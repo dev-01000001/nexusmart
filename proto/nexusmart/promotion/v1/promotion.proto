@@ -1,0 +1,296 @@
+syntax = "proto3";
+
+package nexusmart.promotion.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1;promotionv1";
+
+enum VoucherScope {
+  VOUCHER_SCOPE_UNSPECIFIED = 0;
+  VOUCHER_SCOPE_PLATFORM = 1;
+  VOUCHER_SCOPE_SHOP = 2;
+  VOUCHER_SCOPE_FREESHIP = 3;
+}
+
+enum DiscountType {
+  DISCOUNT_TYPE_UNSPECIFIED = 0;
+  DISCOUNT_TYPE_FIXED = 1;
+  DISCOUNT_TYPE_PERCENT = 2;
+}
+
+enum FlashSaleItemStatus {
+  FLASH_SALE_ITEM_STATUS_UNSPECIFIED = 0;
+  FLASH_SALE_ITEM_STATUS_PENDING = 1;
+  FLASH_SALE_ITEM_STATUS_APPROVED = 2;
+  FLASH_SALE_ITEM_STATUS_REJECTED = 3;
+}
+
+message Voucher {
+  string id = 1;
+  string code = 2;
+  string name = 3;
+  VoucherScope scope = 4;
+  string shop_id = 5;
+  DiscountType discount_type = 6;
+  int64 value_vnd = 7;
+  int32 discount_percent = 8;
+  int64 max_discount_vnd = 9;
+  int64 min_order_vnd = 10;
+  int32 quota = 11;
+  int32 used_count = 12;
+  int32 remaining_quota = 13;
+  int32 per_user_limit = 14;
+  int64 budget_vnd = 15;
+  int64 used_budget_vnd = 16;
+  google.protobuf.Timestamp starts_at = 17;
+  google.protobuf.Timestamp ends_at = 18;
+  bool is_active = 19;
+  bool saved = 20;
+  bool eligible = 21;
+  string ineligible_reason = 22;
+}
+
+message FlashSaleItem {
+  string id = 1;
+  string flash_sale_id = 2;
+  string shop_id = 3;
+  string sku_id = 4;
+  int64 flash_price_vnd = 5;
+  int32 total_slots = 6;
+  int32 remaining_slots = 7;
+  int32 per_user_limit = 8;
+  FlashSaleItemStatus status = 9;
+  string rejection_reason = 10;
+}
+
+message FlashSale {
+  string id = 1;
+  string name = 2;
+  google.protobuf.Timestamp starts_at = 3;
+  google.protobuf.Timestamp ends_at = 4;
+  repeated FlashSaleItem items = 5;
+}
+
+message CoinTransaction {
+  string id = 1;
+  string user_id = 2;
+  int64 delta = 3;
+  string reason = 4;
+  string reference_id = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+message DiscountLineItem {
+  string sku_id = 1;
+  int32 quantity = 2;
+  int64 unit_price_vnd = 3;
+  string flash_sale_item_id = 4;
+}
+
+message ShopDiscountInput {
+  string shop_id = 1;
+  int64 subtotal_vnd = 2;
+  int64 shipping_fee_vnd = 3;
+  repeated DiscountLineItem items = 4;
+}
+
+message ShopDiscountBreakdown {
+  string shop_id = 1;
+  int64 subtotal_vnd = 2;
+  int64 flash_sale_discount_vnd = 3;
+  string shop_voucher_id = 4;
+  int64 shop_voucher_discount_vnd = 5;
+  int64 platform_voucher_discount_vnd = 6;
+  int64 freeship_discount_vnd = 7;
+  int64 coins_discount_vnd = 8;
+  int64 shipping_fee_vnd = 9;
+  int64 final_shipping_fee_vnd = 10;
+  int64 final_payable_vnd = 11;
+}
+
+message DiscountBreakdown {
+  repeated ShopDiscountBreakdown shops = 1;
+  int64 total_subtotal_vnd = 2;
+  int64 total_flash_sale_discount_vnd = 3;
+  int64 total_shop_voucher_discount_vnd = 4;
+  int64 total_platform_voucher_discount_vnd = 5;
+  int64 total_freeship_discount_vnd = 6;
+  int64 total_coins_discount_vnd = 7;
+  int64 total_discount_vnd = 8;
+  int64 platform_cost_vnd = 9;
+  int64 shop_cost_vnd = 10;
+  int64 total_shipping_fee_vnd = 11;
+  int64 final_payable_vnd = 12;
+  repeated string warnings = 13;
+}
+
+message FlashSaleReservationItem {
+  string flash_sale_item_id = 1;
+  string sku_id = 2;
+  int32 quantity = 3;
+}
+
+message CreateVoucherRequest {
+  string code = 1;
+  string name = 2;
+  VoucherScope scope = 3;
+  string shop_id = 4;
+  DiscountType discount_type = 5;
+  int64 value_vnd = 6;
+  int32 discount_percent = 7;
+  int64 max_discount_vnd = 8;
+  int64 min_order_vnd = 9;
+  int32 quota = 10;
+  int32 per_user_limit = 11;
+  int64 budget_vnd = 12;
+  google.protobuf.Timestamp starts_at = 13;
+  google.protobuf.Timestamp ends_at = 14;
+  string created_by = 15;
+}
+
+message CreateVoucherResponse {
+  Voucher voucher = 1;
+}
+
+message ListAvailableVouchersRequest {
+  string user_id = 1;
+  string shop_id = 2;
+  VoucherScope scope = 3;
+  int64 order_amount_vnd = 4;
+}
+
+message ListAvailableVouchersResponse {
+  repeated Voucher vouchers = 1;
+}
+
+message SaveVoucherRequest {
+  string user_id = 1;
+  string voucher_id = 2;
+  string code = 3;
+}
+
+message SaveVoucherResponse {
+  bool saved = 1;
+  Voucher voucher = 2;
+}
+
+message CreateFlashSaleRequest {
+  string name = 1;
+  google.protobuf.Timestamp starts_at = 2;
+  google.protobuf.Timestamp ends_at = 3;
+  string created_by = 4;
+}
+
+message CreateFlashSaleResponse {
+  FlashSale flash_sale = 1;
+}
+
+message RegisterFlashSaleItemRequest {
+  string flash_sale_id = 1;
+  string shop_id = 2;
+  string sku_id = 3;
+  int64 flash_price_vnd = 4;
+  int32 total_slots = 5;
+  int32 per_user_limit = 6;
+}
+
+message RegisterFlashSaleItemResponse {
+  FlashSaleItem item = 1;
+}
+
+message ApproveFlashSaleItemRequest {
+  string admin_id = 1;
+  string item_id = 2;
+  bool approve = 3;
+  string reason = 4;
+}
+
+message ApproveFlashSaleItemResponse {
+  FlashSaleItem item = 1;
+}
+
+message ListActiveFlashSalesRequest {
+  bool include_upcoming = 1;
+}
+
+message ListActiveFlashSalesResponse {
+  repeated FlashSale flash_sales = 1;
+}
+
+message GetCoinBalanceRequest {
+  string user_id = 1;
+}
+
+message GetCoinBalanceResponse {
+  string user_id = 1;
+  int64 balance = 2;
+  repeated CoinTransaction recent_transactions = 3;
+}
+
+message CreditCoinsRequest {
+  string user_id = 1;
+  int64 amount = 2;
+  string reason = 3;
+  string reference_id = 4;
+}
+
+message CreditCoinsResponse {
+  string user_id = 1;
+  int64 balance = 2;
+  bool already_credited = 3;
+}
+
+message PreviewDiscountsRequest {
+  string user_id = 1;
+  repeated ShopDiscountInput shop_items = 2;
+  map<string, string> shop_voucher_ids = 3;
+  string platform_voucher_id = 4;
+  string freeship_voucher_id = 5;
+  int64 coins_to_use = 6;
+}
+
+message PreviewDiscountsResponse {
+  DiscountBreakdown breakdown = 1;
+}
+
+message ReservePromotionRequest {
+  string order_id = 1;
+  string user_id = 2;
+  map<string, string> shop_voucher_ids = 3;
+  string platform_voucher_id = 4;
+  string freeship_voucher_id = 5;
+  int64 coins_to_use = 6;
+  repeated FlashSaleReservationItem flash_sale_items = 7;
+  repeated ShopDiscountInput shop_items = 8;
+}
+
+message ReservePromotionResponse {
+  bool reserved = 1;
+  bool already_reserved = 2;
+  DiscountBreakdown breakdown = 3;
+}
+
+message ReleasePromotionRequest {
+  string order_id = 1;
+}
+
+message ReleasePromotionResponse {
+  bool released = 1;
+  bool already_released = 2;
+}
+
+service PromotionService {
+  rpc CreateVoucher(CreateVoucherRequest) returns (CreateVoucherResponse);
+  rpc ListAvailableVouchers(ListAvailableVouchersRequest) returns (ListAvailableVouchersResponse);
+  rpc SaveVoucher(SaveVoucherRequest) returns (SaveVoucherResponse);
+  rpc CreateFlashSale(CreateFlashSaleRequest) returns (CreateFlashSaleResponse);
+  rpc RegisterFlashSaleItem(RegisterFlashSaleItemRequest) returns (RegisterFlashSaleItemResponse);
+  rpc ApproveFlashSaleItem(ApproveFlashSaleItemRequest) returns (ApproveFlashSaleItemResponse);
+  rpc ListActiveFlashSales(ListActiveFlashSalesRequest) returns (ListActiveFlashSalesResponse);
+  rpc GetCoinBalance(GetCoinBalanceRequest) returns (GetCoinBalanceResponse);
+  rpc CreditCoins(CreditCoinsRequest) returns (CreditCoinsResponse);
+  rpc PreviewDiscounts(PreviewDiscountsRequest) returns (PreviewDiscountsResponse);
+  rpc ReservePromotion(ReservePromotionRequest) returns (ReservePromotionResponse);
+  rpc ReleasePromotion(ReleasePromotionRequest) returns (ReleasePromotionResponse);
+}

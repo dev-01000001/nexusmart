@@ -1,0 +1,1249 @@
+{
+ "url": "http://127.0.0.1:3006/tra-cuu-don-hang",
+ "at": "2026-11-19T21:28:14.403Z",
+ "allow": [],
+ "viewports": [
+  {
+   "width": 1440,
+   "height": 900,
+   "load": "load",
+   "screens": 4,
+   "filled": [
+    0.71,
+    0.53,
+    0.44,
+    0.55
+   ],
+   "motion": {
+    "elements": 13,
+    "css": 5,
+    "transitions": 8,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "page": {
+     "height": 3358,
+     "screens": 3.7,
+     "words": 756,
+     "img": 7,
+     "video": 0,
+     "canvas": 0,
+     "svg": 9,
+     "sections": 3,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 5,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "cotton-twill-slate.jpg",
+      "ao-thun-cotton-xanh-than.png",
+      "ao-thun-dryfit-co-vit.png",
+      "ao-thun-oversize-than-chi.png",
+      "ao-polo-pique-kem.png"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Tra cứu đơn hàng",
+     "words": 4,
+     "chars": 16,
+     "lines": 1,
+     "size": 66.2,
+     "vw": 4.6,
+     "font": "Work Sans",
+     "weight": 300,
+     "tracking": -0.035,
+     "leading": 1.02,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "left",
+     "widthRatio": 0.66,
+     "top": 148,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Tra cứu đơn hàng",
+     "words": 4,
+     "lines": 1,
+     "size": 66.2,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Tra cứu đơn hàng",
+      "words": 4,
+      "chars": 16,
+      "lines": 1,
+      "size": 66.2,
+      "vw": 4.6,
+      "font": "Work Sans",
+      "weight": 300,
+      "tracking": -0.035,
+      "leading": 1.02,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.66,
+      "top": 148,
+      "tag": "h1",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 1,
+     "maxLines": 1,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": null,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      13,
+      14,
+      15,
+      16,
+      18,
+      19,
+      26,
+      66
+     ],
+     "sizeCount": 8,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 16,
+      "leading": 1.55,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 13.7
+     },
+     "measureChars": 81,
+     "max": {
+      "size": 66.2,
+      "vw": 4.6,
+      "font": "Work Sans",
+      "text": "Tra cứu đơn hàng"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0.03,
+     "centerShare": 0.06,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f7f9fa",
+       "top": 0,
+       "hsl": {
+        "h": 200,
+        "s": 0.23,
+        "l": 0.97
+       }
+      },
+      {
+       "color": "#ecf0f2",
+       "top": 330,
+       "hsl": {
+        "h": 200,
+        "s": 0.19,
+        "l": 0.94
+       }
+      },
+      {
+       "color": "#ffffff",
+       "top": 330,
+       "hsl": {
+        "h": 0,
+        "s": 0,
+        "l": 1
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#1f3038",
+       "share": 0.6
+      },
+      {
+       "color": "#5d6b72",
+       "share": 0.33
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.03
+      },
+      {
+       "color": "#754c09",
+       "share": 0.01
+      },
+      {
+       "color": "#ecf0f2",
+       "share": 0.01
+      }
+     ],
+     "button": {
+      "bg": "#ecf0f2",
+      "hsl": {
+       "h": 200,
+       "s": 0.19,
+       "l": 0.94
+      },
+      "fg": "#1f3038"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 22,
+     "inHero": 12,
+     "radius": 0,
+     "height": 32,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Bỏ qua đến nội dung",
+      "Lịch sử đơn đã đăng nhập",
+      "Trung tâm trợ giúp",
+      "Tra cứu đơn hàng ngay",
+      "NM-261120-109 Chờ thanh toán · Thử thanh"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 5,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 358
+      },
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 1284
+      }
+     ]
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 8,
+     "fixed": false,
+     "height": 112,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "pageH": 3358,
+    "margins": {
+     "left": 32,
+     "right": 32
+    },
+    "sections": [
+     {
+      "sel": "main#main-content.layout_main__FQ5Sh",
+      "tag": "main",
+      "top": 112,
+      "height": 3054,
+      "words": 629,
+      "media": 6,
+      "middle": 0,
+      "heading": {
+       "text": "Tra cứu đơn hàng",
+       "size": 66,
+       "tag": "h1"
+      },
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 32,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "footer.ShopFooter_footer__bvkS_",
+      "tag": "footer",
+      "top": 3166,
+      "height": 192,
+      "words": 51,
+      "media": 0,
+      "middle": 233,
+      "heading": null,
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 32,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Tra cứu đơn hàng",
+      "size": 66,
+      "top": 148,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 700,
+      "n": 4
+     },
+     {
+      "x": 32,
+      "n": 3
+     },
+     {
+      "x": 90,
+      "n": 2
+     },
+     {
+      "x": 710,
+      "n": 2
+     },
+     {
+      "x": 62,
+      "n": 1
+     },
+     {
+      "x": 882,
+      "n": 1
+     },
+     {
+      "x": 918,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 14,
+    "bodySize": 16,
+    "stage": false,
+    "explains": true,
+    "slivers": [],
+    "voidShare": 0.07,
+    "voidBox": {
+     "x": 720,
+     "y": 120,
+     "w": 720,
+     "h": 120
+    }
+   },
+   "app": null,
+   "consoleErrors": []
+  },
+  {
+   "width": 768,
+   "height": 1024,
+   "load": "load",
+   "screens": 6,
+   "filled": [
+    0.73,
+    0.79,
+    0.73,
+    0.54,
+    0.64,
+    0.56
+   ],
+   "motion": {
+    "elements": 13,
+    "css": 5,
+    "transitions": 8,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "page": {
+     "height": 5749,
+     "screens": 5.6,
+     "words": 731,
+     "img": 7,
+     "video": 0,
+     "canvas": 0,
+     "svg": 9,
+     "sections": 3,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 5,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "cotton-twill-slate.jpg",
+      "ao-thun-cotton-xanh-than.png",
+      "ao-thun-dryfit-co-vit.png",
+      "ao-thun-oversize-than-chi.png",
+      "ao-polo-pique-kem.png"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Tra cứu đơn hàng",
+     "words": 4,
+     "chars": 16,
+     "lines": 1,
+     "size": 36,
+     "vw": 4.7,
+     "font": "Work Sans",
+     "weight": 300,
+     "tracking": -0.035,
+     "leading": 1.02,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "center",
+     "widthRatio": 0.95,
+     "top": 120,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Tra cứu đơn hàng",
+     "words": 4,
+     "lines": 1,
+     "size": 36,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Tra cứu đơn hàng",
+      "words": 4,
+      "chars": 16,
+      "lines": 1,
+      "size": 36,
+      "vw": 4.7,
+      "font": "Work Sans",
+      "weight": 300,
+      "tracking": -0.035,
+      "leading": 1.02,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.95,
+      "top": 120,
+      "tag": "h1",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 1,
+     "maxLines": 1,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": null,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      13,
+      14,
+      15,
+      16,
+      18,
+      23,
+      36
+     ],
+     "sizeCount": 7,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 16,
+      "leading": 1.55,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 13.7
+     },
+     "measureChars": 82,
+     "max": {
+      "size": 36,
+      "vw": 4.7,
+      "font": "Work Sans",
+      "text": "Tra cứu đơn hàng"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0.03,
+     "centerShare": 0.05,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f7f9fa",
+       "top": 0,
+       "hsl": {
+        "h": 200,
+        "s": 0.23,
+        "l": 0.97
+       }
+      },
+      {
+       "color": "#ecf0f2",
+       "top": 311,
+       "hsl": {
+        "h": 200,
+        "s": 0.19,
+        "l": 0.94
+       }
+      },
+      {
+       "color": "#ffffff",
+       "top": 934,
+       "hsl": {
+        "h": 0,
+        "s": 0,
+        "l": 1
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#1f3038",
+       "share": 0.61
+      },
+      {
+       "color": "#5d6b72",
+       "share": 0.32
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.03
+      },
+      {
+       "color": "#754c09",
+       "share": 0.01
+      },
+      {
+       "color": "#ecf0f2",
+       "share": 0.01
+      }
+     ],
+     "button": {
+      "bg": "#ecf0f2",
+      "hsl": {
+       "h": 200,
+       "s": 0.19,
+       "l": 0.94
+      },
+      "fg": "#1f3038"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 22,
+     "inHero": 8,
+     "radius": 0,
+     "height": 32,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Bỏ qua đến nội dung",
+      "Lịch sử đơn đã đăng nhập",
+      "Trung tâm trợ giúp",
+      "Tra cứu đơn hàng ngay",
+      "NM-261120-109 Chờ thanh toán · Thử thanh"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 5,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 1527
+      },
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 2704
+      }
+     ]
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 2,
+     "fixed": false,
+     "height": 104,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "pageH": 5749,
+    "margins": {
+     "left": 20,
+     "right": 20
+    },
+    "sections": [
+     {
+      "sel": "main#main-content.layout_main__FQ5Sh",
+      "tag": "main",
+      "top": 104,
+      "height": 5397,
+      "words": 629,
+      "media": 6,
+      "middle": 0,
+      "heading": {
+       "text": "Tra cứu đơn hàng",
+       "size": 36,
+       "tag": "h1"
+      },
+      "left": 20,
+      "right": 20,
+      "textLeft": 20,
+      "textRight": 44,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "footer.ShopFooter_footer__bvkS_",
+      "tag": "footer",
+      "top": 5501,
+      "height": 248,
+      "words": 51,
+      "media": 0,
+      "middle": 14,
+      "heading": null,
+      "left": 20,
+      "right": 202,
+      "textLeft": 20,
+      "textRight": 202,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Tra cứu đơn hàng",
+      "size": 36,
+      "top": 120,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 56,
+      "n": 6
+     },
+     {
+      "x": 20,
+      "n": 3
+     },
+     {
+      "x": 40,
+      "n": 1
+     },
+     {
+      "x": 80,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 11,
+    "bodySize": 16,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": null,
+   "consoleErrors": []
+  },
+  {
+   "width": 390,
+   "height": 844,
+   "load": "load",
+   "screens": 8,
+   "filled": [
+    0.76,
+    0.76,
+    0.92,
+    0.82,
+    0.6,
+    0.83,
+    0.64,
+    0.51
+   ],
+   "motion": {
+    "elements": 13,
+    "css": 5,
+    "transitions": 8,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "page": {
+     "height": 6047,
+     "screens": 7.2,
+     "words": 731,
+     "img": 7,
+     "video": 0,
+     "canvas": 0,
+     "svg": 9,
+     "sections": 3,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 5,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "cotton-twill-slate.jpg",
+      "ao-thun-cotton-xanh-than.png",
+      "ao-thun-dryfit-co-vit.png",
+      "ao-thun-oversize-than-chi.png",
+      "ao-polo-pique-kem.png"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Tra cứu đơn hàng",
+     "words": 4,
+     "chars": 16,
+     "lines": 1,
+     "size": 36,
+     "vw": 9.2,
+     "font": "Work Sans",
+     "weight": 300,
+     "tracking": -0.035,
+     "leading": 1.02,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "center",
+     "widthRatio": 0.9,
+     "top": 120,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Tra cứu đơn hàng",
+     "words": 4,
+     "lines": 1,
+     "size": 36,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Tra cứu đơn hàng",
+      "words": 4,
+      "chars": 16,
+      "lines": 1,
+      "size": 36,
+      "vw": 9.2,
+      "font": "Work Sans",
+      "weight": 300,
+      "tracking": -0.035,
+      "leading": 1.02,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.9,
+      "top": 120,
+      "tag": "h1",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 1,
+     "maxLines": 1,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": null,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      20,
+      36
+     ],
+     "sizeCount": 8,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 16,
+      "leading": 1.55,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 13.7
+     },
+     "measureChars": 34,
+     "max": {
+      "size": 36,
+      "vw": 9.2,
+      "font": "Work Sans",
+      "text": "Tra cứu đơn hàng"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0.03,
+     "centerShare": 0.05,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f7f9fa",
+       "top": 0,
+       "hsl": {
+        "h": 200,
+        "s": 0.23,
+        "l": 0.97
+       }
+      },
+      {
+       "color": "#ecf0f2",
+       "top": 414,
+       "hsl": {
+        "h": 200,
+        "s": 0.19,
+        "l": 0.94
+       }
+      },
+      {
+       "color": "#ffffff",
+       "top": 1052,
+       "hsl": {
+        "h": 0,
+        "s": 0,
+        "l": 1
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#1f3038",
+       "share": 0.61
+      },
+      {
+       "color": "#5d6b72",
+       "share": 0.32
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.03
+      },
+      {
+       "color": "#754c09",
+       "share": 0.01
+      },
+      {
+       "color": "#ecf0f2",
+       "share": 0.01
+      }
+     ],
+     "button": {
+      "bg": "#ecf0f2",
+      "hsl": {
+       "h": 200,
+       "s": 0.19,
+       "l": 0.94
+      },
+      "fg": "#1f3038"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 22,
+     "inHero": 6,
+     "radius": 0,
+     "height": 32,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Bỏ qua đến nội dung",
+      "Lịch sử đơn đã đăng nhập",
+      "Trung tâm trợ giúp",
+      "Tra cứu đơn hàng ngay",
+      "NM-261120-109 Chờ thanh toán · Thử thanh"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 1,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 1532
+      },
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 3160
+      }
+     ]
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 2,
+     "fixed": false,
+     "height": 104,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "pageH": 6047,
+    "margins": {
+     "left": 20,
+     "right": 20
+    },
+    "sections": [
+     {
+      "sel": "main#main-content.layout_main__FQ5Sh",
+      "tag": "main",
+      "top": 104,
+      "height": 5645,
+      "words": 629,
+      "media": 6,
+      "middle": 0,
+      "heading": {
+       "text": "Tra cứu đơn hàng",
+       "size": 36,
+       "tag": "h1"
+      },
+      "left": 20,
+      "right": 20,
+      "textLeft": 20,
+      "textRight": 29,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "footer.ShopFooter_footer__bvkS_",
+      "tag": "footer",
+      "top": 5749,
+      "height": 298,
+      "words": 51,
+      "media": 0,
+      "middle": 0,
+      "heading": null,
+      "left": 20,
+      "right": 49,
+      "textLeft": 20,
+      "textRight": 49,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Tra cứu đơn hàng",
+      "size": 36,
+      "top": 120,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 56,
+      "n": 6
+     },
+     {
+      "x": 20,
+      "n": 3
+     },
+     {
+      "x": 40,
+      "n": 1
+     },
+     {
+      "x": 80,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 11,
+    "bodySize": 16,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": null,
+   "consoleErrors": []
+  }
+ ],
+ "findings": [
+  {
+   "level": "WARN",
+   "id": "card-rows",
+   "width": 1440,
+   "message": "2 rows of identical boxed cards.",
+   "fix": "Vary the composition; not every section is a card grid.",
+   "alsoAt": [
+    768,
+    390
+   ]
+  },
+  {
+   "level": "WARN",
+   "id": "no-footage",
+   "width": 1440,
+   "message": "No video anywhere on the page.",
+   "fix": "Look for one honest clip with scripts/assets.mjs --video (the place, the material, the process) and use it as a muted loop with a poster frame. Defend its absence only if no clip fits the subject."
+  },
+  {
+   "level": "WARN",
+   "id": "still-page",
+   "width": 1440,
+   "message": "Little motion: 13 element(s) moved while the page loaded and scrolled.",
+   "fix": "Give every section an entrance for its parts (not one fade of the whole block) and add one moving picture: a looping clip or a slow move on a photograph."
+  }
+ ],
+ "images": [
+  {
+   "viewport": "desktop",
+   "width": 1440,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/tra-cuu-don-hang/desktop-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/tra-cuu-don-hang/desktop-page-01.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "tablet",
+   "width": 768,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/tra-cuu-don-hang/tablet-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/tra-cuu-don-hang/tablet-page-01.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "mobile",
+   "width": 390,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/tra-cuu-don-hang/mobile-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/tra-cuu-don-hang/mobile-page-01.jpg"
+   ],
+   "film": []
+  }
+ ]
+}

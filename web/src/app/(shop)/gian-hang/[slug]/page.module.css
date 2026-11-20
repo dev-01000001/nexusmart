@@ -1,0 +1,790 @@
+.page {
+  width: 100%;
+  padding: clamp(20px, 2.8vw, 36px) var(--margin) clamp(56px, 6vw, 96px);
+  background: var(--bg);
+  color: var(--ink);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .page [data-cat-reveal][data-pending="1"] {
+    opacity: 0;
+    transform: translateY(18px);
+    transition:
+      opacity 560ms var(--ease-out),
+      transform 720ms var(--ease-expo);
+    transition-delay: calc(var(--stagger, 0) * 65ms);
+  }
+
+  .page [data-cat-reveal][data-in="1"] {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 24px;
+  font-size: 14px;
+  color: var(--ink-secondary);
+}
+
+.crumbLink {
+  color: var(--ink-secondary);
+  transition: color var(--t-hover) ease;
+}
+
+.crumbLink:hover {
+  color: var(--ink);
+}
+
+.crumbCurrent {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+/* Shop Header Hero */
+.heroGrid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: clamp(24px, 3vw, 48px);
+  align-items: start;
+  margin-bottom: clamp(40px, 5vw, 64px);
+}
+
+.heroLeft {
+  grid-column: 1 / 7;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.shopTitle {
+  font-size: clamp(34px, 4.8vw, 70px);
+  font-weight: 300;
+  letter-spacing: -0.035em;
+  line-height: 1.04;
+  color: var(--ink);
+}
+
+.story {
+  font-size: 18px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 54ch;
+}
+
+.specialty {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  max-width: 56ch;
+}
+
+.verifiedRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--accent-tint-ink);
+}
+
+.heroActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+/* Right workshop banner + dark slate fact band */
+.heroVisualCol {
+  grid-column: 7 / 13;
+  display: flex;
+  flex-direction: column;
+}
+
+.heroBannerFrame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--surface-subtle);
+  overflow: clip;
+}
+
+.heroBannerImg {
+  object-fit: cover;
+  object-position: center;
+}
+
+.factsBand {
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  padding: 20px 24px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 20px;
+}
+
+.factItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.factItemFull {
+  grid-column: span 2;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.factKey {
+  font-size: 13px;
+  color: var(--band-dark-muted);
+}
+
+.factVal {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--band-dark-ink);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+
+/* Vouchers — single accent-tint band (zero repeated grey cards) */
+.voucherBand {
+  margin-bottom: clamp(40px, 5vw, 64px);
+  background: var(--accent-tint);
+  padding: clamp(22px, 3vw, 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.sectionHeading {
+  font-size: clamp(24px, 2.2vw, 30px);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--ink);
+}
+
+.voucherList {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.voucherRow {
+  background: transparent;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.voucherInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.voucherLineTop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 14px;
+}
+
+.voucherCode {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent-tint-ink);
+}
+
+.voucherTitle {
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--ink);
+}
+
+.voucherDesc {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  max-width: 60ch;
+}
+
+.voucherMeta {
+  font-size: 14px;
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.voucherActions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+/* Workspace tabs & catalog section */
+.catalogSection {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.workspaceHead {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mainTabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mainTabBtn {
+  min-height: 42px;
+  padding: 0 16px;
+  background: var(--surface-white);
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 400;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.mainTabBtn:hover {
+  background: var(--surface-muted);
+}
+
+.mainTabBtnActive {
+  background: var(--band-dark);
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.mainTabBtnActive:hover {
+  background: var(--band-dark);
+}
+
+.tabPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.catalogToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tabBtn {
+  min-height: 38px;
+  padding: 0 14px;
+  background: var(--surface-white);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 400;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.tabBtn:hover {
+  background: var(--surface-muted);
+}
+
+.tabBtnActive {
+  background: var(--band-dark);
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.tabBtnActive:hover {
+  background: var(--band-dark);
+}
+
+.shopToolsRight {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.shopSearchWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.shopSearchIcon {
+  position: absolute;
+  left: 12px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+input.shopSearchInput {
+  min-height: 38px;
+  width: 240px;
+  padding: 0 12px 0 36px;
+  background: var(--surface-white);
+  border: 1px solid var(--control);
+  border-radius: var(--radius-shop);
+  font-size: 14px;
+  color: var(--ink);
+}
+
+input.shopSearchInput::placeholder {
+  color: var(--muted);
+}
+
+.sortWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sortLabel {
+  font-size: 14px;
+  color: var(--ink-secondary);
+}
+
+select.sortSelect {
+  min-height: 38px;
+  padding: 0 12px;
+  background: var(--surface-white);
+  border: 1px solid var(--control);
+  border-radius: var(--radius-shop);
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.productGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 28px 16px;
+}
+
+/* Craft fill tile — fills remaining 3 cols on 5-product shops and shows workshop loom clip */
+.craftFillCard {
+  grid-column: span 3;
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.craftVideoWrap {
+  position: relative;
+  min-height: 260px;
+  background: var(--band-dark-surface);
+  overflow: clip;
+}
+
+.craftVideo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.craftFillBody {
+  padding: clamp(22px, 2.8vw, 34px);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 14px;
+}
+
+.craftFillTitle {
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--band-dark-ink);
+}
+
+.craftFillDesc {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--band-dark-muted);
+  max-width: 48ch;
+}
+
+.craftFillActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* Empty search inside shop */
+.emptySearchPanel {
+  background: var(--surface-white);
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.emptyHeading {
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.emptyBody {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 56ch;
+}
+
+.spellingHintBtn {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--accent-tint-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.emptyActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* Shop Collections Tab */
+.collectionsStack {
+  display: flex;
+  flex-direction: column;
+  gap: 36px;
+}
+
+.collectionBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.collectionHead {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.collectionTitle {
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.collectionSub {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  max-width: 58ch;
+}
+
+/* Factory & QC Tab — single primary white surface */
+.factoryGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: clamp(24px, 3vw, 48px);
+  align-items: start;
+}
+
+.factoryInfoCol {
+  background: var(--surface-white);
+  padding: clamp(22px, 3vw, 34px);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.subHeading {
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.25;
+  color: var(--ink);
+}
+
+.factoryText {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 58ch;
+}
+
+.factoryMetrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 20px;
+}
+
+.metricKey {
+  font-size: 14px;
+  color: var(--ink-secondary);
+}
+
+.metricVal {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--ink);
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+}
+
+.qcBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.qcHeading {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.qcList {
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.qcItem {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  max-width: 56ch;
+}
+
+.factoryVisualCol {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.factoryFigure {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.factoryImgFrame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  background: var(--surface-subtle);
+  overflow: clip;
+}
+
+.factoryImg {
+  object-fit: cover;
+}
+
+.factoryCaption {
+  font-size: 14px;
+  color: var(--ink-secondary);
+}
+
+/* Size Chart Tab */
+.sizeChartHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tablesGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.tableBox {
+  background: var(--surface-white);
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tableTitle {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+.sizeTable th,
+.sizeTable td {
+  padding: 10px 8px;
+  font-size: 14px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.sizeTable td:first-child {
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.embeddedSizeFinder {
+  margin-top: 8px;
+}
+
+/* Other shops — unboxed 3-column typographic directory (zero card-rows) */
+.otherShopsSection {
+  margin-top: clamp(56px, 7vw, 96px);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.otherShopsGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px 36px;
+}
+
+.otherShopItem {
+  background: transparent;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.otherShopName {
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--ink);
+  transition: color var(--t-hover) ease;
+}
+
+.otherShopItem:hover .otherShopName {
+  color: var(--accent);
+}
+
+.otherShopCity {
+  font-size: 14px;
+  color: var(--ink-secondary);
+}
+
+.otherShopSpec {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.otherShopLink {
+  margin-top: 4px;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--accent-tint-ink);
+}
+
+@media (max-width: 1080px) {
+  .heroGrid,
+  .factoryGrid,
+  .tablesGrid {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+
+  .heroLeft,
+  .heroVisualCol {
+    grid-column: auto;
+  }
+
+  .productGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .craftFillCard {
+    grid-column: span 1;
+    grid-template-columns: 1fr;
+  }
+
+  .otherShopsGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .page {
+    padding: 16px 20px 56px;
+  }
+
+  .story {
+    font-size: 16px;
+  }
+
+  .factsBand,
+  .factoryMetrics {
+    grid-template-columns: 1fr;
+  }
+
+  .factItemFull {
+    grid-column: auto;
+  }
+
+  .voucherRow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .voucherActions {
+    width: 100%;
+  }
+
+  .shopToolsRight {
+    width: 100%;
+  }
+
+  .shopSearchWrap,
+  input.shopSearchInput {
+    width: 100%;
+  }
+
+  .tabBtn,
+  .mainTabBtn {
+    min-height: 44px;
+  }
+
+  .productGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px 12px;
+  }
+
+  .craftFillCard {
+    grid-column: span 2;
+  }
+}

@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package nexusmart.notification.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/nexusmart/core/gen/go/nexusmart/notification/v1;notificationv1";
+
+enum NotificationCategory {
+  NOTIFICATION_CATEGORY_UNSPECIFIED = 0;
+  NOTIFICATION_CATEGORY_ORDER = 1;
+  NOTIFICATION_CATEGORY_PROMOTION = 2;
+  NOTIFICATION_CATEGORY_SYSTEM = 3;
+}
+
+message Notification {
+  string id = 1;
+  string user_id = 2;
+  NotificationCategory category = 3;
+  string title = 4;
+  string body = 5;
+  string link = 6;
+  string event_id = 7;
+  bool is_read = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message NotificationPreferences {
+  string user_id = 1;
+  bool order_in_app = 2;
+  bool order_email = 3;
+  bool order_push = 4;
+  bool promotion_in_app = 5;
+  bool promotion_email = 6;
+  bool promotion_push = 7;
+  bool system_in_app = 8;
+  bool system_email = 9;
+  bool system_push = 10;
+}
+
+message ListNotificationsRequest {
+  string user_id = 1;
+  NotificationCategory category = 2;
+  bool unread_only = 3;
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+message ListNotificationsResponse {
+  repeated Notification notifications = 1;
+  int64 unread_count = 2;
+  int64 total = 3;
+}
+
+message MarkReadRequest {
+  string user_id = 1;
+  repeated string notification_ids = 2;
+  bool mark_all = 3;
+}
+
+message MarkReadResponse {
+  int32 updated_count = 1;
+  int64 unread_count = 2;
+}
+
+message GetPreferencesRequest {
+  string user_id = 1;
+}
+
+message GetPreferencesResponse {
+  NotificationPreferences preferences = 1;
+}
+
+message UpdatePreferencesRequest {
+  string user_id = 1;
+  NotificationPreferences preferences = 2;
+}
+
+message UpdatePreferencesResponse {
+  NotificationPreferences preferences = 1;
+}
+
+service NotificationService {
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse);
+  rpc MarkRead(MarkReadRequest) returns (MarkReadResponse);
+  rpc GetPreferences(GetPreferencesRequest) returns (GetPreferencesResponse);
+  rpc UpdatePreferences(UpdatePreferencesRequest) returns (UpdatePreferencesResponse);
+}

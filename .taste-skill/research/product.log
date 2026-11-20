@@ -1,0 +1,38 @@
+> **Lưu ý chặn ghi file:** Phiên làm việc hiện tại không được cấp tool ghi file hay chạy lệnh shell (chỉ có `read_file`, `search_web` và MCP đọc/tìm kiếm), nên tôi chưa thể ghi trực tiếp xuống đĩa tại `.taste-skill/research/product.md`. Dưới đây là nội dung Markdown hoàn chỉnh (đúng cấu trúc, ~685 từ, 20 tính năng đã đối chiếu nguồn) để lưu vào `.taste-skill/research/product.md`.
+
+```markdown
+# Trang sản phẩm (Scope: `product`)
+
+| Tính năng | Hành vi, trạng thái | Bằng chứng (URL) | Nguồn | Áp dụng cho sàn đa gian hàng |
+| --- | --- | --- | --- | --- |
+| 1. Màu & size | Đổi màu đổi ảnh/URL; chọn XS–4XL; combo chọn cỡ từng món. | [Áo thun](https://www.coolmate.me/product/ao-thun-nam-cotton-compact-chong-nhan?color=xam), [Combo](https://www.coolmate.me/product/combo-2-ao-the-focus-duo) | observed | Biến thể SKU ở Seller Center; Admin chuẩn hóa mã màu/size. |
+| 2. Tồn kho SKU | Hiện `Hết hàng`, khóa mua, giới hạn SL/đơn theo tồn thực. | [Quần gym](https://www.coolmate.me/product/quan-short-gym-7-power), [Điều kiện](https://www.coolmate.me/page/dieu-kien-han-che) | observed | Giữ tồn SKU theo kho shop (optimistic locking); seller đặt hạn mức. |
+| 3. Báo có hàng | PDP chỉ hiện nhãn `Hết hàng` tĩnh; chưa thấy form đăng ký. | [Quần lót](https://www.coolmate.me/product/combo-2-quan-lot-nam-trunk-ice-cooling-premium), [Cookie](https://www.coolmate.me/page/chinh-sach-cookie) | inferred | Nút nhận tin theo SKU; seller nhập tồn >0 tự báo. |
+| 4. Bảng size | Modal `Bảng size` cạnh bộ chọn cỡ; bảng đo trong mô tả. | [Polo](https://www.coolmate.me/product/ao-polo-nam-pique-cotton-usa-tham-hut-toi-da) | observed | Lưu theo shop/danh mục; Admin cấp mẫu số đo bắt buộc. |
+| 5. Gợi ý size | Kéo cao, nặng, chọn dáng (gầy/vừa/đầy) nhận cỡ đề xuất. | [Hỏi đáp](https://www.coolmate.me/page/thu-vien-hoi-dap), [Blog](https://www.coolmate.me/blog/huong-dan-chon-size-quan-ao-coolmate-3256) | observed | Tính theo form từng shop; lưu số đo dùng toàn sàn. |
+| 6. Thông tin mẫu | Cao, nặng, 3 vòng, size mặc (nam/nữ cho đồ unisex). | [Outlet](https://www.coolmate.me/product/polo-pique-basic-cotton-100-outlet), [Legging](https://www.coolmate.me/product/legging-78-coolflex-light-suppport?color=nau-mocha) | observed | Trường cấu trúc ở Seller Center, hiện dưới bộ chọn size. |
+| 7. Vải & công nghệ | Badge tính năng, tỷ lệ sợi, GSM, công nghệ vải, form. | [Aircool](https://www.coolmate.me/product/ao-polo-nam-premium-aircool), [Legging](https://www.coolmate.me/product/legging-78-coolflex-light-suppport?color=nau-mocha) | observed | Admin quản từ điển vải; seller gắn tag đồng bộ bộ lọc. |
+| 8. Bảo quản | Mục thu gọn `Bảo quản` (nhiệt giặt, không tẩy/xả, phơi râm). | [Áo gym](https://www.coolmate.me/product/ao-thun-nam-gym-powerfit-dang-slim-fit-1952-co-gian-exdry-thoang-khi) | observed | Seller chọn bộ icon bảo quản chuẩn theo loại vải. |
+| 9. Ảnh & video | Carousel đánh số (`1/10`), `Xem thêm ảnh`, phát `Video` chính. | [Quần gym](https://www.coolmate.me/product/quan-short-gym-7-power), [Áo gym](https://www.coolmate.me/product/ao-thun-nam-gym-powerfit-dang-slim-fit-1952-co-gian-exdry-thoang-khi) | observed | Gắn media theo màu SKU; seller tải ảnh/video; Admin duyệt. |
+| 10. Đánh giá ảnh/size | Lọc sao/ảnh/phản hồi; tỷ lệ `Chật/Đúng/Rộng`; cao/nặng, cỡ mua. | [Quần lót](https://www.coolmate.me/product/quan-lot-gym-powerfit), [Polo](https://www.coolmate.me/product/ao-polo-nam-pique-cotton-usa-tham-hut-toi-da) | observed | Chỉ đơn hoàn tất đánh giá; seller trả lời; Admin lọc spam. |
+| 11. Hỏi đáp | Khối `Câu hỏi thường gặp` trên PDP; hỏi riêng qua CSKH. | [Áo thun](https://www.coolmate.me/product/ao-thun-nam-cotton-compact-chong-nhan), [Quần gym](https://www.coolmate.me/product/quan-short-gym-7-power) | observed | Seller soạn FAQ và trả lời công khai; Admin duyệt từ cấm. |
+| 12. Giá sale | Giá gốc gạch ngang, giá giảm, `% giảm`, nhãn `OUTLET`. | [Legging](https://www.coolmate.me/product/legging-78-coolflex-light-suppport?color=nau-mocha), [KM](https://www.coolmate.me/page/chuong-trinh-va-chinh-sach-khuyen-mai-tai-coolmate) | observed | Giá nguyên VND theo SKU; Admin quản flash sale, chống giá ảo. |
+| 13. Combo & mua nhiều | Pack 2–3 món hoặc giảm tầng (`Mua 2 giảm thêm 10%`). | [Sweatshirt](https://www.coolmate.me/product/ao-ni-all-day-sweatshirt-mickey-du-xuan?color=kem), [Changelog](https://www.coolmate.me/page/changelog) | observed | Seller tạo bundle (trừ tồn SKU con) và giảm bậc cùng shop. |
+| 14. Voucher trên trang | Chip mã giảm, quà ngưỡng đơn, hoàn điểm hoặc báo không áp. | [Sweatshirt](https://www.coolmate.me/product/ao-ni-all-day-sweatshirt-mickey-du-xuan?color=kem), [Short](https://www.coolmate.me/product/quan-the-thao-nam-7-ultra-short) | observed | Tách voucher shop và sàn (Admin); trừ suất Redis Lua. |
+| 15. Mua kèm | Khối `Gợi ý xem thêm` (phối bộ), `Mua sắm theo phong cách`. | [Legging](https://www.coolmate.me/product/legging-78-coolflex-light-suppport?color=nau-mocha) | observed | Seller cài deal mua kèm gộp ship; sàn gợi ý dự phòng. |
+| 16. SP tương tự | Khối `Sản phẩm cùng công nghệ`, `Gợi ý sản phẩm`, thêm nhanh. | [Legging](https://www.coolmate.me/product/legging-78-coolflex-light-suppport?color=nau-mocha) | observed | Tách dải "Cùng shop" và "Tương tự trên sàn" theo vải/giá. |
+| 17. Đã xem gần đây | Khối `Sản phẩm bạn đã xem` cuối trang (cookie, có trạng thái rỗng). | [Sweatshirt](https://www.coolmate.me/product/ao-ni-all-day-sweatshirt-mickey-du-xuan?color=kem), [Cookie](https://www.coolmate.me/page/chinh-sach-cookie) | observed | Lưu cookie/tài khoản đa thiết bị, gắn tên gian hàng. |
+| 18. Yêu thích | Lưu yêu thích theo dõi giá (qua chính sách, chưa thấy nút tĩnh). | [Cookie](https://www.coolmate.me/page/chinh-sach-cookie), [Blog](https://www.coolmate.me/blog/black-friday-la-ngay-gi) | inferred | Nút tim theo SKU báo giảm/có hàng; Seller Center xem lượt thích. |
+| 19. Ước tính giao | Ngưỡng freeship, dự kiến nhận (`2–4 ngày`), hạn xử lý riêng. | [Áo thun](https://www.coolmate.me/product/ao-thun-nam-cotton-compact-chong-nhan), [Giao hàng](https://www.coolmate.me/page/dich-vu-giao-hang-coolmate) | observed | Tính SLA từ kho shop, địa chỉ nhận và hạn chuẩn bị. |
+| 20. Cam kết đổi trả | Tóm tắt đổi trả; nhãn `Không áp dụng đổi trả` cho ngoại lệ. | [Outlet](https://www.coolmate.me/product/polo-pique-basic-cotton-100-outlet), [Đổi trả](https://www.coolmate.me/page/dich-vu-60-ngay-doi-tra) | observed | Admin đặt chuẩn sàn và ngoại lệ; seller có thể mở rộng. |
+
+## 5 tính năng quan trọng nhất cho người mua đồ cơ bản
+
+1. **Gợi ý size + bảng size:** Giảm nhầm cỡ giữa nhiều gian hàng khác form.
+2. **Đánh giá ảnh & độ vừa (`Chật/Đúng/Rộng`):** Xác thực form và chất vải thật.
+3. **Chọn màu/size gắn tồn SKU & mẫu mặc:** Hình dung phom, tránh hụt cỡ.
+4. **Combo & mua nhiều giảm:** Khớp nhu cầu mua lốc 3–5 chiếc đồ cơ bản.
+5. **Chất liệu/GSM/công nghệ vải & đổi trả rõ:** An tâm cảm giác mặc, đổi size.
+```
+
+`.taste-skill/research/product.md` (chưa ghi được do thiếu tool ghi file) — 20 tính năng (18 `observed`, 2 `inferred`).

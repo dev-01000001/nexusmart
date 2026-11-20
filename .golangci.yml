@@ -1,0 +1,60 @@
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - revive
+    - bodyclose
+    - noctx
+    - errorlint
+
+linters-settings:
+  gofmt:
+    simplify: true
+  revive:
+    rules:
+      - name: exported
+        disabled: true
+      - name: var-naming
+        disabled: false
+      - name: error-return
+        disabled: false
+      - name: error-naming
+        disabled: false
+      - name: context-as-argument
+        disabled: false
+  errcheck:
+    check-type-assertions: false
+    check-blank: false
+
+issues:
+  exclude-dirs:
+    - gen/go
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - noctx
+        - bodyclose
+    - path: \.pb\.go
+      linters:
+        - errcheck
+        - gosimple
+        - govet
+        - ineffassign
+        - staticcheck
+        - unused
+        - gofmt
+        - goimports
+        - revive

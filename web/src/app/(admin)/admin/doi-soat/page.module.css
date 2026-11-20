@@ -1,0 +1,52 @@
+/* Đối soát thanh toán (/admin/doi-soat) — Summary strip + borderless ledger list */
+
+.kpiSpacer {
+  margin-top: 20px;
+}
+
+.ledgerBreakdown {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 20px;
+}
+
+.ledgerLine {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.noteSavedBadge {
+  font-size: 13px;
+  color: var(--positive);
+  font-weight: 500;
+}
+
+.batchSub {
+  font-variant-numeric: tabular-nums;
+}
+
+.tabletInlineChannel {
+  display: none;
+}
+
+@media (max-width: 960px) {
+  .ledgerBreakdown {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tabletHideCol {
+    display: none;
+  }
+
+  .tabletInlineChannel {
+    display: inline;
+  }
+}
+
+@media (max-width: 720px) {
+  .ledgerBreakdown {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

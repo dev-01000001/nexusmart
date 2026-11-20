@@ -1,0 +1,433 @@
+/* Overview (/seller) — KPIs as the chart's tabs (seller-sheet.md §5) */
+
+.kpiTabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-bottom: 1px solid var(--border); /* taste-skill-ignore: KPI tab strip bottom divider per seller-sheet.md */
+}
+
+.kpiTab {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 16px var(--card-pad);
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+  min-width: 0;
+  transition: background-color var(--t-hover) ease;
+}
+
+.kpiTab + .kpiTab {
+  border-left: 1px solid var(--border); /* taste-skill-ignore: KPI tab vertical divider */
+}
+
+.kpiTab:hover {
+  background: var(--bg);
+}
+
+.kpiTabActive::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--ink);
+}
+
+.kpiTabLabel {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--muted);
+}
+
+.kpiTabActive .kpiTabLabel {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.kpiTabRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.kpiTabValue {
+  font-size: var(--fs-kpi);
+  line-height: 1.15;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.kpiTabActive .kpiTabValue {
+  font-weight: 600;
+}
+
+.kpiTabDelta {
+  font-size: 13px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chartBody {
+  padding: 16px var(--card-pad) 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.chartCaption {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.chartHeading {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.chartPeriod {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Comparison table inside main card (36px row pitch per seller-sheet.md §5) */
+.compareWrap {
+  padding-top: 8px;
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: comparison table top rule inside chart card */
+}
+
+table.compareTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+table.compareTable th {
+  height: 32px;
+  padding: 0 8px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted);
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+table.compareTable th:not(:first-child),
+table.compareTable td:not(:first-child) {
+  text-align: right;
+  white-space: nowrap;
+}
+
+table.compareTable th:first-child,
+table.compareTable td:first-child {
+  padding-left: 0;
+}
+
+table.compareTable th:last-child,
+table.compareTable td:last-child {
+  padding-right: 0;
+}
+
+table.compareTable td {
+  height: 36px;
+  padding: 0 8px;
+  font-size: 14px;
+  color: var(--ink);
+  border-bottom: 1px solid var(--rule);
+  vertical-align: middle;
+}
+
+table.compareTable tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.comparePrior {
+  color: var(--muted);
+}
+
+.compareMobile {
+  display: none;
+}
+
+/* Paired 2-column operational cards — matched 4 rows each so bottoms align with zero ragged-row */
+.pairedGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gap);
+  align-items: stretch;
+}
+
+.opCard {
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  border: 1px solid var(--border); /* taste-skill-ignore: operational panel 1px border */
+  border-radius: var(--radius-card);
+  padding: var(--card-pad);
+  min-width: 0;
+}
+
+.opRows {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.opRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 64px;
+  padding: 10px 0;
+}
+
+.opRow + .opRow {
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: operational list row divider */
+}
+
+.opRowMain {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.opThumb {
+  width: 34px;
+  height: 45px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--surface);
+  flex: none;
+}
+
+.opInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.opPrimary {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.opPrimary:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.opSecondary {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.opRight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.opFigure {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.opMoney {
+  display: block;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.opStockCrit {
+  color: var(--negative);
+}
+
+.opSubFigure {
+  display: block;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.inlineActionBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--control); /* taste-skill-ignore: compact row action button */
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color var(--t-hover) ease;
+}
+
+.inlineActionBtn:hover {
+  background: var(--surface);
+}
+
+@media (max-width: 1040px) {
+  .pairedGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 860px) {
+  /* Phone/tablet KPI tabs: 2-up filled grid with odd 3rd spanning full width, zero floating underline */
+  .kpiTabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .kpiTab {
+    padding: 13px 16px;
+  }
+
+  .kpiTab + .kpiTab {
+    border-left: 0;
+  }
+
+  .kpiTab:nth-child(2n) {
+    border-left: 1px solid var(--border); /* taste-skill-ignore: mobile 2-up KPI tab divider */
+  }
+
+  .kpiTab:nth-child(n + 3) {
+    border-top: 1px solid var(--border); /* taste-skill-ignore: mobile 2-up KPI tab top divider */
+  }
+
+  .kpiTab:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+    border-left: 0;
+  }
+
+  .kpiTabActive {
+    background: var(--active);
+  }
+
+  .kpiTabActive::after {
+    content: none;
+  }
+
+  .chartBody {
+    padding: 14px 16px 16px;
+  }
+
+  .opCard {
+    padding: 16px;
+  }
+}
+
+@media (max-width: 640px) {
+  table.compareTable {
+    display: none;
+  }
+
+  .compareMobile {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .compareMobileHead {
+    font-size: 13px;
+    color: var(--muted);
+    padding: 4px 0 8px;
+    border-bottom: 1px solid var(--border); /* taste-skill-ignore: mobile comparison header divider */
+  }
+
+  .compareMobileRow {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 0;
+  }
+
+  .compareMobileRow + .compareMobileRow {
+    border-top: 1px solid var(--rule); /* taste-skill-ignore: mobile comparison row divider */
+  }
+
+  .compareMobileLabel {
+    font-size: 14px;
+    color: var(--ink);
+  }
+
+  .compareMobileFigs {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .compareMobileVal {
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  .opRow {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .opRowMain {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .opInfo {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .opPrimary,
+  .opSecondary {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+    overflow-wrap: anywhere;
+  }
+
+  .opRight {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .opFigure {
+    text-align: left;
+  }
+}

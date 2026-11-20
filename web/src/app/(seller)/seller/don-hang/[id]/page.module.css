@@ -1,0 +1,453 @@
+/* Seller Order Detail (/seller/don-hang/[id]) — Object header + 6-column grid (seller-sheet.md §5) */
+
+.backRow {
+  padding: 0 var(--card-pad);
+}
+
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.backLink:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* 88px Object Header Card (14px vertical padding, 50x62 cover, 18/600 title + 28px icon buttons, 36px actions right) */
+.objectHeader {
+  min-height: 88px;
+  padding: 14px 20px;
+  background: var(--card);
+  border: 1px solid var(--border); /* taste-skill-ignore: detail object header card per seller-sheet.md §5 */
+  border-radius: var(--radius-card);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.objectIdentity {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  flex: 1;
+}
+
+.objectCover {
+  width: 50px;
+  height: 62px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--surface);
+  flex: none;
+}
+
+.objectText {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.objectTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.objectTitle {
+  font-size: 18px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+.iconBtn28 {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border); /* taste-skill-ignore: 28px header utility button per seller-sheet.md §5 */
+  background: var(--card);
+  color: var(--muted);
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.iconBtn28:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.objectMeta {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--muted);
+}
+
+.objectActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.actionBtn36 {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--radius-control);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--t-hover) ease;
+}
+
+.actionOutline {
+  border: 1px solid var(--control); /* taste-skill-ignore: 36px outlined detail action */
+  background: var(--card);
+  color: var(--ink);
+}
+
+.actionOutline:hover {
+  background: var(--surface);
+}
+
+.actionInk {
+  background: var(--primary-ink-bg);
+  color: var(--primary-ink-fg);
+}
+
+.actionInk:hover {
+  background: #142026;
+}
+
+/* 6-column CSS grid with uniform 14px gutter both ways (seller-sheet.md §5) */
+.sixGrid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 14px;
+  align-items: stretch;
+}
+
+.span2 {
+  grid-column: span 2;
+}
+
+.span3 {
+  grid-column: span 3;
+}
+
+.span4 {
+  grid-column: span 4;
+}
+
+.span6 {
+  grid-column: span 6;
+}
+
+.kpiTile {
+  background: var(--card);
+  border: 1px solid var(--border); /* taste-skill-ignore: detail KPI tile per seller-sheet.md §5 */
+  border-radius: var(--radius-card);
+  padding: 16px var(--card-pad);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.kpiTileLabel {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.kpiTileVal {
+  font-size: 24px;
+  line-height: 1.15;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.kpiTileSub {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.detailCard {
+  background: var(--card);
+  border: 1px solid var(--border); /* taste-skill-ignore: detail grid card */
+  border-radius: var(--radius-card);
+  padding: var(--card-pad);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.itemCell {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.itemThumb {
+  width: 40px;
+  height: 50px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--surface);
+  flex: none;
+}
+
+.reconBlock {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border); /* taste-skill-ignore: order financial reconciliation divider */
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.reconRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.reconRowTotal {
+  padding-top: 6px;
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: reconciliation net total line */
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.kvList {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.kvRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  font-size: 13px;
+}
+
+.kvRow + .kvRow {
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: buyer detail key-value row rule */
+}
+
+.kvKey {
+  color: var(--muted);
+  flex: none;
+}
+
+.kvVal {
+  color: var(--ink);
+  font-weight: 500;
+  text-align: right;
+}
+
+.noteFooter {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: buyer note footer divider */
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 18px;
+}
+
+/* Timeline tab */
+.timeline {
+  display: flex;
+  flex-direction: column;
+}
+
+.timelineRow {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 16px;
+  padding: 12px 0;
+}
+
+.timelineRow + .timelineRow {
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: order timeline row divider */
+}
+
+.timelineTime {
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.timelineTitle {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.timelineNote {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* Wave 2 operational panels (gift/notes, VAT, amendment, 2-way exchange, tier-1 complaint) */
+.giftBox {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  border: 1px solid var(--border); /* taste-skill-ignore: gift note & delivery details well */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.giftRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.giftQuote {
+  padding: 8px 10px;
+  border-radius: var(--radius-chip);
+  background: var(--card);
+  border: 1px solid var(--rule); /* taste-skill-ignore: buyer gift card message card */
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--ink);
+}
+
+.opsActionBar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: operational panel action bar */
+}
+
+.opsReplyBox {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.slaBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-control);
+  background: var(--pill-warning-bg);
+  color: var(--pill-warning-ink);
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 10px;
+}
+
+.stepTrack {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.stepCell {
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  border: 1px solid var(--border); /* taste-skill-ignore: 2-way exchange courier step */
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.stepCellActive {
+  background: var(--card);
+  border-color: var(--ink);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .stepTrack {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 960px) {
+  .span2,
+  .span3,
+  .span4,
+  .span6 {
+    grid-column: 1 / -1;
+  }
+
+  .objectHeader {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .objectActions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 860px) {
+  .backRow {
+    padding: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .objectHeader {
+    padding: 14px 16px;
+  }
+
+  .detailCard {
+    padding: 16px;
+  }
+
+  .actionBtn36 {
+    flex: 1;
+  }
+
+  .timelineRow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+}

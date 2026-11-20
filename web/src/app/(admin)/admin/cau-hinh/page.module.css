@@ -1,0 +1,386 @@
+/* Cấu hình hệ thống (/admin/cau-hinh) — Framed sheet Settings in two columns (admin-sheet.md §5).
+   Centred 1152px column: 420px label + summary column beside 700px flat #f7f9fa panel (radius 16px, flat surface). */
+
+.settingsContainer {
+  width: 100%;
+  max-width: 1152px;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.sectionList {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.sectionRow {
+  display: grid;
+  grid-template-columns: minmax(260px, 420px) minmax(0, 1fr);
+  gap: 32px;
+  align-items: start;
+  padding: 28px 0;
+  border-top: 1px solid #e6ecee; /* taste-skill-ignore: app settings section divider per admin-sheet.md */
+}
+
+.sectionRow:first-child {
+  padding-top: 22px;
+  border-top: 0;
+}
+
+.labelCol {
+  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sectionTitle {
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 22px;
+  color: var(--ink);
+}
+
+.sectionDesc {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--muted);
+}
+
+.summaryList {
+  margin: 10px 0 0;
+  padding: 12px 0 0;
+  border-top: 1px solid #eaeaea; /* taste-skill-ignore: settings active-summary divider per admin-sheet.md */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.summaryPair {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.summaryKey {
+  color: var(--muted);
+}
+
+.summaryVal {
+  color: var(--ink);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.previewNote {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Right settings panel: flat tone step (--bg #f7f9fa), radius 16px, completely flat */
+.settingsPanel {
+  background: var(--bg);
+  border-radius: var(--radius-sheet);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.fieldGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.fieldGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fieldLabel {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--ink);
+}
+
+input.settingInput {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid #e3e8eb;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+input.settingInputNum {
+  text-align: right;
+}
+
+.fieldHint {
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Switch rows */
+.switchList {
+  display: flex;
+  flex-direction: column;
+}
+
+.switchRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid #e6ecee; /* taste-skill-ignore: settings switch row rule per admin-sheet.md */
+}
+
+.switchRow:first-child {
+  padding-top: 2px;
+}
+
+.switchRow:last-child {
+  border-bottom: 0;
+  padding-bottom: 2px;
+}
+
+.switchCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.switchTitleLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.switchTitle {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--ink);
+}
+
+.switchDesc {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--muted);
+}
+
+/* Commission & carrier table inside right settings panel */
+.commissionTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.commissionTable thead th {
+  height: 32px;
+  padding: 0 8px 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+  text-align: left;
+  border-bottom: 1px solid #e3e8eb;
+}
+
+.commissionTable thead th:first-child {
+  padding-left: 0;
+}
+
+.commissionTable thead th:last-child {
+  padding-right: 0;
+}
+
+.commissionTable tbody td {
+  padding: 10px 8px;
+  border-bottom: 1px solid #e8edf0;
+  font-size: 14px;
+  color: var(--ink);
+  vertical-align: middle;
+}
+
+.commissionTable tbody td:first-child {
+  padding-left: 0;
+  font-weight: 500;
+}
+
+.commissionTable tbody td:last-child {
+  padding-right: 0;
+}
+
+.commissionTable tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+input.compactInput {
+  width: 96px;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid #e3e8eb;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 14px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.commissionMobileList {
+  display: none;
+}
+
+.commissionMobileCard {
+  padding: 12px 0;
+  border-bottom: 1px solid #e6ecee; /* taste-skill-ignore: mobile commission row divider per admin-sheet.md */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.commissionMobileCard:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.commissionMobileInputs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.inlineAddRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) auto;
+  gap: 8px;
+  align-items: end;
+  padding-top: 8px;
+}
+
+/* Template selector & live preview card */
+.templateTabRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.templateBtn {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-control);
+  border: 1px solid #d4dde1; /* taste-skill-ignore: template selector button per admin-sheet.md */
+  background: var(--card);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.templateBtnActive {
+  background: var(--active);
+  color: var(--ink);
+  border-color: var(
+    --control
+  ); /* taste-skill-ignore: active template selector border per admin-sheet.md */
+}
+
+.previewBox {
+  margin-top: 12px;
+  padding: 14px;
+  border-radius: var(--radius-card);
+  background: var(--bg);
+  border: 1px solid #e6ecee; /* taste-skill-ignore: notification preview box per admin-sheet.md */
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.previewChannel {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.previewSubject {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.previewBody {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--muted);
+}
+
+.panelFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  flex-wrap: wrap;
+}
+
+.savedStamp {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+@media (max-width: 960px) {
+  .sectionRow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+    padding: 24px 0;
+  }
+
+  .labelCol {
+    padding-top: 0;
+  }
+}
+
+@media (max-width: 720px) {
+  .fieldGrid,
+  .inlineAddRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .commissionTableWrap {
+    display: none;
+  }
+
+  .commissionMobileList {
+    display: block;
+  }
+
+  .panelFooter {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

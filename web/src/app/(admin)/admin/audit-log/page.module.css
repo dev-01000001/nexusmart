@@ -1,0 +1,25 @@
+/* Nhật ký kiểm toán (/admin/audit-log) — Work Sans tabular-nums audit table (zero monospace) */
+
+.timeCol {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.targetCol {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.summaryCol {
+  max-width: 440px;
+}
+
+.mobileAuditSummary {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ink);
+}

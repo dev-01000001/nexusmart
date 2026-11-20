@@ -1,0 +1,23 @@
+# deps and build output
+node_modules/
+.next/
+out/
+target/
+bin/
+dist/
+*.tsbuildinfo
+coverage/
+*.test
+*.out
+
+# local env and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# agent run logs and review screenshots
+.runs/
+.taste-skill/review*/
+.DS_Store

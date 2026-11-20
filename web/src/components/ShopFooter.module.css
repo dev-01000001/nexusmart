@@ -1,0 +1,519 @@
+/* Full storefront footer on deep slate field (--band-dark #1f3038).
+   Separated cleanly by flat tone steps and space; zero hairlines, zero gradients, zero shadows. */
+
+.footer {
+  width: 100%;
+  margin-top: clamp(56px, 8vw, 96px);
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+}
+
+/* Top band: Brand + Contact + Newsletter */
+.topBand {
+  background: var(--band-dark-surface);
+  padding: clamp(36px, 5vw, 52px) var(--margin);
+}
+
+.topGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: clamp(28px, 4vw, 64px);
+  align-items: start;
+}
+
+.brandCol {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.brandLockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--band-dark-ink);
+  width: fit-content;
+}
+
+.brandName {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1;
+}
+
+.brandLead {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--band-dark-ink);
+  max-width: 48ch;
+}
+
+.contactList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin-top: 4px;
+}
+
+.contactItem {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--band-dark-muted);
+}
+
+.contactLabel {
+  color: var(--band-dark-muted);
+}
+
+.contactValue {
+  color: var(--band-dark-ink);
+  font-weight: 500;
+}
+
+a.contactValue:hover {
+  color: var(--band-dark-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Newsletter signup */
+.newsletterCol {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.newsletterTitle {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--band-dark-ink);
+}
+
+.newsletterLead {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--band-dark-muted);
+  max-width: 46ch;
+}
+
+.newsletterForm {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  max-width: 460px;
+}
+
+.newsletterInput {
+  flex: 1 1 200px;
+  min-width: 0;
+  height: 44px;
+  padding: 0 14px;
+  background: var(--surface-white);
+  color: var(--ink);
+  border: 0;
+  font-size: 14px;
+}
+
+.newsletterInput::placeholder {
+  color: var(--muted);
+}
+
+.newsletterBtn {
+  height: 44px;
+  padding: 0 22px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex: none;
+  transition: background-color var(--t-hover) ease;
+}
+
+.newsletterBtn:hover {
+  background: var(--accent-hover);
+}
+
+.newsletterError {
+  font-size: 14px;
+  color: #f6bcbc;
+}
+
+.newsletterSuccess {
+  padding: 14px 16px;
+  background: var(--band-dark);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 460px;
+}
+
+.newsletterSuccessText {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--band-dark-ink);
+}
+
+.newsletterReset {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--band-dark-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Middle band: 4 link columns */
+.linksBand {
+  background: var(--band-dark);
+  padding: clamp(36px, 5vw, 52px) var(--margin);
+}
+
+.linksGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: clamp(24px, 3vw, 40px);
+}
+
+.linkCol {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.colTitle {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--band-dark-ink);
+}
+
+.colList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.colLink,
+.colLinkBtn {
+  display: inline-block;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--band-dark-muted);
+  text-align: left;
+  transition: color var(--t-hover) ease;
+}
+
+.colLink:hover,
+.colLinkBtn:hover {
+  color: var(--band-dark-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Bottom band: Payment, shipping & sample legal notice */
+.bottomBand {
+  background: var(--band-dark-surface);
+  padding: 28px var(--margin) 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.serviceRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px 40px;
+}
+
+.serviceGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.serviceLabel {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--band-dark-ink);
+}
+
+.serviceChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.serviceChip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  background: var(--band-dark-elevated);
+  color: var(--band-dark-ink);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.3;
+}
+
+.legalRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 24px;
+}
+
+.legalCopy {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--band-dark-muted);
+}
+
+.legalLinks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 18px;
+}
+
+.legalLink,
+.legalLinkBtn {
+  font-size: 14px;
+  color: var(--band-dark-ink);
+  transition: color var(--t-hover) ease;
+}
+
+.legalLink:hover,
+.legalLinkBtn:hover {
+  color: var(--band-dark-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Cookie preferences dialog */
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(31, 48, 56, 0.42);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.modalPanel {
+  width: 100%;
+  max-width: 520px;
+  background: var(--surface-white);
+  outline: 1px solid var(--border);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  color: var(--ink);
+}
+
+.modalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modalTitle {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--ink);
+}
+
+.modalClose {
+  min-width: 36px;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.modalClose:hover {
+  color: var(--ink);
+}
+
+.modalLead {
+  font-size: 16px;
+  color: var(--ink);
+  line-height: 1.55;
+}
+
+.cookieList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cookieRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  background: var(--bg);
+}
+
+.cookieInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.cookieName {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.cookieDesc {
+  font-size: 14px;
+  color: var(--ink-secondary);
+  line-height: 1.45;
+}
+
+.cookieLocked {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.cookieCheck {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  accent-color: var(--accent);
+  flex: none;
+}
+
+.modalActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.btnPrimary,
+.btnSecondary {
+  min-height: 40px;
+  padding: 0 14px;
+  font-size: 14px;
+  font-weight: 500;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.btnPrimary {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.btnPrimary:hover {
+  background: var(--accent-hover);
+}
+
+.btnSecondary {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.btnSecondary:hover {
+  background: var(--raised);
+}
+
+@media (max-width: 1024px) {
+  .topGrid {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+
+  .linksGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 28px 24px;
+  }
+
+  .serviceRow {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+}
+
+@media (max-width: 640px) {
+  .footer {
+    margin-top: 48px;
+  }
+
+  .topBand {
+    padding: 28px var(--margin);
+  }
+
+  .topGrid {
+    gap: 20px;
+  }
+
+  .brandCol {
+    gap: 10px;
+  }
+
+  .linksBand {
+    padding: 28px var(--margin);
+  }
+
+  .linksGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px 14px;
+  }
+
+  .linkCol {
+    gap: 10px;
+  }
+
+  .colList {
+    gap: 8px;
+  }
+
+  .bottomBand {
+    padding: 24px var(--margin) 28px;
+    gap: 18px;
+  }
+
+  .serviceRow {
+    gap: 14px;
+  }
+
+  .newsletterForm {
+    flex-direction: column;
+  }
+
+  .newsletterInput {
+    flex: none;
+    width: 100%;
+    height: 44px;
+  }
+
+  .newsletterBtn {
+    width: 100%;
+  }
+
+  .modalActions {
+    flex-direction: column;
+  }
+
+  .btnPrimary,
+  .btnSecondary {
+    width: 100%;
+  }
+}

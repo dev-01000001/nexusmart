@@ -1,0 +1,121 @@
+.box {
+  background: var(--accent-tint);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.title {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.closeText {
+  font-size: 14px;
+  color: var(--muted);
+  transition: color var(--t-hover) ease;
+}
+
+.closeText:hover {
+  color: var(--ink);
+}
+
+.skuChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.skuChip {
+  min-height: 32px;
+  padding: 0 10px;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 14px;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.skuChip:hover {
+  background: var(--active);
+}
+
+.skuChipActive {
+  background: var(--ink);
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.meta {
+  font-size: 14px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+input.input {
+  flex: 1 1 200px;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 12px;
+  background: var(--card);
+  color: var(--ink);
+  border: 1px solid var(--control);
+  font-size: 14px;
+}
+
+.input::placeholder {
+  color: var(--muted);
+}
+
+.confirmed {
+  background: var(--pill-positive-bg);
+  color: var(--pill-positive-ink);
+  padding: 12px 14px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.confirmedIcon {
+  flex: none;
+  margin-top: 2px;
+}
+
+.confirmedText {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.confirmedTitle {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--pill-positive-ink);
+}
+
+.confirmedDesc {
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.errorText {
+  font-size: 14px;
+  color: var(--negative);
+}

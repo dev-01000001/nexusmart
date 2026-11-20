@@ -1,0 +1,118 @@
+/* NexusMart Design Tokens · Frost and Slate + Work Sans
+   Single shared token file across Storefront (shop), Seller Center (seller), and Admin (admin). */
+
+:root {
+  /* Frost and slate core palette */
+  --bg: #f7f9fa;
+  --surface: #ecf0f2;
+  --ink: #1f3038;
+  --muted: #5d6b72;
+  --accent: #0d7480;
+  --accent-ink: #ffffff;
+
+  /* Storefront semantic surface hierarchy (flat tone steps, zero gradients or resting shadows) */
+  --surface-white: #ffffff;
+  --surface-subtle: #eff3f5;
+  --surface-muted: #e3e9ec;
+  --accent-hover: #0a5f69;
+  --accent-tint: #e4f1f3;
+  --accent-tint-strong: #d2e7ea;
+  --accent-tint-ink: #0a4e57;
+  --band-dark: #1f3038;
+  --band-dark-surface: #293e48;
+  --band-dark-elevated: #324a56;
+  --band-dark-ink: #f7f9fa;
+  --band-dark-muted: #d3dde2;
+  --band-dark-accent: #66ccd7;
+  --band-warm: #eef1ef;
+  --ink-strong: #152229;
+  --ink-secondary: #394b54;
+  --badge-discount-bg: #1f3038;
+  --badge-discount-ink: #ffffff;
+  --badge-flash-bg: #0d7480;
+  --badge-flash-ink: #ffffff;
+
+  /* App screen neutral surfaces & hairlines */
+  --card: #ffffff;
+  --raised: #e6ecef;
+  --active: #e4e9ec;
+  --border: #dde4e8;
+  --rule: #e3e8eb;
+  --control: #c5cfd5;
+  --primary-ink-bg: #1f3038;
+  --primary-ink-fg: #ffffff;
+
+  /* Semantic & status colours (WCAG >= 4.5:1) */
+  --positive: #1b6e4b;
+  --negative: #b33a3a;
+  --amber: #9e6b13;
+  --amber-ink: #754c09;
+
+  --pill-positive-bg: #e3f2eb;
+  --pill-positive-ink: #145338;
+  --pill-negative-bg: #f8e7e7;
+  --pill-negative-ink: #8c2626;
+  --pill-warning-bg: #f5efe2;
+  --pill-warning-ink: #754c09;
+  --pill-neutral-bg: #e6ecef;
+  --pill-neutral-ink: #2c3e47;
+
+  /* Chart tokens (app-screens.md §6) */
+  --chart-1: #0d7480;
+  --chart-2: #5b8c94;
+  --chart-3: #9e6b13;
+  --chart-muted: #c2cdd3;
+  --chart-mark: #1f3038;
+  --chart-span: 0.06;
+  --grid: #e3e8eb;
+  --axis-ink: #5d6b72;
+
+  /* Typography · single shared face: Work Sans */
+  --font-sans: var(--font-work-sans), "Work Sans", sans-serif;
+
+  /* Storefront type steps (storefront-sheet.md §3) */
+  --step-small: clamp(0.8125rem, 0.79rem + 0.1vw, 0.875rem);
+  --step-body: clamp(1.0625rem, 1rem + 0.25vw, 1.1875rem);
+  --step-lead: clamp(1.25rem, 1.1rem + 0.7vw, 1.625rem);
+  --step-head: clamp(2rem, 1.3rem + 3.2vw, 4rem);
+  --step-display: clamp(3.5rem, 5.4vw, 5rem);
+
+  /* App screen type scale (app-screens.md §9.1) */
+  --fs-title: 24px;
+  --fs-section: 16px;
+  --fs-kpi: 24px;
+  --fs-kpi-lead: 30px;
+  --fs-body: 14px;
+  --fs-small: 12px;
+
+  /* Page & app layout geometry */
+  --margin: clamp(1rem, 2.2vw, 2rem);
+  --gutter: clamp(1rem, 2vw, 2rem);
+  --section: clamp(5rem, 10vw, 9.5rem);
+  --gap: 16px;
+  --card-pad: 20px;
+  --pad: 24px;
+  --control-height: 34px;
+  --row-height: 48px;
+  --nav-row: 32px;
+  --seller-sidebar-width: 236px;
+  --admin-sidebar-width: 228px;
+  --admin-topbar-height: 48px;
+
+  /* Radii · square on storefront, bimodal tight/sheet on app screens */
+  --radius-shop: 0px;
+  --radius-card: 8px;
+  --radius-control: 6px;
+  --radius-chip: 4px;
+  --radius-sheet: 16px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.76, 0, 0.24, 1);
+  --ease-soft: cubic-bezier(0.33, 1, 0.68, 1);
+  --t-press: 140ms;
+  --t-hover: 180ms;
+  --t-ui: 220ms;
+  --t-reveal: 800ms;
+}

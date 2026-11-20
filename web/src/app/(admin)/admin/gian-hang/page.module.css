@@ -1,0 +1,46 @@
+/* Hàng đợi duyệt gian hàng (/admin/gian-hang) — List pattern specifics */
+
+.checklistRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.docTagOk {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--radius-chip);
+  background: var(--pill-positive-bg);
+  color: var(--pill-positive-ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.docTagPending {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--radius-chip);
+  background: var(--pill-warning-bg);
+  color: var(--pill-warning-ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.validationError {
+  font-size: 12px;
+  color: var(--negative);
+}
+
+.mobilePillRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}

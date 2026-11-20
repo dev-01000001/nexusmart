@@ -1,0 +1,130 @@
+/* Seller Products List (/seller/san-pham) */
+
+.prodCell {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.prodThumb {
+  width: 40px;
+  height: 53px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--surface);
+  flex: none;
+}
+
+.prodText {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.prodName {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  text-underline-offset: 2px;
+}
+
+.prodName:hover {
+  text-decoration: underline;
+}
+
+.prodSub {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.stockWarn {
+  color: var(--negative);
+  font-weight: 600;
+}
+
+.editLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--control); /* taste-skill-ignore: product row edit button */
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.editLink:hover {
+  background: var(--surface);
+}
+
+.actionRow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.restockBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--ink); /* taste-skill-ignore: quick restock action button */
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.restockBtn:hover {
+  background: var(--surface);
+}
+
+.waitHighlight {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.waitZero {
+  color: var(--muted);
+}
+
+.metaTagLine {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.skuThumbSm {
+  width: 32px;
+  height: 42px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--surface);
+  flex: none;
+}
+
+.mobileProdTop {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mobilePrice {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}

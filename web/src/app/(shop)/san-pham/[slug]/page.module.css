@@ -1,0 +1,1330 @@
+.page {
+  width: 100%;
+  padding: clamp(20px, 2.8vw, 36px) var(--margin) clamp(56px, 6vw, 96px);
+  background: var(--bg);
+  color: var(--ink);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .page [data-cat-reveal][data-pending="1"] {
+    opacity: 0;
+    transform: translateY(18px);
+    transition:
+      opacity 560ms var(--ease-out),
+      transform 720ms var(--ease-expo);
+    transition-delay: calc(var(--stagger, 0) * 65ms);
+  }
+
+  .page [data-cat-reveal][data-in="1"] {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Semantic navigation breadcrumb */
+.breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 24px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.crumbLink {
+  color: var(--muted);
+  transition: color var(--t-hover) ease;
+}
+
+.crumbLink:hover {
+  color: var(--ink);
+}
+
+.crumbCurrent {
+  color: var(--ink);
+}
+
+/* Main 2-column product section */
+.mainGrid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: clamp(24px, 3vw, 48px);
+  align-items: start;
+}
+
+.mediaCol {
+  grid-column: 1 / 7;
+  position: sticky;
+  top: 24px;
+  align-self: start;
+}
+
+/* Purchase panel — single primary white surface on page ground */
+.infoCol {
+  grid-column: 7 / 13;
+  background: var(--surface-white);
+  padding: clamp(20px, 2.5vw, 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.title {
+  font-size: clamp(32px, 2.7vw, 38px);
+  font-weight: 400;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+  color: var(--ink);
+}
+
+.priceBadgeRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 14px;
+}
+
+.badgeGroup {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.badgeTag {
+  padding: 4px 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
+.badgeOutlet {
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+}
+
+.badgePreorder {
+  color: var(--accent);
+}
+
+.specStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.selectorBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.selectorLabel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 12px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.selectorSelected {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.sizeModalTriggers {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sizeLinkBtn {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  transition: text-decoration-color var(--t-hover) ease;
+}
+
+.sizeLinkBtn:hover {
+  text-decoration-color: var(--accent);
+}
+
+.colorRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.colorBtn {
+  min-height: 40px;
+  padding: 0 14px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.colorBtn:hover {
+  background: var(--active);
+}
+
+.colorBtnActive {
+  background: var(--ink);
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.colorBtnActive:hover {
+  background: var(--ink);
+}
+
+.swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  outline: 1px solid var(--control);
+  flex: none;
+}
+
+.sizeRow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.sizeBtn {
+  min-height: 44px;
+  padding: 6px 6px;
+  background: var(--surface);
+  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.sizeBtn:hover {
+  background: var(--active);
+}
+
+.sizeBtnOut {
+  color: var(--muted);
+}
+
+.sizeBtnOut .sizeCode {
+  text-decoration: line-through;
+}
+
+.sizeBtnActive {
+  background: var(--ink);
+  color: var(--accent-ink);
+}
+
+.sizeBtnActive:hover {
+  background: var(--ink);
+}
+
+.sizeBtnActive.sizeBtnOut {
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+}
+
+.sizeCode {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.1;
+}
+
+.sizeQty {
+  font-size: 13px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Model info strip */
+.modelBox {
+  background: transparent;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.modelLine {
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Combo slots selector */
+.comboBlock {
+  background: var(--surface-subtle);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.comboHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.comboTitle {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.comboList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.comboSlotRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--surface-white);
+  padding: 10px 12px;
+}
+
+.comboSlotLabel {
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.comboSlotBtns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.comboSizeBtn {
+  min-width: 34px;
+  min-height: 30px;
+  padding: 0 8px;
+  background: var(--surface-subtle);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.comboSizeBtn:hover {
+  background: var(--surface-muted);
+}
+
+.comboSizeBtnActive {
+  background: var(--band-dark);
+  color: var(--accent-ink);
+}
+
+/* Live stock bar — unboxed inline metadata */
+.skuPanel {
+  background: var(--surface-subtle);
+  padding: 12px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 14px;
+}
+
+.skuLeft,
+.skuRight {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+}
+
+.skuCode {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.skuCap {
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.skuStock {
+  font-size: 14px;
+  color: var(--positive);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.skuStockEmpty {
+  font-size: 14px;
+  color: var(--negative);
+  font-weight: 500;
+}
+
+.bisToggleBtn {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Quantity + Wishlist + CTA */
+.buyRow {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.qtyWishlistRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.qtyStepper {
+  display: inline-flex;
+  align-items: stretch;
+  background: var(--surface);
+}
+
+.qtyBtn {
+  width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink);
+  transition: background-color var(--t-hover) ease;
+}
+
+.qtyBtn:hover:not(:disabled) {
+  background: var(--active);
+}
+
+.qtyBtn:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.qtyValue {
+  min-width: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.wishlistBtn {
+  min-height: 44px;
+  padding: 0 14px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.wishlistBtn:hover {
+  background: var(--active);
+}
+
+.wishlistBtnActive {
+  background: var(--ink);
+  color: var(--accent-ink);
+}
+
+.wishlistBtnActive:hover {
+  background: var(--ink);
+}
+
+.buyActions {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.wishlistHint {
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.inlineLink {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  transition: text-decoration-color var(--t-hover) ease;
+}
+
+.inlineLink:hover {
+  text-decoration-color: var(--accent);
+}
+
+/* Tier discounts — accent-tint palette field */
+.tierBlock {
+  background: var(--accent-tint);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tierHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tierSaved {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--accent-tint-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.tierRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tierItem {
+  background: transparent;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+}
+
+.tierItemActive {
+  background: var(--surface-white);
+  outline-color: var(--accent);
+}
+
+.tierItemText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tierLabel {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.tierUnit {
+  font-size: 13px;
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.tierPickBtn {
+  min-height: 32px;
+  padding: 0 10px;
+  background: var(--surface-subtle);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  flex: none;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.tierPickBtn:hover:not(:disabled) {
+  background: var(--band-dark);
+  color: var(--accent-ink);
+}
+
+.tierPickBtn:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+/* Vouchers, gifts, Xu cashback — two-ended unboxed list (storefront-sheet list blueprint) */
+.voucherBlock {
+  background: transparent;
+  padding: 8px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.voucherHeadRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.subBlockTitle {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.outletExclusionNote {
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+  padding: 10px 12px;
+  font-size: 14px;
+  line-height: 1.45;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.perkList {
+  background: transparent;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.perkIcon {
+  display: inline-block;
+  vertical-align: -2px;
+  margin-right: 6px;
+  color: var(--accent);
+}
+
+.perkText,
+.xuLine {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  max-width: 58ch;
+}
+
+.voucherList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.voucherRow {
+  min-height: 36px;
+  background: transparent;
+  padding: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.voucherLead {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.voucherDot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex: none;
+  margin-top: 3px;
+}
+
+.voucherDotShop {
+  background: var(--accent);
+}
+
+.voucherDotPlatform {
+  background: var(--ink);
+}
+
+.voucherDotShip {
+  background: var(--positive);
+}
+
+.voucherInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.voucherName {
+  font-size: 16px;
+  line-height: 1.4;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.voucherMeta {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.voucherBlocked {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--negative);
+  font-weight: 500;
+}
+
+.voucherActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  padding-top: 1px;
+  font-variant-numeric: tabular-nums;
+}
+
+.voucherActionPrimary,
+.voucherActionApplied,
+.voucherActionMuted {
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: nowrap;
+  transition: color var(--t-hover) ease;
+}
+
+.voucherActionPrimary {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.voucherActionPrimary:hover:not(:disabled) {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.voucherActionApplied {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.voucherActionMuted {
+  color: var(--muted);
+}
+
+.voucherActionMuted:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.voucherActionMuted:disabled {
+  cursor: not-allowed;
+}
+
+/* Delivery & return guarantee */
+.logisticsBlock {
+  background: transparent;
+  padding: 8px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.deliveryHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.deliveryTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.provincePicker {
+  display: inline-flex;
+}
+
+select.provinceSelect {
+  min-height: 36px;
+  padding: 0 10px;
+  background: var(--card);
+  color: var(--ink);
+  border: 1px solid var(--control);
+  font-size: 14px;
+}
+
+.deliveryDetails {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.deliveryLine {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  max-width: 58ch;
+}
+
+.deliverySub {
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--muted);
+  max-width: 58ch;
+}
+
+.deliveryFast {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.returnBox {
+  background: transparent;
+  padding: 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.returnExcluded {
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.returnTop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.returnLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.returnDesc {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  max-width: 58ch;
+}
+
+/* Shop card — deep slate workshop anchor */
+.shopCard {
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.shopTop {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.shopName {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--band-dark-ink);
+}
+
+.shopName:hover {
+  color: var(--band-dark-accent);
+}
+
+.shopCity {
+  font-size: 14px;
+  color: var(--band-dark-muted);
+}
+
+.shopBadge {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--band-dark-accent);
+}
+
+.shopMeta {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--band-dark-ink);
+}
+
+.shopActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+/* Details & Size Chart Section */
+.detailsSection {
+  margin-top: clamp(56px, 7vw, 96px);
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.sectionHeading {
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--ink);
+}
+
+.detailsGrid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: clamp(24px, 3vw, 48px);
+  align-items: start;
+}
+
+.specTextCol {
+  grid-column: 1 / 7;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.descText {
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--ink);
+  max-width: 58ch;
+}
+
+.detailGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.featureHeadRow,
+.chartHeadRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.detailGroupTitle {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.plainList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 58ch;
+}
+
+.featureTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.featureTag {
+  min-height: 36px;
+  padding: 0 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.featureTag:hover {
+  background: var(--ink);
+  color: var(--accent-ink);
+}
+
+/* Collapsible Care Instructions — primary white surface */
+.careDetails {
+  background: var(--surface-white);
+  padding: 18px 20px;
+}
+
+.careSummary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.careSummary::-webkit-details-marker {
+  display: none;
+}
+
+.careChevron {
+  flex: none;
+  transition: transform var(--t-hover) var(--ease-out);
+}
+
+.careDetails[open] .careChevron {
+  transform: rotate(180deg);
+}
+
+.careBody {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.careList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 58ch;
+}
+
+.careItem {
+  color: var(--ink);
+}
+
+/* Fabric weave video figure */
+.fabricVideoFigure {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fabricVideoWrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--ink);
+  overflow: clip;
+}
+
+.fabricVideo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.fabricVideoToggle {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  min-height: 34px;
+  padding: 0 12px;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fabricVideoToggle:hover {
+  background: var(--surface);
+}
+
+.fabricVideoCaption {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.sizeChartCol {
+  grid-column: 7 / 13;
+  background: var(--surface-white);
+  padding: clamp(20px, 2.4vw, 28px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.chartShopNote {
+  background: transparent;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  max-width: 58ch;
+}
+
+.tableWrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+table.sizeTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+table.sizeTable th {
+  padding: 10px 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-secondary);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+table.sizeTable td {
+  padding: 12px 8px;
+  color: var(--ink);
+  border-bottom: 1px solid var(--rule);
+}
+
+.sizeRowActive td {
+  background: var(--accent-tint);
+  font-weight: 500;
+}
+
+.chartNote {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 58ch;
+}
+
+@media (max-width: 1024px) {
+  .mainGrid {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+
+  .mediaCol,
+  .infoCol {
+    grid-column: auto;
+  }
+
+  .mediaCol {
+    position: static;
+  }
+
+  .specTextCol,
+  .sizeChartCol {
+    grid-column: span 12;
+  }
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: 12px 20px 56px;
+  }
+
+  .breadcrumb {
+    margin-bottom: 10px;
+    gap: 6px;
+    font-size: 13px;
+  }
+
+  .mainGrid {
+    gap: 16px;
+  }
+
+  .infoCol {
+    padding: 18px 16px;
+    gap: 14px;
+  }
+
+  .title {
+    font-size: 28px;
+    line-height: 1.15;
+  }
+
+  .priceBadgeRow {
+    gap: 6px 10px;
+  }
+
+  .badgeTag {
+    padding: 2px 8px;
+  }
+
+  .specStrip {
+    font-size: 16px;
+    line-height: 1.45;
+    gap: 4px 8px;
+  }
+
+  .selectorBlock {
+    gap: 6px;
+  }
+
+  .colorBtn {
+    min-height: 36px;
+    padding: 0 12px;
+    font-size: 14px;
+  }
+
+  .sizeBtn {
+    min-height: 40px;
+    padding: 4px;
+  }
+
+  .modelBox {
+    padding: 0;
+    gap: 4px;
+  }
+
+  .modelLine {
+    font-size: 14px;
+    line-height: 1.45;
+  }
+
+  .skuPanel {
+    padding: 10px 12px;
+  }
+
+  .qtyBtn {
+    width: 40px;
+    min-height: 40px;
+  }
+
+  .wishlistBtn {
+    min-height: 40px;
+    padding: 0 12px;
+    font-size: 14px;
+  }
+
+  .buyRow {
+    gap: 10px;
+  }
+
+  .buyActions button {
+    min-height: 44px;
+    padding-inline: 10px;
+    font-size: 14px;
+  }
+
+  .perkText,
+  .xuLine,
+  .deliveryLine,
+  .returnDesc {
+    font-size: 16px;
+  }
+
+  .tierRow {
+    grid-template-columns: 1fr;
+  }
+
+  .voucherRow {
+    min-height: 44px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .voucherActions {
+    padding-left: 24px;
+    padding-top: 0;
+  }
+
+  .voucherActionPrimary,
+  .voucherActionApplied,
+  .voucherActionMuted {
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  table.sizeTable {
+    font-size: 13px;
+  }
+
+  table.sizeTable th {
+    font-size: 13px;
+    padding: 8px 4px;
+  }
+
+  table.sizeTable td {
+    padding: 8px 4px;
+  }
+}

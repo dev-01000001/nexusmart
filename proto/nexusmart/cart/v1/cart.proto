@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package nexusmart.cart.v1;
+
+option go_package = "github.com/nexusmart/core/gen/go/nexusmart/cart/v1;cartv1";
+
+message CartItem {
+  string sku_id = 1;
+  string product_id = 2;
+  string shop_id = 3;
+  string product_name = 4;
+  string sku_name = 5;
+  string image_url = 6;
+  int64 price_vnd = 7;
+  int64 added_price_vnd = 8;
+  bool price_changed = 9;
+  int32 quantity = 10;
+  int32 available_stock = 11;
+  int32 weight_grams = 12;
+  bool selected = 13;
+}
+
+message CartShopGroup {
+  string shop_id = 1;
+  string shop_name = 2;
+  repeated CartItem items = 3;
+  int64 subtotal_vnd = 4;
+  int32 total_weight_grams = 5;
+}
+
+message Cart {
+  string user_id = 1;
+  repeated CartShopGroup shop_groups = 2;
+  int32 total_items = 3;
+  int64 total_vnd = 4;
+}
+
+message GetCartRequest {
+  string user_id = 1;
+}
+
+message GetCartResponse {
+  Cart cart = 1;
+}
+
+message AddItemRequest {
+  string user_id = 1;
+  string sku_id = 2;
+  int32 quantity = 3;
+}
+
+message AddItemResponse {
+  Cart cart = 1;
+  bool clamped_to_stock = 2;
+}
+
+message UpdateItemQtyRequest {
+  string user_id = 1;
+  string sku_id = 2;
+  int32 quantity = 3;
+}
+
+message UpdateItemQtyResponse {
+  Cart cart = 1;
+  bool clamped_to_stock = 2;
+}
+
+message RemoveItemRequest {
+  string user_id = 1;
+  string sku_id = 2;
+}
+
+message RemoveItemResponse {
+  Cart cart = 1;
+}
+
+message ClearItemsRequest {
+  string user_id = 1;
+  repeated string sku_ids = 2;
+}
+
+message ClearItemsResponse {
+  bool ok = 1;
+}
+
+service CartService {
+  rpc GetCart(GetCartRequest) returns (GetCartResponse);
+  rpc AddItem(AddItemRequest) returns (AddItemResponse);
+  rpc UpdateItemQty(UpdateItemQtyRequest) returns (UpdateItemQtyResponse);
+  rpc RemoveItem(RemoveItemRequest) returns (RemoveItemResponse);
+  rpc ClearItems(ClearItemsRequest) returns (ClearItemsResponse);
+}

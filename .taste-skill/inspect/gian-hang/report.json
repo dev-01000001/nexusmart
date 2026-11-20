@@ -1,0 +1,1246 @@
+{
+ "url": "http://127.0.0.1:3005/gian-hang/xuong-det-bach-dang",
+ "at": "2026-11-19T19:58:17.951Z",
+ "allow": [],
+ "viewports": [
+  {
+   "width": 1440,
+   "height": 900,
+   "load": "load",
+   "screens": 3,
+   "filled": [
+    0.62,
+    0.61,
+    0.54
+   ],
+   "motion": {
+    "elements": 18,
+    "css": 5,
+    "transitions": 13,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "page": {
+     "height": 2216,
+     "screens": 2.5,
+     "words": 432,
+     "img": 4,
+     "video": 0,
+     "canvas": 0,
+     "svg": 4,
+     "sections": 4,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 4,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "ao-thun-cotton-trang.png",
+      "ao-thun-cotton-xam-da.png",
+      "ao-thun-cotton-xanh-than.png",
+      "do-lot-boxer-modal-3.png"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Xưởng Dệt Bạch Đằng",
+     "words": 4,
+     "chars": 19,
+     "lines": 1,
+     "size": 66,
+     "vw": 4.6,
+     "font": "Work Sans",
+     "weight": 300,
+     "tracking": -0.035,
+     "leading": 1.02,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "left",
+     "widthRatio": 0.55,
+     "top": 158,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Xưởng Dệt Bạch Đằng",
+     "words": 4,
+     "lines": 1,
+     "size": 66,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Xưởng Dệt Bạch Đằng",
+      "words": 4,
+      "chars": 19,
+      "lines": 1,
+      "size": 66,
+      "vw": 4.6,
+      "font": "Work Sans",
+      "weight": 300,
+      "tracking": -0.035,
+      "leading": 1.02,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.55,
+      "top": 158,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "Voucher áp dụng tại gian hàng",
+      "words": 6,
+      "chars": 29,
+      "lines": 1,
+      "size": 30,
+      "vw": 2.1,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.96,
+      "top": 533,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Sản phẩm của Bạch Đằng",
+      "words": 5,
+      "chars": 22,
+      "lines": 1,
+      "size": 30,
+      "vw": 2.1,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.96,
+      "top": 997,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Các xưởng dệt khác trên NexusMart",
+      "words": 6,
+      "chars": 33,
+      "lines": 1,
+      "size": 30,
+      "vw": 2.1,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.96,
+      "top": 1762,
+      "tag": "h2",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 4,
+     "maxLines": 1,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 6,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      13,
+      14,
+      15,
+      16,
+      18,
+      30,
+      66
+     ],
+     "sizeCount": 7,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 16,
+      "leading": 1.55,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 12.9
+     },
+     "measureChars": 72,
+     "max": {
+      "size": 66,
+      "vw": 4.6,
+      "font": "Work Sans",
+      "text": "Xưởng Dệt Bạch Đằng"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0.01,
+     "centerShare": 0.06,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f7f9fa",
+       "top": 0,
+       "hsl": {
+        "h": 200,
+        "s": 0.23,
+        "l": 0.97
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#1f3038",
+       "share": 0.65
+      },
+      {
+       "color": "#5d6b72",
+       "share": 0.3
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.03
+      },
+      {
+       "color": "#0d7480",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#ecf0f2",
+      "hsl": {
+       "h": 200,
+       "s": 0.19,
+       "l": 0.94
+      },
+      "fg": "#1f3038"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 11,
+     "inHero": 8,
+     "radius": 0,
+     "height": 32,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Chat với người bán",
+      "Lọc theo size & màu",
+      "Đã áp dụng",
+      "Sao chép mã",
+      "Đã áp dụng"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 4,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 3,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 1817
+      }
+     ]
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 6,
+     "fixed": false,
+     "height": 76,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "pageH": 2216,
+    "margins": {
+     "left": 32,
+     "right": 46
+    },
+    "sections": [
+     {
+      "sel": "main.layout_main__FQ5Sh",
+      "tag": "main",
+      "top": 76,
+      "height": 1981,
+      "words": 383,
+      "media": 4,
+      "middle": 0,
+      "heading": {
+       "text": "Xưởng Dệt Bạch Đằng",
+       "size": 66,
+       "tag": "h1"
+      },
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 51,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "footer.ShopFooter_footer__bvkS_",
+      "tag": "footer",
+      "top": 2057,
+      "height": 159,
+      "words": 21,
+      "media": 0,
+      "middle": 349,
+      "heading": null,
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 32,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Xưởng Dệt Bạch Đằng",
+      "size": 66,
+      "top": 158,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 32,
+      "n": 5
+     },
+     {
+      "x": 243,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 6,
+    "bodySize": 16,
+    "stage": false,
+    "explains": true,
+    "slivers": [],
+    "voidShare": 0.19,
+    "voidBox": {
+     "x": 540,
+     "y": 480,
+     "w": 600,
+     "h": 420
+    }
+   },
+   "app": null,
+   "consoleErrors": []
+  },
+  {
+   "width": 768,
+   "height": 1024,
+   "load": "load",
+   "screens": 4,
+   "filled": [
+    0.7,
+    0.76,
+    0.67,
+    0.61
+   ],
+   "motion": {
+    "elements": 18,
+    "css": 5,
+    "transitions": 13,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "page": {
+     "height": 3460,
+     "screens": 3.4,
+     "words": 420,
+     "img": 4,
+     "video": 0,
+     "canvas": 0,
+     "svg": 4,
+     "sections": 4,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 4,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "ao-thun-cotton-trang.png",
+      "ao-thun-cotton-xam-da.png",
+      "ao-thun-cotton-xanh-than.png",
+      "do-lot-boxer-modal-3.png"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Xưởng Dệt Bạch Đằng",
+     "words": 4,
+     "chars": 19,
+     "lines": 1,
+     "size": 35.3,
+     "vw": 4.6,
+     "font": "Work Sans",
+     "weight": 300,
+     "tracking": -0.035,
+     "leading": 1.02,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "center",
+     "widthRatio": 0.95,
+     "top": 130,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Xưởng Dệt Bạch Đằng",
+     "words": 4,
+     "lines": 1,
+     "size": 35.3,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Xưởng Dệt Bạch Đằng",
+      "words": 4,
+      "chars": 19,
+      "lines": 1,
+      "size": 35.3,
+      "vw": 4.6,
+      "font": "Work Sans",
+      "weight": 300,
+      "tracking": -0.035,
+      "leading": 1.02,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.95,
+      "top": 130,
+      "tag": "h1",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 1,
+     "maxLines": 1,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": null,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      13,
+      14,
+      15,
+      16,
+      18,
+      24,
+      35
+     ],
+     "sizeCount": 7,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 16,
+      "leading": 1.55,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 12.9
+     },
+     "measureChars": 72,
+     "max": {
+      "size": 35.3,
+      "vw": 4.6,
+      "font": "Work Sans",
+      "text": "Xưởng Dệt Bạch Đằng"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0.01,
+     "centerShare": 0.06,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f7f9fa",
+       "top": 0,
+       "hsl": {
+        "h": 200,
+        "s": 0.23,
+        "l": 0.97
+       }
+      },
+      {
+       "color": "#ecf0f2",
+       "top": 365,
+       "hsl": {
+        "h": 200,
+        "s": 0.19,
+        "l": 0.94
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#1f3038",
+       "share": 0.67
+      },
+      {
+       "color": "#5d6b72",
+       "share": 0.28
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.03
+      },
+      {
+       "color": "#0d7480",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#ecf0f2",
+      "hsl": {
+       "h": 200,
+       "s": 0.19,
+       "l": 0.94
+      },
+      "fg": "#1f3038"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 11,
+     "inHero": 4,
+     "radius": 0,
+     "height": 32,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Chat với người bán",
+      "Lọc theo size & màu",
+      "Đã áp dụng",
+      "Sao chép mã"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 4,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": []
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 2,
+     "fixed": false,
+     "height": 68,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "pageH": 3460,
+    "margins": {
+     "left": 20,
+     "right": 20
+    },
+    "sections": [
+     {
+      "sel": "main.layout_main__FQ5Sh",
+      "tag": "main",
+      "top": 68,
+      "height": 3236,
+      "words": 383,
+      "media": 4,
+      "middle": 0,
+      "heading": {
+       "text": "Xưởng Dệt Bạch Đằng",
+       "size": 35,
+       "tag": "h1"
+      },
+      "left": 20,
+      "right": 20,
+      "textLeft": 20,
+      "textRight": 65,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "footer.ShopFooter_footer__bvkS_",
+      "tag": "footer",
+      "top": 3304,
+      "height": 156,
+      "words": 21,
+      "media": 0,
+      "middle": 16,
+      "heading": null,
+      "left": 20,
+      "right": 413,
+      "textLeft": 20,
+      "textRight": 413,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Xưởng Dệt Bạch Đằng",
+      "size": 35,
+      "top": 130,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 20,
+      "n": 5
+     },
+     {
+      "x": 189,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 6,
+    "bodySize": 16,
+    "stage": false,
+    "explains": true,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": null,
+   "consoleErrors": []
+  },
+  {
+   "width": 390,
+   "height": 844,
+   "load": "load",
+   "screens": 5,
+   "filled": [
+    0.7,
+    0.73,
+    0.77,
+    0.66,
+    0.59
+   ],
+   "motion": {
+    "elements": 18,
+    "css": 5,
+    "transitions": 13,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "page": {
+     "height": 3527,
+     "screens": 4.2,
+     "words": 420,
+     "img": 4,
+     "video": 0,
+     "canvas": 0,
+     "svg": 4,
+     "sections": 4,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 4,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "ao-thun-cotton-trang.png",
+      "ao-thun-cotton-xam-da.png",
+      "ao-thun-cotton-xanh-than.png",
+      "do-lot-boxer-modal-3.png"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Xưởng Dệt Bạch Đằng",
+     "words": 4,
+     "chars": 19,
+     "lines": 1,
+     "size": 32,
+     "vw": 8.2,
+     "font": "Work Sans",
+     "weight": 300,
+     "tracking": -0.035,
+     "leading": 1.02,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "center",
+     "widthRatio": 0.9,
+     "top": 130,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Xưởng Dệt Bạch Đằng",
+     "words": 4,
+     "lines": 1,
+     "size": 32,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Xưởng Dệt Bạch Đằng",
+      "words": 4,
+      "chars": 19,
+      "lines": 1,
+      "size": 32,
+      "vw": 8.2,
+      "font": "Work Sans",
+      "weight": 300,
+      "tracking": -0.035,
+      "leading": 1.02,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.9,
+      "top": 130,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "Voucher áp dụng tại gian hàng",
+      "words": 6,
+      "chars": 29,
+      "lines": 1,
+      "size": 24,
+      "vw": 6.2,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.9,
+      "top": 1002,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Sản phẩm của Bạch Đằng",
+      "words": 5,
+      "chars": 22,
+      "lines": 1,
+      "size": 24,
+      "vw": 6.2,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.9,
+      "top": 1699,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Các xưởng dệt khác trên NexusMart",
+      "words": 6,
+      "chars": 33,
+      "lines": 2,
+      "size": 24,
+      "vw": 6.2,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.9,
+      "top": 2748,
+      "tag": "h2",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 4,
+     "maxLines": 2,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 6,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      13,
+      14,
+      15,
+      16,
+      18,
+      24,
+      32
+     ],
+     "sizeCount": 7,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 16,
+      "leading": 1.55,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 12.9
+     },
+     "measureChars": 44,
+     "max": {
+      "size": 32,
+      "vw": 8.2,
+      "font": "Work Sans",
+      "text": "Xưởng Dệt Bạch Đằng"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0.01,
+     "centerShare": 0.06,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f7f9fa",
+       "top": 0,
+       "hsl": {
+        "h": 200,
+        "s": 0.23,
+        "l": 0.97
+       }
+      },
+      {
+       "color": "#ecf0f2",
+       "top": 494,
+       "hsl": {
+        "h": 200,
+        "s": 0.19,
+        "l": 0.94
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#1f3038",
+       "share": 0.67
+      },
+      {
+       "color": "#5d6b72",
+       "share": 0.28
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.03
+      },
+      {
+       "color": "#0d7480",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#ecf0f2",
+      "hsl": {
+       "h": 200,
+       "s": 0.19,
+       "l": 0.94
+      },
+      "fg": "#1f3038"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 11,
+     "inHero": 2,
+     "radius": 0,
+     "height": 32,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Chat với người bán",
+      "Lọc theo size & màu"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 0,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 3,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 1048
+      },
+      {
+       "count": 3,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 2824
+      }
+     ]
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 2,
+     "fixed": false,
+     "height": 68,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "pageH": 3527,
+    "margins": {
+     "left": 20,
+     "right": 22
+    },
+    "sections": [
+     {
+      "sel": "main.layout_main__FQ5Sh",
+      "tag": "main",
+      "top": 68,
+      "height": 3304,
+      "words": 383,
+      "media": 4,
+      "middle": 0,
+      "heading": {
+       "text": "Xưởng Dệt Bạch Đằng",
+       "size": 32,
+       "tag": "h1"
+      },
+      "left": 20,
+      "right": 20,
+      "textLeft": 20,
+      "textRight": 24,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "footer.ShopFooter_footer__bvkS_",
+      "tag": "footer",
+      "top": 3372,
+      "height": 155,
+      "words": 21,
+      "media": 0,
+      "middle": 16,
+      "heading": null,
+      "left": 20,
+      "right": 43,
+      "textLeft": 20,
+      "textRight": 43,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Xưởng Dệt Bạch Đằng",
+      "size": 32,
+      "top": 130,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 20,
+      "n": 5
+     },
+     {
+      "x": 189,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 6,
+    "bodySize": 16,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": null,
+   "consoleErrors": []
+  }
+ ],
+ "findings": [
+  {
+   "level": "WARN",
+   "id": "no-footage",
+   "width": 1440,
+   "message": "No video anywhere on the page.",
+   "fix": "Look for one honest clip with scripts/assets.mjs --video (the place, the material, the process) and use it as a muted loop with a poster frame. Defend its absence only if no clip fits the subject."
+  },
+  {
+   "level": "WARN",
+   "id": "card-rows",
+   "width": 390,
+   "message": "2 rows of identical boxed cards.",
+   "fix": "Vary the composition; not every section is a card grid."
+  }
+ ],
+ "images": [
+  {
+   "viewport": "desktop",
+   "width": 1440,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect/gian-hang/desktop-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect/gian-hang/desktop-page-01.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "tablet",
+   "width": 768,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect/gian-hang/tablet-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect/gian-hang/tablet-page-01.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "mobile",
+   "width": 390,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect/gian-hang/mobile-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect/gian-hang/mobile-page-01.jpg"
+   ],
+   "film": []
+  }
+ ]
+}

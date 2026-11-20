@@ -1,0 +1,1406 @@
+{
+ "url": "http://127.0.0.1:3006/chien-dich/soi-xanh-nexus",
+ "at": "2026-11-19T21:28:03.156Z",
+ "allow": [],
+ "viewports": [
+  {
+   "width": 1440,
+   "height": 900,
+   "load": "load",
+   "screens": 5,
+   "filled": [
+    0.53,
+    0.66,
+    0.57,
+    0.63,
+    0.53
+   ],
+   "motion": {
+    "elements": 12,
+    "css": 5,
+    "transitions": 7,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "page": {
+     "height": 3697,
+     "screens": 4.1,
+     "words": 740,
+     "img": 10,
+     "video": 0,
+     "canvas": 0,
+     "svg": 14,
+     "sections": 5,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 10,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "cotton-boll-harvest.jpg",
+      "cotton-jersey-weave.webp",
+      "ao-thun-cotton-trang.png",
+      "ao-thun-cotton-xam-da.png",
+      "ao-thun-dryfit-co-vit.png",
+      "quan-short-linen-xam-da.png",
+      "do-lot-boxer-modal-3.png",
+      "do-lot-brief-tre-3.png"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Sợi Xanh Nexus",
+     "words": 3,
+     "chars": 14,
+     "lines": 1,
+     "size": 68,
+     "vw": 4.7,
+     "font": "Work Sans",
+     "weight": 300,
+     "tracking": -0.035,
+     "leading": 1.02,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "left",
+     "widthRatio": 0.32,
+     "top": 195,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Sợi Xanh Nexus",
+     "words": 3,
+     "lines": 1,
+     "size": 68,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Sợi Xanh Nexus",
+      "words": 3,
+      "chars": 14,
+      "lines": 1,
+      "size": 68,
+      "vw": 4.7,
+      "font": "Work Sans",
+      "weight": 300,
+      "tracking": -0.035,
+      "leading": 1.02,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.32,
+      "top": 195,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "Tiến độ đóng góp Sợi Xanh Nexus",
+      "words": 7,
+      "chars": 31,
+      "lines": 1,
+      "size": 28,
+      "vw": 1.9,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.37,
+      "top": 606,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "96.400.000₫",
+      "words": 1,
+      "chars": 11,
+      "lines": 1,
+      "size": 28,
+      "vw": 1.9,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": 0,
+      "leading": 1.1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "right",
+      "widthRatio": 0.12,
+      "top": 612,
+      "tag": "span",
+      "kind": "heading"
+     },
+     {
+      "text": "Bộ sưu tập Sợi Xanh góp 10% doanh thu",
+      "words": 9,
+      "chars": 37,
+      "lines": 1,
+      "size": 28,
+      "vw": 1.9,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.36,
+      "top": 940,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Bảng sao kê đối soát đóng góp (dữ liệu mẫu)",
+      "words": 10,
+      "chars": 43,
+      "lines": 1,
+      "size": 28,
+      "vw": 1.9,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.41,
+      "top": 2450,
+      "tag": "h2",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 5,
+     "maxLines": 1,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 9,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      13,
+      14,
+      15,
+      16,
+      18,
+      24,
+      28,
+      68
+     ],
+     "sizeCount": 8,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 16,
+      "leading": 1.55,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 5.2
+     },
+     "measureChars": 70,
+     "max": {
+      "size": 68,
+      "vw": 4.7,
+      "font": "Work Sans",
+      "text": "Sợi Xanh Nexus"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0.02,
+     "centerShare": 0.07,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f7f9fa",
+       "top": 0,
+       "hsl": {
+        "h": 200,
+        "s": 0.23,
+        "l": 0.97
+       }
+      },
+      {
+       "color": "#ecf0f2",
+       "top": 570,
+       "hsl": {
+        "h": 200,
+        "s": 0.19,
+        "l": 0.94
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#1f3038",
+       "share": 0.58
+      },
+      {
+       "color": "#5d6b72",
+       "share": 0.38
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.02
+      },
+      {
+       "color": "#0d7480",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#ecf0f2",
+      "hsl": {
+       "h": 200,
+       "s": 0.19,
+       "l": 0.94
+      },
+      "fg": "#1f3038"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 13,
+     "inHero": 3,
+     "radius": 0,
+     "height": 40,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Bỏ qua đến nội dung",
+      "Xem 7 sản phẩm áp dụng",
+      "Xem bảng sao kê mẫu"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 10,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": []
+    },
+    "heroMedia": [
+     {
+      "type": "img",
+      "ratio": 0.09
+     }
+    ],
+    "nav": {
+     "links": 8,
+     "fixed": false,
+     "height": 112,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "pageH": 3697,
+    "margins": {
+     "left": 32,
+     "right": 32
+    },
+    "sections": [
+     {
+      "sel": "main#main-content.layout_main__FQ5Sh",
+      "tag": "main",
+      "top": 112,
+      "height": 3393,
+      "words": 620,
+      "media": 10,
+      "middle": 0,
+      "heading": {
+       "text": "Sợi Xanh Nexus",
+       "size": 68,
+       "tag": "h1"
+      },
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 32,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "footer.ShopFooter_footer__bvkS_",
+      "tag": "footer",
+      "top": 3505,
+      "height": 192,
+      "words": 51,
+      "media": 0,
+      "middle": 233,
+      "heading": null,
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 32,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Sợi Xanh Nexus",
+      "size": 68,
+      "top": 195,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 32,
+      "n": 7
+     },
+     {
+      "x": 68,
+      "n": 2
+     },
+     {
+      "x": 56,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 10,
+    "bodySize": 16,
+    "stage": false,
+    "explains": true,
+    "slivers": [],
+    "voidShare": 0.07,
+    "voidBox": {
+     "x": 0,
+     "y": 480,
+     "w": 720,
+     "h": 120
+    }
+   },
+   "app": null,
+   "consoleErrors": []
+  },
+  {
+   "width": 768,
+   "height": 1024,
+   "load": "load",
+   "screens": 7,
+   "filled": [
+    0.72,
+    0.71,
+    0.66,
+    0.83,
+    0.41,
+    0.74,
+    0.68
+   ],
+   "motion": {
+    "elements": 12,
+    "css": 5,
+    "transitions": 7,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "page": {
+     "height": 6746,
+     "screens": 6.6,
+     "words": 715,
+     "img": 10,
+     "video": 0,
+     "canvas": 0,
+     "svg": 14,
+     "sections": 5,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 10,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "cotton-boll-harvest.jpg",
+      "cotton-jersey-weave.webp",
+      "ao-thun-cotton-trang.png",
+      "ao-thun-cotton-xam-da.png",
+      "ao-thun-dryfit-co-vit.png",
+      "quan-short-linen-xam-da.png",
+      "do-lot-boxer-modal-3.png",
+      "do-lot-brief-tre-3.png"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Sợi Xanh Nexus",
+     "words": 3,
+     "chars": 14,
+     "lines": 1,
+     "size": 36.9,
+     "vw": 4.8,
+     "font": "Work Sans",
+     "weight": 300,
+     "tracking": -0.035,
+     "leading": 1.02,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "left",
+     "widthRatio": 0.32,
+     "top": 166,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Sợi Xanh Nexus",
+     "words": 3,
+     "lines": 1,
+     "size": 36.9,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Sợi Xanh Nexus",
+      "words": 3,
+      "chars": 14,
+      "lines": 1,
+      "size": 36.9,
+      "vw": 4.8,
+      "font": "Work Sans",
+      "weight": 300,
+      "tracking": -0.035,
+      "leading": 1.02,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.32,
+      "top": 166,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "96.400.000₫",
+      "words": 1,
+      "chars": 11,
+      "lines": 1,
+      "size": 28,
+      "vw": 3.6,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": 0,
+      "leading": 1.1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.22,
+      "top": 1685,
+      "tag": "span",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 2,
+     "maxLines": 1,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 1,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      13,
+      14,
+      15,
+      16,
+      24,
+      28,
+      37
+     ],
+     "sizeCount": 7,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 16,
+      "leading": 1.5,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 12.9
+     },
+     "measureChars": 70,
+     "max": {
+      "size": 36.9,
+      "vw": 4.8,
+      "font": "Work Sans",
+      "text": "Sợi Xanh Nexus"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0.02,
+     "centerShare": 0.07,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f7f9fa",
+       "top": 0,
+       "hsl": {
+        "h": 200,
+        "s": 0.23,
+        "l": 0.97
+       }
+      },
+      {
+       "color": "#ecf0f2",
+       "top": 442,
+       "hsl": {
+        "h": 200,
+        "s": 0.19,
+        "l": 0.94
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#1f3038",
+       "share": 0.59
+      },
+      {
+       "color": "#5d6b72",
+       "share": 0.37
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.03
+      },
+      {
+       "color": "#0d7480",
+       "share": 0.01
+      }
+     ],
+     "button": {
+      "bg": "#ecf0f2",
+      "hsl": {
+       "h": 200,
+       "s": 0.19,
+       "l": 0.94
+      },
+      "fg": "#1f3038"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 13,
+     "inHero": 3,
+     "radius": 0,
+     "height": 44,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Bỏ qua đến nội dung",
+      "Xem 7 sản phẩm áp dụng",
+      "Xem bảng sao kê mẫu"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 10,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": []
+    },
+    "heroMedia": [
+     {
+      "type": "img",
+      "ratio": 0.51
+     }
+    ],
+    "nav": {
+     "links": 2,
+     "fixed": false,
+     "height": 104,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "pageH": 6746,
+    "margins": {
+     "left": 20,
+     "right": 20
+    },
+    "sections": [
+     {
+      "sel": "main#main-content.layout_main__FQ5Sh",
+      "tag": "main",
+      "top": 104,
+      "height": 6395,
+      "words": 620,
+      "media": 10,
+      "middle": 0,
+      "heading": {
+       "text": "Sợi Xanh Nexus",
+       "size": 37,
+       "tag": "h1"
+      },
+      "left": 20,
+      "right": 20,
+      "textLeft": 20,
+      "textRight": 20,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "footer.ShopFooter_footer__bvkS_",
+      "tag": "footer",
+      "top": 6499,
+      "height": 248,
+      "words": 51,
+      "media": 0,
+      "middle": 14,
+      "heading": null,
+      "left": 20,
+      "right": 202,
+      "textLeft": 20,
+      "textRight": 202,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Sợi Xanh Nexus",
+      "size": 37,
+      "top": 166,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 20,
+      "n": 7
+     },
+     {
+      "x": 44,
+      "n": 3
+     }
+    ],
+    "leftBlocks": 10,
+    "bodySize": 16,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": null,
+   "consoleErrors": []
+  },
+  {
+   "width": 390,
+   "height": 844,
+   "load": "load",
+   "screens": 9,
+   "filled": [
+    0.75,
+    0.82,
+    0.53,
+    0.66,
+    0.46,
+    0.48,
+    0.37,
+    0.68,
+    0.59
+   ],
+   "motion": {
+    "elements": 12,
+    "css": 5,
+    "transitions": 7,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "page": {
+     "height": 6790,
+     "screens": 8,
+     "words": 715,
+     "img": 10,
+     "video": 0,
+     "canvas": 0,
+     "svg": 14,
+     "sections": 5,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 10,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "cotton-boll-harvest.jpg",
+      "cotton-jersey-weave.webp",
+      "ao-thun-cotton-trang.png",
+      "ao-thun-cotton-xam-da.png",
+      "ao-thun-dryfit-co-vit.png",
+      "quan-short-linen-xam-da.png",
+      "do-lot-boxer-modal-3.png",
+      "do-lot-brief-tre-3.png"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Sợi Xanh Nexus",
+     "words": 3,
+     "chars": 14,
+     "lines": 1,
+     "size": 36,
+     "vw": 9.2,
+     "font": "Work Sans",
+     "weight": 300,
+     "tracking": -0.035,
+     "leading": 1.02,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "left",
+     "widthRatio": 0.62,
+     "top": 166,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Sợi Xanh Nexus",
+     "words": 3,
+     "lines": 1,
+     "size": 36,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Sợi Xanh Nexus",
+      "words": 3,
+      "chars": 14,
+      "lines": 1,
+      "size": 36,
+      "vw": 9.2,
+      "font": "Work Sans",
+      "weight": 300,
+      "tracking": -0.035,
+      "leading": 1.02,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.62,
+      "top": 166,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "Tiến độ đóng góp Sợi Xanh Nexus",
+      "words": 7,
+      "chars": 31,
+      "lines": 2,
+      "size": 24,
+      "vw": 6.2,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.77,
+      "top": 1177,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "96.400.000₫",
+      "words": 1,
+      "chars": 11,
+      "lines": 1,
+      "size": 28,
+      "vw": 7.2,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": 0,
+      "leading": 1.1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.43,
+      "top": 1298,
+      "tag": "span",
+      "kind": "heading"
+     },
+     {
+      "text": "Bộ sưu tập Sợi Xanh góp 10% doanh thu",
+      "words": 9,
+      "chars": 37,
+      "lines": 2,
+      "size": 24,
+      "vw": 6.2,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.9,
+      "top": 1790,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Bảng sao kê đối soát đóng góp (dữ liệu mẫu)",
+      "words": 10,
+      "chars": 43,
+      "lines": 2,
+      "size": 24,
+      "vw": 6.2,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.9,
+      "top": 4292,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Chiến dịch chuyên đề khác",
+      "words": 5,
+      "chars": 25,
+      "lines": 1,
+      "size": 24,
+      "vw": 6.2,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": 0,
+      "leading": 1.55,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.9,
+      "top": 5936,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Công nghệ vải NexusMart",
+      "words": 4,
+      "chars": 23,
+      "lines": 1,
+      "size": 24,
+      "vw": 6.2,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": 0,
+      "leading": 1.55,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.77,
+      "top": 6017,
+      "tag": "span",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 7,
+     "maxLines": 2,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 7,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      13,
+      14,
+      15,
+      16,
+      24,
+      28,
+      36
+     ],
+     "sizeCount": 7,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 16,
+      "leading": 1.5,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 12.9
+     },
+     "measureChars": 44,
+     "max": {
+      "size": 36,
+      "vw": 9.2,
+      "font": "Work Sans",
+      "text": "Sợi Xanh Nexus"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0.02,
+     "centerShare": 0.07,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f7f9fa",
+       "top": 0,
+       "hsl": {
+        "h": 200,
+        "s": 0.23,
+        "l": 0.97
+       }
+      },
+      {
+       "color": "#ecf0f2",
+       "top": 1153,
+       "hsl": {
+        "h": 200,
+        "s": 0.19,
+        "l": 0.94
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#1f3038",
+       "share": 0.61
+      },
+      {
+       "color": "#5d6b72",
+       "share": 0.35
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.03
+      },
+      {
+       "color": "#0d7480",
+       "share": 0.01
+      }
+     ],
+     "button": {
+      "bg": "#ecf0f2",
+      "hsl": {
+       "h": 200,
+       "s": 0.19,
+       "l": 0.94
+      },
+      "fg": "#1f3038"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 13,
+     "inHero": 3,
+     "radius": 0,
+     "height": 44,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Bỏ qua đến nội dung",
+      "Xem 7 sản phẩm áp dụng",
+      "Xem bảng sao kê mẫu"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 3,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 4621
+      }
+     ]
+    },
+    "heroMedia": [
+     {
+      "type": "img",
+      "ratio": 0.28
+     }
+    ],
+    "nav": {
+     "links": 2,
+     "fixed": false,
+     "height": 104,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "pageH": 6790,
+    "margins": {
+     "left": 20,
+     "right": 20
+    },
+    "sections": [
+     {
+      "sel": "main#main-content.layout_main__FQ5Sh",
+      "tag": "main",
+      "top": 104,
+      "height": 6388,
+      "words": 600,
+      "media": 10,
+      "middle": 0,
+      "heading": {
+       "text": "Sợi Xanh Nexus",
+       "size": 36,
+       "tag": "h1"
+      },
+      "left": 20,
+      "right": 20,
+      "textLeft": 20,
+      "textRight": 21,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "footer.ShopFooter_footer__bvkS_",
+      "tag": "footer",
+      "top": 6492,
+      "height": 298,
+      "words": 51,
+      "media": 0,
+      "middle": 0,
+      "heading": null,
+      "left": 20,
+      "right": 49,
+      "textLeft": 20,
+      "textRight": 49,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Sợi Xanh Nexus",
+      "size": 36,
+      "top": 166,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 20,
+      "n": 7
+     },
+     {
+      "x": 44,
+      "n": 3
+     }
+    ],
+    "leftBlocks": 10,
+    "bodySize": 16,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": null,
+   "consoleErrors": []
+  }
+ ],
+ "findings": [
+  {
+   "level": "WARN",
+   "id": "grey-body",
+   "width": 1440,
+   "message": "The running text is a soft grey on its ground (5.2:1).",
+   "fix": "Set body copy in the full ink (7:1 or more). Keep the muted ink for secondary notes; pages read thin and unfinished when everything is grey."
+  },
+  {
+   "level": "WARN",
+   "id": "no-footage",
+   "width": 1440,
+   "message": "No video anywhere on the page.",
+   "fix": "Look for one honest clip with scripts/assets.mjs --video (the place, the material, the process) and use it as a muted loop with a poster frame. Defend its absence only if no clip fits the subject."
+  },
+  {
+   "level": "WARN",
+   "id": "still-page",
+   "width": 1440,
+   "message": "Little motion: 12 element(s) moved while the page loaded and scrolled.",
+   "fix": "Give every section an entrance for its parts (not one fade of the whole block) and add one moving picture: a looping clip or a slow move on a photograph."
+  },
+  {
+   "level": "WARN",
+   "id": "name-only-title",
+   "width": 768,
+   "message": "The h1 is a bare name (\"Sợi Xanh Nexus\") and nothing else on the first screen says what this is.",
+   "fix": "Keep the name if it leads, and give the line under it (18px or more) the plain words: what it is, for whom, where or when. In the study of 97 Sites of the Day, first screens that named nothing lost usability and content points.",
+   "alsoAt": [
+    390
+   ]
+  }
+ ],
+ "images": [
+  {
+   "viewport": "desktop",
+   "width": 1440,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/chien-dich-csr/desktop-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/chien-dich-csr/desktop-page-01.jpg",
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/chien-dich-csr/desktop-page-02.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "tablet",
+   "width": 768,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/chien-dich-csr/tablet-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/chien-dich-csr/tablet-page-01.jpg",
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/chien-dich-csr/tablet-page-02.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "mobile",
+   "width": 390,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/chien-dich-csr/mobile-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/chien-dich-csr/mobile-page-01.jpg",
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/chien-dich-csr/mobile-page-02.jpg"
+   ],
+   "film": []
+  }
+ ]
+}

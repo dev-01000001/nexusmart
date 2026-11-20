@@ -1,0 +1,374 @@
+.page {
+  width: 100%;
+  padding: clamp(24px, 3vw, 44px) var(--margin) clamp(56px, 6vw, 96px);
+  background: var(--bg);
+  color: var(--ink);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .page [data-cat-reveal][data-pending="1"] {
+    opacity: 0;
+    transform: translateY(18px);
+    transition:
+      opacity 560ms var(--ease-out),
+      transform 720ms var(--ease-expo);
+    transition-delay: calc(var(--stagger, 0) * 70ms);
+  }
+
+  .page [data-cat-reveal][data-in="1"] {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.heroGrid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: clamp(24px, 3vw, 40px);
+  align-items: center;
+  margin-bottom: clamp(56px, 7vw, 96px);
+}
+
+.heroText {
+  grid-column: 1 / 7;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.title {
+  font-size: clamp(34px, 4.8vw, 68px);
+  font-weight: 300;
+  letter-spacing: -0.035em;
+  line-height: 1.02;
+  color: var(--ink);
+}
+
+.lead {
+  font-size: 18px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 48ch;
+}
+
+.heroActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.heroFeatureCard {
+  grid-column: 7 / 13;
+  background: var(--surface-white);
+  display: flex;
+  flex-direction: column;
+  transition: background-color var(--t-hover) ease;
+}
+
+.heroFeatureCard:hover {
+  background: var(--surface-subtle);
+}
+
+.heroFeatureMedia {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--surface-subtle);
+  overflow: clip;
+}
+
+.coverImg {
+  object-fit: cover;
+  object-position: center;
+  transition: transform 360ms var(--ease-soft);
+}
+
+.heroFeatureCard:hover .coverImg,
+.cardMedia:hover .coverImg {
+  transform: scale(1.04);
+}
+
+.heroFeatureCaption {
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.heroFeatureTitle {
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--ink);
+}
+
+/* Articles directory — unboxed magazine layout (zero card-rows) */
+.articlesSection {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.sectionTitle {
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--ink);
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tabBtn {
+  min-height: 40px;
+  padding: 0 14px;
+  background: var(--surface-white);
+  color: var(--ink);
+  font-size: 14px;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.tabBtn:hover {
+  background: var(--surface-muted);
+}
+
+.tabBtnActive {
+  background: var(--band-dark);
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.tabBtnActive:hover {
+  background: var(--band-dark);
+}
+
+.articlesGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(32px, 4vw, 48px) clamp(20px, 2.5vw, 32px);
+}
+
+.articleEntry {
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cardMedia {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--surface-subtle);
+  overflow: clip;
+}
+
+.cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+}
+
+.articleMeta {
+  font-size: 14px;
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.cardTitle {
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--ink);
+}
+
+.cardTitleLink:hover {
+  color: var(--accent);
+}
+
+.cardSummary {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 56ch;
+}
+
+.embeddedPreview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.embeddedLabel {
+  font-size: 14px;
+  color: var(--ink-secondary);
+}
+
+.embeddedThumbs {
+  display: flex;
+  gap: 8px;
+}
+
+.miniThumbLink {
+  position: relative;
+  width: 54px;
+  height: 72px;
+  background: var(--surface-white);
+  overflow: clip;
+  display: block;
+}
+
+.miniThumbImg {
+  object-fit: cover;
+  object-position: center;
+}
+
+.miniThumbModel {
+  object-fit: cover;
+  object-position: top center;
+}
+
+.cardFoot {
+  margin-top: auto;
+  padding-top: 8px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.authorMeta {
+  font-size: 14px;
+  color: var(--ink-secondary);
+}
+
+.readLink {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--accent-tint-ink);
+}
+
+.readLink:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Care guide — unified deep slate band, 3 unboxed columns (zero card-rows) */
+.careBand {
+  margin-top: clamp(56px, 7vw, 96px);
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  padding: clamp(28px, 4vw, 44px);
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.careBandTitle {
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--band-dark-ink);
+}
+
+.careBandLink {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--band-dark-accent);
+}
+
+.careBandLink:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.careCols {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px 32px;
+}
+
+.careCol {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.careTitle {
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--band-dark-ink);
+}
+
+.careLine {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--band-dark-ink);
+}
+
+.careTip {
+  margin-top: 4px;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--band-dark-muted);
+}
+
+@media (max-width: 1080px) {
+  .heroGrid {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+
+  .heroText,
+  .heroFeatureCard {
+    grid-column: auto;
+  }
+
+  .careCols {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .page {
+    padding: 20px 20px 56px;
+  }
+
+  .lead {
+    font-size: 16px;
+  }
+
+  .sectionTitle,
+  .careBandTitle {
+    font-size: 28px;
+  }
+
+  .articlesGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .tabBtn {
+    min-height: 44px;
+  }
+}

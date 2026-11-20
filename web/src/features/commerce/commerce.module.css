@@ -1,0 +1,752 @@
+/* Shared storefront commerce layout, typography, surface steps, and form controls.
+   Frost & Slate palette, Work Sans only, square geometry, zero hairlines/gradients/shadows at rest. */
+
+.page {
+  width: 100%;
+  font-size: 16px;
+  padding: clamp(20px, 2.8vw, 36px) var(--margin) clamp(48px, 6vw, 72px);
+}
+
+.pageHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px 40px;
+  flex-wrap: wrap;
+  margin-bottom: clamp(28px, 4vw, 44px);
+}
+
+.headerLeadGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  flex: 1 1 420px;
+}
+
+.pageTitle {
+  font-size: clamp(2.25rem, 4.6vw, 4.375rem);
+  font-weight: 300;
+  letter-spacing: -0.035em;
+  line-height: 1.02;
+  color: var(--ink);
+}
+
+.pageLead {
+  font-size: 18px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 58ch;
+}
+
+.headerAside {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.breadcrumbNav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--step-small);
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+
+.breadcrumbLink {
+  color: var(--ink);
+  transition: color var(--t-hover) ease;
+}
+
+.breadcrumbLink:hover {
+  color: var(--accent);
+}
+
+/* Sections & headings */
+.section {
+  width: 100%;
+}
+
+.sectionGap {
+  margin-top: clamp(56px, 6vw, 84px);
+}
+
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.sectionTitle {
+  font-size: var(--step-lead);
+  font-weight: 400;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+  color: var(--ink);
+}
+
+.sectionNote {
+  font-size: var(--step-small);
+  color: var(--muted);
+}
+
+/* Flat tone-stepped panels (zero 1px borders or shadows) */
+.surfacePanel {
+  background: var(--surface);
+  padding: clamp(20px, 2.4vw, 28px);
+}
+
+.whitePanel {
+  background: var(--card);
+  padding: clamp(20px, 2.4vw, 28px);
+}
+
+/* Form layout and tag-qualified controls */
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.formFull {
+  grid-column: 1 / -1;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fieldLabel {
+  font-size: var(--step-small);
+  font-weight: 500;
+  color: var(--ink);
+}
+
+input.input,
+select.select,
+textarea.textarea {
+  width: 100%;
+  background: var(--card);
+  border: 1px solid var(--control);
+  border-radius: var(--radius-shop);
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.4;
+  transition: border-color var(--t-hover) ease;
+}
+
+input.input,
+select.select {
+  height: 44px;
+  padding: 0 14px;
+}
+
+textarea.textarea {
+  min-height: 88px;
+  padding: 12px 14px;
+  resize: vertical;
+}
+
+input.input:focus,
+select.select:focus,
+textarea.textarea:focus {
+  border-color: var(--accent);
+}
+
+.fieldHint {
+  font-size: var(--step-small);
+  color: var(--muted);
+}
+
+.fieldError {
+  font-size: var(--step-small);
+  color: var(--negative);
+  font-weight: 500;
+}
+
+.checkboxRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+  color: var(--ink);
+  cursor: pointer;
+  min-height: 36px;
+}
+
+input.checkbox {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex: none;
+}
+
+.formActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+/* Status tone chips (flat square, WCAG >= 4.5:1) */
+.statusTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: var(--step-small);
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: normal;
+  max-width: 100%;
+  overflow-wrap: break-word;
+}
+
+button.wrapBtn,
+a.wrapBtn {
+  white-space: normal;
+  height: auto;
+  min-height: 44px;
+  padding: 10px 18px;
+  max-width: 100%;
+  text-align: center;
+  line-height: 1.35;
+}
+
+.toneNeutral {
+  background: var(--pill-neutral-bg);
+  color: var(--pill-neutral-ink);
+}
+
+.toneWarn {
+  background: var(--pill-warning-bg);
+  color: var(--pill-warning-ink);
+}
+
+.tonePos {
+  background: var(--pill-positive-bg);
+  color: var(--pill-positive-ink);
+}
+
+.toneNeg {
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+}
+
+/* Product suggestion strip (4 real 3:4 studio shots) */
+.addonGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: clamp(16px, 2vw, 24px);
+}
+
+.addonCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: transparent;
+}
+
+.addonMedia {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.addonImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 360ms var(--ease-out);
+}
+
+.addonCard:hover .addonImg {
+  transform: scale(1.03);
+}
+
+.addonMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.addonShop {
+  font-size: var(--step-small);
+  color: var(--muted);
+}
+
+.addonTitle {
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--ink);
+  transition: color var(--t-hover) ease;
+}
+
+.addonTitle:hover {
+  color: var(--accent);
+}
+
+.addonFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 6px;
+}
+
+/* VietQR flat SVG card */
+.qrWrap {
+  background: var(--surface-white);
+  padding: 20px;
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  gap: 20px;
+  align-items: center;
+  margin-top: 12px;
+}
+
+.qrBox {
+  width: 168px;
+  height: 168px;
+  background: var(--bg);
+  padding: 10px;
+}
+
+.qrInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.qrRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 16px;
+}
+
+.qrLabel {
+  color: var(--ink-secondary);
+}
+
+.qrVal {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.qrAmount {
+  color: var(--accent);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.qrNote {
+  font-size: 16px;
+  color: var(--ink);
+  line-height: 1.55;
+  margin-top: 4px;
+  max-width: 60ch;
+}
+
+.addressMetaBar {
+  background: var(--accent-tint);
+  padding: 12px 16px;
+  font-size: 16px;
+  color: var(--ink);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* Quick search suggestion strip inside address selector */
+.quickSuggestList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.quickSuggestChip {
+  padding: 5px 10px;
+  background: var(--surface-subtle);
+  color: var(--ink);
+  font-size: var(--step-small);
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.quickSuggestChip:hover {
+  background: var(--accent-tint);
+}
+
+.quickSuggestChipActive {
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+}
+
+/* Flat progress bar (freeship, membership tier) */
+.progressBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.progressMeta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.progressTrack {
+  width: 100%;
+  height: 8px;
+  background: var(--surface-muted);
+  overflow: hidden;
+}
+
+.progressTrackLight {
+  background: var(--surface-white);
+}
+
+.progressFill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 320ms var(--ease-out);
+}
+
+.progressFillDone {
+  background: var(--positive);
+}
+
+/* Mode switch & horizontal tabs */
+.modeSwitch {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  background: var(--surface-subtle);
+  padding: 6px;
+}
+
+.modeBtn {
+  min-height: 38px;
+  padding: 0 14px;
+  font-size: var(--step-small);
+  font-weight: 500;
+  color: var(--ink);
+  background: transparent;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.modeBtn:hover {
+  background: var(--surface-white);
+}
+
+.modeBtnActive {
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+}
+
+.modeBtnActive:hover {
+  background: var(--band-dark);
+}
+
+.tabStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 28px;
+}
+
+.tabBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 16px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 400;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.tabBtn:hover {
+  background: var(--active);
+}
+
+.tabBtnActive {
+  background: var(--ink);
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.tabBtnActive:hover {
+  background: var(--ink);
+}
+
+.tabCount {
+  font-size: var(--step-small);
+  opacity: 0.85;
+}
+
+/* Inline code entry & validation feedback */
+.codeInputRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.feedbackBox {
+  padding: 10px 12px;
+  font-size: var(--step-small);
+  line-height: 1.45;
+}
+
+.feedbackError {
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+}
+
+.feedbackSuccess {
+  background: var(--pill-positive-bg);
+  color: var(--pill-positive-ink);
+}
+
+.feedbackWarn {
+  background: var(--pill-warning-bg);
+  color: var(--pill-warning-ink);
+}
+
+.feedbackInfo {
+  background: var(--card);
+  color: var(--ink);
+}
+
+/* Retry payment inline panel (accent palette highlight, unboxed method choices) */
+.retryBox {
+  background: var(--accent-tint);
+  padding: clamp(18px, 2.2vw, 24px);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  border-left: 4px solid var(--accent);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.retryHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.retryTitle {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+
+.retryText {
+  font-size: 16px;
+  color: var(--ink);
+  line-height: 1.55;
+  max-width: 62ch;
+}
+
+.retryMethods {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 18px;
+}
+
+.retryMethodBtn {
+  padding: 10px 12px;
+  background: transparent;
+  border-bottom: 2px solid var(--accent-tint-strong);
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--ink);
+  min-width: 0;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.retryMethodBtn:hover {
+  background: var(--surface-white);
+}
+
+.retryMethodActive {
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  border-bottom-color: var(--band-dark);
+}
+
+.retryMethodActive:hover {
+  background: var(--band-dark);
+}
+
+.retryMethodActive .retryMethodSub {
+  color: var(--band-dark-muted);
+}
+
+.retryMethodName {
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.retryMethodSub {
+  font-size: var(--step-small);
+  color: var(--ink-secondary);
+}
+
+/* Clean flat data table (responsive stacked cards on <= 768px to prevent side-scroll) */
+.tableWrap {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  background: var(--card);
+}
+
+table.dataTable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+table.dataTable th,
+table.dataTable td {
+  padding: 12px 16px;
+  text-align: left;
+  font-size: 16px;
+  color: var(--ink);
+  vertical-align: top;
+}
+
+table.dataTable th {
+  font-size: var(--step-small);
+  font-weight: 500;
+  color: var(--muted);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+table.dataTable td {
+  border-bottom: 1px solid var(--rule);
+}
+
+table.dataTable tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+@media (max-width: 1024px) {
+  .addonGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .page {
+    padding: 16px 18px 56px;
+  }
+
+  .pageHeader {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+
+  .headerLeadGroup {
+    flex: none;
+    width: 100%;
+  }
+
+  .formGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .qrWrap {
+    grid-template-columns: 1fr;
+    justify-items: start;
+  }
+
+  .retryMethods {
+    grid-template-columns: 1fr;
+  }
+
+  .codeInputRow {
+    grid-template-columns: 1fr;
+  }
+
+  table.dataTable,
+  table.dataTable tbody,
+  table.dataTable tr,
+  table.dataTable td {
+    display: block;
+    width: 100%;
+  }
+
+  table.dataTable thead {
+    display: none;
+  }
+
+  table.dataTable tbody {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px;
+    background: var(--surface);
+  }
+
+  table.dataTable tr {
+    background: var(--card);
+    padding: 12px 14px;
+  }
+
+  table.dataTable td {
+    padding: 5px 0;
+    border-bottom: 0;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 16px;
+  }
+
+  table.dataTable td::before {
+    content: attr(data-label);
+    font-size: var(--step-small);
+    color: var(--muted);
+    font-weight: 500;
+  }
+}

@@ -1,0 +1,43 @@
+.chartBox {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+
+.tooltip {
+  position: absolute;
+  top: 4px;
+  pointer-events: none;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  border-radius: var(--radius-control);
+  white-space: nowrap;
+  background: var(--card);
+  color: var(--ink);
+  border: 1px solid var(--border); /* taste-skill-ignore: floating chart tooltip */
+  z-index: 4;
+  font-variant-numeric: tabular-nums;
+}
+
+.tooltipRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.tooltipLabel {
+  color: var(--muted);
+}
+
+.tooltipValue {
+  font-weight: 600;
+  color: var(--ink);
+}

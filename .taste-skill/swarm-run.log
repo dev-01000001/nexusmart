@@ -1,0 +1,83 @@
+Đã đọc [swarm-brief.md](file:///home/dev/Documents/Nexus_Ecom/.taste-skill/swarm-brief.md), [AGENTS.md](file:///home/dev/Documents/Nexus_Ecom/AGENTS.md), 3 direction/app sheets ([storefront-sheet.md](file:///home/dev/Documents/Nexus_Ecom/.taste-skill/storefront-sheet.md), [seller-sheet.md](file:///home/dev/Documents/Nexus_Ecom/.taste-skill/seller-sheet.md), [admin-sheet.md](file:///home/dev/Documents/Nexus_Ecom/.taste-skill/admin-sheet.md)) và [SKILL.md](file:///home/dev/.claude/skills/design-taste-frontend/SKILL.md).
+
+Swarm **NexusMart Web UI** đã được khởi động theo 2 giai đoạn để tránh đụng file và giữ đội hình gọn:
+
+- **Giai đoạn 1 (đang chạy song song):**
+  - `foundation`: dựng nền `web/` (Next.js App Router, TypeScript, CSS Modules + `tokens.css` Frost & Slate, Work Sans tiếng Việt, 3 shell `(shop)` / `(seller)` Achromatic ledger / `(admin)` Framed sheet, mock data có đối soát toán học, 34 tỉnh thành 2 cấp, React Context và component dùng chung).
+  - `assets`: sinh 18 ảnh sản phẩm gốc NexusMart vào `web/public/products/`, tải ảnh không khí + credit vào `web/public/atmosphere/` và ghi `web/public/media-manifest.json` theo đúng hợp đồng tên file với `foundation`.
+  - `monitor`: giám sát nghẽn (stall monitor).
+- **Giai đoạn 2 (sẽ mở ngay khi Giai đoạn 1 hoàn tất):**
+  - 4 worker chạy song song theo ownership tách biệt: `shop-catalog`, `shop-commerce`, `seller-center`, `admin-portal`, kèm 1 worker `qa` chạy liên tục toàn bộ gate (`npm run build`, `npm run lint`, `lint.mjs`, `inspect.mjs` ở 1440/768/390, mở ảnh chụp kiểm tra và lập `web/DESIGN_REPORT.md`).
+
+Đang chờ `foundation` và `assets` hoàn tất Giai đoạn 1.
+Đã kích hoạt 6 batch `image-generator` chạy song song để sinh toàn bộ 18 ảnh sản phẩm gốc NexusMart (nền studio `#ecf0f2`, ánh sáng phẳng, không logo), trong lúc `assets` tải ảnh không khí và `foundation` dựng nền `web/`. Đang chờ các kết quả gửi về.
+Batch 1 đã xong 2/3 ảnh (`ao-thun-cotton-trang`, `ao-thun-cotton-xam-da`); ảnh thứ 3 bị rate-limit nhẹ (429), sẽ gom chạy lại cùng các ảnh còn thiếu sau khi 5 batch còn lại báo về để tránh đụng rate-limit. Đang chờ các batch còn lại và `foundation`/`assets`.
+Batch 2 đã xong 2/3 ảnh (`ao-thun-dryfit-co-vit`, `ao-thun-oversize-than-chi`), tổng cộng hiện có 4 ảnh; tiếp tục chờ 4 batch còn lại báo về rồi gom chạy lại phần bị rate-limit.
+Batch 4 đã xong 3/3 quần short, Batch 3 xong 1/3 polo (`ao-polo-pique-kem`); hiện có 8/18 ảnh, đang chờ Batch 5 và 6 rồi gom chạy bổ sung các ảnh còn thiếu.
+Batch 6 đã xong 3/3 (đồ lót brief & 2 combo tất), tổng hiện 11/18 ảnh. Đang chờ Batch 5 rồi chạy bổ sung tuần tự các ảnh bị rate-limit.
+Batch 5 đã xong 3/3 (14/18 ảnh đã tạo xong). Đang chạy tuần tự 4 ảnh cuối (`ao-thun-cotton-xanh-than`, `ao-khoac-gio-xam-tro`, `ao-polo-pique-xanh-da`, `ao-polo-det-kim-den`), trong khi `foundation` và `assets` vẫn đang chạy.
+Giai đoạn 1 đã hoàn tất sạch sẽ:
+- `assets`: đủ 18/18 ảnh sản phẩm PNG gốc (`896×1200`, nền `#ecf0f2`, không logo) tại `web/public/products/`, kèm 6 ảnh không khí + 1 clip khung cửi Jacquard WebM lặp tắt tiếng + `web/public/media-manifest.json`.
+- `foundation`: dựng nền `web/` hoàn chỉnh (Work Sans, Frost & Slate tokens, 3 layout shell, 34 tỉnh thành 2 cấp, mock data có đối soát toán học, React Context, component dùng chung); `tsc`, `eslint`, `prettier`, `check-data.mjs` (8/8) và `lint.mjs` (0 FAIL, 0 WARN) đều xanh.
+
+Đã mở **Giai đoạn 2** với 4 worker chạy song song (tách biệt hoàn toàn vùng file):
+- `shop-catalog`: Trang chủ (Contact sheet + Ring of frames), danh mục & tìm kiếm, chi tiết sản phẩm SKU, flash sale, gian hàng.
+- `shop-commerce`: Giỏ hàng gom gian hàng, checkout 34 tỉnh 2 cấp (COD/VietQR/Ví sandbox), đơn hàng & trả hàng, tài khoản/đăng nhập/đăng ký, khung chat & trợ lý AI streaming.
+- `seller-center`: Toàn bộ 6 phân hệ Kênh người bán theo style **Achromatic ledger**.
+- `admin-portal`: Toàn bộ 6 phân hệ Quản trị theo style **Framed sheet**.
+
+Ngay khi các nhánh hoàn tất, sẽ kích hoạt worker `qa` chạy toàn bộ gate build, `lint.mjs`, `inspect.mjs` (1440/768/390), kiểm tra ảnh chụp và lập `web/DESIGN_REPORT.md`.
+Cả 4 worker Giai đoạn 2 (`shop-catalog`, `shop-commerce`, `seller-center`, `admin-portal`) đã hoàn tất toàn bộ màn hình cho cả 3 khu vực `(shop)`, `(seller)` và `(admin)` với `tsc`, `eslint`, `prettier` và `lint.mjs` đều xanh (`0 FAIL, 0 WARN`).
+
+Đã kích hoạt worker `qa` chạy **Giai đoạn 3 (Gate & Look-and-Fix)**:
+- Chạy `npm run lint`, `npm run format:check`, `node scripts/check-data.mjs`, `npm run build` và `lint.mjs web/src`.
+- Khởi chạy bản production (`npm run start`) và chạy `inspect.mjs` ở 3 kích thước `1440 / 768 / 390` cho các tuyến storefront (trang chủ, danh mục, sản phẩm, flash sale, gian hàng, giỏ hàng, thanh toán, đơn hàng) cùng `--app` cho các màn seller và admin.
+- Mở trực tiếp ảnh chụp màn hình kiểm tra thị giác, gửi lỗi trực tiếp về đúng worker phụ trách sửa rồi kiểm lại cho đến khi `0 FAIL`.
+- Lập báo cáo hoàn chỉnh [web/DESIGN_REPORT.md](file:///home/dev/Documents/Nexus_Ecom/web/DESIGN_REPORT.md) sau khi mọi gate xanh.
+
+Đang chờ `qa` hoàn tất vòng nghiệm thu.
+Đã hoàn tất toàn bộ giao diện web **NexusMart** trong thư mục `web/` theo đúng [swarm-brief.md](file:///home/dev/Documents/Nexus_Ecom/.taste-skill/swarm-brief.md), [AGENTS.md](file:///home/dev/Documents/Nexus_Ecom/AGENTS.md) và 3 direction/app sheets, đã qua 3 vòng Look-and-Fix và nghiệm thu đầy đủ. Báo cáo chi tiết nằm tại [DESIGN_REPORT.md](file:///home/dev/Documents/Nexus_Ecom/web/DESIGN_REPORT.md).
+
+---
+
+### 1. Tổng quan phần đã hoàn thành
+
+- **Kiến trúc & Ponytail (`web/`):** Next.js 15 (App Router, TypeScript), React Context ([StoreContext.tsx](file:///home/dev/Documents/Nexus_Ecom/web/src/context/StoreContext.tsx)), CSS thuần (CSS Modules + 1 tệp token [tokens.css](file:///home/dev/Documents/Nexus_Ecom/web/src/styles/tokens.css)). Không Tailwind, không UI kit, không thư viện state/icon/chart ngoài. Toàn bộ UI tiếng Việt, giá là số nguyên VND dạng `199.000₫` ([format.ts](file:///home/dev/Documents/Nexus_Ecom/web/src/lib/format.ts)), không đánh giá/số liệu/logo/báo chí giả.
+- **Chung 1 bảng màu & 1 phông chữ cho cả 3 khu vực (`redraws: 0`):**
+  - Bảng màu **Frost and slate** (`#f7f9fa`, `#ecf0f2`, `#1f3038`, `#5d6b72`, `#0d7480`) + **Work Sans** (`300/400/500/600`, subset `latin` + `vietnamese`).
+  - **Storefront `(shop)` — `The contact sheet` (seed `98794034`):** 13 route (`/`, `/danh-muc`, `/tim-kiem`, `/san-pham/[slug]`, `/flash-sale`, `/gian-hang/[slug]`, `/gio-hang`, `/thanh-toan`, `/don-hang`, `/don-hang/[id]`, `/tai-khoan`, `/dang-nhap`, `/dang-ky`) + 2 panel nổi (`BuyerChatPanel` đồng bộ hai chiều với Seller, `AiAssistantPanel` có trạng thái streaming + nút `Dừng` và gợi ý sản phẩm thực).
+    - *Ý tưởng:* toàn bộ 18 mẫu đồ basic và định lượng GSM thực từ 4 xưởng dệt Việt Nam trở thành tờ contact sheet phẳng để người mua tự soi vải, chọn size và mua trực tiếp.
+    - *Tính năng live:* vòng 18 khung hero tương tác + bộ chọn size theo chiều cao/cân nặng/phom ([SizeFinder.tsx](file:///home/dev/Documents/Nexus_Ecom/web/src/features/catalog/SizeFinder.tsx)) trả ra size, thông số rập và SKU còn hàng.
+    - *Checkout:* sổ địa chỉ 2 cấp đủ **34 tỉnh/thành phố → phường/xã** ([provinces.ts](file:///home/dev/Documents/Nexus_Ecom/web/src/lib/provinces.ts)), thanh toán COD / VietQR (mã QR SVG phẳng) / Ví sandbox (không có form thẻ).
+  - **Seller Center `(seller)` — `Achromatic ledger` (seed `1009380704`, shell `Open plane`):** 9 route (`/seller`, `/seller/san-pham`, `/moi`, `/[id]`, `/seller/don-hang`, `/[id]`, `/seller/khuyen-mai`, `/seller/tai-chinh`, `/seller/chat`), chrome vô sắc với nút chính `#1f3038`, 1 màu dữ liệu `#0d7480` trên biểu đồ tuyến, ma trận biến thể SKU và sổ cái ghi kép đối soát khớp tuyệt đối (`Có − Nợ = Khả dụng + Chờ đối soát`).
+  - **Admin Portal `(admin)` — `Framed sheet` (seed `54610117`, shell `Tinted frame, white sheet`):** 6 route (`/admin`, `/admin/gian-hang`, `/admin/cau-hinh`, `/admin/khieu-nai`, `/admin/doi-soat`, `/admin/audit-log`), khung L-frame `--surface` + tờ trắng bo `16px` không shadow, làm nổi bật lô COD lệch `−149.000₫`, thao tác duyệt gian hàng/cấu hình/phân xử khiếu nại/đối soát ghi trực tiếp vào nhật ký kiểm toán.
+  - **Trạng thái & bố cục điện thoại:** Mọi route có trạng thái `loading`, `empty`, `error` (kiểm thử trực tiếp qua `?state=loading|empty|error` và trạng thái lọc/giỏ trống thật) cùng bố cục riêng ở `390px`.
+
+---
+
+### 2. Hình ảnh & Media ([media-manifest.json](file:///home/dev/Documents/Nexus_Ecom/web/public/media-manifest.json))
+
+- **18 ảnh sản phẩm tự sinh** trong `web/public/products/*.png` (`896×1200`, nền `#ecf0f2`, ánh sáng phẳng nhất quán, không logo thương hiệu ngoài): áo thun (5), polo (3), quần short (3), quần jogger (2), combo đồ lót (2), combo tất (2), áo khoác gió (1).
+- **6 ảnh không khí & 1 video lặp tắt tiếng** trong `web/public/atmosphere/` (tải nội bộ, hiển thị đầy đủ tác giả, nguồn và giấy phép `CC BY 2.0`, `CC0`, `CC BY-SA 4.0`, `Unsplash License` ngay trên trang chủ `/` và liệt kê đầy đủ trong mục 4 của [DESIGN_REPORT.md](file:///home/dev/Documents/Nexus_Ecom/web/DESIGN_REPORT.md)).
+
+---
+
+### 3. Kết quả Gate trên bản build cuối
+
+| Hạng mục | Kết quả |
+| --- | --- |
+| `cd web && npm run lint` (ESLint) | **PASS** — 0 error, 0 warning |
+| `cd web && npm run format:check` (Prettier) | **PASS** — 100% sạch |
+| `cd web && node scripts/check-data.mjs` | **PASS** — 8/8 bài kiểm tra toán học & dữ liệu |
+| `cd web && npm run build` | **PASS** — Next.js 15.5.29, 26 trang tĩnh + 5 dynamic route, 0 lỗi TypeScript |
+| `lint.mjs web/src` (114 tệp) & `lint.mjs --app` (44 tệp) | **PASS** — **`0 FAIL, 0 WARN`** |
+| HTTP 200 smoke test (production `next start`, đã tắt sạch sau khi đo) | **PASS** — 34/34 URL (`28` route + `6` mẫu `?state=`) trả `200 OK` |
+| `inspect.mjs` thực tế ở `1440 / 768 / 390` trên **16 route** | **16/16 route đạt `0 FAIL`**, `0px` tràn ngang (48/48 lượt viewport), 100% Work Sans. **8/16 route đạt `0 FAIL, 0 WARN`** (gồm `/`, `/seller/san-pham`, `/seller/don-hang`, `/seller/tai-chinh`, `/admin`, `/admin/gian-hang`, `/admin/cau-hinh`, `/admin/doi-soat`). |
+| Critique vòng 3 trên ảnh chụp trang chủ `/` | `design 8.4 · usability 8.5 · creativity 8.2 · content 8.3 → overall 8.4` (`caps: none`). |
+
+---
+
+### 4. Nội dung mẫu & phần chưa làm (ngoài phạm vi giai đoạn UI mock)
+
+- **Nội dung mẫu cần thay trước khi vận hành:** Toàn bộ 18 sản phẩm/SKU, 4 gian hàng xưởng dệt, 8 mã voucher, 4 khung Flash sale, 6 đơn hàng, sổ cái seller, dữ liệu duyệt gian hàng/khiếu nại/đối soát admin, tài khoản demo và biểu cước 34 tỉnh đã được kê chi tiết tại mục 5 của [DESIGN_REPORT.md](file:///home/dev/Documents/Nexus_Ecom/web/DESIGN_REPORT.md).
+- **Chưa triển khai (đúng phạm vi UI mock):** Chưa kết nối 11 microservice backend Go/Rust, DB riêng từng service, Saga/Outbox/DLQ, xác thực JWT/argon2id/RBAC thật, cổng VietQR/webhook HMAC thật, Redis Lua cho Flash sale, WebSocket chat, LLM backend và Dockerfile multi-stage cho `web/`.

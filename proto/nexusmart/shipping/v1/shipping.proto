@@ -1,0 +1,166 @@
+syntax = "proto3";
+
+package nexusmart.shipping.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/nexusmart/core/gen/go/nexusmart/shipping/v1;shippingv1";
+
+enum ShipmentStatus {
+  SHIPMENT_STATUS_UNSPECIFIED = 0;
+  SHIPMENT_STATUS_CREATED = 1;
+  SHIPMENT_STATUS_PICKING = 2;
+  SHIPMENT_STATUS_DELIVERING = 3;
+  SHIPMENT_STATUS_DELIVERED = 4;
+  SHIPMENT_STATUS_FAILED = 5;
+  SHIPMENT_STATUS_RETURNING = 6;
+  SHIPMENT_STATUS_RETURNED = 7;
+  SHIPMENT_STATUS_CANCELLED = 8;
+}
+
+message Province {
+  string code = 1;
+  string name = 2;
+}
+
+message Ward {
+  string code = 1;
+  string province_code = 2;
+  string name = 3;
+}
+
+message CarrierQuote {
+  string carrier_code = 1;
+  string carrier_name = 2;
+  string service_code = 3;
+  string service_name = 4;
+  int64 fee_vnd = 5;
+  int32 estimated_days = 6;
+  bool is_fallback = 7;
+}
+
+message ShipmentAddress {
+  string name = 1;
+  string phone = 2;
+  string province_code = 3;
+  string ward_code = 4;
+  string street_address = 5;
+}
+
+message Shipment {
+  string shipment_id = 1;
+  string order_id = 2;
+  string shop_id = 3;
+  string carrier_code = 4;
+  string service_code = 5;
+  string tracking_code = 6;
+  string label_url = 7;
+  ShipmentStatus status = 8;
+  int64 fee_vnd = 9;
+  int64 cod_amount_vnd = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+}
+
+message ShipmentEvent {
+  string id = 1;
+  string shipment_id = 2;
+  ShipmentStatus status = 3;
+  string raw_status = 4;
+  string description = 5;
+  google.protobuf.Timestamp occurred_at = 6;
+}
+
+message ListProvincesRequest {
+  string query = 1;
+}
+
+message ListProvincesResponse {
+  repeated Province provinces = 1;
+}
+
+message ListWardsRequest {
+  string province_code = 1;
+  string query = 2;
+}
+
+message ListWardsResponse {
+  repeated Ward wards = 1;
+}
+
+message MapLegacyAddressRequest {
+  string legacy_province = 1;
+  string legacy_district = 2;
+  string legacy_ward = 3;
+}
+
+message MapLegacyAddressResponse {
+  bool found = 1;
+  string province_code = 2;
+  string province_name = 3;
+  string ward_code = 4;
+  string ward_name = 5;
+  string legacy_province_code = 6;
+  string legacy_district_code = 7;
+  string legacy_ward_code = 8;
+}
+
+message CalculateFeeRequest {
+  string shop_id = 1;
+  string from_province_code = 2;
+  string from_ward_code = 3;
+  string to_province_code = 4;
+  string to_ward_code = 5;
+  int32 weight_grams = 6;
+  int64 cod_amount_vnd = 7;
+}
+
+message CalculateFeeResponse {
+  repeated CarrierQuote quotes = 1;
+}
+
+message CreateShipmentRequest {
+  string order_id = 1;
+  string shop_id = 2;
+  string carrier_code = 3;
+  string service_code = 4;
+  int64 cod_amount_vnd = 5;
+  int32 weight_grams = 6;
+  ShipmentAddress from_address = 7;
+  ShipmentAddress to_address = 8;
+  string items_summary = 9;
+}
+
+message CreateShipmentResponse {
+  Shipment shipment = 1;
+  bool already_existed = 2;
+}
+
+message CancelShipmentRequest {
+  string order_id = 1;
+  string reason = 2;
+}
+
+message CancelShipmentResponse {
+  Shipment shipment = 1;
+}
+
+message GetShipmentRequest {
+  string order_id = 1;
+  string tracking_code = 2;
+}
+
+message GetShipmentResponse {
+  Shipment shipment = 1;
+  repeated ShipmentEvent events = 2;
+}
+
+service ShippingService {
+  rpc ListProvinces(ListProvincesRequest) returns (ListProvincesResponse);
+  rpc ListWards(ListWardsRequest) returns (ListWardsResponse);
+  rpc MapLegacyAddress(MapLegacyAddressRequest) returns (MapLegacyAddressResponse);
+  rpc CalculateFee(CalculateFeeRequest) returns (CalculateFeeResponse);
+  rpc CreateShipment(CreateShipmentRequest) returns (CreateShipmentResponse);
+  rpc CancelShipment(CancelShipmentRequest) returns (CancelShipmentResponse);
+  rpc GetShipment(GetShipmentRequest) returns (GetShipmentResponse);
+}

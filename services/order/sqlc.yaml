@@ -1,0 +1,46 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "queries/"
+    schema: "migrations/"
+    gen:
+      go:
+        package: "db"
+        out: "internal/db"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_empty_slices: true
+        rename:
+          qr_url: "QRURL"
+          qr_code: "QRCode"
+          label_url: "LabelURL"
+          response_snapshot_json: "ResponseSnapshotJSON"
+          shipping_address_json: "ShippingAddressJSON"
+          evidence_urls_json: "EvidenceURLsJSON"
+          payload_json: "PayloadJSON"
+          sku_id: "SKUID"
+          sku_name: "SKUName"
+          commission_rate_bps: "CommissionRateBPS"
+          subtotal_vnd: "SubtotalVND"
+          flash_sale_discount_vnd: "FlashSaleDiscountVND"
+          shop_voucher_discount_vnd: "ShopVoucherDiscountVND"
+          platform_voucher_discount_vnd: "PlatformVoucherDiscountVND"
+          freeship_discount_vnd: "FreeshipDiscountVND"
+          coins_discount_vnd: "CoinsDiscountVND"
+          shipping_fee_vnd: "ShippingFeeVND"
+          commission_vnd: "CommissionVND"
+          total_payable_vnd: "TotalPayableVND"
+          unit_price_vnd: "UnitPriceVND"
+          effective_unit_price_vnd: "EffectiveUnitPriceVND"
+          line_total_vnd: "LineTotalVND"
+        overrides:
+          - db_type: "timestamptz"
+            go_type:
+              import: "time"
+              type: "Time"
+          - db_type: "timestamptz"
+            nullable: true
+            go_type:
+              import: "time"
+              type: "Time"
+              pointer: true

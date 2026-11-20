@@ -1,0 +1,321 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(31, 48, 56, 0.48);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.panel {
+  width: 100%;
+  max-width: 780px;
+  max-height: 90dvh;
+  overflow-y: auto;
+  background: var(--card);
+  outline: 1px solid var(--border);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.headerText {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.title {
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.25;
+  color: var(--ink);
+}
+
+.subtitle {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.closeBtn {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  background: var(--surface);
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color var(--t-hover) ease;
+}
+
+.closeBtn:hover {
+  background: var(--active);
+}
+
+.tabRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tabBtn {
+  min-height: 40px;
+  padding: 0 16px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.tabBtn:hover {
+  background: var(--active);
+}
+
+.tabBtnActive {
+  background: var(--ink);
+  color: var(--accent-ink);
+}
+
+.tabBtnActive:hover {
+  background: var(--ink);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.shopNote {
+  background: var(--surface);
+  padding: 12px 14px;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.tableWrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+table.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+table.table th {
+  padding: 10px 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+table.table td {
+  padding: 10px 8px;
+  color: var(--ink);
+  border-bottom: 1px solid var(--rule);
+}
+
+.rowActive td {
+  background: var(--surface);
+  font-weight: 500;
+}
+
+.sizePickCell {
+  min-width: 36px;
+  min-height: 28px;
+  padding: 2px 8px;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.sizePickCell:hover {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.chartFooter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.footnote {
+  font-size: 14px;
+  color: var(--muted);
+  max-width: 44ch;
+}
+
+.finderGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.controlsCol {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fieldTop {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.valueNum {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.slider {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.choiceRow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.choiceBtn {
+  min-height: 38px;
+  padding: 6px 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.choiceBtn:hover {
+  background: var(--active);
+}
+
+.choiceBtnActive {
+  background: var(--ink);
+  color: var(--accent-ink);
+}
+
+.hintText {
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.resultCol {
+  background: var(--surface);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.resultHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.resultLabel {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.resultConfidence {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.resultSize {
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  color: var(--ink);
+}
+
+.resultReason {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.resultSpec {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.resultNote {
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.resultActions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+@media (max-width: 720px) {
+  .panel {
+    padding: 18px;
+  }
+
+  .finderGrid {
+    grid-template-columns: 1fr;
+  }
+}

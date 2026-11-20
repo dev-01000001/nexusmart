@@ -1,0 +1,439 @@
+{
+  "products": [
+    {
+      "filename": "ao-thun-cotton-trang.png",
+      "path": "/products/ao-thun-cotton-trang.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Áo thun cổ tròn cotton dày màu trắng trên nền xám nhạt"
+    },
+    {
+      "filename": "ao-thun-cotton-xam-da.png",
+      "path": "/products/ao-thun-cotton-xam-da.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Áo thun cổ tròn cotton màu xám đá trên nền xám nhạt"
+    },
+    {
+      "filename": "ao-thun-cotton-xanh-than.png",
+      "path": "/products/ao-thun-cotton-xanh-than.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Áo thun cổ tròn cotton màu xanh than trên nền xám nhạt"
+    },
+    {
+      "filename": "ao-thun-dryfit-co-vit.png",
+      "path": "/products/ao-thun-dryfit-co-vit.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Áo thun thể thao dry-fit thoáng khí màu xanh cổ vịt trên nền xám nhạt"
+    },
+    {
+      "filename": "ao-thun-oversize-than-chi.png",
+      "path": "/products/ao-thun-oversize-than-chi.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Áo thun dáng rộng oversize cotton dày màu xám than chì trên nền xám nhạt"
+    },
+    {
+      "filename": "ao-polo-pique-kem.png",
+      "path": "/products/ao-polo-pique-kem.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Áo polo vải pique hai nút màu trắng kem trên nền xám nhạt"
+    },
+    {
+      "filename": "ao-polo-pique-xanh-da.png",
+      "path": "/products/ao-polo-pique-xanh-da.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Áo polo vải pique cổ bo dệt màu xanh đá trên nền xám nhạt"
+    },
+    {
+      "filename": "ao-polo-det-kim-den.png",
+      "path": "/products/ao-polo-det-kim-den.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Áo polo dệt kim mịn cổ mở màu đen lì trên nền xám nhạt"
+    },
+    {
+      "filename": "quan-short-daily-be.png",
+      "path": "/products/quan-short-daily-be.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Quần short cotton mặc hằng ngày lưng thun dây rút màu be cát trên nền xám nhạt"
+    },
+    {
+      "filename": "quan-short-run-xam-dam.png",
+      "path": "/products/quan-short-run-xam-dam.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Quần short chạy bộ siêu nhẹ xẻ tà màu xám đậm trên nền xám nhạt"
+    },
+    {
+      "filename": "quan-short-linen-xam-da.png",
+      "path": "/products/quan-short-linen-xam-da.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Quần short vải pha linen dáng thoải mái màu xám đá trên nền xám nhạt"
+    },
+    {
+      "filename": "quan-jogger-terry-xam.png",
+      "path": "/products/quan-jogger-terry-xam.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Quần jogger nỉ da cá bo gấu màu xám tiêu trên nền xám nhạt"
+    },
+    {
+      "filename": "quan-jogger-tech-den.png",
+      "path": "/products/quan-jogger-tech-den.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Quần jogger vải kỹ thuật co giãn túi khóa kéo màu đen than trên nền xám nhạt"
+    },
+    {
+      "filename": "do-lot-boxer-modal-3.png",
+      "path": "/products/do-lot-boxer-modal-3.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Bộ 3 quần lót boxer vải modal màu xám nhạt, xám chì và đen gấp gọn trên nền xám nhạt"
+    },
+    {
+      "filename": "do-lot-brief-tre-3.png",
+      "path": "/products/do-lot-brief-tre-3.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Bộ 3 quần lót brief sợi tre tông xanh đá và xám gấp gọn trên nền xám nhạt"
+    },
+    {
+      "filename": "tat-cotton-co-trung-5.png",
+      "path": "/products/tat-cotton-co-trung-5.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Bộ 5 đôi tất cotton gân cổ trung từ trắng đến đen xếp phẳng trên nền xám nhạt"
+    },
+    {
+      "filename": "tat-the-thao-co-thap-4.png",
+      "path": "/products/tat-the-thao-co-thap-4.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Bộ 4 đôi tất thể thao cổ thấp màu trắng và xám băng xếp phẳng trên nền xám nhạt"
+    },
+    {
+      "filename": "ao-khoac-gio-xam-tro.png",
+      "path": "/products/ao-khoac-gio-xam-tro.png",
+      "width": 896,
+      "height": 1200,
+      "source": "generated",
+      "alt": "Áo khoác gió nhẹ khóa kéo túi ẩn màu xám tro trên nền xám nhạt"
+    }
+  ],
+  "models": [
+    {
+      "filename": "model-ao-thun-trang.jpg",
+      "path": "/models/model-ao-thun-trang.jpg",
+      "productId": "prod-at-trang",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nam Việt Nam mặc áo thun Cotton Compact 220gsm màu trắng tinh cổ tròn phối quần tây xám đậm"
+    },
+    {
+      "filename": "model-ao-thun-xam-da.jpg",
+      "path": "/models/model-ao-thun-xam-da.jpg",
+      "productId": "prod-at-xamda",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nữ Việt Nam mặc áo thun Cotton Compact 220gsm màu xám đá giữa sân gạch kiến trúc sáng"
+    },
+    {
+      "filename": "model-ao-thun-xanh-than.jpg",
+      "path": "/models/model-ao-thun-xanh-than.jpg",
+      "productId": "prod-at-xanhthan",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nam Việt Nam mặc áo thun Cotton Compact 220gsm màu xanh than phối quần kaki be trên phố"
+    },
+    {
+      "filename": "model-ao-thun-dryfit.jpg",
+      "path": "/models/model-ao-thun-dryfit.jpg",
+      "productId": "prod-at-dryfit",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nam Việt Nam mặc áo thun thể thao Dry-Fit màu xanh cổ vịt thoáng khí ven hồ buổi sáng"
+    },
+    {
+      "filename": "model-ao-thun-oversize.jpg",
+      "path": "/models/model-ao-thun-oversize.jpg",
+      "productId": "prod-at-oversize",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nữ Việt Nam mặc áo thun Oversize 260gsm màu than chì dáng rộng vai xuôi phối quần short sáng"
+    },
+    {
+      "filename": "model-polo-kem.jpg",
+      "path": "/models/model-polo-kem.jpg",
+      "productId": "prod-polo-kem",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nam Việt Nam mặc áo Polo Pique Cotton màu kem nhạt tại không gian văn phòng hiện đại"
+    },
+    {
+      "filename": "model-polo-xanh-da.jpg",
+      "path": "/models/model-polo-xanh-da.jpg",
+      "productId": "prod-polo-xanhda",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nam Việt Nam mặc áo Polo Pique Cotton màu xanh đá đứng cạnh cửa kính sáng"
+    },
+    {
+      "filename": "model-polo-det-kim-den.jpg",
+      "path": "/models/model-polo-det-kim-den.jpg",
+      "productId": "prod-polo-detkim",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nữ Việt Nam mặc áo Polo dệt kim mịn cổ mở màu đen than phối quần tây xám nhạt"
+    },
+    {
+      "filename": "model-short-daily-be.jpg",
+      "path": "/models/model-short-daily-be.jpg",
+      "productId": "prod-short-daily",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nam Việt Nam mặc quần Short Daily Cotton 7 inch màu be cát phối áo thun trắng"
+    },
+    {
+      "filename": "model-short-run-xam.jpg",
+      "path": "/models/model-short-run-xam.jpg",
+      "productId": "prod-short-run",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nam chạy bộ buổi sáng mặc quần Short chạy bộ 5 inch màu xám đậm xẻ tà"
+    },
+    {
+      "filename": "model-short-linen-xam.jpg",
+      "path": "/models/model-short-linen-xam.jpg",
+      "productId": "prod-short-linen",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nữ Việt Nam mặc quần Short Linen pha Cotton màu xám đá dây rút trên hiên đón nắng"
+    },
+    {
+      "filename": "model-jogger-terry-xam.jpg",
+      "path": "/models/model-jogger-terry-xam.jpg",
+      "productId": "prod-jogger-terry",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nam Việt Nam mặc quần Jogger nỉ chân cua 320gsm màu xám muối tiêu tại phòng khách sáng"
+    },
+    {
+      "filename": "model-jogger-tech-den.jpg",
+      "path": "/models/model-jogger-tech-den.jpg",
+      "productId": "prod-jogger-tech",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nam Việt Nam sải bước ngoài phố mặc quần Jogger co giãn Tech màu đen than dáng gọn"
+    },
+    {
+      "filename": "model-mac-nha-modal.jpg",
+      "path": "/models/model-mac-nha-modal.jpg",
+      "productId": "prod-dolot-boxer",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nam Việt Nam mặc đồ mặc nhà gọn gàng trong phòng ngủ sáng bên hộp combo 3 quần lót boxer sợi Modal"
+    },
+    {
+      "filename": "model-mac-nha-bamboo.jpg",
+      "path": "/models/model-mac-nha-bamboo.jpg",
+      "productId": "prod-dolot-brief",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Bộ 3 quần lót brief sợi tre màu xanh đá, xám nhạt và xám đậm gấp gọn cạnh hộp tối giản và mẫu vải sợi tre"
+    },
+    {
+      "filename": "model-tat-co-trung.jpg",
+      "path": "/models/model-tat-co-trung.jpg",
+      "productId": "prod-tat-cotrung",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Cận cảnh đôi tất cotton gân cổ trung màu xám đá phối giày sneaker trắng trên bậc bê tông sáng"
+    },
+    {
+      "filename": "model-tat-the-thao.jpg",
+      "path": "/models/model-tat-the-thao.jpg",
+      "productId": "prod-tat-cothap",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Cận cảnh đôi tất thể thao cổ thấp màu trắng xám phối giày chạy bộ trên đường chạy buổi sáng"
+    },
+    {
+      "filename": "model-ao-khoac-gio.jpg",
+      "path": "/models/model-ao-khoac-gio.jpg",
+      "productId": "prod-aokhoac-gio",
+      "width": 896,
+      "height": 1200,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nam Việt Nam khoác áo gió nhẹ gấp gọn màu xám tro ngoài áo thun trắng trên phố"
+    }
+  ],
+  "banners": [
+    {
+      "filename": "campaign-everyday.jpg",
+      "path": "/banners/campaign-everyday.jpg",
+      "role": "campaign-everyday",
+      "width": 1365,
+      "height": 768,
+      "source": "generated-original-nexusmart",
+      "alt": "Hai người mẫu nam nữ Việt Nam dạo phố nắng sáng trong trang phục áo thun cotton cơ bản trắng và xám đá"
+    },
+    {
+      "filename": "campaign-office.jpg",
+      "path": "/banners/campaign-office.jpg",
+      "role": "campaign-office",
+      "width": 1365,
+      "height": 768,
+      "source": "generated-original-nexusmart",
+      "alt": "Người mẫu nam mặc áo polo pique kem và người mẫu nữ mặc polo dệt kim đen trao đổi công việc tại văn phòng sáng"
+    },
+    {
+      "filename": "campaign-running.jpg",
+      "path": "/banners/campaign-running.jpg",
+      "role": "campaign-running",
+      "width": 1365,
+      "height": 768,
+      "source": "generated-original-nexusmart",
+      "alt": "Hai vận động viên nam nữ Việt Nam chạy bộ sáng sớm ven sông trong trang phục áo Dry-Fit xanh cổ vịt và quần short chạy bộ"
+    },
+    {
+      "filename": "campaign-green-fiber.jpg",
+      "path": "/banners/campaign-green-fiber.jpg",
+      "role": "campaign-green-fiber",
+      "width": 1365,
+      "height": 768,
+      "source": "generated-original-nexusmart",
+      "alt": "Quả bông cotton tự nhiên, cuộn chỉ thô và các cuộn vải lanh bông nhuộm màu trung tính trên bàn xưởng sáng nắng"
+    },
+    {
+      "filename": "fabric-closeup.jpg",
+      "path": "/banners/fabric-closeup.jpg",
+      "role": "fabric-closeup",
+      "width": 1365,
+      "height": 768,
+      "source": "generated-original-nexusmart",
+      "alt": "Cận cảnh cấu trúc sợi dệt vải cotton chải kỹ 220gsm trắng, vải pique mắt chim xanh đá và vải dệt kim than chì"
+    },
+    {
+      "filename": "vietnam-workshop.jpg",
+      "path": "/banners/vietnam-workshop.jpg",
+      "role": "vietnam-workshop",
+      "width": 1365,
+      "height": 768,
+      "source": "generated-original-nexusmart",
+      "alt": "Không gian xưởng dệt may Việt Nam rộng thoáng đầy ánh sáng tự nhiên với hai thợ dệt kiểm tra chất lượng cuộn vải cotton"
+    }
+  ],
+  "atmosphere": [
+    {
+      "filename": "cotton-twill-slate.jpg",
+      "path": "/atmosphere/cotton-twill-slate.jpg",
+      "width": 1920,
+      "height": 1280,
+      "role": "gallery-feature",
+      "title": "Blue Cotton Fabric Texture Free Creative Commons (6962342861)",
+      "creator": "Pink Sherbet Photography from Utah, USA",
+      "licence": "CC BY 2.0",
+      "licenceUrl": "https://creativecommons.org/licenses/by/2.0/",
+      "sourceUrl": "https://commons.wikimedia.org/w/index.php?curid=40532814",
+      "alt": "Cận cảnh bề mặt vải cotton dệt chéo màu xanh đá sẫm"
+    },
+    {
+      "filename": "cotton-jersey-drape.webp",
+      "path": "/atmosphere/cotton-jersey-drape.webp",
+      "width": 1520,
+      "height": 760,
+      "role": "gallery-texture",
+      "title": "Cotton jersey (Rico Cilliers and colormass via Poly Haven)",
+      "creator": "Rico Cilliers (Processing), colormass (Photography)",
+      "licence": "CC0 1.0",
+      "licenceUrl": "https://creativecommons.org/publicdomain/zero/1.0/deed.en",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:Cotton_jersey_(Rico_Cilliers_and_colormass_via_Poly_Haven).webp",
+      "alt": "Nếp gấp mềm tự nhiên của tấm vải thun cotton jersey màu trung tính"
+    },
+    {
+      "filename": "cotton-jersey-weave.webp",
+      "path": "/atmosphere/cotton-jersey-weave.webp",
+      "width": 1520,
+      "height": 760,
+      "role": "gallery-detail",
+      "title": "Primary flat - Cotton Jersey (Rico Cilliers and colormass via Poly Haven)",
+      "creator": "Rico Cilliers (Processing), colormass (Photography)",
+      "licence": "CC0 1.0",
+      "licenceUrl": "https://creativecommons.org/publicdomain/zero/1.0/deed.en",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:Primary_flat_-_Cotton_Jersey_(Rico_Cilliers_and_colormass_via_Poly_Haven).webp",
+      "alt": "Bề mặt sợi dệt phẳng cận cảnh của vải cotton jersey"
+    },
+    {
+      "filename": "cotton-boll-harvest.jpg",
+      "path": "/atmosphere/cotton-boll-harvest.jpg",
+      "width": 1920,
+      "height": 1280,
+      "role": "gallery-origin",
+      "title": "Cotton boll nearly ready for harvest",
+      "creator": "Michael Bass-Deschenes",
+      "licence": "CC BY 2.0",
+      "licenceUrl": "https://creativecommons.org/licenses/by/2.0/",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:Cotton_boll_nearly_ready_for_harvest.jpg",
+      "alt": "Quả bông cotton tự nhiên nở trắng trước khi thu hoạch"
+    }
+  ],
+  "video": {
+    "path": "/atmosphere/jacquard-loom-loop.webm",
+    "poster": "/atmosphere/jacquard-loom-poster.jpg",
+    "width": 854,
+    "height": 480,
+    "posterWidth": 1920,
+    "posterHeight": 1080,
+    "durationSec": 6.64,
+    "mimeType": "video/webm",
+    "title": "Métier à tisser Jacquard 02",
+    "creator": "Bastenbas",
+    "licence": "CC BY-SA 4.0",
+    "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:M%C3%A9tier_%C3%A0_tisser_Jacquard_02.webm",
+    "alt": "Cận cảnh khung dệt Jacquard đang đan sợi vải nhịp nhàng"
+  },
+  "creditsLine": "Ảnh sản phẩm, người mẫu, chiến dịch và xưởng dệt là ảnh gốc tạo riêng cho NexusMart. Tư liệu bề mặt vải & video khung dệt: “Blue Cotton Fabric Texture” của Pink Sherbet Photography (CC BY 2.0), “Cotton boll nearly ready for harvest” của Michael Bass-Deschenes (CC BY 2.0), “Cotton jersey” của Rico Cilliers & colormass via Poly Haven (CC0), “Métier à tisser Jacquard 02” của Bastenbas (CC BY-SA 4.0) qua Wikimedia Commons."
+}

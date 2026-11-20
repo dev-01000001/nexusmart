@@ -1,0 +1,320 @@
+/* Seller Interaction & Content (/seller/tuong-tac) — Achromatic ledger */
+
+.fitBarTrack {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  gap: 2px;
+  margin-top: 6px;
+}
+
+.fitSegCorrect {
+  background: var(--chart-1);
+  border-radius: 2px;
+}
+
+.fitSegTight {
+  background: var(--ink);
+  border-radius: 2px;
+}
+
+.fitSegLoose {
+  background: var(--chart-muted);
+  border-radius: 2px;
+}
+
+.fitLegend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.fitLegendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legendDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.reviewList {
+  display: flex;
+  flex-direction: column;
+}
+
+.reviewItem {
+  padding: 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.reviewItem + .reviewItem {
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: review list item divider */
+}
+
+.reviewTop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.reviewProd {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.reviewThumb {
+  width: 40px;
+  height: 53px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--surface);
+  flex: none;
+}
+
+.reviewTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.reviewMeta {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.reviewBadges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex: none;
+}
+
+.reviewBody {
+  font-size: 14px;
+  line-height: 21px;
+  color: var(--ink);
+}
+
+.replyBox {
+  padding: 10px 14px;
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  border: 1px solid var(--border); /* taste-skill-ignore: published seller reply panel */
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.replyHead {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.replyText {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--muted);
+}
+
+.composerRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.composerInput {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--control); /* taste-skill-ignore: public reply composer input */
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.inlineForm {
+  padding: 16px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  border: 1px solid var(--border); /* taste-skill-ignore: inline creation form well */
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.formGrid2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+}
+
+.formGrid3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 14px;
+}
+
+.formActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.skuChipGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.skuChip {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--control); /* taste-skill-ignore: lookbook SKU tag selector */
+  background: var(--card);
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.skuChipActive {
+  background: var(--primary-ink-bg);
+  border-color: var(--primary-ink-bg);
+  color: var(--primary-ink-fg);
+  font-weight: 500;
+}
+
+.taggedSkuRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.taggedSkuPill {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.rankBarTrack {
+  width: 100%;
+  height: 3px;
+  background: var(--surface);
+  border-radius: 2px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.rankBarFillTop {
+  height: 100%;
+  background: var(--chart-1);
+}
+
+.rankBarFill {
+  height: 100%;
+  background: var(--muted);
+}
+
+.actionBtnSm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--ink); /* taste-skill-ignore: inline table action button */
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.actionBtnSm:hover {
+  background: var(--surface);
+}
+
+.waitingGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: var(--gap);
+  align-items: start;
+}
+
+.wishRow {
+  padding: 11px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wishRow + .wishRow {
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: wishlist ranking row divider */
+}
+
+.wishTop {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.wishCount {
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+@media (max-width: 1020px) {
+  .waitingGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .reviewTop {
+    flex-direction: column;
+  }
+
+  .composerRow {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .formGrid2,
+  .formGrid3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

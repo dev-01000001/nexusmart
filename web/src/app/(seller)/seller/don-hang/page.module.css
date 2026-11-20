@@ -1,0 +1,105 @@
+/* Seller Orders List (/seller/don-hang) */
+
+.actionGroup {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.rowAdvanceBtn {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--ink); /* taste-skill-ignore: outlined ink row transition button */
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color var(--t-hover) ease;
+}
+
+.rowAdvanceBtn:hover {
+  background: var(--surface);
+}
+
+.rowDetailLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--control); /* taste-skill-ignore: secondary order detail button */
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.rowDetailLink:hover {
+  background: var(--surface);
+}
+
+.orderCodeCell {
+  white-space: nowrap;
+}
+
+.itemSummaryCell {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobileOrderCode {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.mobileOrderTotal {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mobileOrderSummary {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 18px;
+}
+
+.signalList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.signalTag {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.signalTagWarn {
+  background: var(--pill-warning-bg);
+  color: var(--pill-warning-ink);
+}
+
+.queueMeta {
+  font-size: 13px;
+  color: var(--muted);
+}

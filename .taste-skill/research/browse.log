@@ -1,0 +1,35 @@
+**Bị chặn ghi tệp:** Phiên làm việc hiện tại chỉ có các công cụ chỉ-đọc và tìm kiếm (`read_file`, `search_web`, `call_mcp_tool` — không có công cụ ghi tệp hoặc shell), nên tôi không thể tự tạo tệp `.taste-skill/research/browse.md` trên đĩa. Dưới đây là nội dung hoàn chỉnh (~680 từ, 17 tính năng) sẵn sàng lưu vào `.taste-skill/research/browse.md`:
+
+```markdown
+# Nghiên cứu tính năng duyệt & khám phá (`browse`)
+
+| Tính năng | Người dùng làm được gì (hành vi, trạng thái) | Bằng chứng (URL) | Observed / Inferred | Áp dụng cho sàn đa gian hàng (NexusMart) |
+| --- | --- | --- | --- | --- |
+| Điều hướng toàn site | Bỏ qua đến nội dung, chỉnh cookie, chuyển nhánh giới tính/nhu cầu, mở FAQ. | https://www.coolmate.me/ ; https://www.coolmate.me/page/thu-vien-hoi-dap | observed | **Admin**: cấu hình thanh thông báo, menu cấp 1, chính sách chung. **Seller**: giữ header sàn, chỉ quản lý menu nội bộ gian hàng. |
+| Mega-menu theo nhu cầu | Rê/chạm mở cột loại đồ, hoàn cảnh mặc, môn thể thao, BST nổi bật. | https://www.coolmate.me/page/changelog ; tóm tắt nguồn azweb.com.vn | inferred | **Admin**: quản trị cây mega-menu và slot banner. **Seller Center**: đăng ký suất quảng bá BST. |
+| Danh mục & BST | Duyệt cây 3 cấp; xem BST mùa/thể thao/chất liệu/collab; chọn tab nhanh danh mục con/chất liệu kèm mô tả lợi ích. | https://www.coolmate.me/collection/shop-all ; https://www.coolmate.me/collection/quan-lot-nam-vai-cafe | observed | **Admin**: chuẩn hoá taxonomy 3 cấp, từ điển chất liệu. **Seller Center**: gắn SP vào danh mục sàn, tạo BST riêng của shop. |
+| Các khối trang chủ | Hero carousel; block `Mới về`/`Bán chạy` lọc tab Nam/Nữ/Tất cả; banner ngành hàng, cộng đồng, lưới BST. | https://www.coolmate.me/ | observed | **Admin**: CMS kéo-thả khối trang chủ, luật chọn SP đa shop theo đánh giá, tồn kho, uy tín. |
+| Tìm kiếm gợi ý & không dấu | Gõ ký tự hiện gợi ý nhanh; truy vấn không dấu (`ao thun`) trả đúng SP có dấu. | https://www.coolmate.me/spotlight?search=ao+thun ; https://www.coolmate.me/page/changelog | observed | **Sàn**: chỉ mục bỏ dấu + đồng nghĩa (áo phông/áo thun) cho toàn sàn và từng shop; tự đồng bộ SKU đang bán. |
+| Từ khoá xu hướng | Chạm ô tìm kiếm thấy sẵn từ khoá hot theo mùa để chọn 1 chạm. | Tóm tắt tìm kiếm web về coolmate.me | inferred | **Admin**: tổng hợp top truy vấn, ghim từ khoá chiến dịch, lọc từ vi phạm. |
+| Kết quả tìm kiếm rỗng | Báo không có SP khớp kèm nút quay lại mua sắm. | https://www.coolmate.me/spotlight?search=khongcodauxyz | observed | **Sàn**: gợi ý sửa chính tả, nút xoá lọc và mở rộng ra toàn sàn khi tìm trong shop trống. |
+| Bộ lọc & chip size nhanh | Chip size ngang (`XS–4XL`, `29–33`); sidebar bật/ẩn 12+ tiêu chí (giới tính, 17 màu, 4 mức giá, chất liệu, form, hoàn cảnh, thể thao, tính năng vải, hoạ tiết) + đếm kết quả. | https://www.coolmate.me/collection/shop-all ; https://www.coolmate.me/collection/ao-thun-nam | observed | **Admin**: chuẩn hoá thuộc tính bắt buộc theo ngành. **Seller Center**: nhập đủ chất liệu, form, màu chuẩn, size; sàn thêm lọc `Gian hàng`, `Nơi giao`. |
+| Sắp xếp danh sách | Đổi thứ tự qua `Phân loại`/`Sắp xếp theo` (bán chạy, mới nhất, giá tăng/giảm). | https://www.coolmate.me/collection/do-the-thao ; tóm tắt web | observed (nút) / inferred (tuỳ chọn) | **Admin**: công thức xếp hạng đa shop (lượt bán, sao, giao đúng hẹn) chống spam giá ảo. |
+| Swatch màu trên thẻ | Bấm chấm màu đổi ảnh SP ngay tại lưới; hiện `+N` khi vượt số màu hiển thị. | https://www.coolmate.me/page/quan-ao-chay-bo ; https://www.coolmate.me/collection/ao-nam | observed | **Seller Center**: bắt buộc ảnh đại diện riêng và mã swatch chuẩn cho từng biến thể màu. |
+| Quick-add & rẽ nhánh combo | `Thêm nhanh vào giỏ hàng` chọn size 1 chạm cho SP đơn/pack; combo nhiều món tự đổi sang `Xem chi tiết`. | https://www.coolmate.me/collection/ao-nam ; https://www.coolmate.me/collection/ao-thun-nam | observed | **Seller Center**: gắn loại SP (`đơn/pack` vs `combo đa size`), đồng bộ tồn kho SKU để làm mờ size hết hàng. |
+| Badge, đánh giá & SLA kho | Nhãn `new`, `Bán chạy`, `preorder`, sao (`4.9`/`5.0`), ngày giao/thời gian xử lý và kho xuất. | https://www.coolmate.me/collection/shop-all ; https://www.coolmate.me/collection/ao-nam | observed | **Sàn**: tự cấp badge theo dữ liệu thật và kho từng shop. **Admin**: duyệt nhãn `Pre-order`, `Gian hàng chính hãng`. |
+| Phân trang Load More | Nút `Xem thêm` tải nối tiếp kèm tiến độ (`19/156`, `21/346`). | https://www.coolmate.me/collection/ao-nam ; https://www.coolmate.me/collection/do-the-thao | observed | **Sàn**: cursor pagination giữ bộ lọc và vị trí cuộn khi quay lại từ PDP. |
+| Blog & thẻ mua nhúng | Đọc bài phối đồ/thể thao theo chuyên mục, có lượt xem; chọn màu/size, `Mua ngay` trong bài. | https://www.coolmate.me/blog ; https://www.coolmate.me/blog/huong-dan-chon-size-quan-ao-coolmate-3256 | observed | **Admin**: CMS blog nhúng SKU đa shop. **Seller Center**: gửi bài lookbook gắn SP của shop chờ duyệt. |
+| Hướng dẫn size & bảo quản | Thanh chiều cao/cân nặng + 3 dáng người gợi ý size áo/quần; mẹo giặt ủi ở blog và cuối trang danh mục. | https://www.coolmate.me/blog/huong-dan-chon-size-quan-ao-coolmate-3256 ; https://www.coolmate.me/blog/danh-muc/thoi-trang/meo-thoi-trang/bao-quan ; https://www.coolmate.me/collection/do-nu | observed | **Seller Center**: nhập bảng size riêng từng dòng và hướng dẫn bảo quản. **Admin**: widget tính size dùng chung đọc bảng size theo shop. |
+| Câu chuyện & minh bạch xưởng | Tab giới thiệu, timeline cột mốc, hồ sơ nhà máy/QC, nhật ký cập nhật web. | https://www.coolmate.me/page/coolmate-story ; https://www.coolmate.me/lp/coolmate-101 ; https://www.coolmate.me/page/nha-may-nobland | observed | **Admin**: trang giới thiệu & chuẩn kiểm định sàn. **Seller Center**: hồ sơ gian hàng chuẩn hoá (xưởng may, nguồn vải, QC). |
+| Landing campaign & CSR | Trang công nghệ vải kèm lưới mua nhanh; trang CSR có tab BST con, thanh tiến độ doanh thu và sao kê. | https://www.coolmate.me/page/quan-ao-chay-bo ; https://www.coolmate.me/collection/care-and-share | observed | **Admin**: page builder chiến dịch đa shop kèm bộ đếm tiến độ. **Seller Center**: cổng đăng ký SKU vào campaign. |
+
+## 5 tính năng quan trọng nhất cho người mua đồ cơ bản
+
+1. **Chip size nhanh + bộ lọc chất liệu, form, hoàn cảnh**: lọc ngay đúng size còn hàng và chọn vải theo nhu cầu mặc hằng ngày/thể thao.
+2. **Swatch màu + Quick-add 1 chạm**: tối ưu mua lặp nhiều màu/pack ngay tại trang danh sách mà không cần mở từng sản phẩm.
+3. **Gợi ý size theo chiều cao, cân nặng, dáng người gắn bảng size từng shop**: xử lý lệch form giữa các gian hàng, giảm mạnh tỷ lệ đổi trả.
+4. **Tìm kiếm không dấu, gợi ý tức thời và từ đồng nghĩa**: khớp thói quen gõ nhanh (`ao thun`) và khác biệt tên gọi vùng miền.
+5. **Danh mục theo nhu cầu/chất liệu kèm hướng dẫn bảo quản**: giúp người mua phổ thông phân biệt nhanh tính năng vải và dùng bền lâu.
+```
+
+`.taste-skill/research/browse.md` (chưa ghi được do thiếu quyền ghi tệp) — 17 tính năng.

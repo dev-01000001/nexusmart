@@ -1,0 +1,115 @@
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  border: 0;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease,
+    border-color var(--t-hover) ease,
+    transform var(--t-press) var(--ease-out);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* Shapes: storefront uses square corners (0px), app screens use tight 6px */
+.shapeSquare {
+  border-radius: var(--radius-shop);
+}
+
+.shapeApp {
+  border-radius: var(--radius-control);
+}
+
+/* Sizes */
+.sm {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.md {
+  min-height: 40px;
+  padding: 0 18px;
+  font-size: 14px;
+}
+
+.lg {
+  min-height: 48px;
+  padding: 0 24px;
+  font-size: 15px;
+}
+
+/* Variants */
+.primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.ink {
+  background: var(--primary-ink-bg);
+  color: var(--primary-ink-fg);
+}
+
+.ink:hover:not(:disabled) {
+  background: #142026;
+}
+
+.secondary {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.secondary:hover:not(:disabled) {
+  background: var(--active);
+}
+
+.outline {
+  background: var(--card);
+  color: var(--ink);
+  border: 1px solid var(--control); /* taste-skill-ignore: form/app outlined button */
+}
+
+.outline:hover:not(:disabled) {
+  background: var(--bg);
+}
+
+.ghost {
+  background: transparent;
+  color: var(--ink);
+}
+
+.ghost:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+.danger {
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+}
+
+.danger:hover:not(:disabled) {
+  background: #f0d6d6;
+}
+
+.fullWidth {
+  width: 100%;
+}

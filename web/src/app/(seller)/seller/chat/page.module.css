@@ -1,0 +1,372 @@
+/* Seller Chat Inbox (/seller/chat) — Two-column desktop split + distinct single-pane phone switcher */
+
+.inboxShell {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  background: var(--card);
+  border: 1px solid var(--border); /* taste-skill-ignore: inbox split container border */
+  border-radius: var(--radius-card);
+  height: clamp(540px, calc(100svh - 178px), 680px);
+  overflow: hidden;
+}
+
+.threadPane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--border); /* taste-skill-ignore: inbox list-to-conversation divider */
+}
+
+.threadPaneHead {
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid var(--rule); /* taste-skill-ignore: inbox search bottom divider */
+}
+
+.threadList {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.threadItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+  width: 100%;
+  transition: background-color var(--t-hover) ease;
+}
+
+.threadItem + .threadItem {
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: inbox thread separator */
+}
+
+/* Selected row takes nav pill's --active fill (app-screens.md §7.8) */
+.threadItemSelected {
+  background: var(--active);
+}
+
+.avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  flex: none;
+}
+
+.threadBody {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.threadTop {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.threadName {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.threadTime {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.threadSnippet {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.threadMetaRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.threadProdTag {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.unreadCount {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--primary-ink-bg);
+  color: var(--primary-ink-fg);
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Conversation pane */
+.chatPane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.chatHeader {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border); /* taste-skill-ignore: chat header rule */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.chatHeaderLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.mobileBackBtn {
+  display: none;
+}
+
+.chatBuyerName {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.chatBuyerSub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Order & product context bar inside conversation */
+.contextStrip {
+  padding: 10px 18px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--rule); /* taste-skill-ignore: customer order context rule */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.contextProduct {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.contextThumb {
+  width: 30px;
+  height: 40px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--surface);
+  flex: none;
+}
+
+.contextProdName {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.contextProdPrice {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.contextOrder {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.contextOrderLink {
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+
+/* Message stream */
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.msgGroup {
+  display: flex;
+  flex-direction: column;
+  max-width: 78%;
+  gap: 4px;
+}
+
+.msgBuyer {
+  align-self: flex-start;
+}
+
+.msgSeller {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.bubble {
+  padding: 10px 14px;
+  border-radius: var(--radius-card);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.bubbleBuyer {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.bubbleSeller {
+  background: var(--primary-ink-bg);
+  color: var(--primary-ink-fg);
+}
+
+.msgMeta {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Quick reply templates & composer */
+.composerArea {
+  padding: 10px 18px 14px;
+  border-top: 1px solid var(--border); /* taste-skill-ignore: chat composer top border */
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.quickReplies {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.quickReplyBtn {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border); /* taste-skill-ignore: quick reply template button */
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 12px;
+  white-space: nowrap;
+  flex: none;
+  cursor: pointer;
+}
+
+.quickReplyBtn:hover {
+  background: var(--surface);
+}
+
+.composerRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+input.composerInput {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--control);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  font-size: 14px;
+  color: var(--ink);
+}
+
+@media (max-width: 768px) {
+  .inboxShell {
+    grid-template-columns: minmax(0, 1fr);
+    height: clamp(500px, calc(100svh - 170px), 660px);
+  }
+
+  .threadPane {
+    border-right: 0;
+  }
+
+  .paneHiddenMobile {
+    display: none;
+  }
+
+  .mobileBackBtn {
+    display: inline-flex;
+    align-items: center;
+    height: 32px;
+    padding: 0 10px;
+    border-radius: var(--radius-control);
+    border: 1px solid var(--control); /* taste-skill-ignore: mobile inbox back button */
+    background: var(--card);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink);
+  }
+
+  .chatHeader,
+  .contextStrip,
+  .messages,
+  .composerArea {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .msgGroup {
+    max-width: 88%;
+  }
+}

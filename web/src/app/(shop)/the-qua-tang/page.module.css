@@ -1,0 +1,276 @@
+/* Gift cards & .edu student discount page: clear surface hierarchy (white builder, dark card preview, unboxed redeem/issued list, accent-tint student band) */
+
+.leadCopy {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 56ch;
+}
+
+.twoColGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: clamp(24px, 3vw, 36px);
+  align-items: start;
+}
+
+/* Primary surface: Gift Card Builder */
+.builderPanel {
+  background: var(--surface-white);
+  padding: clamp(24px, 2.8vw, 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+.panelHead {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bodyCopy {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 56ch;
+}
+
+.denomGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.denomBtn {
+  min-height: 46px;
+  padding: 10px 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 500;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.denomBtn:hover {
+  background: var(--surface-muted);
+}
+
+.denomBtnActive {
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+}
+
+.denomBtnActive:hover {
+  background: var(--band-dark);
+}
+
+.policyMetaRow {
+  padding-top: 14px;
+  border-top: 2px solid var(--surface-subtle);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: var(--step-small);
+  color: var(--ink-secondary);
+}
+
+/* Right column: Dark Gift Card Preview + Unboxed Redeem */
+.previewCol {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  min-width: 0;
+}
+
+.cardPreview {
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cardPreviewPhoto {
+  width: 100%;
+  aspect-ratio: 16 / 7;
+  object-fit: cover;
+  background: var(--band-dark-surface);
+}
+
+.cardPreviewBody {
+  padding: clamp(24px, 2.8vw, 30px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cardPreviewTop {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cardValueBig {
+  font-size: clamp(1.75rem, 1.4rem + 1vw, 2.25rem);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: var(--band-dark-ink);
+}
+
+.cardExpiry {
+  font-size: var(--step-small);
+  color: var(--band-dark-accent);
+  font-weight: 500;
+}
+
+.cardBrand {
+  font-size: 16px;
+  color: var(--band-dark-muted);
+  line-height: 1.45;
+}
+
+.cardCodeBar {
+  background: var(--band-dark-surface);
+  border-left: 4px solid var(--band-dark-accent);
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 16px;
+  color: var(--band-dark-ink);
+}
+
+.cardMessagePreview {
+  font-size: 16px;
+  color: var(--band-dark-ink);
+  line-height: 1.55;
+  max-width: 54ch;
+}
+
+/* Unboxed secondary redeem section */
+.redeemSection {
+  padding-top: 22px;
+  border-top: 2px solid var(--surface-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Issued Gift Cards (unboxed list rows) */
+.issuedSection {
+  min-width: 0;
+}
+
+.issuedList {
+  display: flex;
+  flex-direction: column;
+}
+
+.issuedRow {
+  padding: 20px 0;
+  border-top: 2px solid var(--surface-muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.issuedRow:first-child {
+  border-top: 2px solid var(--surface-muted);
+}
+
+.issuedInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.issuedCodeLine {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.issuedCode {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.issuedBalance {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.issuedExpiry {
+  font-size: var(--step-small);
+  color: var(--muted);
+}
+
+/* Accent-tint student .edu verification field */
+.eduPanel {
+  background: var(--accent-tint);
+  border-left: 4px solid var(--accent);
+  padding: clamp(24px, 2.8vw, 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.eduPerks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.eduPerkLine {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 54ch;
+}
+
+/* Product suggestion shelf */
+.shelfSub {
+  font-size: 16px;
+  color: var(--ink);
+  line-height: 1.5;
+  max-width: 56ch;
+}
+
+.productGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: clamp(16px, 2vw, 24px);
+}
+
+@media (max-width: 1024px) {
+  .twoColGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .productGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .denomGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

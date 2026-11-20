@@ -1,0 +1,1480 @@
+{
+ "url": "http://127.0.0.1:3006/",
+ "at": "2026-11-19T21:27:39.968Z",
+ "allow": [],
+ "viewports": [
+  {
+   "width": 1440,
+   "height": 900,
+   "load": "load",
+   "screens": 10,
+   "filled": [
+    0.36,
+    0.93,
+    0.93,
+    0.69,
+    0.69,
+    0.54,
+    0.83,
+    0.76,
+    0.45,
+    0.32
+   ],
+   "motion": {
+    "elements": 48,
+    "css": 4,
+    "transitions": 44,
+    "scripted": 0,
+    "videos": 1,
+    "playingVideos": 1
+   },
+   "metrics": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "page": {
+     "height": 8298,
+     "screens": 9.2,
+     "words": 1520,
+     "img": 61,
+     "video": 1,
+     "canvas": 0,
+     "svg": 5,
+     "sections": 7,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 52,
+     "videoCount": 1,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "ao-thun-cotton-xanh-than.png",
+      "ao-thun-oversize-than-chi.png",
+      "ao-polo-pique-xanh-da.png",
+      "ao-polo-det-kim-den.png",
+      "quan-short-daily-be.png",
+      "quan-short-linen-xam-da.png",
+      "quan-jogger-terry-xam.png",
+      "quan-jogger-tech-den.png"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Đồ basic Việt từ xưởng dệt",
+     "words": 6,
+     "chars": 26,
+     "lines": 2,
+     "size": 74.9,
+     "vw": 5.2,
+     "font": "Work Sans",
+     "weight": 300,
+     "tracking": -0.035,
+     "leading": 0.98,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "center",
+     "position": "center",
+     "widthRatio": 0.29,
+     "top": 341,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Đồ basic Việt từ xưởng dệt",
+     "words": 6,
+     "lines": 2,
+     "size": 74.9,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Đồ basic Việt từ xưởng dệt",
+      "words": 6,
+      "chars": 26,
+      "lines": 2,
+      "size": 74.9,
+      "vw": 5.2,
+      "font": "Work Sans",
+      "weight": 300,
+      "tracking": -0.035,
+      "leading": 0.98,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "center",
+      "position": "center",
+      "widthRatio": 0.29,
+      "top": 341,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "Giao 34 tỉnh",
+      "words": 3,
+      "chars": 12,
+      "lines": 1,
+      "size": 28,
+      "vw": 1.9,
+      "font": "Work Sans",
+      "weight": 400,
+      "tracking": -0.025,
+      "leading": 1.1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.14,
+      "top": 1002,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Bảng giá xưởng hôm nay",
+      "words": 5,
+      "chars": 22,
+      "lines": 1,
+      "size": 28,
+      "vw": 1.9,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.36,
+      "top": 2110,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Quy chuẩn dệt may",
+      "words": 4,
+      "chars": 17,
+      "lines": 1,
+      "size": 28,
+      "vw": 1.9,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.96,
+      "top": 3248,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "L",
+      "words": 1,
+      "chars": 1,
+      "lines": 1,
+      "size": 28,
+      "vw": 1.9,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "right",
+      "widthRatio": 0.01,
+      "top": 3717,
+      "tag": "span",
+      "kind": "heading"
+     },
+     {
+      "text": "Bảng mẫu xưởng dệt",
+      "words": 4,
+      "chars": 18,
+      "lines": 1,
+      "size": 28,
+      "vw": 1.9,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.39,
+      "top": 4695,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Hệ sinh thái xưởng",
+      "words": 4,
+      "chars": 18,
+      "lines": 1,
+      "size": 28,
+      "vw": 1.9,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.22,
+      "top": 6751,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Câu hỏi thường gặp",
+      "words": 4,
+      "chars": 18,
+      "lines": 1,
+      "size": 28,
+      "vw": 1.9,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.22,
+      "top": 7348,
+      "tag": "h2",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 8,
+     "maxLines": 2,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 1,
+     "medianWords": 4,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      14,
+      15,
+      16,
+      18,
+      20,
+      28,
+      75
+     ],
+     "sizeCount": 7,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 16,
+      "leading": 1.55,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 11.9
+     },
+     "measureChars": 67,
+     "max": {
+      "size": 74.9,
+      "vw": 5.2,
+      "font": "Work Sans",
+      "text": "Đồ basic Việt"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0,
+     "centerShare": 0.06,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f7f9fa",
+       "top": 0,
+       "hsl": {
+        "h": 200,
+        "s": 0.23,
+        "l": 0.97
+       }
+      },
+      {
+       "color": "#ecf0f2",
+       "top": 2009,
+       "hsl": {
+        "h": 200,
+        "s": 0.19,
+        "l": 0.94
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#1f3038",
+       "share": 0.67
+      },
+      {
+       "color": "#5d6b72",
+       "share": 0.29
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.03
+      },
+      {
+       "color": "#0d7480",
+       "share": 0.01
+      }
+     ],
+     "button": {
+      "bg": "#f7f9fa",
+      "hsl": {
+       "h": 200,
+       "s": 0.23,
+       "l": 0.97
+      },
+      "fg": "#1f3038"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 22,
+     "inHero": 2,
+     "radius": 0,
+     "height": 40,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Bỏ qua đến nội dung",
+      "Khám phá ngay"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 40,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 5,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 986
+      }
+     ]
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 7,
+     "fixed": false,
+     "height": 76,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "pageH": 8298,
+    "margins": {
+     "left": 32,
+     "right": 33
+    },
+    "sections": [
+     {
+      "sel": "main#main-content.layout_main__FQ5Sh",
+      "tag": "main",
+      "top": 76,
+      "height": 8030,
+      "words": 1409,
+      "media": 52,
+      "middle": 0,
+      "heading": {
+       "text": "Đồ basic Việt",
+       "size": 75,
+       "tag": "h1"
+      },
+      "left": 16,
+      "right": 16,
+      "textLeft": 32,
+      "textRight": 33,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "footer.ShopFooter_footer__bvkS_",
+      "tag": "footer",
+      "top": 8106,
+      "height": 192,
+      "words": 51,
+      "media": 0,
+      "middle": 233,
+      "heading": null,
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 32,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Đồ basic Việt từ xưởng dệt",
+      "size": 75,
+      "top": 341,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 500,
+      "n": 6
+     },
+     {
+      "x": 32,
+      "n": 5
+     },
+     {
+      "x": 978,
+      "n": 5
+     },
+     {
+      "x": 68,
+      "n": 2
+     },
+     {
+      "x": 869,
+      "n": 2
+     },
+     {
+      "x": 460,
+      "n": 1
+     },
+     {
+      "x": 852,
+      "n": 1
+     },
+     {
+      "x": 1106,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 23,
+    "bodySize": 16,
+    "stage": false,
+    "explains": true,
+    "slivers": [],
+    "voidShare": 0.04,
+    "voidBox": {
+     "x": 0,
+     "y": 120,
+     "w": 60,
+     "h": 780
+    }
+   },
+   "app": null,
+   "consoleErrors": []
+  },
+  {
+   "width": 768,
+   "height": 1024,
+   "load": "load",
+   "screens": 12,
+   "filled": [
+    0.35,
+    0.89,
+    0.97,
+    0.59,
+    0.34,
+    0.7,
+    0.69,
+    0.89,
+    0.92,
+    0.84,
+    0.66,
+    0.45
+   ],
+   "motion": {
+    "elements": 42,
+    "css": 4,
+    "transitions": 38,
+    "scripted": 0,
+    "videos": 1,
+    "playingVideos": 1
+   },
+   "metrics": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "page": {
+     "height": 11985,
+     "screens": 11.7,
+     "words": 1479,
+     "img": 61,
+     "video": 1,
+     "canvas": 0,
+     "svg": 5,
+     "sections": 7,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 38,
+     "videoCount": 1,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "ao-polo-pique-xanh-da.png",
+      "quan-jogger-tech-den.png",
+      "cotton-twill-slate.jpg",
+      "ao-thun-cotton-trang.png",
+      "ao-thun-cotton-xam-da.png",
+      "ao-thun-cotton-xanh-than.png",
+      "ao-thun-dryfit-co-vit.png",
+      "cotton-jersey-drape.webp"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Đồ basic Việt từ xưởng dệt",
+     "words": 6,
+     "chars": 26,
+     "lines": 2,
+     "size": 42,
+     "vw": 5.5,
+     "font": "Work Sans",
+     "weight": 300,
+     "tracking": -0.035,
+     "leading": 0.98,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "center",
+     "position": "center",
+     "widthRatio": 0.31,
+     "top": 346,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Đồ basic Việt từ xưởng dệt",
+     "words": 6,
+     "lines": 2,
+     "size": 42,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Đồ basic Việt từ xưởng dệt",
+      "words": 6,
+      "chars": 26,
+      "lines": 2,
+      "size": 42,
+      "vw": 5.5,
+      "font": "Work Sans",
+      "weight": 300,
+      "tracking": -0.035,
+      "leading": 0.98,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "center",
+      "position": "center",
+      "widthRatio": 0.31,
+      "top": 346,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "L",
+      "words": 1,
+      "chars": 1,
+      "lines": 1,
+      "size": 28,
+      "vw": 3.6,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "right",
+      "widthRatio": 0.02,
+      "top": 5541,
+      "tag": "span",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 2,
+     "maxLines": 2,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 1,
+     "medianWords": 1,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      13,
+      14,
+      15,
+      16,
+      20,
+      24,
+      28,
+      42
+     ],
+     "sizeCount": 8,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 16,
+      "leading": 1.5,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 12.9
+     },
+     "measureChars": 67,
+     "max": {
+      "size": 42,
+      "vw": 5.5,
+      "font": "Work Sans",
+      "text": "Đồ basic Việt"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0,
+     "centerShare": 0.06,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f7f9fa",
+       "top": 0,
+       "hsl": {
+        "h": 200,
+        "s": 0.23,
+        "l": 0.97
+       }
+      },
+      {
+       "color": "#ecf0f2",
+       "top": 2422,
+       "hsl": {
+        "h": 200,
+        "s": 0.19,
+        "l": 0.94
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#1f3038",
+       "share": 0.66
+      },
+      {
+       "color": "#5d6b72",
+       "share": 0.3
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.03
+      },
+      {
+       "color": "#0d7480",
+       "share": 0.01
+      }
+     ],
+     "button": {
+      "bg": "#f7f9fa",
+      "hsl": {
+       "h": 200,
+       "s": 0.23,
+       "l": 0.97
+      },
+      "fg": "#1f3038"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 29,
+     "inHero": 7,
+     "radius": 0,
+     "height": 40,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Bỏ qua đến nội dung",
+      "Khám phá ngay"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 34,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": []
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 2,
+     "fixed": false,
+     "height": 68,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "pageH": 11985,
+    "margins": {
+     "left": 16,
+     "right": 16
+    },
+    "sections": [
+     {
+      "sel": "main#main-content.layout_main__FQ5Sh",
+      "tag": "main",
+      "top": 68,
+      "height": 11669,
+      "words": 1362,
+      "media": 38,
+      "middle": 0,
+      "heading": {
+       "text": "Đồ basic Việt",
+       "size": 42,
+       "tag": "h1"
+      },
+      "left": 16,
+      "right": 16,
+      "textLeft": 16,
+      "textRight": 20,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "footer.ShopFooter_footer__bvkS_",
+      "tag": "footer",
+      "top": 11737,
+      "height": 248,
+      "words": 51,
+      "media": 0,
+      "middle": 14,
+      "heading": null,
+      "left": 20,
+      "right": 202,
+      "textLeft": 20,
+      "textRight": 202,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Đồ basic Việt từ xưởng dệt",
+      "size": 42,
+      "top": 346,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 16,
+      "n": 20
+     },
+     {
+      "x": 43,
+      "n": 2
+     },
+     {
+      "x": 63,
+      "n": 2
+     },
+     {
+      "x": 32,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 25,
+    "bodySize": 16,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": null,
+   "consoleErrors": []
+  },
+  {
+   "width": 390,
+   "height": 844,
+   "load": "load",
+   "screens": 12,
+   "filled": [
+    0.26,
+    0.86,
+    1,
+    0.55,
+    0.5,
+    0.66,
+    0.59,
+    0.63,
+    0.8,
+    0.78,
+    0.87,
+    0.59
+   ],
+   "motion": {
+    "elements": 42,
+    "css": 4,
+    "transitions": 38,
+    "scripted": 0,
+    "videos": 1,
+    "playingVideos": 1
+   },
+   "metrics": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "page": {
+     "height": 11308,
+     "screens": 13.4,
+     "words": 1479,
+     "img": 61,
+     "video": 1,
+     "canvas": 0,
+     "svg": 5,
+     "sections": 7,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 2,
+     "videoCount": 1,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "cotton-twill-slate.jpg"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Đồ basic Việt từ xưởng dệt",
+     "words": 6,
+     "chars": 26,
+     "lines": 2,
+     "size": 37.1,
+     "vw": 9.5,
+     "font": "Work Sans",
+     "weight": 300,
+     "tracking": -0.035,
+     "leading": 1,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "center",
+     "position": "center",
+     "widthRatio": 0.54,
+     "top": 334,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Đồ basic Việt từ xưởng dệt",
+     "words": 6,
+     "lines": 2,
+     "size": 37.1,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Đồ basic Việt từ xưởng dệt",
+      "words": 6,
+      "chars": 26,
+      "lines": 2,
+      "size": 37.1,
+      "vw": 9.5,
+      "font": "Work Sans",
+      "weight": 300,
+      "tracking": -0.035,
+      "leading": 1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "center",
+      "position": "center",
+      "widthRatio": 0.54,
+      "top": 334,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "Giao 34 tỉnh",
+      "words": 3,
+      "chars": 12,
+      "lines": 1,
+      "size": 24,
+      "vw": 6.2,
+      "font": "Work Sans",
+      "weight": 400,
+      "tracking": -0.025,
+      "leading": 1.1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.35,
+      "top": 872,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Bảng giá xưởng hôm nay",
+      "words": 5,
+      "chars": 22,
+      "lines": 1,
+      "size": 24,
+      "vw": 6.2,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.9,
+      "top": 1695,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Quy chuẩn dệt may",
+      "words": 4,
+      "chars": 17,
+      "lines": 1,
+      "size": 24,
+      "vw": 6.2,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.9,
+      "top": 2936,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "L",
+      "words": 1,
+      "chars": 1,
+      "lines": 1,
+      "size": 28,
+      "vw": 7.2,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "right",
+      "widthRatio": 0.04,
+      "top": 5488,
+      "tag": "span",
+      "kind": "heading"
+     },
+     {
+      "text": "Bảng mẫu xưởng dệt",
+      "words": 4,
+      "chars": 18,
+      "lines": 1,
+      "size": 24,
+      "vw": 6.2,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 6434,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Hệ sinh thái xưởng",
+      "words": 4,
+      "chars": 18,
+      "lines": 1,
+      "size": 24,
+      "vw": 6.2,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.9,
+      "top": 8642,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Câu hỏi thường gặp",
+      "words": 4,
+      "chars": 18,
+      "lines": 1,
+      "size": 24,
+      "vw": 6.2,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.02,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.9,
+      "top": 9370,
+      "tag": "h2",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 8,
+     "maxLines": 2,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 1,
+     "medianWords": 4,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      13,
+      14,
+      15,
+      16,
+      20,
+      24,
+      28,
+      37
+     ],
+     "sizeCount": 8,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 16,
+      "leading": 1.5,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 12.9
+     },
+     "measureChars": 50,
+     "max": {
+      "size": 37.1,
+      "vw": 9.5,
+      "font": "Work Sans",
+      "text": "Đồ basic Việt"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0,
+     "centerShare": 0.06,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f7f9fa",
+       "top": 0,
+       "hsl": {
+        "h": 200,
+        "s": 0.23,
+        "l": 0.97
+       }
+      },
+      {
+       "color": "#ecf0f2",
+       "top": 1639,
+       "hsl": {
+        "h": 200,
+        "s": 0.19,
+        "l": 0.94
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#1f3038",
+       "share": 0.66
+      },
+      {
+       "color": "#5d6b72",
+       "share": 0.3
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.03
+      },
+      {
+       "color": "#0d7480",
+       "share": 0.01
+      }
+     ],
+     "button": {
+      "bg": "#f7f9fa",
+      "hsl": {
+       "h": 200,
+       "s": 0.23,
+       "l": 0.97
+      },
+      "fg": "#1f3038"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 29,
+     "inHero": 7,
+     "radius": 0,
+     "height": 44,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Bỏ qua đến nội dung",
+      "Khám phá ngay"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 2,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": []
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 2,
+     "fixed": false,
+     "height": 68,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "pageH": 11308,
+    "margins": {
+     "left": 16,
+     "right": 16
+    },
+    "sections": [
+     {
+      "sel": "main#main-content.layout_main__FQ5Sh",
+      "tag": "main",
+      "top": 68,
+      "height": 10943,
+      "words": 1362,
+      "media": 2,
+      "middle": 25,
+      "heading": {
+       "text": "Đồ basic Việt",
+       "size": 37,
+       "tag": "h1"
+      },
+      "left": 0,
+      "right": 0,
+      "textLeft": 16,
+      "textRight": 20,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "footer.ShopFooter_footer__bvkS_",
+      "tag": "footer",
+      "top": 11011,
+      "height": 298,
+      "words": 51,
+      "media": 0,
+      "middle": 0,
+      "heading": null,
+      "left": 20,
+      "right": 49,
+      "textLeft": 20,
+      "textRight": 49,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Đồ basic Việt từ xưởng dệt",
+      "size": 37,
+      "top": 334,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 16,
+      "n": 20
+     },
+     {
+      "x": 32,
+      "n": 3
+     },
+     {
+      "x": 60,
+      "n": 2
+     }
+    ],
+    "leftBlocks": 25,
+    "bodySize": 16,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": null,
+   "consoleErrors": []
+  }
+ ],
+ "findings": [],
+ "images": [
+  {
+   "viewport": "desktop",
+   "width": 1440,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/home/desktop-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/home/desktop-page-01.jpg",
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/home/desktop-page-02.jpg",
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/home/desktop-page-03.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "tablet",
+   "width": 768,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/home/tablet-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/home/tablet-page-01.jpg",
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/home/tablet-page-02.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "mobile",
+   "width": 390,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/home/mobile-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/home/mobile-page-01.jpg",
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p2/home/mobile-page-02.jpg"
+   ],
+   "film": []
+  }
+ ]
+}

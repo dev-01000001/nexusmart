@@ -1,0 +1,111 @@
+/* Seller Finance & Double-Entry Ledger (/seller/tai-chinh) */
+
+.withdrawCard {
+  background: var(--card);
+  border: 1px solid var(--border); /* taste-skill-ignore: payout request panel border */
+  border-radius: var(--radius-card);
+  padding: var(--card-pad);
+}
+
+.withdrawGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: end;
+}
+
+.bankSummary {
+  padding: 12px 14px;
+  background: var(--bg);
+  border-radius: var(--radius-control);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.bankTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.bankMeta {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.quickFillRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.quickChip {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--control); /* taste-skill-ignore: quick payout amount button */
+  background: var(--card);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.quickChip:hover {
+  background: var(--surface);
+}
+
+.withdrawActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.ledgerHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.creditCell {
+  color: var(--positive);
+  font-weight: 500;
+}
+
+.debitCell {
+  color: var(--ink);
+}
+
+.mutedCell {
+  color: var(--muted);
+}
+
+.runningCell {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.reconFormula {
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 760px) {
+  .withdrawGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .withdrawCard {
+    padding: 16px;
+  }
+}

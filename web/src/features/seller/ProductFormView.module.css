@@ -1,0 +1,622 @@
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.backLink:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.noticeBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--pill-positive-bg);
+  color: var(--pill-positive-ink);
+  border-radius: var(--radius-card);
+  font-size: 14px;
+}
+
+.noticeLink {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+
+.topRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(300px, 1fr);
+  gap: var(--gap);
+  align-items: stretch;
+}
+
+.policyGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 16px 24px;
+  align-items: start;
+}
+
+.fields2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 16px;
+}
+
+.fields3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 16px;
+}
+
+.fieldStack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Variant controls */
+.variantControls {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border); /* taste-skill-ignore: variant section separator */
+}
+
+.controlGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.controlLabel {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.sizeRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sizeToggle {
+  min-width: 48px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--control); /* taste-skill-ignore: size selector toggle */
+  background: var(--card);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    border-color var(--t-hover) ease,
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.sizeToggleActive {
+  background: var(--primary-ink-bg);
+  color: var(--primary-ink-fg);
+  border-color: var(--primary-ink-bg);
+}
+
+.colorList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.colorTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border); /* taste-skill-ignore: color variant chip */
+  background: var(--bg);
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--control); /* taste-skill-ignore: color swatch ring */
+  flex: none;
+}
+
+.removeColorBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--muted);
+  border-radius: 4px;
+}
+
+.removeColorBtn:hover {
+  color: var(--negative);
+  background: var(--surface);
+}
+
+.addColorRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+input.colorNameInput {
+  height: 34px;
+  width: 190px;
+  padding: 0 10px;
+  border: 1px solid var(--control);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  font-size: 13px;
+}
+
+.swatchPicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.swatchOption {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--control); /* taste-skill-ignore: preset color swatch button */
+  cursor: pointer;
+}
+
+.swatchOptionActive {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.bulkRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.bulkControls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+input.bulkInput {
+  width: 84px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--control);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  text-align: right;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Matrix editable inputs */
+input.skuCodeInput {
+  width: 100%;
+  min-width: 136px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--control); /* taste-skill-ignore: editable SKU input field border */
+  border-radius: var(--radius-control);
+  background: var(--card);
+  font-size: 13px;
+  color: var(--ink);
+}
+
+input.numCellInput {
+  width: 96px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--control);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  text-align: right;
+  font-size: 13px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+input.stockCellInput {
+  width: 72px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--control);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  text-align: right;
+  font-size: 13px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+input.stockZero {
+  border-color: var(--negative);
+  color: var(--negative);
+}
+
+/* Preview card: preview image sits beside 3x2 thumbnails so top-row cards match height cleanly */
+.mediaPickerRow {
+  display: grid;
+  grid-template-columns: 144px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 16px;
+}
+
+.previewMedia {
+  width: 144px;
+  aspect-ratio: 3 / 4;
+  border-radius: var(--radius-control);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.previewImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.thumbGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.thumbBtn {
+  padding: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1.5px solid transparent; /* taste-skill-ignore: product image selector */
+  background: var(--surface);
+  aspect-ratio: 3 / 4;
+  cursor: pointer;
+}
+
+.thumbBtnActive {
+  border-color: var(--ink);
+}
+
+.thumbImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.summaryList {
+  display: flex;
+  flex-direction: column;
+}
+
+.summaryRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  font-size: 13px;
+}
+
+.summaryRow + .summaryRow {
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: summary key-value row divider */
+}
+
+.summaryKey {
+  color: var(--muted);
+}
+
+.summaryVal {
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.summaryValWarn {
+  color: var(--negative);
+}
+
+/* Wave 2 attribute pills, taxonomy trail, care presets & color media rows */
+.taxonomyTrail {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.taxonomyLeaf {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.chipGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.attrToggle {
+  height: 32px;
+  padding: 0 11px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--control); /* taste-skill-ignore: multi-select attribute chip */
+  background: var(--card);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+  transition:
+    border-color var(--t-hover) ease,
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.attrToggle:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.attrToggleActive {
+  background: var(--primary-ink-bg);
+  border-color: var(--primary-ink-bg);
+  color: var(--primary-ink-fg);
+  font-weight: 500;
+}
+
+.careGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.careCard {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px 12px;
+  text-align: left;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border); /* taste-skill-ignore: fabric care standard selector */
+  background: var(--card);
+  cursor: pointer;
+  transition:
+    border-color var(--t-hover) ease,
+    background-color var(--t-hover) ease;
+}
+
+.careCard:hover {
+  border-color: var(--control);
+}
+
+.careCardActive {
+  border: 1.5px solid var(--ink); /* taste-skill-ignore: active fabric care standard */
+  background: var(--bg);
+}
+
+.careCode {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.careLabel {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 17px;
+}
+
+.careCardActive .careLabel {
+  color: var(--ink);
+}
+
+.colorMediaList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.colorMediaRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border); /* taste-skill-ignore: per-color media binding row */
+  background: var(--bg);
+}
+
+.colorMediaLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.colorMediaThumb {
+  width: 30px;
+  height: 40px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--surface);
+  flex: none;
+}
+
+.colorMediaRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+select.colorMediaSelect {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--control);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.switchRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+}
+
+.switchRow + .switchRow {
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: policy switch row divider */
+}
+
+.switchText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.switchTitle {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.switchDesc {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--muted);
+}
+
+.comboSlotBox {
+  padding: 12px;
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  border: 1px solid var(--border); /* taste-skill-ignore: combo slot editor panel */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mobileSkuList {
+  display: none;
+}
+
+@media (max-width: 1040px) {
+  .topRow,
+  .policyGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .careGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .mediaPickerRow {
+    grid-template-columns: 112px minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .previewMedia {
+    width: 112px;
+  }
+
+  .fields2,
+  .fields3,
+  .careGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .colorMediaRow {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .colorMediaRight {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  select.colorMediaSelect {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .skuTableDesktop {
+    display: none;
+  }
+
+  .mobileSkuList {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .mobileSkuItem {
+    padding: 12px;
+    border: 1px solid var(--border); /* taste-skill-ignore: mobile SKU variant editor row */
+    border-radius: var(--radius-control);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .mobileSkuHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .mobileSkuInputs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  input.numCellInput,
+  input.stockCellInput {
+    width: 100%;
+  }
+}

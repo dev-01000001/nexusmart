@@ -1,0 +1,461 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nexusmart}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexusmart_dev_password}
+      POSTGRES_DB: postgres
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ./infra/postgres/init-dbs.sql:/docker-entrypoint-initdb.d/init-dbs.sql:ro
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexusmart} -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-m", "8222", "-sd", "/data"]
+    ports:
+      - "${NATS_PORT:-4222}:4222"
+      - "${NATS_MONITOR_PORT:-8222}:8222"
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  mailpit:
+    image: axllent/mailpit:v1.20
+    ports:
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.108.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "${OTEL_GRPC_PORT:-4317}:4317"
+      - "${OTEL_HTTP_PORT:-4318}:4318"
+      - "${OTEL_PROM_PORT:-8889}:8889"
+
+  user:
+    build:
+      context: .
+      dockerfile: services/user/Dockerfile
+    environment:
+      SERVICE_NAME: user
+      GRPC_PORT: "50051"
+      HTTP_PORT: "8081"
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/user_db?sslmode=disable
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      REFRESH_TOKEN_TTL: ${REFRESH_TOKEN_TTL:-168h}
+      ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-admin@nexusmart.local}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-AdminDevPassword123!}
+      SHIPPING_GRPC_ADDR: shipping:50057
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${USER_HTTP_PORT:-8081}:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  product:
+    build:
+      context: .
+      dockerfile: services/product/Dockerfile
+    environment:
+      SERVICE_NAME: product
+      GRPC_PORT: "50052"
+      HTTP_PORT: "8082"
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/product_db?sslmode=disable
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${PRODUCT_HTTP_PORT:-8082}:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8082/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  cart:
+    build:
+      context: .
+      dockerfile: services/cart/Dockerfile
+    environment:
+      SERVICE_NAME: cart
+      GRPC_PORT: "50053"
+      HTTP_PORT: "8083"
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      PRODUCT_GRPC_ADDR: product:50052
+      USER_GRPC_ADDR: user:50051
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${CART_HTTP_PORT:-8083}:8083"
+    depends_on:
+      redis:
+        condition: service_healthy
+      product:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8083/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  promotion:
+    build:
+      context: .
+      dockerfile: services/promotion/Dockerfile
+    environment:
+      SERVICE_NAME: promotion
+      GRPC_PORT: "50054"
+      HTTP_PORT: "8084"
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/promotion_db?sslmode=disable
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${PROMOTION_HTTP_PORT:-8084}:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8084/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  payment:
+    build:
+      context: .
+      dockerfile: services/payment/Dockerfile
+    environment:
+      SERVICE_NAME: payment
+      GRPC_PORT: "50056"
+      HTTP_PORT: "8086"
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/payment_db?sslmode=disable
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
+      VIETQR_MODE: ${VIETQR_MODE:-mock}
+      PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-dev-only-payment-webhook-hmac-secret}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
+      PAYMENT_EXPIRY_MINUTES: ${PAYMENT_EXPIRY_MINUTES:-15}
+      PAYOS_CLIENT_ID: ${PAYOS_CLIENT_ID:-sandbox-client-id}
+      PAYOS_API_KEY: ${PAYOS_API_KEY:-sandbox-api-key}
+      PAYOS_CHECKSUM_KEY: ${PAYOS_CHECKSUM_KEY:-sandbox-checksum-key}
+      SEPAY_API_TOKEN: ${SEPAY_API_TOKEN:-sandbox-sepay-token}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "${PAYMENT_HTTP_PORT:-8086}:8086"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8086/healthz || curl -fsS http://127.0.0.1:8086/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  shipping:
+    build:
+      context: .
+      dockerfile: services/shipping/Dockerfile
+    environment:
+      SERVICE_NAME: shipping
+      GRPC_PORT: "50057"
+      HTTP_PORT: "8087"
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/shipping_db?sslmode=disable
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
+      SHIPPING_WEBHOOK_SECRET: ${SHIPPING_WEBHOOK_SECRET:-dev-only-shipping-webhook-hmac-secret}
+      GHN_ENABLED: ${GHN_ENABLED:-true}
+      GHN_MODE: ${GHN_MODE:-mock}
+      GHN_BASE_URL: ${GHN_BASE_URL:-https://dev-online-gateway.ghn.vn/shiip/public-api}
+      GHN_TOKEN: ${GHN_TOKEN:-sandbox-ghn-token}
+      GHN_SHOP_ID: ${GHN_SHOP_ID:-0}
+      MOCK_CARRIER_ENABLED: ${MOCK_CARRIER_ENABLED:-true}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${SHIPPING_HTTP_PORT:-8087}:8087"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8087/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  notification:
+    build:
+      context: .
+      dockerfile: services/notification/Dockerfile
+    environment:
+      SERVICE_NAME: notification
+      GRPC_PORT: "50058"
+      HTTP_PORT: "8088"
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/notification_db?sslmode=disable
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_FROM: ${SMTP_FROM:-no-reply@nexusmart.local}
+      USER_GRPC_ADDR: user:50051
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${NOTIFICATION_HTTP_PORT:-8088}:8088"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8088/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  order:
+    build:
+      context: .
+      dockerfile: services/order/Dockerfile
+    environment:
+      SERVICE_NAME: order
+      GRPC_PORT: "50055"
+      HTTP_PORT: "8085"
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/order_db?sslmode=disable
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
+      USER_GRPC_ADDR: user:50051
+      PRODUCT_GRPC_ADDR: product:50052
+      CART_GRPC_ADDR: cart:50053
+      PROMOTION_GRPC_ADDR: promotion:50054
+      PAYMENT_GRPC_ADDR: payment:50056
+      SHIPPING_GRPC_ADDR: shipping:50057
+      ORDER_COD_MAX_VND: ${ORDER_COD_MAX_VND:-5000000}
+      ORDER_COD_MAX_REJECTED_COUNT: ${ORDER_COD_MAX_REJECTED_COUNT:-3}
+      ORDER_PAYMENT_EXPIRY_MINUTES: ${ORDER_PAYMENT_EXPIRY_MINUTES:-15}
+      ORDER_DEFAULT_COMMISSION_BPS: ${ORDER_DEFAULT_COMMISSION_BPS:-500}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${ORDER_HTTP_PORT:-8085}:8085"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      user:
+        condition: service_healthy
+      product:
+        condition: service_healthy
+      cart:
+        condition: service_healthy
+      promotion:
+        condition: service_healthy
+      payment:
+        condition: service_healthy
+      shipping:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8085/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    environment:
+      SERVICE_NAME: gateway
+      HTTP_PORT: "8080"
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      RATE_LIMIT_IP_PER_MIN: ${RATE_LIMIT_IP_PER_MIN:-300}
+      RATE_LIMIT_USER_PER_MIN: ${RATE_LIMIT_USER_PER_MIN:-180}
+      RATE_LIMIT_FLASH_SALE_PER_MIN: ${RATE_LIMIT_FLASH_SALE_PER_MIN:-60}
+      USER_GRPC_ADDR: user:50051
+      PRODUCT_GRPC_ADDR: product:50052
+      CART_GRPC_ADDR: cart:50053
+      PROMOTION_GRPC_ADDR: promotion:50054
+      ORDER_GRPC_ADDR: order:50055
+      PAYMENT_GRPC_ADDR: payment:50056
+      PAYMENT_HTTP_URL: http://payment:8086
+      SHIPPING_GRPC_ADDR: shipping:50057
+      SHIPPING_HTTP_URL: http://shipping:8087
+      NOTIFICATION_GRPC_ADDR: notification:50058
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      user:
+        condition: service_healthy
+      product:
+        condition: service_healthy
+      cart:
+        condition: service_healthy
+      promotion:
+        condition: service_healthy
+      order:
+        condition: service_healthy
+      payment:
+        condition: service_healthy
+      shipping:
+        condition: service_healthy
+      notification:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # E2E suite (profile "e2e", started by `make e2e`). Runs inside the compose network because
+  # service gRPC ports are deliberately not published to the host.
+  e2e:
+    image: golang:1.22-alpine
+    profiles: ["e2e"]
+    working_dir: /src/tests/e2e
+    volumes:
+      - .:/src
+      - ${GOMODCACHE:-~/go/pkg/mod}:/go/pkg/mod
+    environment:
+      CGO_ENABLED: "0"
+      HOME: /tmp
+      GOCACHE: /tmp/go-build
+      GATEWAY_URL: http://gateway:8080
+      USER_HTTP_URL: http://user:8081
+      PRODUCT_HTTP_URL: http://product:8082
+      CART_HTTP_URL: http://cart:8083
+      PROMOTION_HTTP_URL: http://promotion:8084
+      ORDER_HTTP_URL: http://order:8085
+      PAYMENT_HTTP_URL: http://payment:8086
+      SHIPPING_HTTP_URL: http://shipping:8087
+      NOTIFICATION_HTTP_URL: http://notification:8088
+      PROMOTION_GRPC_ADDR: promotion:50054
+      PRODUCT_GRPC_ADDR: product:50052
+      PAYMENT_GRPC_ADDR: payment:50056
+      MAILPIT_URL: http://mailpit:8025
+      ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-admin@nexusmart.local}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-AdminDevPassword123!}
+      PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-dev-only-payment-webhook-hmac-secret}
+      SHIPPING_WEBHOOK_SECRET: ${SHIPPING_WEBHOOK_SECRET:-dev-only-shipping-webhook-hmac-secret}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+    command: ["go", "test", "-v", "-count=1", "-timeout", "5m", "./..."]
+
+volumes:
+  postgres_data:
+  redis_data:
+  nats_data:

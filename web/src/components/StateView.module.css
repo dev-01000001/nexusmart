@@ -1,0 +1,87 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 10px;
+  padding: 28px 24px;
+  background: var(--surface-white);
+  color: var(--ink);
+  width: 100%;
+}
+
+.appContainer {
+  border-radius: var(--radius-card);
+  background: var(--card);
+  border: 1px dashed var(--control); /* taste-skill-ignore: app empty/error slot per app-screens.md §11 */
+  padding: 24px 20px;
+}
+
+.title {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.appContainer .title {
+  font-size: 16px;
+}
+
+.message {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 56ch;
+}
+
+.appContainer .message {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.meta {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.errorHeading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--negative);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* Flat skeleton loading bars without shimmer gradients (app-screens.md §11) */
+.skeletonWrap {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+}
+
+.skeletonBar {
+  height: 16px;
+  background: var(--raised);
+  border-radius: 4px;
+}
+
+.skeletonTall {
+  height: 28px;
+  width: 42%;
+  background: var(--raised);
+  border-radius: 4px;
+}
+
+.skeletonRow {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 12px;
+}

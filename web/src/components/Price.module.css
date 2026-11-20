@@ -1,0 +1,56 @@
+.wrap {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.current {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.sm .current {
+  font-size: 16px;
+}
+
+.md .current {
+  font-size: 18px;
+}
+
+.lg .current {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.original {
+  color: var(--muted);
+  text-decoration: line-through;
+  font-weight: 400;
+}
+
+.sm .original {
+  font-size: 13px;
+}
+
+.md .original {
+  font-size: 14px;
+}
+
+.lg .original {
+  font-size: 16px;
+}
+
+.discount {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+@media (max-width: 480px) {
+  .sm .current {
+    font-size: 14px;
+  }
+}

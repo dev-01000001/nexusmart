@@ -1,0 +1,520 @@
+.page {
+  width: 100%;
+  padding: clamp(24px, 3vw, 44px) var(--margin) clamp(56px, 6vw, 96px);
+  background: var(--bg);
+  color: var(--ink);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .page [data-cat-reveal][data-pending="1"] {
+    opacity: 0;
+    transform: translateY(18px);
+    transition:
+      opacity 560ms var(--ease-out),
+      transform 720ms var(--ease-expo);
+    transition-delay: calc(var(--stagger, 0) * 70ms);
+  }
+
+  .page [data-cat-reveal][data-in="1"] {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.heroGrid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: clamp(24px, 3vw, 40px);
+  align-items: center;
+  margin-bottom: clamp(56px, 7vw, 96px);
+}
+
+.heroText {
+  grid-column: 1 / 7;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.title {
+  font-size: clamp(34px, 4.7vw, 68px);
+  font-weight: 300;
+  letter-spacing: -0.035em;
+  line-height: 1.04;
+  color: var(--ink);
+}
+
+.lead {
+  font-size: 18px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 50ch;
+}
+
+.heroActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.heroVisuals {
+  grid-column: 7 / 13;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.heroMainFigure,
+.heroSubFigure {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.heroMainMedia {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--surface-subtle);
+  overflow: clip;
+}
+
+.heroSubPair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.heroSubMedia {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  background: var(--surface-subtle);
+  overflow: clip;
+}
+
+.heroPhotoImg {
+  object-fit: cover;
+  object-position: center;
+}
+
+.heroPhotoCaption {
+  font-size: 14px;
+  color: var(--ink-secondary);
+}
+
+/* Tabbed Workspace */
+.tabsSection {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.tabsHead {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sectionTitle {
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--ink);
+}
+
+.tabsBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tabBtn {
+  min-height: 42px;
+  padding: 0 16px;
+  background: var(--surface-white);
+  color: var(--ink);
+  font-size: 16px;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.tabBtn:hover {
+  background: var(--surface-muted);
+}
+
+.tabBtnActive {
+  background: var(--band-dark);
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.tabBtnActive:hover {
+  background: var(--band-dark);
+}
+
+.panelStack {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* Story tab — unboxed pillars left, video + dark slate standards right */
+.storyLeadGrid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: clamp(24px, 3vw, 48px);
+  align-items: start;
+}
+
+.pillarsCol {
+  grid-column: 1 / 7;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.pillarEntry {
+  background: transparent;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pillarTitle {
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--ink);
+}
+
+.pillarDetail {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 56ch;
+}
+
+.videoCol {
+  grid-column: 7 / 13;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.videoFrame {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--band-dark);
+  overflow: clip;
+}
+
+.loomVideo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.videoCaption {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  max-width: 56ch;
+}
+
+.standardBand {
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.specRow,
+.specRowFull {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.specRowFull {
+  grid-column: span 2;
+}
+
+.specKey {
+  font-size: 14px;
+  color: var(--band-dark-muted);
+}
+
+.specVal {
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--band-dark-ink);
+}
+
+/* Single white surface for Timeline & Changelog */
+.timelineSurface {
+  background: var(--surface-white);
+  padding: clamp(22px, 3vw, 36px);
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.timelineRow,
+.changelogRow {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.timelinePeriod {
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--accent-tint-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.timelineBody,
+.changelogBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 4 Factories tab — single primary white cards (zero grey-in-grey) */
+.factoriesGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.factoryCard {
+  background: var(--surface-white);
+  padding: 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.factoryHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.factoryName {
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.factoryCity {
+  font-size: 14px;
+  color: var(--ink-secondary);
+  margin-top: 2px;
+}
+
+.verifiedTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--accent-tint-ink);
+}
+
+.factoryMetaGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+.factoryMetaKey {
+  font-size: 14px;
+  color: var(--ink-secondary);
+}
+
+.factoryMetaVal {
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.qcBox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.qcLabel {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-secondary);
+}
+
+.qcList {
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.qcItem {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  max-width: 56ch;
+}
+
+.factoryProductsStrip {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.factoryProdThumb {
+  position: relative;
+  width: 56px;
+  height: 74px;
+  background: var(--surface-subtle);
+  overflow: clip;
+  display: block;
+}
+
+.factoryProdImg {
+  object-fit: cover;
+  object-position: center;
+}
+
+.factoryProdModel {
+  object-fit: cover;
+  object-position: top center;
+}
+
+.factoryLinkBox {
+  margin-left: auto;
+}
+
+/* Changelog tab */
+.changelogMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.versionText {
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.dateText {
+  font-size: 14px;
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Bottom CTA Band — accent-tint field */
+.ctaBand {
+  margin-top: clamp(56px, 7vw, 96px);
+  background: var(--accent-tint);
+  padding: clamp(26px, 3.5vw, 40px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+
+.ctaText {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ctaHeading {
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--ink-strong);
+}
+
+.ctaSub {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  max-width: 54ch;
+}
+
+.ctaLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+@media (max-width: 1080px) {
+  .heroGrid,
+  .storyLeadGrid,
+  .factoriesGrid {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+
+  .heroText,
+  .heroVisuals,
+  .pillarsCol,
+  .videoCol {
+    grid-column: auto;
+  }
+
+  .timelineRow,
+  .changelogRow {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+}
+
+@media (max-width: 768px) {
+  .page {
+    padding: 20px 20px 56px;
+  }
+
+  .lead {
+    font-size: 16px;
+  }
+
+  .sectionTitle {
+    font-size: 24px;
+  }
+
+  .factoryMetaGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .specRowFull {
+    grid-column: auto;
+  }
+
+  .factoryLinkBox {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .tabBtn {
+    min-height: 44px;
+  }
+}

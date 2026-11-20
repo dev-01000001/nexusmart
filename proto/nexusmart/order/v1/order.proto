@@ -1,0 +1,258 @@
+syntax = "proto3";
+
+package nexusmart.order.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/nexusmart/core/gen/go/nexusmart/order/v1;orderv1";
+
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  ORDER_STATUS_PENDING = 1;
+  ORDER_STATUS_CONFIRMED = 2;
+  ORDER_STATUS_PREPARING = 3;
+  ORDER_STATUS_SHIPPING = 4;
+  ORDER_STATUS_DELIVERED = 5;
+  ORDER_STATUS_COMPLETED = 6;
+  ORDER_STATUS_CANCELLED = 7;
+  ORDER_STATUS_RETURN_REQUESTED = 8;
+  ORDER_STATUS_RETURNED = 9;
+}
+
+enum OrderPaymentMethod {
+  ORDER_PAYMENT_METHOD_UNSPECIFIED = 0;
+  ORDER_PAYMENT_METHOD_COD = 1;
+  ORDER_PAYMENT_METHOD_VIETQR = 2;
+}
+
+enum PaymentResultStatus {
+  PAYMENT_RESULT_STATUS_UNSPECIFIED = 0;
+  PAYMENT_RESULT_STATUS_SUCCEEDED = 1;
+  PAYMENT_RESULT_STATUS_FAILED = 2;
+  PAYMENT_RESULT_STATUS_EXPIRED = 3;
+}
+
+message OrderItem {
+  string id = 1;
+  string order_id = 2;
+  string sku_id = 3;
+  string product_id = 4;
+  string product_name = 5;
+  string sku_name = 6;
+  int64 unit_price_vnd = 7;
+  int64 effective_unit_price_vnd = 8;
+  int32 quantity = 9;
+  int64 line_total_vnd = 10;
+  int32 weight_grams = 11;
+  string flash_sale_item_id = 12;
+}
+
+message OrderTimelineEvent {
+  string id = 1;
+  string order_id = 2;
+  OrderStatus from_status = 3;
+  OrderStatus to_status = 4;
+  string actor_id = 5;
+  string actor_role = 6;
+  string note = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message OrderAddressSnapshot {
+  string recipient_name = 1;
+  string recipient_phone = 2;
+  string province_code = 3;
+  string province_name = 4;
+  string ward_code = 5;
+  string ward_name = 6;
+  string street_address = 7;
+}
+
+message Order {
+  string id = 1;
+  string order_code = 2;
+  string checkout_group_id = 3;
+  string buyer_id = 4;
+  string shop_id = 5;
+  OrderStatus status = 6;
+  OrderPaymentMethod payment_method = 7;
+  string payment_id = 8;
+  string payment_status = 9;
+  int64 subtotal_vnd = 10;
+  int64 flash_sale_discount_vnd = 11;
+  int64 shop_voucher_discount_vnd = 12;
+  int64 platform_voucher_discount_vnd = 13;
+  int64 freeship_discount_vnd = 14;
+  int64 coins_discount_vnd = 15;
+  int64 shipping_fee_vnd = 16;
+  int64 commission_vnd = 17;
+  int64 total_payable_vnd = 18;
+  string carrier_code = 19;
+  string service_code = 20;
+  string tracking_code = 21;
+  string label_url = 22;
+  string cancel_reason = 23;
+  OrderAddressSnapshot shipping_address = 24;
+  repeated OrderItem items = 25;
+  repeated OrderTimelineEvent timeline = 26;
+  google.protobuf.Timestamp payment_expires_at = 27;
+  google.protobuf.Timestamp created_at = 28;
+  google.protobuf.Timestamp updated_at = 29;
+}
+
+message CheckoutItemInput {
+  string sku_id = 1;
+  int32 quantity = 2;
+  string flash_sale_item_id = 3;
+}
+
+message ShopShippingChoice {
+  string shop_id = 1;
+  string carrier_code = 2;
+  string service_code = 3;
+}
+
+message CreateCheckoutRequest {
+  string idempotency_key = 1;
+  string buyer_id = 2;
+  string address_id = 3;
+  bool from_cart = 4;
+  repeated CheckoutItemInput items = 5;
+  map<string, string> shop_voucher_ids = 6;
+  string platform_voucher_id = 7;
+  string freeship_voucher_id = 8;
+  int64 coins_to_use = 9;
+  OrderPaymentMethod payment_method = 10;
+  repeated ShopShippingChoice shipping_choices = 11;
+}
+
+message CreateCheckoutResponse {
+  string checkout_group_id = 1;
+  repeated Order orders = 2;
+  string payment_id = 3;
+  OrderPaymentMethod payment_method = 4;
+  string payment_status = 5;
+  string qr_url = 6;
+  string qr_code = 7;
+  google.protobuf.Timestamp payment_expires_at = 8;
+  int64 total_payable_vnd = 9;
+  bool idempotent_replay = 10;
+}
+
+message GetOrderRequest {
+  string order_id = 1;
+  string actor_id = 2;
+  string actor_role = 3;
+  string actor_shop_id = 4;
+}
+
+message GetOrderResponse {
+  Order order = 1;
+}
+
+message ListOrdersRequest {
+  string buyer_id = 1;
+  string shop_id = 2;
+  OrderStatus status = 3;
+  string role_scope = 4;
+  int32 page = 5;
+  int32 page_size = 6;
+}
+
+message ListOrdersResponse {
+  repeated Order orders = 1;
+  int64 total = 2;
+}
+
+message CancelOrderRequest {
+  string order_id = 1;
+  string actor_id = 2;
+  string actor_role = 3;
+  string actor_shop_id = 4;
+  string reason = 5;
+}
+
+message CancelOrderResponse {
+  Order order = 1;
+}
+
+message SellerConfirmOrderRequest {
+  string order_id = 1;
+  string shop_id = 2;
+  string seller_user_id = 3;
+}
+
+message SellerConfirmOrderResponse {
+  Order order = 1;
+}
+
+message SellerShipOrderRequest {
+  string order_id = 1;
+  string shop_id = 2;
+  string seller_user_id = 3;
+  string carrier_code = 4;
+  string service_code = 5;
+}
+
+message SellerShipOrderResponse {
+  Order order = 1;
+  string tracking_code = 2;
+  string label_url = 3;
+}
+
+message BuyerConfirmReceivedRequest {
+  string order_id = 1;
+  string buyer_id = 2;
+}
+
+message BuyerConfirmReceivedResponse {
+  Order order = 1;
+}
+
+message RequestReturnRequest {
+  string order_id = 1;
+  string buyer_id = 2;
+  string reason = 3;
+  repeated string evidence_urls = 4;
+}
+
+message RequestReturnResponse {
+  Order order = 1;
+  string return_request_id = 2;
+}
+
+message GetOrderTimelineRequest {
+  string order_id = 1;
+  string actor_id = 2;
+  string actor_role = 3;
+  string actor_shop_id = 4;
+}
+
+message GetOrderTimelineResponse {
+  repeated OrderTimelineEvent events = 1;
+}
+
+message MarkPaymentResultRequest {
+  string checkout_group_id = 1;
+  string order_id = 2;
+  string payment_id = 3;
+  PaymentResultStatus status = 4;
+  string reason = 5;
+}
+
+message MarkPaymentResultResponse {
+  bool ok = 1;
+}
+
+service OrderService {
+  rpc CreateCheckout(CreateCheckoutRequest) returns (CreateCheckoutResponse);
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+  rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse);
+  rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
+  rpc SellerConfirmOrder(SellerConfirmOrderRequest) returns (SellerConfirmOrderResponse);
+  rpc SellerShipOrder(SellerShipOrderRequest) returns (SellerShipOrderResponse);
+  rpc BuyerConfirmReceived(BuyerConfirmReceivedRequest) returns (BuyerConfirmReceivedResponse);
+  rpc RequestReturn(RequestReturnRequest) returns (RequestReturnResponse);
+  rpc GetOrderTimeline(GetOrderTimelineRequest) returns (GetOrderTimelineResponse);
+  rpc MarkPaymentResult(MarkPaymentResultRequest) returns (MarkPaymentResultResponse);
+}

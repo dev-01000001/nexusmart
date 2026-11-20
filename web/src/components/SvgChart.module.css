@@ -1,0 +1,195 @@
+.chartBox {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+
+.tooltip {
+  position: absolute;
+  top: 0;
+  pointer-events: none;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  border-radius: 6px;
+  white-space: nowrap;
+  background: var(--card);
+  color: var(--ink);
+  border: 1px solid var(--border); /* taste-skill-ignore: floating chart tooltip */
+  z-index: 5;
+  font-variant-numeric: tabular-nums;
+}
+
+.tooltipLabel {
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
+.tooltipRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tooltipValue {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.legend {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.legendLine {
+  width: 14px;
+  height: 2px;
+  display: inline-block;
+}
+
+/* Ranked bar list */
+.barList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.barListItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 12px;
+  row-gap: 5px;
+}
+
+.barListLabel {
+  font-size: 14px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.barListSub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-left: 6px;
+}
+
+.barListValue {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.barListTrack {
+  grid-column: 1 / -1;
+  height: 3px;
+  background: var(--rule);
+  width: 100%;
+  overflow: hidden;
+}
+
+.barListFill {
+  display: block;
+  height: 100%;
+  transition: width 240ms var(--ease-out);
+}
+
+/* Progress bar */
+.progressWrap {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.progressHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.progressLeft {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.progressRight {
+  color: var(--muted);
+  text-align: right;
+}
+
+.progressTrack {
+  height: 8px;
+  width: 100%;
+  border-radius: 999px;
+  background: var(--rule);
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--chart-1);
+  transition: width 240ms var(--ease-out);
+}
+
+/* Ring chart */
+.ringWrap {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.ringCenter {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  pointer-events: none;
+}
+
+.ringValue {
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.1;
+}
+
+.ringSub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 3px;
+}

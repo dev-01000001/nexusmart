@@ -1,0 +1,147 @@
+package proxy
+
+import (
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/nexusmart/core/pkg/common/auth"
+	"github.com/nexusmart/core/services/gateway/internal/httpx"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+)
+
+// NewWebhookProxy creates a reverse proxy that forwards webhooks to targetBaseURL while preserving
+// the exact raw request body, X-Signature, X-Timestamp, and W3C traceparent headers.
+func NewWebhookProxy(targetBaseURL string, log *slog.Logger) (http.Handler, error) {
+	target, err := url.Parse(strings.TrimSpace(targetBaseURL))
+	if err != nil || target.Scheme == "" || target.Host == "" {
+		return nil, fmt.Errorf("invalid webhook upstream url %q: %w", targetBaseURL, err)
+	}
+
+	baseTransport, _ := http.DefaultTransport.(*http.Transport)
+	var transport http.RoundTripper
+	if baseTransport != nil {
+		tr := baseTransport.Clone()
+		tr.ResponseHeaderTimeout = 15 * time.Second
+		transport = tr
+	}
+
+	rp := &httputil.ReverseProxy{
+		Transport: transport,
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			pr.Out.URL.Path = pr.In.URL.Path
+			pr.Out.URL.RawPath = pr.In.URL.RawPath
+			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
+			pr.Out.Host = target.Host
+			pr.SetXForwarded()
+
+			// Preserve incoming signature/timestamp headers verbatim and propagate traceparent.
+			if sig := pr.In.Header.Get("X-Signature"); sig != "" {
+				pr.Out.Header.Set("X-Signature", sig)
+			}
+			if ts := pr.In.Header.Get("X-Timestamp"); ts != "" {
+				pr.Out.Header.Set("X-Timestamp", ts)
+			}
+			if tp := pr.In.Header.Get("traceparent"); tp != "" {
+				pr.Out.Header.Set("traceparent", tp)
+			} else {
+				otel.GetTextMapPropagator().Inject(pr.In.Context(), propagation.HeaderCarrier(pr.Out.Header))
+			}
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, proxyErr error) {
+			if log != nil {
+				log.ErrorContext(r.Context(), "webhook proxy error", slog.String("path", r.URL.Path), slog.String("error", proxyErr.Error()))
+			}
+			httpx.WriteError(w, r, http.StatusBadGateway, "UPSTREAM_ERROR", "upstream webhook service unavailable")
+		},
+	}
+
+	return rp, nil
+}
+
+// NewSSEProxy creates a flush-enabled reverse proxy for payment SSE events:
+// GET /api/v1/payments/{id}/events -> PAYMENT_HTTP_URL/payments/{id}/events.
+func NewSSEProxy(paymentHTTPURL string, log *slog.Logger) (http.Handler, error) {
+	target, err := url.Parse(strings.TrimSpace(paymentHTTPURL))
+	if err != nil || target.Scheme == "" || target.Host == "" {
+		return nil, fmt.Errorf("invalid payment SSE upstream url %q: %w", paymentHTTPURL, err)
+	}
+
+	rp := &httputil.ReverseProxy{
+		FlushInterval: -1,
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			rewritten := strings.TrimPrefix(pr.In.URL.Path, "/api/v1")
+			if rewritten == "" {
+				rewritten = "/"
+			}
+			pr.Out.URL.Path = rewritten
+			pr.Out.URL.RawPath = ""
+			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
+			pr.Out.Host = target.Host
+			pr.SetXForwarded()
+
+			if claims, ok := auth.ClaimsFromContext(pr.In.Context()); ok {
+				if claims.UserID() != "" {
+					pr.Out.Header.Set("X-User-Id", claims.UserID())
+				}
+				if claims.Role != "" {
+					pr.Out.Header.Set("X-User-Role", claims.Role)
+				}
+				if claims.ShopID != "" {
+					pr.Out.Header.Set("X-Shop-Id", claims.ShopID)
+				}
+			}
+			if rawAuth := auth.RawTokenFromContext(pr.In.Context()); rawAuth != "" {
+				pr.Out.Header.Set("Authorization", rawAuth)
+			}
+			otel.GetTextMapPropagator().Inject(pr.In.Context(), propagation.HeaderCarrier(pr.Out.Header))
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			resp.Header.Set("X-Accel-Buffering", "no")
+			if resp.Header.Get("Cache-Control") == "" {
+				resp.Header.Set("Cache-Control", "no-cache")
+			}
+			return nil
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, proxyErr error) {
+			if log != nil {
+				log.ErrorContext(r.Context(), "payment SSE proxy error", slog.String("path", r.URL.Path), slog.String("error", proxyErr.Error()))
+			}
+			httpx.WriteError(w, r, http.StatusBadGateway, "UPSTREAM_ERROR", "payment event stream unavailable")
+		},
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Disable per-request write timeout for long-lived SSE connections.
+		clearWriteDeadline(w)
+		rp.ServeHTTP(w, r)
+	}), nil
+}
+
+func clearWriteDeadline(w http.ResponseWriter) {
+	type unwrapper interface {
+		Unwrap() http.ResponseWriter
+	}
+	type writeDeadliner interface {
+		SetWriteDeadline(time.Time) error
+	}
+	cur := w
+	for cur != nil {
+		if wd, ok := cur.(writeDeadliner); ok {
+			_ = wd.SetWriteDeadline(time.Time{})
+			return
+		}
+		if u, ok := cur.(unwrapper); ok {
+			cur = u.Unwrap()
+			continue
+		}
+		return
+	}
+}

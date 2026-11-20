@@ -1,0 +1,256 @@
+/* Seller Factory Profile, Size Chart & Operations (/seller/ho-so) — Achromatic ledger */
+
+.twoCol {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: var(--gap);
+  align-items: stretch;
+}
+
+.colStack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-width: 0;
+}
+
+.fields2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+}
+
+.fields3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 14px;
+}
+
+.fieldStack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.formActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.qcList {
+  display: flex;
+  flex-direction: column;
+}
+
+.qcRow {
+  padding: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.qcRow + .qcRow {
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: QC standard item divider */
+}
+
+.qcHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.qcTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.qcDesc {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--muted);
+}
+
+.menuList {
+  display: flex;
+  flex-direction: column;
+}
+
+.menuRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+}
+
+.menuRow + .menuRow {
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: shop menu item divider */
+}
+
+.menuLabel {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.menuSlug {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.addCollectionForm {
+  padding: 14px;
+  margin-bottom: 14px;
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  border: 1px solid var(--border); /* taste-skill-ignore: add shop collection form well */
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Size chart inline inputs */
+input.sizeCellInput {
+  width: 100%;
+  min-width: 78px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--control); /* taste-skill-ignore: editable size chart cell input */
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.sizePreviewBox {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sizeResultWell {
+  padding: 16px;
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  border: 1px solid var(--border); /* taste-skill-ignore: size recommendation widget preview */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.sizeResultVal {
+  font-size: 28px;
+  line-height: 1.1;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.switchRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 0;
+}
+
+.switchRow + .switchRow {
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: operations toggle row divider */
+}
+
+.switchText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.switchTitle {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.switchDesc {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--muted);
+}
+
+.badgePreviewList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.previewWell {
+  padding: 14px 16px;
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  border: 1px solid var(--border); /* taste-skill-ignore: buyer-facing policy preview card */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.previewHeading {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.previewLine {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--muted);
+}
+
+.mobileSizeCard {
+  padding: 12px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border); /* taste-skill-ignore: mobile size row editor */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.mobileSizeHead {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.mobileSizeGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 980px) {
+  .twoCol {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .fields2,
+  .fields3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sizeResultWell {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

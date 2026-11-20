@@ -1,0 +1,102 @@
+package config
+
+import (
+	"log/slog"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/nexusmart/core/pkg/common/env"
+)
+
+// Config holds runtime configuration for the order service.
+type Config struct {
+	ServiceName string
+	GRPCPort    string
+	HTTPPort    string
+	DatabaseURL string
+	NATSURL     string
+	NATSStream  string
+
+	UserGRPCAddr      string
+	ProductGRPCAddr   string
+	CartGRPCAddr      string
+	PromotionGRPCAddr string
+	PaymentGRPCAddr   string
+	ShippingGRPCAddr  string
+
+	CODMaxVND             int64
+	CODMaxRejectedCount   int32
+	PaymentExpiryMinutes  int
+	DefaultCommissionBPS  int32
+	RewardCoinsBPS        int32
+	GRPCCallTimeout       time.Duration
+	OutboxPollInterval    time.Duration
+	ExpiryWatchdogTimeout time.Duration
+	ExpiryWatchdogPeriod  time.Duration
+
+	JWTSecret    string
+	OTLPEndpoint string
+	OTLPInsecure bool
+	LogLevel     slog.Level
+}
+
+// Load reads order service configuration from environment variables with safe dev defaults.
+func Load() Config {
+	return Config{
+		ServiceName: env.EnvString("SERVICE_NAME", "order"),
+		GRPCPort:    env.EnvString("GRPC_PORT", "50055"),
+		HTTPPort:    env.EnvString("HTTP_PORT", "8085"),
+		DatabaseURL: env.EnvString("DATABASE_URL", "postgres://nexusmart:nexusmart_dev_password@localhost:5432/order_db?sslmode=disable"),
+		NATSURL:     env.EnvString("NATS_URL", "nats://localhost:4222"),
+		NATSStream:  env.EnvString("NATS_STREAM", "NEXUSMART"),
+
+		UserGRPCAddr:      env.EnvString("USER_GRPC_ADDR", "localhost:50051"),
+		ProductGRPCAddr:   env.EnvString("PRODUCT_GRPC_ADDR", "localhost:50052"),
+		CartGRPCAddr:      env.EnvString("CART_GRPC_ADDR", "localhost:50053"),
+		PromotionGRPCAddr: env.EnvString("PROMOTION_GRPC_ADDR", "localhost:50054"),
+		PaymentGRPCAddr:   env.EnvString("PAYMENT_GRPC_ADDR", "localhost:50056"),
+		ShippingGRPCAddr:  env.EnvString("SHIPPING_GRPC_ADDR", "localhost:50057"),
+
+		CODMaxVND:             envInt64("ORDER_COD_MAX_VND", 5000000),
+		CODMaxRejectedCount:   int32(env.EnvInt("ORDER_COD_MAX_REJECTED_COUNT", 3)),
+		PaymentExpiryMinutes:  env.EnvInt("ORDER_PAYMENT_EXPIRY_MINUTES", 15),
+		DefaultCommissionBPS:  int32(env.EnvInt("ORDER_DEFAULT_COMMISSION_BPS", 500)),
+		RewardCoinsBPS:        int32(env.EnvInt("ORDER_REWARD_COINS_BPS", 100)),
+		GRPCCallTimeout:       env.EnvDuration("ORDER_GRPC_TIMEOUT", 10*time.Second),
+		OutboxPollInterval:    env.EnvDuration("ORDER_OUTBOX_POLL_INTERVAL", 250*time.Millisecond),
+		ExpiryWatchdogPeriod:  env.EnvDuration("ORDER_EXPIRY_WATCHDOG_INTERVAL", 10*time.Second),
+		ExpiryWatchdogTimeout: env.EnvDuration("ORDER_EXPIRY_WATCHDOG_TIMEOUT", 15*time.Second),
+
+		JWTSecret:    env.EnvString("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me"),
+		OTLPEndpoint: env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		OTLPInsecure: env.EnvBool("OTEL_EXPORTER_OTLP_INSECURE", true),
+		LogLevel:     parseLogLevel(env.EnvString("LOG_LEVEL", "info")),
+	}
+}
+
+func envInt64(key string, defaultVal int64) int64 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return defaultVal
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return defaultVal
+	}
+	return n
+}
+
+func parseLogLevel(raw string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}

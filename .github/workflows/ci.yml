@@ -1,0 +1,112 @@
+name: NexusMart Core CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  proto-lint:
+    name: Protobuf Lint & Generate Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: v1.45.0
+      - run: buf lint
+
+  go-lint-and-test:
+    name: Go Lint & Test (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - pkg/common
+          - gen/go
+          - services/gateway
+          - services/user
+          - services/product
+          - services/cart
+          - services/promotion
+          - services/order
+          - services/shipping
+          - services/notification
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.2"
+      - name: Check gofmt
+        working-directory: ${{ matrix.module }}
+        run: |
+          if [ -f go.mod ]; then
+            UNFMT=$(gofmt -l .)
+            if [ -n "$UNFMT" ]; then
+              echo "Unformatted files:"
+              echo "$UNFMT"
+              exit 1
+            fi
+          fi
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.60.3
+          working-directory: ${{ matrix.module }}
+          args: -c ${{ github.workspace }}/.golangci.yml
+      - name: Run Go unit tests
+        working-directory: ${{ matrix.module }}
+        run: go test -race -cover ./...
+
+  rust-payment:
+    name: Rust Payment (fmt, clippy, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libprotobuf-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/payment
+      - name: cargo fmt
+        working-directory: services/payment
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        working-directory: services/payment
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test
+        working-directory: services/payment
+        run: cargo test
+
+  docker-build:
+    name: Docker Image Build (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: [proto-lint, go-lint-and-test, rust-payment]
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - gateway
+          - user
+          - product
+          - cart
+          - promotion
+          - order
+          - payment
+          - shipping
+          - notification
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build ${{ matrix.service }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/${{ matrix.service }}/Dockerfile
+          push: false
+          load: false
+          tags: nexusmart/${{ matrix.service }}:ci

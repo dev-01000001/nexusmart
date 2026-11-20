@@ -1,0 +1,265 @@
+syntax = "proto3";
+
+package nexusmart.product.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/nexusmart/core/gen/go/nexusmart/product/v1;productv1";
+
+enum ProductStatus {
+  PRODUCT_STATUS_UNSPECIFIED = 0;
+  PRODUCT_STATUS_PENDING = 1;
+  PRODUCT_STATUS_APPROVED = 2;
+  PRODUCT_STATUS_REJECTED = 3;
+  PRODUCT_STATUS_HIDDEN = 4;
+  PRODUCT_STATUS_OUT_OF_STOCK = 5;
+}
+
+enum ProductReviewDecision {
+  PRODUCT_REVIEW_DECISION_UNSPECIFIED = 0;
+  PRODUCT_REVIEW_DECISION_APPROVE = 1;
+  PRODUCT_REVIEW_DECISION_REJECT = 2;
+}
+
+message Category {
+  string id = 1;
+  string name = 2;
+  string slug = 3;
+  string parent_id = 4;
+  int32 commission_rate_bps = 5;
+  int32 sort_order = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+message SKU {
+  string id = 1;
+  string product_id = 2;
+  string shop_id = 3;
+  string product_name = 4;
+  string sku_code = 5;
+  string name = 6;
+  map<string, string> attributes = 7;
+  int64 price_vnd = 8;
+  int32 stock = 9;
+  int32 reserved_stock = 10;
+  int32 available_stock = 11;
+  int64 version = 12;
+  int32 weight_grams = 13;
+  string image_url = 14;
+  string category_id = 15;
+  int32 commission_rate_bps = 16;
+  bool is_active = 17;
+}
+
+message SKUInput {
+  string id = 1;
+  string sku_code = 2;
+  string name = 3;
+  map<string, string> attributes = 4;
+  int64 price_vnd = 5;
+  int32 stock = 6;
+  int32 weight_grams = 7;
+  string image_url = 8;
+}
+
+message Product {
+  string id = 1;
+  string shop_id = 2;
+  string category_id = 3;
+  string name = 4;
+  string description = 5;
+  repeated string images = 6;
+  ProductStatus status = 7;
+  string rejection_reason = 8;
+  int64 min_price_vnd = 9;
+  int64 max_price_vnd = 10;
+  repeated SKU skus = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+
+message CreateCategoryRequest {
+  string name = 1;
+  string slug = 2;
+  string parent_id = 3;
+  int32 commission_rate_bps = 4;
+  int32 sort_order = 5;
+}
+
+message CreateCategoryResponse {
+  Category category = 1;
+}
+
+message UpdateCategoryRequest {
+  string id = 1;
+  string name = 2;
+  string slug = 3;
+  string parent_id = 4;
+  int32 commission_rate_bps = 5;
+  int32 sort_order = 6;
+}
+
+message UpdateCategoryResponse {
+  Category category = 1;
+}
+
+message DeleteCategoryRequest {
+  string id = 1;
+}
+
+message DeleteCategoryResponse {
+  bool ok = 1;
+}
+
+message ListCategoriesRequest {
+  string parent_id = 1;
+}
+
+message ListCategoriesResponse {
+  repeated Category categories = 1;
+}
+
+message CreateProductRequest {
+  string shop_id = 1;
+  string category_id = 2;
+  string name = 3;
+  string description = 4;
+  repeated string images = 5;
+  repeated SKUInput skus = 6;
+}
+
+message CreateProductResponse {
+  Product product = 1;
+}
+
+message UpdateProductRequest {
+  string id = 1;
+  string shop_id = 2;
+  string category_id = 3;
+  string name = 4;
+  string description = 5;
+  repeated string images = 6;
+  ProductStatus status = 7;
+  repeated SKUInput skus = 8;
+}
+
+message UpdateProductResponse {
+  Product product = 1;
+}
+
+message DeleteProductRequest {
+  string id = 1;
+  string shop_id = 2;
+}
+
+message DeleteProductResponse {
+  bool ok = 1;
+}
+
+message AdminReviewProductRequest {
+  string admin_id = 1;
+  string product_id = 2;
+  ProductReviewDecision decision = 3;
+  string reason = 4;
+}
+
+message AdminReviewProductResponse {
+  Product product = 1;
+}
+
+message GetProductRequest {
+  string id = 1;
+}
+
+message GetProductResponse {
+  Product product = 1;
+}
+
+message ListProductsRequest {
+  string category_id = 1;
+  string keyword = 2;
+  string shop_id = 3;
+  ProductStatus status = 4;
+  int64 min_price_vnd = 5;
+  int64 max_price_vnd = 6;
+  string sort_by = 7;
+  int32 page = 8;
+  int32 page_size = 9;
+}
+
+message ListProductsResponse {
+  repeated Product products = 1;
+  int64 total = 2;
+}
+
+message GetSKUsBatchRequest {
+  repeated string sku_ids = 1;
+}
+
+message GetSKUsBatchResponse {
+  repeated SKU skus = 1;
+}
+
+message UpdateStockRequest {
+  string sku_id = 1;
+  string shop_id = 2;
+  int32 new_stock = 3;
+  int64 expected_version = 4;
+}
+
+message UpdateStockResponse {
+  SKU sku = 1;
+}
+
+message StockReservationItem {
+  string sku_id = 1;
+  int32 quantity = 2;
+}
+
+message ReserveStockRequest {
+  string order_id = 1;
+  repeated StockReservationItem items = 2;
+}
+
+message ReserveStockResponse {
+  bool reserved = 1;
+  string reservation_id = 2;
+  bool already_reserved = 3;
+}
+
+message ReleaseStockRequest {
+  string order_id = 1;
+}
+
+message ReleaseStockResponse {
+  bool released = 1;
+  bool already_released = 2;
+}
+
+message ConfirmStockRequest {
+  string order_id = 1;
+}
+
+message ConfirmStockResponse {
+  bool confirmed = 1;
+  bool already_confirmed = 2;
+}
+
+service ProductService {
+  rpc CreateCategory(CreateCategoryRequest) returns (CreateCategoryResponse);
+  rpc UpdateCategory(UpdateCategoryRequest) returns (UpdateCategoryResponse);
+  rpc DeleteCategory(DeleteCategoryRequest) returns (DeleteCategoryResponse);
+  rpc ListCategories(ListCategoriesRequest) returns (ListCategoriesResponse);
+  rpc CreateProduct(CreateProductRequest) returns (CreateProductResponse);
+  rpc UpdateProduct(UpdateProductRequest) returns (UpdateProductResponse);
+  rpc DeleteProduct(DeleteProductRequest) returns (DeleteProductResponse);
+  rpc AdminReviewProduct(AdminReviewProductRequest) returns (AdminReviewProductResponse);
+  rpc GetProduct(GetProductRequest) returns (GetProductResponse);
+  rpc ListProducts(ListProductsRequest) returns (ListProductsResponse);
+  rpc GetSKUsBatch(GetSKUsBatchRequest) returns (GetSKUsBatchResponse);
+  rpc UpdateStock(UpdateStockRequest) returns (UpdateStockResponse);
+  rpc ReserveStock(ReserveStockRequest) returns (ReserveStockResponse);
+  rpc ReleaseStock(ReleaseStockRequest) returns (ReleaseStockResponse);
+  rpc ConfirmStock(ConfirmStockRequest) returns (ConfirmStockResponse);
+}
