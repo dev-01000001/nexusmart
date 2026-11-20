@@ -1,9 +1,13 @@
 name: NexusMart Core CI
 
+# Chạy tay để tiết kiệm quota Actions: `gh workflow run ci.yml` hoặc nút Run workflow.
+# Gate hằng ngày chạy local: make lint, make test, make e2e.
 on:
-  push:
-    branches: [main, master]
-  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   proto-lint:
