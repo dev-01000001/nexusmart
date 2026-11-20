@@ -129,6 +129,8 @@ func New(deps Dependencies) http.Handler {
 
 			api.Get("/shops", h.handleListShops)
 			api.Get("/categories", h.handleListCategories)
+			api.Get("/sites/by-host", h.handleGetSiteByHost)
+			api.Get("/sites/by-shop/{shop_id}", h.handleGetSiteByShop)
 
 			api.Get("/shipping/provinces", h.handleListProvinces)
 			api.Get("/shipping/provinces/{code}/wards", h.handleListWards)
@@ -212,6 +214,13 @@ func New(deps Dependencies) http.Handler {
 
 					seller.Get("/shop", h.handleSellerGetShop)
 
+					// Phase 2 Seller Site Management
+					seller.Get("/site", h.handleSellerGetSite)
+					seller.Put("/site/draft", h.handleSellerSaveSiteDraft)
+					seller.Post("/site/publish", h.handleSellerPublishSite)
+					seller.Post("/site/rollback", h.handleSellerRollbackSite)
+					seller.Get("/site/versions", h.handleSellerListSiteVersions)
+
 					// Section 4.2 Seller Products & Stock
 					seller.Get("/products", h.handleSellerListProducts)
 					seller.Post("/products", h.handleSellerCreateProduct)
@@ -245,6 +254,9 @@ func New(deps Dependencies) http.Handler {
 					admin.Patch("/users/{id}/role", h.handleAdminUpdateUserRole)
 					admin.Get("/shops", h.handleAdminListShops)
 					admin.Post("/shops/{id}/review", h.handleAdminReviewShop)
+					admin.Get("/sites", h.handleAdminListSites)
+					admin.Get("/sites/{shop_id}", h.handleAdminGetSiteByShop)
+					admin.Post("/sites/{site_id}/suspend", h.handleAdminSuspendSite)
 					admin.Get("/audit-logs", h.handleAdminListAuditLogs)
 
 					// Section 4.2 Admin Categories & Product Review
@@ -257,6 +269,7 @@ func New(deps Dependencies) http.Handler {
 					// Section 4.4 Admin Vouchers, Flash Sales & Coins
 					admin.Post("/vouchers", h.handleAdminCreateVoucher)
 					admin.Post("/flash-sales", h.handleAdminCreateFlashSale)
+					admin.Post("/flash-sales/{id}/end", h.handleAdminEndFlashSaleWindow)
 					admin.Post("/flash-sale-items/{item_id}/approve", h.handleAdminApproveFlashSaleItem)
 					admin.Post("/coins/credit", h.handleAdminCreditCoins)
 

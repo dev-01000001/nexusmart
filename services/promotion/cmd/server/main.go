@@ -17,9 +17,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 
+	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	promotionv1 "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/logger"
@@ -88,12 +92,21 @@ func main() {
 	}
 	defer func() { _ = rdb.Close() }()
 
+	productConn, err := dialProductService(cfg.ProductGRPCAddr, cfg.ServiceName, cfg.GRPCCallTimeout, svcMgr)
+	if err != nil {
+		log.Error("failed to dial product service", slog.String("addr", cfg.ProductGRPCAddr), slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	defer func() { _ = productConn.Close() }()
+
 	luaEngine := lua.NewEngine(rdb)
 	promoSvc := service.NewPromotionService(pgStore, luaEngine, log)
+	promoSvc.SetProductClient(productv1.NewProductServiceClient(productConn))
 	if err := promoSvc.SyncRedisFromStore(ctx); err != nil {
 		log.Error("failed to sync redis keys from store", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
+	promoSvc.StartFlashSaleSweeper(ctx, cfg.FlashSaleSweepInterval)
 
 	nc, consumer, err := connectNATS(ctx, cfg.NATSURL, cfg.NATSStream, pgStore, log)
 	if err != nil {
@@ -295,4 +308,36 @@ func connectNATS(
 		return nil, nil, err
 	}
 	return nc, consumer, nil
+}
+
+func dialProductService(addr, serviceName string, defaultTimeout time.Duration, svcMgr *auth.Manager) (*grpc.ClientConn, error) {
+	return grpc.NewClient(
+		addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithChainUnaryInterceptor(
+			func(
+				ctx context.Context,
+				method string,
+				req, reply any,
+				cc *grpc.ClientConn,
+				invoker grpc.UnaryInvoker,
+				opts ...grpc.CallOption,
+			) error {
+				if defaultTimeout > 0 {
+					if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithTimeout(ctx, defaultTimeout)
+						defer cancel()
+					}
+				}
+				tok, err := svcMgr.SignServiceToken("promotion-service")
+				if err != nil {
+					return status.Error(codes.Internal, "sign promotion service token")
+				}
+				ctx = auth.InjectOutgoingGRPC(ctx, tok)
+				return invoker(ctx, method, req, reply, cc, opts...)
+			},
+			telemetry.GRPCUnaryClientInterceptor(serviceName),
+		),
+	)
 }

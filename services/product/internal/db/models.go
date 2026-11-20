@@ -21,6 +21,17 @@ type Category struct {
 	UpdatedAt         time.Time
 }
 
+type FlashSaleStockReservation struct {
+	FlashSaleItemID string
+	SkuID           string
+	ReservedQty     int32
+	ConsumedQty     int32
+	Status          string
+	EndsAt          time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 type Product struct {
 	ID              string
 	ShopID          string
@@ -38,20 +49,21 @@ type Product struct {
 }
 
 type Sku struct {
-	ID            string
-	ProductID     string
-	SkuCode       string
-	Name          string
-	Attributes    []byte
-	PriceVnd      int64
-	Stock         int32
-	ReservedStock int32
-	Version       int64
-	WeightGrams   int32
-	ImageURL      string
-	Status        string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID                     string
+	ProductID              string
+	SkuCode                string
+	Name                   string
+	Attributes             []byte
+	PriceVnd               int64
+	Stock                  int32
+	ReservedStock          int32
+	Version                int64
+	WeightGrams            int32
+	ImageURL               string
+	Status                 string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	FlashSaleReservedStock int32
 }
 
 type StockHistory struct {
@@ -78,4 +90,5 @@ type StockReservation struct {
 	Status             string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	FlashSaleItemID    string
 }

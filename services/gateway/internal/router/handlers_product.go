@@ -22,23 +22,24 @@ type categoryDTO struct {
 }
 
 type skuDTO struct {
-	ID                string            `json:"id"`
-	ProductID         string            `json:"product_id"`
-	ShopID            string            `json:"shop_id"`
-	ProductName       string            `json:"product_name"`
-	SKUCode           string            `json:"sku_code"`
-	Name              string            `json:"name"`
-	Attributes        map[string]string `json:"attributes"`
-	PriceVND          int64             `json:"price_vnd"`
-	Stock             int32             `json:"stock"`
-	ReservedStock     int32             `json:"reserved_stock"`
-	AvailableStock    int32             `json:"available_stock"`
-	Version           int64             `json:"version"`
-	WeightGrams       int32             `json:"weight_grams"`
-	ImageURL          string            `json:"image_url"`
-	CategoryID        string            `json:"category_id"`
-	CommissionRateBps int32             `json:"commission_rate_bps"`
-	IsActive          bool              `json:"is_active"`
+	ID                     string            `json:"id"`
+	ProductID              string            `json:"product_id"`
+	ShopID                 string            `json:"shop_id"`
+	ProductName            string            `json:"product_name"`
+	SKUCode                string            `json:"sku_code"`
+	Name                   string            `json:"name"`
+	Attributes             map[string]string `json:"attributes"`
+	PriceVND               int64             `json:"price_vnd"`
+	Stock                  int32             `json:"stock"`
+	ReservedStock          int32             `json:"reserved_stock"`
+	FlashSaleReservedStock int32             `json:"flash_sale_reserved_stock"`
+	AvailableStock         int32             `json:"available_stock"`
+	Version                int64             `json:"version"`
+	WeightGrams            int32             `json:"weight_grams"`
+	ImageURL               string            `json:"image_url"`
+	CategoryID             string            `json:"category_id"`
+	CommissionRateBps      int32             `json:"commission_rate_bps"`
+	IsActive               bool              `json:"is_active"`
 }
 
 type productDTO struct {
@@ -93,23 +94,24 @@ func mapSKU(s *productv1.SKU) *skuDTO {
 		attrs = map[string]string{}
 	}
 	return &skuDTO{
-		ID:                s.GetId(),
-		ProductID:         s.GetProductId(),
-		ShopID:            s.GetShopId(),
-		ProductName:       s.GetProductName(),
-		SKUCode:           s.GetSkuCode(),
-		Name:              s.GetName(),
-		Attributes:        attrs,
-		PriceVND:          s.GetPriceVnd(),
-		Stock:             s.GetStock(),
-		ReservedStock:     s.GetReservedStock(),
-		AvailableStock:    s.GetAvailableStock(),
-		Version:           s.GetVersion(),
-		WeightGrams:       s.GetWeightGrams(),
-		ImageURL:          s.GetImageUrl(),
-		CategoryID:        s.GetCategoryId(),
-		CommissionRateBps: s.GetCommissionRateBps(),
-		IsActive:          s.GetIsActive(),
+		ID:                     s.GetId(),
+		ProductID:              s.GetProductId(),
+		ShopID:                 s.GetShopId(),
+		ProductName:            s.GetProductName(),
+		SKUCode:                s.GetSkuCode(),
+		Name:                   s.GetName(),
+		Attributes:             attrs,
+		PriceVND:               s.GetPriceVnd(),
+		Stock:                  s.GetStock(),
+		ReservedStock:          s.GetReservedStock(),
+		FlashSaleReservedStock: s.GetFlashSaleReservedStock(),
+		AvailableStock:         s.GetAvailableStock(),
+		Version:                s.GetVersion(),
+		WeightGrams:            s.GetWeightGrams(),
+		ImageURL:               s.GetImageUrl(),
+		CategoryID:             s.GetCategoryId(),
+		CommissionRateBps:      s.GetCommissionRateBps(),
+		IsActive:               s.GetIsActive(),
 	}
 }
 

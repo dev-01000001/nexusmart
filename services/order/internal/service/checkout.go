@@ -282,28 +282,51 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		}
 	}
 
-	// Saga Step 1: Reserve Stock (atomic optimistic locking, idempotent by checkoutGroupID).
-	if _, err := s.clients.Product.ReserveStock(ctx, &productv1.ReserveStockRequest{
-		OrderId: checkoutGroupID,
-		Items:   allStockItems,
-	}); err != nil {
-		failGroupBeforePersist("STOCK_RESERVE_FAILED")
-		return nil, err
-	}
-
-	// Saga Step 2: Reserve Promotions (vouchers, freeship, coins, flash sale slots).
+	// Saga Steps 1 & 2: Reserve Stock and Reserve Promotions.
+	// For flash-sale orders, gate via Redis Lua (ReservePromotion) BEFORE touching Product DB
+	// so 1,000 concurrent requests competing for 100 slots reject the 900 losers in memory with
+	// zero Product DB contention and zero leaked stock.
 	promoReserved := false
 	var breakdown *promotionv1.DiscountBreakdown
-	if hasPromotions {
+	if len(flashSaleItems) > 0 {
 		promoReq := buildReservePromotionRequest(checkoutGroupID, buyerID, req, plans, flashSaleItems, salesChannel, storefrontShopID)
 		promoResp, pErr := s.clients.Promotion.ReservePromotion(ctx, promoReq)
 		if pErr != nil {
-			s.compensateReleaseStock(ctx, checkoutGroupID)
 			failGroupBeforePersist("PROMOTION_RESERVE_FAILED")
 			return nil, pErr
 		}
 		promoReserved = true
 		breakdown = promoResp.GetBreakdown()
+
+		if _, err := s.clients.Product.ReserveStock(ctx, &productv1.ReserveStockRequest{
+			OrderId: checkoutGroupID,
+			Items:   allStockItems,
+		}); err != nil {
+			s.compensateReleasePromotion(ctx, checkoutGroupID)
+			failGroupBeforePersist("STOCK_RESERVE_FAILED")
+			return nil, err
+		}
+	} else {
+		// Regular order: Reserve Stock first (atomic optimistic locking, idempotent by checkoutGroupID).
+		if _, err := s.clients.Product.ReserveStock(ctx, &productv1.ReserveStockRequest{
+			OrderId: checkoutGroupID,
+			Items:   allStockItems,
+		}); err != nil {
+			failGroupBeforePersist("STOCK_RESERVE_FAILED")
+			return nil, err
+		}
+
+		if hasPromotions {
+			promoReq := buildReservePromotionRequest(checkoutGroupID, buyerID, req, plans, flashSaleItems, salesChannel, storefrontShopID)
+			promoResp, pErr := s.clients.Promotion.ReservePromotion(ctx, promoReq)
+			if pErr != nil {
+				s.compensateReleaseStock(ctx, checkoutGroupID)
+				failGroupBeforePersist("PROMOTION_RESERVE_FAILED")
+				return nil, pErr
+			}
+			promoReserved = true
+			breakdown = promoResp.GetBreakdown()
+		}
 	}
 
 	// Resolve exact flash sale prices if multiple flash sale items exist in a shop.
@@ -751,12 +774,22 @@ func buildShopPlans(
 		if sku.GetPriceVnd() <= 0 {
 			return nil, nil, nil, status.Errorf(codes.FailedPrecondition, "SKU %s has invalid price", sku.GetId())
 		}
-		if sku.GetAvailableStock() < reqItem.GetQuantity() {
+		if reqItem.GetFlashSaleItemId() == "" {
+			if sku.GetAvailableStock() < reqItem.GetQuantity() {
+				return nil, nil, nil, status.Errorf(
+					codes.FailedPrecondition,
+					"INSUFFICIENT_STOCK: SKU %s has %d available, requested %d",
+					sku.GetId(),
+					sku.GetAvailableStock(),
+					reqItem.GetQuantity(),
+				)
+			}
+		} else if sku.GetAvailableStock()+sku.GetFlashSaleReservedStock() < reqItem.GetQuantity() {
 			return nil, nil, nil, status.Errorf(
 				codes.FailedPrecondition,
-				"INSUFFICIENT_STOCK: SKU %s has %d available, requested %d",
+				"INSUFFICIENT_STOCK: SKU %s has %d flash-sale/available stock, requested %d",
 				sku.GetId(),
-				sku.GetAvailableStock(),
+				sku.GetAvailableStock()+sku.GetFlashSaleReservedStock(),
 				reqItem.GetQuantity(),
 			)
 		}
@@ -782,8 +815,9 @@ func buildShopPlans(
 		plan.weightGrams += weight * reqItem.GetQuantity()
 
 		stockItems = append(stockItems, &productv1.StockReservationItem{
-			SkuId:    sku.GetId(),
-			Quantity: reqItem.GetQuantity(),
+			SkuId:           sku.GetId(),
+			Quantity:        reqItem.GetQuantity(),
+			FlashSaleItemId: reqItem.GetFlashSaleItemId(),
 		})
 
 		if reqItem.GetFlashSaleItemId() != "" {

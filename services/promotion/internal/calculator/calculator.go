@@ -149,7 +149,7 @@ func Calculate(in Input) (*Output, error) {
 				warnings = append(warnings, msg)
 				continue
 			}
-			if now.Before(fi.StartsAt) || now.After(fi.EndsAt) {
+			if fi.WindowStatus == domain.FlashWindowStatusEnded || now.Before(fi.StartsAt) || now.After(fi.EndsAt) {
 				msg := fmt.Sprintf("flash sale item %s is not active", fi.ID)
 				if in.Strict {
 					return nil, fmt.Errorf("%w: %s", ErrInvalidFlashSaleItem, msg)

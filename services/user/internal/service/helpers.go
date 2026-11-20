@@ -38,6 +38,10 @@ const (
 	ShopStatusActive    = "ACTIVE"
 	ShopStatusRejected  = "REJECTED"
 	ShopStatusSuspended = "SUSPENDED"
+
+	SiteStatusDraft     = "DRAFT"
+	SiteStatusPublished = "PUBLISHED"
+	SiteStatusSuspended = "SUSPENDED"
 )
 
 func normalizeEmail(email string) string {
@@ -316,5 +320,58 @@ func auditShopSnapshot(s db.Shop) map[string]any {
 		"name":             s.Name,
 		"status":           s.Status,
 		"rejection_reason": s.RejectionReason,
+	}
+}
+
+func siteStatusToProto(st string) userv1.SiteStatus {
+	switch strings.ToUpper(strings.TrimSpace(st)) {
+	case SiteStatusDraft:
+		return userv1.SiteStatus_SITE_STATUS_DRAFT
+	case SiteStatusPublished:
+		return userv1.SiteStatus_SITE_STATUS_PUBLISHED
+	case SiteStatusSuspended:
+		return userv1.SiteStatus_SITE_STATUS_SUSPENDED
+	default:
+		return userv1.SiteStatus_SITE_STATUS_UNSPECIFIED
+	}
+}
+
+func siteStatusFromProto(st userv1.SiteStatus) string {
+	switch st {
+	case userv1.SiteStatus_SITE_STATUS_DRAFT:
+		return SiteStatusDraft
+	case userv1.SiteStatus_SITE_STATUS_PUBLISHED:
+		return SiteStatusPublished
+	case userv1.SiteStatus_SITE_STATUS_SUSPENDED:
+		return SiteStatusSuspended
+	default:
+		return ""
+	}
+}
+
+func toProtoSiteVersion(v db.SiteVersion) *userv1.SiteVersion {
+	return &userv1.SiteVersion{
+		Id:            v.ID,
+		SiteId:        v.SiteID,
+		VersionNumber: v.VersionNumber,
+		ConfigJson:    string(v.Config),
+		PublishedBy:   v.PublishedBy,
+		Note:          v.Note,
+		CreatedAt:     timestamppb.New(v.CreatedAt),
+	}
+}
+
+func auditSiteSnapshot(s db.Site) map[string]any {
+	var pubVerID string
+	if s.PublishedVersionID != nil {
+		pubVerID = *s.PublishedVersionID
+	}
+	return map[string]any{
+		"id":                   s.ID,
+		"shop_id":              s.ShopID,
+		"subdomain":            s.Subdomain,
+		"status":               s.Status,
+		"published_version_id": pubVerID,
+		"suspended_reason":     s.SuspendedReason,
 	}
 }

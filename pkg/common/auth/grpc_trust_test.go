@@ -122,4 +122,15 @@ func TestGRPCInterceptorInternalRPCMatrix(t *testing.T) {
 			}
 		}
 	}
+
+	// Public site lookup RPCs must stay anonymous-accessible (no JWT required).
+	for _, pubMethod := range []string{
+		"/nexusmart.user.v1.UserService/GetSiteByHost",
+		"/nexusmart.user.v1.UserService/GetSiteByShop",
+	} {
+		claims, err := callInterceptor(t, users, svc, pubMethod)
+		if err != nil || claims != nil {
+			t.Errorf("public site RPC %s: want anonymous nil claims, got claims=%+v err=%v", pubMethod, claims, err)
+		}
+	}
 }

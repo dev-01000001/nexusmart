@@ -9,11 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	promotionv1 "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/promotion/internal/calculator"
@@ -22,14 +24,21 @@ import (
 	"github.com/nexusmart/core/services/promotion/internal/store"
 )
 
+// ProductStockClient defines the subset of ProductService RPCs used to reserve/release SKU stock for flash sales.
+type ProductStockClient interface {
+	ReserveFlashSaleStock(ctx context.Context, in *productv1.ReserveFlashSaleStockRequest, opts ...grpc.CallOption) (*productv1.ReserveFlashSaleStockResponse, error)
+	ReleaseFlashSaleStock(ctx context.Context, in *productv1.ReleaseFlashSaleStockRequest, opts ...grpc.CallOption) (*productv1.ReleaseFlashSaleStockResponse, error)
+}
+
 // PromotionService implements nexusmart.promotion.v1.PromotionServiceServer.
 type PromotionService struct {
 	promotionv1.UnimplementedPromotionServiceServer
 
-	store  store.Store
-	engine *lua.Engine
-	logger *slog.Logger
-	nowFn  func() time.Time
+	store         store.Store
+	engine        *lua.Engine
+	productClient ProductStockClient
+	logger        *slog.Logger
+	nowFn         func() time.Time
 }
 
 // NewPromotionService creates a PromotionService wired to a Store and Redis Lua Engine.
@@ -43,6 +52,11 @@ func NewPromotionService(st store.Store, engine *lua.Engine, logger *slog.Logger
 		logger: logger,
 		nowFn:  func() time.Time { return time.Now().UTC() },
 	}
+}
+
+// SetProductClient wires the ProductService client used for Phase 2b flash sale stock reservations.
+func (s *PromotionService) SetProductClient(client ProductStockClient) {
+	s.productClient = client
 }
 
 // SetClock overrides the wall clock function (intended for deterministic unit tests).
@@ -76,7 +90,11 @@ func (s *PromotionService) SyncRedisFromStore(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list approved flash items for redis sync: %w", err)
 	}
+	now := s.nowFn()
 	for _, item := range items {
+		if item.WindowStatus == domain.FlashWindowStatusEnded || !item.EndsAt.After(now) {
+			continue
+		}
 		if syncErr := s.engine.InitFlashItemSlots(ctx, item.ID, item.RemainingSlots, false); syncErr != nil {
 			return fmt.Errorf("sync flash item %s to redis: %w", item.ID, syncErr)
 		}
@@ -400,7 +418,7 @@ func (s *PromotionService) CreateFlashSale(ctx context.Context, req *promotionv1
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "create flash sale: %v", err)
 	}
-	return &promotionv1.CreateFlashSaleResponse{FlashSale: flashSaleToProto(fs, nil)}, nil
+	return &promotionv1.CreateFlashSaleResponse{FlashSale: flashSaleToProto(fs, nil, s.nowFn())}, nil
 }
 
 // RegisterFlashSaleItem enrolls a seller SKU into a flash sale, rejecting overlapping windows for the same SKU.
@@ -468,7 +486,8 @@ func (s *PromotionService) RegisterFlashSaleItem(ctx context.Context, req *promo
 	return &promotionv1.RegisterFlashSaleItemResponse{Item: flashSaleItemToProto(item, item.RemainingSlots)}, nil
 }
 
-// ApproveFlashSaleItem approves or rejects a flash sale item and initializes its Redis atomic slot counter on approval.
+// ApproveFlashSaleItem approves or rejects a flash sale item, reserving or releasing SKU stock in ProductService
+// and managing its Redis atomic slot counter.
 func (s *PromotionService) ApproveFlashSaleItem(ctx context.Context, req *promotionv1.ApproveFlashSaleItemRequest) (*promotionv1.ApproveFlashSaleItemResponse, error) {
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
@@ -484,35 +503,238 @@ func (s *PromotionService) ApproveFlashSaleItem(ctx context.Context, req *promot
 		return nil, status.Error(codes.InvalidArgument, "item_id is required")
 	}
 
-	item, prevStatus, err := s.store.ApproveFlashSaleItem(ctx, itemID, adminID, req.GetApprove(), strings.TrimSpace(req.GetReason()))
+	existing, err := s.store.GetFlashSaleItem(ctx, itemID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, status.Error(codes.NotFound, "flash sale item not found")
 		}
-		return nil, status.Errorf(codes.Internal, "approve flash sale item: %v", err)
+		return nil, status.Errorf(codes.Internal, "get flash sale item: %v", err)
 	}
 
-	remaining := item.RemainingSlots
+	now := s.nowFn()
 	if req.GetApprove() {
+		if existing.WindowStatus == domain.FlashWindowStatusEnded || !existing.EndsAt.After(now) {
+			return nil, status.Error(codes.FailedPrecondition, "FLASH_SALE_ENDED: cannot approve item in an ended flash sale window")
+		}
+
+		// Reserve SKU stock in ProductService BEFORE marking item APPROVED or loading Redis slots.
+		// ProductService.ReserveFlashSaleStock is strictly idempotent by flash_sale_item_id.
+		if s.productClient != nil {
+			if _, rErr := s.productClient.ReserveFlashSaleStock(ctx, &productv1.ReserveFlashSaleStockRequest{
+				FlashSaleItemId: existing.ID,
+				SkuId:           existing.SKUID,
+				Quantity:        existing.TotalSlots,
+				EndsAt:          timestamppb.New(existing.EndsAt),
+			}); rErr != nil {
+				return nil, rErr
+			}
+		}
+
+		if existing.Status == domain.FlashStatusApproved {
+			if err := s.engine.InitFlashItemSlots(ctx, existing.ID, existing.RemainingSlots, false); err != nil {
+				return nil, status.Errorf(codes.Internal, "ensure flash sale redis slots: %v", err)
+			}
+			remaining := existing.RemainingSlots
+			if live, ok, getErr := s.engine.GetInt64(ctx, lua.FlashRemainingKey(existing.ID)); getErr == nil && ok {
+				remaining = int32(live)
+			}
+			return &promotionv1.ApproveFlashSaleItemResponse{Item: flashSaleItemToProto(existing, remaining)}, nil
+		}
+
+		item, prevStatus, err := s.store.ApproveFlashSaleItem(ctx, itemID, adminID, true, "")
+		if err != nil {
+			if s.productClient != nil {
+				compCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				_, _ = s.productClient.ReleaseFlashSaleStock(compCtx, &productv1.ReleaseFlashSaleStockRequest{
+					FlashSaleItemId: existing.ID,
+				})
+				cancel()
+			}
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, status.Error(codes.NotFound, "flash sale item not found")
+			}
+			if errors.Is(err, store.ErrFlashSaleEnded) {
+				return nil, status.Error(codes.FailedPrecondition, "FLASH_SALE_ENDED: cannot approve item in an ended flash sale window")
+			}
+			return nil, status.Errorf(codes.Internal, "approve flash sale item: %v", err)
+		}
+
 		overwrite := prevStatus != domain.FlashStatusApproved
 		if err := s.engine.InitFlashItemSlots(ctx, item.ID, item.RemainingSlots, overwrite); err != nil {
 			return nil, status.Errorf(codes.Internal, "initialize flash sale redis slots: %v", err)
 		}
+		remaining := item.RemainingSlots
 		if live, ok, getErr := s.engine.GetInt64(ctx, lua.FlashRemainingKey(item.ID)); getErr == nil && ok {
 			remaining = int32(live)
 		}
-	} else {
-		if err := s.engine.DeleteFlashItemSlots(ctx, item.ID); err != nil {
-			return nil, status.Errorf(codes.Internal, "delete rejected flash sale redis slots: %v", err)
-		}
+		return &promotionv1.ApproveFlashSaleItemResponse{Item: flashSaleItemToProto(item, remaining)}, nil
 	}
 
-	return &promotionv1.ApproveFlashSaleItemResponse{Item: flashSaleItemToProto(item, remaining)}, nil
+	// Rejecting or revoking an item.
+	item, prevStatus, err := s.store.ApproveFlashSaleItem(ctx, itemID, adminID, false, strings.TrimSpace(req.GetReason()))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, status.Error(codes.NotFound, "flash sale item not found")
+		}
+		return nil, status.Errorf(codes.Internal, "reject flash sale item: %v", err)
+	}
+
+	if err := s.engine.DeleteFlashItemSlots(ctx, item.ID); err != nil {
+		return nil, status.Errorf(codes.Internal, "delete rejected flash sale redis slots: %v", err)
+	}
+	if prevStatus == domain.FlashStatusApproved {
+		if err := s.releaseFlashItemProductStock(ctx, item.ID); err != nil {
+			return nil, status.Errorf(codes.Internal, "release rejected flash sale product stock: %v", err)
+		}
+		_ = s.store.MarkFlashSaleItemStockReleased(ctx, item.ID, now)
+	}
+
+	return &promotionv1.ApproveFlashSaleItemResponse{Item: flashSaleItemToProto(item, item.RemainingSlots)}, nil
+}
+
+// EndFlashSaleWindow immediately ends/cancels a flash sale window (admin only), deletes Redis slot keys,
+// and releases all remaining reserved SKU stock in ProductService idempotently.
+func (s *PromotionService) EndFlashSaleWindow(ctx context.Context, req *promotionv1.EndFlashSaleWindowRequest) (*promotionv1.EndFlashSaleWindowResponse, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if !isAdmin(claims) || claims.Service != "" {
+		return nil, status.Error(codes.PermissionDenied, "only admins can end flash sale windows")
+	}
+
+	windowID := strings.TrimSpace(req.GetWindowId())
+	if windowID == "" {
+		return nil, status.Error(codes.InvalidArgument, "window_id is required")
+	}
+
+	now := s.nowFn()
+	fs, unreleased, err := s.store.EndFlashSaleWindow(ctx, windowID, now)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, status.Error(codes.NotFound, "flash sale window not found")
+		}
+		return nil, status.Errorf(codes.Internal, "end flash sale window: %v", err)
+	}
+
+	var releasedCount int32
+	for _, it := range unreleased {
+		if relErr := s.releaseFlashItemSlotsAndStock(ctx, it.ID, now); relErr != nil {
+			s.logger.WarnContext(ctx, "failed to release flash sale stock while ending window",
+				slog.String("window_id", windowID),
+				slog.String("item_id", it.ID),
+				slog.String("error", relErr.Error()),
+			)
+			continue
+		}
+		releasedCount++
+	}
+
+	return &promotionv1.EndFlashSaleWindowResponse{
+		Window:        flashSaleToProto(fs, nil, now),
+		ReleasedItems: releasedCount,
+	}, nil
+}
+
+// SweepExpiredFlashSales marks expired flash sale windows ENDED, clears their Redis slot keys,
+// and releases remaining reserved SKU stock in ProductService.
+func (s *PromotionService) SweepExpiredFlashSales(ctx context.Context) (int, error) {
+	now := s.nowFn()
+	expired, err := s.store.ListExpiredUnreleasedFlashSaleItems(ctx, now)
+	if err != nil {
+		return 0, fmt.Errorf("list expired unreleased flash sale items: %w", err)
+	}
+	released := 0
+	var firstErr error
+	for _, it := range expired {
+		if relErr := s.releaseFlashItemSlotsAndStock(ctx, it.ID, now); relErr != nil {
+			if firstErr == nil {
+				firstErr = relErr
+			}
+			s.logger.WarnContext(ctx, "failed to sweep expired flash sale item",
+				slog.String("flash_sale_id", it.FlashSaleID),
+				slog.String("item_id", it.ID),
+				slog.String("error", relErr.Error()),
+			)
+			continue
+		}
+		released++
+	}
+	return released, firstErr
+}
+
+// StartFlashSaleSweeper periodically releases expired flash sale windows until ctx is canceled.
+func (s *PromotionService) StartFlashSaleSweeper(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				sweepCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				n, err := s.SweepExpiredFlashSales(sweepCtx)
+				cancel()
+				if err != nil && ctx.Err() == nil {
+					s.logger.Warn("flash sale expiry sweep error", slog.String("error", err.Error()))
+				} else if n > 0 {
+					s.logger.Info("swept expired flash sale items", slog.Int("released_items", n))
+				}
+			}
+		}
+	}()
+}
+
+func (s *PromotionService) releaseFlashItemSlotsAndStock(ctx context.Context, itemID string, now time.Time) error {
+	if err := s.engine.DeleteFlashItemSlots(ctx, itemID); err != nil {
+		return fmt.Errorf("delete flash sale redis slots: %w", err)
+	}
+	if err := s.releaseFlashItemProductStock(ctx, itemID); err != nil {
+		return err
+	}
+	if err := s.store.MarkFlashSaleItemStockReleased(ctx, itemID, now); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *PromotionService) releaseFlashItemProductStock(ctx context.Context, itemID string) error {
+	if s.productClient == nil {
+		return nil
+	}
+	var lastErr error
+	backoff := 50 * time.Millisecond
+	for attempt := 0; attempt < 3; attempt++ {
+		_, lastErr = s.productClient.ReleaseFlashSaleStock(ctx, &productv1.ReleaseFlashSaleStockRequest{
+			FlashSaleItemId: itemID,
+		})
+		if lastErr == nil {
+			return nil
+		}
+		code := status.Code(lastErr)
+		if code != codes.Unavailable && code != codes.DeadlineExceeded && code != codes.Aborted {
+			return lastErr
+		}
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+				backoff *= 2
+			}
+		}
+	}
+	return lastErr
 }
 
 // ListActiveFlashSales returns active (and optionally upcoming) flash sales with live remaining slots from Redis.
 func (s *PromotionService) ListActiveFlashSales(ctx context.Context, req *promotionv1.ListActiveFlashSalesRequest) (*promotionv1.ListActiveFlashSalesResponse, error) {
-	sales, err := s.store.ListFlashSales(ctx, s.nowFn(), req.GetIncludeUpcoming())
+	now := s.nowFn()
+	sales, err := s.store.ListFlashSales(ctx, now, req.GetIncludeUpcoming())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list flash sales: %v", err)
 	}
@@ -532,7 +754,7 @@ func (s *PromotionService) ListActiveFlashSales(ctx context.Context, req *promot
 		FlashSales: make([]*promotionv1.FlashSale, 0, len(sales)),
 	}
 	for i := range sales {
-		resp.FlashSales = append(resp.FlashSales, flashSaleToProto(&sales[i], liveSlots))
+		resp.FlashSales = append(resp.FlashSales, flashSaleToProto(&sales[i], liveSlots, now))
 	}
 	return resp, nil
 }
@@ -1008,7 +1230,7 @@ func (s *PromotionService) resolveFlashReservations(
 		if fi.Status != domain.FlashStatusApproved {
 			return nil, nil, status.Errorf(codes.FailedPrecondition, "flash sale item %s is not approved", id)
 		}
-		if now.Before(fi.StartsAt) || now.After(fi.EndsAt) {
+		if fi.WindowStatus == domain.FlashWindowStatusEnded || now.Before(fi.StartsAt) || now.After(fi.EndsAt) {
 			return nil, nil, status.Errorf(codes.FailedPrecondition, "flash sale item %s is outside active window", id)
 		}
 		if mf.skuID != "" && fi.SKUID != "" && mf.skuID != fi.SKUID {
@@ -1351,7 +1573,7 @@ func voucherToProto(
 	}
 }
 
-func flashSaleToProto(fs *domain.FlashSale, liveSlots map[string]int64) *promotionv1.FlashSale {
+func flashSaleToProto(fs *domain.FlashSale, liveSlots map[string]int64, now time.Time) *promotionv1.FlashSale {
 	items := make([]*promotionv1.FlashSaleItem, 0, len(fs.Items))
 	for i := range fs.Items {
 		item := &fs.Items[i]
@@ -1366,12 +1588,20 @@ func flashSaleToProto(fs *domain.FlashSale, liveSlots map[string]int64) *promoti
 		}
 		items = append(items, flashSaleItemToProto(item, rem))
 	}
+	st := domain.FlashWindowStatusActive
+	switch {
+	case fs.Status == domain.FlashWindowStatusEnded || !fs.EndsAt.After(now):
+		st = domain.FlashWindowStatusEnded
+	case now.Before(fs.StartsAt):
+		st = "UPCOMING"
+	}
 	return &promotionv1.FlashSale{
 		Id:       fs.ID,
 		Name:     fs.Name,
 		StartsAt: timestamppb.New(fs.StartsAt),
 		EndsAt:   timestamppb.New(fs.EndsAt),
 		Items:    items,
+		Status:   st,
 	}
 }
 

@@ -162,6 +162,9 @@ func TestGRPCTrust_PromotionService_B1(t *testing.T) {
 		if _, err := client.ReleasePromotion(ctx, &promotionv1.ReleasePromotionRequest{OrderId: "anon-ord"}); status.Code(err) != codes.Unauthenticated {
 			t.Fatalf("ReleasePromotion(%s): want Unauthenticated, got %v", name, err)
 		}
+		if _, err := client.EndFlashSaleWindow(ctx, &promotionv1.EndFlashSaleWindowRequest{WindowId: "fs-1"}); status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("EndFlashSaleWindow(%s): want Unauthenticated, got %v", name, err)
+		}
 	}
 
 	// Verify buyer-a's coins were NOT inflated by anonymous CreditCoins calls.
@@ -206,6 +209,12 @@ func TestGRPCTrust_PromotionService_B1(t *testing.T) {
 	}
 	if _, err := client.ReleasePromotion(bearer(buyerATok), &promotionv1.ReleasePromotionRequest{OrderId: "some-order"}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("buyer ReleasePromotion: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.EndFlashSaleWindow(bearer(buyerATok), &promotionv1.EndFlashSaleWindowRequest{WindowId: "some-window"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("buyer EndFlashSaleWindow: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.EndFlashSaleWindow(bearer(sellerATok), &promotionv1.EndFlashSaleWindowRequest{WindowId: "some-window"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("seller EndFlashSaleWindow: want PermissionDenied, got %v", err)
 	}
 
 	// 5. Seller JWT + forged x-shop-id: shop-b creates voucher only for shop-a; targeting shop-b in body -> PermissionDenied.
@@ -267,6 +276,10 @@ func TestGRPCTrust_PromotionService_B1(t *testing.T) {
 			})
 			return e
 		},
+		"EndFlashSaleWindow": func() error {
+			_, e := client.EndFlashSaleWindow(bearer(svcTok), &promotionv1.EndFlashSaleWindowRequest{WindowId: "fs-1"})
+			return e
+		},
 	} {
 		if err := call(); status.Code(err) != codes.PermissionDenied {
 			t.Fatalf("service token on %s: want PermissionDenied, got %v", name, err)
@@ -290,5 +303,21 @@ func TestGRPCTrust_PromotionService_B1(t *testing.T) {
 	}
 	if mem.AccountBalance("buyer-a") != 20000 {
 		t.Fatalf("expected buyer-a balance restored to 20000 after service ReleasePromotion, got %d", mem.AccountBalance("buyer-a"))
+	}
+
+	// Admin JWT CAN call EndFlashSaleWindow.
+	fs, err := client.CreateFlashSale(bearer(adminTok), &promotionv1.CreateFlashSaleRequest{
+		Name:     "Trust Window",
+		StartsAt: timestamppb.New(now.Add(-time.Minute)),
+		EndsAt:   timestamppb.New(now.Add(time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("admin CreateFlashSale: %v", err)
+	}
+	endResp, err := client.EndFlashSaleWindow(bearer(adminTok), &promotionv1.EndFlashSaleWindowRequest{
+		WindowId: fs.GetFlashSale().GetId(),
+	})
+	if err != nil || endResp.GetWindow().GetStatus() != "ENDED" {
+		t.Fatalf("admin EndFlashSaleWindow failed: resp=%+v err=%v", endResp, err)
 	}
 }

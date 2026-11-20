@@ -7,12 +7,13 @@ import (
 )
 
 var (
-	ErrNotFound             = errors.New("not found")
-	ErrAlreadyExists        = errors.New("already exists")
-	ErrVersionConflict      = errors.New("version conflict")
-	ErrInsufficientStock    = errors.New("insufficient stock")
-	ErrInvalidStock         = errors.New("new stock cannot be less than reserved stock")
-	ErrDuplicateReservation = errors.New("duplicate stock reservation")
+	ErrNotFound                     = errors.New("not found")
+	ErrAlreadyExists                = errors.New("already exists")
+	ErrVersionConflict              = errors.New("version conflict")
+	ErrInsufficientStock            = errors.New("insufficient stock")
+	ErrInvalidStock                 = errors.New("new stock cannot be less than reserved stock")
+	ErrDuplicateReservation         = errors.New("duplicate stock reservation")
+	ErrFlashSaleReservationInactive = errors.New("flash sale reservation inactive or expired")
 )
 
 const (
@@ -29,6 +30,9 @@ const (
 	ReservationStatusReserved  = "RESERVED"
 	ReservationStatusConfirmed = "CONFIRMED"
 	ReservationStatusReleased  = "RELEASED"
+
+	FlashReservationStatusActive   = "ACTIVE"
+	FlashReservationStatusReleased = "RELEASED"
 )
 
 type Category struct {
@@ -59,35 +63,41 @@ type Product struct {
 }
 
 type SKU struct {
-	ID                string
-	ProductID         string
-	ShopID            string
-	ProductName       string
-	SKUCode           string
-	Name              string
-	Attributes        map[string]string
-	PriceVND          int64
-	Stock             int32
-	ReservedStock     int32
-	Version           int64
-	WeightGrams       int32
-	ImageURL          string
-	CategoryID        string
-	CommissionRateBps int32
-	Status            string
-	ProductStatus     string
-	ProductDeleted    bool
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                     string
+	ProductID              string
+	ShopID                 string
+	ProductName            string
+	SKUCode                string
+	Name                   string
+	Attributes             map[string]string
+	PriceVND               int64
+	Stock                  int32
+	ReservedStock          int32
+	FlashSaleReservedStock int32
+	Version                int64
+	WeightGrams            int32
+	ImageURL               string
+	CategoryID             string
+	CommissionRateBps      int32
+	Status                 string
+	ProductStatus          string
+	ProductDeleted         bool
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
-// AvailableStock returns stock - reserved_stock, clamped at 0.
+// AvailableStock returns stock - reserved_stock - flash_sale_reserved_stock, clamped at 0.
 func (s SKU) AvailableStock() int32 {
-	avail := s.Stock - s.ReservedStock
+	avail := s.Stock - s.ReservedStock - s.FlashSaleReservedStock
 	if avail < 0 {
 		return 0
 	}
 	return avail
+}
+
+// TotalReservedStock returns reserved_stock + flash_sale_reserved_stock.
+func (s SKU) TotalReservedStock() int32 {
+	return s.ReservedStock + s.FlashSaleReservedStock
 }
 
 // IsActive reports whether the SKU belongs to an approved (or out-of-stock) non-deleted product and is not deactivated.
@@ -105,8 +115,20 @@ type StockReservation struct {
 	SKUID              string
 	Quantity           int32
 	Status             string
+	FlashSaleItemID    string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+}
+
+type FlashSaleStockReservation struct {
+	FlashSaleItemID string
+	SKUID           string
+	ReservedQty     int32
+	ConsumedQty     int32
+	Status          string
+	EndsAt          time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type StockHistoryEntry struct {
@@ -162,6 +184,7 @@ type Queries interface {
 	ListSKUsByProductIDs(ctx context.Context, productIDs []string) ([]SKU, error)
 	GetSKUsBatch(ctx context.Context, skuIDs []string) ([]SKU, error)
 	GetSKUWithContext(ctx context.Context, skuID string) (SKU, error)
+	GetSKUWithContextForUpdate(ctx context.Context, skuID string) (SKU, error)
 	CountActiveInStockSKUsByProduct(ctx context.Context, productID string) (int64, error)
 
 	UpdateSKUStockOptimistic(ctx context.Context, skuID string, newStock int32, expectedVersion int64) (SKU, error)
@@ -169,10 +192,22 @@ type Queries interface {
 	ReleaseSKUOptimistic(ctx context.Context, skuID string, qty int32, expectedVersion int64) (SKU, error)
 	ConfirmSKUOptimistic(ctx context.Context, skuID string, qty int32, expectedVersion int64) (SKU, error)
 
+	AddFlashSaleReservedStock(ctx context.Context, skuID string, qty int32) (SKU, error)
+	SubFlashSaleReservedStock(ctx context.Context, skuID string, qty int32) (SKU, error)
+	ConsumeFlashSaleStockToOrder(ctx context.Context, skuID string, qty int32) (SKU, error)
+	RestoreOrderStockToFlashSale(ctx context.Context, skuID string, releaseReservedQty, addFlashReservedQty int32) (SKU, error)
+
 	ListReservationsByOrderID(ctx context.Context, orderID string, forUpdate bool) ([]StockReservation, error)
 	CreateStockReservation(ctx context.Context, r StockReservation) (StockReservation, error)
 	TransitionStockReservation(ctx context.Context, id, toStatus, fromStatus string) (bool, error)
 	InsertStockHistory(ctx context.Context, h StockHistoryEntry) error
+
+	GetFlashSaleReservation(ctx context.Context, flashSaleItemID string, forUpdate bool) (FlashSaleStockReservation, error)
+	CreateFlashSaleReservation(ctx context.Context, r FlashSaleStockReservation) (FlashSaleStockReservation, error)
+	ConsumeFlashSaleReservation(ctx context.Context, flashSaleItemID string, qty int32, now time.Time) (FlashSaleStockReservation, error)
+	RestoreFlashSaleReservationConsumed(ctx context.Context, flashSaleItemID string, qty int32) (FlashSaleStockReservation, error)
+	MarkFlashSaleReservationReleased(ctx context.Context, flashSaleItemID string) (FlashSaleStockReservation, error)
+	ListExpiredActiveFlashSaleReservations(ctx context.Context, now time.Time, limit int32) ([]FlashSaleStockReservation, error)
 }
 
 // Store is the top-level persistence interface supporting transactions and health pings.

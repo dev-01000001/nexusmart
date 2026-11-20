@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Idempotent backend seed tool for NexusMart Phase 0b.
+ * Idempotent backend seed tool for NexusMart (Phase 0b + Phase 2/2b).
  *
  * Reads the canonical storefront catalog from web/src/data/* and seeds via the
  * real gateway REST API + Mailpit OTP verification:
@@ -8,14 +8,18 @@
  *     4 demo seller accounts (primary demo seller owns Xưởng Dệt Bạch Đằng)
  *   - 4 verified ACTIVE shops matching web/src/data/shops.ts
  *   - 6 categories matching web/src/data/products.ts CATEGORIES
- *   - 18 APPROVED products with all 159 SKUs, integer VND prices, stock, and
- *     image paths matching web/public/products and web/public/models
+ *   - 18 APPROVED products with all 159 SKUs, integer VND prices, stock (with
+ *     Phase 2b flash-sale reservation headroom + >= 25 regular available units
+ *     while keeping the 6 intentional out-of-stock SKUs at 0), and image paths
+ *     matching web/public/products and web/public/models
  *   - 11 vouchers matching web/src/data/vouchers.ts (platform, freeship, shop)
  *   - 3 active/upcoming flash sale slots (12:00 live, 18:00 & 21:00 upcoming)
  *     matching web/src/data/flash-sale.ts
+ *   - 2 clearly distinct PUBLISHED subdomain storefront sites (bach-dang & sai-gon),
+ *     leaving Đà Nẵng and Hà Nội without sites for E2E lifecycle tests
  *
  * Safe to run repeatedly: existing entities are detected and reused with zero
- * duplicates. Exits 0 on success.
+ * duplicates or extra site versions. Exits 0 on success.
  */
 import { register } from "node:module";
 
@@ -40,6 +44,8 @@ const MAILPIT_URL = (
 
 const HTTP_TIMEOUT_MS = Number(env("SEED_HTTP_TIMEOUT_MS", "20000"));
 const OTP_TIMEOUT_MS = Number(env("SEED_OTP_TIMEOUT_MS", "30000"));
+const SITE_ROOT_DOMAIN = env("SITE_ROOT_DOMAIN", "nexusmart.localhost").toLowerCase();
+const FLASH_SALE_REGULAR_STOCK_BUFFER = 25;
 
 const ADMIN_CREDS = {
   email: env("ADMIN_EMAIL", env("ADMIN_BOOTSTRAP_EMAIL", "admin@nexusmart.local")),
@@ -397,6 +403,431 @@ function distributeSlots(totalQuota, count) {
   return out;
 }
 
+/**
+ * Selects the primary-color in-stock SKUs of a product to register in flash sales.
+ * Never selects intentional 0-stock SKUs. Shared between stock planning and flash-sale seeding.
+ */
+function selectFlashSaleTargetSkus(mockProduct, skuIdByCode = null) {
+  const isAvailable = (s) =>
+    Math.trunc(s.stock) > 0 && (!skuIdByCode || skuIdByCode.has(s.skuCode));
+  const primaryColor = mockProduct.colors[0]?.code;
+  const candidateSkus = mockProduct.skus.filter(
+    (s) => s.colorCode === primaryColor && isAvailable(s)
+  );
+  if (candidateSkus.length > 0) return candidateSkus;
+  return mockProduct.skus.filter(isAvailable).slice(0, 1);
+}
+
+/**
+ * Precomputes total flash-sale slot demand per skuCode across all seeded (non-ended) windows
+ * so Phase 2b flash-sale stock reservations leave >= FLASH_SALE_REGULAR_STOCK_BUFFER regular units.
+ */
+function buildFlashDemandBySkuCode(products, flashSlots, windowSpecs) {
+  const prodById = new Map(products.map((p) => [p.id, p]));
+  const demand = new Map(); // skuCode -> total flash slots across seeded windows
+
+  for (const slot of flashSlots) {
+    if (!windowSpecs[slot.id]) continue;
+    for (const item of slot.items) {
+      const mockProd = prodById.get(item.productId);
+      if (!mockProd) continue;
+      const targetSkus = selectFlashSaleTargetSkus(mockProd);
+      const slotsPerSku = distributeSlots(item.totalQuota, targetSkus.length);
+      for (let i = 0; i < targetSkus.length; i++) {
+        const code = targetSkus[i].skuCode;
+        demand.set(code, (demand.get(code) ?? 0) + slotsPerSku[i]);
+      }
+    }
+  }
+  return demand;
+}
+
+function computeDesiredSkuStock(mockSku, totalFlashDemand) {
+  const baseStock = Math.trunc(mockSku.stock);
+  if (baseStock <= 0) return 0; // preserve intentional out-of-stock SKUs
+  if (totalFlashDemand <= 0) return baseStock;
+  return totalFlashDemand + Math.max(baseStock, FLASH_SALE_REGULAR_STOCK_BUFFER);
+}
+
+async function topUpSkuStock(sellerToken, productId, sku, targetStock) {
+  let current = sku;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const version = Number(current.version ?? 1);
+    const res = await gwRequest("PATCH", `/api/v1/seller/skus/${encodeURIComponent(current.id)}/stock`, {
+      token: sellerToken,
+      body: {
+        new_stock: Math.trunc(targetStock),
+        expected_version: version > 0 ? version : 1,
+      },
+      allowedStatuses: [200, 409],
+    });
+    if (res.status === 200) {
+      return res.data?.sku ?? { ...current, stock: Math.trunc(targetStock), version: version + 1 };
+    }
+    // Reload latest SKU version on optimistic-locking conflict and retry once.
+    const prodRes = await gwRequest("GET", `/api/v1/products/${encodeURIComponent(productId)}`, {
+      token: sellerToken,
+      allowedStatuses: [200],
+    });
+    const refreshed = (prodRes.data?.product?.skus ?? []).find((s) => s.id === current.id);
+    if (!refreshed) {
+      throw new Error(`SKU ${current.id} disappeared while reloading for stock top-up`);
+    }
+    if (Math.trunc(refreshed.stock ?? 0) >= Math.trunc(targetStock)) {
+      return refreshed;
+    }
+    current = refreshed;
+  }
+  throw new Error(`Failed to top up stock for SKU ${sku.sku_code} (${sku.id}) after conflict retry`);
+}
+
+function parseMaybeJson(val) {
+  if (val == null) return null;
+  if (typeof val === "string") {
+    const trimmed = val.trim();
+    if (!trimmed) return null;
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return null;
+    }
+  }
+  return val;
+}
+
+function normalizeForCompare(value) {
+  if (value === null || value === undefined) return undefined;
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeForCompare(item));
+  }
+  if (typeof value === "object") {
+    const out = {};
+    for (const key of Object.keys(value).sort()) {
+      const normalized = normalizeForCompare(value[key]);
+      // Ignore omitted/empty optional string fields so Go `omitempty` round-trips stay equal.
+      if (normalized === undefined || normalized === "") continue;
+      out[key] = normalized;
+    }
+    return out;
+  }
+  return value;
+}
+
+function siteConfigsEqual(a, b) {
+  const normA = normalizeForCompare(parseMaybeJson(a));
+  const normB = normalizeForCompare(parseMaybeJson(b));
+  if (!normA || !normB) return false;
+  return JSON.stringify(normA) === JSON.stringify(normB);
+}
+
+/**
+ * Builds the 2 showcase subdomain storefront site specs (Xưởng Dệt Bạch Đằng & Kho Basic Sài Gòn).
+ * Sợi Tự Nhiên Đà Nẵng and Dệt Kim Hà Nội are intentionally left without sites for QA E2E lifecycle tests.
+ */
+function buildShowcaseSiteSpecs(seededProducts) {
+  const productUuid = (mockId) => seededProducts.get(mockId)?.product?.id ?? "";
+  const bachDangProductIds = [
+    productUuid("prod-at-trang"),
+    productUuid("prod-at-xamda"),
+    productUuid("prod-at-xanhthan"),
+    productUuid("prod-dolot-boxer"),
+  ].filter(Boolean);
+
+  const saiGonProductIds = [
+    productUuid("prod-at-dryfit"),
+    productUuid("prod-short-run"),
+    productUuid("prod-aokhoac-gio"),
+    productUuid("prod-at-oversize"),
+  ].filter(Boolean);
+
+  return [
+    {
+      mockShopId: "shop-bach-dang",
+      subdomain: "bach-dang",
+      publishNote: "Xuất bản giao diện mẫu Xưởng Dệt Bạch Đằng",
+      config: {
+        theme: {
+          bg_color: "#F8F6F1",
+          surface_color: "#FFFFFF",
+          text_color: "#182026",
+          accent_color: "#1D4ED8",
+          accent_text_color: "#FFFFFF",
+          font_family: "work-sans",
+          logo_url: "/banners/vietnam-workshop.jpg",
+          banner_url: "/banners/campaign-everyday.jpg",
+          brand_name: "Xưởng Dệt Bạch Đằng",
+          tagline: "Áo thun Cotton Compact 220gsm may trực tiếp tại xưởng Hải Phòng",
+        },
+        sections: [
+          {
+            id: "bd-hero",
+            type: "hero",
+            visible: true,
+            props: {
+              title: "Cotton Compact 220gsm từ xưởng Hải Phòng",
+              subtitle:
+                "Dệt kim tròn chủ động, xử lý chống co rút trước khi cắt rập. Mặt vải mịn đứng vai và giữ form cổ áo bền bỉ qua hơn 40 lần giặt máy.",
+              image_url: "/banners/campaign-everyday.jpg",
+              cta_label: "Xem sản phẩm xưởng",
+              cta_href: "/san-pham",
+            },
+          },
+          {
+            id: "bd-featured",
+            type: "featured_products",
+            visible: true,
+            props: {
+              title: "Sản phẩm chủ lực tại xưởng",
+              subtitle:
+                "Đồ mặc hằng ngày từ bông chải kỹ 220gsm và sợi gỗ sồi Modal, giá trực tiếp từ Xưởng Dệt Bạch Đằng.",
+              product_ids: bachDangProductIds,
+              limit: 4,
+            },
+          },
+          {
+            id: "bd-vouchers",
+            type: "voucher_strip",
+            visible: true,
+            props: {
+              title: "Ưu đãi riêng của Xưởng Dệt Bạch Đằng",
+              subtitle: "Lưu mã giảm giá gian hàng và áp dụng trực tiếp khi đặt mua từ cửa hàng.",
+              limit: 4,
+            },
+          },
+          {
+            id: "bd-collection",
+            type: "collection",
+            visible: true,
+            props: {
+              title: "Dòng áo thun Cotton Compact 220gsm",
+              subtitle:
+                "Ba tông màu cơ bản trắng tinh, xám đá và xanh than dễ phối đồ đi làm lẫn dạo phố.",
+              collection_slug: "cotton-220gsm-bach-dang",
+              category_slug: "ao-thun",
+              image_url: "/banners/fabric-closeup.jpg",
+              limit: 4,
+            },
+          },
+          {
+            id: "bd-banner",
+            type: "banner",
+            visible: true,
+            props: {
+              title: "Kiểm định 3 bước tại nhà máy Hải Phòng",
+              subtitle:
+                "Mỗi lô vải mộc đều trải qua 3 chu kỳ giặt thử đo co rút, soi mật độ mũi kim và kiểm bền màu trước khi đóng gói.",
+              image_url: "/banners/vietnam-workshop.jpg",
+              cta_label: "Tìm hiểu xưởng dệt",
+              cta_href: "/gioi-thieu",
+            },
+          },
+          {
+            id: "bd-story",
+            type: "text",
+            visible: true,
+            props: {
+              title: "Triết lý dệt may bền bỉ từ năm 2019",
+              body: "Xưởng Dệt Bạch Đằng đặt tại Hải Phòng, chủ động từ khâu dệt kim tròn đến cắt rập và hoàn thiện. Chúng tôi tập trung vào hai dòng sản phẩm cốt lõi là áo thun Cotton Compact 220gsm và đồ lót sợi gỗ sồi Modal may phẳng Flatlock, để mỗi đường kim mũi chỉ đều đồng đều qua từng đợt sản xuất. Khách hàng nhận giao tiêu chuẩn liên tỉnh 1 đến 3 ngày cùng chính sách đổi size hai chiều tận nhà trong 45 ngày.",
+              align: "left",
+            },
+          },
+          {
+            id: "bd-policies",
+            type: "policies",
+            visible: true,
+            props: {
+              title: "Cam kết bán hàng và hậu mãi",
+              items: [
+                {
+                  heading: "Đổi trả miễn phí 45 ngày",
+                  detail:
+                    "Hỗ trợ đổi size hai chiều tận nơi với bưu tá nhận và giao lại trong một lượt cho sản phẩm còn nguyên tem mác.",
+                },
+                {
+                  heading: "Giao hàng từ kho Hải Phòng",
+                  detail:
+                    "Đóng gói trong ngày và giao tiêu chuẩn liên tỉnh từ 1 đến 3 ngày trên toàn quốc 34 tỉnh thành.",
+                },
+                {
+                  heading: "Kiểm hàng trước khi nhận",
+                  detail:
+                    "Cho phép đồng kiểm đúng màu sắc, đúng cỡ và chất lượng đường may đối với mọi đơn thanh toán khi nhận hàng.",
+                },
+                {
+                  heading: "Nguồn sợi minh bạch",
+                  detail:
+                    "Công bố rõ định lượng 220gsm, thành phần 95% Cotton chải kỹ Compact pha 5% Spandex không chứa chất huỳnh quang.",
+                },
+              ],
+            },
+          },
+        ],
+      },
+    },
+    {
+      mockShopId: "shop-sai-gon",
+      subdomain: "sai-gon",
+      publishNote: "Xuất bản giao diện mẫu Kho Basic Sài Gòn",
+      config: {
+        theme: {
+          bg_color: "#14181C",
+          surface_color: "#1E242B",
+          text_color: "#F4F6F8",
+          accent_color: "#D97706",
+          accent_text_color: "#111418",
+          font_family: "be-vietnam-pro",
+          logo_url: "/banners/campaign-running.jpg",
+          banner_url: "/banners/campaign-running.jpg",
+          brand_name: "Kho Basic Sài Gòn",
+          tagline: "Đồ chạy bộ Dry-Fit siêu nhẹ và trang phục vận động cho khí hậu miền Nam",
+        },
+        sections: [
+          {
+            id: "sg-hero",
+            type: "hero",
+            visible: true,
+            props: {
+              title: "Trang phục vận động nhẹ mát Sài Gòn",
+              subtitle:
+                "Sợi Dry-Fit 145gsm khô nhanh sau 45 phút phơi gió cùng quần short chạy bộ 5 inch siêu nhẹ, thiết kế riêng cho thời tiết nắng nóng.",
+              image_url: "/banners/campaign-running.jpg",
+              cta_label: "Khám phá đồ thể thao",
+              cta_href: "/san-pham",
+            },
+          },
+          {
+            id: "sg-featured",
+            type: "featured_products",
+            visible: true,
+            props: {
+              title: "Thiết kế bán chạy cho tập luyện",
+              subtitle:
+                "Từ đường chạy 5K buổi sáng tới bộ đồ basic thoáng nhẹ mặc suốt ngày làm việc tại TP.HCM.",
+              product_ids: saiGonProductIds,
+              limit: 4,
+            },
+          },
+          {
+            id: "sg-collection",
+            type: "collection",
+            visible: true,
+            props: {
+              title: "Quần short chạy bộ và mặc hằng ngày",
+              subtitle:
+                "Cạp giấu dây rút chắc chắn, túi khóa kéo sau lưng giữ gọn điện thoại và chìa khóa khi vận động.",
+              collection_slug: "chay-bo-sai-gon",
+              category_slug: "quan-short",
+              image_url: "/banners/campaign-green-fiber.jpg",
+              limit: 4,
+            },
+          },
+          {
+            id: "sg-vouchers",
+            type: "voucher_strip",
+            visible: true,
+            props: {
+              title: "Mã ưu đãi Kho Basic Sài Gòn",
+              subtitle:
+                "Nhận ngay mã giảm trực tiếp trên giỏ hàng của xưởng khi đặt trang phục chạy bộ và đồ basic.",
+              limit: 4,
+            },
+          },
+          {
+            id: "sg-story",
+            type: "text",
+            visible: true,
+            props: {
+              title: "Chuẩn đường may 4 kim 6 chỉ tại Tân Thuận",
+              body: "Ra đời năm 2020 tại Thành phố Hồ Chí Minh, Kho Basic Sài Gòn tối ưu từng chi tiết nhỏ cho người chạy bộ và tập luyện hằng ngày. Sợi Polyester tái chế Micro-mesh và Polyamide co giãn 4 chiều được đo tốc độ thoát ẩm theo từng lô vải, kết hợp đường may chập phẳng ở nách và đùi để giảm ma sát tối đa trong những buổi chạy dài. Đơn nội thành TP.HCM đặt trước 17 giờ được hỗ trợ giao nhanh trong 2 đến 4 giờ.",
+              align: "left",
+            },
+          },
+          {
+            id: "sg-policies",
+            type: "policies",
+            visible: true,
+            props: {
+              title: "Chính sách giao vận và đổi cỡ",
+              items: [
+                {
+                  heading: "Giao nhanh 2 đến 4 giờ TP.HCM",
+                  detail:
+                    "Áp dụng cho đơn đặt trước 17 giờ tại khu vực nội thành Thành phố Hồ Chí Minh trực tiếp từ kho Thảo Điền.",
+                },
+                {
+                  heading: "Đổi size tận nhà 45 ngày",
+                  detail:
+                    "Miễn phí đổi cỡ hai chiều khi mặc chưa vừa vai hoặc chiều dài ống quần, xử lý nhanh trong vòng 24 giờ.",
+                },
+                {
+                  heading: "Sợi tái chế truy xuất lô",
+                  detail:
+                    "Sử dụng sợi Micro-mesh tái chế nhẹ thoáng và đóng gói trong túi tự hủy sinh học giảm rác thải nhựa.",
+                },
+                {
+                  heading: "Tư vấn cỡ trong 12 phút",
+                  detail:
+                    "Đội ngũ xưởng hỗ trợ chọn đúng form vận động hoặc oversize theo chiều cao và cân nặng thực tế.",
+                },
+              ],
+            },
+          },
+        ],
+      },
+    },
+  ];
+}
+
+async function ensurePublishedSite(sellerToken, spec) {
+  const getRes = await gwRequest("GET", "/api/v1/seller/site", {
+    token: sellerToken,
+    allowedStatuses: [200, 404],
+  });
+  const existing = getRes.status === 200 ? (getRes.data?.site ?? null) : null;
+  const existingSubdomain = String(existing?.subdomain ?? "").trim().toLowerCase();
+  const targetSubdomain = spec.subdomain.trim().toLowerCase();
+  const existingPublishedCfg =
+    existing?.published_config ?? existing?.published_config_json ?? existing?.config ?? existing?.config_json ?? null;
+  const existingDraftCfg =
+    existing?.draft_config ?? existing?.draft_config_json ?? existing?.config ?? existing?.config_json ?? null;
+
+  if (
+    existing &&
+    existing.status === "PUBLISHED" &&
+    existingSubdomain === targetSubdomain &&
+    siteConfigsEqual(existingPublishedCfg ?? existingDraftCfg, spec.config)
+  ) {
+    return { created: false, site: existing };
+  }
+
+  const draftMatches =
+    existing &&
+    existingSubdomain === targetSubdomain &&
+    siteConfigsEqual(existingDraftCfg, spec.config);
+
+  if (!draftMatches) {
+    await gwRequest("PUT", "/api/v1/seller/site/draft", {
+      token: sellerToken,
+      body: {
+        subdomain: targetSubdomain,
+        config: spec.config,
+      },
+      allowedStatuses: [200, 201],
+    });
+  }
+
+  const pubRes = await gwRequest("POST", "/api/v1/seller/site/publish", {
+    token: sellerToken,
+    body: {
+      note: spec.publishNote,
+    },
+    allowedStatuses: [200, 201],
+  });
+
+  const publishedSite = pubRes.data?.site ?? existing ?? { subdomain: targetSubdomain, status: "PUBLISHED" };
+  return { created: true, site: publishedSite };
+}
+
 async function main() {
   console.log(`==> Seeding NexusMart backend via ${GATEWAY_URL} (Mailpit: ${MAILPIT_URL})`);
 
@@ -406,13 +837,18 @@ async function main() {
   const adminToken = adminSession.access_token;
   const { resolveProvinceAndWard } = await loadLocationHelper();
 
+  const nowMs = Date.now();
+  const windowSpecs = buildFlashWindowTimes(nowMs);
+  const flashDemandBySkuCode = buildFlashDemandBySkuCode(PRODUCTS, FLASH_SALE_SLOTS, windowSpecs);
+
   const summary = {
     users: { created: 0, reused: 0 },
     shops: { created: 0, reused: 0, map: {} },
     categories: { created: 0, reused: 0, map: {} },
-    products: { created: 0, reused: 0, totalSkus: 0 },
+    products: { created: 0, reused: 0, totalSkus: 0, skusToppedUp: 0 },
     vouchers: { created: 0, reused: 0 },
     flashSales: { windowsCreated: 0, windowsReused: 0, itemsCreated: 0, itemsReused: 0 },
+    sites: { created: 0, reused: 0, map: {} },
   };
 
   // 1. Demo buyer (+ default address + welcome coins)
@@ -553,7 +989,8 @@ async function main() {
     existingProductsByShop.set(mockShopId, { bySkuCode, byName });
   }
 
-  const seededProducts = new Map(); // mockProductId -> { product, mockProduct, shopEntry, skuIdByCode }
+  const seededProducts = new Map(); // mockProductId -> { product, mockProduct, shopEntry, skuIdByCode, skuByCode }
+  const skuCatalogByCode = new Map(); // skuCode -> { mockSku, productId, shopEntry, skuByCode }
 
   for (const prod of PRODUCTS) {
     const shopEntry = seededShops.get(prod.shopId);
@@ -573,6 +1010,7 @@ async function main() {
 
       const skusPayload = prod.skus.map((sku) => {
         const color = colorByCode.get(sku.colorCode);
+        const totalFlashDemand = flashDemandBySkuCode.get(sku.skuCode) ?? 0;
         return {
           sku_code: sku.skuCode,
           name: `${color?.name ?? sku.colorCode} / ${sku.size}`,
@@ -583,7 +1021,7 @@ async function main() {
             size: sku.size,
           },
           price_vnd: Math.trunc(sku.price),
-          stock: Math.trunc(sku.stock),
+          stock: computeDesiredSkuStock(sku, totalFlashDemand),
           weight_grams: weightGrams,
           image_url: color?.image ?? prod.image,
         };
@@ -616,8 +1054,19 @@ async function main() {
     }
 
     const skuIdByCode = new Map((backendProd.skus ?? []).map((s) => [s.sku_code, s.id]));
+    const skuByCode = new Map((backendProd.skus ?? []).map((s) => [s.sku_code, s]));
     summary.products.totalSkus += backendProd.skus?.length ?? 0;
-    seededProducts.set(prod.id, { product: backendProd, mockProduct: prod, shopEntry, skuIdByCode });
+    seededProducts.set(prod.id, { product: backendProd, mockProduct: prod, shopEntry, skuIdByCode, skuByCode });
+    for (const mockSku of prod.skus) {
+      if (skuByCode.has(mockSku.skuCode)) {
+        skuCatalogByCode.set(mockSku.skuCode, {
+          mockSku,
+          productId: backendProd.id,
+          shopEntry,
+          skuByCode,
+        });
+      }
+    }
   }
 
   // 5. 11 Vouchers matching VOUCHERS
@@ -629,7 +1078,6 @@ async function main() {
     (vListRes.data?.vouchers ?? []).map((v) => [String(v.code).toUpperCase(), v])
   );
 
-  const nowMs = Date.now();
   const voucherStartsAt = new Date(nowMs - 3600 * 1000).toISOString();
   const minVoucherEndMs = nowMs + 90 * 24 * 3600 * 1000;
 
@@ -690,7 +1138,63 @@ async function main() {
   const existingFlashByName = new Map(
     (fsListRes.data?.flash_sales ?? []).map((fs) => [fs.name, fs])
   );
-  const windowSpecs = buildFlashWindowTimes(nowMs);
+
+  // Under Phase 2b, approving flash-sale items reserves total_slots from SKU stock across all
+  // active/upcoming windows. Compute how many slots still need approval right now, and idempotently
+  // top up ONLY flash-sale SKUs whose stock or available_stock is below the required floor
+  // (never touching the 6 intentional 0-stock non-flash SKUs).
+  const pendingFlashDemandBySkuCode = new Map();
+  for (const slot of FLASH_SALE_SLOTS) {
+    const win = windowSpecs[slot.id];
+    if (!win) continue;
+    const existingFlash = existingFlashByName.get(win.name);
+    const existingSkuIds = new Set((existingFlash?.items ?? []).map((it) => it.sku_id));
+
+    for (const item of slot.items) {
+      const seededProd = seededProducts.get(item.productId);
+      if (!seededProd) continue;
+      const targetSkus = selectFlashSaleTargetSkus(seededProd.mockProduct, seededProd.skuIdByCode);
+      const slotsPerSku = distributeSlots(item.totalQuota, targetSkus.length);
+      for (let idx = 0; idx < targetSkus.length; idx++) {
+        const sku = targetSkus[idx];
+        const skuId = seededProd.skuIdByCode.get(sku.skuCode);
+        if (!existingSkuIds.has(skuId)) {
+          pendingFlashDemandBySkuCode.set(
+            sku.skuCode,
+            (pendingFlashDemandBySkuCode.get(sku.skuCode) ?? 0) + slotsPerSku[idx]
+          );
+        }
+      }
+    }
+  }
+
+  for (const [skuCode, totalFlashDemand] of flashDemandBySkuCode.entries()) {
+    const entry = skuCatalogByCode.get(skuCode);
+    if (!entry || Math.trunc(entry.mockSku.stock) <= 0) continue;
+    const backendSku = entry.skuByCode.get(skuCode);
+    if (!backendSku) continue;
+
+    const pendingFlash = pendingFlashDemandBySkuCode.get(skuCode) ?? 0;
+    const minTotalStock = computeDesiredSkuStock(entry.mockSku, totalFlashDemand);
+    const curStock = Math.trunc(backendSku.stock ?? 0);
+    const curAvailable = Math.trunc(
+      backendSku.available_stock ?? Math.max(0, curStock - Math.trunc(backendSku.reserved_stock ?? 0))
+    );
+    const requiredAvailableNow = pendingFlash + FLASH_SALE_REGULAR_STOCK_BUFFER;
+    const neededStockForAvailable = curStock + Math.max(0, requiredAvailableNow - curAvailable);
+    const targetStock = Math.max(minTotalStock, neededStockForAvailable);
+
+    if (curStock < targetStock) {
+      const updatedSku = await topUpSkuStock(
+        entry.shopEntry.sellerToken,
+        entry.productId,
+        backendSku,
+        targetStock
+      );
+      entry.skuByCode.set(skuCode, updatedSku);
+      summary.products.skusToppedUp += 1;
+    }
+  }
 
   for (const slot of FLASH_SALE_SLOTS) {
     const win = windowSpecs[slot.id];
@@ -723,15 +1227,7 @@ async function main() {
 
       // Register all in-stock SKUs of the product's primary color so every size works on /flash-sale
       // while staying cleanly within gateway flash-sale & IP rate limits.
-      const primaryColor = seededProd.mockProduct.colors[0]?.code;
-      const candidateSkus = seededProd.mockProduct.skus.filter(
-        (s) => s.colorCode === primaryColor && s.stock > 0 && seededProd.skuIdByCode.has(s.skuCode)
-      );
-      const targetSkus =
-        candidateSkus.length > 0
-          ? candidateSkus
-          : seededProd.mockProduct.skus.filter((s) => s.stock > 0 && seededProd.skuIdByCode.has(s.skuCode)).slice(0, 1);
-
+      const targetSkus = selectFlashSaleTargetSkus(seededProd.mockProduct, seededProd.skuIdByCode);
       const slotsPerSku = distributeSlots(item.totalQuota, targetSkus.length);
 
       for (let idx = 0; idx < targetSkus.length; idx++) {
@@ -778,11 +1274,31 @@ async function main() {
     }
   }
 
+  // 7. 2 Showcase Published Subdomain Sites (bach-dang & sai-gon; Đà Nẵng & Hà Nội left unpublished for QA E2E)
+  const showcaseSiteSpecs = buildShowcaseSiteSpecs(seededProducts);
+  for (const spec of showcaseSiteSpecs) {
+    const shopEntry = seededShops.get(spec.mockShopId);
+    if (!shopEntry) throw new Error(`Missing seeded shop for site ${spec.subdomain} (${spec.mockShopId})`);
+    const { created, site } = await ensurePublishedSite(shopEntry.sellerToken, spec);
+    summary.sites[created ? "created" : "reused"] += 1;
+    summary.sites.map[spec.subdomain] = {
+      shop_id: shopEntry.shop.id,
+      shop_name: shopEntry.shop.name,
+      subdomain: spec.subdomain,
+      primary_host: site.primary_host || `${spec.subdomain}.${SITE_ROOT_DOMAIN}`,
+      status: site.status || "PUBLISHED",
+    };
+  }
+
   console.log("==> Seed complete:");
+  console.log(
+    `  sites: created=${summary.sites.created}, reused=${summary.sites.reused} (root_domain=${SITE_ROOT_DOMAIN})`
+  );
   console.log(
     JSON.stringify(
       {
         gateway: GATEWAY_URL,
+        site_root_domain: SITE_ROOT_DOMAIN,
         accounts: {
           admin: { email: ADMIN_CREDS.email, role: adminSession.user.role, id: adminSession.user.id },
           buyer: {

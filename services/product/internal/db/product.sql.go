@@ -12,6 +12,47 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const addFlashSaleReservedStock = `-- name: AddFlashSaleReservedStock :one
+
+UPDATE skus
+SET flash_sale_reserved_stock = flash_sale_reserved_stock + $1,
+    version = version + 1,
+    updated_at = NOW()
+WHERE id = $2
+  AND (stock - reserved_stock - flash_sale_reserved_stock) >= $1
+RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
+`
+
+type AddFlashSaleReservedStockParams struct {
+	FlashSaleReservedStock int32
+	ID                     string
+}
+
+// Flash sale stock locking mutations
+func (q *Queries) AddFlashSaleReservedStock(ctx context.Context, arg AddFlashSaleReservedStockParams) (Sku, error) {
+	row := q.db.QueryRow(ctx, addFlashSaleReservedStock, arg.FlashSaleReservedStock, arg.ID)
+	var i Sku
+	err := row.Scan(
+		&i.ID,
+		&i.ProductID,
+		&i.SkuCode,
+		&i.Name,
+		&i.Attributes,
+		&i.PriceVnd,
+		&i.Stock,
+		&i.ReservedStock,
+		&i.Version,
+		&i.WeightGrams,
+		&i.ImageURL,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
+	)
+	return i, err
+}
+
 const confirmSKUOptimistic = `-- name: ConfirmSKUOptimistic :one
 UPDATE skus
 SET stock = GREATEST(0, stock - $1),
@@ -26,7 +67,7 @@ SET stock = GREATEST(0, stock - $1),
 WHERE id = $2
   AND version = $3
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
 `
 
 type ConfirmSKUOptimisticParams struct {
@@ -53,6 +94,80 @@ func (q *Queries) ConfirmSKUOptimistic(ctx context.Context, arg ConfirmSKUOptimi
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
+	)
+	return i, err
+}
+
+const consumeFlashSaleReservation = `-- name: ConsumeFlashSaleReservation :one
+UPDATE flash_sale_stock_reservations
+SET consumed_qty = consumed_qty + $2,
+    updated_at = NOW()
+WHERE flash_sale_item_id = $1
+  AND status = 'ACTIVE'
+  AND ends_at > $3
+  AND (reserved_qty - consumed_qty) >= $2
+RETURNING flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at, created_at, updated_at
+`
+
+type ConsumeFlashSaleReservationParams struct {
+	FlashSaleItemID string
+	ConsumedQty     int32
+	EndsAt          time.Time
+}
+
+func (q *Queries) ConsumeFlashSaleReservation(ctx context.Context, arg ConsumeFlashSaleReservationParams) (FlashSaleStockReservation, error) {
+	row := q.db.QueryRow(ctx, consumeFlashSaleReservation, arg.FlashSaleItemID, arg.ConsumedQty, arg.EndsAt)
+	var i FlashSaleStockReservation
+	err := row.Scan(
+		&i.FlashSaleItemID,
+		&i.SkuID,
+		&i.ReservedQty,
+		&i.ConsumedQty,
+		&i.Status,
+		&i.EndsAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const consumeFlashSaleStockToOrder = `-- name: ConsumeFlashSaleStockToOrder :one
+UPDATE skus
+SET flash_sale_reserved_stock = flash_sale_reserved_stock - $1,
+    reserved_stock = reserved_stock + $1,
+    version = version + 1,
+    updated_at = NOW()
+WHERE id = $2
+  AND flash_sale_reserved_stock >= $1
+RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
+`
+
+type ConsumeFlashSaleStockToOrderParams struct {
+	FlashSaleReservedStock int32
+	ID                     string
+}
+
+func (q *Queries) ConsumeFlashSaleStockToOrder(ctx context.Context, arg ConsumeFlashSaleStockToOrderParams) (Sku, error) {
+	row := q.db.QueryRow(ctx, consumeFlashSaleStockToOrder, arg.FlashSaleReservedStock, arg.ID)
+	var i Sku
+	err := row.Scan(
+		&i.ID,
+		&i.ProductID,
+		&i.SkuCode,
+		&i.Name,
+		&i.Attributes,
+		&i.PriceVnd,
+		&i.Stock,
+		&i.ReservedStock,
+		&i.Version,
+		&i.WeightGrams,
+		&i.ImageURL,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
 	)
 	return i, err
 }
@@ -182,6 +297,40 @@ func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) 
 	return i, err
 }
 
+const createFlashSaleReservation = `-- name: CreateFlashSaleReservation :one
+INSERT INTO flash_sale_stock_reservations (flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at)
+VALUES ($1, $2, $3, 0, 'ACTIVE', $4)
+RETURNING flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at, created_at, updated_at
+`
+
+type CreateFlashSaleReservationParams struct {
+	FlashSaleItemID string
+	SkuID           string
+	ReservedQty     int32
+	EndsAt          time.Time
+}
+
+func (q *Queries) CreateFlashSaleReservation(ctx context.Context, arg CreateFlashSaleReservationParams) (FlashSaleStockReservation, error) {
+	row := q.db.QueryRow(ctx, createFlashSaleReservation,
+		arg.FlashSaleItemID,
+		arg.SkuID,
+		arg.ReservedQty,
+		arg.EndsAt,
+	)
+	var i FlashSaleStockReservation
+	err := row.Scan(
+		&i.FlashSaleItemID,
+		&i.SkuID,
+		&i.ReservedQty,
+		&i.ConsumedQty,
+		&i.Status,
+		&i.EndsAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createProduct = `-- name: CreateProduct :one
 
 INSERT INTO products (
@@ -243,11 +392,11 @@ const createSKU = `-- name: CreateSKU :one
 
 INSERT INTO skus (
     id, product_id, sku_code, name, attributes, price_vnd, stock,
-    reserved_stock, version, weight_grams, image_url, status
+    reserved_stock, flash_sale_reserved_stock, version, weight_grams, image_url, status
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 1, $8, $9, $10)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 0, 1, $8, $9, $10)
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
 `
 
 type CreateSKUParams struct {
@@ -293,14 +442,15 @@ func (q *Queries) CreateSKU(ctx context.Context, arg CreateSKUParams) (Sku, erro
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
 	)
 	return i, err
 }
 
 const createStockReservation = `-- name: CreateStockReservation :one
-INSERT INTO stock_reservations (id, reservation_group_id, order_id, sku_id, quantity, status)
-VALUES ($1, $2, $3, $4, $5, 'RESERVED')
-RETURNING id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at
+INSERT INTO stock_reservations (id, reservation_group_id, order_id, sku_id, quantity, status, flash_sale_item_id)
+VALUES ($1, $2, $3, $4, $5, 'RESERVED', $6)
+RETURNING id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at, flash_sale_item_id
 `
 
 type CreateStockReservationParams struct {
@@ -309,6 +459,7 @@ type CreateStockReservationParams struct {
 	OrderID            string
 	SkuID              string
 	Quantity           int32
+	FlashSaleItemID    string
 }
 
 func (q *Queries) CreateStockReservation(ctx context.Context, arg CreateStockReservationParams) (StockReservation, error) {
@@ -318,6 +469,7 @@ func (q *Queries) CreateStockReservation(ctx context.Context, arg CreateStockRes
 		arg.OrderID,
 		arg.SkuID,
 		arg.Quantity,
+		arg.FlashSaleItemID,
 	)
 	var i StockReservation
 	err := row.Scan(
@@ -329,6 +481,7 @@ func (q *Queries) CreateStockReservation(ctx context.Context, arg CreateStockRes
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleItemID,
 	)
 	return i, err
 }
@@ -392,6 +545,53 @@ func (q *Queries) GetCategoryByID(ctx context.Context, id string) (Category, err
 	return i, err
 }
 
+const getFlashSaleReservation = `-- name: GetFlashSaleReservation :one
+
+SELECT flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at, created_at, updated_at
+FROM flash_sale_stock_reservations
+WHERE flash_sale_item_id = $1
+`
+
+// Flash sale stock reservations
+func (q *Queries) GetFlashSaleReservation(ctx context.Context, flashSaleItemID string) (FlashSaleStockReservation, error) {
+	row := q.db.QueryRow(ctx, getFlashSaleReservation, flashSaleItemID)
+	var i FlashSaleStockReservation
+	err := row.Scan(
+		&i.FlashSaleItemID,
+		&i.SkuID,
+		&i.ReservedQty,
+		&i.ConsumedQty,
+		&i.Status,
+		&i.EndsAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getFlashSaleReservationForUpdate = `-- name: GetFlashSaleReservationForUpdate :one
+SELECT flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at, created_at, updated_at
+FROM flash_sale_stock_reservations
+WHERE flash_sale_item_id = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetFlashSaleReservationForUpdate(ctx context.Context, flashSaleItemID string) (FlashSaleStockReservation, error) {
+	row := q.db.QueryRow(ctx, getFlashSaleReservationForUpdate, flashSaleItemID)
+	var i FlashSaleStockReservation
+	err := row.Scan(
+		&i.FlashSaleItemID,
+		&i.SkuID,
+		&i.ReservedQty,
+		&i.ConsumedQty,
+		&i.Status,
+		&i.EndsAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getProductByID = `-- name: GetProductByID :one
 SELECT id, shop_id, category_id, name, description, images, status,
        rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at
@@ -423,7 +623,7 @@ func (q *Queries) GetProductByID(ctx context.Context, id string) (Product, error
 const getSKUWithContext = `-- name: GetSKUWithContext :one
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
@@ -433,24 +633,25 @@ WHERE s.id = $1
 `
 
 type GetSKUWithContextRow struct {
-	ID                string
-	ProductID         string
-	ShopID            string
-	ProductName       string
-	SkuCode           string
-	Name              string
-	Attributes        []byte
-	PriceVnd          int64
-	Stock             int32
-	ReservedStock     int32
-	Version           int64
-	WeightGrams       int32
-	ImageURL          string
-	CategoryID        string
-	CommissionRateBps int32
-	SkuStatus         string
-	ProductStatus     string
-	ProductDeletedAt  *time.Time
+	ID                     string
+	ProductID              string
+	ShopID                 string
+	ProductName            string
+	SkuCode                string
+	Name                   string
+	Attributes             []byte
+	PriceVnd               int64
+	Stock                  int32
+	ReservedStock          int32
+	FlashSaleReservedStock int32
+	Version                int64
+	WeightGrams            int32
+	ImageURL               string
+	CategoryID             string
+	CommissionRateBps      int32
+	SkuStatus              string
+	ProductStatus          string
+	ProductDeletedAt       *time.Time
 }
 
 func (q *Queries) GetSKUWithContext(ctx context.Context, id string) (GetSKUWithContextRow, error) {
@@ -467,6 +668,69 @@ func (q *Queries) GetSKUWithContext(ctx context.Context, id string) (GetSKUWithC
 		&i.PriceVnd,
 		&i.Stock,
 		&i.ReservedStock,
+		&i.FlashSaleReservedStock,
+		&i.Version,
+		&i.WeightGrams,
+		&i.ImageURL,
+		&i.CategoryID,
+		&i.CommissionRateBps,
+		&i.SkuStatus,
+		&i.ProductStatus,
+		&i.ProductDeletedAt,
+	)
+	return i, err
+}
+
+const getSKUWithContextForUpdate = `-- name: GetSKUWithContextForUpdate :one
+SELECT
+    s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
+    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+FROM skus s
+JOIN products p ON p.id = s.product_id
+JOIN categories c ON c.id = p.category_id
+WHERE s.id = $1
+FOR UPDATE OF s
+`
+
+type GetSKUWithContextForUpdateRow struct {
+	ID                     string
+	ProductID              string
+	ShopID                 string
+	ProductName            string
+	SkuCode                string
+	Name                   string
+	Attributes             []byte
+	PriceVnd               int64
+	Stock                  int32
+	ReservedStock          int32
+	FlashSaleReservedStock int32
+	Version                int64
+	WeightGrams            int32
+	ImageURL               string
+	CategoryID             string
+	CommissionRateBps      int32
+	SkuStatus              string
+	ProductStatus          string
+	ProductDeletedAt       *time.Time
+}
+
+func (q *Queries) GetSKUWithContextForUpdate(ctx context.Context, id string) (GetSKUWithContextForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getSKUWithContextForUpdate, id)
+	var i GetSKUWithContextForUpdateRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProductID,
+		&i.ShopID,
+		&i.ProductName,
+		&i.SkuCode,
+		&i.Name,
+		&i.Attributes,
+		&i.PriceVnd,
+		&i.Stock,
+		&i.ReservedStock,
+		&i.FlashSaleReservedStock,
 		&i.Version,
 		&i.WeightGrams,
 		&i.ImageURL,
@@ -482,7 +746,7 @@ func (q *Queries) GetSKUWithContext(ctx context.Context, id string) (GetSKUWithC
 const getSKUsBatch = `-- name: GetSKUsBatch :many
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
@@ -493,24 +757,25 @@ ORDER BY s.id ASC
 `
 
 type GetSKUsBatchRow struct {
-	ID                string
-	ProductID         string
-	ShopID            string
-	ProductName       string
-	SkuCode           string
-	Name              string
-	Attributes        []byte
-	PriceVnd          int64
-	Stock             int32
-	ReservedStock     int32
-	Version           int64
-	WeightGrams       int32
-	ImageURL          string
-	CategoryID        string
-	CommissionRateBps int32
-	SkuStatus         string
-	ProductStatus     string
-	ProductDeletedAt  *time.Time
+	ID                     string
+	ProductID              string
+	ShopID                 string
+	ProductName            string
+	SkuCode                string
+	Name                   string
+	Attributes             []byte
+	PriceVnd               int64
+	Stock                  int32
+	ReservedStock          int32
+	FlashSaleReservedStock int32
+	Version                int64
+	WeightGrams            int32
+	ImageURL               string
+	CategoryID             string
+	CommissionRateBps      int32
+	SkuStatus              string
+	ProductStatus          string
+	ProductDeletedAt       *time.Time
 }
 
 func (q *Queries) GetSKUsBatch(ctx context.Context, dollar_1 []string) ([]GetSKUsBatchRow, error) {
@@ -533,6 +798,7 @@ func (q *Queries) GetSKUsBatch(ctx context.Context, dollar_1 []string) ([]GetSKU
 			&i.PriceVnd,
 			&i.Stock,
 			&i.ReservedStock,
+			&i.FlashSaleReservedStock,
 			&i.Version,
 			&i.WeightGrams,
 			&i.ImageURL,
@@ -665,6 +931,49 @@ func (q *Queries) ListCategoriesByParent(ctx context.Context, parentID pgtype.Te
 	return items, nil
 }
 
+const listExpiredActiveFlashSaleReservations = `-- name: ListExpiredActiveFlashSaleReservations :many
+SELECT flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at, created_at, updated_at
+FROM flash_sale_stock_reservations
+WHERE status = 'ACTIVE'
+  AND ends_at <= $1
+ORDER BY ends_at ASC, flash_sale_item_id ASC
+LIMIT $2
+`
+
+type ListExpiredActiveFlashSaleReservationsParams struct {
+	EndsAt time.Time
+	Limit  int32
+}
+
+func (q *Queries) ListExpiredActiveFlashSaleReservations(ctx context.Context, arg ListExpiredActiveFlashSaleReservationsParams) ([]FlashSaleStockReservation, error) {
+	rows, err := q.db.Query(ctx, listExpiredActiveFlashSaleReservations, arg.EndsAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FlashSaleStockReservation{}
+	for rows.Next() {
+		var i FlashSaleStockReservation
+		if err := rows.Scan(
+			&i.FlashSaleItemID,
+			&i.SkuID,
+			&i.ReservedQty,
+			&i.ConsumedQty,
+			&i.Status,
+			&i.EndsAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProductsFiltered = `-- name: ListProductsFiltered :many
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
        p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at
@@ -756,7 +1065,7 @@ func (q *Queries) ListProductsFiltered(ctx context.Context, arg ListProductsFilt
 
 const listReservationsByOrderID = `-- name: ListReservationsByOrderID :many
 
-SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at
+SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at, flash_sale_item_id
 FROM stock_reservations
 WHERE order_id = $1
 ORDER BY sku_id ASC
@@ -781,6 +1090,7 @@ func (q *Queries) ListReservationsByOrderID(ctx context.Context, orderID string)
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.FlashSaleItemID,
 		); err != nil {
 			return nil, err
 		}
@@ -793,7 +1103,7 @@ func (q *Queries) ListReservationsByOrderID(ctx context.Context, orderID string)
 }
 
 const listReservationsByOrderIDForUpdate = `-- name: ListReservationsByOrderIDForUpdate :many
-SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at
+SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at, flash_sale_item_id
 FROM stock_reservations
 WHERE order_id = $1
 ORDER BY sku_id ASC
@@ -818,6 +1128,7 @@ func (q *Queries) ListReservationsByOrderIDForUpdate(ctx context.Context, orderI
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.FlashSaleItemID,
 		); err != nil {
 			return nil, err
 		}
@@ -868,7 +1179,7 @@ func (q *Queries) ListRootCategories(ctx context.Context) ([]Category, error) {
 const listSKUsByProductIDs = `-- name: ListSKUsByProductIDs :many
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
@@ -880,24 +1191,25 @@ ORDER BY s.created_at ASC, s.id ASC
 `
 
 type ListSKUsByProductIDsRow struct {
-	ID                string
-	ProductID         string
-	ShopID            string
-	ProductName       string
-	SkuCode           string
-	Name              string
-	Attributes        []byte
-	PriceVnd          int64
-	Stock             int32
-	ReservedStock     int32
-	Version           int64
-	WeightGrams       int32
-	ImageURL          string
-	CategoryID        string
-	CommissionRateBps int32
-	SkuStatus         string
-	ProductStatus     string
-	ProductDeletedAt  *time.Time
+	ID                     string
+	ProductID              string
+	ShopID                 string
+	ProductName            string
+	SkuCode                string
+	Name                   string
+	Attributes             []byte
+	PriceVnd               int64
+	Stock                  int32
+	ReservedStock          int32
+	FlashSaleReservedStock int32
+	Version                int64
+	WeightGrams            int32
+	ImageURL               string
+	CategoryID             string
+	CommissionRateBps      int32
+	SkuStatus              string
+	ProductStatus          string
+	ProductDeletedAt       *time.Time
 }
 
 func (q *Queries) ListSKUsByProductIDs(ctx context.Context, dollar_1 []string) ([]ListSKUsByProductIDsRow, error) {
@@ -920,6 +1232,7 @@ func (q *Queries) ListSKUsByProductIDs(ctx context.Context, dollar_1 []string) (
 			&i.PriceVnd,
 			&i.Stock,
 			&i.ReservedStock,
+			&i.FlashSaleReservedStock,
 			&i.Version,
 			&i.WeightGrams,
 			&i.ImageURL,
@@ -939,6 +1252,31 @@ func (q *Queries) ListSKUsByProductIDs(ctx context.Context, dollar_1 []string) (
 	return items, nil
 }
 
+const markFlashSaleReservationReleased = `-- name: MarkFlashSaleReservationReleased :one
+UPDATE flash_sale_stock_reservations
+SET status = 'RELEASED',
+    updated_at = NOW()
+WHERE flash_sale_item_id = $1
+  AND status = 'ACTIVE'
+RETURNING flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at, created_at, updated_at
+`
+
+func (q *Queries) MarkFlashSaleReservationReleased(ctx context.Context, flashSaleItemID string) (FlashSaleStockReservation, error) {
+	row := q.db.QueryRow(ctx, markFlashSaleReservationReleased, flashSaleItemID)
+	var i FlashSaleStockReservation
+	err := row.Scan(
+		&i.FlashSaleItemID,
+		&i.SkuID,
+		&i.ReservedQty,
+		&i.ConsumedQty,
+		&i.Status,
+		&i.EndsAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const releaseSKUOptimistic = `-- name: ReleaseSKUOptimistic :one
 UPDATE skus
 SET reserved_stock = GREATEST(0, reserved_stock - $1),
@@ -947,7 +1285,7 @@ SET reserved_stock = GREATEST(0, reserved_stock - $1),
 WHERE id = $2
   AND version = $3
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
 `
 
 type ReleaseSKUOptimisticParams struct {
@@ -974,6 +1312,7 @@ func (q *Queries) ReleaseSKUOptimistic(ctx context.Context, arg ReleaseSKUOptimi
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
 	)
 	return i, err
 }
@@ -985,9 +1324,9 @@ SET reserved_stock = reserved_stock + $1,
     updated_at = NOW()
 WHERE id = $2
   AND version = $3
-  AND (stock - reserved_stock) >= $1
+  AND (stock - reserved_stock - flash_sale_reserved_stock) >= $1
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
 `
 
 type ReserveSKUOptimisticParams struct {
@@ -1014,6 +1353,76 @@ func (q *Queries) ReserveSKUOptimistic(ctx context.Context, arg ReserveSKUOptimi
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
+	)
+	return i, err
+}
+
+const restoreFlashSaleReservationConsumed = `-- name: RestoreFlashSaleReservationConsumed :one
+UPDATE flash_sale_stock_reservations
+SET consumed_qty = GREATEST(0, consumed_qty - $2),
+    updated_at = NOW()
+WHERE flash_sale_item_id = $1
+RETURNING flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at, created_at, updated_at
+`
+
+type RestoreFlashSaleReservationConsumedParams struct {
+	FlashSaleItemID string
+	ConsumedQty     int32
+}
+
+func (q *Queries) RestoreFlashSaleReservationConsumed(ctx context.Context, arg RestoreFlashSaleReservationConsumedParams) (FlashSaleStockReservation, error) {
+	row := q.db.QueryRow(ctx, restoreFlashSaleReservationConsumed, arg.FlashSaleItemID, arg.ConsumedQty)
+	var i FlashSaleStockReservation
+	err := row.Scan(
+		&i.FlashSaleItemID,
+		&i.SkuID,
+		&i.ReservedQty,
+		&i.ConsumedQty,
+		&i.Status,
+		&i.EndsAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const restoreOrderStockToFlashSale = `-- name: RestoreOrderStockToFlashSale :one
+UPDATE skus
+SET reserved_stock = GREATEST(0, reserved_stock - $1),
+    flash_sale_reserved_stock = flash_sale_reserved_stock + $2,
+    version = version + 1,
+    updated_at = NOW()
+WHERE id = $3
+RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
+`
+
+type RestoreOrderStockToFlashSaleParams struct {
+	ReservedStock          int32
+	FlashSaleReservedStock int32
+	ID                     string
+}
+
+func (q *Queries) RestoreOrderStockToFlashSale(ctx context.Context, arg RestoreOrderStockToFlashSaleParams) (Sku, error) {
+	row := q.db.QueryRow(ctx, restoreOrderStockToFlashSale, arg.ReservedStock, arg.FlashSaleReservedStock, arg.ID)
+	var i Sku
+	err := row.Scan(
+		&i.ID,
+		&i.ProductID,
+		&i.SkuCode,
+		&i.Name,
+		&i.Attributes,
+		&i.PriceVnd,
+		&i.Stock,
+		&i.ReservedStock,
+		&i.Version,
+		&i.WeightGrams,
+		&i.ImageURL,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
 	)
 	return i, err
 }
@@ -1032,6 +1441,44 @@ func (q *Queries) SoftDeleteProduct(ctx context.Context, id string) (int64, erro
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const subFlashSaleReservedStock = `-- name: SubFlashSaleReservedStock :one
+UPDATE skus
+SET flash_sale_reserved_stock = GREATEST(0, flash_sale_reserved_stock - $1),
+    version = version + 1,
+    updated_at = NOW()
+WHERE id = $2
+RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
+`
+
+type SubFlashSaleReservedStockParams struct {
+	FlashSaleReservedStock int32
+	ID                     string
+}
+
+func (q *Queries) SubFlashSaleReservedStock(ctx context.Context, arg SubFlashSaleReservedStockParams) (Sku, error) {
+	row := q.db.QueryRow(ctx, subFlashSaleReservedStock, arg.FlashSaleReservedStock, arg.ID)
+	var i Sku
+	err := row.Scan(
+		&i.ID,
+		&i.ProductID,
+		&i.SkuCode,
+		&i.Name,
+		&i.Attributes,
+		&i.PriceVnd,
+		&i.Stock,
+		&i.ReservedStock,
+		&i.Version,
+		&i.WeightGrams,
+		&i.ImageURL,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
+	)
+	return i, err
 }
 
 const transitionStockReservation = `-- name: TransitionStockReservation :execrows
@@ -1226,7 +1673,7 @@ SET sku_code = $2,
     updated_at = NOW()
 WHERE id = $1
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
 `
 
 type UpdateSKUDetailsParams struct {
@@ -1269,6 +1716,7 @@ func (q *Queries) UpdateSKUDetails(ctx context.Context, arg UpdateSKUDetailsPara
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
 	)
 	return i, err
 }
@@ -1286,9 +1734,9 @@ SET stock = $1,
     updated_at = NOW()
 WHERE id = $2
   AND version = $3
-  AND $1 >= reserved_stock
+  AND $1 >= (reserved_stock + flash_sale_reserved_stock)
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
 `
 
 type UpdateSKUStockOptimisticParams struct {
@@ -1316,6 +1764,7 @@ func (q *Queries) UpdateSKUStockOptimistic(ctx context.Context, arg UpdateSKUSto
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
 	)
 	return i, err
 }

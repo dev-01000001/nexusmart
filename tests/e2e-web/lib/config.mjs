@@ -13,6 +13,7 @@ export const config = {
   // Gateway is only used to play the external bank: the VietQR mock webhook
   // is HMAC-signed and posted the way the payment provider would.
   gatewayURL: env("GATEWAY_URL", "http://gateway:8080").replace(/\/$/, ""),
+  siteRootDomain: env("SITE_ROOT_DOMAIN", "nexusmart.localhost").toLowerCase(),
   redisAddr: env("REDIS_ADDR", ""),
   paymentWebhookSecret: env("PAYMENT_WEBHOOK_SECRET", "dev-only-payment-webhook-hmac-secret"),
   httpTimeoutMs: Number(env("HTTP_TIMEOUT_MS", "20000")),

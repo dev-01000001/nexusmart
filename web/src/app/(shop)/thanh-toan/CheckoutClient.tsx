@@ -11,6 +11,10 @@ import { useSession } from "@/components/SessionProvider";
 import { Button, IconShield, IconTruck, StateView } from "@/components";
 import { AddressForm } from "@/features/commerce/AddressForm";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
+import {
+  StorefrontBanner,
+  type StorefrontCheckoutContext,
+} from "@/features/commerce/StorefrontBanner";
 import { useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import {
   enrichCartGroups,
@@ -19,6 +23,7 @@ import {
 } from "@/features/commerce/cartEnrich";
 import type {
   GwAddress,
+  GwCart,
   GwCarrierQuote,
   GwCheckoutResponse,
   GwDiscountBreakdown,
@@ -39,6 +44,7 @@ export interface CheckoutClientProps {
   initialVouchers: GwVoucher[];
   initialCoinBalance: number;
   initialError: string | null;
+  storefrontContext?: StorefrontCheckoutContext | null;
 }
 
 function generateClientAttemptKey(): string {
@@ -56,12 +62,12 @@ export function CheckoutClient({
   initialVouchers,
   initialCoinBalance,
   initialError,
+  storefrontContext = null,
 }: CheckoutClientProps) {
   const router = useRouter();
   const { user, isAuthenticated, loading: sessionLoading } = useSession();
   const {
     cart,
-    cartItems,
     cartLoading,
     cartError,
     refreshCart,
@@ -78,6 +84,12 @@ export function CheckoutClient({
     showToast,
   } = useStore();
 
+  const isStorefront = Boolean(storefrontContext);
+  const storefrontShopId = storefrontContext?.shopId ?? null;
+
+  const [scopedCart, setScopedCart] = useState<GwCart | null>(null);
+  const [scopedCartLoading, setScopedCartLoading] = useState<boolean>(false);
+
   const [addresses, setAddresses] = useState<GwAddress[]>(initialAddresses);
   const [selectedAddressId, setSelectedAddressId] = useState<string>(
     initialAddresses.find((a) => a.is_default)?.id ?? initialAddresses[0]?.id ?? ""
@@ -88,7 +100,7 @@ export function CheckoutClient({
   );
 
   const [vouchers, setVouchers] = useState<GwVoucher[]>(initialVouchers);
-  const [coinBalance, setCoinBalance] = useState<number>(initialCoinBalance);
+  const [coinBalance, setCoinBalance] = useState<number>(isStorefront ? 0 : initialCoinBalance);
   const [quotesByShop, setQuotesByShop] = useState<Record<string, GwCarrierQuote[]>>({});
   const [selectedCarrierByShop, setSelectedCarrierByShop] = useState<
     Record<string, { carrier_code: string; service_code: string }>
@@ -113,9 +125,59 @@ export function CheckoutClient({
   const [idempotencyKey, setIdempotencyKey] = useState<string>(initialIdempotencyKey);
   const lastSignatureRef = useRef<string | null>(null);
 
+  const fetchScopedCart = useCallback(async () => {
+    if (!isAuthenticated || !storefrontShopId) {
+      setScopedCart(null);
+      return null;
+    }
+    setScopedCartLoading(true);
+    try {
+      const res = await api<{ cart: GwCart }>(
+        `/api/cart?shop_id=${encodeURIComponent(storefrontShopId)}`
+      );
+      setScopedCart(res.cart ?? null);
+      return res.cart ?? null;
+    } catch {
+      return null;
+    } finally {
+      setScopedCartLoading(false);
+    }
+  }, [isAuthenticated, storefrontShopId]);
+
+  useEffect(() => {
+    if (isStorefront && isAuthenticated) {
+      void fetchScopedCart();
+    } else {
+      setScopedCart(null);
+    }
+  }, [isStorefront, isAuthenticated, cart, fetchScopedCart]);
+
+  const effectiveCart = useMemo<GwCart | null>(() => {
+    if (!isStorefront || !storefrontShopId) return cart;
+    if (scopedCart) return scopedCart;
+    if (!cart) return null;
+    const onlyGroups = cart.shop_groups.filter((g) => g.shop_id === storefrontShopId);
+    const totalItems = onlyGroups.reduce(
+      (sum, g) => sum + g.items.reduce((s, it) => s + it.quantity, 0),
+      0
+    );
+    const totalVnd = onlyGroups.reduce((sum, g) => sum + g.subtotal_vnd, 0);
+    return {
+      ...cart,
+      shop_groups: onlyGroups,
+      total_items: totalItems,
+      total_vnd: totalVnd,
+    };
+  }, [isStorefront, storefrontShopId, scopedCart, cart]);
+
+  const effectiveCartItems = useMemo(
+    () => (effectiveCart?.shop_groups ?? []).flatMap((g) => g.items),
+    [effectiveCart]
+  );
+
   const enrichedGroups = useMemo(
-    () => enrichCartGroups(cart?.shop_groups ?? [], catalogProducts, catalogShops),
-    [cart?.shop_groups, catalogProducts, catalogShops]
+    () => enrichCartGroups(effectiveCart?.shop_groups ?? [], catalogProducts, catalogShops),
+    [effectiveCart?.shop_groups, catalogProducts, catalogShops]
   );
 
   const selectedAddress = useMemo(
@@ -123,16 +185,44 @@ export function CheckoutClient({
     [addresses, selectedAddressId]
   );
 
-  const addonProducts = useMemo(() => {
-    const inCart = new Set(cartItems.map((c) => c.product_id));
-    const filtered = catalogProducts.filter(
-      (p) => !inCart.has(p.backendId ?? p.id) && !inCart.has(p.id)
+  const storefrontCatalogShopId = useMemo(() => {
+    if (!storefrontShopId) return null;
+    const match = catalogShops.find(
+      (s) => s.backendId === storefrontShopId || s.id === storefrontShopId
     );
-    return (filtered.length >= 4 ? filtered : catalogProducts).slice(0, 4);
-  }, [cartItems, catalogProducts]);
+    return match?.id ?? storefrontShopId;
+  }, [catalogShops, storefrontShopId]);
+
+  const addonProducts = useMemo(() => {
+    const basePool =
+      isStorefront && storefrontCatalogShopId
+        ? catalogProducts.filter((p) => p.shopId === storefrontCatalogShopId)
+        : catalogProducts;
+    const inCart = new Set(effectiveCartItems.map((c) => c.product_id));
+    const filtered = basePool.filter((p) => !inCart.has(p.backendId ?? p.id) && !inCart.has(p.id));
+    return (filtered.length >= 4 ? filtered : basePool).slice(0, 4);
+  }, [isStorefront, storefrontCatalogShopId, effectiveCartItems, catalogProducts]);
+
+  const backToCartHref = useMemo(() => {
+    if (!storefrontContext) return "/gio-hang";
+    const params = new URLSearchParams();
+    params.set("shop", storefrontContext.shopId);
+    params.set("channel", "storefront");
+    if (storefrontContext.siteHost) params.set("site", storefrontContext.siteHost);
+    return `/gio-hang?${params.toString()}`;
+  }, [storefrontContext]);
+
+  const loginReturnHref = useMemo(() => {
+    if (!storefrontContext) return "/dang-nhap?next=%2Fthanh-toan";
+    const params = new URLSearchParams();
+    params.set("shop", storefrontContext.shopId);
+    params.set("channel", "storefront");
+    if (storefrontContext.siteHost) params.set("site", storefrontContext.siteHost);
+    return `/dang-nhap?next=${encodeURIComponent(`/thanh-toan?${params.toString()}`)}`;
+  }, [storefrontContext]);
 
   useRevealOnScroll(
-    `checkout-${isAuthenticated ? "auth" : "guest"}-${enrichedGroups.length}-${paymentMethod}-${addresses.length}`
+    `checkout-${isAuthenticated ? "auth" : "guest"}-${isStorefront ? "sf" : "mkt"}-${enrichedGroups.length}-${paymentMethod}-${addresses.length}`
   );
 
   // Refresh addresses & coins client-side if server didn't have them (e.g. client navigation after login)
@@ -140,10 +230,16 @@ export function CheckoutClient({
     if (!isAuthenticated) return;
     setAddressesLoading(true);
     try {
+      const voucherUrl =
+        isStorefront && storefrontShopId
+          ? `/api/vouchers?shop_id=${encodeURIComponent(storefrontShopId)}&scope=SHOP`
+          : "/api/vouchers";
       const [addrRes, vRes, cRes] = await Promise.allSettled([
         api<{ addresses: GwAddress[] }>("/api/checkout/addresses"),
-        api<{ vouchers: GwVoucher[] }>("/api/vouchers"),
-        api<{ balance: number }>("/api/vouchers/coins"),
+        api<{ vouchers: GwVoucher[] }>(voucherUrl),
+        isStorefront
+          ? Promise.resolve({ balance: 0 })
+          : api<{ balance: number }>("/api/vouchers/coins"),
       ]);
       if (addrRes.status === "fulfilled") {
         const list = addrRes.value.addresses ?? [];
@@ -155,15 +251,22 @@ export function CheckoutClient({
         if (list.length === 0) setShowNewAddressForm(true);
       }
       if (vRes.status === "fulfilled" && Array.isArray(vRes.value.vouchers)) {
-        setVouchers(vRes.value.vouchers);
+        setVouchers(
+          isStorefront && storefrontShopId
+            ? vRes.value.vouchers.filter(
+                (v) =>
+                  v.scope.toUpperCase() === "SHOP" && v.shop_id === storefrontShopId && v.is_active
+              )
+            : vRes.value.vouchers
+        );
       }
-      if (cRes.status === "fulfilled" && typeof cRes.value.balance === "number") {
+      if (!isStorefront && cRes.status === "fulfilled" && typeof cRes.value.balance === "number") {
         setCoinBalance(Math.max(0, cRes.value.balance));
       }
     } finally {
       setAddressesLoading(false);
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isStorefront, storefrontShopId]);
 
   useEffect(() => {
     if (isAuthenticated && (addresses.length === 0 || vouchers.length === 0)) {
@@ -174,14 +277,19 @@ export function CheckoutClient({
   // Fetch real shipping quotes per shop whenever address or cart shop groups change
   const cartShopWeightSig = useMemo(
     () =>
-      (cart?.shop_groups ?? [])
+      (effectiveCart?.shop_groups ?? [])
         .map((g) => `${g.shop_id}:${g.total_weight_grams}:${g.subtotal_vnd}`)
         .join("|"),
-    [cart?.shop_groups]
+    [effectiveCart?.shop_groups]
   );
 
   useEffect(() => {
-    if (!isAuthenticated || !selectedAddress || !cart || cart.shop_groups.length === 0) {
+    if (
+      !isAuthenticated ||
+      !selectedAddress ||
+      !effectiveCart ||
+      effectiveCart.shop_groups.length === 0
+    ) {
       setQuotesByShop({});
       return;
     }
@@ -193,7 +301,7 @@ export function CheckoutClient({
       body: {
         to_province_code: selectedAddress.province_code,
         to_ward_code: selectedAddress.ward_code,
-        shops: cart.shop_groups.map((g) => ({
+        shops: effectiveCart.shop_groups.map((g) => ({
           shop_id: g.shop_id,
           weight_grams: Math.max(100, g.total_weight_grams || 500),
           cod_amount_vnd: paymentMethod === "COD" ? g.subtotal_vnd : 0,
@@ -206,7 +314,7 @@ export function CheckoutClient({
         setQuotesByShop(map);
         setSelectedCarrierByShop((prev) => {
           const next: Record<string, { carrier_code: string; service_code: string }> = {};
-          for (const g of cart.shop_groups) {
+          for (const g of effectiveCart.shop_groups) {
             const list = map[g.shop_id] ?? [];
             const cur = prev[g.shop_id];
             const stillValid =
@@ -236,11 +344,11 @@ export function CheckoutClient({
     return () => {
       cancelled = true;
     };
-  }, [isAuthenticated, selectedAddress, cart, cartShopWeightSig, paymentMethod]);
+  }, [isAuthenticated, selectedAddress, effectiveCart, cartShopWeightSig, paymentMethod]);
 
   const shippingFeesByShop = useMemo<Record<string, number>>(() => {
     const out: Record<string, number> = {};
-    for (const g of cart?.shop_groups ?? []) {
+    for (const g of effectiveCart?.shop_groups ?? []) {
       const list = quotesByShop[g.shop_id] ?? [];
       const chosen = selectedCarrierByShop[g.shop_id];
       const match =
@@ -252,15 +360,21 @@ export function CheckoutClient({
       out[g.shop_id] = match ? match.fee_vnd : 0;
     }
     return out;
-  }, [cart?.shop_groups, quotesByShop, selectedCarrierByShop]);
+  }, [effectiveCart?.shop_groups, quotesByShop, selectedCarrierByShop]);
+
+  const effectiveShopVouchers = useMemo(() => {
+    if (!isStorefront || !storefrontShopId) return selectedShopVouchers;
+    const only = selectedShopVouchers[storefrontShopId];
+    return only ? { [storefrontShopId]: only } : {};
+  }, [isStorefront, storefrontShopId, selectedShopVouchers]);
 
   const shippingFeesKey = JSON.stringify(shippingFeesByShop);
-  const shopVouchersKey = JSON.stringify(selectedShopVouchers);
+  const shopVouchersKey = JSON.stringify(effectiveShopVouchers);
   const flashKey = JSON.stringify(flashSaleItemBySku);
 
   // Authoritative promotion preview with real per-shop shipping fees
   useEffect(() => {
-    if (!isAuthenticated || !cart || cart.shop_groups.length === 0) {
+    if (!isAuthenticated || !effectiveCart || effectiveCart.shop_groups.length === 0) {
       setBreakdown(null);
       return;
     }
@@ -268,16 +382,40 @@ export function CheckoutClient({
     setPreviewLoading(true);
     setPreviewError(null);
 
+    const previewBody = isStorefront
+      ? {
+          shop_items: effectiveCart.shop_groups.map((g) => ({
+            shop_id: g.shop_id,
+            subtotal_vnd: g.subtotal_vnd,
+            shipping_fee_vnd: Math.max(
+              0,
+              Math.trunc(Number(shippingFeesByShop[g.shop_id] ?? 0) || 0)
+            ),
+            items: g.items.map((it) => ({
+              sku_id: it.sku_id,
+              quantity: it.quantity,
+              unit_price_vnd: it.price_vnd,
+              flash_sale_item_id: flashSaleItemBySku[it.sku_id] || "",
+            })),
+          })),
+          shop_voucher_ids: effectiveShopVouchers,
+          platform_voucher_id: "",
+          freeship_voucher_id: "",
+          coins_to_use: 0,
+          flash_sale_item_by_sku: flashSaleItemBySku,
+        }
+      : {
+          shipping_fees: shippingFeesByShop,
+          shop_voucher_ids: selectedShopVouchers,
+          platform_voucher_id: platformVoucherId || "",
+          freeship_voucher_id: freeshipVoucherId || "",
+          coins_to_use: useCoins ? coinBalance : 0,
+          flash_sale_item_by_sku: flashSaleItemBySku,
+        };
+
     api<{ breakdown: GwDiscountBreakdown }>("/api/vouchers/preview", {
       method: "POST",
-      body: {
-        shipping_fees: shippingFeesByShop,
-        shop_voucher_ids: selectedShopVouchers,
-        platform_voucher_id: platformVoucherId || "",
-        freeship_voucher_id: freeshipVoucherId || "",
-        coins_to_use: useCoins ? coinBalance : 0,
-        flash_sale_item_by_sku: flashSaleItemBySku,
-      },
+      body: previewBody,
     })
       .then((res) => {
         if (!cancelled) setBreakdown(res.breakdown);
@@ -299,7 +437,8 @@ export function CheckoutClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     isAuthenticated,
-    cart,
+    isStorefront,
+    effectiveCart,
     shippingFeesKey,
     shopVouchersKey,
     platformVoucherId,
@@ -316,18 +455,21 @@ export function CheckoutClient({
       JSON.stringify({
         addressId: selectedAddress?.id ?? "",
         paymentMethod,
-        cart: cartItems.map((it) => `${it.sku_id}:${it.quantity}`),
-        shopVouchers: selectedShopVouchers,
-        platformVoucherId,
-        freeshipVoucherId,
-        useCoins,
+        channel: isStorefront ? storefrontShopId : "MARKETPLACE",
+        cart: effectiveCartItems.map((it) => `${it.sku_id}:${it.quantity}`),
+        shopVouchers: effectiveShopVouchers,
+        platformVoucherId: isStorefront ? "" : platformVoucherId,
+        freeshipVoucherId: isStorefront ? "" : freeshipVoucherId,
+        useCoins: isStorefront ? false : useCoins,
         carriers: selectedCarrierByShop,
       }),
     [
       selectedAddress?.id,
       paymentMethod,
-      cartItems,
-      selectedShopVouchers,
+      isStorefront,
+      storefrontShopId,
+      effectiveCartItems,
+      effectiveShopVouchers,
       platformVoucherId,
       freeshipVoucherId,
       useCoins,
@@ -347,21 +489,27 @@ export function CheckoutClient({
   }, [orderAttemptSignature]);
 
   const freeshipVouchers = useMemo(
-    () => vouchers.filter((v) => v.scope.toUpperCase() === "FREESHIP" && v.is_active),
-    [vouchers]
+    () =>
+      isStorefront
+        ? []
+        : vouchers.filter((v) => v.scope.toUpperCase() === "FREESHIP" && v.is_active),
+    [isStorefront, vouchers]
   );
 
-  const subtotal = breakdown?.total_subtotal_vnd ?? cart?.total_vnd ?? 0;
+  const subtotal = breakdown?.total_subtotal_vnd ?? effectiveCart?.total_vnd ?? 0;
   const flashDiscount = breakdown?.total_flash_sale_discount_vnd ?? 0;
   const shopVoucherTotal = breakdown?.total_shop_voucher_discount_vnd ?? 0;
-  const platformVoucherDiscount = breakdown?.total_platform_voucher_discount_vnd ?? 0;
+  const platformVoucherDiscount = isStorefront
+    ? 0
+    : (breakdown?.total_platform_voucher_discount_vnd ?? 0);
   const shippingFeeTotal =
     breakdown?.total_shipping_fee_vnd ??
     Object.values(shippingFeesByShop).reduce((sum, fee) => sum + fee, 0);
-  const freeshipDiscount = breakdown?.total_freeship_discount_vnd ?? 0;
-  const coinsDiscount = breakdown?.total_coins_discount_vnd ?? 0;
+  const freeshipDiscount = isStorefront ? 0 : (breakdown?.total_freeship_discount_vnd ?? 0);
+  const coinsDiscount = isStorefront ? 0 : (breakdown?.total_coins_discount_vnd ?? 0);
   const finalPayable = breakdown?.final_payable_vnd ?? subtotal + shippingFeeTotal;
-  const totalQty = cart?.total_items ?? cartItems.reduce((s, it) => s + it.quantity, 0);
+  const totalQty =
+    effectiveCart?.total_items ?? effectiveCartItems.reduce((s, it) => s + it.quantity, 0);
   const codOverLimit = finalPayable > COD_MAX_VND;
   const hasStockIssue = useMemo(
     () => enrichedGroups.some((g) => g.items.some((it) => it.isOutOfStock || it.exceedsStock)),
@@ -392,10 +540,10 @@ export function CheckoutClient({
         body: {
           code: clean,
           shipping_fees: shippingFeesByShop,
-          shop_voucher_ids: selectedShopVouchers,
-          platform_voucher_id: platformVoucherId || "",
-          freeship_voucher_id: freeshipVoucherId || "",
-          coins_to_use: useCoins ? coinBalance : 0,
+          shop_voucher_ids: effectiveShopVouchers,
+          platform_voucher_id: isStorefront ? "" : platformVoucherId || "",
+          freeship_voucher_id: isStorefront ? "" : freeshipVoucherId || "",
+          coins_to_use: isStorefront ? 0 : useCoins ? coinBalance : 0,
           flash_sale_item_by_sku: flashSaleItemBySku,
         },
       });
@@ -407,14 +555,23 @@ export function CheckoutClient({
         return;
       }
       const scope = (res.scope || res.voucher.scope).toUpperCase();
-      if (scope === "SHOP" && res.voucher.shop_id) {
+      if (isStorefront && storefrontShopId) {
+        if (scope !== "SHOP" || res.voucher.shop_id !== storefrontShopId) {
+          setPromoFeedback({
+            ok: false,
+            message: `Đơn từ website riêng của ${storefrontContext?.brandName ?? "cửa hàng"} chỉ áp dụng mã ưu đãi của cửa hàng này.`,
+          });
+          return;
+        }
+        setShopVoucher(res.voucher.shop_id, res.voucher.id);
+      } else if (scope === "SHOP" && res.voucher.shop_id) {
         setShopVoucher(res.voucher.shop_id, res.voucher.id);
       } else if (scope === "FREESHIP") {
         setFreeshipVoucher(res.voucher.id);
       } else {
         setPlatformVoucher(res.voucher.id);
       }
-      if (res.breakdown) setBreakdown(res.breakdown);
+      if (res.breakdown && !isStorefront) setBreakdown(res.breakdown);
       setPromoFeedback({
         ok: true,
         message:
@@ -460,7 +617,7 @@ export function CheckoutClient({
     setSessionExpired(false);
     setIsSubmitting(true);
 
-    const flashItems = cartItems
+    const flashItems = effectiveCartItems
       .filter((it) => Boolean(flashSaleItemBySku[it.sku_id]))
       .map((it) => ({
         sku_id: it.sku_id,
@@ -468,27 +625,39 @@ export function CheckoutClient({
         flash_sale_item_id: flashSaleItemBySku[it.sku_id],
       }));
 
-    const shippingChoices = Object.entries(selectedCarrierByShop).map(([shopId, choice]) => ({
-      shop_id: shopId,
-      carrier_code: choice.carrier_code,
-      service_code: choice.service_code,
-    }));
+    const shippingChoices = Object.entries(selectedCarrierByShop)
+      .filter(([shopId]) => !isStorefront || shopId === storefrontShopId)
+      .map(([shopId, choice]) => ({
+        shop_id: shopId,
+        carrier_code: choice.carrier_code,
+        service_code: choice.service_code,
+      }));
+
+    const checkoutRequestBody: Record<string, unknown> = {
+      address_id: selectedAddress.id,
+      from_cart: true,
+      items: flashItems,
+      shop_voucher_ids: effectiveShopVouchers,
+      platform_voucher_id: isStorefront ? "" : platformVoucherId || "",
+      freeship_voucher_id: isStorefront ? "" : freeshipVoucherId || "",
+      coins_to_use: isStorefront ? 0 : useCoins ? coinBalance : 0,
+      payment_method: paymentMethod,
+      shipping_choices: shippingChoices,
+    };
+
+    if (isStorefront && storefrontContext) {
+      checkoutRequestBody.checkout_channel_hint = "storefront";
+      checkoutRequestBody.storefront_shop_id = storefrontContext.shopId;
+      if (storefrontContext.siteHost) {
+        checkoutRequestBody.storefront_host = storefrontContext.siteHost;
+      }
+    }
 
     try {
       const res = await api<GwCheckoutResponse>("/api/checkout", {
         method: "POST",
         headers: { "Idempotency-Key": idempotencyKey },
-        body: {
-          address_id: selectedAddress.id,
-          from_cart: true,
-          items: flashItems,
-          shop_voucher_ids: selectedShopVouchers,
-          platform_voucher_id: platformVoucherId || "",
-          freeship_voucher_id: freeshipVoucherId || "",
-          coins_to_use: useCoins ? coinBalance : 0,
-          payment_method: paymentMethod,
-          shipping_choices: shippingChoices,
-        },
+        body: checkoutRequestBody,
       });
 
       resetVoucherSelection();
@@ -546,28 +715,41 @@ export function CheckoutClient({
   };
 
   const renderHeader = (subtitle: string) => (
-    <section className={shared.pageHeader}>
-      <div className={shared.headerLeadGroup}>
-        <h1 className={`${shared.pageTitle} lines`}>
-          <span className="line">
-            <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-              Thanh toán đơn hàng
+    <>
+      {storefrontContext && <StorefrontBanner context={storefrontContext} mode="checkout" />}
+      <section className={shared.pageHeader}>
+        <div className={shared.headerLeadGroup}>
+          <h1 className={`${shared.pageTitle} lines`}>
+            <span className="line">
+              <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
+                {storefrontContext
+                  ? `Thanh toán · ${storefrontContext.brandName}`
+                  : "Thanh toán đơn hàng"}
+              </span>
             </span>
-          </span>
-        </h1>
-        <p className={shared.pageLead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
-          {subtitle}
-        </p>
-      </div>
-      <div className={shared.headerAside} data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
-        <Button variant="secondary" size="md" href="/gio-hang">
-          Quay lại giỏ hàng
-        </Button>
-      </div>
-    </section>
+          </h1>
+          <p className={shared.pageLead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
+            {subtitle}
+          </p>
+        </div>
+        <div
+          className={shared.headerAside}
+          data-rise=""
+          style={{ "--i": 2 } as React.CSSProperties}
+        >
+          <Button variant="secondary" size="md" href={backToCartHref}>
+            Quay lại giỏ hàng
+          </Button>
+        </div>
+      </section>
+    </>
   );
 
-  if (sessionLoading || (isAuthenticated && cartLoading && !cart)) {
+  if (
+    sessionLoading ||
+    (isAuthenticated &&
+      ((cartLoading && !effectiveCart) || (isStorefront && scopedCartLoading && !scopedCart)))
+  ) {
     return (
       <div className={shared.page}>
         {renderHeader("Đang cập nhật tồn kho, địa chỉ giao hàng và cước vận chuyển.")}
@@ -579,7 +761,9 @@ export function CheckoutClient({
             rows={4}
           />
         </section>
-        <ProductAddonStrip title="Đồ cơ bản thường mua kèm" products={addonProducts} />
+        {addonProducts.length > 0 && (
+          <ProductAddonStrip title="Đồ cơ bản thường mua kèm" products={addonProducts} />
+        )}
       </div>
     );
   }
@@ -597,9 +781,13 @@ export function CheckoutClient({
           <StateView
             kind="empty"
             title="Vui lòng đăng nhập để đặt hàng"
-            message="Đăng nhập tài khoản NexusMart để sử dụng sổ địa chỉ, mã ưu đãi và theo dõi thanh toán an toàn."
+            message={
+              storefrontContext
+                ? `Đăng nhập tài khoản NexusMart để hoàn tất đơn hàng từ ${storefrontContext.brandName}.`
+                : "Đăng nhập tài khoản NexusMart để sử dụng sổ địa chỉ, mã ưu đãi và theo dõi thanh toán an toàn."
+            }
             actionLabel="Đăng nhập ngay"
-            actionHref="/dang-nhap?next=%2Fthanh-toan"
+            actionHref={loginReturnHref}
           />
           <div className={shared.formActions} style={{ marginTop: 16 }}>
             <Button variant="secondary" size="md" href="/dang-ky">
@@ -607,12 +795,14 @@ export function CheckoutClient({
             </Button>
           </div>
         </section>
-        <ProductAddonStrip title="Đồ cơ bản bán chạy" products={addonProducts} />
+        {addonProducts.length > 0 && (
+          <ProductAddonStrip title="Đồ cơ bản bán chạy" products={addonProducts} />
+        )}
       </div>
     );
   }
 
-  if (cartError && !cart) {
+  if (cartError && !effectiveCart) {
     return (
       <div className={shared.page}>
         {renderHeader("Không thể kết nối trang thanh toán lúc này. Chưa có khoản tiền nào bị trừ.")}
@@ -623,10 +813,12 @@ export function CheckoutClient({
             title="Thanh toán tạm gián đoạn"
             message={cartError}
             actionLabel="Thử lại"
-            onAction={() => void refreshCart()}
+            onAction={() => void (isStorefront ? fetchScopedCart() : refreshCart())}
           />
         </section>
-        <ProductAddonStrip title="Đồ cơ bản thường mua kèm" products={addonProducts} />
+        {addonProducts.length > 0 && (
+          <ProductAddonStrip title="Đồ cơ bản thường mua kèm" products={addonProducts} />
+        )}
       </div>
     );
   }
@@ -644,12 +836,21 @@ export function CheckoutClient({
           <StateView
             kind="empty"
             title="Chưa có sản phẩm cần thanh toán"
-            message="Quay lại giỏ hàng để kiểm tra hoặc khám phá danh mục đồ cơ bản của NexusMart."
+            message={
+              storefrontContext
+                ? `Quay lại giỏ hàng hoặc website của ${storefrontContext.brandName} để chọn sản phẩm.`
+                : "Quay lại giỏ hàng để kiểm tra hoặc khám phá danh mục đồ cơ bản của NexusMart."
+            }
             actionLabel="Quay lại giỏ hàng"
-            actionHref="/gio-hang"
+            actionHref={backToCartHref}
           />
         </section>
-        <ProductAddonStrip title="Thêm nhanh đồ cơ bản để đặt hàng ngay" products={addonProducts} />
+        {addonProducts.length > 0 && (
+          <ProductAddonStrip
+            title="Thêm nhanh đồ cơ bản để đặt hàng ngay"
+            products={addonProducts}
+          />
+        )}
       </div>
     );
   }
@@ -1019,19 +1220,21 @@ export function CheckoutClient({
                     {promoFeedback.message}
                   </p>
                 )}
-                <label className={shared.checkboxRow}>
-                  <input
-                    type="checkbox"
-                    className={shared.checkbox}
-                    checked={useCoins && coinBalance > 0}
-                    disabled={coinBalance <= 0}
-                    onChange={(e) => setUseCoins(e.target.checked)}
-                  />
-                  <span>
-                    Dùng Xu NexusMart (có{" "}
-                    <strong className="num">{formatInt(coinBalance)} Xu</strong>)
-                  </span>
-                </label>
+                {!isStorefront && (
+                  <label className={shared.checkboxRow}>
+                    <input
+                      type="checkbox"
+                      className={shared.checkbox}
+                      checked={useCoins && coinBalance > 0}
+                      disabled={coinBalance <= 0}
+                      onChange={(e) => setUseCoins(e.target.checked)}
+                    />
+                    <span>
+                      Dùng Xu NexusMart (có{" "}
+                      <strong className="num">{formatInt(coinBalance)} Xu</strong>)
+                    </span>
+                  </label>
+                )}
               </form>
 
               {(previewError || (breakdown?.warnings?.length ?? 0) > 0) && (
@@ -1061,28 +1264,36 @@ export function CheckoutClient({
                     {shopVoucherTotal > 0 ? formatSignedVnd(-shopVoucherTotal) : "0₫"}
                   </dd>
                 </div>
-                <div className={styles.ledgerRow}>
-                  <dt className={styles.ledgerLabel}>Voucher toàn sàn</dt>
-                  <dd className={`${styles.ledgerDiscount} num`}>
-                    {platformVoucherDiscount > 0 ? formatSignedVnd(-platformVoucherDiscount) : "0₫"}
-                  </dd>
-                </div>
+                {!isStorefront && (
+                  <div className={styles.ledgerRow}>
+                    <dt className={styles.ledgerLabel}>Voucher toàn sàn</dt>
+                    <dd className={`${styles.ledgerDiscount} num`}>
+                      {platformVoucherDiscount > 0
+                        ? formatSignedVnd(-platformVoucherDiscount)
+                        : "0₫"}
+                    </dd>
+                  </div>
+                )}
                 <div className={styles.ledgerRow}>
                   <dt className={styles.ledgerLabel}>Phí vận chuyển</dt>
                   <dd className="num">{formatVnd(shippingFeeTotal)}</dd>
                 </div>
-                <div className={styles.ledgerRow}>
-                  <dt className={styles.ledgerLabel}>Giảm phí vận chuyển</dt>
-                  <dd className={`${styles.ledgerDiscount} num`}>
-                    {freeshipDiscount > 0 ? formatSignedVnd(-freeshipDiscount) : "0₫"}
-                  </dd>
-                </div>
-                <div className={styles.ledgerRow}>
-                  <dt className={styles.ledgerLabel}>Trừ Xu NexusMart</dt>
-                  <dd className={`${styles.ledgerDiscount} num`}>
-                    {coinsDiscount > 0 ? formatSignedVnd(-coinsDiscount) : "0₫"}
-                  </dd>
-                </div>
+                {!isStorefront && (
+                  <div className={styles.ledgerRow}>
+                    <dt className={styles.ledgerLabel}>Giảm phí vận chuyển</dt>
+                    <dd className={`${styles.ledgerDiscount} num`}>
+                      {freeshipDiscount > 0 ? formatSignedVnd(-freeshipDiscount) : "0₫"}
+                    </dd>
+                  </div>
+                )}
+                {!isStorefront && (
+                  <div className={styles.ledgerRow}>
+                    <dt className={styles.ledgerLabel}>Trừ Xu NexusMart</dt>
+                    <dd className={`${styles.ledgerDiscount} num`}>
+                      {coinsDiscount > 0 ? formatSignedVnd(-coinsDiscount) : "0₫"}
+                    </dd>
+                  </div>
+                )}
               </dl>
             </div>
 
@@ -1107,7 +1318,7 @@ export function CheckoutClient({
                   <p>{formError}</p>
                   {sessionExpired && (
                     <div style={{ marginTop: 10 }}>
-                      <Button variant="secondary" size="sm" href="/dang-nhap?next=%2Fthanh-toan">
+                      <Button variant="secondary" size="sm" href={loginReturnHref}>
                         Đăng nhập lại
                       </Button>
                     </div>
@@ -1135,11 +1346,21 @@ export function CheckoutClient({
         </div>
       </section>
 
-      <ProductAddonStrip
-        title="Mua kèm nhanh trước khi đặt hàng"
-        subtitle="Tất cotton, đồ lót sợi tre và áo thun cơ bản giao chung đơn"
-        products={addonProducts}
-      />
+      {addonProducts.length > 0 && (
+        <ProductAddonStrip
+          title={
+            storefrontContext
+              ? `Sản phẩm khác từ ${storefrontContext.brandName}`
+              : "Mua kèm nhanh trước khi đặt hàng"
+          }
+          subtitle={
+            storefrontContext
+              ? "Thêm sản phẩm giao cùng đơn từ cửa hàng"
+              : "Tất cotton, đồ lót sợi tre và áo thun cơ bản giao chung đơn"
+          }
+          products={addonProducts}
+        />
+      )}
 
       {/* Sticky mobile place-order bar */}
       <div className={styles.mobileCheckoutBar} aria-label="Xác nhận đặt hàng nhanh">

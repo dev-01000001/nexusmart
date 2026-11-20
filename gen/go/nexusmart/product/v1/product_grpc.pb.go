@@ -19,21 +19,23 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ProductService_CreateCategory_FullMethodName     = "/nexusmart.product.v1.ProductService/CreateCategory"
-	ProductService_UpdateCategory_FullMethodName     = "/nexusmart.product.v1.ProductService/UpdateCategory"
-	ProductService_DeleteCategory_FullMethodName     = "/nexusmart.product.v1.ProductService/DeleteCategory"
-	ProductService_ListCategories_FullMethodName     = "/nexusmart.product.v1.ProductService/ListCategories"
-	ProductService_CreateProduct_FullMethodName      = "/nexusmart.product.v1.ProductService/CreateProduct"
-	ProductService_UpdateProduct_FullMethodName      = "/nexusmart.product.v1.ProductService/UpdateProduct"
-	ProductService_DeleteProduct_FullMethodName      = "/nexusmart.product.v1.ProductService/DeleteProduct"
-	ProductService_AdminReviewProduct_FullMethodName = "/nexusmart.product.v1.ProductService/AdminReviewProduct"
-	ProductService_GetProduct_FullMethodName         = "/nexusmart.product.v1.ProductService/GetProduct"
-	ProductService_ListProducts_FullMethodName       = "/nexusmart.product.v1.ProductService/ListProducts"
-	ProductService_GetSKUsBatch_FullMethodName       = "/nexusmart.product.v1.ProductService/GetSKUsBatch"
-	ProductService_UpdateStock_FullMethodName        = "/nexusmart.product.v1.ProductService/UpdateStock"
-	ProductService_ReserveStock_FullMethodName       = "/nexusmart.product.v1.ProductService/ReserveStock"
-	ProductService_ReleaseStock_FullMethodName       = "/nexusmart.product.v1.ProductService/ReleaseStock"
-	ProductService_ConfirmStock_FullMethodName       = "/nexusmart.product.v1.ProductService/ConfirmStock"
+	ProductService_CreateCategory_FullMethodName        = "/nexusmart.product.v1.ProductService/CreateCategory"
+	ProductService_UpdateCategory_FullMethodName        = "/nexusmart.product.v1.ProductService/UpdateCategory"
+	ProductService_DeleteCategory_FullMethodName        = "/nexusmart.product.v1.ProductService/DeleteCategory"
+	ProductService_ListCategories_FullMethodName        = "/nexusmart.product.v1.ProductService/ListCategories"
+	ProductService_CreateProduct_FullMethodName         = "/nexusmart.product.v1.ProductService/CreateProduct"
+	ProductService_UpdateProduct_FullMethodName         = "/nexusmart.product.v1.ProductService/UpdateProduct"
+	ProductService_DeleteProduct_FullMethodName         = "/nexusmart.product.v1.ProductService/DeleteProduct"
+	ProductService_AdminReviewProduct_FullMethodName    = "/nexusmart.product.v1.ProductService/AdminReviewProduct"
+	ProductService_GetProduct_FullMethodName            = "/nexusmart.product.v1.ProductService/GetProduct"
+	ProductService_ListProducts_FullMethodName          = "/nexusmart.product.v1.ProductService/ListProducts"
+	ProductService_GetSKUsBatch_FullMethodName          = "/nexusmart.product.v1.ProductService/GetSKUsBatch"
+	ProductService_UpdateStock_FullMethodName           = "/nexusmart.product.v1.ProductService/UpdateStock"
+	ProductService_ReserveStock_FullMethodName          = "/nexusmart.product.v1.ProductService/ReserveStock"
+	ProductService_ReleaseStock_FullMethodName          = "/nexusmart.product.v1.ProductService/ReleaseStock"
+	ProductService_ConfirmStock_FullMethodName          = "/nexusmart.product.v1.ProductService/ConfirmStock"
+	ProductService_ReserveFlashSaleStock_FullMethodName = "/nexusmart.product.v1.ProductService/ReserveFlashSaleStock"
+	ProductService_ReleaseFlashSaleStock_FullMethodName = "/nexusmart.product.v1.ProductService/ReleaseFlashSaleStock"
 )
 
 // ProductServiceClient is the client API for ProductService service.
@@ -55,6 +57,8 @@ type ProductServiceClient interface {
 	ReserveStock(ctx context.Context, in *ReserveStockRequest, opts ...grpc.CallOption) (*ReserveStockResponse, error)
 	ReleaseStock(ctx context.Context, in *ReleaseStockRequest, opts ...grpc.CallOption) (*ReleaseStockResponse, error)
 	ConfirmStock(ctx context.Context, in *ConfirmStockRequest, opts ...grpc.CallOption) (*ConfirmStockResponse, error)
+	ReserveFlashSaleStock(ctx context.Context, in *ReserveFlashSaleStockRequest, opts ...grpc.CallOption) (*ReserveFlashSaleStockResponse, error)
+	ReleaseFlashSaleStock(ctx context.Context, in *ReleaseFlashSaleStockRequest, opts ...grpc.CallOption) (*ReleaseFlashSaleStockResponse, error)
 }
 
 type productServiceClient struct {
@@ -215,6 +219,26 @@ func (c *productServiceClient) ConfirmStock(ctx context.Context, in *ConfirmStoc
 	return out, nil
 }
 
+func (c *productServiceClient) ReserveFlashSaleStock(ctx context.Context, in *ReserveFlashSaleStockRequest, opts ...grpc.CallOption) (*ReserveFlashSaleStockResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReserveFlashSaleStockResponse)
+	err := c.cc.Invoke(ctx, ProductService_ReserveFlashSaleStock_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) ReleaseFlashSaleStock(ctx context.Context, in *ReleaseFlashSaleStockRequest, opts ...grpc.CallOption) (*ReleaseFlashSaleStockResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReleaseFlashSaleStockResponse)
+	err := c.cc.Invoke(ctx, ProductService_ReleaseFlashSaleStock_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ProductServiceServer is the server API for ProductService service.
 // All implementations must embed UnimplementedProductServiceServer
 // for forward compatibility.
@@ -234,6 +258,8 @@ type ProductServiceServer interface {
 	ReserveStock(context.Context, *ReserveStockRequest) (*ReserveStockResponse, error)
 	ReleaseStock(context.Context, *ReleaseStockRequest) (*ReleaseStockResponse, error)
 	ConfirmStock(context.Context, *ConfirmStockRequest) (*ConfirmStockResponse, error)
+	ReserveFlashSaleStock(context.Context, *ReserveFlashSaleStockRequest) (*ReserveFlashSaleStockResponse, error)
+	ReleaseFlashSaleStock(context.Context, *ReleaseFlashSaleStockRequest) (*ReleaseFlashSaleStockResponse, error)
 	mustEmbedUnimplementedProductServiceServer()
 }
 
@@ -288,6 +314,12 @@ func (UnimplementedProductServiceServer) ReleaseStock(context.Context, *ReleaseS
 }
 func (UnimplementedProductServiceServer) ConfirmStock(context.Context, *ConfirmStockRequest) (*ConfirmStockResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ConfirmStock not implemented")
+}
+func (UnimplementedProductServiceServer) ReserveFlashSaleStock(context.Context, *ReserveFlashSaleStockRequest) (*ReserveFlashSaleStockResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReserveFlashSaleStock not implemented")
+}
+func (UnimplementedProductServiceServer) ReleaseFlashSaleStock(context.Context, *ReleaseFlashSaleStockRequest) (*ReleaseFlashSaleStockResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReleaseFlashSaleStock not implemented")
 }
 func (UnimplementedProductServiceServer) mustEmbedUnimplementedProductServiceServer() {}
 func (UnimplementedProductServiceServer) testEmbeddedByValue()                        {}
@@ -580,6 +612,42 @@ func _ProductService_ConfirmStock_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ProductService_ReserveFlashSaleStock_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReserveFlashSaleStockRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).ReserveFlashSaleStock(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_ReserveFlashSaleStock_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).ReserveFlashSaleStock(ctx, req.(*ReserveFlashSaleStockRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_ReleaseFlashSaleStock_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseFlashSaleStockRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).ReleaseFlashSaleStock(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_ReleaseFlashSaleStock_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).ReleaseFlashSaleStock(ctx, req.(*ReleaseFlashSaleStockRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ProductService_ServiceDesc is the grpc.ServiceDesc for ProductService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -646,6 +714,14 @@ var ProductService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ConfirmStock",
 			Handler:    _ProductService_ConfirmStock_Handler,
+		},
+		{
+			MethodName: "ReserveFlashSaleStock",
+			Handler:    _ProductService_ReserveFlashSaleStock_Handler,
+		},
+		{
+			MethodName: "ReleaseFlashSaleStock",
+			Handler:    _ProductService_ReleaseFlashSaleStock_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

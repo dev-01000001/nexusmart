@@ -50,6 +50,7 @@ message SKU {
   string category_id = 15;
   int32 commission_rate_bps = 16;
   bool is_active = 17;
+  int32 flash_sale_reserved_stock = 18;
 }
 
 message SKUInput {
@@ -215,6 +216,7 @@ message UpdateStockResponse {
 message StockReservationItem {
   string sku_id = 1;
   int32 quantity = 2;
+  string flash_sale_item_id = 3;
 }
 
 message ReserveStockRequest {
@@ -246,6 +248,29 @@ message ConfirmStockResponse {
   bool already_confirmed = 2;
 }
 
+message ReserveFlashSaleStockRequest {
+  string flash_sale_item_id = 1;
+  string sku_id = 2;
+  int32 quantity = 3;
+  google.protobuf.Timestamp ends_at = 4;
+}
+
+message ReserveFlashSaleStockResponse {
+  int32 reserved_qty = 1;
+  int32 available_stock = 2;
+  bool already_reserved = 3;
+}
+
+message ReleaseFlashSaleStockRequest {
+  string flash_sale_item_id = 1;
+}
+
+message ReleaseFlashSaleStockResponse {
+  int32 released_qty = 1;
+  int32 available_stock = 2;
+  bool already_released = 3;
+}
+
 service ProductService {
   rpc CreateCategory(CreateCategoryRequest) returns (CreateCategoryResponse);
   rpc UpdateCategory(UpdateCategoryRequest) returns (UpdateCategoryResponse);
@@ -262,4 +287,6 @@ service ProductService {
   rpc ReserveStock(ReserveStockRequest) returns (ReserveStockResponse);
   rpc ReleaseStock(ReleaseStockRequest) returns (ReleaseStockResponse);
   rpc ConfirmStock(ConfirmStockRequest) returns (ConfirmStockResponse);
+  rpc ReserveFlashSaleStock(ReserveFlashSaleStockRequest) returns (ReserveFlashSaleStockResponse);
+  rpc ReleaseFlashSaleStock(ReleaseFlashSaleStockRequest) returns (ReleaseFlashSaleStockResponse);
 }

@@ -9,6 +9,7 @@ import {
   IconClose,
   IconDashboard,
   IconFileText,
+  IconHome,
   IconMenu,
   IconPackage,
   IconSearch,
@@ -121,6 +122,11 @@ export function AdminShell({
       label: "Duyệt gian hàng",
       icon: <IconStore size={16} />,
       badge: pendingShopApprovals > 0 ? pendingShopApprovals : undefined,
+    },
+    {
+      href: "/admin/sites",
+      label: "Site gian hàng",
+      icon: <IconHome size={16} />,
     },
     {
       href: "/admin/kiem-duyet",

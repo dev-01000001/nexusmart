@@ -51,3 +51,40 @@ export const TRUST_PROXY_HEADERS = process.env.TRUST_PROXY_HEADERS === "true";
 export function isTrustedProxyHeadersEnabled(): boolean {
   return process.env.TRUST_PROXY_HEADERS === "true";
 }
+
+function normalizeRootDomain(raw: string | undefined): string {
+  const cleaned = (raw || "nexusmart.localhost")
+    .trim()
+    .toLowerCase()
+    .replace(/^\.+|\.+$/g, "");
+  return cleaned || "nexusmart.localhost";
+}
+
+/**
+ * Root domain under which seller subdomain sites are served (e.g. `bach-dang.nexusmart.localhost`).
+ */
+export const SITE_ROOT_DOMAIN = normalizeRootDomain(process.env.SITE_ROOT_DOMAIN);
+
+/** Runtime reader for `SITE_ROOT_DOMAIN` (reflects env changes in tests). */
+export function getSiteRootDomain(): string {
+  return normalizeRootDomain(process.env.SITE_ROOT_DOMAIN);
+}
+
+/** Short positive TTL (ms) for middleware host -> PUBLISHED site cache. */
+export const SITE_HOST_CACHE_TTL_MS = Math.max(
+  250,
+  Number(process.env.SITE_HOST_CACHE_TTL_MS) || 3000
+);
+
+/** Short negative TTL (ms) for middleware host -> 404 negative cache. */
+export const SITE_HOST_NEG_CACHE_TTL_MS = Math.max(
+  250,
+  Number(process.env.SITE_HOST_NEG_CACHE_TTL_MS) || 1500
+);
+
+export function getSiteHostCacheTtls(): { positiveTtlMs: number; negativeTtlMs: number } {
+  return {
+    positiveTtlMs: Math.max(250, Number(process.env.SITE_HOST_CACHE_TTL_MS) || 3000),
+    negativeTtlMs: Math.max(250, Number(process.env.SITE_HOST_NEG_CACHE_TTL_MS) || 1500),
+  };
+}

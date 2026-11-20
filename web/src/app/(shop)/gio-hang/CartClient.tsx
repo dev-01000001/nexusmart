@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { PLATFORM_FREESHIP_THRESHOLD } from "@/data/vouchers";
 import type { Product } from "@/data/products";
@@ -21,30 +21,53 @@ import {
   StateView,
 } from "@/components";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
+import {
+  StorefrontBanner,
+  type StorefrontCheckoutContext,
+} from "@/features/commerce/StorefrontBanner";
 import { useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import {
   enrichCartGroups,
   formatVoucherHeadline,
   formatVoucherIneligibleReason,
 } from "@/features/commerce/cartEnrich";
-import type { GwCoinBalance, GwDiscountBreakdown, GwVoucher } from "@/features/commerce/types";
+import type {
+  GwCart,
+  GwCoinBalance,
+  GwDiscountBreakdown,
+  GwVoucher,
+} from "@/features/commerce/types";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./page.module.css";
+
+export interface CartHandoffSku {
+  skuId: string;
+  qty: number;
+  flashSaleItemId?: string;
+}
 
 export interface CartClientProps {
   catalogProducts: Product[];
   catalogShops: Shop[];
   initialVouchers: GwVoucher[];
+  storefrontContext?: StorefrontCheckoutContext | null;
+  handoffSku?: CartHandoffSku | null;
 }
 
-export function CartClient({ catalogProducts, catalogShops, initialVouchers }: CartClientProps) {
+export function CartClient({
+  catalogProducts,
+  catalogShops,
+  initialVouchers,
+  storefrontContext = null,
+  handoffSku = null,
+}: CartClientProps) {
   const { isAuthenticated, loading: sessionLoading } = useSession();
   const {
     cart,
-    cartItems,
     cartLoading,
     cartError,
     refreshCart,
+    addToCart,
     updateCartItemQty,
     removeCartItem,
     clearCart,
@@ -62,6 +85,14 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
     showToast,
   } = useStore();
 
+  const isStorefront = Boolean(storefrontContext);
+  const storefrontShopId = storefrontContext?.shopId ?? null;
+
+  const [scopedCart, setScopedCart] = useState<GwCart | null>(null);
+  const [scopedCartLoading, setScopedCartLoading] = useState<boolean>(false);
+  const [handoffAdding, setHandoffAdding] = useState<boolean>(false);
+  const handoffDoneRef = useRef<boolean>(false);
+
   const [vouchers, setVouchers] = useState<GwVoucher[]>(initialVouchers);
   const [coinBalance, setCoinBalance] = useState<number>(0);
   const [breakdown, setBreakdown] = useState<GwDiscountBreakdown | null>(null);
@@ -74,26 +105,167 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
   const [validatingCode, setValidatingCode] = useState<boolean>(false);
   const [codeFeedback, setCodeFeedback] = useState<{ ok: boolean; message: string } | null>(null);
 
-  const enrichedGroups = useMemo(
-    () => enrichCartGroups(cart?.shop_groups ?? [], catalogProducts, catalogShops),
-    [cart?.shop_groups, catalogProducts, catalogShops]
+  const fetchScopedCart = useCallback(async () => {
+    if (!isAuthenticated || !storefrontShopId) {
+      setScopedCart(null);
+      return null;
+    }
+    setScopedCartLoading(true);
+    try {
+      const res = await api<{ cart: GwCart }>(
+        `/api/cart?shop_id=${encodeURIComponent(storefrontShopId)}`
+      );
+      setScopedCart(res.cart ?? null);
+      return res.cart ?? null;
+    } catch {
+      return null;
+    } finally {
+      setScopedCartLoading(false);
+    }
+  }, [isAuthenticated, storefrontShopId]);
+
+  useEffect(() => {
+    if (isStorefront && isAuthenticated) {
+      void fetchScopedCart();
+    } else {
+      setScopedCart(null);
+    }
+  }, [isStorefront, isAuthenticated, cart, fetchScopedCart]);
+
+  // One-time auto-add when arriving from a subdomain site PDP with `?sku=...&qty=...`.
+  useEffect(() => {
+    if (!isStorefront || !isAuthenticated || !handoffSku || handoffDoneRef.current) return;
+    handoffDoneRef.current = true;
+    setHandoffAdding(true);
+    void (async () => {
+      try {
+        const res = await addToCart({
+          skuId: handoffSku.skuId,
+          quantity: handoffSku.qty,
+          flashSaleItemId: handoffSku.flashSaleItemId,
+        });
+        if (res.ok) {
+          showToast("Đã thêm sản phẩm từ cửa hàng vào giỏ hàng.");
+        }
+        await fetchScopedCart();
+        if (typeof window !== "undefined" && storefrontContext) {
+          const nextParams = new URLSearchParams();
+          nextParams.set("shop", storefrontContext.shopId);
+          nextParams.set("channel", "storefront");
+          if (storefrontContext.siteHost) nextParams.set("site", storefrontContext.siteHost);
+          window.history.replaceState(null, "", `/gio-hang?${nextParams.toString()}`);
+        }
+      } finally {
+        setHandoffAdding(false);
+      }
+    })();
+  }, [
+    isStorefront,
+    isAuthenticated,
+    handoffSku,
+    addToCart,
+    fetchScopedCart,
+    showToast,
+    storefrontContext,
+  ]);
+
+  const effectiveCart = useMemo<GwCart | null>(() => {
+    if (!isStorefront || !storefrontShopId) return cart;
+    if (scopedCart) return scopedCart;
+    if (!cart) return null;
+    const onlyGroups = cart.shop_groups.filter((g) => g.shop_id === storefrontShopId);
+    const totalItems = onlyGroups.reduce(
+      (sum, g) => sum + g.items.reduce((s, it) => s + it.quantity, 0),
+      0
+    );
+    const totalVnd = onlyGroups.reduce((sum, g) => sum + g.subtotal_vnd, 0);
+    return {
+      ...cart,
+      shop_groups: onlyGroups,
+      total_items: totalItems,
+      total_vnd: totalVnd,
+    };
+  }, [isStorefront, storefrontShopId, scopedCart, cart]);
+
+  const effectiveCartItems = useMemo(
+    () => (effectiveCart?.shop_groups ?? []).flatMap((g) => g.items),
+    [effectiveCart]
   );
 
+  const enrichedGroups = useMemo(
+    () => enrichCartGroups(effectiveCart?.shop_groups ?? [], catalogProducts, catalogShops),
+    [effectiveCart?.shop_groups, catalogProducts, catalogShops]
+  );
+
+  const storefrontCatalogShopId = useMemo(() => {
+    if (!storefrontShopId) return null;
+    const match = catalogShops.find(
+      (s) => s.backendId === storefrontShopId || s.id === storefrontShopId
+    );
+    return match?.id ?? storefrontShopId;
+  }, [catalogShops, storefrontShopId]);
+
   const addonProducts = useMemo(() => {
-    const inCartProductIds = new Set(cartItems.map((c) => c.product_id));
-    const filtered = catalogProducts.filter(
+    const basePool =
+      isStorefront && storefrontCatalogShopId
+        ? catalogProducts.filter((p) => p.shopId === storefrontCatalogShopId)
+        : catalogProducts;
+    const inCartProductIds = new Set(effectiveCartItems.map((c) => c.product_id));
+    const filtered = basePool.filter(
       (p) => !inCartProductIds.has(p.backendId ?? p.id) && !inCartProductIds.has(p.id)
     );
-    return (filtered.length >= 4 ? filtered : catalogProducts).slice(0, 4);
-  }, [cartItems, catalogProducts]);
+    return (filtered.length >= 4 ? filtered : basePool).slice(0, 4);
+  }, [isStorefront, storefrontCatalogShopId, effectiveCartItems, catalogProducts]);
+
+  const checkoutHref = useMemo(() => {
+    if (!storefrontContext) return "/thanh-toan";
+    const params = new URLSearchParams();
+    params.set("shop", storefrontContext.shopId);
+    params.set("channel", "storefront");
+    if (storefrontContext.siteHost) params.set("site", storefrontContext.siteHost);
+    return `/thanh-toan?${params.toString()}`;
+  }, [storefrontContext]);
+
+  const loginReturnHref = useMemo(() => {
+    if (!storefrontContext) return "/dang-nhap?next=%2Fgio-hang";
+    const params = new URLSearchParams();
+    params.set("shop", storefrontContext.shopId);
+    params.set("channel", "storefront");
+    if (storefrontContext.siteHost) params.set("site", storefrontContext.siteHost);
+    if (handoffSku) {
+      params.set("sku", handoffSku.skuId);
+      params.set("qty", String(handoffSku.qty));
+      if (handoffSku.flashSaleItemId) params.set("flash", handoffSku.flashSaleItemId);
+    }
+    return `/dang-nhap?next=${encodeURIComponent(`/gio-hang?${params.toString()}`)}`;
+  }, [storefrontContext, handoffSku]);
 
   useRevealOnScroll(
-    `cart-${isAuthenticated ? "auth" : "guest"}-${cartItems.length}-${enrichedGroups.length}`
+    `cart-${isAuthenticated ? "auth" : "guest"}-${isStorefront ? "sf" : "mkt"}-${effectiveCartItems.length}-${enrichedGroups.length}`
   );
 
   // Load real vouchers & real coin balance when authenticated
   const loadPromoMeta = useCallback(async () => {
     if (!isAuthenticated) return;
+    if (isStorefront && storefrontShopId) {
+      try {
+        const vRes = await api<{ vouchers: GwVoucher[] }>(
+          `/api/vouchers?shop_id=${encodeURIComponent(storefrontShopId)}&scope=SHOP`
+        );
+        if (Array.isArray(vRes.vouchers)) {
+          setVouchers(
+            vRes.vouchers.filter(
+              (v) =>
+                v.scope.toUpperCase() === "SHOP" && v.shop_id === storefrontShopId && v.is_active
+            )
+          );
+        }
+      } catch {
+        // Keep initial shop vouchers
+      }
+      setCoinBalance(0);
+      return;
+    }
     const [vRes, cRes] = await Promise.allSettled([
       api<{ vouchers: GwVoucher[] }>("/api/vouchers"),
       api<GwCoinBalance>("/api/vouchers/coins"),
@@ -104,18 +276,24 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
     if (cRes.status === "fulfilled" && typeof cRes.value.balance === "number") {
       setCoinBalance(Math.max(0, cRes.value.balance));
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isStorefront, storefrontShopId]);
 
   useEffect(() => {
     void loadPromoMeta();
   }, [loadPromoMeta]);
 
   // Run authoritative backend promotion preview whenever cart or voucher/coin selections change
-  const selectedVouchersKey = JSON.stringify(selectedShopVouchers);
+  const effectiveShopVouchers = useMemo(() => {
+    if (!isStorefront || !storefrontShopId) return selectedShopVouchers;
+    const only = selectedShopVouchers[storefrontShopId];
+    return only ? { [storefrontShopId]: only } : {};
+  }, [isStorefront, storefrontShopId, selectedShopVouchers]);
+
+  const selectedVouchersKey = JSON.stringify(effectiveShopVouchers);
   const flashKey = JSON.stringify(flashSaleItemBySku);
 
   useEffect(() => {
-    if (!isAuthenticated || !cart || cart.shop_groups.length === 0) {
+    if (!isAuthenticated || !effectiveCart || effectiveCart.shop_groups.length === 0) {
       setBreakdown(null);
       setPreviewError(null);
       return;
@@ -125,15 +303,36 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
     setPreviewLoading(true);
     setPreviewError(null);
 
+    const previewBody = isStorefront
+      ? {
+          shop_items: effectiveCart.shop_groups.map((g) => ({
+            shop_id: g.shop_id,
+            subtotal_vnd: g.subtotal_vnd,
+            shipping_fee_vnd: 0,
+            items: g.items.map((it) => ({
+              sku_id: it.sku_id,
+              quantity: it.quantity,
+              unit_price_vnd: it.price_vnd,
+              flash_sale_item_id: flashSaleItemBySku[it.sku_id] || "",
+            })),
+          })),
+          shop_voucher_ids: effectiveShopVouchers,
+          platform_voucher_id: "",
+          freeship_voucher_id: "",
+          coins_to_use: 0,
+          flash_sale_item_by_sku: flashSaleItemBySku,
+        }
+      : {
+          shop_voucher_ids: selectedShopVouchers,
+          platform_voucher_id: platformVoucherId || "",
+          freeship_voucher_id: freeshipVoucherId || "",
+          coins_to_use: useCoins ? coinBalance : 0,
+          flash_sale_item_by_sku: flashSaleItemBySku,
+        };
+
     api<{ breakdown: GwDiscountBreakdown; warnings_vi?: string[] }>("/api/vouchers/preview", {
       method: "POST",
-      body: {
-        shop_voucher_ids: selectedShopVouchers,
-        platform_voucher_id: platformVoucherId || "",
-        freeship_voucher_id: freeshipVoucherId || "",
-        coins_to_use: useCoins ? coinBalance : 0,
-        flash_sale_item_by_sku: flashSaleItemBySku,
-      },
+      body: previewBody,
     })
       .then((res) => {
         if (!cancelled) setBreakdown(res.breakdown);
@@ -157,7 +356,8 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     isAuthenticated,
-    cart,
+    isStorefront,
+    effectiveCart,
     selectedVouchersKey,
     platformVoucherId,
     freeshipVoucherId,
@@ -167,25 +367,34 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
   ]);
 
   const platformVouchers = useMemo(
-    () => vouchers.filter((v) => v.scope.toUpperCase() === "PLATFORM" && v.is_active),
-    [vouchers]
+    () =>
+      isStorefront
+        ? []
+        : vouchers.filter((v) => v.scope.toUpperCase() === "PLATFORM" && v.is_active),
+    [isStorefront, vouchers]
   );
   const freeshipVouchers = useMemo(
-    () => vouchers.filter((v) => v.scope.toUpperCase() === "FREESHIP" && v.is_active),
-    [vouchers]
+    () =>
+      isStorefront
+        ? []
+        : vouchers.filter((v) => v.scope.toUpperCase() === "FREESHIP" && v.is_active),
+    [isStorefront, vouchers]
   );
 
-  const subtotal = breakdown?.total_subtotal_vnd ?? cart?.total_vnd ?? 0;
+  const subtotal = breakdown?.total_subtotal_vnd ?? effectiveCart?.total_vnd ?? 0;
   const flashDiscount = breakdown?.total_flash_sale_discount_vnd ?? 0;
   const shopVoucherTotal = breakdown?.total_shop_voucher_discount_vnd ?? 0;
-  const platformVoucherDiscount = breakdown?.total_platform_voucher_discount_vnd ?? 0;
-  const freeshipDiscount = breakdown?.total_freeship_discount_vnd ?? 0;
-  const coinsDiscount = breakdown?.total_coins_discount_vnd ?? 0;
+  const platformVoucherDiscount = isStorefront
+    ? 0
+    : (breakdown?.total_platform_voucher_discount_vnd ?? 0);
+  const freeshipDiscount = isStorefront ? 0 : (breakdown?.total_freeship_discount_vnd ?? 0);
+  const coinsDiscount = isStorefront ? 0 : (breakdown?.total_coins_discount_vnd ?? 0);
   const totalDiscount = breakdown?.total_discount_vnd ?? 0;
   const grandTotal = breakdown?.final_payable_vnd ?? subtotal;
   const previewWarnings = breakdown?.warnings ?? [];
 
-  const totalItemQty = cart?.total_items ?? cartItems.reduce((s, it) => s + it.quantity, 0);
+  const totalItemQty =
+    effectiveCart?.total_items ?? effectiveCartItems.reduce((s, it) => s + it.quantity, 0);
   const hasStockIssue = useMemo(
     () => enrichedGroups.some((g) => g.items.some((it) => it.isOutOfStock || it.exceedsStock)),
     [enrichedGroups]
@@ -204,6 +413,7 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
     setBusySkuId(skuId);
     try {
       await updateCartItemQty(skuId, nextQty);
+      if (isStorefront) await fetchScopedCart();
     } finally {
       setBusySkuId(null);
     }
@@ -214,6 +424,7 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
     setBusySkuId(skuId);
     try {
       const res = await removeCartItem(skuId);
+      if (isStorefront) await fetchScopedCart();
       if (res.ok) showToast(`Đã bỏ ${name} khỏi giỏ hàng.`);
     } finally {
       setBusySkuId(null);
@@ -224,10 +435,19 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
     if (clearing) return;
     setClearing(true);
     try {
-      const ok = await clearCart();
-      if (ok) {
+      if (isStorefront && storefrontShopId) {
+        await api(`/api/cart?shop_id=${encodeURIComponent(storefrontShopId)}`, {
+          method: "DELETE",
+        });
+        await Promise.all([refreshCart(), fetchScopedCart()]);
         setConfirmClear(false);
-        showToast("Đã xóa toàn bộ sản phẩm trong giỏ hàng.");
+        showToast(`Đã xóa sản phẩm của ${storefrontContext?.brandName ?? "cửa hàng"} khỏi giỏ.`);
+      } else {
+        const ok = await clearCart();
+        if (ok) {
+          setConfirmClear(false);
+          showToast("Đã xóa toàn bộ sản phẩm trong giỏ hàng.");
+        }
       }
     } finally {
       setClearing(false);
@@ -257,10 +477,10 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
         method: "POST",
         body: {
           code: clean,
-          shop_voucher_ids: selectedShopVouchers,
-          platform_voucher_id: platformVoucherId || "",
-          freeship_voucher_id: freeshipVoucherId || "",
-          coins_to_use: useCoins ? coinBalance : 0,
+          shop_voucher_ids: effectiveShopVouchers,
+          platform_voucher_id: isStorefront ? "" : platformVoucherId || "",
+          freeship_voucher_id: isStorefront ? "" : freeshipVoucherId || "",
+          coins_to_use: isStorefront ? 0 : useCoins ? coinBalance : 0,
           flash_sale_item_by_sku: flashSaleItemBySku,
         },
       });
@@ -274,14 +494,23 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
       }
 
       const scope = (res.scope || res.voucher.scope).toUpperCase();
-      if (scope === "SHOP" && res.voucher.shop_id) {
+      if (isStorefront && storefrontShopId) {
+        if (scope !== "SHOP" || res.voucher.shop_id !== storefrontShopId) {
+          setCodeFeedback({
+            ok: false,
+            message: `Đơn từ website riêng của ${storefrontContext?.brandName ?? "cửa hàng"} chỉ áp dụng mã ưu đãi của cửa hàng này.`,
+          });
+          return;
+        }
+        setShopVoucher(res.voucher.shop_id, res.voucher.id);
+      } else if (scope === "SHOP" && res.voucher.shop_id) {
         setShopVoucher(res.voucher.shop_id, res.voucher.id);
       } else if (scope === "FREESHIP") {
         setFreeshipVoucher(res.voucher.id);
       } else {
         setPlatformVoucher(res.voucher.id);
       }
-      if (res.breakdown) {
+      if (res.breakdown && !isStorefront) {
         setBreakdown(res.breakdown);
       }
 
@@ -316,28 +545,48 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
   };
 
   const renderHeader = (subtitle: string) => (
-    <section className={shared.pageHeader}>
-      <div className={shared.headerLeadGroup}>
-        <h1 className={`${shared.pageTitle} lines`}>
-          <span className="line">
-            <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-              Giỏ hàng của bạn
+    <>
+      {storefrontContext && <StorefrontBanner context={storefrontContext} mode="cart" />}
+      <section className={shared.pageHeader}>
+        <div className={shared.headerLeadGroup}>
+          <h1 className={`${shared.pageTitle} lines`}>
+            <span className="line">
+              <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
+                {storefrontContext
+                  ? `Giỏ hàng · ${storefrontContext.brandName}`
+                  : "Giỏ hàng của bạn"}
+              </span>
             </span>
-          </span>
-        </h1>
-        <p className={shared.pageLead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
-          {subtitle}
-        </p>
-      </div>
-      <div className={shared.headerAside} data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
-        <Button variant="secondary" size="md" href="/danh-muc">
-          Tiếp tục chọn đồ
-        </Button>
-      </div>
-    </section>
+          </h1>
+          <p className={shared.pageLead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
+            {subtitle}
+          </p>
+        </div>
+        <div
+          className={shared.headerAside}
+          data-rise=""
+          style={{ "--i": 2 } as React.CSSProperties}
+        >
+          {storefrontContext?.siteOrigin ? (
+            <Button variant="secondary" size="md" href={storefrontContext.siteOrigin}>
+              Quay lại cửa hàng
+            </Button>
+          ) : (
+            <Button variant="secondary" size="md" href="/danh-muc">
+              Tiếp tục chọn đồ
+            </Button>
+          )}
+        </div>
+      </section>
+    </>
   );
 
-  if (sessionLoading || (isAuthenticated && cartLoading && !cart)) {
+  if (
+    sessionLoading ||
+    handoffAdding ||
+    (isAuthenticated &&
+      ((cartLoading && !effectiveCart) || (isStorefront && scopedCartLoading && !scopedCart)))
+  ) {
     return (
       <div className={shared.page}>
         {renderHeader("Đang cập nhật sản phẩm, tồn kho và mã ưu đãi trong giỏ hàng của bạn.")}
@@ -345,12 +594,22 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
           <h2 className={shared.sectionTitle}>Danh sách sản phẩm</h2>
           <StateView kind="loading" title="Đang tải giỏ hàng của bạn..." rows={4} />
         </section>
-        <ProductAddonStrip
-          title="Đồ cơ bản bán chạy tại NexusMart"
-          subtitle="Sản phẩm dệt may trực tiếp từ các xưởng Việt Nam"
-          products={addonProducts}
-          showTierHint
-        />
+        {addonProducts.length > 0 && (
+          <ProductAddonStrip
+            title={
+              storefrontContext
+                ? `Sản phẩm của ${storefrontContext.brandName}`
+                : "Đồ cơ bản bán chạy tại NexusMart"
+            }
+            subtitle={
+              storefrontContext
+                ? "Các mẫu đang sẵn hàng tại kho của cửa hàng"
+                : "Sản phẩm dệt may trực tiếp từ các xưởng Việt Nam"
+            }
+            products={addonProducts}
+            showTierHint={!isStorefront}
+          />
+        )}
       </div>
     );
   }
@@ -370,30 +629,50 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
           <StateView
             kind="empty"
             title="Bạn chưa đăng nhập"
-            message="Giỏ hàng được lưu an toàn theo tài khoản của bạn. Đăng nhập để thêm sản phẩm, áp mã giảm giá và đặt hàng."
+            message={
+              storefrontContext
+                ? `Đăng nhập tài khoản NexusMart để thêm sản phẩm và thanh toán đơn hàng từ ${storefrontContext.brandName}.`
+                : "Giỏ hàng được lưu an toàn theo tài khoản của bạn. Đăng nhập để thêm sản phẩm, áp mã giảm giá và đặt hàng."
+            }
             actionLabel="Đăng nhập ngay"
-            actionHref="/dang-nhap?next=%2Fgio-hang"
+            actionHref={loginReturnHref}
           />
           <div className={shared.formActions} style={{ marginTop: 16 }}>
             <Button variant="secondary" size="md" href="/dang-ky">
               Đăng ký tài khoản mới
             </Button>
-            <Button variant="secondary" size="md" href="/danh-muc">
-              Xem danh mục sản phẩm
-            </Button>
+            {storefrontContext?.siteOrigin ? (
+              <Button variant="secondary" size="md" href={storefrontContext.siteOrigin}>
+                Quay lại {storefrontContext.brandName}
+              </Button>
+            ) : (
+              <Button variant="secondary" size="md" href="/danh-muc">
+                Xem danh mục sản phẩm
+              </Button>
+            )}
           </div>
         </section>
-        <ProductAddonStrip
-          title="Gợi ý bắt đầu cho tủ đồ cơ bản"
-          subtitle="Bốn mẫu tiêu chuẩn từ các xưởng dệt Việt Nam"
-          products={addonProducts}
-          showTierHint
-        />
+        {addonProducts.length > 0 && (
+          <ProductAddonStrip
+            title={
+              storefrontContext
+                ? `Sản phẩm nổi bật của ${storefrontContext.brandName}`
+                : "Gợi ý bắt đầu cho tủ đồ cơ bản"
+            }
+            subtitle={
+              storefrontContext
+                ? "Sản phẩm trực tiếp từ kho của cửa hàng"
+                : "Bốn mẫu tiêu chuẩn từ các xưởng dệt Việt Nam"
+            }
+            products={addonProducts}
+            showTierHint={!isStorefront}
+          />
+        )}
       </div>
     );
   }
 
-  if (cartError && !cart) {
+  if (cartError && !effectiveCart) {
     return (
       <div className={shared.page}>
         {renderHeader("Chưa thể kết nối đến giỏ hàng lúc này. Sản phẩm bạn đã chọn vẫn được giữ.")}
@@ -404,10 +683,12 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
             title="Chưa thể tải giỏ hàng"
             message={cartError}
             actionLabel="Thử tải lại"
-            onAction={() => void refreshCart()}
+            onAction={() => void (isStorefront ? fetchScopedCart() : refreshCart())}
           />
         </section>
-        <ProductAddonStrip title="Gợi ý xem nhanh danh mục cơ bản" products={addonProducts} />
+        {addonProducts.length > 0 && (
+          <ProductAddonStrip title="Gợi ý xem nhanh danh mục cơ bản" products={addonProducts} />
+        )}
       </div>
     );
   }
@@ -416,7 +697,9 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
     return (
       <div className={shared.page}>
         {renderHeader(
-          "Giỏ hàng của bạn hiện chưa có sản phẩm nào. Chọn đồ cơ bản chuẩn chất liệu để bắt đầu."
+          storefrontContext
+            ? `Bạn chưa có sản phẩm nào của ${storefrontContext.brandName} trong giỏ hàng.`
+            : "Giỏ hàng của bạn hiện chưa có sản phẩm nào. Chọn đồ cơ bản chuẩn chất liệu để bắt đầu."
         )}
         <section
           className={shared.section}
@@ -427,68 +710,87 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
           <StateView
             kind="empty"
             title="Giỏ hàng đang trống"
-            message="Khám phá áo thun cotton 220gsm, polo pique, quần short và đồ lót sợi tre từ 4 xưởng dệt Việt Nam."
-            actionLabel="Khám phá danh mục"
-            actionHref="/danh-muc"
+            message={
+              storefrontContext
+                ? `Quay lại website của ${storefrontContext.brandName} để chọn sản phẩm phù hợp.`
+                : "Khám phá áo thun cotton 220gsm, polo pique, quần short và đồ lót sợi tre từ 4 xưởng dệt Việt Nam."
+            }
+            actionLabel={
+              storefrontContext ? `Quay lại ${storefrontContext.brandName}` : "Khám phá danh mục"
+            }
+            actionHref={storefrontContext?.siteOrigin || "/danh-muc"}
           />
         </section>
-        <ProductAddonStrip
-          title="Gợi ý bắt đầu cho tủ đồ cơ bản"
-          subtitle="Thêm nhanh theo size trực tiếp từ thẻ sản phẩm"
-          products={addonProducts}
-          showTierHint
-        />
+        {addonProducts.length > 0 && (
+          <ProductAddonStrip
+            title={
+              storefrontContext
+                ? `Sản phẩm từ ${storefrontContext.brandName}`
+                : "Gợi ý bắt đầu cho tủ đồ cơ bản"
+            }
+            subtitle="Thêm nhanh theo size trực tiếp từ thẻ sản phẩm"
+            products={addonProducts}
+            showTierHint={!isStorefront}
+          />
+        )}
       </div>
     );
   }
 
   return (
     <div className={`${shared.page} ${styles.mobileSpacer}`}>
-      {renderHeader("Kiểm tra số lượng, áp mã ưu đãi và chuyển sang bước đặt hàng.")}
+      {renderHeader(
+        storefrontContext
+          ? `Kiểm tra số lượng, áp mã ưu đãi riêng của ${storefrontContext.brandName} và tiến hành đặt hàng.`
+          : "Kiểm tra số lượng, áp mã ưu đãi và chuyển sang bước đặt hàng."
+      )}
 
       <section className={shared.section}>
         <div className={styles.cartLayout}>
-          {/* Left column: Freeship progress, toolbar, crisp white shop sheets */}
+          {/* Left column: Freeship progress (marketplace only), toolbar, crisp white shop sheets */}
           <div className={styles.leftCol}>
-            <div
-              className={styles.platformShipBar}
-              data-rise=""
-              style={{ "--i": 2 } as React.CSSProperties}
-            >
-              <div className={shared.progressBlock}>
-                <div className={shared.progressMeta}>
-                  <span>
-                    {platformShipUnlocked ? (
-                      <>
-                        Đơn hàng đạt mốc ưu đãi vận chuyển toàn sàn{" "}
-                        <strong className="num">{formatVnd(platformShipThreshold)}</strong>
-                      </>
-                    ) : (
-                      <>
-                        Mua thêm <strong className="num">{formatVnd(platformShipRemaining)}</strong>{" "}
-                        để mở khóa mã miễn phí vận chuyển đơn từ{" "}
-                        <span className="num">{formatVnd(platformShipThreshold)}</span>
-                      </>
-                    )}
-                  </span>
-                  <span className="num">
-                    <strong>{formatVnd(Math.min(subtotal, platformShipThreshold))}</strong> /{" "}
-                    {formatVnd(platformShipThreshold)}
-                  </span>
-                </div>
-                <div
-                  className={`${shared.progressTrack} ${shared.progressTrackLight}`}
-                  aria-hidden="true"
-                >
+            {!isStorefront && (
+              <div
+                className={styles.platformShipBar}
+                data-rise=""
+                style={{ "--i": 2 } as React.CSSProperties}
+              >
+                <div className={shared.progressBlock}>
+                  <div className={shared.progressMeta}>
+                    <span>
+                      {platformShipUnlocked ? (
+                        <>
+                          Đơn hàng đạt mốc ưu đãi vận chuyển toàn sàn{" "}
+                          <strong className="num">{formatVnd(platformShipThreshold)}</strong>
+                        </>
+                      ) : (
+                        <>
+                          Mua thêm{" "}
+                          <strong className="num">{formatVnd(platformShipRemaining)}</strong> để mở
+                          khóa mã miễn phí vận chuyển đơn từ{" "}
+                          <span className="num">{formatVnd(platformShipThreshold)}</span>
+                        </>
+                      )}
+                    </span>
+                    <span className="num">
+                      <strong>{formatVnd(Math.min(subtotal, platformShipThreshold))}</strong> /{" "}
+                      {formatVnd(platformShipThreshold)}
+                    </span>
+                  </div>
                   <div
-                    className={`${shared.progressFill} ${
-                      platformShipUnlocked ? shared.progressFillDone : ""
-                    }`}
-                    style={{ width: `${platformShipPct}%` }}
-                  />
+                    className={`${shared.progressTrack} ${shared.progressTrackLight}`}
+                    aria-hidden="true"
+                  >
+                    <div
+                      className={`${shared.progressFill} ${
+                        platformShipUnlocked ? shared.progressFillDone : ""
+                      }`}
+                      style={{ width: `${platformShipPct}%` }}
+                    />
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
 
             <div
               className={styles.cartToolbar}
@@ -504,7 +806,7 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
                 {confirmClear ? (
                   <div className={shared.formActions}>
                     <Button variant="danger" size="sm" disabled={clearing} onClick={handleClearAll}>
-                      {clearing ? "Đang xóa..." : "Xác nhận xóa hết"}
+                      {clearing ? "Đang xóa..." : "Xác nhận xóa"}
                     </Button>
                     <Button variant="secondary" size="sm" onClick={() => setConfirmClear(false)}>
                       Giữ lại
@@ -516,7 +818,9 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
                     className={styles.clearBtn}
                     onClick={() => setConfirmClear(true)}
                   >
-                    Xóa toàn bộ giỏ
+                    {storefrontContext
+                      ? `Xóa sản phẩm của ${storefrontContext.brandName}`
+                      : "Xóa toàn bộ giỏ"}
                   </button>
                 )}
               </div>
@@ -969,25 +1273,27 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
                 </div>
               )}
 
-              {/* Real NexusMart Coins */}
-              <div className={styles.summaryBlock}>
-                <h3 className={styles.blockHeading}>Dùng Xu NexusMart</h3>
-                <label className={shared.checkboxRow}>
-                  <input
-                    type="checkbox"
-                    className={shared.checkbox}
-                    checked={useCoins && coinBalance > 0}
-                    disabled={coinBalance <= 0}
-                    onChange={(e) => setUseCoins(e.target.checked)}
-                  />
-                  <span>
-                    Dùng Xu hiện có (<strong className="num">{formatInt(coinBalance)} Xu</strong>)
-                  </span>
-                </label>
-                <p className={styles.coinMeta}>
-                  Quy đổi 1 Xu = 1₫. Hệ thống tự động trừ mức Xu tối đa hợp lệ cho đơn hàng.
-                </p>
-              </div>
+              {/* Real NexusMart Coins (marketplace only) */}
+              {!isStorefront && (
+                <div className={styles.summaryBlock}>
+                  <h3 className={styles.blockHeading}>Dùng Xu NexusMart</h3>
+                  <label className={shared.checkboxRow}>
+                    <input
+                      type="checkbox"
+                      className={shared.checkbox}
+                      checked={useCoins && coinBalance > 0}
+                      disabled={coinBalance <= 0}
+                      onChange={(e) => setUseCoins(e.target.checked)}
+                    />
+                    <span>
+                      Dùng Xu hiện có (<strong className="num">{formatInt(coinBalance)} Xu</strong>)
+                    </span>
+                  </label>
+                  <p className={styles.coinMeta}>
+                    Quy đổi 1 Xu = 1₫. Hệ thống tự động trừ mức Xu tối đa hợp lệ cho đơn hàng.
+                  </p>
+                </div>
+              )}
 
               {(previewError || previewWarnings.length > 0) && (
                 <div className={`${shared.feedbackBox} ${shared.feedbackWarn}`} role="status">
@@ -1020,14 +1326,18 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
                   </dd>
                 </div>
 
-                <div className={styles.breakdownRow}>
-                  <dt className={styles.breakdownLabel}>Voucher toàn sàn</dt>
-                  <dd className={`${styles.breakdownDiscount} num`}>
-                    {platformVoucherDiscount > 0 ? formatSignedVnd(-platformVoucherDiscount) : "0₫"}
-                  </dd>
-                </div>
+                {!isStorefront && (
+                  <div className={styles.breakdownRow}>
+                    <dt className={styles.breakdownLabel}>Voucher toàn sàn</dt>
+                    <dd className={`${styles.breakdownDiscount} num`}>
+                      {platformVoucherDiscount > 0
+                        ? formatSignedVnd(-platformVoucherDiscount)
+                        : "0₫"}
+                    </dd>
+                  </div>
+                )}
 
-                {freeshipDiscount > 0 && (
+                {!isStorefront && freeshipDiscount > 0 && (
                   <div className={styles.breakdownRow}>
                     <dt className={styles.breakdownLabel}>Giảm phí vận chuyển</dt>
                     <dd className={`${styles.breakdownDiscount} num`}>
@@ -1036,12 +1346,14 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
                   </div>
                 )}
 
-                <div className={styles.breakdownRow}>
-                  <dt className={styles.breakdownLabel}>Trừ Xu NexusMart</dt>
-                  <dd className={`${styles.breakdownDiscount} num`}>
-                    {coinsDiscount > 0 ? formatSignedVnd(-coinsDiscount) : "0₫"}
-                  </dd>
-                </div>
+                {!isStorefront && (
+                  <div className={styles.breakdownRow}>
+                    <dt className={styles.breakdownLabel}>Trừ Xu NexusMart</dt>
+                    <dd className={`${styles.breakdownDiscount} num`}>
+                      {coinsDiscount > 0 ? formatSignedVnd(-coinsDiscount) : "0₫"}
+                    </dd>
+                  </div>
+                )}
               </dl>
             </div>
 
@@ -1081,7 +1393,7 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
                     size="lg"
                     fullWidth
                     className={shared.wrapBtn}
-                    href="/thanh-toan"
+                    href={checkoutHref}
                   >
                     Tiến hành thanh toán · {formatVnd(grandTotal)}
                   </Button>
@@ -1092,12 +1404,22 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
         </div>
       </section>
 
-      <ProductAddonStrip
-        title="Gợi ý mua kèm đồ cơ bản"
-        subtitle="Thêm nhanh theo size trực tiếp từ kho các xưởng dệt Việt Nam"
-        products={addonProducts}
-        showTierHint
-      />
+      {addonProducts.length > 0 && (
+        <ProductAddonStrip
+          title={
+            storefrontContext
+              ? `Sản phẩm khác từ ${storefrontContext.brandName}`
+              : "Gợi ý mua kèm đồ cơ bản"
+          }
+          subtitle={
+            storefrontContext
+              ? "Chọn thêm sản phẩm giao cùng đơn từ cửa hàng"
+              : "Thêm nhanh theo size trực tiếp từ kho các xưởng dệt Việt Nam"
+          }
+          products={addonProducts}
+          showTierHint={!isStorefront}
+        />
+      )}
 
       {/* Sticky mobile checkout bar (390px thumb zone) */}
       <div className={styles.mobileStickyBar} aria-label="Thanh toán nhanh">
@@ -1112,7 +1434,7 @@ export function CartClient({ catalogProducts, catalogShops, initialVouchers }: C
             Kiểm tra tồn
           </Button>
         ) : (
-          <Button variant="primary" size="md" href="/thanh-toan">
+          <Button variant="primary" size="md" href={checkoutHref}>
             Thanh toán
           </Button>
         )}

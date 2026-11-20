@@ -40,6 +40,18 @@ type AuditLog struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+type Domain struct {
+	ID         string     `json:"id"`
+	SiteID     string     `json:"site_id"`
+	Host       string     `json:"host"`
+	Kind       string     `json:"kind"`
+	IsPrimary  bool       `json:"is_primary"`
+	VerifiedAt *time.Time `json:"verified_at"`
+	TlsStatus  string     `json:"tls_status"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+}
+
 type RefreshToken struct {
 	ID           string     `json:"id"`
 	UserID       string     `json:"user_id"`
@@ -63,6 +75,29 @@ type Shop struct {
 	RejectionReason    string    `json:"rejection_reason"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+type Site struct {
+	ID                 string     `json:"id"`
+	ShopID             string     `json:"shop_id"`
+	Subdomain          string     `json:"subdomain"`
+	Status             string     `json:"status"`
+	DraftConfig        []byte     `json:"draft_config"`
+	PublishedVersionID *string    `json:"published_version_id"`
+	PublishedAt        *time.Time `json:"published_at"`
+	SuspendedReason    string     `json:"suspended_reason"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
+type SiteVersion struct {
+	ID            string    `json:"id"`
+	SiteID        string    `json:"site_id"`
+	VersionNumber int32     `json:"version_number"`
+	Config        []byte    `json:"config"`
+	PublishedBy   string    `json:"published_by"`
+	Note          string    `json:"note"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type User struct {

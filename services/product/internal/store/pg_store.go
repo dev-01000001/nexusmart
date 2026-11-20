@@ -319,7 +319,7 @@ func (p *pgQueries) ListSKUsByProductIDs(ctx context.Context, productIDs []strin
 	for _, r := range rows {
 		out = append(out, fromSKUContextFields(
 			r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
-			r.Attributes, r.PriceVnd, r.Stock, r.ReservedStock, r.Version,
+			r.Attributes, r.PriceVnd, r.Stock, r.ReservedStock, r.FlashSaleReservedStock, r.Version,
 			r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
 			r.SkuStatus, r.ProductStatus, r.ProductDeletedAt,
 		))
@@ -339,7 +339,7 @@ func (p *pgQueries) GetSKUsBatch(ctx context.Context, skuIDs []string) ([]SKU, e
 	for _, r := range rows {
 		out = append(out, fromSKUContextFields(
 			r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
-			r.Attributes, r.PriceVnd, r.Stock, r.ReservedStock, r.Version,
+			r.Attributes, r.PriceVnd, r.Stock, r.ReservedStock, r.FlashSaleReservedStock, r.Version,
 			r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
 			r.SkuStatus, r.ProductStatus, r.ProductDeletedAt,
 		))
@@ -354,7 +354,20 @@ func (p *pgQueries) GetSKUWithContext(ctx context.Context, skuID string) (SKU, e
 	}
 	return fromSKUContextFields(
 		r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
-		r.Attributes, r.PriceVnd, r.Stock, r.ReservedStock, r.Version,
+		r.Attributes, r.PriceVnd, r.Stock, r.ReservedStock, r.FlashSaleReservedStock, r.Version,
+		r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
+		r.SkuStatus, r.ProductStatus, r.ProductDeletedAt,
+	), nil
+}
+
+func (p *pgQueries) GetSKUWithContextForUpdate(ctx context.Context, skuID string) (SKU, error) {
+	r, err := p.q.GetSKUWithContextForUpdate(ctx, skuID)
+	if err != nil {
+		return SKU{}, mapPgError(err)
+	}
+	return fromSKUContextFields(
+		r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
+		r.Attributes, r.PriceVnd, r.Stock, r.ReservedStock, r.FlashSaleReservedStock, r.Version,
 		r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
 		r.SkuStatus, r.ProductStatus, r.ProductDeletedAt,
 	), nil
@@ -379,7 +392,7 @@ func (p *pgQueries) UpdateSKUStockOptimistic(ctx context.Context, skuID string, 
 			if current.Version != expectedVersion {
 				return SKU{}, ErrVersionConflict
 			}
-			if newStock < current.ReservedStock {
+			if newStock < current.TotalReservedStock() {
 				return SKU{}, ErrInvalidStock
 			}
 			return SKU{}, ErrVersionConflict
@@ -445,6 +458,57 @@ func (p *pgQueries) ConfirmSKUOptimistic(ctx context.Context, skuID string, qty 
 	return mergeDBSKU(row, SKU{}), nil
 }
 
+func (p *pgQueries) AddFlashSaleReservedStock(ctx context.Context, skuID string, qty int32) (SKU, error) {
+	row, err := p.q.AddFlashSaleReservedStock(ctx, db.AddFlashSaleReservedStockParams{
+		FlashSaleReservedStock: qty,
+		ID:                     skuID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return SKU{}, ErrInsufficientStock
+		}
+		return SKU{}, mapPgError(err)
+	}
+	return mergeDBSKU(row, SKU{}), nil
+}
+
+func (p *pgQueries) SubFlashSaleReservedStock(ctx context.Context, skuID string, qty int32) (SKU, error) {
+	row, err := p.q.SubFlashSaleReservedStock(ctx, db.SubFlashSaleReservedStockParams{
+		FlashSaleReservedStock: qty,
+		ID:                     skuID,
+	})
+	if err != nil {
+		return SKU{}, mapPgError(err)
+	}
+	return mergeDBSKU(row, SKU{}), nil
+}
+
+func (p *pgQueries) ConsumeFlashSaleStockToOrder(ctx context.Context, skuID string, qty int32) (SKU, error) {
+	row, err := p.q.ConsumeFlashSaleStockToOrder(ctx, db.ConsumeFlashSaleStockToOrderParams{
+		FlashSaleReservedStock: qty,
+		ID:                     skuID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return SKU{}, ErrInsufficientStock
+		}
+		return SKU{}, mapPgError(err)
+	}
+	return mergeDBSKU(row, SKU{}), nil
+}
+
+func (p *pgQueries) RestoreOrderStockToFlashSale(ctx context.Context, skuID string, releaseReservedQty, addFlashReservedQty int32) (SKU, error) {
+	row, err := p.q.RestoreOrderStockToFlashSale(ctx, db.RestoreOrderStockToFlashSaleParams{
+		ReservedStock:          releaseReservedQty,
+		FlashSaleReservedStock: addFlashReservedQty,
+		ID:                     skuID,
+	})
+	if err != nil {
+		return SKU{}, mapPgError(err)
+	}
+	return mergeDBSKU(row, SKU{}), nil
+}
+
 func (p *pgQueries) ListReservationsByOrderID(ctx context.Context, orderID string, forUpdate bool) ([]StockReservation, error) {
 	var (
 		rows []db.StockReservation
@@ -467,6 +531,7 @@ func (p *pgQueries) ListReservationsByOrderID(ctx context.Context, orderID strin
 			SKUID:              r.SkuID,
 			Quantity:           r.Quantity,
 			Status:             r.Status,
+			FlashSaleItemID:    r.FlashSaleItemID,
 			CreatedAt:          r.CreatedAt,
 			UpdatedAt:          r.UpdatedAt,
 		})
@@ -481,6 +546,7 @@ func (p *pgQueries) CreateStockReservation(ctx context.Context, r StockReservati
 		OrderID:            r.OrderID,
 		SkuID:              r.SKUID,
 		Quantity:           r.Quantity,
+		FlashSaleItemID:    r.FlashSaleItemID,
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -496,6 +562,7 @@ func (p *pgQueries) CreateStockReservation(ctx context.Context, r StockReservati
 		SKUID:              row.SkuID,
 		Quantity:           row.Quantity,
 		Status:             row.Status,
+		FlashSaleItemID:    row.FlashSaleItemID,
 		CreatedAt:          row.CreatedAt,
 		UpdatedAt:          row.UpdatedAt,
 	}, nil
@@ -527,6 +594,90 @@ func (p *pgQueries) InsertStockHistory(ctx context.Context, h StockHistoryEntry)
 		ActorID:        h.ActorID,
 		Reason:         h.Reason,
 	}))
+}
+
+func (p *pgQueries) GetFlashSaleReservation(ctx context.Context, flashSaleItemID string, forUpdate bool) (FlashSaleStockReservation, error) {
+	var (
+		row db.FlashSaleStockReservation
+		err error
+	)
+	if forUpdate {
+		row, err = p.q.GetFlashSaleReservationForUpdate(ctx, flashSaleItemID)
+	} else {
+		row, err = p.q.GetFlashSaleReservation(ctx, flashSaleItemID)
+	}
+	if err != nil {
+		return FlashSaleStockReservation{}, mapPgError(err)
+	}
+	return fromDBFlashReservation(row), nil
+}
+
+func (p *pgQueries) CreateFlashSaleReservation(ctx context.Context, r FlashSaleStockReservation) (FlashSaleStockReservation, error) {
+	row, err := p.q.CreateFlashSaleReservation(ctx, db.CreateFlashSaleReservationParams{
+		FlashSaleItemID: r.FlashSaleItemID,
+		SkuID:           r.SKUID,
+		ReservedQty:     r.ReservedQty,
+		EndsAt:          r.EndsAt.UTC(),
+	})
+	if err != nil {
+		return FlashSaleStockReservation{}, mapPgError(err)
+	}
+	return fromDBFlashReservation(row), nil
+}
+
+func (p *pgQueries) ConsumeFlashSaleReservation(ctx context.Context, flashSaleItemID string, qty int32, now time.Time) (FlashSaleStockReservation, error) {
+	row, err := p.q.ConsumeFlashSaleReservation(ctx, db.ConsumeFlashSaleReservationParams{
+		FlashSaleItemID: flashSaleItemID,
+		ConsumedQty:     qty,
+		EndsAt:          now.UTC(),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return FlashSaleStockReservation{}, ErrFlashSaleReservationInactive
+		}
+		return FlashSaleStockReservation{}, mapPgError(err)
+	}
+	return fromDBFlashReservation(row), nil
+}
+
+func (p *pgQueries) RestoreFlashSaleReservationConsumed(ctx context.Context, flashSaleItemID string, qty int32) (FlashSaleStockReservation, error) {
+	row, err := p.q.RestoreFlashSaleReservationConsumed(ctx, db.RestoreFlashSaleReservationConsumedParams{
+		FlashSaleItemID: flashSaleItemID,
+		ConsumedQty:     qty,
+	})
+	if err != nil {
+		return FlashSaleStockReservation{}, mapPgError(err)
+	}
+	return fromDBFlashReservation(row), nil
+}
+
+func (p *pgQueries) MarkFlashSaleReservationReleased(ctx context.Context, flashSaleItemID string) (FlashSaleStockReservation, error) {
+	row, err := p.q.MarkFlashSaleReservationReleased(ctx, flashSaleItemID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return FlashSaleStockReservation{}, ErrVersionConflict
+		}
+		return FlashSaleStockReservation{}, mapPgError(err)
+	}
+	return fromDBFlashReservation(row), nil
+}
+
+func (p *pgQueries) ListExpiredActiveFlashSaleReservations(ctx context.Context, now time.Time, limit int32) ([]FlashSaleStockReservation, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := p.q.ListExpiredActiveFlashSaleReservations(ctx, db.ListExpiredActiveFlashSaleReservationsParams{
+		EndsAt: now.UTC(),
+		Limit:  limit,
+	})
+	if err != nil {
+		return nil, mapPgError(err)
+	}
+	out := make([]FlashSaleStockReservation, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fromDBFlashReservation(r))
+	}
+	return out, nil
 }
 
 func mapPgError(err error) error {
@@ -590,6 +741,7 @@ func mergeDBSKU(row db.Sku, base SKU) SKU {
 	base.PriceVND = row.PriceVnd
 	base.Stock = row.Stock
 	base.ReservedStock = row.ReservedStock
+	base.FlashSaleReservedStock = row.FlashSaleReservedStock
 	base.Version = row.Version
 	base.WeightGrams = row.WeightGrams
 	base.ImageURL = row.ImageURL
@@ -601,29 +753,43 @@ func mergeDBSKU(row db.Sku, base SKU) SKU {
 
 func fromSKUContextFields(
 	id, productID, shopID, productName, skuCode, name string,
-	attrs []byte, priceVND int64, stock, reservedStock int32, version int64,
+	attrs []byte, priceVND int64, stock, reservedStock, flashSaleReservedStock int32, version int64,
 	weightGrams int32, imageURL, categoryID string, commissionRateBps int32,
 	skuStatus, productStatus string, productDeletedAt *time.Time,
 ) SKU {
 	return SKU{
-		ID:                id,
-		ProductID:         productID,
-		ShopID:            shopID,
-		ProductName:       productName,
-		SKUCode:           skuCode,
-		Name:              name,
-		Attributes:        unmarshalStringMap(attrs),
-		PriceVND:          priceVND,
-		Stock:             stock,
-		ReservedStock:     reservedStock,
-		Version:           version,
-		WeightGrams:       weightGrams,
-		ImageURL:          imageURL,
-		CategoryID:        categoryID,
-		CommissionRateBps: commissionRateBps,
-		Status:            skuStatus,
-		ProductStatus:     productStatus,
-		ProductDeleted:    productDeletedAt != nil,
+		ID:                     id,
+		ProductID:              productID,
+		ShopID:                 shopID,
+		ProductName:            productName,
+		SKUCode:                skuCode,
+		Name:                   name,
+		Attributes:             unmarshalStringMap(attrs),
+		PriceVND:               priceVND,
+		Stock:                  stock,
+		ReservedStock:          reservedStock,
+		FlashSaleReservedStock: flashSaleReservedStock,
+		Version:                version,
+		WeightGrams:            weightGrams,
+		ImageURL:               imageURL,
+		CategoryID:             categoryID,
+		CommissionRateBps:      commissionRateBps,
+		Status:                 skuStatus,
+		ProductStatus:          productStatus,
+		ProductDeleted:         productDeletedAt != nil,
+	}
+}
+
+func fromDBFlashReservation(r db.FlashSaleStockReservation) FlashSaleStockReservation {
+	return FlashSaleStockReservation{
+		FlashSaleItemID: r.FlashSaleItemID,
+		SKUID:           r.SkuID,
+		ReservedQty:     r.ReservedQty,
+		ConsumedQty:     r.ConsumedQty,
+		Status:          r.Status,
+		EndsAt:          r.EndsAt,
+		CreatedAt:       r.CreatedAt,
+		UpdatedAt:       r.UpdatedAt,
 	}
 }
 

@@ -36,6 +36,13 @@ enum ReviewDecision {
   REVIEW_DECISION_REQUEST_INFO = 3;
 }
 
+enum SiteStatus {
+  SITE_STATUS_UNSPECIFIED = 0;
+  SITE_STATUS_DRAFT = 1;
+  SITE_STATUS_PUBLISHED = 2;
+  SITE_STATUS_SUSPENDED = 3;
+}
+
 message User {
   string id = 1;
   string full_name = 2;
@@ -374,6 +381,129 @@ message ListAuditLogsResponse {
   int64 total = 2;
 }
 
+message PublicShop {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  ShopStatus status = 4;
+}
+
+message Site {
+  string id = 1;
+  string shop_id = 2;
+  string shop_name = 3;
+  string subdomain = 4;
+  string primary_host = 5;
+  SiteStatus status = 6;
+  string config_json = 7;
+  string published_version_id = 8;
+  int32 published_version_number = 9;
+  google.protobuf.Timestamp published_at = 10;
+  string suspended_reason = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+
+message SiteVersion {
+  string id = 1;
+  string site_id = 2;
+  int32 version_number = 3;
+  string config_json = 4;
+  string published_by = 5;
+  string note = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message GetSiteByHostRequest {
+  string host = 1;
+}
+
+message GetSiteByHostResponse {
+  Site site = 1;
+  PublicShop shop = 2;
+}
+
+message GetSiteByShopRequest {
+  string shop_id = 1;
+}
+
+message GetSiteByShopResponse {
+  Site site = 1;
+  PublicShop shop = 2;
+}
+
+message GetSiteDraftRequest {
+  string shop_id = 1;
+}
+
+message GetSiteDraftResponse {
+  Site site = 1;
+}
+
+message SaveSiteDraftRequest {
+  string shop_id = 1;
+  string subdomain = 2;
+  string config_json = 3;
+}
+
+message SaveSiteDraftResponse {
+  Site site = 1;
+}
+
+message PublishSiteRequest {
+  string shop_id = 1;
+  string note = 2;
+}
+
+message PublishSiteResponse {
+  Site site = 1;
+  SiteVersion version = 2;
+}
+
+message RollbackSiteRequest {
+  string shop_id = 1;
+  string version_id = 2;
+  string note = 3;
+}
+
+message RollbackSiteResponse {
+  Site site = 1;
+  SiteVersion version = 2;
+}
+
+message ListSiteVersionsRequest {
+  string shop_id = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message ListSiteVersionsResponse {
+  repeated SiteVersion versions = 1;
+  int64 total = 2;
+}
+
+message ListSitesRequest {
+  SiteStatus status = 1;
+  string query = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message ListSitesResponse {
+  repeated Site sites = 1;
+  int64 total = 2;
+}
+
+message SuspendSiteRequest {
+  string site_id = 1;
+  bool suspend = 2;
+  string reason = 3;
+}
+
+message SuspendSiteResponse {
+  Site site = 1;
+}
+
 service UserService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   rpc VerifyOTP(VerifyOTPRequest) returns (VerifyOTPResponse);
@@ -399,4 +529,13 @@ service UserService {
   rpc DeleteAddress(DeleteAddressRequest) returns (DeleteAddressResponse);
   rpc WriteAuditLog(WriteAuditLogRequest) returns (WriteAuditLogResponse);
   rpc ListAuditLogs(ListAuditLogsRequest) returns (ListAuditLogsResponse);
+  rpc GetSiteByHost(GetSiteByHostRequest) returns (GetSiteByHostResponse);
+  rpc GetSiteByShop(GetSiteByShopRequest) returns (GetSiteByShopResponse);
+  rpc GetSiteDraft(GetSiteDraftRequest) returns (GetSiteDraftResponse);
+  rpc SaveSiteDraft(SaveSiteDraftRequest) returns (SaveSiteDraftResponse);
+  rpc PublishSite(PublishSiteRequest) returns (PublishSiteResponse);
+  rpc RollbackSite(RollbackSiteRequest) returns (RollbackSiteResponse);
+  rpc ListSiteVersions(ListSiteVersionsRequest) returns (ListSiteVersionsResponse);
+  rpc ListSites(ListSitesRequest) returns (ListSitesResponse);
+  rpc SuspendSite(SuspendSiteRequest) returns (SuspendSiteResponse);
 }

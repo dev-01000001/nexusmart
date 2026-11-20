@@ -28,6 +28,7 @@ type Options struct {
 	OTPMaxResends          int
 	LoginMaxFailedAttempts int
 	LoginLockoutDuration   time.Duration
+	SiteRootDomain         string
 }
 
 func (o Options) withDefaults() Options {
@@ -48,6 +49,10 @@ func (o Options) withDefaults() Options {
 	}
 	if o.LoginLockoutDuration <= 0 {
 		o.LoginLockoutDuration = 15 * time.Minute
+	}
+	o.SiteRootDomain = strings.Trim(strings.ToLower(strings.TrimSpace(o.SiteRootDomain)), ".")
+	if o.SiteRootDomain == "" {
+		o.SiteRootDomain = "nexusmart.localhost"
 	}
 	return o
 }

@@ -14,6 +14,9 @@ const (
 	FlashStatusApproved = "APPROVED"
 	FlashStatusRejected = "REJECTED"
 
+	FlashWindowStatusActive = "ACTIVE"
+	FlashWindowStatusEnded  = "ENDED"
+
 	ReservationStatusReserved = "RESERVED"
 	ReservationStatusReleased = "RELEASED"
 
@@ -52,6 +55,7 @@ type FlashSale struct {
 	Name      string
 	StartsAt  time.Time
 	EndsAt    time.Time
+	Status    string
 	CreatedBy string
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -71,6 +75,8 @@ type FlashSaleItem struct {
 	Status          string
 	RejectionReason string
 	ApprovedBy      string
+	WindowStatus    string
+	StockReleasedAt *time.Time
 	StartsAt        time.Time
 	EndsAt          time.Time
 	CreatedAt       time.Time

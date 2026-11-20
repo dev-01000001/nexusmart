@@ -43,6 +43,15 @@ const (
 	UserService_DeleteAddress_FullMethodName         = "/nexusmart.user.v1.UserService/DeleteAddress"
 	UserService_WriteAuditLog_FullMethodName         = "/nexusmart.user.v1.UserService/WriteAuditLog"
 	UserService_ListAuditLogs_FullMethodName         = "/nexusmart.user.v1.UserService/ListAuditLogs"
+	UserService_GetSiteByHost_FullMethodName         = "/nexusmart.user.v1.UserService/GetSiteByHost"
+	UserService_GetSiteByShop_FullMethodName         = "/nexusmart.user.v1.UserService/GetSiteByShop"
+	UserService_GetSiteDraft_FullMethodName          = "/nexusmart.user.v1.UserService/GetSiteDraft"
+	UserService_SaveSiteDraft_FullMethodName         = "/nexusmart.user.v1.UserService/SaveSiteDraft"
+	UserService_PublishSite_FullMethodName           = "/nexusmart.user.v1.UserService/PublishSite"
+	UserService_RollbackSite_FullMethodName          = "/nexusmart.user.v1.UserService/RollbackSite"
+	UserService_ListSiteVersions_FullMethodName      = "/nexusmart.user.v1.UserService/ListSiteVersions"
+	UserService_ListSites_FullMethodName             = "/nexusmart.user.v1.UserService/ListSites"
+	UserService_SuspendSite_FullMethodName           = "/nexusmart.user.v1.UserService/SuspendSite"
 )
 
 // UserServiceClient is the client API for UserService service.
@@ -73,6 +82,15 @@ type UserServiceClient interface {
 	DeleteAddress(ctx context.Context, in *DeleteAddressRequest, opts ...grpc.CallOption) (*DeleteAddressResponse, error)
 	WriteAuditLog(ctx context.Context, in *WriteAuditLogRequest, opts ...grpc.CallOption) (*WriteAuditLogResponse, error)
 	ListAuditLogs(ctx context.Context, in *ListAuditLogsRequest, opts ...grpc.CallOption) (*ListAuditLogsResponse, error)
+	GetSiteByHost(ctx context.Context, in *GetSiteByHostRequest, opts ...grpc.CallOption) (*GetSiteByHostResponse, error)
+	GetSiteByShop(ctx context.Context, in *GetSiteByShopRequest, opts ...grpc.CallOption) (*GetSiteByShopResponse, error)
+	GetSiteDraft(ctx context.Context, in *GetSiteDraftRequest, opts ...grpc.CallOption) (*GetSiteDraftResponse, error)
+	SaveSiteDraft(ctx context.Context, in *SaveSiteDraftRequest, opts ...grpc.CallOption) (*SaveSiteDraftResponse, error)
+	PublishSite(ctx context.Context, in *PublishSiteRequest, opts ...grpc.CallOption) (*PublishSiteResponse, error)
+	RollbackSite(ctx context.Context, in *RollbackSiteRequest, opts ...grpc.CallOption) (*RollbackSiteResponse, error)
+	ListSiteVersions(ctx context.Context, in *ListSiteVersionsRequest, opts ...grpc.CallOption) (*ListSiteVersionsResponse, error)
+	ListSites(ctx context.Context, in *ListSitesRequest, opts ...grpc.CallOption) (*ListSitesResponse, error)
+	SuspendSite(ctx context.Context, in *SuspendSiteRequest, opts ...grpc.CallOption) (*SuspendSiteResponse, error)
 }
 
 type userServiceClient struct {
@@ -323,6 +341,96 @@ func (c *userServiceClient) ListAuditLogs(ctx context.Context, in *ListAuditLogs
 	return out, nil
 }
 
+func (c *userServiceClient) GetSiteByHost(ctx context.Context, in *GetSiteByHostRequest, opts ...grpc.CallOption) (*GetSiteByHostResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSiteByHostResponse)
+	err := c.cc.Invoke(ctx, UserService_GetSiteByHost_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) GetSiteByShop(ctx context.Context, in *GetSiteByShopRequest, opts ...grpc.CallOption) (*GetSiteByShopResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSiteByShopResponse)
+	err := c.cc.Invoke(ctx, UserService_GetSiteByShop_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) GetSiteDraft(ctx context.Context, in *GetSiteDraftRequest, opts ...grpc.CallOption) (*GetSiteDraftResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSiteDraftResponse)
+	err := c.cc.Invoke(ctx, UserService_GetSiteDraft_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) SaveSiteDraft(ctx context.Context, in *SaveSiteDraftRequest, opts ...grpc.CallOption) (*SaveSiteDraftResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SaveSiteDraftResponse)
+	err := c.cc.Invoke(ctx, UserService_SaveSiteDraft_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) PublishSite(ctx context.Context, in *PublishSiteRequest, opts ...grpc.CallOption) (*PublishSiteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PublishSiteResponse)
+	err := c.cc.Invoke(ctx, UserService_PublishSite_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) RollbackSite(ctx context.Context, in *RollbackSiteRequest, opts ...grpc.CallOption) (*RollbackSiteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RollbackSiteResponse)
+	err := c.cc.Invoke(ctx, UserService_RollbackSite_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) ListSiteVersions(ctx context.Context, in *ListSiteVersionsRequest, opts ...grpc.CallOption) (*ListSiteVersionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSiteVersionsResponse)
+	err := c.cc.Invoke(ctx, UserService_ListSiteVersions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) ListSites(ctx context.Context, in *ListSitesRequest, opts ...grpc.CallOption) (*ListSitesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSitesResponse)
+	err := c.cc.Invoke(ctx, UserService_ListSites_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) SuspendSite(ctx context.Context, in *SuspendSiteRequest, opts ...grpc.CallOption) (*SuspendSiteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SuspendSiteResponse)
+	err := c.cc.Invoke(ctx, UserService_SuspendSite_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UserServiceServer is the server API for UserService service.
 // All implementations must embed UnimplementedUserServiceServer
 // for forward compatibility.
@@ -351,6 +459,15 @@ type UserServiceServer interface {
 	DeleteAddress(context.Context, *DeleteAddressRequest) (*DeleteAddressResponse, error)
 	WriteAuditLog(context.Context, *WriteAuditLogRequest) (*WriteAuditLogResponse, error)
 	ListAuditLogs(context.Context, *ListAuditLogsRequest) (*ListAuditLogsResponse, error)
+	GetSiteByHost(context.Context, *GetSiteByHostRequest) (*GetSiteByHostResponse, error)
+	GetSiteByShop(context.Context, *GetSiteByShopRequest) (*GetSiteByShopResponse, error)
+	GetSiteDraft(context.Context, *GetSiteDraftRequest) (*GetSiteDraftResponse, error)
+	SaveSiteDraft(context.Context, *SaveSiteDraftRequest) (*SaveSiteDraftResponse, error)
+	PublishSite(context.Context, *PublishSiteRequest) (*PublishSiteResponse, error)
+	RollbackSite(context.Context, *RollbackSiteRequest) (*RollbackSiteResponse, error)
+	ListSiteVersions(context.Context, *ListSiteVersionsRequest) (*ListSiteVersionsResponse, error)
+	ListSites(context.Context, *ListSitesRequest) (*ListSitesResponse, error)
+	SuspendSite(context.Context, *SuspendSiteRequest) (*SuspendSiteResponse, error)
 	mustEmbedUnimplementedUserServiceServer()
 }
 
@@ -432,6 +549,33 @@ func (UnimplementedUserServiceServer) WriteAuditLog(context.Context, *WriteAudit
 }
 func (UnimplementedUserServiceServer) ListAuditLogs(context.Context, *ListAuditLogsRequest) (*ListAuditLogsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListAuditLogs not implemented")
+}
+func (UnimplementedUserServiceServer) GetSiteByHost(context.Context, *GetSiteByHostRequest) (*GetSiteByHostResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSiteByHost not implemented")
+}
+func (UnimplementedUserServiceServer) GetSiteByShop(context.Context, *GetSiteByShopRequest) (*GetSiteByShopResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSiteByShop not implemented")
+}
+func (UnimplementedUserServiceServer) GetSiteDraft(context.Context, *GetSiteDraftRequest) (*GetSiteDraftResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSiteDraft not implemented")
+}
+func (UnimplementedUserServiceServer) SaveSiteDraft(context.Context, *SaveSiteDraftRequest) (*SaveSiteDraftResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SaveSiteDraft not implemented")
+}
+func (UnimplementedUserServiceServer) PublishSite(context.Context, *PublishSiteRequest) (*PublishSiteResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PublishSite not implemented")
+}
+func (UnimplementedUserServiceServer) RollbackSite(context.Context, *RollbackSiteRequest) (*RollbackSiteResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RollbackSite not implemented")
+}
+func (UnimplementedUserServiceServer) ListSiteVersions(context.Context, *ListSiteVersionsRequest) (*ListSiteVersionsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListSiteVersions not implemented")
+}
+func (UnimplementedUserServiceServer) ListSites(context.Context, *ListSitesRequest) (*ListSitesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListSites not implemented")
+}
+func (UnimplementedUserServiceServer) SuspendSite(context.Context, *SuspendSiteRequest) (*SuspendSiteResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SuspendSite not implemented")
 }
 func (UnimplementedUserServiceServer) mustEmbedUnimplementedUserServiceServer() {}
 func (UnimplementedUserServiceServer) testEmbeddedByValue()                     {}
@@ -886,6 +1030,168 @@ func _UserService_ListAuditLogs_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserService_GetSiteByHost_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSiteByHostRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).GetSiteByHost(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_GetSiteByHost_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).GetSiteByHost(ctx, req.(*GetSiteByHostRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_GetSiteByShop_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSiteByShopRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).GetSiteByShop(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_GetSiteByShop_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).GetSiteByShop(ctx, req.(*GetSiteByShopRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_GetSiteDraft_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSiteDraftRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).GetSiteDraft(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_GetSiteDraft_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).GetSiteDraft(ctx, req.(*GetSiteDraftRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_SaveSiteDraft_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SaveSiteDraftRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).SaveSiteDraft(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_SaveSiteDraft_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).SaveSiteDraft(ctx, req.(*SaveSiteDraftRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_PublishSite_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PublishSiteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).PublishSite(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_PublishSite_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).PublishSite(ctx, req.(*PublishSiteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_RollbackSite_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RollbackSiteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).RollbackSite(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_RollbackSite_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).RollbackSite(ctx, req.(*RollbackSiteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_ListSiteVersions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSiteVersionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).ListSiteVersions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_ListSiteVersions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).ListSiteVersions(ctx, req.(*ListSiteVersionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_ListSites_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSitesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).ListSites(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_ListSites_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).ListSites(ctx, req.(*ListSitesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_SuspendSite_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SuspendSiteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).SuspendSite(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_SuspendSite_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).SuspendSite(ctx, req.(*SuspendSiteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UserService_ServiceDesc is the grpc.ServiceDesc for UserService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -988,6 +1294,42 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListAuditLogs",
 			Handler:    _UserService_ListAuditLogs_Handler,
+		},
+		{
+			MethodName: "GetSiteByHost",
+			Handler:    _UserService_GetSiteByHost_Handler,
+		},
+		{
+			MethodName: "GetSiteByShop",
+			Handler:    _UserService_GetSiteByShop_Handler,
+		},
+		{
+			MethodName: "GetSiteDraft",
+			Handler:    _UserService_GetSiteDraft_Handler,
+		},
+		{
+			MethodName: "SaveSiteDraft",
+			Handler:    _UserService_SaveSiteDraft_Handler,
+		},
+		{
+			MethodName: "PublishSite",
+			Handler:    _UserService_PublishSite_Handler,
+		},
+		{
+			MethodName: "RollbackSite",
+			Handler:    _UserService_RollbackSite_Handler,
+		},
+		{
+			MethodName: "ListSiteVersions",
+			Handler:    _UserService_ListSiteVersions_Handler,
+		},
+		{
+			MethodName: "ListSites",
+			Handler:    _UserService_ListSites_Handler,
+		},
+		{
+			MethodName: "SuspendSite",
+			Handler:    _UserService_SuspendSite_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

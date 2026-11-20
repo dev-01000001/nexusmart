@@ -9,6 +9,7 @@ import {
   IconClose,
   IconDashboard,
   IconFileText,
+  IconHome,
   IconMenu,
   IconPackage,
   IconSliders,
@@ -110,6 +111,7 @@ export function SellerShell({ user, shop, pendingOrdersCount, children }: Seller
       badge: pendingInteractionCount > 0 ? pendingInteractionCount : undefined,
     },
     { href: "/seller/ho-so", label: "Hồ sơ & Vận hành", icon: <IconSliders size={16} /> },
+    { href: "/seller/site", label: "Site riêng", icon: <IconHome size={16} /> },
     { href: "/seller/tai-chinh", label: "Tài chính", icon: <IconWallet size={16} /> },
     {
       href: "/seller/chat",

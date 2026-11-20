@@ -45,6 +45,7 @@ func run() error {
 	databaseURL := env.EnvString("DATABASE_URL", "")
 	jwtSecret := env.EnvString("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me")
 	otelEndpoint := env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	sweepInterval := env.EnvDuration("FLASH_SALE_SWEEP_INTERVAL", 2*time.Second)
 	logLevel := parseLogLevel(env.EnvString("LOG_LEVEL", "info"))
 
 	log := logger.New(serviceName, logger.WithLevel(logLevel))
@@ -99,6 +100,7 @@ func run() error {
 		),
 	)
 	productSrv := server.New(pgStore, log)
+	productSrv.StartFlashSaleSweeper(ctx, sweepInterval)
 	productv1.RegisterProductServiceServer(grpcServer, productSrv)
 	reflection.Register(grpcServer)
 

@@ -23,7 +23,7 @@ import (
 const (
 	defaultPageSize      = 20
 	maxPageSize          = 100
-	maxOptimisticRetries = 8
+	maxOptimisticRetries = 16
 	retryBaseDelay       = 5 * time.Millisecond
 )
 
@@ -32,6 +32,7 @@ type Server struct {
 	productv1.UnimplementedProductServiceServer
 	store  store.Store
 	logger *slog.Logger
+	nowFn  func() time.Time
 }
 
 // New constructs a ProductService gRPC server.
@@ -42,6 +43,14 @@ func New(st store.Store, logger *slog.Logger) *Server {
 	return &Server{
 		store:  st,
 		logger: logger,
+		nowFn:  func() time.Time { return time.Now().UTC() },
+	}
+}
+
+// SetClock overrides the wall clock function (for deterministic unit tests).
+func (s *Server) SetClock(fn func() time.Time) {
+	if fn != nil {
+		s.nowFn = fn
 	}
 }
 
@@ -397,8 +406,8 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 					if !ok {
 						return status.Errorf(codes.NotFound, "sku %s does not belong to product %s", in.ID, id)
 					}
-					if in.Stock < cur.ReservedStock {
-						return status.Errorf(codes.FailedPrecondition, "sku %s stock (%d) cannot be less than reserved stock (%d)", cur.ID, in.Stock, cur.ReservedStock)
+					if in.Stock < cur.TotalReservedStock() {
+						return status.Errorf(codes.FailedPrecondition, "sku %s stock (%d) cannot be less than reserved stock (%d)", cur.ID, in.Stock, cur.TotalReservedStock())
 					}
 					keptIDs[cur.ID] = true
 					_, updErr := q.UpdateSKUDetails(ctx, store.SKU{
@@ -735,7 +744,7 @@ func (s *Server) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequ
 		if !isAdmin && cur.ShopID != shopID {
 			return status.Error(codes.PermissionDenied, "cannot update stock of another shop's SKU")
 		}
-		if req.GetNewStock() < cur.ReservedStock {
+		if req.GetNewStock() < cur.TotalReservedStock() {
 			return store.ErrInvalidStock
 		}
 
@@ -838,7 +847,77 @@ func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRe
 			}
 
 			groupID := uuid.NewString()
+			now := s.nowFn()
 			for _, item := range items {
+				if item.flashSaleItemID != "" {
+					sku, getErr := q.GetSKUWithContextForUpdate(ctx, item.skuID)
+					if getErr != nil {
+						if errors.Is(getErr, store.ErrNotFound) {
+							return status.Errorf(codes.NotFound, "sku %s not found", item.skuID)
+						}
+						return getErr
+					}
+					if !sku.IsActive() {
+						return status.Errorf(codes.FailedPrecondition, "SKU_NOT_ACTIVE: sku %s is not active", item.skuID)
+					}
+
+					fsRes, fsErr := q.GetFlashSaleReservation(ctx, item.flashSaleItemID, true)
+					if fsErr != nil {
+						if errors.Is(fsErr, store.ErrNotFound) {
+							return status.Errorf(codes.FailedPrecondition, "FLASH_SALE_RESERVATION_NOT_FOUND: flash sale item %s has no active stock reservation", item.flashSaleItemID)
+						}
+						return fsErr
+					}
+					if fsRes.SKUID != item.skuID {
+						return status.Errorf(codes.InvalidArgument, "FLASH_SALE_SKU_MISMATCH: flash sale item %s belongs to sku %s, not %s", item.flashSaleItemID, fsRes.SKUID, item.skuID)
+					}
+					if fsRes.Status != store.FlashReservationStatusActive || !fsRes.EndsAt.After(now) {
+						return status.Errorf(codes.FailedPrecondition, "FLASH_SALE_RESERVATION_INACTIVE: flash sale item %s is no longer active", item.flashSaleItemID)
+					}
+					if fsRes.ReservedQty-fsRes.ConsumedQty < item.quantity {
+						return status.Errorf(codes.FailedPrecondition, "INSUFFICIENT_FLASH_STOCK: flash sale item %s has %d remaining reserved units, requested %d", item.flashSaleItemID, fsRes.ReservedQty-fsRes.ConsumedQty, item.quantity)
+					}
+					if sku.FlashSaleReservedStock < item.quantity {
+						return status.Errorf(codes.FailedPrecondition, "INSUFFICIENT_FLASH_STOCK: sku %s has %d flash reserved units, requested %d", item.skuID, sku.FlashSaleReservedStock, item.quantity)
+					}
+
+					if _, cErr := q.ConsumeFlashSaleReservation(ctx, item.flashSaleItemID, item.quantity, now); cErr != nil {
+						return cErr
+					}
+					updated, optErr := q.ConsumeFlashSaleStockToOrder(ctx, item.skuID, item.quantity)
+					if optErr != nil {
+						return optErr
+					}
+
+					if _, resErr := q.CreateStockReservation(ctx, store.StockReservation{
+						ID:                 uuid.NewString(),
+						ReservationGroupID: groupID,
+						OrderID:            orderID,
+						SKUID:              item.skuID,
+						Quantity:           item.quantity,
+						Status:             store.ReservationStatusReserved,
+						FlashSaleItemID:    item.flashSaleItemID,
+					}); resErr != nil {
+						return resErr
+					}
+
+					if histErr := q.InsertStockHistory(ctx, store.StockHistoryEntry{
+						ID:             uuid.NewString(),
+						SKUID:          item.skuID,
+						OrderID:        orderID,
+						ChangeType:     "FLASH_ORDER_RESERVE",
+						Delta:          0,
+						StockBefore:    sku.Stock,
+						StockAfter:     updated.Stock,
+						ReservedBefore: sku.ReservedStock,
+						ReservedAfter:  updated.ReservedStock,
+						Reason:         "flash sale order stock reservation (" + item.flashSaleItemID + ")",
+					}); histErr != nil {
+						return histErr
+					}
+					continue
+				}
+
 				sku, getErr := q.GetSKUWithContext(ctx, item.skuID)
 				if getErr != nil {
 					if errors.Is(getErr, store.ErrNotFound) {
@@ -901,6 +980,9 @@ func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRe
 		}
 		if errors.Is(txErr, store.ErrInsufficientStock) {
 			return nil, status.Error(codes.FailedPrecondition, "INSUFFICIENT_STOCK: not enough available stock")
+		}
+		if errors.Is(txErr, store.ErrFlashSaleReservationInactive) {
+			return nil, status.Error(codes.FailedPrecondition, "INSUFFICIENT_FLASH_STOCK: flash sale stock reservation is exhausted or inactive")
 		}
 		if errors.Is(txErr, store.ErrVersionConflict) || errors.Is(txErr, store.ErrDuplicateReservation) {
 			s.logger.DebugContext(ctx, "retrying stock reservation after concurrent conflict",
@@ -965,6 +1047,7 @@ func (s *Server) ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRe
 				return nil
 			}
 
+			now := s.nowFn()
 			for _, r := range reservedRows {
 				changed, trErr := q.TransitionStockReservation(ctx, r.ID, store.ReservationStatusReleased, store.ReservationStatusReserved)
 				if trErr != nil {
@@ -972,6 +1055,49 @@ func (s *Server) ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRe
 				}
 				if !changed {
 					return store.ErrVersionConflict
+				}
+
+				if r.FlashSaleItemID != "" {
+					sku, getErr := q.GetSKUWithContextForUpdate(ctx, r.SKUID)
+					if getErr != nil {
+						return getErr
+					}
+					var returnToFlash int32
+					fsRes, fsErr := q.GetFlashSaleReservation(ctx, r.FlashSaleItemID, true)
+					if fsErr == nil && fsRes.Status == store.FlashReservationStatusActive && fsRes.EndsAt.After(now) {
+						returnToFlash = r.Quantity
+						if returnToFlash > fsRes.ConsumedQty {
+							returnToFlash = fsRes.ConsumedQty
+						}
+						if returnToFlash > 0 {
+							if _, rErr := q.RestoreFlashSaleReservationConsumed(ctx, r.FlashSaleItemID, returnToFlash); rErr != nil {
+								return rErr
+							}
+						}
+					} else if fsErr != nil && !errors.Is(fsErr, store.ErrNotFound) {
+						return fsErr
+					}
+
+					updated, optErr := q.RestoreOrderStockToFlashSale(ctx, r.SKUID, r.Quantity, returnToFlash)
+					if optErr != nil {
+						return optErr
+					}
+
+					if histErr := q.InsertStockHistory(ctx, store.StockHistoryEntry{
+						ID:             uuid.NewString(),
+						SKUID:          r.SKUID,
+						OrderID:        orderID,
+						ChangeType:     "RELEASE",
+						Delta:          0,
+						StockBefore:    sku.Stock,
+						StockAfter:     updated.Stock,
+						ReservedBefore: sku.ReservedStock,
+						ReservedAfter:  updated.ReservedStock,
+						Reason:         "flash sale order stock release (" + r.FlashSaleItemID + ")",
+					}); histErr != nil {
+						return histErr
+					}
+					continue
 				}
 
 				sku, getErr := q.GetSKUWithContext(ctx, r.SKUID)
@@ -1141,7 +1267,333 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 	return nil, status.Error(codes.Aborted, "STOCK_VERSION_CONFLICT: concurrent confirm contention exceeded retries")
 }
 
+// --- Flash Sale Stock Reservations (Phase 2b) ---
+
+func (s *Server) ReserveFlashSaleStock(ctx context.Context, req *productv1.ReserveFlashSaleStockRequest) (*productv1.ReserveFlashSaleStockResponse, error) {
+	claims, err := requireAdminOrPromotionService(ctx)
+	if err != nil {
+		return nil, err
+	}
+	flashSaleItemID := strings.TrimSpace(req.GetFlashSaleItemId())
+	if flashSaleItemID == "" {
+		return nil, status.Error(codes.InvalidArgument, "flash_sale_item_id is required")
+	}
+	skuID := strings.TrimSpace(req.GetSkuId())
+	if skuID == "" {
+		return nil, status.Error(codes.InvalidArgument, "sku_id is required")
+	}
+	qty := req.GetQuantity()
+	if qty <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "quantity must be > 0")
+	}
+	if req.GetEndsAt() == nil || !req.GetEndsAt().IsValid() {
+		return nil, status.Error(codes.InvalidArgument, "ends_at is required")
+	}
+	endsAt := req.GetEndsAt().AsTime().UTC()
+	now := s.nowFn()
+	if !endsAt.After(now) {
+		return nil, status.Error(codes.FailedPrecondition, "FLASH_SALE_ENDED: ends_at must be in the future")
+	}
+
+	for attempt := 0; attempt < maxOptimisticRetries; attempt++ {
+		if attempt > 0 {
+			if err := sleepWithContext(ctx, retryBaseDelay*time.Duration(attempt)); err != nil {
+				return nil, status.Error(codes.Canceled, "context canceled while retrying flash sale reservation")
+			}
+		}
+
+		var resp *productv1.ReserveFlashSaleStockResponse
+		txErr := s.store.WithTx(ctx, func(q store.Queries) error {
+			// Always lock SKU row first to prevent deadlocks across concurrent operations.
+			sku, getErr := q.GetSKUWithContextForUpdate(ctx, skuID)
+			if getErr != nil {
+				if errors.Is(getErr, store.ErrNotFound) {
+					return status.Errorf(codes.NotFound, "sku %s not found", skuID)
+				}
+				return getErr
+			}
+
+			existing, fsErr := q.GetFlashSaleReservation(ctx, flashSaleItemID, true)
+			if fsErr == nil {
+				if existing.Status == store.FlashReservationStatusActive &&
+					existing.SKUID == skuID &&
+					existing.ReservedQty == qty {
+					resp = &productv1.ReserveFlashSaleStockResponse{
+						ReservedQty:     existing.ReservedQty,
+						AvailableStock:  sku.AvailableStock(),
+						AlreadyReserved: true,
+					}
+					return nil
+				}
+				if existing.Status == store.FlashReservationStatusReleased {
+					return status.Errorf(codes.FailedPrecondition, "FLASH_SALE_ALREADY_RELEASED: flash sale item %s reservation was already released", flashSaleItemID)
+				}
+				return status.Errorf(codes.FailedPrecondition, "FLASH_SALE_RESERVATION_CONFLICT: flash sale item %s already reserved with different parameters", flashSaleItemID)
+			} else if !errors.Is(fsErr, store.ErrNotFound) {
+				return fsErr
+			}
+
+			if !sku.IsActive() {
+				return status.Errorf(codes.FailedPrecondition, "SKU_NOT_ACTIVE: sku %s is not active", skuID)
+			}
+			if sku.AvailableStock() < qty {
+				return status.Errorf(codes.FailedPrecondition, "INSUFFICIENT_STOCK: sku %s has %d available, requested %d for flash sale", skuID, sku.AvailableStock(), qty)
+			}
+
+			updated, addErr := q.AddFlashSaleReservedStock(ctx, skuID, qty)
+			if addErr != nil {
+				return addErr
+			}
+
+			if _, createErr := q.CreateFlashSaleReservation(ctx, store.FlashSaleStockReservation{
+				FlashSaleItemID: flashSaleItemID,
+				SKUID:           skuID,
+				ReservedQty:     qty,
+				EndsAt:          endsAt,
+			}); createErr != nil {
+				return createErr
+			}
+
+			if histErr := q.InsertStockHistory(ctx, store.StockHistoryEntry{
+				ID:             uuid.NewString(),
+				SKUID:          skuID,
+				ChangeType:     "FLASH_RESERVE",
+				Delta:          0,
+				StockBefore:    sku.Stock,
+				StockAfter:     updated.Stock,
+				ReservedBefore: sku.TotalReservedStock(),
+				ReservedAfter:  updated.TotalReservedStock(),
+				ActorID:        claims.UserID(),
+				Reason:         "flash sale slot stock reservation (" + flashSaleItemID + ")",
+			}); histErr != nil {
+				return histErr
+			}
+
+			resp = &productv1.ReserveFlashSaleStockResponse{
+				ReservedQty:     qty,
+				AvailableStock:  updated.AvailableStock(),
+				AlreadyReserved: false,
+			}
+			return nil
+		})
+
+		if txErr == nil {
+			return resp, nil
+		}
+		if _, ok := status.FromError(txErr); ok {
+			return nil, txErr
+		}
+		if errors.Is(txErr, store.ErrInsufficientStock) {
+			return nil, status.Error(codes.FailedPrecondition, "INSUFFICIENT_STOCK: not enough available stock for flash sale")
+		}
+		if errors.Is(txErr, store.ErrAlreadyExists) || errors.Is(txErr, store.ErrVersionConflict) {
+			continue
+		}
+		return nil, status.Errorf(codes.Internal, "reserve flash sale stock: %v", txErr)
+	}
+
+	return nil, status.Error(codes.Aborted, "STOCK_VERSION_CONFLICT: concurrent flash sale reservation exceeded retries")
+}
+
+func (s *Server) ReleaseFlashSaleStock(ctx context.Context, req *productv1.ReleaseFlashSaleStockRequest) (*productv1.ReleaseFlashSaleStockResponse, error) {
+	claims, err := requireAdminOrPromotionService(ctx)
+	if err != nil {
+		return nil, err
+	}
+	flashSaleItemID := strings.TrimSpace(req.GetFlashSaleItemId())
+	if flashSaleItemID == "" {
+		return nil, status.Error(codes.InvalidArgument, "flash_sale_item_id is required")
+	}
+	return s.releaseFlashSaleStock(ctx, flashSaleItemID, false, claims.UserID(), "flash sale stock release")
+}
+
+func (s *Server) releaseFlashSaleStock(
+	ctx context.Context,
+	flashSaleItemID string,
+	onlyIfExpired bool,
+	actorID string,
+	reason string,
+) (*productv1.ReleaseFlashSaleStockResponse, error) {
+	for attempt := 0; attempt < maxOptimisticRetries; attempt++ {
+		if attempt > 0 {
+			if err := sleepWithContext(ctx, retryBaseDelay*time.Duration(attempt)); err != nil {
+				return nil, status.Error(codes.Canceled, "context canceled while retrying flash sale release")
+			}
+		}
+
+		// Lookup sku_id outside lock so we always lock skus row BEFORE flash_sale_stock_reservations.
+		meta, metaErr := s.store.GetFlashSaleReservation(ctx, flashSaleItemID, false)
+		if metaErr != nil {
+			if errors.Is(metaErr, store.ErrNotFound) {
+				return &productv1.ReleaseFlashSaleStockResponse{
+					ReleasedQty:     0,
+					AvailableStock:  0,
+					AlreadyReleased: true,
+				}, nil
+			}
+			return nil, status.Errorf(codes.Internal, "lookup flash sale reservation: %v", metaErr)
+		}
+
+		var resp *productv1.ReleaseFlashSaleStockResponse
+		txErr := s.store.WithTx(ctx, func(q store.Queries) error {
+			sku, getErr := q.GetSKUWithContextForUpdate(ctx, meta.SKUID)
+			if getErr != nil {
+				return getErr
+			}
+
+			fsRes, fsErr := q.GetFlashSaleReservation(ctx, flashSaleItemID, true)
+			if fsErr != nil {
+				if errors.Is(fsErr, store.ErrNotFound) {
+					resp = &productv1.ReleaseFlashSaleStockResponse{
+						ReleasedQty:     0,
+						AvailableStock:  sku.AvailableStock(),
+						AlreadyReleased: true,
+					}
+					return nil
+				}
+				return fsErr
+			}
+			if fsRes.Status == store.FlashReservationStatusReleased {
+				resp = &productv1.ReleaseFlashSaleStockResponse{
+					ReleasedQty:     0,
+					AvailableStock:  sku.AvailableStock(),
+					AlreadyReleased: true,
+				}
+				return nil
+			}
+			if onlyIfExpired && fsRes.EndsAt.After(s.nowFn()) {
+				resp = &productv1.ReleaseFlashSaleStockResponse{
+					ReleasedQty:     0,
+					AvailableStock:  sku.AvailableStock(),
+					AlreadyReleased: false,
+				}
+				return nil
+			}
+
+			if _, markErr := q.MarkFlashSaleReservationReleased(ctx, flashSaleItemID); markErr != nil {
+				return markErr
+			}
+
+			remaining := fsRes.ReservedQty - fsRes.ConsumedQty
+			if remaining < 0 {
+				remaining = 0
+			}
+			updated := sku
+			if remaining > 0 {
+				var subErr error
+				updated, subErr = q.SubFlashSaleReservedStock(ctx, sku.ID, remaining)
+				if subErr != nil {
+					return subErr
+				}
+			}
+
+			if histErr := q.InsertStockHistory(ctx, store.StockHistoryEntry{
+				ID:             uuid.NewString(),
+				SKUID:          sku.ID,
+				ChangeType:     "FLASH_RELEASE",
+				Delta:          0,
+				StockBefore:    sku.Stock,
+				StockAfter:     updated.Stock,
+				ReservedBefore: sku.TotalReservedStock(),
+				ReservedAfter:  updated.TotalReservedStock(),
+				ActorID:        actorID,
+				Reason:         reason + " (" + flashSaleItemID + ")",
+			}); histErr != nil {
+				return histErr
+			}
+
+			resp = &productv1.ReleaseFlashSaleStockResponse{
+				ReleasedQty:     remaining,
+				AvailableStock:  updated.AvailableStock(),
+				AlreadyReleased: false,
+			}
+			return nil
+		})
+
+		if txErr == nil {
+			return resp, nil
+		}
+		if errors.Is(txErr, store.ErrVersionConflict) {
+			continue
+		}
+		return nil, status.Errorf(codes.Internal, "release flash sale stock: %v", txErr)
+	}
+
+	return nil, status.Error(codes.Aborted, "STOCK_VERSION_CONFLICT: concurrent flash sale release exceeded retries")
+}
+
+// SweepExpiredFlashSaleReservations releases all ACTIVE flash sale stock reservations whose ends_at <= now.
+func (s *Server) SweepExpiredFlashSaleReservations(ctx context.Context) (int, error) {
+	expired, err := s.store.ListExpiredActiveFlashSaleReservations(ctx, s.nowFn(), 100)
+	if err != nil {
+		return 0, fmt.Errorf("list expired flash sale reservations: %w", err)
+	}
+	released := 0
+	var firstErr error
+	for _, r := range expired {
+		resp, relErr := s.releaseFlashSaleStock(ctx, r.FlashSaleItemID, true, "product-sweeper", "flash sale expired sweep")
+		if relErr != nil {
+			if firstErr == nil {
+				firstErr = relErr
+			}
+			s.logger.WarnContext(ctx, "failed to sweep expired flash sale reservation",
+				slog.String("flash_sale_item_id", r.FlashSaleItemID),
+				slog.String("sku_id", r.SKUID),
+				slog.String("error", relErr.Error()),
+			)
+			continue
+		}
+		if !resp.GetAlreadyReleased() {
+			released++
+		}
+	}
+	return released, firstErr
+}
+
+// StartFlashSaleSweeper periodically releases expired flash sale stock reservations until ctx is canceled.
+func (s *Server) StartFlashSaleSweeper(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				sweepCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				n, err := s.SweepExpiredFlashSaleReservations(sweepCtx)
+				cancel()
+				if err != nil && ctx.Err() == nil {
+					s.logger.Warn("flash sale reservation sweep error", slog.String("error", err.Error()))
+				} else if n > 0 {
+					s.logger.Info("swept expired flash sale stock reservations", slog.Int("released_count", n))
+				}
+			}
+		}
+	}()
+}
+
 // --- Helpers ---
+
+func requireAdminOrPromotionService(ctx context.Context) (*auth.Claims, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if claims.Service != "" {
+		if claims.Service != "promotion-service" {
+			return nil, status.Error(codes.PermissionDenied, "only promotion-service or admin can manage flash sale stock reservations")
+		}
+		return claims, nil
+	}
+	if !auth.HasRole(claims, "admin", "super_admin") {
+		return nil, status.Error(codes.PermissionDenied, "admin role required")
+	}
+	return claims, nil
+}
 
 func requireAdmin(ctx context.Context) (*auth.Claims, error) {
 	claims, ok := auth.ClaimsFromContext(ctx)
@@ -1290,15 +1742,16 @@ func resolveUpdatedProductStatus(current string, requested productv1.ProductStat
 }
 
 type sortedReservationItem struct {
-	skuID    string
-	quantity int32
+	skuID           string
+	quantity        int32
+	flashSaleItemID string
 }
 
 func normalizeAndSortReservationItems(raw []*productv1.StockReservationItem) ([]sortedReservationItem, error) {
 	if len(raw) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "at least one reservation item is required")
 	}
-	merged := make(map[string]int32, len(raw))
+	merged := make(map[string]*sortedReservationItem, len(raw))
 	for i, it := range raw {
 		skuID := strings.TrimSpace(it.GetSkuId())
 		if skuID == "" {
@@ -1307,11 +1760,23 @@ func normalizeAndSortReservationItems(raw []*productv1.StockReservationItem) ([]
 		if it.GetQuantity() <= 0 {
 			return nil, status.Errorf(codes.InvalidArgument, "items[%d].quantity must be > 0", i)
 		}
-		merged[skuID] += it.GetQuantity()
+		fsID := strings.TrimSpace(it.GetFlashSaleItemId())
+		if cur, ok := merged[skuID]; ok {
+			if cur.flashSaleItemID != fsID {
+				return nil, status.Errorf(codes.InvalidArgument, "items[%d] has conflicting flash_sale_item_id for sku %s", i, skuID)
+			}
+			cur.quantity += it.GetQuantity()
+		} else {
+			merged[skuID] = &sortedReservationItem{
+				skuID:           skuID,
+				quantity:        it.GetQuantity(),
+				flashSaleItemID: fsID,
+			}
+		}
 	}
 	out := make([]sortedReservationItem, 0, len(merged))
-	for skuID, qty := range merged {
-		out = append(out, sortedReservationItem{skuID: skuID, quantity: qty})
+	for _, it := range merged {
+		out = append(out, *it)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].skuID < out[j].skuID
@@ -1400,23 +1865,24 @@ func toProtoSKU(s store.SKU) *productv1.SKU {
 		attrs[k] = v
 	}
 	return &productv1.SKU{
-		Id:                s.ID,
-		ProductId:         s.ProductID,
-		ShopId:            s.ShopID,
-		ProductName:       s.ProductName,
-		SkuCode:           s.SKUCode,
-		Name:              s.Name,
-		Attributes:        attrs,
-		PriceVnd:          s.PriceVND,
-		Stock:             s.Stock,
-		ReservedStock:     s.ReservedStock,
-		AvailableStock:    s.AvailableStock(),
-		Version:           s.Version,
-		WeightGrams:       s.WeightGrams,
-		ImageUrl:          s.ImageURL,
-		CategoryId:        s.CategoryID,
-		CommissionRateBps: s.CommissionRateBps,
-		IsActive:          s.IsActive(),
+		Id:                     s.ID,
+		ProductId:              s.ProductID,
+		ShopId:                 s.ShopID,
+		ProductName:            s.ProductName,
+		SkuCode:                s.SKUCode,
+		Name:                   s.Name,
+		Attributes:             attrs,
+		PriceVnd:               s.PriceVND,
+		Stock:                  s.Stock,
+		ReservedStock:          s.ReservedStock,
+		AvailableStock:         s.AvailableStock(),
+		Version:                s.Version,
+		WeightGrams:            s.WeightGrams,
+		ImageUrl:               s.ImageURL,
+		CategoryId:             s.CategoryID,
+		CommissionRateBps:      s.CommissionRateBps,
+		IsActive:               s.IsActive(),
+		FlashSaleReservedStock: s.FlashSaleReservedStock,
 	}
 }
 

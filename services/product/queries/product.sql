@@ -161,11 +161,11 @@ OFFSET sqlc.arg(offset_val)::int;
 -- name: CreateSKU :one
 INSERT INTO skus (
     id, product_id, sku_code, name, attributes, price_vnd, stock,
-    reserved_stock, version, weight_grams, image_url, status
+    reserved_stock, flash_sale_reserved_stock, version, weight_grams, image_url, status
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 1, $8, $9, $10)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 0, 1, $8, $9, $10)
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
 
 -- name: UpdateSKUDetails :one
 UPDATE skus
@@ -181,7 +181,7 @@ SET sku_code = $2,
     updated_at = NOW()
 WHERE id = $1
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
 
 -- name: DeactivateSKUsByProduct :exec
 UPDATE skus
@@ -198,7 +198,7 @@ WHERE id = $1;
 -- name: ListSKUsByProductIDs :many
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
@@ -211,7 +211,7 @@ ORDER BY s.created_at ASC, s.id ASC;
 -- name: GetSKUsBatch :many
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
@@ -223,13 +223,25 @@ ORDER BY s.id ASC;
 -- name: GetSKUWithContext :one
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
 WHERE s.id = $1;
+
+-- name: GetSKUWithContextForUpdate :one
+SELECT
+    s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
+    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+FROM skus s
+JOIN products p ON p.id = s.product_id
+JOIN categories c ON c.id = p.category_id
+WHERE s.id = $1
+FOR UPDATE OF s;
 
 -- name: CountActiveInStockSKUsByProduct :one
 SELECT COUNT(*)::bigint AS cnt
@@ -250,9 +262,9 @@ SET stock = $1,
     updated_at = NOW()
 WHERE id = $2
   AND version = $3
-  AND $1 >= reserved_stock
+  AND $1 >= (reserved_stock + flash_sale_reserved_stock)
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
 
 -- name: ReserveSKUOptimistic :one
 UPDATE skus
@@ -261,9 +273,9 @@ SET reserved_stock = reserved_stock + $1,
     updated_at = NOW()
 WHERE id = $2
   AND version = $3
-  AND (stock - reserved_stock) >= $1
+  AND (stock - reserved_stock - flash_sale_reserved_stock) >= $1
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
 
 -- name: ReleaseSKUOptimistic :one
 UPDATE skus
@@ -273,7 +285,7 @@ SET reserved_stock = GREATEST(0, reserved_stock - $1),
 WHERE id = $2
   AND version = $3
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
 
 -- name: ConfirmSKUOptimistic :one
 UPDATE skus
@@ -289,33 +301,126 @@ SET stock = GREATEST(0, stock - $1),
 WHERE id = $2
   AND version = $3
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
+
+-- Flash sale stock locking mutations
+
+-- name: AddFlashSaleReservedStock :one
+UPDATE skus
+SET flash_sale_reserved_stock = flash_sale_reserved_stock + $1,
+    version = version + 1,
+    updated_at = NOW()
+WHERE id = $2
+  AND (stock - reserved_stock - flash_sale_reserved_stock) >= $1
+RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
+
+-- name: SubFlashSaleReservedStock :one
+UPDATE skus
+SET flash_sale_reserved_stock = GREATEST(0, flash_sale_reserved_stock - $1),
+    version = version + 1,
+    updated_at = NOW()
+WHERE id = $2
+RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
+
+-- name: ConsumeFlashSaleStockToOrder :one
+UPDATE skus
+SET flash_sale_reserved_stock = flash_sale_reserved_stock - $1,
+    reserved_stock = reserved_stock + $1,
+    version = version + 1,
+    updated_at = NOW()
+WHERE id = $2
+  AND flash_sale_reserved_stock >= $1
+RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
+
+-- name: RestoreOrderStockToFlashSale :one
+UPDATE skus
+SET reserved_stock = GREATEST(0, reserved_stock - $1),
+    flash_sale_reserved_stock = flash_sale_reserved_stock + $2,
+    version = version + 1,
+    updated_at = NOW()
+WHERE id = $3
+RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
 
 -- Stock reservations
 
 -- name: ListReservationsByOrderID :many
-SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at
+SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at, flash_sale_item_id
 FROM stock_reservations
 WHERE order_id = $1
 ORDER BY sku_id ASC;
 
 -- name: ListReservationsByOrderIDForUpdate :many
-SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at
+SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at, flash_sale_item_id
 FROM stock_reservations
 WHERE order_id = $1
 ORDER BY sku_id ASC
 FOR UPDATE;
 
 -- name: CreateStockReservation :one
-INSERT INTO stock_reservations (id, reservation_group_id, order_id, sku_id, quantity, status)
-VALUES ($1, $2, $3, $4, $5, 'RESERVED')
-RETURNING id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at;
+INSERT INTO stock_reservations (id, reservation_group_id, order_id, sku_id, quantity, status, flash_sale_item_id)
+VALUES ($1, $2, $3, $4, $5, 'RESERVED', $6)
+RETURNING id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at, flash_sale_item_id;
 
 -- name: TransitionStockReservation :execrows
 UPDATE stock_reservations
 SET status = $2,
     updated_at = NOW()
 WHERE id = $1 AND status = $3;
+
+-- Flash sale stock reservations
+
+-- name: GetFlashSaleReservation :one
+SELECT flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at, created_at, updated_at
+FROM flash_sale_stock_reservations
+WHERE flash_sale_item_id = $1;
+
+-- name: GetFlashSaleReservationForUpdate :one
+SELECT flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at, created_at, updated_at
+FROM flash_sale_stock_reservations
+WHERE flash_sale_item_id = $1
+FOR UPDATE;
+
+-- name: CreateFlashSaleReservation :one
+INSERT INTO flash_sale_stock_reservations (flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at)
+VALUES ($1, $2, $3, 0, 'ACTIVE', $4)
+RETURNING flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at, created_at, updated_at;
+
+-- name: ConsumeFlashSaleReservation :one
+UPDATE flash_sale_stock_reservations
+SET consumed_qty = consumed_qty + $2,
+    updated_at = NOW()
+WHERE flash_sale_item_id = $1
+  AND status = 'ACTIVE'
+  AND ends_at > $3
+  AND (reserved_qty - consumed_qty) >= $2
+RETURNING flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at, created_at, updated_at;
+
+-- name: RestoreFlashSaleReservationConsumed :one
+UPDATE flash_sale_stock_reservations
+SET consumed_qty = GREATEST(0, consumed_qty - $2),
+    updated_at = NOW()
+WHERE flash_sale_item_id = $1
+RETURNING flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at, created_at, updated_at;
+
+-- name: MarkFlashSaleReservationReleased :one
+UPDATE flash_sale_stock_reservations
+SET status = 'RELEASED',
+    updated_at = NOW()
+WHERE flash_sale_item_id = $1
+  AND status = 'ACTIVE'
+RETURNING flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at, created_at, updated_at;
+
+-- name: ListExpiredActiveFlashSaleReservations :many
+SELECT flash_sale_item_id, sku_id, reserved_qty, consumed_qty, status, ends_at, created_at, updated_at
+FROM flash_sale_stock_reservations
+WHERE status = 'ACTIVE'
+  AND ends_at <= $1
+ORDER BY ends_at ASC, flash_sale_item_id ASC
+LIMIT $2;
 
 -- Stock history
 

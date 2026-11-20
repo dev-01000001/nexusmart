@@ -128,6 +128,7 @@ func run() error {
 		OTPMaxResends:          cfg.OTPMaxResends,
 		LoginMaxFailedAttempts: cfg.LoginMaxFailedAttempts,
 		LoginLockoutDuration:   cfg.LoginLockoutDuration,
+		SiteRootDomain:         cfg.SiteRootDomain,
 	})
 	userv1.RegisterUserServiceServer(grpcSrv, userSrv)
 	reflection.Register(grpcSrv)

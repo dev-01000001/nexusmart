@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
@@ -168,5 +169,60 @@ func TestGRPCTrust_SpoofedMetadataAndServiceTokens(t *testing.T) {
 	}
 	if _, err = client.ConfirmStock(md(), &productv1.ConfirmStockRequest{OrderId: "grp-trust-1"}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("ConfirmStock anonymous: want Unauthenticated, got %v", err)
+	}
+
+	// 6. Phase 2b: ReserveFlashSaleStock & ReleaseFlashSaleStock strict RBAC + caller allowlist.
+	promoSvcTok, _ := svc.SignServiceToken("promotion-service")
+	fsEnd := time.Now().UTC().Add(time.Hour)
+	for name, ctx := range map[string]context.Context{
+		"anonymous":   md("x-user-role", "admin"),
+		"wrong_key":   bearer(forged),
+		"expired_svc": bearer(expired),
+	} {
+		if _, err = client.ReserveFlashSaleStock(ctx, &productv1.ReserveFlashSaleStockRequest{
+			FlashSaleItemId: "trust-fs-1", SkuId: skuID, Quantity: 2, EndsAt: timestamppb.New(fsEnd),
+		}); status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("ReserveFlashSaleStock(%s): want Unauthenticated, got %v", name, err)
+		}
+		if _, err = client.ReleaseFlashSaleStock(ctx, &productv1.ReleaseFlashSaleStockRequest{
+			FlashSaleItemId: "trust-fs-1",
+		}); status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("ReleaseFlashSaleStock(%s): want Unauthenticated, got %v", name, err)
+		}
+	}
+	for name, tok := range map[string]string{
+		"buyer":         buyerTok,
+		"seller":        sellerATok,
+		"order-service": good,
+	} {
+		if _, err = client.ReserveFlashSaleStock(bearer(tok), &productv1.ReserveFlashSaleStockRequest{
+			FlashSaleItemId: "trust-fs-1", SkuId: skuID, Quantity: 2, EndsAt: timestamppb.New(fsEnd),
+		}); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("ReserveFlashSaleStock(%s): want PermissionDenied, got %v", name, err)
+		}
+		if _, err = client.ReleaseFlashSaleStock(bearer(tok), &productv1.ReleaseFlashSaleStockRequest{
+			FlashSaleItemId: "trust-fs-1",
+		}); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("ReleaseFlashSaleStock(%s): want PermissionDenied, got %v", name, err)
+		}
+	}
+	// Approve product so SKU is active, then verify promotion-service token and admin JWT are allowed.
+	if _, err = client.AdminReviewProduct(bearer(adminTok), &productv1.AdminReviewProductRequest{
+		ProductId: created.GetProduct().GetId(),
+		Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
+	}); err != nil {
+		t.Fatalf("approve product for flash trust test: %v", err)
+	}
+	fsRes, err := client.ReserveFlashSaleStock(bearer(promoSvcTok), &productv1.ReserveFlashSaleStockRequest{
+		FlashSaleItemId: "trust-fs-1", SkuId: skuID, Quantity: 2, EndsAt: timestamppb.New(fsEnd),
+	})
+	if err != nil || fsRes.GetReservedQty() != 2 {
+		t.Fatalf("ReserveFlashSaleStock with promotion-service token failed: resp=%+v err=%v", fsRes, err)
+	}
+	fsRel, err := client.ReleaseFlashSaleStock(bearer(adminTok), &productv1.ReleaseFlashSaleStockRequest{
+		FlashSaleItemId: "trust-fs-1",
+	})
+	if err != nil || fsRel.GetReleasedQty() != 2 {
+		t.Fatalf("ReleaseFlashSaleStock with admin JWT failed: resp=%+v err=%v", fsRel, err)
 	}
 }

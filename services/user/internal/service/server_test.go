@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/logger"
@@ -30,6 +32,9 @@ type memStore struct {
 	refreshTokens        map[string]db.RefreshToken
 	shops                map[string]db.Shop
 	addresses            map[string]db.Address
+	sites                map[string]db.Site
+	siteVersions         map[string]db.SiteVersion
+	domains              map[string]db.Domain
 	auditLogs            []db.AuditLog
 	forceReplaceZeroRows bool
 }
@@ -40,23 +45,43 @@ func newMemStore() *memStore {
 		refreshTokens: make(map[string]db.RefreshToken),
 		shops:         make(map[string]db.Shop),
 		addresses:     make(map[string]db.Address),
+		sites:         make(map[string]db.Site),
+		siteVersions:  make(map[string]db.SiteVersion),
+		domains:       make(map[string]db.Domain),
 	}
 }
 
 func (m *memStore) Ping(_ context.Context) error { return nil }
 
 func (m *memStore) WithTx(_ context.Context, fn func(q db.Querier) error) error {
-	// Snapshot refreshTokens so any error returned by fn genuinely rolls back TX mutations.
+	// Snapshot mutable tables so any error returned by fn genuinely rolls back TX mutations.
 	m.mu.Lock()
-	snapshot := make(map[string]db.RefreshToken, len(m.refreshTokens))
+	rtSnap := make(map[string]db.RefreshToken, len(m.refreshTokens))
 	for k, v := range m.refreshTokens {
-		snapshot[k] = v
+		rtSnap[k] = v
 	}
+	siteSnap := make(map[string]db.Site, len(m.sites))
+	for k, v := range m.sites {
+		siteSnap[k] = v
+	}
+	verSnap := make(map[string]db.SiteVersion, len(m.siteVersions))
+	for k, v := range m.siteVersions {
+		verSnap[k] = v
+	}
+	domSnap := make(map[string]db.Domain, len(m.domains))
+	for k, v := range m.domains {
+		domSnap[k] = v
+	}
+	auditLen := len(m.auditLogs)
 	m.mu.Unlock()
 
 	if err := fn(m); err != nil {
 		m.mu.Lock()
-		m.refreshTokens = snapshot
+		m.refreshTokens = rtSnap
+		m.sites = siteSnap
+		m.siteVersions = verSnap
+		m.domains = domSnap
+		m.auditLogs = m.auditLogs[:auditLen]
 		m.mu.Unlock()
 		return err
 	}
@@ -525,6 +550,468 @@ func (m *memStore) CountAuditLogs(ctx context.Context, arg db.CountAuditLogsPara
 		TargetID:   arg.TargetID,
 	})
 	return int64(len(list)), err
+}
+
+func (m *memStore) CreateSite(_ context.Context, arg db.CreateSiteParams) (db.Site, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sub := strings.ToLower(arg.Lower)
+	for _, s := range m.sites {
+		if s.ShopID == arg.ShopID || strings.EqualFold(s.Subdomain, sub) {
+			return db.Site{}, &pgconn.PgError{Code: "23505"}
+		}
+	}
+	now := time.Now().UTC()
+	st := db.Site{
+		ID:          arg.ID,
+		ShopID:      arg.ShopID,
+		Subdomain:   sub,
+		Status:      SiteStatusDraft,
+		DraftConfig: append([]byte(nil), arg.DraftConfig...),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	m.sites[st.ID] = st
+	return st, nil
+}
+
+func (m *memStore) UpdateSiteDraft(_ context.Context, arg db.UpdateSiteDraftParams) (db.Site, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.sites[arg.ID]
+	if !ok {
+		return db.Site{}, pgx.ErrNoRows
+	}
+	sub := strings.ToLower(arg.Lower)
+	for id, other := range m.sites {
+		if id != arg.ID && strings.EqualFold(other.Subdomain, sub) {
+			return db.Site{}, &pgconn.PgError{Code: "23505"}
+		}
+	}
+	st.Subdomain = sub
+	st.DraftConfig = append([]byte(nil), arg.DraftConfig...)
+	st.UpdatedAt = time.Now().UTC()
+	m.sites[st.ID] = st
+	return st, nil
+}
+
+func (m *memStore) GetSiteByShopID(_ context.Context, shopID string) (db.Site, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, st := range m.sites {
+		if st.ShopID == shopID {
+			return st, nil
+		}
+	}
+	return db.Site{}, pgx.ErrNoRows
+}
+
+func (m *memStore) GetSiteByShopIDForUpdate(ctx context.Context, shopID string) (db.Site, error) {
+	return m.GetSiteByShopID(ctx, shopID)
+}
+
+func (m *memStore) GetSiteByID(_ context.Context, id string) (db.Site, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.sites[id]
+	if !ok {
+		return db.Site{}, pgx.ErrNoRows
+	}
+	return st, nil
+}
+
+func (m *memStore) GetSiteByIDForUpdate(ctx context.Context, id string) (db.Site, error) {
+	return m.GetSiteByID(ctx, id)
+}
+
+func (m *memStore) GetSiteBySubdomain(_ context.Context, lower string) (db.Site, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, st := range m.sites {
+		if strings.EqualFold(st.Subdomain, lower) {
+			return st, nil
+		}
+	}
+	return db.Site{}, pgx.ErrNoRows
+}
+
+func (m *memStore) primaryHostLocked(siteID string) string {
+	for _, d := range m.domains {
+		if d.SiteID == siteID && d.IsPrimary {
+			return d.Host
+		}
+	}
+	return ""
+}
+
+func (m *memStore) publishedVersionNumberLocked(pubVerID *string) int32 {
+	if pubVerID == nil || *pubVerID == "" {
+		return 0
+	}
+	if v, ok := m.siteVersions[*pubVerID]; ok {
+		return v.VersionNumber
+	}
+	return 0
+}
+
+func (m *memStore) GetSiteDetailByID(_ context.Context, id string) (db.GetSiteDetailByIDRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.sites[id]
+	if !ok {
+		return db.GetSiteDetailByIDRow{}, pgx.ErrNoRows
+	}
+	sh, ok := m.shops[st.ShopID]
+	if !ok {
+		return db.GetSiteDetailByIDRow{}, pgx.ErrNoRows
+	}
+	return db.GetSiteDetailByIDRow{
+		ID:                     st.ID,
+		ShopID:                 st.ShopID,
+		ShopName:               sh.Name,
+		Subdomain:              st.Subdomain,
+		PrimaryHost:            m.primaryHostLocked(st.ID),
+		Status:                 st.Status,
+		DraftConfig:            append([]byte(nil), st.DraftConfig...),
+		PublishedVersionID:     st.PublishedVersionID,
+		PublishedVersionNumber: m.publishedVersionNumberLocked(st.PublishedVersionID),
+		PublishedAt:            st.PublishedAt,
+		SuspendedReason:        st.SuspendedReason,
+		CreatedAt:              st.CreatedAt,
+		UpdatedAt:              st.UpdatedAt,
+	}, nil
+}
+
+func (m *memStore) GetSiteDetailByShopID(_ context.Context, shopID string) (db.GetSiteDetailByShopIDRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, st := range m.sites {
+		if st.ShopID == shopID {
+			sh, ok := m.shops[st.ShopID]
+			if !ok {
+				return db.GetSiteDetailByShopIDRow{}, pgx.ErrNoRows
+			}
+			return db.GetSiteDetailByShopIDRow{
+				ID:                     st.ID,
+				ShopID:                 st.ShopID,
+				ShopName:               sh.Name,
+				Subdomain:              st.Subdomain,
+				PrimaryHost:            m.primaryHostLocked(st.ID),
+				Status:                 st.Status,
+				DraftConfig:            append([]byte(nil), st.DraftConfig...),
+				PublishedVersionID:     st.PublishedVersionID,
+				PublishedVersionNumber: m.publishedVersionNumberLocked(st.PublishedVersionID),
+				PublishedAt:            st.PublishedAt,
+				SuspendedReason:        st.SuspendedReason,
+				CreatedAt:              st.CreatedAt,
+				UpdatedAt:              st.UpdatedAt,
+			}, nil
+		}
+	}
+	return db.GetSiteDetailByShopIDRow{}, pgx.ErrNoRows
+}
+
+func (m *memStore) GetPublishedSiteByHost(_ context.Context, lower string) (db.GetPublishedSiteByHostRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, d := range m.domains {
+		if !strings.EqualFold(d.Host, lower) {
+			continue
+		}
+		st, ok := m.sites[d.SiteID]
+		if !ok || st.Status != SiteStatusPublished || st.PublishedVersionID == nil {
+			continue
+		}
+		ver, ok := m.siteVersions[*st.PublishedVersionID]
+		if !ok {
+			continue
+		}
+		sh, ok := m.shops[st.ShopID]
+		if !ok || sh.Status != ShopStatusActive {
+			continue
+		}
+		pHost := m.primaryHostLocked(st.ID)
+		if pHost == "" {
+			pHost = d.Host
+		}
+		return db.GetPublishedSiteByHostRow{
+			ID:                     st.ID,
+			ShopID:                 st.ShopID,
+			ShopName:               sh.Name,
+			ShopDescription:        sh.Description,
+			ShopStatus:             sh.Status,
+			Subdomain:              st.Subdomain,
+			PrimaryHost:            pHost,
+			Status:                 st.Status,
+			PublishedConfig:        append([]byte(nil), ver.Config...),
+			PublishedVersionID:     st.PublishedVersionID,
+			PublishedVersionNumber: ver.VersionNumber,
+			PublishedAt:            st.PublishedAt,
+			CreatedAt:              st.CreatedAt,
+			UpdatedAt:              st.UpdatedAt,
+		}, nil
+	}
+	return db.GetPublishedSiteByHostRow{}, pgx.ErrNoRows
+}
+
+func (m *memStore) GetPublishedSiteByShopID(_ context.Context, shopID string) (db.GetPublishedSiteByShopIDRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, st := range m.sites {
+		if st.ShopID != shopID || st.Status != SiteStatusPublished || st.PublishedVersionID == nil {
+			continue
+		}
+		ver, ok := m.siteVersions[*st.PublishedVersionID]
+		if !ok {
+			continue
+		}
+		sh, ok := m.shops[st.ShopID]
+		if !ok || sh.Status != ShopStatusActive {
+			continue
+		}
+		return db.GetPublishedSiteByShopIDRow{
+			ID:                     st.ID,
+			ShopID:                 st.ShopID,
+			ShopName:               sh.Name,
+			ShopDescription:        sh.Description,
+			ShopStatus:             sh.Status,
+			Subdomain:              st.Subdomain,
+			PrimaryHost:            m.primaryHostLocked(st.ID),
+			Status:                 st.Status,
+			PublishedConfig:        append([]byte(nil), ver.Config...),
+			PublishedVersionID:     st.PublishedVersionID,
+			PublishedVersionNumber: ver.VersionNumber,
+			PublishedAt:            st.PublishedAt,
+			CreatedAt:              st.CreatedAt,
+			UpdatedAt:              st.UpdatedAt,
+		}, nil
+	}
+	return db.GetPublishedSiteByShopIDRow{}, pgx.ErrNoRows
+}
+
+func (m *memStore) UpdateSitePublished(_ context.Context, arg db.UpdateSitePublishedParams) (db.Site, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.sites[arg.ID]
+	if !ok {
+		return db.Site{}, pgx.ErrNoRows
+	}
+	now := time.Now().UTC()
+	st.PublishedVersionID = arg.PublishedVersionID
+	st.Status = SiteStatusPublished
+	st.PublishedAt = &now
+	st.UpdatedAt = now
+	m.sites[st.ID] = st
+	return st, nil
+}
+
+func (m *memStore) UpdateSiteRollback(_ context.Context, arg db.UpdateSiteRollbackParams) (db.Site, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.sites[arg.ID]
+	if !ok {
+		return db.Site{}, pgx.ErrNoRows
+	}
+	now := time.Now().UTC()
+	st.PublishedVersionID = arg.PublishedVersionID
+	st.DraftConfig = append([]byte(nil), arg.DraftConfig...)
+	st.Status = SiteStatusPublished
+	st.PublishedAt = &now
+	st.UpdatedAt = now
+	m.sites[st.ID] = st
+	return st, nil
+}
+
+func (m *memStore) UpdateSiteStatus(_ context.Context, arg db.UpdateSiteStatusParams) (db.Site, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.sites[arg.ID]
+	if !ok {
+		return db.Site{}, pgx.ErrNoRows
+	}
+	st.Status = arg.Status
+	st.SuspendedReason = arg.SuspendedReason
+	st.UpdatedAt = time.Now().UTC()
+	m.sites[st.ID] = st
+	return st, nil
+}
+
+func (m *memStore) ListSites(_ context.Context, arg db.ListSitesParams) ([]db.ListSitesRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	q := strings.ToLower(arg.Query)
+	var rows []db.ListSitesRow
+	for _, st := range m.sites {
+		if arg.Status != "" && st.Status != arg.Status {
+			continue
+		}
+		sh, ok := m.shops[st.ShopID]
+		if !ok {
+			continue
+		}
+		pHost := m.primaryHostLocked(st.ID)
+		if q != "" &&
+			!strings.Contains(strings.ToLower(st.Subdomain), q) &&
+			!strings.Contains(strings.ToLower(sh.Name), q) &&
+			!strings.Contains(strings.ToLower(pHost), q) {
+			continue
+		}
+		rows = append(rows, db.ListSitesRow{
+			ID:                     st.ID,
+			ShopID:                 st.ShopID,
+			ShopName:               sh.Name,
+			Subdomain:              st.Subdomain,
+			PrimaryHost:            pHost,
+			Status:                 st.Status,
+			DraftConfig:            append([]byte(nil), st.DraftConfig...),
+			PublishedVersionID:     st.PublishedVersionID,
+			PublishedVersionNumber: m.publishedVersionNumberLocked(st.PublishedVersionID),
+			PublishedAt:            st.PublishedAt,
+			SuspendedReason:        st.SuspendedReason,
+			CreatedAt:              st.CreatedAt,
+			UpdatedAt:              st.UpdatedAt,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].UpdatedAt.After(rows[j].UpdatedAt)
+	})
+	start := int(arg.PageOffset)
+	if start >= len(rows) {
+		return []db.ListSitesRow{}, nil
+	}
+	end := len(rows)
+	if arg.PageLimit > 0 && start+int(arg.PageLimit) < end {
+		end = start + int(arg.PageLimit)
+	}
+	return rows[start:end], nil
+}
+
+func (m *memStore) CountSites(ctx context.Context, arg db.CountSitesParams) (int64, error) {
+	list, err := m.ListSites(ctx, db.ListSitesParams{Status: arg.Status, Query: arg.Query})
+	return int64(len(list)), err
+}
+
+func (m *memStore) GetMaxSiteVersionNumber(_ context.Context, siteID string) (int32, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var maxVer int32
+	for _, v := range m.siteVersions {
+		if v.SiteID == siteID && v.VersionNumber > maxVer {
+			maxVer = v.VersionNumber
+		}
+	}
+	return maxVer, nil
+}
+
+func (m *memStore) CreateSiteVersion(_ context.Context, arg db.CreateSiteVersionParams) (db.SiteVersion, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, v := range m.siteVersions {
+		if v.SiteID == arg.SiteID && v.VersionNumber == arg.VersionNumber {
+			return db.SiteVersion{}, &pgconn.PgError{Code: "23505"}
+		}
+	}
+	v := db.SiteVersion{
+		ID:            arg.ID,
+		SiteID:        arg.SiteID,
+		VersionNumber: arg.VersionNumber,
+		Config:        append([]byte(nil), arg.Config...),
+		PublishedBy:   arg.PublishedBy,
+		Note:          arg.Note,
+		CreatedAt:     time.Now().UTC(),
+	}
+	m.siteVersions[v.ID] = v
+	return v, nil
+}
+
+func (m *memStore) GetSiteVersionByID(_ context.Context, id string) (db.SiteVersion, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.siteVersions[id]
+	if !ok {
+		return db.SiteVersion{}, pgx.ErrNoRows
+	}
+	return v, nil
+}
+
+func (m *memStore) ListSiteVersions(_ context.Context, arg db.ListSiteVersionsParams) ([]db.SiteVersion, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var list []db.SiteVersion
+	for _, v := range m.siteVersions {
+		if v.SiteID == arg.SiteID {
+			list = append(list, v)
+		}
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].VersionNumber > list[j].VersionNumber
+	})
+	start := int(arg.PageOffset)
+	if start >= len(list) {
+		return []db.SiteVersion{}, nil
+	}
+	end := len(list)
+	if arg.PageLimit > 0 && start+int(arg.PageLimit) < end {
+		end = start + int(arg.PageLimit)
+	}
+	return list[start:end], nil
+}
+
+func (m *memStore) CountSiteVersions(_ context.Context, siteID string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for _, v := range m.siteVersions {
+		if v.SiteID == siteID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *memStore) GetDomainByHost(_ context.Context, lower string) (db.Domain, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, d := range m.domains {
+		if strings.EqualFold(d.Host, lower) {
+			return d, nil
+		}
+	}
+	return db.Domain{}, pgx.ErrNoRows
+}
+
+func (m *memStore) UpsertSiteSubdomainDomain(_ context.Context, arg db.UpsertSiteSubdomainDomainParams) (db.Domain, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	host := strings.ToLower(arg.Lower)
+	for _, d := range m.domains {
+		if strings.EqualFold(d.Host, host) && !(d.SiteID == arg.SiteID && d.Kind == "SUBDOMAIN") {
+			return db.Domain{}, &pgconn.PgError{Code: "23505"}
+		}
+	}
+	now := time.Now().UTC()
+	for id, d := range m.domains {
+		if d.SiteID == arg.SiteID && d.Kind == "SUBDOMAIN" {
+			d.Host = host
+			d.VerifiedAt = &now
+			d.UpdatedAt = now
+			m.domains[id] = d
+			return d, nil
+		}
+	}
+	d := db.Domain{
+		ID:         arg.ID,
+		SiteID:     arg.SiteID,
+		Host:       host,
+		Kind:       "SUBDOMAIN",
+		IsPrimary:  true,
+		VerifiedAt: &now,
+		TlsStatus:  "MANAGED",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	m.domains[d.ID] = d
+	return d, nil
 }
 
 type memOTP struct {

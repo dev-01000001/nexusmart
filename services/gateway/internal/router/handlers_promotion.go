@@ -53,6 +53,7 @@ type flashSaleDTO struct {
 	Name     string              `json:"name"`
 	StartsAt string              `json:"starts_at,omitempty"`
 	EndsAt   string              `json:"ends_at,omitempty"`
+	Status   string              `json:"status,omitempty"`
 	Items    []*flashSaleItemDTO `json:"items"`
 }
 
@@ -156,6 +157,7 @@ func mapFlashSale(fs *promotionv1.FlashSale) *flashSaleDTO {
 		Name:     fs.GetName(),
 		StartsAt: httpx.FormatTimestamp(fs.GetStartsAt()),
 		EndsAt:   httpx.FormatTimestamp(fs.GetEndsAt()),
+		Status:   fs.GetStatus(),
 		Items:    items,
 	}
 }
@@ -567,6 +569,30 @@ func (h *handler) handleAdminApproveFlashSaleItem(w http.ResponseWriter, r *http
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"item": mapFlashSaleItem(resp.GetItem())})
+}
+
+func (h *handler) handleAdminEndFlashSaleWindow(w http.ResponseWriter, r *http.Request) {
+	windowID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if windowID == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "flash sale id is required")
+		return
+	}
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Promotion.EndFlashSaleWindow(ctx, &promotionv1.EndFlashSaleWindowRequest{
+		WindowId: windowID,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	mapped := mapFlashSale(resp.GetWindow())
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"flash_sale":     mapped,
+		"window":         mapped,
+		"released_items": resp.GetReleasedItems(),
+	})
 }
 
 func (h *handler) handleGetCoinBalance(w http.ResponseWriter, r *http.Request) {

@@ -11,12 +11,13 @@ import (
 // MemoryStore is a concurrency-safe in-memory implementation of Store with real
 // optimistic locking and atomic commit/rollback semantics for unit tests.
 type MemoryStore struct {
-	mu           sync.Mutex
-	categories   map[string]Category
-	products     map[string]Product
-	skus         map[string]SKU
-	reservations map[string]StockReservation
-	history      []StockHistoryEntry
+	mu                sync.Mutex
+	categories        map[string]Category
+	products          map[string]Product
+	skus              map[string]SKU
+	reservations      map[string]StockReservation
+	flashReservations map[string]FlashSaleStockReservation
+	history           []StockHistoryEntry
 
 	// BeforeReserveWrite is an optional test hook invoked right before an optimistic
 	// reserve check inside a transaction to deterministically simulate concurrent updates.
@@ -25,10 +26,11 @@ type MemoryStore struct {
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		categories:   make(map[string]Category),
-		products:     make(map[string]Product),
-		skus:         make(map[string]SKU),
-		reservations: make(map[string]StockReservation),
+		categories:        make(map[string]Category),
+		products:          make(map[string]Product),
+		skus:              make(map[string]SKU),
+		reservations:      make(map[string]StockReservation),
+		flashReservations: make(map[string]FlashSaleStockReservation),
 	}
 }
 
@@ -52,13 +54,35 @@ const (
 	skuOpReserve
 	skuOpRelease
 	skuOpConfirm
+	skuOpAddFlash
+	skuOpSubFlash
+	skuOpConsumeFlash
+	skuOpRestoreOrderToFlash
 )
 
 type stagedSKUOp struct {
 	kind            skuOpKind
 	skuID           string
 	amount          int32
+	secondaryAmount int32
 	expectedVersion int64
+}
+
+type flashResOpKind int
+
+const (
+	flashResOpCreate flashResOpKind = iota + 1
+	flashResOpConsume
+	flashResOpRestore
+	flashResOpRelease
+)
+
+type stagedFlashResOp struct {
+	kind                flashResOpKind
+	item                FlashSaleStockReservation
+	qty                 int32
+	expectedConsumedQty int32
+	now                 time.Time
 }
 
 type stagedResTransition struct {
@@ -70,12 +94,13 @@ type stagedResTransition struct {
 // WithTx executes fn with optimistic snapshot reads and atomic validation+commit on exit.
 func (m *MemoryStore) WithTx(ctx context.Context, fn func(q Queries) error) error {
 	tx := &memTx{
-		store:       m,
-		stagedCats:  make(map[string]Category),
-		deletedCats: make(map[string]bool),
-		stagedProds: make(map[string]Product),
-		stagedSKUs:  make(map[string]SKU),
-		stagedRes:   make(map[string]StockReservation),
+		store:          m,
+		stagedCats:     make(map[string]Category),
+		deletedCats:    make(map[string]bool),
+		stagedProds:    make(map[string]Product),
+		stagedSKUs:     make(map[string]SKU),
+		stagedRes:      make(map[string]StockReservation),
+		stagedFlashRes: make(map[string]FlashSaleStockReservation),
 	}
 	if err := fn(tx); err != nil {
 		return err
@@ -500,6 +525,124 @@ func (m *MemoryStore) TransitionStockReservation(ctx context.Context, id, toStat
 	return ok, err
 }
 
+func (m *MemoryStore) GetSKUWithContextForUpdate(ctx context.Context, skuID string) (SKU, error) {
+	return m.GetSKUWithContext(ctx, skuID)
+}
+
+func (m *MemoryStore) AddFlashSaleReservedStock(ctx context.Context, skuID string, qty int32) (SKU, error) {
+	var out SKU
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		out, e = q.AddFlashSaleReservedStock(ctx, skuID, qty)
+		return e
+	})
+	return out, err
+}
+
+func (m *MemoryStore) SubFlashSaleReservedStock(ctx context.Context, skuID string, qty int32) (SKU, error) {
+	var out SKU
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		out, e = q.SubFlashSaleReservedStock(ctx, skuID, qty)
+		return e
+	})
+	return out, err
+}
+
+func (m *MemoryStore) ConsumeFlashSaleStockToOrder(ctx context.Context, skuID string, qty int32) (SKU, error) {
+	var out SKU
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		out, e = q.ConsumeFlashSaleStockToOrder(ctx, skuID, qty)
+		return e
+	})
+	return out, err
+}
+
+func (m *MemoryStore) RestoreOrderStockToFlashSale(ctx context.Context, skuID string, releaseReservedQty, addFlashReservedQty int32) (SKU, error) {
+	var out SKU
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		out, e = q.RestoreOrderStockToFlashSale(ctx, skuID, releaseReservedQty, addFlashReservedQty)
+		return e
+	})
+	return out, err
+}
+
+func (m *MemoryStore) GetFlashSaleReservation(_ context.Context, flashSaleItemID string, _ bool) (FlashSaleStockReservation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.flashReservations[flashSaleItemID]
+	if !ok {
+		return FlashSaleStockReservation{}, ErrNotFound
+	}
+	return r, nil
+}
+
+func (m *MemoryStore) CreateFlashSaleReservation(ctx context.Context, r FlashSaleStockReservation) (FlashSaleStockReservation, error) {
+	var out FlashSaleStockReservation
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		out, e = q.CreateFlashSaleReservation(ctx, r)
+		return e
+	})
+	return out, err
+}
+
+func (m *MemoryStore) ConsumeFlashSaleReservation(ctx context.Context, flashSaleItemID string, qty int32, now time.Time) (FlashSaleStockReservation, error) {
+	var out FlashSaleStockReservation
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		out, e = q.ConsumeFlashSaleReservation(ctx, flashSaleItemID, qty, now)
+		return e
+	})
+	return out, err
+}
+
+func (m *MemoryStore) RestoreFlashSaleReservationConsumed(ctx context.Context, flashSaleItemID string, qty int32) (FlashSaleStockReservation, error) {
+	var out FlashSaleStockReservation
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		out, e = q.RestoreFlashSaleReservationConsumed(ctx, flashSaleItemID, qty)
+		return e
+	})
+	return out, err
+}
+
+func (m *MemoryStore) MarkFlashSaleReservationReleased(ctx context.Context, flashSaleItemID string) (FlashSaleStockReservation, error) {
+	var out FlashSaleStockReservation
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		out, e = q.MarkFlashSaleReservationReleased(ctx, flashSaleItemID)
+		return e
+	})
+	return out, err
+}
+
+func (m *MemoryStore) ListExpiredActiveFlashSaleReservations(_ context.Context, now time.Time, limit int32) ([]FlashSaleStockReservation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	out := make([]FlashSaleStockReservation, 0)
+	for _, r := range m.flashReservations {
+		if r.Status == FlashReservationStatusActive && !r.EndsAt.After(now) {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].EndsAt.Equal(out[j].EndsAt) {
+			return out[i].EndsAt.Before(out[j].EndsAt)
+		}
+		return out[i].FlashSaleItemID < out[j].FlashSaleItemID
+	})
+	if int32(len(out)) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (m *MemoryStore) InsertStockHistory(ctx context.Context, h StockHistoryEntry) error {
 	return m.WithTx(ctx, func(q Queries) error {
 		return q.InsertStockHistory(ctx, h)
@@ -529,7 +672,9 @@ type memTx struct {
 	stagedProds    map[string]Product
 	stagedSKUs     map[string]SKU
 	stagedRes      map[string]StockReservation
+	stagedFlashRes map[string]FlashSaleStockReservation
 	skuOps         []stagedSKUOp
+	flashResOps    []stagedFlashResOp
 	resTransitions []stagedResTransition
 	newRes         []StockReservation
 	stagedHistory  []StockHistoryEntry
@@ -567,7 +712,53 @@ func (t *memTx) commit() error {
 		}
 	}
 
-	// 4. Validate and compute optimistic SKU operations against committed state
+	// 3b. Validate and compute flash sale reservation mutations against committed state
+	computedFlash := make(map[string]FlashSaleStockReservation)
+	for _, op := range t.flashResOps {
+		id := op.item.FlashSaleItemID
+		cur, hasCur := computedFlash[id]
+		if !hasCur {
+			cur, hasCur = t.store.flashReservations[id]
+		}
+		switch op.kind {
+		case flashResOpCreate:
+			if hasCur {
+				return ErrAlreadyExists
+			}
+			item := op.item
+			item.Status = FlashReservationStatusActive
+			item.ConsumedQty = 0
+			item.CreatedAt = now
+			item.UpdatedAt = now
+			computedFlash[id] = item
+		case flashResOpConsume:
+			if !hasCur || cur.Status != FlashReservationStatusActive || !cur.EndsAt.After(op.now) || (cur.ReservedQty-cur.ConsumedQty) < op.qty {
+				return ErrFlashSaleReservationInactive
+			}
+			cur.ConsumedQty += op.qty
+			cur.UpdatedAt = now
+			computedFlash[id] = cur
+		case flashResOpRestore:
+			if !hasCur || cur.Status != FlashReservationStatusActive {
+				return ErrVersionConflict
+			}
+			cur.ConsumedQty -= op.qty
+			if cur.ConsumedQty < 0 {
+				cur.ConsumedQty = 0
+			}
+			cur.UpdatedAt = now
+			computedFlash[id] = cur
+		case flashResOpRelease:
+			if !hasCur || cur.Status != FlashReservationStatusActive || cur.ConsumedQty != op.expectedConsumedQty {
+				return ErrVersionConflict
+			}
+			cur.Status = FlashReservationStatusReleased
+			cur.UpdatedAt = now
+			computedFlash[id] = cur
+		}
+	}
+
+	// 4. Validate and compute optimistic / locked SKU operations against committed state
 	computedSKUs := make(map[string]SKU)
 	for _, op := range t.skuOps {
 		cur, ok := computedSKUs[op.skuID]
@@ -582,7 +773,7 @@ func (t *memTx) commit() error {
 			if cur.Version != op.expectedVersion {
 				return ErrVersionConflict
 			}
-			if op.amount < cur.ReservedStock {
+			if op.amount < cur.TotalReservedStock() {
 				return ErrInvalidStock
 			}
 			cur.Stock = op.amount
@@ -632,6 +823,36 @@ func (t *memTx) commit() error {
 			}
 			cur.Version++
 			cur.UpdatedAt = now
+		case skuOpAddFlash:
+			if cur.AvailableStock() < op.amount {
+				return ErrInsufficientStock
+			}
+			cur.FlashSaleReservedStock += op.amount
+			cur.Version++
+			cur.UpdatedAt = now
+		case skuOpSubFlash:
+			cur.FlashSaleReservedStock -= op.amount
+			if cur.FlashSaleReservedStock < 0 {
+				cur.FlashSaleReservedStock = 0
+			}
+			cur.Version++
+			cur.UpdatedAt = now
+		case skuOpConsumeFlash:
+			if cur.FlashSaleReservedStock < op.amount {
+				return ErrInsufficientStock
+			}
+			cur.FlashSaleReservedStock -= op.amount
+			cur.ReservedStock += op.amount
+			cur.Version++
+			cur.UpdatedAt = now
+		case skuOpRestoreOrderToFlash:
+			cur.ReservedStock -= op.amount
+			if cur.ReservedStock < 0 {
+				cur.ReservedStock = 0
+			}
+			cur.FlashSaleReservedStock += op.secondaryAmount
+			cur.Version++
+			cur.UpdatedAt = now
 		}
 		computedSKUs[op.skuID] = cur
 	}
@@ -653,6 +874,9 @@ func (t *memTx) commit() error {
 	}
 	for id, s := range computedSKUs {
 		t.store.skus[id] = cloneSKU(s)
+	}
+	for id, fr := range computedFlash {
+		t.store.flashReservations[id] = fr
 	}
 	for _, r := range t.newRes {
 		t.store.reservations[r.ID] = r
@@ -969,6 +1193,10 @@ func (t *memTx) CountActiveInStockSKUsByProduct(_ context.Context, productID str
 	return n, nil
 }
 
+func (t *memTx) GetSKUWithContextForUpdate(ctx context.Context, skuID string) (SKU, error) {
+	return t.GetSKUWithContext(ctx, skuID)
+}
+
 func (t *memTx) UpdateSKUStockOptimistic(ctx context.Context, skuID string, newStock int32, expectedVersion int64) (SKU, error) {
 	cur, err := t.GetSKUWithContext(ctx, skuID)
 	if err != nil {
@@ -977,7 +1205,7 @@ func (t *memTx) UpdateSKUStockOptimistic(ctx context.Context, skuID string, newS
 	if cur.Version != expectedVersion {
 		return SKU{}, ErrVersionConflict
 	}
-	if newStock < cur.ReservedStock {
+	if newStock < cur.TotalReservedStock() {
 		return SKU{}, ErrInvalidStock
 	}
 	t.skuOps = append(t.skuOps, stagedSKUOp{
@@ -1114,6 +1342,171 @@ func (t *memTx) TransitionStockReservation(_ context.Context, id, toStatus, from
 		toStatus:   toStatus,
 	})
 	return true, nil
+}
+
+func (t *memTx) AddFlashSaleReservedStock(ctx context.Context, skuID string, qty int32) (SKU, error) {
+	cur, err := t.GetSKUWithContext(ctx, skuID)
+	if err != nil {
+		return SKU{}, err
+	}
+	if cur.AvailableStock() < qty {
+		return SKU{}, ErrInsufficientStock
+	}
+	t.skuOps = append(t.skuOps, stagedSKUOp{
+		kind:   skuOpAddFlash,
+		skuID:  skuID,
+		amount: qty,
+	})
+	cur.FlashSaleReservedStock += qty
+	cur.Version++
+	t.stagedSKUs[skuID] = cloneSKU(cur)
+	return cur, nil
+}
+
+func (t *memTx) SubFlashSaleReservedStock(ctx context.Context, skuID string, qty int32) (SKU, error) {
+	cur, err := t.GetSKUWithContext(ctx, skuID)
+	if err != nil {
+		return SKU{}, err
+	}
+	t.skuOps = append(t.skuOps, stagedSKUOp{
+		kind:   skuOpSubFlash,
+		skuID:  skuID,
+		amount: qty,
+	})
+	cur.FlashSaleReservedStock -= qty
+	if cur.FlashSaleReservedStock < 0 {
+		cur.FlashSaleReservedStock = 0
+	}
+	cur.Version++
+	t.stagedSKUs[skuID] = cloneSKU(cur)
+	return cur, nil
+}
+
+func (t *memTx) ConsumeFlashSaleStockToOrder(ctx context.Context, skuID string, qty int32) (SKU, error) {
+	cur, err := t.GetSKUWithContext(ctx, skuID)
+	if err != nil {
+		return SKU{}, err
+	}
+	if cur.FlashSaleReservedStock < qty {
+		return SKU{}, ErrInsufficientStock
+	}
+	t.skuOps = append(t.skuOps, stagedSKUOp{
+		kind:   skuOpConsumeFlash,
+		skuID:  skuID,
+		amount: qty,
+	})
+	cur.FlashSaleReservedStock -= qty
+	cur.ReservedStock += qty
+	cur.Version++
+	t.stagedSKUs[skuID] = cloneSKU(cur)
+	return cur, nil
+}
+
+func (t *memTx) RestoreOrderStockToFlashSale(ctx context.Context, skuID string, releaseReservedQty, addFlashReservedQty int32) (SKU, error) {
+	cur, err := t.GetSKUWithContext(ctx, skuID)
+	if err != nil {
+		return SKU{}, err
+	}
+	t.skuOps = append(t.skuOps, stagedSKUOp{
+		kind:            skuOpRestoreOrderToFlash,
+		skuID:           skuID,
+		amount:          releaseReservedQty,
+		secondaryAmount: addFlashReservedQty,
+	})
+	cur.ReservedStock -= releaseReservedQty
+	if cur.ReservedStock < 0 {
+		cur.ReservedStock = 0
+	}
+	cur.FlashSaleReservedStock += addFlashReservedQty
+	cur.Version++
+	t.stagedSKUs[skuID] = cloneSKU(cur)
+	return cur, nil
+}
+
+func (t *memTx) GetFlashSaleReservation(_ context.Context, flashSaleItemID string, _ bool) (FlashSaleStockReservation, error) {
+	if r, ok := t.stagedFlashRes[flashSaleItemID]; ok {
+		return r, nil
+	}
+	t.store.mu.Lock()
+	defer t.store.mu.Unlock()
+	r, ok := t.store.flashReservations[flashSaleItemID]
+	if !ok {
+		return FlashSaleStockReservation{}, ErrNotFound
+	}
+	return r, nil
+}
+
+func (t *memTx) CreateFlashSaleReservation(_ context.Context, r FlashSaleStockReservation) (FlashSaleStockReservation, error) {
+	now := time.Now().UTC()
+	r.Status = FlashReservationStatusActive
+	r.ConsumedQty = 0
+	r.CreatedAt = now
+	r.UpdatedAt = now
+	t.flashResOps = append(t.flashResOps, stagedFlashResOp{
+		kind: flashResOpCreate,
+		item: r,
+	})
+	t.stagedFlashRes[r.FlashSaleItemID] = r
+	return r, nil
+}
+
+func (t *memTx) ConsumeFlashSaleReservation(ctx context.Context, flashSaleItemID string, qty int32, now time.Time) (FlashSaleStockReservation, error) {
+	cur, err := t.GetFlashSaleReservation(ctx, flashSaleItemID, true)
+	if err != nil {
+		return FlashSaleStockReservation{}, ErrFlashSaleReservationInactive
+	}
+	if cur.Status != FlashReservationStatusActive || !cur.EndsAt.After(now) || (cur.ReservedQty-cur.ConsumedQty) < qty {
+		return FlashSaleStockReservation{}, ErrFlashSaleReservationInactive
+	}
+	t.flashResOps = append(t.flashResOps, stagedFlashResOp{
+		kind: flashResOpConsume,
+		item: FlashSaleStockReservation{FlashSaleItemID: flashSaleItemID},
+		qty:  qty,
+		now:  now,
+	})
+	cur.ConsumedQty += qty
+	cur.UpdatedAt = now
+	t.stagedFlashRes[flashSaleItemID] = cur
+	return cur, nil
+}
+
+func (t *memTx) RestoreFlashSaleReservationConsumed(ctx context.Context, flashSaleItemID string, qty int32) (FlashSaleStockReservation, error) {
+	cur, err := t.GetFlashSaleReservation(ctx, flashSaleItemID, true)
+	if err != nil {
+		return FlashSaleStockReservation{}, err
+	}
+	t.flashResOps = append(t.flashResOps, stagedFlashResOp{
+		kind: flashResOpRestore,
+		item: FlashSaleStockReservation{FlashSaleItemID: flashSaleItemID},
+		qty:  qty,
+	})
+	cur.ConsumedQty -= qty
+	if cur.ConsumedQty < 0 {
+		cur.ConsumedQty = 0
+	}
+	cur.UpdatedAt = time.Now().UTC()
+	t.stagedFlashRes[flashSaleItemID] = cur
+	return cur, nil
+}
+
+func (t *memTx) MarkFlashSaleReservationReleased(ctx context.Context, flashSaleItemID string) (FlashSaleStockReservation, error) {
+	cur, err := t.GetFlashSaleReservation(ctx, flashSaleItemID, true)
+	if err != nil || cur.Status != FlashReservationStatusActive {
+		return FlashSaleStockReservation{}, ErrVersionConflict
+	}
+	t.flashResOps = append(t.flashResOps, stagedFlashResOp{
+		kind:                flashResOpRelease,
+		item:                FlashSaleStockReservation{FlashSaleItemID: flashSaleItemID},
+		expectedConsumedQty: cur.ConsumedQty,
+	})
+	cur.Status = FlashReservationStatusReleased
+	cur.UpdatedAt = time.Now().UTC()
+	t.stagedFlashRes[flashSaleItemID] = cur
+	return cur, nil
+}
+
+func (t *memTx) ListExpiredActiveFlashSaleReservations(ctx context.Context, now time.Time, limit int32) ([]FlashSaleStockReservation, error) {
+	return t.store.ListExpiredActiveFlashSaleReservations(ctx, now, limit)
 }
 
 func (t *memTx) InsertStockHistory(_ context.Context, h StockHistoryEntry) error {

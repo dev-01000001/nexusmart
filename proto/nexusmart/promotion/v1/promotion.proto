@@ -70,6 +70,7 @@ message FlashSale {
   google.protobuf.Timestamp starts_at = 3;
   google.protobuf.Timestamp ends_at = 4;
   repeated FlashSaleItem items = 5;
+  string status = 6;
 }
 
 message CoinTransaction {
@@ -214,6 +215,15 @@ message ApproveFlashSaleItemResponse {
   FlashSaleItem item = 1;
 }
 
+message EndFlashSaleWindowRequest {
+  string window_id = 1;
+}
+
+message EndFlashSaleWindowResponse {
+  FlashSale window = 1;
+  int32 released_items = 2;
+}
+
 message ListActiveFlashSalesRequest {
   bool include_upcoming = 1;
 }
@@ -299,6 +309,7 @@ service PromotionService {
   rpc CreateFlashSale(CreateFlashSaleRequest) returns (CreateFlashSaleResponse);
   rpc RegisterFlashSaleItem(RegisterFlashSaleItemRequest) returns (RegisterFlashSaleItemResponse);
   rpc ApproveFlashSaleItem(ApproveFlashSaleItemRequest) returns (ApproveFlashSaleItemResponse);
+  rpc EndFlashSaleWindow(EndFlashSaleWindowRequest) returns (EndFlashSaleWindowResponse);
   rpc ListActiveFlashSales(ListActiveFlashSalesRequest) returns (ListActiveFlashSalesResponse);
   rpc GetCoinBalance(GetCoinBalanceRequest) returns (GetCoinBalanceResponse);
   rpc CreditCoins(CreditCoinsRequest) returns (CreditCoinsResponse);

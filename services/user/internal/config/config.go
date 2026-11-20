@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"time"
 
 	"github.com/nexusmart/core/pkg/common/env"
@@ -25,6 +26,7 @@ type Config struct {
 	LoginLockoutDuration   time.Duration
 	AdminBootstrapEmail    string
 	AdminBootstrapPassword string
+	SiteRootDomain         string
 	OTLPEndpoint           string
 	OTLPInsecure           bool
 	LogLevel               string
@@ -32,6 +34,10 @@ type Config struct {
 
 // Load reads configuration from environment variables with dev/sandbox defaults.
 func Load() Config {
+	rootDomain := strings.Trim(strings.ToLower(strings.TrimSpace(env.EnvString("SITE_ROOT_DOMAIN", "nexusmart.localhost"))), ".")
+	if rootDomain == "" {
+		rootDomain = "nexusmart.localhost"
+	}
 	return Config{
 		ServiceName:            env.EnvString("SERVICE_NAME", "user"),
 		GRPCPort:               env.EnvString("GRPC_PORT", "50051"),
@@ -50,6 +56,7 @@ func Load() Config {
 		LoginLockoutDuration:   env.EnvDuration("LOGIN_LOCKOUT_DURATION", 15*time.Minute),
 		AdminBootstrapEmail:    env.EnvString("ADMIN_BOOTSTRAP_EMAIL", "admin@nexusmart.local"),
 		AdminBootstrapPassword: env.EnvString("ADMIN_BOOTSTRAP_PASSWORD", "AdminDevPassword123!"),
+		SiteRootDomain:         rootDomain,
 		OTLPEndpoint:           env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		OTLPInsecure:           env.EnvBool("OTEL_EXPORTER_OTLP_INSECURE", true),
 		LogLevel:               env.EnvString("LOG_LEVEL", "info"),
