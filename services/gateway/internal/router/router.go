@@ -219,12 +219,14 @@ func New(deps Dependencies) http.Handler {
 					seller.Patch("/skus/{sku_id}/stock", h.handleSellerUpdateStock)
 
 					// Section 4.4 Seller Vouchers & Flash Sales
+					seller.Get("/vouchers", h.handleSellerListVouchers)
 					seller.Post("/vouchers", h.handleSellerCreateVoucher)
 					seller.With(middleware.RateLimitFlashSale(deps.RateLimiter, deps.RateLimitFlashPerMin, deps.Logger)).
 						Post("/flash-sales/{id}/items", h.handleSellerRegisterFlashSaleItem)
 
 					// Section 4.5 Seller Orders
 					seller.Get("/orders", h.handleSellerListOrders)
+					seller.Get("/orders/{id}", h.handleSellerGetOrder)
 					seller.Post("/orders/{id}/confirm", h.handleSellerConfirmOrder)
 					seller.Post("/orders/{id}/ship", h.handleSellerShipOrder)
 
@@ -248,6 +250,7 @@ func New(deps Dependencies) http.Handler {
 					admin.Post("/categories", h.handleCreateCategory)
 					admin.Put("/categories/{id}", h.handleUpdateCategory)
 					admin.Delete("/categories/{id}", h.handleDeleteCategory)
+					admin.Get("/products", h.handleListProducts)
 					admin.Post("/products/{id}/review", h.handleAdminReviewProduct)
 
 					// Section 4.4 Admin Vouchers, Flash Sales & Coins

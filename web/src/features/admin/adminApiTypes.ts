@@ -1,0 +1,246 @@
+// Shared DTO types and pure display helpers for Admin Portal backend integration.
+import type { PillTone } from "./adminMeta";
+
+export interface GwAdminShop {
+  id: string;
+  owner_user_id: string;
+  name: string;
+  description: string;
+  pickup_address_id: string;
+  contact_phone: string;
+  business_license_doc: string;
+  status: string;
+  rejection_reason: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface GwAccountBalance {
+  account_code: string;
+  account_type: string;
+  debit_total_vnd: number;
+  credit_total_vnd: number;
+  balance_vnd: number;
+}
+
+export interface GwLedgerSummary {
+  total_debits_vnd: number;
+  total_credits_vnd: number;
+  is_balanced: boolean;
+  accounts: GwAccountBalance[];
+}
+
+export interface GwReconciliationItem {
+  payment_id: string;
+  provider_tx_id: string;
+  local_amount_vnd: number;
+  provider_amount_vnd: number;
+  status: string;
+  note: string;
+}
+
+export interface GwReconciliationReport {
+  run_id: string;
+  matched_count: number;
+  missing_local_count: number;
+  missing_provider_count: number;
+  amount_mismatch_count: number;
+  items: GwReconciliationItem[];
+}
+
+export interface GwAuditLog {
+  id: string;
+  actor_id: string;
+  actor_role: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  before_json: string;
+  after_json: string;
+  reason: string;
+  ip_address: string;
+  created_at?: string;
+}
+
+export interface GwAdminOrder {
+  id: string;
+  order_code: string;
+  shop_id: string;
+  buyer_id: string;
+  status: string;
+  payment_method: string;
+  payment_status: string;
+  subtotal_vnd: number;
+  commission_vnd: number;
+  total_payable_vnd: number;
+  created_at?: string;
+}
+
+export interface GwAdminProduct {
+  id: string;
+  shop_id: string;
+  category_id: string;
+  name: string;
+  description: string;
+  images: string[];
+  status: string;
+  rejection_reason: string;
+  min_price_vnd: number;
+  max_price_vnd: number;
+  skus: Array<{
+    id: string;
+    sku_code: string;
+    name: string;
+    price_vnd: number;
+    stock: number;
+    available_stock: number;
+  }>;
+  created_at?: string;
+}
+
+export interface GwAdminVoucher {
+  id: string;
+  code: string;
+  name: string;
+  scope: string;
+  shop_id: string;
+  discount_type: string;
+  value_vnd: number;
+  discount_percent: number;
+  max_discount_vnd: number;
+  min_order_vnd: number;
+  quota: number;
+  used_count: number;
+  remaining_quota: number;
+  starts_at?: string;
+  ends_at?: string;
+  is_active: boolean;
+}
+
+export interface GwAdminFlashSaleItem {
+  id: string;
+  flash_sale_id: string;
+  shop_id: string;
+  sku_id: string;
+  flash_price_vnd: number;
+  total_slots: number;
+  remaining_slots: number;
+  per_user_limit: number;
+  status: string;
+  rejection_reason: string;
+}
+
+export interface GwAdminFlashSale {
+  id: string;
+  name: string;
+  starts_at?: string;
+  ends_at?: string;
+  items: GwAdminFlashSaleItem[];
+}
+
+export function getAdminShopStatusMeta(status: string): { label: string; tone: PillTone } {
+  switch (status.toUpperCase()) {
+    case "PENDING":
+      return { label: "Chờ duyệt", tone: "warning" };
+    case "ACTIVE":
+      return { label: "Đã duyệt", tone: "positive" };
+    case "REJECTED":
+      return { label: "Từ chối", tone: "negative" };
+    case "SUSPENDED":
+      return { label: "Tạm khóa", tone: "negative" };
+    default:
+      return { label: status || "Đang xử lý", tone: "neutral" };
+  }
+}
+
+export function getReconItemStatusMeta(status: string): { label: string; tone: PillTone } {
+  switch (status.toUpperCase()) {
+    case "MATCHED":
+      return { label: "Đã khớp", tone: "positive" };
+    case "AMOUNT_MISMATCH":
+      return { label: "Lệch số tiền", tone: "negative" };
+    case "MISSING_LOCAL":
+      return { label: "Thiếu ở hệ thống", tone: "negative" };
+    case "MISSING_PROVIDER":
+      return { label: "Thiếu ở cổng TT", tone: "warning" };
+    default:
+      return { label: status || "Đang kiểm tra", tone: "neutral" };
+  }
+}
+
+export function getAccountTypeLabelVi(accountType: string): string {
+  switch (accountType.toUpperCase()) {
+    case "ASSET":
+      return "Tài sản";
+    case "LIABILITY":
+      return "Công nợ phải trả";
+    case "REVENUE":
+      return "Doanh thu sàn";
+    case "EXPENSE":
+      return "Chi phí / hoàn trả";
+    default:
+      return accountType || "Tài khoản sổ cái";
+  }
+}
+
+export function getAuditTargetLabelVi(targetType: string): string {
+  switch (targetType.toLowerCase()) {
+    case "shop":
+      return "Gian hàng";
+    case "user":
+      return "Tài khoản";
+    case "product":
+      return "Sản phẩm";
+    case "order":
+      return "Đơn hàng";
+    case "payment":
+      return "Đối soát";
+    default:
+      return targetType || "Hệ thống";
+  }
+}
+
+export function getAuditActionLabelVi(action: string): string {
+  switch (action) {
+    case "admin.shop.review":
+      return "Thẩm định hồ sơ gian hàng";
+    case "admin.user.status":
+      return "Cập nhật trạng thái tài khoản";
+    case "admin.user.role":
+      return "Thay đổi phân quyền tài khoản";
+    default:
+      return action || "Thao tác quản trị";
+  }
+}
+
+export function getActorRoleLabelVi(role: string): string {
+  switch (role.toLowerCase()) {
+    case "super_admin":
+      return "Quản trị tối cao";
+    case "admin":
+      return "Quản trị viên";
+    case "seller":
+      return "Người bán";
+    case "buyer":
+      return "Người mua";
+    default:
+      return role || "Hệ thống";
+  }
+}
+
+export function getProductReviewStatusMeta(status: string): { label: string; tone: PillTone } {
+  switch (status.toUpperCase()) {
+    case "PENDING":
+      return { label: "Chờ kiểm duyệt", tone: "warning" };
+    case "APPROVED":
+      return { label: "Đã duyệt bán", tone: "positive" };
+    case "REJECTED":
+      return { label: "Đã từ chối", tone: "negative" };
+    case "OUT_OF_STOCK":
+      return { label: "Hết hàng", tone: "neutral" };
+    case "HIDDEN":
+      return { label: "Đang ẩn", tone: "neutral" };
+    default:
+      return { label: status || "Đang xử lý", tone: "neutral" };
+  }
+}

@@ -1,75 +1,64 @@
 "use client";
 
 import React, { useState } from "react";
-import type { Order, PaymentMethod } from "@/data";
-import { PAYMENT_METHOD_LABELS, WALLET_PAYMENT_METHOD } from "@/data";
+import { useRouter } from "next/navigation";
+import type { Order } from "@/data";
+import { ApiError, api } from "@/lib/api";
 import { formatDateTimeVi, formatVnd } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
 import { Button } from "@/components/Button";
-import { VietQrPreview } from "./VietQrPreview";
+import type { GwPayment } from "./types";
 import styles from "./commerce.module.css";
 
-type GatewayChoice = "vietqr" | "nexuspay" | "linked_wallet" | "cod";
-
-const GATEWAY_CHOICES: Array<{
-  id: GatewayChoice;
-  method: PaymentMethod;
-  title: string;
-  shortLabel: string;
-  subtitle: string;
-}> = [
-  {
-    id: "vietqr",
-    method: "vietqr",
-    title: PAYMENT_METHOD_LABELS.vietqr,
-    shortLabel: "VietQR",
-    subtitle: "Quét mã QR ngân hàng, xác nhận đơn ngay lập tức",
-  },
-  {
-    id: "nexuspay",
-    method: WALLET_PAYMENT_METHOD,
-    title: PAYMENT_METHOD_LABELS[WALLET_PAYMENT_METHOD],
-    shortLabel: "Ví NexusPay",
-    subtitle: "Thanh toán nhanh bằng số dư ví NexusPay của bạn",
-  },
-  {
-    id: "linked_wallet",
-    method: WALLET_PAYMENT_METHOD,
-    title: "Ví điện tử liên kết",
-    shortLabel: "Ví liên kết",
-    subtitle: "Thanh toán qua ví nội địa đã liên kết, không cần nhập thẻ",
-  },
-  {
-    id: "cod",
-    method: "cod",
-    title: "Đổi sang thanh toán khi nhận hàng (COD)",
-    shortLabel: "COD",
-    subtitle: "Trả tiền khi nhận hàng, được mở kiểm tra mẫu và size",
-  },
-];
-
 export interface RetryPaymentBoxProps {
-  order: Order;
-  onCompleted?: () => void;
+  order: Order & { paymentId?: string };
+  paymentId?: string;
+  onCompleted?: (nextPayment?: GwPayment) => void;
   onCancel?: () => void;
 }
 
-export function RetryPaymentBox({ order, onCompleted, onCancel }: RetryPaymentBoxProps) {
-  const { retryOrderPayment } = useStore();
-  const [choice, setChoice] = useState<GatewayChoice>(
-    order.paymentMethod === "cod"
-      ? "vietqr"
-      : order.paymentMethod === WALLET_PAYMENT_METHOD
-        ? "nexuspay"
-        : "vietqr"
-  );
+export function RetryPaymentBox({ order, paymentId, onCompleted, onCancel }: RetryPaymentBoxProps) {
+  const router = useRouter();
+  const { showToast } = useStore();
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const selectedConfig = GATEWAY_CHOICES.find((c) => c.id === choice) ?? GATEWAY_CHOICES[0];
+  const targetPaymentId = (paymentId ?? order.paymentId ?? "").trim();
 
-  const handleConfirm = () => {
-    const ok = retryOrderPayment(order.id, selectedConfig.method);
-    if (ok) {
-      onCompleted?.();
+  const handleOpenWaiting = () => {
+    if (!targetPaymentId) return;
+    router.push(
+      `/thanh-toan/cho/${encodeURIComponent(targetPaymentId)}?order=${encodeURIComponent(order.id)}`
+    );
+  };
+
+  const handleCreateNewQr = async () => {
+    if (!targetPaymentId || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await api<{ payment: GwPayment }>(
+        `/api/payments/${encodeURIComponent(targetPaymentId)}/retry`,
+        {
+          method: "POST",
+          body: { method: "VIETQR" },
+        }
+      );
+      showToast("Đã tạo mã VietQR mới cho đơn hàng của bạn.");
+      onCompleted?.(res.payment);
+      if (res.payment?.payment_id) {
+        router.push(
+          `/thanh-toan/cho/${encodeURIComponent(res.payment.payment_id)}?order=${encodeURIComponent(order.id)}`
+        );
+      }
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : "Chưa thể tạo lại mã thanh toán lúc này. Bạn vui lòng thử lại."
+      );
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -81,7 +70,7 @@ export function RetryPaymentBox({ order, onCompleted, onCancel }: RetryPaymentBo
     >
       <div className={styles.retryHead}>
         <p className={styles.retryTitle}>
-          Đơn <span className="num">{order.orderCode}</span> đang chờ thanh toán lại
+          Đơn <span className="num">{order.orderCode}</span> đang chờ thanh toán VietQR
         </p>
         <span className={`${styles.statusTag} ${styles.toneWarn} num`}>
           Cần thanh toán: {formatVnd(order.total)}
@@ -89,40 +78,43 @@ export function RetryPaymentBox({ order, onCompleted, onCancel }: RetryPaymentBo
       </div>
 
       <p className={styles.retryText}>
-        Giao dịch trước đó chưa hoàn tất. Các sản phẩm đúng màu và size vẫn được giữ sẵn cho bạn
-        {order.paymentDueAt ? ` đến ${formatDateTimeVi(order.paymentDueAt)}` : ""}. Chọn phương thức
-        bên dưới để hoàn tất ngay mà không cần đặt lại giỏ hàng.
+        Sản phẩm đúng màu và size đang được giữ riêng cho bạn
+        {order.paymentDueAt ? ` đến ${formatDateTimeVi(order.paymentDueAt)}` : ""}. Mở lại trang mã
+        VietQR để chuyển khoản hoặc tạo mã mới nếu mã cũ đã hết hạn.
       </p>
 
-      <div
-        className={styles.retryMethods}
-        role="radiogroup"
-        aria-label="Chọn phương thức thanh toán lại"
-      >
-        {GATEWAY_CHOICES.map((gw) => {
-          const active = choice === gw.id;
-          return (
-            <button
-              key={gw.id}
-              type="button"
-              role="radio"
-              aria-checked={active}
-              className={`${styles.retryMethodBtn} ${active ? styles.retryMethodActive : ""}`}
-              onClick={() => setChoice(gw.id)}
-            >
-              <span className={styles.retryMethodName}>{gw.title}</span>
-              <span className={styles.retryMethodSub}>{gw.subtitle}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {choice === "vietqr" && <VietQrPreview amount={order.total} reference={order.orderCode} />}
+      {error && (
+        <p className={`${styles.feedbackBox} ${styles.feedbackError}`} role="alert">
+          {error}
+        </p>
+      )}
 
       <div className={styles.formActions}>
-        <Button variant="primary" size="md" className={styles.wrapBtn} onClick={handleConfirm}>
-          Thanh toán · {formatVnd(order.total)} ({selectedConfig.shortLabel})
-        </Button>
+        {targetPaymentId ? (
+          <>
+            <Button
+              variant="primary"
+              size="md"
+              className={styles.wrapBtn}
+              onClick={handleOpenWaiting}
+            >
+              Mở mã VietQR · {formatVnd(order.total)}
+            </Button>
+            <Button
+              variant="secondary"
+              size="md"
+              className={styles.wrapBtn}
+              disabled={submitting}
+              onClick={handleCreateNewQr}
+            >
+              {submitting ? "Đang tạo mã mới..." : "Tạo mã VietQR mới"}
+            </Button>
+          </>
+        ) : (
+          <Button variant="primary" size="md" href="/don-hang">
+            Kiểm tra trạng thái đơn hàng
+          </Button>
+        )}
         {onCancel && (
           <Button variant="secondary" size="md" onClick={onCancel}>
             Đóng

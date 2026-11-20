@@ -491,6 +491,29 @@ func (h *handler) handleSellerListOrders(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// handleSellerGetOrder fetches a single order belonging to the caller's shop (derived from JWT).
+func (h *handler) handleSellerGetOrder(w http.ResponseWriter, r *http.Request) {
+	shopID := auth.ShopIDFromContext(r.Context())
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Order.GetOrder(ctx, &orderv1.GetOrderRequest{
+		OrderId:     chi.URLParam(r, "id"),
+		ActorId:     auth.UserIDFromContext(r.Context()),
+		ActorRole:   auth.RoleFromContext(r.Context()),
+		ActorShopId: shopID,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	if resp.GetOrder() == nil || resp.GetOrder().GetShopId() != shopID {
+		httpx.WriteError(w, r, http.StatusForbidden, "PERMISSION_DENIED", "order does not belong to seller shop")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"order": mapOrder(resp.GetOrder())})
+}
+
 func (h *handler) handleSellerConfirmOrder(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()

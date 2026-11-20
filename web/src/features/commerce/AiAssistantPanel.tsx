@@ -4,9 +4,11 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { AI_SUGGESTED_PROMPTS, ORDER_STATUS_META, PRODUCTS, SHOPS, getShopById } from "@/data";
 import type { Order, Product } from "@/data";
+import { api } from "@/lib/api";
 import { BODY_SHAPE_LABELS, recommendSize, type BodyProfile } from "@/lib/sizing";
 import { formatDateTimeVi, formatVnd } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
+import { useSession } from "@/components/SessionProvider";
 import { Button } from "@/components/Button";
 import { IconClose, IconShield } from "@/components/Icons";
 import styles from "./OverlayPanel.module.css";
@@ -44,6 +46,17 @@ const SESSION_QUICK_CHIPS: QuickActionChip[] = [
   },
 ];
 
+function isOrderQuestion(prompt: string): boolean {
+  const lower = prompt.toLowerCase();
+  return (
+    /NMP?-\d{6}-\d{2,4}/i.test(prompt) ||
+    lower.includes("đơn") ||
+    lower.includes("vận chuyển") ||
+    lower.includes("trạng thái") ||
+    lower.includes("tra cứu")
+  );
+}
+
 function buildAiAnswer(
   prompt: string,
   orders: Order[],
@@ -52,14 +65,13 @@ function buildAiAnswer(
 ): { text: string; products: Product[]; orderRef?: Order; helpHref?: string } {
   const lower = prompt.toLowerCase();
 
-  // Check explicit order code typed by user (e.g. NM-261120-109)
-  const codeMatch = prompt.toUpperCase().match(/NMP?-\d{6}-\d{2,3}/);
+  const codeMatch = prompt.toUpperCase().match(/NMP?-[A-Z0-9-]+/);
   if (codeMatch) {
     if (!isAuthenticated) {
       return {
-        text: "Bạn chưa đăng nhập tài khoản. Hãy đăng nhập để trợ lý tra đơn của bạn, hoặc dùng trang Tra cứu đơn hàng bằng Mã đơn và Số điện thoại.",
+        text: "Bạn chưa đăng nhập tài khoản. Hãy đăng nhập để trợ lý tra cứu đơn hàng của riêng bạn.",
         products: [],
-        helpHref: "/tra-cuu-don-hang",
+        helpHref: "/dang-nhap",
       };
     }
     const found = orders.find(
@@ -82,13 +94,12 @@ function buildAiAnswer(
       };
     }
     return {
-      text: `Không tìm thấy mã ${codeMatch[0]} trong lịch sử đơn thuộc tài khoản của bạn. Nếu đặt không cần tài khoản, bạn có thể tra tại trang Tra cứu đơn hàng.`,
+      text: `Không tìm thấy mã ${codeMatch[0]} trong lịch sử đơn thuộc tài khoản của bạn.`,
       products: [],
-      helpHref: "/tra-cuu-don-hang",
+      helpHref: "/don-hang",
     };
   }
 
-  // Size recommendation from saved bodyProfile across all 4 shops
   if (lower.includes("hồ sơ số đo") || lower.includes("số đo hiện tại")) {
     const shapeInfo = BODY_SHAPE_LABELS[bodyProfile.shape];
     const shopSummaries = SHOPS.map((shop) => {
@@ -118,16 +129,14 @@ function buildAiAnswer(
     };
   }
 
-  // 45-day return & exchange policy
   if (lower.includes("45 ngày") || lower.includes("đổi trả") || lower.includes("hoàn tiền")) {
     return {
-      text: "NexusMart áp dụng đổi trả miễn phí trong 45 ngày (tối đa 3 lần/đơn): bưu tá đổi size 2 chiều tận nơi, hoàn chuyển khoản định kỳ vào Thứ 2 & Thứ 5 hằng tuần, và bù lẻ 1 chiếc tất thất lạc miễn phí từ Dệt Kim Hà Nội. Hàng Outlet, săn deal sốc và pack niêm phong không áp dụng đổi trả.",
+      text: "NexusMart áp dụng đổi trả miễn phí trong 45 ngày (tối đa 3 lần/đơn): bưu tá đổi size 2 chiều tận nơi, hoàn chuyển khoản định kỳ vào Thứ 2 & Thứ 5 hằng tuần. Hàng Outlet, săn deal sốc và pack niêm phong không áp dụng đổi trả.",
       products: [],
       helpHref: "/tro-giup",
     };
   }
 
-  // Exact match to suggested prompts first for crisp deterministic replies + real products
   const suggested = AI_SUGGESTED_PROMPTS.find((s) => s.prompt === prompt);
   if (suggested) {
     if (suggested.id === "ai-size") {
@@ -162,47 +171,14 @@ function buildAiAnswer(
         helpHref: "/hoi-vien",
       };
     }
-    if (suggested.id === "ai-order") {
-      if (!isAuthenticated) {
-        return {
-          text: "Bạn chưa đăng nhập tài khoản. Hãy đăng nhập để trợ lý kiểm tra đơn hàng của bạn hoặc mở trang Tra cứu đơn hàng.",
-          products: [],
-          helpHref: "/tra-cuu-don-hang",
-        };
-      }
-      const pendingPay = orders.find((o) => o.paymentStatus === "cho_thanh_toan");
-      const shipping =
-        orders.find((o) => o.status === "dang_giao") ??
-        pendingPay ??
-        orders.find((o) => o.status === "dang_chuan_bi") ??
-        orders[0];
-      if (!shipping) {
-        return {
-          text: "Tài khoản của bạn hiện chưa có đơn hàng nào.",
-          products: [],
-        };
-      }
-      const meta = ORDER_STATUS_META[shipping.status];
-      return {
-        text: `Đơn hàng ${shipping.orderCode} từ ${shipping.shopName} (tổng thanh toán ${formatVnd(shipping.total)}) hiện ở trạng thái ${meta.label}. Cập nhật gần nhất lúc ${formatDateTimeVi(shipping.updatedAt)}: ${shipping.timeline[shipping.timeline.length - 1]?.note ?? meta.description}`,
-        products: [],
-        orderRef: shipping,
-      };
-    }
   }
 
-  // Order lookup via user session
-  if (
-    lower.includes("đơn") ||
-    lower.includes("vận chuyển") ||
-    lower.includes("trạng thái") ||
-    lower.includes("tra cứu")
-  ) {
+  if (isOrderQuestion(prompt)) {
     if (!isAuthenticated) {
       return {
-        text: "Để bảo vệ riêng tư, trợ lý chỉ xem đơn thuộc tài khoản của bạn. Vui lòng đăng nhập tại trang Tài khoản hoặc dùng trang Tra cứu đơn hàng bằng Mã đơn và Số điện thoại.",
+        text: "Để bảo vệ riêng tư, trợ lý chỉ xem đơn thuộc tài khoản của bạn. Vui lòng đăng nhập để kiểm tra đơn hàng.",
         products: [],
-        helpHref: "/tra-cuu-don-hang",
+        helpHref: "/dang-nhap",
       };
     }
     const pendingPay = orders.find((o) => o.paymentStatus === "cho_thanh_toan");
@@ -213,23 +189,23 @@ function buildAiAnswer(
       orders[0];
     if (!targetOrder) {
       return {
-        text: "Tài khoản của bạn hiện chưa phát sinh đơn hàng nào trên NexusMart.",
+        text: "Tài khoản của bạn hiện chưa có đơn hàng nào trên NexusMart.",
         products: [],
+        helpHref: "/danh-muc",
       };
     }
     const meta = ORDER_STATUS_META[targetOrder.status];
     const pendingNote =
       targetOrder.paymentStatus === "cho_thanh_toan"
-        ? " Lưu ý: đơn này đang chờ thanh toán lại."
+        ? " Lưu ý: đơn này đang chờ hoàn tất thanh toán VietQR."
         : "";
     return {
-      text: `Tài khoản của bạn hiện có ${orders.length} đơn hàng. Đơn cần chú ý nhất là ${targetOrder.orderCode} (${targetOrder.shopName}), trạng thái ${meta.label}, tổng ${formatVnd(targetOrder.total)}.${pendingNote} Bạn cũng có thể nhập trực tiếp mã đơn (ví dụ NM-261120-104) để kiểm tra cụ thể.`,
+      text: `Tài khoản của bạn hiện có ${orders.length} đơn hàng. Đơn gần nhất là ${targetOrder.orderCode} (${targetOrder.shopName}), trạng thái ${meta.label}, tổng ${formatVnd(targetOrder.total)}.${pendingNote}`,
       products: [],
       orderRef: targetOrder,
     };
   }
 
-  // Height / weight size parser
   const kgMatch = lower.match(/(\d{2,3})\s*(kg|kí|cân)/);
   if (lower.includes("size") || lower.includes("cỡ") || kgMatch) {
     const kg = kgMatch ? Number(kgMatch[1]) : bodyProfile.weightKg;
@@ -247,7 +223,6 @@ function buildAiAnswer(
     };
   }
 
-  // Fabric comparison
   if (
     lower.includes("cotton") ||
     lower.includes("dry") ||
@@ -255,12 +230,11 @@ function buildAiAnswer(
     lower.includes("gsm")
   ) {
     return {
-      text: "Cotton Compact 220gsm (95% cotton chải kỹ, 5% spandex) đứng phom và mềm da cho mặc hằng ngày, còn Dry-Fit 145gsm (micro-mesh) thoát mồ hôi nhanh và khô trong khoảng 45 phút cho chạy bộ, tập gym.",
+      text: "Cotton Compact 220gsm (95% cotton chải kỹ, 5% spandex) đứng phom và mềm da cho mặc hằng ngày, còn Dry-Fit 145gsm (micro-mesh) thoát mồ hôi nhanh cho chạy bộ và tập gym.",
       products: PRODUCTS.filter((p) => ["prod-at-trang", "prod-at-dryfit"].includes(p.id)),
     };
   }
 
-  // Budget / combo query
   if (
     lower.includes("combo") ||
     lower.includes("600") ||
@@ -268,12 +242,11 @@ function buildAiAnswer(
     lower.includes("rẻ")
   ) {
     return {
-      text: "Gợi ý bộ đi làm gọn gàng dưới 600.000₫: Áo Polo Pique Cotton Kem nhạt (289.000₫) phối Quần Short Linen pha Cotton Xám đá (279.000₫), tổng 568.000₫ chưa tính mã giảm DANANG30 và NEXUS30.",
+      text: "Gợi ý bộ đi làm gọn gàng dưới 600.000₫: Áo Polo Pique Cotton Kem nhạt phối Quần Short Linen pha Cotton Xám đá.",
       products: PRODUCTS.filter((p) => ["prod-polo-kem", "prod-short-linen"].includes(p.id)),
     };
   }
 
-  // Keyword match across real PRODUCTS
   const matched = PRODUCTS.filter((p) => {
     const hay = `${p.name} ${p.categoryName} ${p.fabric} ${p.description}`.toLowerCase();
     return lower
@@ -284,7 +257,7 @@ function buildAiAnswer(
 
   if (matched.length > 0) {
     return {
-      text: `Mình tìm thấy ${matched.length} sản phẩm phù hợp nhất với yêu cầu "${prompt}" trên NexusMart. Bạn có thể xem chi tiết thông số vải hoặc thêm trực tiếp vào giỏ hàng:`,
+      text: `Mình tìm thấy ${matched.length} sản phẩm phù hợp với yêu cầu "${prompt}" trên NexusMart. Bạn có thể mở xem chi tiết chất liệu và chọn size:`,
       products: matched,
     };
   }
@@ -296,7 +269,8 @@ function buildAiAnswer(
 }
 
 export function AiAssistantPanel() {
-  const { aiOpen, closeAi, orders, isAuthenticated, bodyProfile, addToCart } = useStore();
+  const { aiOpen, closeAi, bodyProfile } = useStore();
+  const { isAuthenticated } = useSession();
   const [turns, setTurns] = useState<AiTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -336,12 +310,23 @@ export function AiAssistantPanel() {
 
   if (!aiOpen) return null;
 
-  const runPrompt = (promptText: string) => {
+  const runPrompt = async (promptText: string) => {
     const clean = promptText.trim();
     if (!clean) return;
     stopStreaming();
 
-    const answer = buildAiAnswer(clean, orders, isAuthenticated, bodyProfile);
+    // Fetch real buyer orders only under the user's own session cookie when an order question is asked
+    let liveOrders: Order[] = [];
+    if (isAuthenticated && isOrderQuestion(clean)) {
+      try {
+        const res = await api<{ items?: Order[] }>("/api/orders?page=1&page_size=20");
+        liveOrders = res.items ?? [];
+      } catch {
+        liveOrders = [];
+      }
+    }
+
+    const answer = buildAiAnswer(clean, liveOrders, isAuthenticated, bodyProfile);
     const userTurnId = `ai-u-${Date.now()}`;
     const assistantTurnId = `ai-a-${Date.now() + 1}`;
 
@@ -383,7 +368,7 @@ export function AiAssistantPanel() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    runPrompt(question);
+    void runPrompt(question);
   };
 
   const handleReset = () => {
@@ -429,7 +414,7 @@ export function AiAssistantPanel() {
         <div className={styles.noticeBar}>
           <IconShield size={16} className={styles.noticeIcon} />
           <span>
-            Hỗ trợ riêng tư theo tài khoản của bạn — chỉ đọc số đo và đơn hàng thuộc tài khoản đang
+            Hỗ trợ riêng tư theo tài khoản của bạn, chỉ đọc số đo và đơn hàng thuộc tài khoản đang
             đăng nhập.
           </span>
         </div>
@@ -443,7 +428,7 @@ export function AiAssistantPanel() {
                   key={chip.id}
                   type="button"
                   className={styles.quickChip}
-                  onClick={() => runPrompt(chip.prompt)}
+                  onClick={() => void runPrompt(chip.prompt)}
                 >
                   {chip.label}
                 </button>
@@ -459,7 +444,7 @@ export function AiAssistantPanel() {
                   key={item.id}
                   type="button"
                   className={styles.promptBtn}
-                  onClick={() => runPrompt(item.prompt)}
+                  onClick={() => void runPrompt(item.prompt)}
                 >
                   {item.label}
                 </button>
@@ -511,11 +496,15 @@ export function AiAssistantPanel() {
                     <Link href={turn.helpHref} className={styles.orderLinkAction} onClick={closeAi}>
                       {turn.helpHref === "/tro-giup"
                         ? "Trung tâm trợ giúp"
-                        : turn.helpHref === "/tra-cuu-don-hang"
-                          ? "Tra cứu đơn hàng"
-                          : turn.helpHref === "/hoi-vien"
-                            ? "Hội viên Nexus"
-                            : "Mở Hồ sơ số đo"}
+                        : turn.helpHref === "/dang-nhap"
+                          ? "Đăng nhập tài khoản"
+                          : turn.helpHref === "/don-hang"
+                            ? "Đơn hàng của tôi"
+                            : turn.helpHref === "/hoi-vien"
+                              ? "Hội viên Nexus"
+                              : turn.helpHref === "/danh-muc"
+                                ? "Khám phá sản phẩm"
+                                : "Mở Hồ sơ số đo"}
                     </Link>
                   </div>
                 )}
@@ -524,9 +513,6 @@ export function AiAssistantPanel() {
                   <div className={styles.recList}>
                     {turn.products.map((product) => {
                       const shop = getShopById(product.shopId);
-                      const sku =
-                        product.skus.find((s) => s.size === "L" && s.stock > 0) ??
-                        product.skus.find((s) => s.stock > 0);
                       return (
                         <div key={product.id} className={styles.recCard}>
                           <img
@@ -549,22 +535,14 @@ export function AiAssistantPanel() {
                               <strong className="num">{formatVnd(product.price)}</strong>
                             </span>
                           </div>
-                          {sku && (
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              onClick={() =>
-                                addToCart({
-                                  productId: product.id,
-                                  colorCode: sku.colorCode,
-                                  size: sku.size,
-                                  quantity: 1,
-                                })
-                              }
-                            >
-                              Thêm vào giỏ
-                            </Button>
-                          )}
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            href={`/san-pham/${product.slug}`}
+                            onClick={closeAi}
+                          >
+                            Xem mẫu
+                          </Button>
                         </div>
                       );
                     })}
@@ -590,7 +568,7 @@ export function AiAssistantPanel() {
             className={styles.input}
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
-            placeholder="Nhập mã đơn (NM-...), chiều cao cân nặng..."
+            placeholder="Nhập mã đơn, chiều cao cân nặng..."
             aria-label="Câu hỏi cho trợ lý AI"
           />
           <Button type="submit" variant="primary" size="md" disabled={!question.trim()}>

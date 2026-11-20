@@ -68,7 +68,9 @@ export async function errorFromResponse(res: Response): Promise<GatewayError> {
   let detail = "";
   let traceId = "";
   try {
-    const body = (await res.json()) as { error?: { code?: string; message?: string; trace_id?: string } };
+    const body = (await res.json()) as {
+      error?: { code?: string; message?: string; trace_id?: string };
+    };
     code = body.error?.code ?? "";
     detail = body.error?.message ?? "";
     traceId = body.error?.trace_id ?? "";

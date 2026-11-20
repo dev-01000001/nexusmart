@@ -4,18 +4,19 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import {
-  CAMPAIGNS,
-  CARE_GUIDE_LIBRARY,
-  getCampaignBySlug,
-  getProductById,
-  type Product,
-} from "@/data";
+import { CAMPAIGNS, CARE_GUIDE_LIBRARY, getCampaignBySlug, type Product, type Shop } from "@/data";
 import { WORKSHOP_MEDIA } from "@/data/media";
 import { formatDateVi, formatInt, formatPercent, formatVnd } from "@/lib/format";
 import { Button, ProductCard, StateView } from "@/components";
 import { useRevealObserver } from "@/features/catalog/useRevealObserver";
 import styles from "./page.module.css";
+
+export interface CampaignDetailClientProps {
+  slug: string;
+  products: Product[];
+  shops: Shop[];
+  loadError: string | null;
+}
 
 const TECH_TO_SUBTAB: Record<string, string> = {
   "tech-compact": "cotton-compact",
@@ -36,7 +37,12 @@ const HERO_HEADLINE_LINES: Record<string, [string, string]> = {
   "soi-xanh-nexus": ["Sợi Xanh Nexus", "góp áo ấm vùng cao"],
 };
 
-export function CampaignDetailClient({ slug }: { slug: string }) {
+export function CampaignDetailClient({
+  slug,
+  products,
+  shops,
+  loadError,
+}: CampaignDetailClientProps) {
   const searchParams = useSearchParams();
   const router = useRouter();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -44,6 +50,9 @@ export function CampaignDetailClient({ slug }: { slug: string }) {
 
   const stateParam = searchParams.get("state");
   const campaign = useMemo(() => getCampaignBySlug(slug), [slug]);
+
+  const productById = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
+  const shopById = useMemo(() => new Map(shops.map((s) => [s.id, s])), [shops]);
 
   const [activeSubTabId, setActiveSubTabId] = useState<string>(campaign?.subTabs[0]?.id ?? "all");
   const [statementShopFilter, setStatementShopFilter] = useState<string>("all");
@@ -76,8 +85,8 @@ export function CampaignDetailClient({ slug }: { slug: string }) {
   const displayedProducts = useMemo<Product[]>(() => {
     if (!campaign) return [];
     const ids = activeSubTab?.productIds ?? campaign.productIds;
-    return ids.map((id) => getProductById(id)).filter((p): p is Product => Boolean(p));
-  }, [activeSubTab, campaign]);
+    return ids.map((id) => productById.get(id)).filter((p): p is Product => Boolean(p));
+  }, [activeSubTab, campaign, productById]);
 
   const filteredStatementRows = useMemo(() => {
     const rows = campaign?.csrProgress?.statementRows ?? [];
@@ -108,15 +117,21 @@ export function CampaignDetailClient({ slug }: { slug: string }) {
     );
   }
 
-  if (stateParam === "error") {
+  if (stateParam === "error" || (loadError && products.length === 0)) {
     return (
       <div className={styles.page}>
         <StateView
           kind="error"
           title="Không thể tải trang chiến dịch lúc này"
-          message="Dữ liệu chiến dịch tạm thời gián đoạn. Vui lòng thử tải lại."
+          message={loadError ?? "Dữ liệu chiến dịch tạm thời gián đoạn. Vui lòng thử tải lại."}
           actionLabel="Tải lại chiến dịch"
-          onAction={() => router.replace(`/chien-dich/${slug}`)}
+          onAction={() => {
+            if (stateParam === "error") {
+              router.replace(`/chien-dich/${slug}`);
+            } else {
+              router.refresh();
+            }
+          }}
         />
       </div>
     );
@@ -141,6 +156,7 @@ export function CampaignDetailClient({ slug }: { slug: string }) {
   const csrRatio = csr ? Math.min(1, csr.currentRaisedVnd / Math.max(1, csr.targetVnd)) : 0;
   const statementShops = csr ? Array.from(new Set(csr.statementRows.map((r) => r.shopName))) : [];
   const heroLines = HERO_HEADLINE_LINES[campaign.slug] ?? [campaign.title, ""];
+  const liveCampaignProductCount = campaign.productIds.filter((id) => productById.has(id)).length;
 
   return (
     <div ref={rootRef} className={styles.page}>
@@ -156,7 +172,6 @@ export function CampaignDetailClient({ slug }: { slug: string }) {
         <span className={styles.crumbCurrent}>{campaign.title}</span>
       </nav>
 
-      {/* Campaign Hero */}
       <section className={styles.heroGrid} aria-label={`Chiến dịch ${campaign.title}`}>
         <div className={styles.heroInfo}>
           <h1 className={`${styles.title} lines`}>
@@ -186,7 +201,7 @@ export function CampaignDetailClient({ slug }: { slug: string }) {
             style={{ "--i": 3 } as React.CSSProperties}
           >
             <Button variant="primary" size="lg" href="#campaign-products-heading">
-              Xem {campaign.productIds.length} sản phẩm áp dụng
+              Xem {liveCampaignProductCount || campaign.productIds.length} sản phẩm áp dụng
             </Button>
             {csr ? (
               <Button variant="secondary" size="lg" href="#csr-statement-heading">
@@ -248,7 +263,6 @@ export function CampaignDetailClient({ slug }: { slug: string }) {
         </div>
       </section>
 
-      {/* Fabric Tech Showcase (cong-nghe-vai) — unboxed alternating editorial rows (zero card-rows) */}
       {campaign.kind === "fabric-tech" && campaign.fabricTechCards && (
         <section className={styles.techSection} aria-labelledby="fabric-tech-heading">
           <h2
@@ -315,7 +329,6 @@ export function CampaignDetailClient({ slug }: { slug: string }) {
         </section>
       )}
 
-      {/* CSR Progress Band (soi-xanh-nexus) — bold dark slate palette field */}
       {campaign.kind === "csr" && csr && (
         <section
           className={styles.csrSection}
@@ -383,7 +396,6 @@ export function CampaignDetailClient({ slug }: { slug: string }) {
         </section>
       )}
 
-      {/* Sub-tabs & Quick-Buy Product Grid */}
       <section className={styles.productsSection} aria-labelledby="campaign-products-heading">
         <div
           className={styles.sectionHeader}
@@ -401,6 +413,7 @@ export function CampaignDetailClient({ slug }: { slug: string }) {
         <div className={styles.subTabsBar} role="tablist" aria-label="Tab phân nhóm chiến dịch">
           {campaign.subTabs.map((tab) => {
             const selected = activeSubTab?.id === tab.id;
+            const liveCount = tab.productIds.filter((id) => productById.has(id)).length;
             return (
               <button
                 key={tab.id}
@@ -410,7 +423,7 @@ export function CampaignDetailClient({ slug }: { slug: string }) {
                 className={`${styles.tabBtn} ${selected ? styles.tabBtnActive : ""}`}
                 onClick={() => setActiveSubTabId(tab.id)}
               >
-                {tab.label} ({tab.productIds.length})
+                {tab.label} ({liveCount})
               </button>
             );
           })}
@@ -418,29 +431,38 @@ export function CampaignDetailClient({ slug }: { slug: string }) {
 
         {activeSubTab && <p className={styles.subTabDesc}>{activeSubTab.description}</p>}
 
-        <div className={styles.productGrid}>
-          {displayedProducts.map((product, idx) => (
-            <div
-              key={product.id}
-              data-cat-reveal=""
-              style={{ "--stagger": idx % 4 } as React.CSSProperties}
-            >
-              <ProductCard
-                product={product}
-                showSpec={true}
-                showSla={true}
-                showBadges={true}
-                showWishlist={true}
-                enableQuickAdd={true}
-                enableInteractiveSwatches={true}
-                priority={idx < 4}
-              />
-            </div>
-          ))}
-        </div>
+        {displayedProducts.length === 0 ? (
+          <StateView
+            kind="empty"
+            title="Chưa có sản phẩm khả dụng trong nhóm này"
+            actionLabel="Xem toàn bộ danh mục"
+            actionHref="/danh-muc"
+          />
+        ) : (
+          <div className={styles.productGrid}>
+            {displayedProducts.map((product, idx) => (
+              <div
+                key={product.id}
+                data-cat-reveal=""
+                style={{ "--stagger": idx % 4 } as React.CSSProperties}
+              >
+                <ProductCard
+                  product={product}
+                  shop={shopById.get(product.shopId)}
+                  showSpec={true}
+                  showSla={true}
+                  showBadges={true}
+                  showWishlist={true}
+                  enableQuickAdd={true}
+                  enableInteractiveSwatches={true}
+                  priority={idx < 4}
+                />
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
-      {/* CSR Statement Table (soi-xanh-nexus) */}
       {campaign.kind === "csr" && csr && (
         <section className={styles.statementSection} aria-labelledby="csr-statement-heading">
           <div
@@ -536,7 +558,6 @@ export function CampaignDetailClient({ slug }: { slug: string }) {
         </section>
       )}
 
-      {/* Fabric Care Library for fabric-tech campaign — unified accent-tint band, unboxed columns */}
       {campaign.kind === "fabric-tech" && (
         <section className={styles.careBand} aria-labelledby="campaign-care-heading">
           <h2
@@ -566,7 +587,6 @@ export function CampaignDetailClient({ slug }: { slug: string }) {
         </section>
       )}
 
-      {/* Link to companion campaign */}
       {otherCampaign && (
         <section
           className={styles.otherSection}

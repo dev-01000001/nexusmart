@@ -14,6 +14,8 @@ import {
 import { getInstantSearchSuggestions } from "@/lib/search";
 import { formatVnd } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
+import { useMockStore } from "@/mock/MockStoreContext";
+import { useSession } from "./SessionProvider";
 import {
   IconBag,
   IconChat,
@@ -27,6 +29,16 @@ import {
   NexusMark,
 } from "./Icons";
 import styles from "./ShopHeader.module.css";
+
+function getShortDisplayName(fullName: string, email: string): string {
+  const clean = fullName.trim();
+  if (clean) {
+    const parts = clean.split(/\s+/);
+    return parts.length <= 2 ? clean : parts.slice(-2).join(" ");
+  }
+  const local = email.split("@")[0]?.trim();
+  return local || "Tài khoản";
+}
 
 interface MegaEditorialConfig {
   title: string;
@@ -128,11 +140,14 @@ const MOBILE_CATEGORY_SECTIONS = [
 export function ShopHeader() {
   const pathname = usePathname();
   const router = useRouter();
-  const { cartCount, wishlist, openChat, openAi, openCookieModal, chatThreads } = useStore();
+  const { cartCount, wishlist, openChat, openAi, openCookieModal } = useStore();
+  const { chatThreads } = useMockStore();
+  const { user, isAuthenticated, loading: sessionLoading, logout } = useSession();
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openMobileGroup, setOpenMobileGroup] = useState<string>("mob-ao");
   const [megaOpen, setMegaOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [activeMegaGroupId, setActiveMegaGroupId] = useState<string>(MEGA_MENU_GROUPS[0].id);
   const [announcementIdx, setAnnouncementIdx] = useState(0);
   const [announcementVisible, setAnnouncementVisible] = useState(true);
@@ -150,6 +165,9 @@ export function ShopHeader() {
   const wishlistCount = wishlist.length;
   const buyerUnread = chatThreads.reduce((s, t) => s + t.unreadByBuyer, 0);
   const currentAnnouncement = ANNOUNCEMENT_BAR[announcementIdx % ANNOUNCEMENT_BAR.length];
+  const shortUserName = user ? getShortDisplayName(user.fullName, user.email) : "";
+  const isSeller = user?.role === "seller";
+  const isAdmin = user?.role === "admin" || user?.role === "super_admin";
 
   const activeMegaGroup = useMemo(
     () => MEGA_MENU_GROUPS.find((g) => g.id === activeMegaGroupId) ?? MEGA_MENU_GROUPS[0],
@@ -177,6 +195,7 @@ export function ShopHeader() {
   const openMegaMenu = () => {
     clearMegaCloseTimer();
     setSearchOpen(false);
+    setUserMenuOpen(false);
     setMegaOpen(true);
   };
 
@@ -198,6 +217,7 @@ export function ShopHeader() {
     setDrawerOpen(false);
     setMegaOpen(false);
     setSearchOpen(false);
+    setUserMenuOpen(false);
     setMobileSearchFocus(false);
   }, [pathname]);
 
@@ -215,6 +235,7 @@ export function ShopHeader() {
         clearMegaCloseTimer();
         setMegaOpen(false);
         setSearchOpen(false);
+        setUserMenuOpen(false);
         setDrawerOpen(false);
       }
     };
@@ -223,6 +244,7 @@ export function ShopHeader() {
         clearMegaCloseTimer();
         setMegaOpen(false);
         setSearchOpen(false);
+        setUserMenuOpen(false);
       }
     };
     document.addEventListener("keydown", onKeyDown);
@@ -232,6 +254,12 @@ export function ShopHeader() {
       document.removeEventListener("mousedown", onPointerDown);
     };
   }, []);
+
+  const handleLogout = async () => {
+    setUserMenuOpen(false);
+    setDrawerOpen(false);
+    await logout();
+  };
 
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
@@ -540,15 +568,114 @@ export function ShopHeader() {
                 <span className={styles.actionLabelWide}>Trợ lý AI</span>
               </button>
 
-              <Link
-                href="/tai-khoan"
-                className={`${styles.actionItem} ${isActive("/tai-khoan") ? styles.actionItemActive : ""}`}
-                aria-label="Tài khoản của tôi"
-                title="Tài khoản"
-              >
-                <IconUser size={17} />
-                <span className={styles.actionLabel}>Tài khoản</span>
-              </Link>
+              {isAuthenticated && user ? (
+                <div className={styles.userMenuWrap}>
+                  <button
+                    type="button"
+                    className={`${styles.actionItem} ${
+                      userMenuOpen || isActive("/tai-khoan") || isActive("/don-hang")
+                        ? styles.actionItemActive
+                        : ""
+                    }`}
+                    aria-expanded={userMenuOpen}
+                    aria-haspopup="menu"
+                    aria-controls="nexus-user-menu"
+                    aria-label={`Tài khoản ${user.fullName || user.email}`}
+                    title={user.fullName || user.email}
+                    onClick={() => {
+                      clearMegaCloseTimer();
+                      setMegaOpen(false);
+                      setSearchOpen(false);
+                      setUserMenuOpen((v) => !v);
+                    }}
+                  >
+                    <IconUser size={17} />
+                    <span className={`${styles.actionLabel} ${styles.userNameShort}`}>
+                      {shortUserName}
+                    </span>
+                    <IconChevronDown
+                      size={13}
+                      className={userMenuOpen ? styles.chevronOpen : styles.chevron}
+                    />
+                  </button>
+
+                  {userMenuOpen && (
+                    <div
+                      id="nexus-user-menu"
+                      className={styles.userDropdown}
+                      data-ui="user-menu"
+                      role="menu"
+                      aria-label="Tài khoản của tôi"
+                    >
+                      <div className={styles.userDropdownHeader}>
+                        <p className={styles.userDropdownName}>{user.fullName || "Thành viên"}</p>
+                        <p className={styles.userDropdownEmail}>{user.email}</p>
+                      </div>
+
+                      <div className={styles.userDropdownList}>
+                        <Link
+                          href="/tai-khoan"
+                          role="menuitem"
+                          className={styles.userDropdownLink}
+                          onClick={() => setUserMenuOpen(false)}
+                        >
+                          Tài khoản của tôi
+                        </Link>
+                        <Link
+                          href="/don-hang"
+                          role="menuitem"
+                          className={styles.userDropdownLink}
+                          onClick={() => setUserMenuOpen(false)}
+                        >
+                          Đơn hàng của tôi
+                        </Link>
+                        {isSeller && (
+                          <Link
+                            href="/seller"
+                            role="menuitem"
+                            className={`${styles.userDropdownLink} ${styles.userDropdownRoleLink}`}
+                            onClick={() => setUserMenuOpen(false)}
+                          >
+                            Kênh người bán
+                          </Link>
+                        )}
+                        {isAdmin && (
+                          <Link
+                            href="/admin"
+                            role="menuitem"
+                            className={`${styles.userDropdownLink} ${styles.userDropdownRoleLink}`}
+                            onClick={() => setUserMenuOpen(false)}
+                          >
+                            Cổng quản trị
+                          </Link>
+                        )}
+                      </div>
+
+                      <div className={styles.userDropdownFooter}>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className={styles.userLogoutBtn}
+                          onClick={handleLogout}
+                          disabled={sessionLoading}
+                        >
+                          {sessionLoading ? "Đang đăng xuất..." : "Đăng xuất"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <Link
+                  href="/dang-nhap"
+                  className={`${styles.actionItem} ${isActive("/dang-nhap") ? styles.actionItemActive : ""}`}
+                  aria-label="Đăng nhập tài khoản"
+                  title="Đăng nhập"
+                >
+                  <IconUser size={17} />
+                  <span className={styles.actionLabel}>Đăng nhập</span>
+                </Link>
+              )}
 
               <Link
                 href="/tai-khoan?tab=yeu-thich"
@@ -857,11 +984,11 @@ export function ShopHeader() {
                 Yêu thích ({wishlistCount})
               </Link>
               <Link
-                href="/tai-khoan"
+                href={isAuthenticated ? "/tai-khoan" : "/dang-nhap"}
                 className={styles.drawerQuickTile}
                 onClick={() => setDrawerOpen(false)}
               >
-                Tài khoản
+                {isAuthenticated ? "Tài khoản" : "Đăng nhập"}
               </Link>
             </div>
 
@@ -968,15 +1095,64 @@ export function ShopHeader() {
             </div>
 
             <div className={styles.drawerFooter}>
-              <Link href="/dang-nhap" className={styles.drawerSubLink}>
-                Đăng nhập / Đăng ký
-              </Link>
-              <Link href="/seller" className={styles.drawerSubLink}>
-                Kênh người bán
-              </Link>
-              <Link href="/admin" className={styles.drawerSubLink}>
-                Cổng Quản trị
-              </Link>
+              {isAuthenticated && user ? (
+                <>
+                  <div className={styles.drawerUserInfo}>
+                    <p className={styles.drawerUserName}>{user.fullName || "Thành viên"}</p>
+                    <p className={styles.drawerUserEmail}>{user.email}</p>
+                  </div>
+                  <Link
+                    href="/tai-khoan"
+                    className={styles.drawerSubLink}
+                    onClick={() => setDrawerOpen(false)}
+                  >
+                    Tài khoản của tôi
+                  </Link>
+                  {isSeller && (
+                    <Link
+                      href="/seller"
+                      className={`${styles.drawerSubLink} ${styles.drawerRoleLink}`}
+                      onClick={() => setDrawerOpen(false)}
+                    >
+                      Kênh người bán
+                    </Link>
+                  )}
+                  {isAdmin && (
+                    <Link
+                      href="/admin"
+                      className={`${styles.drawerSubLink} ${styles.drawerRoleLink}`}
+                      onClick={() => setDrawerOpen(false)}
+                    >
+                      Cổng quản trị
+                    </Link>
+                  )}
+                  <button
+                    type="button"
+                    className={styles.drawerLogoutBtn}
+                    onClick={handleLogout}
+                    disabled={sessionLoading}
+                  >
+                    {sessionLoading ? "Đang đăng xuất..." : "Đăng xuất"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <Link
+                    href="/dang-nhap"
+                    className={styles.drawerSubLink}
+                    onClick={() => setDrawerOpen(false)}
+                  >
+                    Đăng nhập
+                  </Link>
+                  <Link
+                    href="/dang-ky"
+                    className={styles.drawerSubLink}
+                    onClick={() => setDrawerOpen(false)}
+                  >
+                    Tạo tài khoản mới
+                  </Link>
+                </>
+              )}
             </div>
           </div>
         </div>

@@ -4,28 +4,37 @@ import React, { useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import {
-  COLLECTIONS,
-  getCollectionBySlug,
-  getProductById,
-  type Product,
-  type SizeCode,
-} from "@/data";
+import { COLLECTIONS, getCollectionBySlug, type Product, type Shop, type SizeCode } from "@/data";
 import { MODEL_SHOTS } from "@/data/media";
 import { Button, ProductCard, StateView } from "@/components";
 import { useRevealObserver } from "@/features/catalog/useRevealObserver";
 import styles from "./page.module.css";
 
+export interface CollectionDetailClientProps {
+  slug: string;
+  products: Product[];
+  shops: Shop[];
+  loadError: string | null;
+}
+
 type SortKey = "bestseller" | "newest" | "price-asc" | "price-desc";
 const QUICK_SIZES: SizeCode[] = ["S", "M", "L", "XL", "2XL"];
 
-export function CollectionDetailClient({ slug }: { slug: string }) {
+export function CollectionDetailClient({
+  slug,
+  products,
+  shops,
+  loadError,
+}: CollectionDetailClientProps) {
   const searchParams = useSearchParams();
   const router = useRouter();
   const rootRef = useRef<HTMLDivElement>(null);
 
   const stateParam = searchParams.get("state");
   const collection = useMemo(() => getCollectionBySlug(slug), [slug]);
+
+  const productById = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
+  const shopById = useMemo(() => new Map(shops.map((s) => [s.id, s])), [shops]);
 
   const [activeSubTabId, setActiveSubTabId] = useState<string>(collection?.subTabs[0]?.id ?? "all");
   const [selectedSize, setSelectedSize] = useState<SizeCode | "">("");
@@ -39,7 +48,7 @@ export function CollectionDetailClient({ slug }: { slug: string }) {
   const displayedProducts = useMemo<Product[]>(() => {
     if (!collection) return [];
     const ids = activeSubTab?.productIds ?? collection.productIds;
-    let list = ids.map((id) => getProductById(id)).filter((p): p is Product => Boolean(p));
+    let list = ids.map((id) => productById.get(id)).filter((p): p is Product => Boolean(p));
 
     if (selectedSize) {
       list = list.filter((p) => p.skus.some((s) => s.size === selectedSize && s.stock > 0));
@@ -60,7 +69,7 @@ export function CollectionDetailClient({ slug }: { slug: string }) {
       sorted.sort((a, b) => (a.salesRank ?? 99) - (b.salesRank ?? 99));
     }
     return sorted;
-  }, [activeSubTab, collection, selectedSize, sortBy]);
+  }, [activeSubTab, collection, productById, selectedSize, sortBy]);
 
   useRevealObserver(
     rootRef,
@@ -75,15 +84,21 @@ export function CollectionDetailClient({ slug }: { slug: string }) {
     );
   }
 
-  if (stateParam === "error") {
+  if (stateParam === "error" || (loadError && products.length === 0)) {
     return (
       <div className={styles.page}>
         <StateView
           kind="error"
           title="Không thể tải bộ sưu tập lúc này"
-          message="Dữ liệu bộ sưu tập tạm thời gián đoạn. Vui lòng tải lại trang."
+          message={loadError ?? "Dữ liệu bộ sưu tập tạm thời gián đoạn. Vui lòng tải lại trang."}
           actionLabel="Tải lại bộ sưu tập"
-          onAction={() => router.replace(`/bo-suu-tap/${slug}`)}
+          onAction={() => {
+            if (stateParam === "error") {
+              router.replace(`/bo-suu-tap/${slug}`);
+            } else {
+              router.refresh();
+            }
+          }}
         />
       </div>
     );
@@ -103,10 +118,11 @@ export function CollectionDetailClient({ slug }: { slug: string }) {
     );
   }
 
-  // Pick 2 distinct on-model shots that never duplicate the wide hero banner
-  const companionModels = collection.productIds
-    .map((id) => getProductById(id))
-    .filter((p): p is Product => Boolean(p))
+  const collectionProducts = collection.productIds
+    .map((id) => productById.get(id))
+    .filter((p): p is Product => Boolean(p));
+
+  const companionModels = collectionProducts
     .filter((p) => (p.onModelImage ?? p.image) !== collection.heroImage)
     .slice(0, 2);
 
@@ -164,7 +180,7 @@ export function CollectionDetailClient({ slug }: { slug: string }) {
             style={{ "--i": 3 } as React.CSSProperties}
           >
             <Button variant="primary" size="lg" href="#collection-grid-heading">
-              Xem {collection.productIds.length} sản phẩm
+              Xem {collectionProducts.length || collection.productIds.length} sản phẩm
             </Button>
             {collection.slug === "soi-xanh-nexus" && (
               <Button variant="secondary" size="lg" href="/chien-dich/soi-xanh-nexus">
@@ -189,28 +205,33 @@ export function CollectionDetailClient({ slug }: { slug: string }) {
               className={styles.heroBannerImg}
             />
           </div>
-          <div className={styles.heroModelRow}>
-            {companionModels.map((prod) => {
-              const src = prod.onModelImage ?? prod.image;
-              const isModel = src.startsWith("/models/");
-              return (
-                <Link key={prod.id} href={`/san-pham/${prod.slug}`} className={styles.heroSideTile}>
-                  <Image
-                    src={src}
-                    alt={MODEL_SHOTS[prod.id]?.alt ?? prod.name}
-                    fill
-                    priority
-                    sizes="(max-width: 1080px) 50vw, 24vw"
-                    className={isModel ? styles.heroModelImg : styles.heroBannerImg}
-                  />
-                </Link>
-              );
-            })}
-          </div>
+          {companionModels.length > 0 && (
+            <div className={styles.heroModelRow}>
+              {companionModels.map((prod) => {
+                const src = prod.onModelImage ?? prod.image;
+                const isModel = src.startsWith("/models/");
+                return (
+                  <Link
+                    key={prod.id}
+                    href={`/san-pham/${prod.slug}`}
+                    className={styles.heroSideTile}
+                  >
+                    <Image
+                      src={src}
+                      alt={MODEL_SHOTS[prod.id]?.alt ?? prod.name}
+                      fill
+                      priority
+                      sizes="(max-width: 1080px) 50vw, 24vw"
+                      className={isModel ? styles.heroModelImg : styles.heroBannerImg}
+                    />
+                  </Link>
+                );
+              })}
+            </div>
+          )}
         </div>
       </section>
 
-      {/* Sub-tabs + quick size/sort + balanced ProductCard grid */}
       <section className={styles.productsSection} aria-labelledby="collection-grid-heading">
         <div
           className={styles.sectionHeader}
@@ -230,6 +251,7 @@ export function CollectionDetailClient({ slug }: { slug: string }) {
         >
           {collection.subTabs.map((tab) => {
             const active = activeSubTab?.id === tab.id;
+            const liveCount = tab.productIds.filter((id) => productById.has(id)).length;
             return (
               <button
                 key={tab.id}
@@ -239,7 +261,7 @@ export function CollectionDetailClient({ slug }: { slug: string }) {
                 className={`${styles.tabBtn} ${active ? styles.tabBtnActive : ""}`}
                 onClick={() => setActiveSubTabId(tab.id)}
               >
-                {tab.label} ({tab.productIds.length})
+                {tab.label} ({liveCount})
               </button>
             );
           })}
@@ -292,9 +314,14 @@ export function CollectionDetailClient({ slug }: { slug: string }) {
         {displayedProducts.length === 0 ? (
           <StateView
             kind="empty"
-            title={`Chưa có mẫu còn hàng size ${selectedSize} trong nhóm này`}
-            actionLabel="Xem lại tất cả size"
-            onAction={() => setSelectedSize("")}
+            title={
+              selectedSize
+                ? `Chưa có mẫu còn hàng size ${selectedSize} trong nhóm này`
+                : "Chưa có sản phẩm trong nhóm này"
+            }
+            actionLabel={selectedSize ? "Xem lại tất cả size" : "Xem toàn bộ danh mục"}
+            onAction={selectedSize ? () => setSelectedSize("") : undefined}
+            actionHref={selectedSize ? undefined : "/danh-muc"}
           />
         ) : (
           <div className={gridClass}>
@@ -306,6 +333,7 @@ export function CollectionDetailClient({ slug }: { slug: string }) {
               >
                 <ProductCard
                   product={product}
+                  shop={shopById.get(product.shopId)}
                   showSpec={true}
                   showSla={true}
                   showBadges={true}
@@ -320,7 +348,6 @@ export function CollectionDetailClient({ slug }: { slug: string }) {
         )}
       </section>
 
-      {/* Care guide tips — accent-tint band */}
       <section
         className={styles.careSection}
         aria-labelledby="collection-care-heading"
@@ -339,7 +366,6 @@ export function CollectionDetailClient({ slug }: { slug: string }) {
         </ul>
       </section>
 
-      {/* Explore other collections — unboxed editorial strip */}
       <section className={styles.otherSection} aria-labelledby="other-collections-heading">
         <h2
           id="other-collections-heading"

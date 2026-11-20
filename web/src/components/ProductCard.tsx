@@ -3,22 +3,26 @@
 import React, { useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import {
   BADGE_LABELS,
   computeReviewSummary,
   getShopById,
   getSku,
   type Product,
+  type Shop,
   type SizeCode,
 } from "@/data";
 import { formatDiscountPercent } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { IconHeart, IconStar } from "./Icons";
 import { Price } from "./Price";
 import styles from "./ProductCard.module.css";
 
 export interface ProductCardProps {
   product: Product;
+  shop?: Shop;
   overridePrice?: number;
   overrideOriginalPrice?: number;
   quotaLabel?: string;
@@ -34,6 +38,7 @@ export interface ProductCardProps {
   maxVisibleSwatches?: number;
   isFlashSaleItem?: boolean;
   isShockDeal?: boolean;
+  flashSaleItemIdBySku?: Record<string, string>;
 }
 
 type ProductWithOnModel = Product & {
@@ -58,6 +63,7 @@ function getFallbackSampleRating(product: Product): { average: number; count: nu
 
 export function ProductCard({
   product,
+  shop: shopProp,
   overridePrice,
   overrideOriginalPrice,
   quotaLabel,
@@ -72,17 +78,22 @@ export function ProductCard({
   maxVisibleSwatches = 4,
   isFlashSaleItem = false,
   isShockDeal = false,
+  flashSaleItemIdBySku,
 }: ProductCardProps) {
-  const { addToCart, toggleWishlist, isWishlisted, reviews } = useStore();
+  const router = useRouter();
+  const pathname = usePathname();
+  const { addToCart, toggleWishlist, isWishlisted } = useStore();
+  const { reviews } = useMockStore();
   const [selectedColorCode, setSelectedColorCode] = useState<string>(product.colors[0]?.code ?? "");
   const [addedSize, setAddedSize] = useState<SizeCode | null>(null);
+  const [addingSize, setAddingSize] = useState<SizeCode | null>(null);
   const [hoverQuickOpen, setHoverQuickOpen] = useState(false);
   const [focusQuickOpen, setFocusQuickOpen] = useState(false);
   const [touchQuickOpen, setTouchQuickOpen] = useState(false);
 
   const showQuickOverlay = hoverQuickOpen || focusQuickOpen || touchQuickOpen || addedSize !== null;
 
-  const shop = getShopById(product.shopId);
+  const shop = shopProp ?? getShopById(product.shopId);
   const activeColor = useMemo(
     () => product.colors.find((c) => c.code === selectedColorCode) ?? product.colors[0],
     [product.colors, selectedColorCode]
@@ -106,6 +117,10 @@ export function ProductCard({
   const isComboProduct = Boolean(
     product.isCombo || (product.comboSlots && product.comboSlots.length > 0)
   );
+  const hasAnyInStockForColor = product.sizes.some((sz) => {
+    const sku = activeColor ? getSku(product, activeColor.code, sz) : undefined;
+    return Boolean(sku && sku.stock > 0 && sku.skuId);
+  });
 
   const ratingInfo = useMemo(() => {
     const summary = computeReviewSummary(reviews, product.id);
@@ -120,23 +135,35 @@ export function ProductCard({
       ? `/san-pham/${product.slug}?color=${encodeURIComponent(activeColor.code)}`
       : `/san-pham/${product.slug}`;
 
-  const handleQuickAdd = (size: SizeCode) => {
+  const handleQuickAdd = async (size: SizeCode) => {
+    if (addingSize !== null) return;
     const colorCode = activeColor?.code ?? product.colors[0]?.code;
     if (!colorCode) return;
-    const ok = addToCart({
-      productId: product.id,
-      colorCode,
-      size,
-      quantity: 1,
-      overridePrice,
-      isFlashSaleItem,
-      isShockDeal,
-    });
-    if (ok) {
-      setAddedSize(size);
-      window.setTimeout(() => {
-        setAddedSize((cur) => (cur === size ? null : cur));
-      }, 1500);
+    const sku = getSku(product, colorCode, size);
+    if (!sku || sku.stock <= 0 || !sku.skuId) return;
+
+    setAddingSize(size);
+    try {
+      const res = await addToCart({
+        skuId: sku.skuId,
+        quantity: 1,
+        flashSaleItemId: flashSaleItemIdBySku?.[sku.skuId],
+        productName: product.shortName,
+        size,
+      });
+      if (res.unauthenticated) {
+        const nextUrl = pathname || "/";
+        router.push(`/dang-nhap?next=${encodeURIComponent(nextUrl)}`);
+        return;
+      }
+      if (res.ok) {
+        setAddedSize(size);
+        window.setTimeout(() => {
+          setAddedSize((cur) => (cur === size ? null : cur));
+        }, 1500);
+      }
+    } finally {
+      setAddingSize(null);
     }
   };
 
@@ -221,10 +248,18 @@ export function ProductCard({
               <Link href={productHref} className={styles.comboLink}>
                 Chọn size combo
               </Link>
+            ) : !hasAnyInStockForColor ? (
+              <Link href={productHref} className={styles.comboLink}>
+                Tạm hết hàng
+              </Link>
             ) : (
               <>
                 <p className={styles.quickOverlayLabel}>
-                  {addedSize ? `Đã thêm size ${addedSize}` : "Thêm nhanh theo size"}
+                  {addedSize
+                    ? `Đã thêm size ${addedSize}`
+                    : addingSize
+                      ? "Đang thêm vào giỏ..."
+                      : "Thêm nhanh theo size"}
                 </p>
                 <div
                   className={styles.sizeButtons}
@@ -233,13 +268,13 @@ export function ProductCard({
                 >
                   {product.sizes.map((sz) => {
                     const sku = activeColor ? getSku(product, activeColor.code, sz) : undefined;
-                    const outOfStock = !sku || sku.stock <= 0;
+                    const outOfStock = !sku || sku.stock <= 0 || !sku.skuId;
                     const justAdded = addedSize === sz;
                     return (
                       <button
                         key={sz}
                         type="button"
-                        disabled={outOfStock}
+                        disabled={outOfStock || addingSize !== null}
                         className={`${styles.sizeBtn} ${justAdded ? styles.sizeBtnAdded : ""}`}
                         onClick={() => handleQuickAdd(sz)}
                         title={
@@ -329,7 +364,9 @@ export function ProductCard({
 
         {showSpec ? (
           <p className={styles.specLine}>
-            {shop?.shortName ?? "NexusMart"} · {product.gsm}gsm · {product.fit}
+            {shop?.shortName ?? "NexusMart"}
+            {product.gsm > 0 ? ` · ${product.gsm}gsm` : ""}
+            {product.fit ? ` · ${product.fit}` : ""}
           </p>
         ) : (
           <p className={styles.shopName}>{shop?.shortName ?? shop?.name ?? "NexusMart"}</p>
@@ -354,6 +391,10 @@ export function ProductCard({
             {isComboProduct ? (
               <Link href={productHref} className={styles.touchQuickBtn}>
                 Chọn size combo
+              </Link>
+            ) : !hasAnyInStockForColor ? (
+              <Link href={productHref} className={styles.touchQuickBtn}>
+                Tạm hết hàng
               </Link>
             ) : (
               <button

@@ -301,6 +301,27 @@ func (h *handler) handleListVouchers(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"vouchers": vouchers})
 }
 
+// handleSellerListVouchers lists SHOP vouchers scoped strictly to the caller's JWT shop_id.
+func (h *handler) handleSellerListVouchers(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Promotion.ListAvailableVouchers(ctx, &promotionv1.ListAvailableVouchersRequest{
+		UserId: auth.UserIDFromContext(r.Context()),
+		ShopId: auth.ShopIDFromContext(r.Context()),
+		Scope:  promotionv1.VoucherScope_VOUCHER_SCOPE_SHOP,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	vouchers := make([]*voucherDTO, 0, len(resp.GetVouchers()))
+	for _, v := range resp.GetVouchers() {
+		vouchers = append(vouchers, mapVoucher(v))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"vouchers": vouchers})
+}
+
 func (h *handler) handleSaveVoucher(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Code string `json:"code"`

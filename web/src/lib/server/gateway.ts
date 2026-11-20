@@ -1,7 +1,13 @@
 // Server-side client for the NexusMart REST gateway. Import only from server components,
 // route handlers and server actions.
 import { cookies, headers } from "next/headers";
-import { ACCESS_COOKIE, GATEWAY_TIMEOUT_MS, GATEWAY_URL, REFRESH_COOKIE, baseCookie } from "./config";
+import {
+  ACCESS_COOKIE,
+  GATEWAY_TIMEOUT_MS,
+  GATEWAY_URL,
+  REFRESH_COOKIE,
+  baseCookie,
+} from "./config";
 import { GatewayError, errorFromResponse } from "./errors";
 import { clearAuthCookies, rotateRefreshToken, setAuthCookies } from "./tokens";
 
@@ -86,7 +92,8 @@ function buildUrl(path: string, query?: GwOptions["query"]): string {
   const u = new URL(path.startsWith("/") ? path : `/${path}`, `${GATEWAY_URL}/`);
   for (const [k, v] of Object.entries(query ?? {})) {
     for (const item of Array.isArray(v) ? v : [v]) {
-      if (item !== undefined && item !== null && item !== "") u.searchParams.append(k, String(item));
+      if (item !== undefined && item !== null && item !== "")
+        u.searchParams.append(k, String(item));
     }
   }
   return `${GATEWAY_URL}${u.pathname}${u.search}`;

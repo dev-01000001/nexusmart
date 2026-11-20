@@ -1,18 +1,16 @@
 import React, { Suspense } from "react";
-import { COLLECTIONS } from "@/data";
+import { loadCatalog } from "@/lib/catalog";
 import { StateView } from "@/components";
 import { CollectionDetailClient } from "./CollectionDetailClient";
 
-export function generateStaticParams() {
-  return COLLECTIONS.map((c) => ({ slug: c.slug }));
-}
+export const dynamic = "force-dynamic";
 
 export default async function CollectionDetailPage({
   params,
 }: {
   params: Promise<{ slug: string }>;
 }) {
-  const { slug } = await params;
+  const [{ slug }, catalog] = await Promise.all([params, loadCatalog()]);
 
   return (
     <Suspense
@@ -22,7 +20,12 @@ export default async function CollectionDetailPage({
         </div>
       }
     >
-      <CollectionDetailClient slug={slug} />
+      <CollectionDetailClient
+        slug={slug}
+        products={catalog.products}
+        shops={catalog.shops}
+        loadError={catalog.error}
+      />
     </Suspense>
   );
 }

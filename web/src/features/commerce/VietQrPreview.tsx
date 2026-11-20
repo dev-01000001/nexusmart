@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo } from "react";
-import { formatVnd } from "@/lib/format";
+import { formatDateTimeVi, formatVnd } from "@/lib/format";
 import { Button } from "@/components/Button";
 import { useStore } from "@/context/StoreContext";
 import styles from "./commerce.module.css";
@@ -9,12 +9,25 @@ import styles from "./commerce.module.css";
 export interface VietQrPreviewProps {
   amount: number;
   reference: string;
+  qrCode?: string;
+  bankName?: string;
+  accountNo?: string;
+  accountName?: string;
+  expiresAt?: string;
 }
 
 /**
- * Crisp deterministic flat SVG VietQR preview in Frost & Slate palette (no card form).
+ * Crisp deterministic flat SVG VietQR display in Frost & Slate palette (no card form).
  */
-export function VietQrPreview({ amount, reference }: VietQrPreviewProps) {
+export function VietQrPreview({
+  amount,
+  reference,
+  qrCode,
+  bankName = "ACB · Chi nhánh TP. Hồ Chí Minh",
+  accountNo = "2026 8841 9001",
+  accountName = "Công ty TNHH NexusMart Việt Nam",
+  expiresAt,
+}: VietQrPreviewProps) {
   const { showToast } = useStore();
 
   const modules = useMemo(() => {
@@ -36,7 +49,7 @@ export function VietQrPreview({ amount, reference }: VietQrPreviewProps) {
     drawFinder(0, size - 7);
 
     let hash = 2166136261;
-    const seedStr = `${reference}-${amount}`;
+    const seedStr = `${qrCode || reference}-${amount}`;
     for (let i = 0; i < seedStr.length; i++) {
       hash ^= seedStr.charCodeAt(i);
       hash = Math.imul(hash, 16777619);
@@ -59,7 +72,7 @@ export function VietQrPreview({ amount, reference }: VietQrPreviewProps) {
     }
 
     return grid;
-  }, [amount, reference]);
+  }, [amount, qrCode, reference]);
 
   const handleCopy = async () => {
     try {
@@ -101,15 +114,15 @@ export function VietQrPreview({ amount, reference }: VietQrPreviewProps) {
       <div className={styles.qrInfo}>
         <div className={styles.qrRow}>
           <span className={styles.qrLabel}>Ngân hàng thụ hưởng</span>
-          <span className={styles.qrVal}>ACB · Chi nhánh TP. Hồ Chí Minh</span>
+          <span className={styles.qrVal}>{bankName}</span>
         </div>
         <div className={styles.qrRow}>
           <span className={styles.qrLabel}>Số tài khoản</span>
-          <span className={`${styles.qrVal} num`}>2026 8841 9001</span>
+          <span className={`${styles.qrVal} num`}>{accountNo}</span>
         </div>
         <div className={styles.qrRow}>
           <span className={styles.qrLabel}>Chủ tài khoản</span>
-          <span className={styles.qrVal}>Công ty TNHH NexusMart Việt Nam</span>
+          <span className={styles.qrVal}>{accountName}</span>
         </div>
         <div className={styles.qrRow}>
           <span className={styles.qrLabel}>Số tiền chuyển khoản</span>
@@ -119,14 +132,20 @@ export function VietQrPreview({ amount, reference }: VietQrPreviewProps) {
           <span className={styles.qrLabel}>Nội dung bắt buộc</span>
           <span className={`${styles.qrVal} num`}>{reference}</span>
         </div>
+        {expiresAt && (
+          <div className={styles.qrRow}>
+            <span className={styles.qrLabel}>Hạn thanh toán</span>
+            <span className={`${styles.qrVal} num`}>{formatDateTimeVi(expiresAt)}</span>
+          </div>
+        )}
         <div className={styles.formActions}>
           <Button variant="secondary" size="sm" onClick={handleCopy}>
             Sao chép nội dung
           </Button>
         </div>
         <p className={styles.qrNote}>
-          Mở ứng dụng ngân hàng để quét mã và xác nhận đơn tự động theo nội dung chuyển khoản, không
-          cần nhập số thẻ.
+          Mở ứng dụng ngân hàng để quét mã và chuyển khoản đúng số tiền cùng nội dung ở trên. Đơn
+          hàng sẽ tự động xác nhận ngay khi nhận được thanh toán.
         </p>
       </div>
     </div>

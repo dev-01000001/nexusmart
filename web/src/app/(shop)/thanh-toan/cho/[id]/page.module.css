@@ -1,0 +1,157 @@
+/* VietQR payment waiting sheet — Frost & Slate, dark status header + crisp white body */
+
+.sheet {
+  background: var(--surface-white);
+  max-width: 880px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.banner {
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  padding: clamp(22px, 2.8vw, 32px);
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.bannerLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.bannerTitle {
+  font-size: var(--step-lead);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--band-dark-ink);
+}
+
+.bannerMeta {
+  font-size: 16px;
+  color: var(--band-dark-muted);
+  line-height: 1.45;
+}
+
+.bannerAmountCol {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.bannerAmount {
+  font-size: var(--step-lead);
+  font-weight: 600;
+  color: var(--band-dark-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.body {
+  padding: clamp(22px, 2.8vw, 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.statusBar {
+  background: var(--accent-tint);
+  border-left: 4px solid var(--accent);
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.statusBarSuccess {
+  border-left-color: var(--positive);
+}
+
+.statusBarFailed {
+  border-left-color: var(--negative);
+}
+
+.statusTextGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.statusTitle {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+
+.statusSub {
+  font-size: 16px;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.countdown {
+  font-size: var(--step-lead);
+  font-weight: 600;
+  color: var(--ink-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.allocSection {
+  padding-top: 20px;
+  border-top: 2px solid var(--surface-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.allocHeading {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+
+.allocList {
+  display: flex;
+  flex-direction: column;
+}
+
+.allocRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 0;
+  border-bottom: 2px solid var(--surface-subtle);
+  font-size: 16px;
+  color: var(--ink);
+}
+
+.allocRow:last-child {
+  border-bottom: 0;
+}
+
+.orderLink {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.orderLink:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 768px) {
+  .bannerAmountCol {
+    align-items: flex-start;
+  }
+}

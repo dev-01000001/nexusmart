@@ -431,6 +431,10 @@ services:
       NODE_ENV: production
       PORT: "3000"
       GATEWAY_URL: http://gateway:8080
+      GATEWAY_TIMEOUT_MS: ${GATEWAY_TIMEOUT_MS:-8000}
+      COOKIE_SECURE: ${WEB_COOKIE_SECURE:-false}
+      APP_ORIGIN: ${WEB_APP_ORIGIN:-}
+      REFRESH_TOKEN_TTL_SECONDS: ${REFRESH_TOKEN_TTL_SECONDS:-604800}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "${WEB_PORT:-3300}:3000"

@@ -46,6 +46,7 @@ export interface GwOrder {
   id: string;
   order_code: string;
   checkout_group_id: string;
+  buyer_id?: string;
   shop_id: string;
   status: string;
   payment_method: string;
@@ -91,9 +92,11 @@ export interface OrderLookups {
 
 /** `Order` của UI cộng các trường chỉ có ở backend để quyết định nút thao tác. */
 export interface OrderView extends Order {
+  checkoutGroupId: string;
   backendStatus: string;
   paymentId: string;
   shopSlug?: string;
+  itemSkuIds: Record<string, string>;
   canCancel: boolean;
   canConfirmReceived: boolean;
   canRequestReturn: boolean;
@@ -259,9 +262,20 @@ export function mapGatewayOrder(o: GwOrder, lookups: OrderLookups): OrderView {
     if (ev.to_status.toUpperCase() === "RETURN_REQUESTED") returnReason = text.note;
   }
 
+  const rawItems = o.items ?? [];
+  const mappedItems = rawItems.map((it) => mapLine(it, lookups));
+  const itemSkuIds: Record<string, string> = {};
+  rawItems.forEach((raw, idx) => {
+    const line = mappedItems[idx];
+    if (line && raw.sku_id) {
+      itemSkuIds[line.skuCode] = raw.sku_id;
+    }
+  });
+
   return {
     id: o.id,
     orderCode: o.order_code,
+    checkoutGroupId: o.checkout_group_id,
     shopId: o.shop_id,
     shopName: shop?.name ?? "Gian hàng NexusMart",
     shopSlug: shop?.slug,
@@ -279,7 +293,8 @@ export function mapGatewayOrder(o: GwOrder, lookups: OrderLookups): OrderView {
     carrier: o.carrier_code.toUpperCase() === "GHN" ? "GHN" : undefined,
     createdAt: o.created_at ?? "",
     updatedAt: o.updated_at ?? o.created_at ?? "",
-    items: (o.items ?? []).map((it) => mapLine(it, lookups)),
+    items: mappedItems,
+    itemSkuIds,
     // Giá dòng đã là giá sau flash sale nên tạm tính hiển thị trừ luôn phần flash sale.
     subtotal: o.subtotal_vnd - o.flash_sale_discount_vnd,
     shippingFee: o.shipping_fee_vnd,

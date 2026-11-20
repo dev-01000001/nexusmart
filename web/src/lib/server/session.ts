@@ -41,13 +41,16 @@ export interface GatewayUser {
   phone_verified?: boolean;
 }
 
+const VALID_ROLES = new Set<Role>(["buyer", "seller", "admin", "super_admin"]);
+
 export function toSessionUser(u: GatewayUser): SessionUser {
+  const rawRole = u.role as Role | undefined;
   return {
     id: u.id,
     fullName: u.full_name ?? "",
     email: u.email ?? "",
     phone: u.phone ?? "",
-    role: (u.role as Role) || "buyer",
+    role: rawRole && VALID_ROLES.has(rawRole) ? rawRole : "buyer",
     status: u.status ?? "",
     shopId: u.shop_id ?? "",
     avatarUrl: u.avatar_url ?? "",

@@ -62,6 +62,40 @@
   text-underline-offset: 3px;
 }
 
+.otpInput {
+  letter-spacing: 0.18em;
+  font-weight: 600;
+}
+
+.noticeText {
+  font-size: var(--step-small);
+  color: var(--positive);
+  font-weight: 500;
+}
+
+.otpActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.textLinkBtn {
+  background: transparent;
+  color: var(--ink-secondary);
+  font-size: var(--step-small);
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  min-height: 36px;
+  padding: 0 4px;
+}
+
+.textLinkBtn:hover {
+  color: var(--accent);
+}
+
 /* Right editorial & member perks column */
 .showcaseCol {
   display: flex;

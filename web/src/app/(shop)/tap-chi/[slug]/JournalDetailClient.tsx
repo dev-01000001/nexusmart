@@ -61,15 +61,25 @@ function EmbeddedProductBuyCard({ product }: { product: Product }) {
       : (activeColor?.image ?? product.image);
   const isModelImg = previewSrc.startsWith("/models/");
 
-  const handleAdd = (goCheckout: boolean) => {
+  const handleAdd = async (goCheckout: boolean) => {
     if (!activeColor || outOfStock) return;
-    const ok = addToCart({
-      productId: product.id,
-      colorCode: activeColor.code,
-      size: resolvedSize,
+    if (!resolvedSku?.skuId) {
+      router.push(
+        `/san-pham/${product.slug}?color=${encodeURIComponent(activeColor.code)}&size=${encodeURIComponent(resolvedSize)}`
+      );
+      return;
+    }
+    const res = await addToCart({
+      skuId: resolvedSku.skuId,
       quantity: 1,
+      productName: product.shortName,
+      size: resolvedSize,
     });
-    if (ok && goCheckout) {
+    if (res.unauthenticated) {
+      router.push(`/dang-nhap?next=${encodeURIComponent(`/san-pham/${product.slug}`)}`);
+      return;
+    }
+    if (res.ok && goCheckout) {
       router.push("/thanh-toan");
     }
   };

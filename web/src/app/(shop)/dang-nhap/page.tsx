@@ -3,11 +3,14 @@
 import React, { Suspense, useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { DEMO_USER, PRODUCTS } from "@/data";
+import { useRouter, useSearchParams } from "next/navigation";
+import { PRODUCTS } from "@/data";
 import { MODEL_SHOTS } from "@/data/media";
+import { ApiError, api } from "@/lib/api";
+import { useSession, type SessionUser } from "@/components/SessionProvider";
 import { useStore } from "@/context/StoreContext";
 import { Button, StateView } from "@/components";
+import { safeNextPath } from "@/features/account/accountTypes";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./page.module.css";
@@ -29,15 +32,24 @@ const MEMBER_PERKS = [
 
 function LoginPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const viewState = usePageStateParam();
-  const { loginMock, isAuthenticated, user } = useStore();
+  const { user, isAuthenticated, setUser, logout } = useSession();
+  const { refreshCart, showToast } = useStore();
 
-  const [email, setEmail] = useState(DEMO_USER.email);
-  const [password, setPassword] = useState("NexusMart2026");
+  const nextParam = searchParams.get("next");
+  const nextTarget = safeNextPath(nextParam, "/tai-khoan");
+  const prefilledEmail = searchParams.get("email") ?? "";
+  const verifiedNotice = searchParams.get("verified") === "1";
+
+  const [email, setEmail] = useState(prefilledEmail);
+  const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [needsVerificationEmail, setNeedsVerificationEmail] = useState<string | null>(null);
 
-  useRevealOnScroll(viewState ?? "live");
+  useRevealOnScroll(`${viewState ?? "live"}-${isAuthenticated}`);
 
   const showcaseProducts = useMemo(
     () =>
@@ -49,7 +61,9 @@ function LoginPageContent() {
     []
   );
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const registerHref = nextParam ? `/dang-ky?next=${encodeURIComponent(nextTarget)}` : "/dang-ky";
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanEmail = email.trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
@@ -60,14 +74,32 @@ function LoginPageContent() {
       setError("Mật khẩu cần có tối thiểu 6 ký tự.");
       return;
     }
-    setError(null);
-    loginMock(cleanEmail);
-    router.push("/tai-khoan");
-  };
 
-  const handleDemoLogin = () => {
-    loginMock(DEMO_USER.email, DEMO_USER.fullName);
-    router.push("/tai-khoan");
+    setError(null);
+    setNeedsVerificationEmail(null);
+    setSubmitting(true);
+    try {
+      const res = await api<{ user: SessionUser }>("/api/auth/login", {
+        method: "POST",
+        body: { email: cleanEmail, password },
+      });
+      setUser(res.user);
+      void refreshCart();
+      showToast(`Chào mừng ${res.user.fullName || res.user.email} trở lại NexusMart.`);
+      router.push(nextTarget);
+      router.refresh();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.message);
+        if (err.code === "FAILED_PRECONDITION") {
+          setNeedsVerificationEmail(cleanEmail);
+        }
+      } else {
+        setError("Hệ thống đăng nhập đang bận. Bạn vui lòng thử lại sau.");
+      }
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (viewState === "loading") {
@@ -116,7 +148,7 @@ function LoginPageContent() {
         <section className={shared.pageHeader}>
           <div className={styles.authHeader}>
             <h1 className={shared.pageTitle}>Đăng nhập</h1>
-            <p className={styles.authLead}>Chưa có tài khoản nào được lưu trên trình duyệt này.</p>
+            <p className={styles.authLead}>Chưa có phiên đăng nhập nào đang mở.</p>
           </div>
         </section>
         <section className={shared.section}>
@@ -156,18 +188,36 @@ function LoginPageContent() {
               </p>
             </div>
 
-            {isAuthenticated && (
+            {verifiedNotice && (
+              <div className={styles.sessionBar} role="status">
+                <p className={styles.bodyText}>
+                  Tài khoản đã được xác thực thành công. Nhập mật khẩu bên dưới để đăng nhập.
+                </p>
+              </div>
+            )}
+
+            {isAuthenticated && user && (
               <div
                 className={styles.sessionBar}
                 data-rise=""
                 style={{ "--i": 2 } as React.CSSProperties}
               >
                 <p className={styles.bodyText}>
-                  Đang đăng nhập: <strong>{user.fullName}</strong> ({user.email}).
+                  Đang đăng nhập: <strong>{user.fullName || user.email}</strong> ({user.email}).
                 </p>
-                <Button variant="ink" size="sm" href="/tai-khoan">
-                  Vào trang Tài khoản
-                </Button>
+                <div className={shared.formActions}>
+                  <Button variant="ink" size="sm" href={nextTarget}>
+                    Tiếp tục
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void logout("/dang-nhap")}
+                  >
+                    Đăng xuất
+                  </Button>
+                </div>
               </div>
             )}
 
@@ -193,7 +243,8 @@ function LoginPageContent() {
                   className={shared.input}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="minhquan.nguyen@nexusmart.vn"
+                  placeholder="tenban@nexusmart.vn"
+                  disabled={submitting}
                   required
                 />
               </div>
@@ -215,6 +266,7 @@ function LoginPageContent() {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Nhập mật khẩu tài khoản"
+                    disabled={submitting}
                     required
                   />
                   <button
@@ -228,14 +280,24 @@ function LoginPageContent() {
               </div>
 
               {error && (
-                <p className={shared.fieldError} role="alert">
-                  {error}
-                </p>
+                <div role="alert" className={styles.errorStack}>
+                  <p className={shared.fieldError}>{error}</p>
+                  {needsVerificationEmail && (
+                    <Link
+                      href={`/dang-ky?step=otp&email=${encodeURIComponent(needsVerificationEmail)}${
+                        nextParam ? `&next=${encodeURIComponent(nextTarget)}` : ""
+                      }`}
+                      className={styles.switchLink}
+                    >
+                      Nhập mã xác thực email ngay
+                    </Link>
+                  )}
+                </div>
               )}
 
               <div data-rise="" style={{ "--i": 5 } as React.CSSProperties}>
-                <Button type="submit" variant="primary" size="lg" fullWidth>
-                  Đăng nhập vào NexusMart
+                <Button type="submit" variant="primary" size="lg" fullWidth disabled={submitting}>
+                  {submitting ? "Đang đăng nhập..." : "Đăng nhập vào NexusMart"}
                 </Button>
               </div>
 
@@ -245,33 +307,26 @@ function LoginPageContent() {
                 style={{ "--i": 6 } as React.CSSProperties}
               >
                 Chưa có tài khoản NexusMart?{" "}
-                <Link href="/dang-ky" className={styles.switchLink}>
+                <Link href={registerHref} className={styles.switchLink}>
                   Tạo tài khoản mới
                 </Link>{" "}
                 ·{" "}
                 <Link href="/tra-cuu-don-hang" className={styles.switchLink}>
-                  Tra cứu đơn không cần đăng nhập
+                  Tra cứu đơn hàng
                 </Link>
               </p>
             </form>
 
-            {/* Compact quick-try utility separated cleanly below the main login flow */}
             <div
               className={styles.quickAccess}
               data-rise=""
               style={{ "--i": 7 } as React.CSSProperties}
             >
-              <p className={styles.quickTitle}>Trải nghiệm nhanh</p>
+              <p className={styles.quickTitle}>An tâm mua sắm trực tiếp từ xưởng</p>
               <p className={styles.bodyText}>
-                Dùng sẵn tài khoản <strong>{DEMO_USER.fullName}</strong> với{" "}
-                <span className="num">42.000 Xu</span> và <span className="num">6</span> đơn hàng để
-                xem đầy đủ tính năng thành viên.
+                Đơn hàng, địa chỉ giao nhận và giỏ hàng được đồng bộ an toàn giữa các thiết bị khi
+                bạn đăng nhập.
               </p>
-              <div>
-                <Button type="button" variant="secondary" size="sm" onClick={handleDemoLogin}>
-                  Vào nhanh tài khoản thử
-                </Button>
-              </div>
             </div>
           </div>
 

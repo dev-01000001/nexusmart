@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
+	promotionv1 "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/logger"
@@ -54,6 +56,31 @@ func (f *fakeListProductClient) ListProducts(_ context.Context, in *productv1.Li
 	return &productv1.ListProductsResponse{Products: []*productv1.Product{{Id: "p1", ShopId: in.GetShopId()}}, Total: 1}, nil
 }
 
+type fakeSellerOrderClient struct {
+	orderv1.OrderServiceClient
+	orders map[string]*orderv1.Order
+}
+
+func (f *fakeSellerOrderClient) GetOrder(_ context.Context, in *orderv1.GetOrderRequest, _ ...grpc.CallOption) (*orderv1.GetOrderResponse, error) {
+	o, ok := f.orders[in.GetOrderId()]
+	if !ok {
+		return nil, status.Error(codes.NotFound, "order not found")
+	}
+	return &orderv1.GetOrderResponse{Order: o}, nil
+}
+
+type fakeSellerPromotionClient struct {
+	promotionv1.PromotionServiceClient
+	lastList *promotionv1.ListAvailableVouchersRequest
+}
+
+func (f *fakeSellerPromotionClient) ListAvailableVouchers(_ context.Context, in *promotionv1.ListAvailableVouchersRequest, _ ...grpc.CallOption) (*promotionv1.ListAvailableVouchersResponse, error) {
+	f.lastList = in
+	return &promotionv1.ListAvailableVouchersResponse{
+		Vouchers: []*promotionv1.Voucher{{Id: "v1", Code: "SHOP10", ShopId: in.GetShopId(), Scope: in.GetScope()}},
+	}, nil
+}
+
 func TestStorefrontShopVisibilityAndSellerScopes(t *testing.T) {
 	authMgr, err := auth.NewManager("router-test-secret", 15*time.Minute)
 	if err != nil {
@@ -75,9 +102,14 @@ func TestStorefrontShopVisibilityAndSellerScopes(t *testing.T) {
 		},
 	}}
 	products := &fakeListProductClient{}
+	orders := &fakeSellerOrderClient{orders: map[string]*orderv1.Order{
+		"ord-own":   {Id: "ord-own", BuyerId: "buyer-1", ShopId: "shop-active"},
+		"ord-other": {Id: "ord-other", BuyerId: "owner-1", ShopId: "shop-pending"},
+	}}
+	promos := &fakeSellerPromotionClient{}
 	h := New(Dependencies{
 		ServiceName: "gateway-router-test",
-		Clients:     &clients.Clients{User: users, Product: products, Timeout: 5 * time.Second},
+		Clients:     &clients.Clients{User: users, Product: products, Order: orders, Promotion: promos, Timeout: 5 * time.Second},
 		AuthManager: authMgr,
 		Logger:      logger.New("gateway-router-test", logger.WithWriter(io.Discard)),
 	})
@@ -155,5 +187,42 @@ func TestStorefrontShopVisibilityAndSellerScopes(t *testing.T) {
 	}
 	if code, _ := do(http.MethodGet, "/api/v1/seller/shop", ""); code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without token on seller/shop, got %d", code)
+	}
+
+	// Seller order detail: allows own shop's order, blocks another shop's order even if seller is buyer.
+	if code, body := do(http.MethodGet, "/api/v1/seller/orders/ord-own", sellerTok); code != http.StatusOK || body["order"] == nil {
+		t.Fatalf("expected 200 for seller own order, got %d %+v", code, body)
+	}
+	if code, _ := do(http.MethodGet, "/api/v1/seller/orders/ord-other", sellerTok); code != http.StatusForbidden {
+		t.Fatalf("expected 403 for seller accessing another shop's order, got %d", code)
+	}
+	if code, _ := do(http.MethodGet, "/api/v1/seller/orders/ord-own", buyerTok); code != http.StatusForbidden {
+		t.Fatalf("expected 403 for buyer on seller/orders/{id}, got %d", code)
+	}
+
+	// Seller vouchers: scoped to JWT shop_id & SHOP scope, ignoring query shop_id.
+	if code, _ := do(http.MethodGet, "/api/v1/seller/vouchers?shop_id=shop-pending", sellerTok); code != http.StatusOK ||
+		promos.lastList.GetShopId() != "shop-active" ||
+		promos.lastList.GetScope() != promotionv1.VoucherScope_VOUCHER_SCOPE_SHOP {
+		t.Fatalf("seller/vouchers: code=%d req=%+v", code, promos.lastList)
+	}
+	if code, _ := do(http.MethodGet, "/api/v1/seller/vouchers", buyerTok); code != http.StatusForbidden {
+		t.Fatalf("expected 403 for buyer on seller/vouchers, got %d", code)
+	}
+
+	// Admin products listing: RBAC strictly enforced at gateway.
+	if code, _ := do(http.MethodGet, "/api/v1/admin/products?status=PENDING", ""); code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without token on admin/products, got %d", code)
+	}
+	if code, _ := do(http.MethodGet, "/api/v1/admin/products?status=PENDING", buyerTok); code != http.StatusForbidden {
+		t.Fatalf("expected 403 for buyer on admin/products, got %d", code)
+	}
+	if code, _ := do(http.MethodGet, "/api/v1/admin/products?status=PENDING", sellerTok); code != http.StatusForbidden {
+		t.Fatalf("expected 403 for seller on admin/products, got %d", code)
+	}
+	if code, _ := do(http.MethodGet, "/api/v1/admin/products?status=PENDING&shop_id=shop-pending", adminTok); code != http.StatusOK ||
+		products.lastList.GetStatus() != productv1.ProductStatus_PRODUCT_STATUS_PENDING ||
+		products.lastList.GetShopId() != "shop-pending" {
+		t.Fatalf("admin/products: code=%d req=%+v", code, products.lastList)
 	}
 }

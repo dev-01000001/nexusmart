@@ -2,16 +2,8 @@
 
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
-import {
-  PRODUCTS,
-  getProductById,
-  getShopById,
-  getSku,
-  type CartComboSelection,
-  type Product,
-  type Shop,
-  type SizeCode,
-} from "@/data";
+import { useRouter } from "next/navigation";
+import { getSku, type CartComboSelection, type Product, type Shop, type SizeCode } from "@/data";
 import { useStore } from "@/context/StoreContext";
 import { Button, Price, ProductCard } from "@/components";
 import { formatVnd } from "@/lib/format";
@@ -20,6 +12,8 @@ import styles from "./PdpCrossSell.module.css";
 export interface PdpBundleSectionProps {
   product: Product;
   shop: Shop;
+  allProducts: Product[];
+  shops: Shop[];
   selectedColorCode: string;
   selectedSize: SizeCode;
   comboSelections?: CartComboSelection[];
@@ -38,22 +32,28 @@ function getDefaultInStockSize(p: Product): SizeCode {
 export function PdpBundleSection({
   product,
   shop,
+  allProducts,
+  shops,
   selectedColorCode,
   selectedSize,
-  comboSelections,
 }: PdpBundleSectionProps) {
+  const router = useRouter();
   const { addToCart, showToast } = useStore();
+  const [adding, setAdding] = useState(false);
+
+  const productById = useMemo(() => new Map(allProducts.map((p) => [p.id, p])), [allProducts]);
+  const shopById = useMemo(() => new Map(shops.map((s) => [s.id, s])), [shops]);
 
   const bundleProducts = useMemo(() => {
     const ids = product.bundleIds ?? [];
     const list: Product[] = [];
     for (const id of ids) {
       if (id === product.id) continue;
-      const found = getProductById(id);
+      const found = productById.get(id);
       if (found) list.push(found);
     }
     return list;
-  }, [product]);
+  }, [product, productById]);
 
   const [checkedIds, setCheckedIds] = useState<Record<string, boolean>>(() => {
     const init: Record<string, boolean> = {};
@@ -85,34 +85,51 @@ export function PdpBundleSection({
     }));
   };
 
-  const handleAddBundle = () => {
-    let addedCount = 0;
-    const okMain = addToCart({
-      productId: product.id,
-      colorCode: selectedColorCode,
-      size: selectedSize,
-      quantity: 1,
-      comboSelections,
-    });
-    if (okMain) addedCount += 1;
-
-    for (const item of selectedBundleItems) {
-      const sz = getSizeFor(item);
-      const colorCode = item.colors[0]?.code;
-      if (!colorCode) continue;
-      const ok = addToCart({
-        productId: item.id,
-        colorCode,
-        size: sz,
+  const handleAddBundle = async () => {
+    if (adding || !currentSku || currentSku.stock <= 0 || !currentSku.skuId) return;
+    setAdding(true);
+    try {
+      let addedCount = 0;
+      const mainRes = await addToCart({
+        skuId: currentSku.skuId,
         quantity: 1,
+        productName: product.shortName,
+        size: selectedSize,
       });
-      if (ok) addedCount += 1;
-    }
+      if (mainRes.unauthenticated) {
+        router.push(`/dang-nhap?next=${encodeURIComponent(`/san-pham/${product.slug}`)}`);
+        return;
+      }
+      if (mainRes.ok) addedCount += 1;
 
-    if (addedCount > 1) {
-      showToast(`Đã thêm bộ ${addedCount} sản phẩm vào giỏ hàng.`);
+      for (const item of selectedBundleItems) {
+        const sz = getSizeFor(item);
+        const colorCode = item.colors[0]?.code;
+        if (!colorCode) continue;
+        const itemSku = getSku(item, colorCode, sz);
+        if (!itemSku || itemSku.stock <= 0 || !itemSku.skuId) continue;
+        const res = await addToCart({
+          skuId: itemSku.skuId,
+          quantity: 1,
+          productName: item.shortName,
+          size: sz,
+        });
+        if (res.unauthenticated) {
+          router.push(`/dang-nhap?next=${encodeURIComponent(`/san-pham/${product.slug}`)}`);
+          return;
+        }
+        if (res.ok) addedCount += 1;
+      }
+
+      if (addedCount > 1) {
+        showToast(`Đã thêm bộ ${addedCount} sản phẩm vào giỏ hàng.`);
+      }
+    } finally {
+      setAdding(false);
     }
   };
+
+  const canAddMain = Boolean(currentSku && currentSku.stock > 0 && currentSku.skuId);
 
   return (
     <section className={styles.bundleSection} aria-labelledby="pdp-bundle-heading">
@@ -156,7 +173,7 @@ export function PdpBundleSection({
           </div>
 
           {bundleProducts.map((item) => {
-            const itemShop = getShopById(item.shopId);
+            const itemShop = shopById.get(item.shopId);
             const checked = isChecked(item.id);
             const chosenSize = getSizeFor(item);
             const sameShop = item.shopId === product.shopId;
@@ -208,11 +225,18 @@ export function PdpBundleSection({
                         }
                         className={styles.bundleSizeSelect}
                       >
-                        {item.sizes.map((sz) => (
-                          <option key={sz} value={sz}>
-                            Size {sz}
-                          </option>
-                        ))}
+                        {item.sizes.map((sz) => {
+                          const sku = item.colors[0]
+                            ? getSku(item, item.colors[0].code, sz)
+                            : undefined;
+                          const oos = !sku || sku.stock <= 0;
+                          return (
+                            <option key={sz} value={sz} disabled={oos}>
+                              Size {sz}
+                              {oos ? " (Hết hàng)" : ""}
+                            </option>
+                          );
+                        })}
                       </select>
                     </label>
                     <Price amount={item.price} originalAmount={item.originalPrice} size="sm" />
@@ -237,10 +261,10 @@ export function PdpBundleSection({
             variant="primary"
             size="lg"
             fullWidth
-            disabled={currentSku ? currentSku.stock <= 0 : true}
+            disabled={!canAddMain || adding}
             onClick={handleAddBundle}
           >
-            Thêm {totalSelectedCount} món vào giỏ
+            {adding ? "Đang thêm vào giỏ..." : `Thêm ${totalSelectedCount} món vào giỏ`}
           </Button>
         </aside>
       </div>
@@ -251,18 +275,28 @@ export function PdpBundleSection({
 export interface PdpRecommendationsSectionProps {
   product: Product;
   shop: Shop;
+  allProducts: Product[];
+  shops: Shop[];
 }
 
-export function PdpRecommendationsSection({ product, shop }: PdpRecommendationsSectionProps) {
+export function PdpRecommendationsSection({
+  product,
+  shop,
+  allProducts,
+  shops,
+}: PdpRecommendationsSectionProps) {
   const { recentlyViewed, clearRecentlyViewed } = useStore();
 
+  const productById = useMemo(() => new Map(allProducts.map((p) => [p.id, p])), [allProducts]);
+  const shopById = useMemo(() => new Map(shops.map((s) => [s.id, s])), [shops]);
+
   const sameShopProducts = useMemo(
-    () => PRODUCTS.filter((p) => p.id !== product.id && p.shopId === product.shopId).slice(0, 4),
-    [product.id, product.shopId]
+    () => allProducts.filter((p) => p.id !== product.id && p.shopId === product.shopId).slice(0, 4),
+    [allProducts, product.id, product.shopId]
   );
 
   const similarOnPlatform = useMemo(() => {
-    const others = PRODUCTS.filter((p) => p.id !== product.id && p.shopId !== product.shopId);
+    const others = allProducts.filter((p) => p.id !== product.id && p.shopId !== product.shopId);
     const scored = others.map((candidate) => {
       let score = 0;
       if (candidate.categorySlug === product.categorySlug) score += 4;
@@ -276,18 +310,18 @@ export function PdpRecommendationsSection({ product, shop }: PdpRecommendationsS
     });
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, 4).map((x) => x.candidate);
-  }, [product]);
+  }, [allProducts, product]);
 
   const recentProducts = useMemo(() => {
     const list: Product[] = [];
     for (const id of recentlyViewed) {
       if (id === product.id) continue;
-      const found = getProductById(id);
+      const found = productById.get(id);
       if (found) list.push(found);
       if (list.length >= 4) break;
     }
     return list;
-  }, [recentlyViewed, product.id]);
+  }, [recentlyViewed, product.id, productById]);
 
   const gridClassFor = (count: number) => {
     if (count === 3) return `${styles.cardGrid} ${styles.cardGridThree}`;
@@ -311,7 +345,7 @@ export function PdpRecommendationsSection({ product, shop }: PdpRecommendationsS
           <div className={gridClassFor(sameShopProducts.length)}>
             {sameShopProducts.map((rel) => (
               <div key={rel.id}>
-                <ProductCard product={rel} showSpec={true} showSla={true} />
+                <ProductCard product={rel} shop={shop} showSpec={true} showSla={true} />
               </div>
             ))}
           </div>
@@ -332,7 +366,12 @@ export function PdpRecommendationsSection({ product, shop }: PdpRecommendationsS
           <div className={gridClassFor(similarOnPlatform.length)}>
             {similarOnPlatform.map((rel) => (
               <div key={rel.id}>
-                <ProductCard product={rel} showSpec={true} showSla={true} />
+                <ProductCard
+                  product={rel}
+                  shop={shopById.get(rel.shopId)}
+                  showSpec={true}
+                  showSla={true}
+                />
               </div>
             ))}
           </div>
@@ -358,14 +397,14 @@ export function PdpRecommendationsSection({ product, shop }: PdpRecommendationsS
               theo sẽ tự động xuất hiện tại đây để dễ so sánh chất liệu và giá.
             </p>
             <Button variant="secondary" size="md" href="/danh-muc">
-              Xem toàn bộ 18 mẫu cơ bản
+              Xem toàn bộ {allProducts.length} mẫu cơ bản
             </Button>
           </div>
         ) : (
           <div className={gridClassFor(recentProducts.length)}>
             {recentProducts.map((rel) => (
               <div key={rel.id}>
-                <ProductCard product={rel} showSpec={true} />
+                <ProductCard product={rel} shop={shopById.get(rel.shopId)} showSpec={true} />
               </div>
             ))}
           </div>

@@ -1,8 +1,13 @@
 import React, { Suspense } from "react";
 import { StateView } from "@/components";
 import { CatalogExplorer } from "@/features/catalog/CatalogExplorer";
+import { loadCatalog } from "@/lib/catalog";
 
-export default function CatalogPage() {
+export const dynamic = "force-dynamic";
+
+export default async function CatalogPage() {
+  const { products, categories, shops, error } = await loadCatalog();
+
   return (
     <Suspense
       fallback={
@@ -11,7 +16,13 @@ export default function CatalogPage() {
         </div>
       }
     >
-      <CatalogExplorer mode="catalog" />
+      <CatalogExplorer
+        mode="catalog"
+        products={products}
+        categories={categories}
+        shops={shops}
+        loadError={error}
+      />
     </Suspense>
   );
 }

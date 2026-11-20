@@ -5,19 +5,16 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   CARE_GUIDE_LIBRARY,
-  CATEGORIES,
   FABRIC_FEATURE_LABELS,
   FIT_LABELS,
   GENDER_LABELS,
   MATERIAL_LABELS,
   OCCASION_LABELS,
   PATTERN_LABELS,
-  PRODUCTS,
-  SHOPS,
   SPORT_LABELS,
   TRENDING_KEYWORDS,
-  getShopById,
   matchesGenderFilter,
+  type CategoryInfo,
   type CategorySlug,
   type FabricFeatureCode,
   type FitCode,
@@ -26,6 +23,7 @@ import {
   type OccasionCode,
   type PatternCode,
   type Product,
+  type Shop,
   type SizeCode,
   type SportCode,
 } from "@/data";
@@ -36,6 +34,10 @@ import styles from "./CatalogExplorer.module.css";
 
 export interface CatalogExplorerProps {
   mode: "catalog" | "search";
+  products: Product[];
+  categories: CategoryInfo[];
+  shops: Shop[];
+  loadError?: string | null;
 }
 
 type SortKey = "bestseller" | "newest" | "price-asc" | "price-desc";
@@ -165,6 +167,7 @@ function matchPriceBucket(price: number, bucket: PriceBucket): boolean {
 function applyStructuredFilters(
   basePool: Product[],
   filters: ActiveFilters,
+  shopById: Map<string, Shop>,
   omitKey?: keyof ActiveFilters
 ): Product[] {
   const activeColorGroup =
@@ -181,7 +184,7 @@ function applyStructuredFilters(
       return false;
     }
     if (omitKey !== "origin" && filters.origin) {
-      const shop = getShopById(product.shopId);
+      const shop = shopById.get(product.shopId);
       if (shop?.provinceCode !== filters.origin) return false;
     }
     if (omitKey !== "size" && filters.size) {
@@ -219,11 +222,19 @@ function applyStructuredFilters(
   });
 }
 
-export function CatalogExplorer({ mode }: CatalogExplorerProps) {
+export function CatalogExplorer({
+  mode,
+  products,
+  categories,
+  shops,
+  loadError,
+}: CatalogExplorerProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const rootRef = useRef<HTMLDivElement>(null);
+
+  const shopById = useMemo(() => new Map(shops.map((s) => [s.id, s])), [shops]);
 
   const qParam = searchParams.get("q") ?? "";
   const genderParam = (searchParams.get("gender") ?? "") as GenderCode | "";
@@ -383,12 +394,12 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
   // Query search pool (supports non-diacritic input & Vietnamese apparel synonyms)
   const searchPool = useMemo(() => {
     const trimmed = qParam.trim();
-    if (!trimmed) return PRODUCTS;
-    return searchProducts(trimmed, PRODUCTS);
-  }, [qParam]);
+    if (!trimmed) return products;
+    return searchProducts(trimmed, products);
+  }, [products, qParam]);
 
   const filteredProducts = useMemo<Product[]>(() => {
-    const list = applyStructuredFilters(searchPool, filters);
+    const list = applyStructuredFilters(searchPool, filters, shopById);
     const sorted = [...list];
     if (sortParam === "price-asc") {
       sorted.sort((a, b) => a.price - b.price);
@@ -401,11 +412,10 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
         return bTime - aTime || Number(Boolean(b.isNew)) - Number(Boolean(a.isNew));
       });
     } else {
-      // bestseller
       sorted.sort((a, b) => (a.salesRank ?? 99) - (b.salesRank ?? 99));
     }
     return sorted;
-  }, [filters, searchPool, sortParam]);
+  }, [filters, searchPool, shopById, sortParam]);
 
   const visibleProducts = useMemo(
     () => filteredProducts.slice(0, visibleCount),
@@ -414,19 +424,19 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
 
   // Live faceted counts for each filter group
   const facets = useMemo(() => {
-    const poolGender = applyStructuredFilters(searchPool, filters, "gender");
-    const poolCat = applyStructuredFilters(searchPool, filters, "cat");
-    const poolSize = applyStructuredFilters(searchPool, filters, "size");
-    const poolColor = applyStructuredFilters(searchPool, filters, "color");
-    const poolPrice = applyStructuredFilters(searchPool, filters, "price");
-    const poolMaterial = applyStructuredFilters(searchPool, filters, "material");
-    const poolFit = applyStructuredFilters(searchPool, filters, "fit");
-    const poolOccasion = applyStructuredFilters(searchPool, filters, "occasion");
-    const poolSport = applyStructuredFilters(searchPool, filters, "sport");
-    const poolFeature = applyStructuredFilters(searchPool, filters, "feature");
-    const poolPattern = applyStructuredFilters(searchPool, filters, "pattern");
-    const poolShop = applyStructuredFilters(searchPool, filters, "shop");
-    const poolOrigin = applyStructuredFilters(searchPool, filters, "origin");
+    const poolGender = applyStructuredFilters(searchPool, filters, shopById, "gender");
+    const poolCat = applyStructuredFilters(searchPool, filters, shopById, "cat");
+    const poolSize = applyStructuredFilters(searchPool, filters, shopById, "size");
+    const poolColor = applyStructuredFilters(searchPool, filters, shopById, "color");
+    const poolPrice = applyStructuredFilters(searchPool, filters, shopById, "price");
+    const poolMaterial = applyStructuredFilters(searchPool, filters, shopById, "material");
+    const poolFit = applyStructuredFilters(searchPool, filters, shopById, "fit");
+    const poolOccasion = applyStructuredFilters(searchPool, filters, shopById, "occasion");
+    const poolSport = applyStructuredFilters(searchPool, filters, shopById, "sport");
+    const poolFeature = applyStructuredFilters(searchPool, filters, shopById, "feature");
+    const poolPattern = applyStructuredFilters(searchPool, filters, shopById, "pattern");
+    const poolShop = applyStructuredFilters(searchPool, filters, shopById, "shop");
+    const poolOrigin = applyStructuredFilters(searchPool, filters, shopById, "origin");
 
     const gender: Record<GenderCode, number> = {
       nam: poolGender.filter((p) => matchesGenderFilter(p, "nam")).length,
@@ -435,7 +445,7 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
     };
 
     const cat: Record<string, number> = {};
-    for (const c of CATEGORIES) {
+    for (const c of categories) {
       cat[c.slug] = poolCat.filter((p) => p.categorySlug === c.slug).length;
     }
 
@@ -498,14 +508,14 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
     }
 
     const shop: Record<string, number> = {};
-    for (const s of SHOPS) {
+    for (const s of shops) {
       shop[s.id] = poolShop.filter((p) => p.shopId === s.id).length;
     }
 
     const origin: Record<string, number> = {};
     for (const o of ORIGIN_OPTIONS) {
       origin[o.code] = poolOrigin.filter(
-        (p) => getShopById(p.shopId)?.provinceCode === o.code
+        (p) => shopById.get(p.shopId)?.provinceCode === o.code
       ).length;
     }
 
@@ -525,13 +535,13 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
       origin,
       allCatTotal: poolCat.length,
     };
-  }, [filters, searchPool]);
+  }, [categories, filters, searchPool, shopById, shops]);
 
   // Marketplace-wide matches if currently filtered by a single shop with 0 results
   const marketplaceFallbackCount = useMemo(() => {
     if (!shopParam || filteredProducts.length > 0) return 0;
-    return applyStructuredFilters(searchPool, filters, "shop").length;
-  }, [filteredProducts.length, filters, searchPool, shopParam]);
+    return applyStructuredFilters(searchPool, filters, shopById, "shop").length;
+  }, [filteredProducts.length, filters, searchPool, shopById, shopParam]);
 
   const spellingSuggestion = useMemo(() => {
     if (!qParam.trim() || filteredProducts.length > 0) return null;
@@ -540,8 +550,8 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
 
   useRevealObserver(rootRef, `${filterSignature}|${visibleCount}|${stateParam ?? ""}`);
 
-  const activeCategory = CATEGORIES.find((c) => c.slug === catParam);
-  const activeShop = SHOPS.find((s) => s.id === shopParam);
+  const activeCategory = categories.find((c) => c.slug === catParam);
+  const activeShop = shops.find((s) => s.id === shopParam);
   const activeColor = COLOR_GROUPS.find((c) => c.id === colorParam);
   const activePrice = PRICE_OPTIONS.find((p) => p.id === priceParam && p.id !== "all");
   const activeOrigin = ORIGIN_OPTIONS.find((o) => o.code === originParam);
@@ -575,7 +585,7 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
       ? "Tìm nhanh theo tên sản phẩm, chất liệu vải, phom dáng hoặc xưởng dệt."
       : activeCategory
         ? activeCategory.description
-        : "18 mẫu đồ basic nam nữ từ bốn xưởng dệt Việt Nam, cập nhật còn hàng theo màu và size.";
+        : `${products.length} mẫu đồ basic nam nữ từ các xưởng dệt Việt Nam, cập nhật còn hàng theo màu và size.`;
 
   const shownRatio =
     filteredProducts.length > 0
@@ -621,7 +631,6 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
 
   const renderFilterGroups = (idPrefix: string) => (
     <>
-      {/* Primary groups: open by default (Danh mục, Kích cỡ, Mức giá) */}
       {renderAccordionSection(
         idPrefix,
         "cat",
@@ -637,7 +646,7 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
             <span>Tất cả sản phẩm</span>
             <span className={styles.optionCount}>{facets.allCatTotal}</span>
           </button>
-          {CATEGORIES.map((cat) => {
+          {categories.map((cat) => {
             const active = catParam === cat.slug;
             const count = facets.cat[cat.slug] ?? 0;
             return (
@@ -712,7 +721,6 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
         </div>
       )}
 
-      {/* Secondary groups: collapsed by default */}
       {renderAccordionSection(
         idPrefix,
         "color",
@@ -757,12 +765,12 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
             onClick={() => updateParams({ shop: null })}
             aria-pressed={!shopParam}
           >
-            <span>Tất cả 4 xưởng</span>
+            <span>Tất cả {shops.length} xưởng</span>
             <span className={styles.optionCount}>
               {Object.values(facets.shop).reduce((s, n) => s + n, 0)}
             </span>
           </button>
-          {SHOPS.map((shop) => {
+          {shops.map((shop) => {
             const active = shopParam === shop.id;
             const count = facets.shop[shop.id] ?? 0;
             return (
@@ -1025,7 +1033,7 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
 
             <div className={styles.searchMetaRow}>
               <span className={styles.countText}>
-                Khớp {filteredProducts.length} / {PRODUCTS.length} sản phẩm
+                Khớp {filteredProducts.length} / {products.length} sản phẩm
               </span>
               <div className={styles.desktopControls}>
                 <button
@@ -1093,7 +1101,7 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
             <span>Tất cả</span>
             <span className={styles.catCount}>{facets.allCatTotal}</span>
           </button>
-          {CATEGORIES.map((cat) => {
+          {categories.map((cat) => {
             const count = facets.cat[cat.slug] ?? 0;
             const active = catParam === cat.slug;
             return (
@@ -1221,13 +1229,16 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
 
             {stateParam === "loading" ? (
               <StateView kind="loading" title="Đang tải danh mục sản phẩm..." rows={6} />
-            ) : stateParam === "error" ? (
+            ) : loadError || stateParam === "error" ? (
               <StateView
                 kind="error"
                 title="Không thể tải danh mục lúc này"
-                message="Kết nối danh mục tạm thời gián đoạn. Vui lòng thử tải lại danh sách."
+                message={
+                  loadError ??
+                  "Kết nối danh mục tạm thời gián đoạn. Vui lòng thử tải lại danh sách."
+                }
                 actionLabel="Tải lại danh mục"
-                onAction={() => updateParams({ state: null })}
+                onAction={() => (loadError ? router.refresh() : updateParams({ state: null }))}
               />
             ) : stateParam === "empty" || filteredProducts.length === 0 ? (
               <div className={styles.emptyBox}>
@@ -1309,6 +1320,7 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
                     >
                       <ProductCard
                         product={product}
+                        shop={shopById.get(product.shopId)}
                         showSpec={true}
                         showSla={true}
                         showBadges={true}

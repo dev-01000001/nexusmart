@@ -102,14 +102,14 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 16px;
   min-height: 72px;
 }
 
 .leftCluster {
   display: flex;
   align-items: center;
-  gap: 28px;
+  gap: 20px;
   min-width: 0;
   flex: none;
 }
@@ -133,7 +133,7 @@
 .navDesktop {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 16px;
 }
 
 .navLink,
@@ -171,9 +171,9 @@
 /* Wider instant search */
 .searchWrap {
   position: relative;
-  flex: 1 1 240px;
-  max-width: 360px;
-  min-width: 190px;
+  flex: 1 1 200px;
+  max-width: 340px;
+  min-width: 150px;
 }
 
 .searchForm {
@@ -397,7 +397,7 @@
 .actionsDesktop {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   flex: none;
 }
 
@@ -405,9 +405,9 @@
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   min-height: 38px;
-  padding: 0 8px;
+  padding: 0 6px;
   font-size: 14px;
   font-weight: 500;
   color: var(--ink);
@@ -445,9 +445,9 @@
 .cartAction {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-height: 40px;
-  padding: 0 12px;
+  padding: 0 10px;
   background: var(--surface);
   color: var(--ink);
   font-size: 14px;
@@ -483,6 +483,117 @@
   border-radius: 50%;
   background: var(--accent);
   flex: none;
+}
+
+/* Authenticated user dropdown (flat frost-and-slate surface, 1px hairline) */
+.userMenuWrap {
+  position: relative;
+}
+
+.userNameShort {
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.userDropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 248px;
+  background: var(--surface-white);
+  outline: 1px solid var(--border);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+}
+
+.userDropdownHeader {
+  padding: 12px 14px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.userDropdownName {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.userDropdownEmail {
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.userDropdownList {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+}
+
+.userDropdownLink {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 10px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.userDropdownLink:hover {
+  background: var(--surface);
+  color: var(--accent);
+}
+
+.userDropdownRoleLink {
+  color: var(--accent);
+}
+
+.userDropdownRoleLink:hover {
+  background: var(--accent-tint);
+  color: var(--accent-tint-ink);
+}
+
+.userDropdownFooter {
+  background: var(--bg);
+  padding: 6px;
+}
+
+.userLogoutBtn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 10px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-secondary);
+  text-align: left;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.userLogoutBtn:hover:not(:disabled) {
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+}
+
+.userLogoutBtn:disabled {
+  opacity: 0.6;
 }
 
 /* Mega-menu panel */
@@ -943,21 +1054,60 @@
   background: var(--surface);
 }
 
-@media (max-width: 1320px) {
+.drawerUserInfo {
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  background: var(--surface-white);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.drawerUserName {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.drawerUserEmail {
+  font-size: 13px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.drawerRoleLink {
+  color: var(--accent);
+}
+
+.drawerLogoutBtn {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--negative);
+  text-align: left;
+}
+
+.drawerLogoutBtn:disabled {
+  opacity: 0.6;
+}
+
+@media (max-width: 1360px) {
   .actionLabelWide {
     display: none;
   }
 
   .leftCluster {
-    gap: 20px;
-  }
-
-  .navDesktop {
     gap: 16px;
   }
 
+  .navDesktop {
+    gap: 14px;
+  }
+
   .actionsDesktop {
-    gap: 8px;
+    gap: 4px;
   }
 }
 
@@ -967,7 +1117,7 @@
   }
 
   .searchWrap {
-    min-width: 170px;
+    min-width: 140px;
     max-width: 260px;
   }
 

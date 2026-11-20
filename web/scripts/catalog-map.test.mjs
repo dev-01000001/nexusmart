@@ -3,12 +3,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildCatalogLookups,
   buildFlashSlots,
+  checkLiveVoucher,
+  createTtlCache,
+  filterStorefrontShops,
+  findProductByParam,
+  findShopByParam,
   markFlashProducts,
   mergeCategories,
   mergeProducts,
   mergeShops,
   mergeVouchers,
+  pickDefaultFlashSlot,
+  secondsUntilSlotEdge,
 } from "../src/lib/catalog-map.ts";
 
 const contentCategories = [
@@ -205,7 +213,20 @@ test("mergeVouchers keeps copy for known codes and real quota", () => {
         remaining_quota: 10,
       },
     ],
-    [{ code: "NEXUS10", title: "Giảm 10%", description: "copy", scope: "platform", discountType: "percent", discountValue: 15, minOrderValue: 1, expiresAt: "", remainingUses: 1, totalUses: 1 }],
+    [
+      {
+        code: "NEXUS10",
+        title: "Giảm 10%",
+        description: "copy",
+        scope: "platform",
+        discountType: "percent",
+        discountValue: 15,
+        minOrderValue: 1,
+        expiresAt: "",
+        remainingUses: 1,
+        totalUses: 1,
+      },
+    ],
     new Map([["u-1", "shop-bach-dang"]])
   );
   assert.equal(vouchers[0].title, "Giảm 10%");
@@ -242,10 +263,42 @@ test("buildFlashSlots groups SKU items per product with VN clock and status", ()
         starts_at: "2026-11-20T05:00:00Z",
         ends_at: "2026-11-20T08:00:00Z",
         items: [
-          { id: "i-1", sku_id: "s-1", flash_price_vnd: 149000, total_slots: 10, remaining_slots: 4, per_user_limit: 2, status: "APPROVED" },
-          { id: "i-2", sku_id: "s-2", flash_price_vnd: 139000, total_slots: 5, remaining_slots: 5, per_user_limit: 1, status: "APPROVED" },
-          { id: "i-3", sku_id: "s-x", flash_price_vnd: 1, total_slots: 1, remaining_slots: 1, per_user_limit: 1, status: "APPROVED" },
-          { id: "i-4", sku_id: "s-1", flash_price_vnd: 1, total_slots: 1, remaining_slots: 1, per_user_limit: 1, status: "PENDING" },
+          {
+            id: "i-1",
+            sku_id: "s-1",
+            flash_price_vnd: 149000,
+            total_slots: 10,
+            remaining_slots: 4,
+            per_user_limit: 2,
+            status: "APPROVED",
+          },
+          {
+            id: "i-2",
+            sku_id: "s-2",
+            flash_price_vnd: 139000,
+            total_slots: 5,
+            remaining_slots: 5,
+            per_user_limit: 1,
+            status: "APPROVED",
+          },
+          {
+            id: "i-3",
+            sku_id: "s-x",
+            flash_price_vnd: 1,
+            total_slots: 1,
+            remaining_slots: 1,
+            per_user_limit: 1,
+            status: "APPROVED",
+          },
+          {
+            id: "i-4",
+            sku_id: "s-1",
+            flash_price_vnd: 1,
+            total_slots: 1,
+            remaining_slots: 1,
+            per_user_limit: 1,
+            status: "PENDING",
+          },
         ],
       },
     ],
@@ -267,4 +320,267 @@ test("buildFlashSlots groups SKU items per product with VN clock and status", ()
   assert.equal(item.remainingQuota, 9);
   assert.deepEqual(item.itemIdBySku, { "s-1": "i-1", "s-2": "i-2" });
   assert.equal(markFlashProducts(products, slots)[0].isFlashSale, true);
+  assert.equal(pickDefaultFlashSlot(slots)?.id, "fs-12");
+  assert.equal(pickDefaultFlashSlot(slots, "fs-18")?.id, "fs-18");
+  assert.equal(secondsUntilSlotEdge(slots[0], now), 2.5 * 3600);
+  assert.equal(secondsUntilSlotEdge(slots[1], now), 5.5 * 3600);
+});
+
+test("mergeProducts keeps OUT_OF_STOCK products with 0 available_stock", () => {
+  const categories = mergeCategories(gwCategories, contentCategories);
+  const products = mergeProducts(
+    [
+      {
+        id: "p-oos",
+        shop_id: "u-1",
+        category_id: "cat-1",
+        name: "Áo hết hàng",
+        status: "OUT_OF_STOCK",
+        skus: [sku("s-oos", "BD-AT01-TRANG-S", 179000, 0)],
+      },
+      {
+        id: "p-pending",
+        shop_id: "u-1",
+        category_id: "cat-1",
+        name: "Chưa duyệt",
+        status: "PENDING",
+        skus: [sku("s-pend", "BD-AT01-TRANG-M", 179000, 10)],
+      },
+    ],
+    { content: [contentProduct], categories, shopIdByBackend: new Map([["u-1", "shop-bach-dang"]]) }
+  );
+  assert.equal(products.length, 1);
+  assert.equal(products[0].skus[0].stock, 0);
+  assert.equal(products[0].skus[0].skuId, "s-oos");
+});
+
+test("buildCatalogLookups and find helpers resolve by slug, id, backendId and skuId", () => {
+  const shop = { ...contentShop, backendId: "u-1" };
+  const prod = {
+    ...contentProduct,
+    backendId: "p-1",
+    skus: [{ ...contentProduct.skus[0], skuId: "s-1" }],
+  };
+  assert.equal(findProductByParam([prod], "ao-thun-cotton-trang")?.id, "prod-at-trang");
+  assert.equal(findProductByParam([prod], "p-1")?.id, "prod-at-trang");
+  assert.equal(findShopByParam([shop], "xuong-det-bach-dang")?.id, "shop-bach-dang");
+  assert.equal(findShopByParam([shop], "u-1")?.id, "shop-bach-dang");
+  const lookups = buildCatalogLookups([prod], [shop]);
+  assert.equal(lookups.product("p-1")?.slug, "ao-thun-cotton-trang");
+  assert.equal(lookups.shop("u-1")?.slug, "xuong-det-bach-dang");
+  assert.equal(lookups.productBySkuId("s-1")?.id, "prod-at-trang");
+});
+
+test("checkLiveVoucher validates real quota, min order, expiry, shop scope and discount cap", () => {
+  const now = Date.parse("2026-11-20T05:00:00Z");
+  const voucher = {
+    id: "v-1",
+    code: "NEXUS10",
+    title: "Giảm 10%",
+    description: "",
+    scope: "platform",
+    discountType: "percent",
+    discountValue: 10,
+    maxDiscount: 60000,
+    minOrderValue: 500000,
+    expiresAt: "2026-12-01T00:00:00Z",
+    remainingUses: 5,
+    totalUses: 100,
+  };
+  assert.equal(checkLiveVoucher(voucher, { eligibleAmount: 300000, nowMs: now }).valid, false);
+  assert.deepEqual(checkLiveVoucher(voucher, { eligibleAmount: 800000, nowMs: now }), {
+    valid: true,
+    discount: 60000,
+  });
+  assert.equal(
+    checkLiveVoucher({ ...voucher, remainingUses: 0 }, { eligibleAmount: 800000, nowMs: now })
+      .valid,
+    false
+  );
+  assert.equal(
+    checkLiveVoucher(
+      { ...voucher, expiresAt: "2026-11-19T00:00:00Z" },
+      { eligibleAmount: 800000, nowMs: now }
+    ).valid,
+    false
+  );
+});
+
+test("filterStorefrontShops, mergeVouchers, and buildFlashSlots isolate storefront data from foreign E2E fixtures", () => {
+  const shops = mergeShops(
+    [
+      { id: "u-1", name: "Xưởng Dệt Bạch Đằng", status: "ACTIVE" },
+      { id: "u-new", name: "Xưởng Mới Có Hàng", status: "ACTIVE" },
+      { id: "u-e2e", name: "NexusShop-seller1-deadbeef", status: "ACTIVE" },
+    ],
+    [contentShop]
+  );
+  const filteredShops = filterStorefrontShops(
+    shops,
+    [
+      { ...contentProduct, shopId: "shop-bach-dang" },
+      { ...contentProduct, id: "p-2", shopId: "u-new" },
+    ],
+    [contentShop]
+  );
+  assert.deepEqual(
+    filteredShops.map((s) => s.id),
+    ["shop-bach-dang", "u-new"]
+  );
+
+  const allowedShopIds = new Set(filteredShops.map((s) => s.id));
+  const vouchers = mergeVouchers(
+    [
+      {
+        id: "v-e2e",
+        code: "PLA123",
+        name: "E2E PLATFORM Voucher",
+        scope: "PLATFORM",
+        discount_type: "FIXED",
+        value_vnd: 25000,
+        discount_percent: 0,
+        max_discount_vnd: 25000,
+        min_order_vnd: 100000,
+        quota: 5,
+        remaining_quota: 5,
+      },
+      {
+        id: "v-e2e-shop",
+        code: "SHP123",
+        name: "Shop khác",
+        scope: "SHOP",
+        shop_id: "u-e2e",
+        discount_type: "FIXED",
+        value_vnd: 10000,
+        discount_percent: 0,
+        max_discount_vnd: 10000,
+        min_order_vnd: 0,
+        quota: 5,
+        remaining_quota: 5,
+      },
+      {
+        id: "v-custom",
+        code: "CUSTOM5",
+        name: "Ưu đãi mới",
+        scope: "PLATFORM",
+        discount_type: "FIXED",
+        value_vnd: 5000,
+        discount_percent: 0,
+        max_discount_vnd: 5000,
+        min_order_vnd: 0,
+        quota: 10,
+        remaining_quota: 10,
+      },
+      {
+        id: "v-known",
+        code: "NEXUS30",
+        name: "Giảm 30k",
+        scope: "PLATFORM",
+        discount_type: "FIXED",
+        value_vnd: 30000,
+        discount_percent: 0,
+        max_discount_vnd: 30000,
+        min_order_vnd: 300000,
+        quota: 500,
+        remaining_quota: 499,
+      },
+    ],
+    [
+      {
+        code: "NEXUS30",
+        title: "Giảm 30.000₫ toàn sàn",
+        description: "desc",
+        scope: "platform",
+        discountType: "fixed",
+        discountValue: 30000,
+        minOrderValue: 300000,
+        expiresAt: "",
+        remainingUses: 500,
+        totalUses: 500,
+      },
+    ],
+    new Map([
+      ["u-1", "shop-bach-dang"],
+      ["u-e2e", "u-e2e"],
+    ]),
+    allowedShopIds
+  );
+  assert.deepEqual(
+    vouchers.map((v) => v.code),
+    ["NEXUS30", "CUSTOM5"]
+  );
+
+  const slots = buildFlashSlots(
+    [
+      {
+        id: "fs-e2e",
+        name: "E2E Mega Flash Sale deadbeef",
+        starts_at: "2026-11-20T05:00:00Z",
+        ends_at: "2026-11-20T08:00:00Z",
+        items: [
+          {
+            id: "i-e2e",
+            sku_id: "foreign-sku",
+            flash_price_vnd: 1000,
+            total_slots: 5,
+            remaining_slots: 5,
+            per_user_limit: 1,
+            status: "APPROVED",
+          },
+        ],
+      },
+    ],
+    [{ ...contentProduct, skus: [{ ...contentProduct.skus[0], skuId: "s-1" }] }],
+    Date.parse("2026-11-20T05:30:00Z")
+  );
+  assert.equal(slots.length, 0);
+});
+
+test("createTtlCache deduplicates in-flight calls, respects TTL, and never caches errors", async () => {
+  const c = createTtlCache(1000);
+  let calls = 0;
+
+  // Concurrent calls share a single loader invocation
+  const [a, b] = await Promise.all([
+    c.get(async () => {
+      calls += 1;
+      return "v1";
+    }, 100),
+    c.get(async () => {
+      calls += 1;
+      return "v1-dup";
+    }, 100),
+  ]);
+  assert.equal(a, "v1");
+  assert.equal(b, "v1");
+  assert.equal(calls, 1);
+
+  // Within TTL: served from cache
+  assert.equal(
+    await c.get(async () => {
+      calls += 1;
+      return "v2";
+    }, 900),
+    "v1"
+  );
+  assert.equal(calls, 1);
+
+  // Expired: error is NOT cached, next call succeeds
+  await assert.rejects(
+    c.get(async () => {
+      calls += 1;
+      throw new Error("gw down");
+    }, 1200),
+    /gw down/
+  );
+  assert.equal(calls, 2);
+
+  assert.equal(
+    await c.get(async () => {
+      calls += 1;
+      return "v3";
+    }, 1201),
+    "v3"
+  );
+  assert.equal(calls, 3);
 });

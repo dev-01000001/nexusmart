@@ -1,6 +1,9 @@
 // Server-only configuration for the BFF layer. Never import from client components.
 
-export const GATEWAY_URL = (process.env.GATEWAY_URL || "http://localhost:28080").replace(/\/+$/, "");
+export const GATEWAY_URL = (process.env.GATEWAY_URL || "http://localhost:28080").replace(
+  /\/+$/,
+  ""
+);
 
 /** Default timeout for one gateway call (ms). */
 export const GATEWAY_TIMEOUT_MS = Number(process.env.GATEWAY_TIMEOUT_MS) || 8000;

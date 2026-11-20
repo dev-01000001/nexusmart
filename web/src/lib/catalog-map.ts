@@ -7,7 +7,14 @@
  * from the content tables by stable keys: category slug, shop name, SKU code and
  * voucher code. No I/O here so it can be unit tested with `node --test`.
  */
-import type { CategoryInfo, CategorySlug, Product, ProductColor, ProductSku, SizeCode } from "../data/products";
+import type {
+  CategoryInfo,
+  CategorySlug,
+  Product,
+  ProductColor,
+  ProductSku,
+  SizeCode,
+} from "../data/products";
 import type { Shop } from "../data/shops";
 import type { Voucher, VoucherScope } from "../data/vouchers";
 import type { FlashSaleItem, FlashSaleSlot, FlashSlotStatus } from "../data/flash-sale";
@@ -145,6 +152,20 @@ export function mergeShops(gw: GwShop[], content: Shop[]): Shop[] {
     });
 }
 
+/**
+ * Keeps storefront workshops (matched from curated profiles) plus any active
+ * backend shop that owns at least one mapped storefront product.
+ */
+export function filterStorefrontShops(
+  shops: Shop[],
+  products: Product[],
+  contentShops: Shop[]
+): Shop[] {
+  const knownIds = new Set(contentShops.map((s) => s.id));
+  const productShopIds = new Set(products.map((p) => p.shopId));
+  return shops.filter((s) => knownIds.has(s.id) || productShopIds.has(s.id));
+}
+
 function activeSkus(p: GwProduct): GwSku[] {
   return (p.skus ?? []).filter((s) => s.is_active !== false);
 }
@@ -184,7 +205,13 @@ function fromContent(p: GwProduct, content: Product, skus: GwSku[], shopId: stri
   };
 }
 
-function generic(p: GwProduct, skus: GwSku[], slug: CategorySlug, categoryName: string, shopId: string): Product | null {
+function generic(
+  p: GwProduct,
+  skus: GwSku[],
+  slug: CategorySlug,
+  categoryName: string,
+  shopId: string
+): Product | null {
   const colors = new Map<string, ProductColor>();
   const mapped: ProductSku[] = [];
   const fallbackImage = p.images?.[0] ?? skus.find((s) => s.image_url)?.image_url ?? "";
@@ -252,7 +279,7 @@ export function mergeProducts(gw: GwProduct[], ctx: ProductMergeContext): Produc
   for (const p of gw) {
     const slug = ctx.categories.slugById.get(p.category_id);
     if (!slug) continue;
-    if (p.status && p.status !== "APPROVED") continue;
+    if (p.status && p.status !== "APPROVED" && p.status !== "OUT_OF_STOCK") continue;
     const skus = activeSkus(p);
     if (!skus.length) continue;
     const shopId = ctx.shopIdByBackend.get(p.shop_id) ?? p.shop_id;
@@ -262,8 +289,7 @@ export function mergeProducts(gw: GwProduct[], ctx: ProductMergeContext): Produc
       out.push(fromContent(p, content, skus, shopId));
       continue;
     }
-    const categoryName =
-      ctx.categories.categories.find((c) => c.slug === slug)?.name ?? slug;
+    const categoryName = ctx.categories.categories.find((c) => c.slug === slug)?.name ?? slug;
     const g = generic(p, skus, slug, categoryName, shopId);
     if (g) out.push(g);
   }
@@ -284,31 +310,46 @@ function scopeOf(v: string): VoucherScope {
 }
 
 /** Live vouchers from promotion, keeping marketing copy for known codes. */
-export function mergeVouchers(gw: GwVoucher[], content: Voucher[], shopIdByBackend: Map<string, string>): Voucher[] {
-  const byCode = new Map(content.map((v) => [v.code.toUpperCase(), v]));
-  return gw
-    .filter((v) => v.is_active !== false)
-    .map((v): Voucher => {
-      const copy = byCode.get(v.code.toUpperCase());
-      const percent = v.discount_type.toUpperCase() === "PERCENT";
-      const scope = scopeOf(v.scope);
-      const real = {
-        id: v.id,
-        code: v.code,
-        scope,
-        shopId: v.shop_id ? (shopIdByBackend.get(v.shop_id) ?? v.shop_id) : undefined,
-        discountType: percent ? ("percent" as const) : ("fixed" as const),
-        discountValue: percent ? v.discount_percent : v.value_vnd,
-        maxDiscount: v.max_discount_vnd > 0 ? v.max_discount_vnd : undefined,
-        minOrderValue: v.min_order_vnd,
-        expiresAt: v.ends_at ?? copy?.expiresAt ?? "",
-        remainingUses: Math.max(0, v.remaining_quota),
-        totalUses: v.quota,
-        saved: Boolean(v.saved),
-      };
-      if (copy) return { ...copy, ...real };
-      return { ...real, title: v.name, description: v.name };
-    });
+export function mergeVouchers(
+  gw: GwVoucher[],
+  content: Voucher[],
+  shopIdByBackend: Map<string, string>,
+  allowedShopIds?: Set<string>
+): Voucher[] {
+  const byCode = new Map(content.map((v, idx) => [v.code.toUpperCase(), { v, idx }]));
+  const mapped: Array<{ voucher: Voucher; order: number }> = [];
+  for (const v of gw) {
+    if (v.is_active === false) continue;
+    if (/^E2E\s/i.test(v.name.trim())) continue;
+    const scope = scopeOf(v.scope);
+    const shopId = v.shop_id ? (shopIdByBackend.get(v.shop_id) ?? v.shop_id) : undefined;
+    if (scope === "shop" && allowedShopIds && (!shopId || !allowedShopIds.has(shopId))) {
+      continue;
+    }
+    const known = byCode.get(v.code.toUpperCase());
+    const copy = known?.v;
+    const percent = v.discount_type.toUpperCase() === "PERCENT";
+    const real = {
+      id: v.id,
+      code: v.code,
+      scope,
+      shopId,
+      discountType: percent ? ("percent" as const) : ("fixed" as const),
+      discountValue: percent ? v.discount_percent : v.value_vnd,
+      maxDiscount: v.max_discount_vnd > 0 ? v.max_discount_vnd : undefined,
+      minOrderValue: v.min_order_vnd,
+      expiresAt: v.ends_at ?? copy?.expiresAt ?? "",
+      remainingUses: Math.max(0, v.remaining_quota),
+      totalUses: v.quota,
+      saved: Boolean(v.saved),
+    };
+    const voucher: Voucher = copy
+      ? { ...copy, ...real }
+      : { ...real, title: v.name, description: v.name };
+    mapped.push({ voucher, order: known ? known.idx : Number.MAX_SAFE_INTEGER });
+  }
+  mapped.sort((a, b) => a.order - b.order);
+  return mapped.map((entry) => entry.voucher);
 }
 
 const STATUS_LABELS: Record<FlashSlotStatus, string> = {
@@ -318,53 +359,63 @@ const STATUS_LABELS: Record<FlashSlotStatus, string> = {
 };
 
 /** Flash sale windows with SKU-level items grouped back to products. */
-export function buildFlashSlots(gw: GwFlashSale[], products: Product[], now: number): FlashSaleSlot[] {
+export function buildFlashSlots(
+  gw: GwFlashSale[],
+  products: Product[],
+  now: number
+): FlashSaleSlot[] {
   const productBySku = new Map<string, Product>();
   for (const p of products) for (const s of p.skus) if (s.skuId) productBySku.set(s.skuId, p);
-  return [...gw]
-    .sort((a, b) => Date.parse(a.starts_at ?? "") - Date.parse(b.starts_at ?? ""))
-    .map((fs): FlashSaleSlot => {
-      const start = Date.parse(fs.starts_at ?? "");
-      const end = Date.parse(fs.ends_at ?? "");
-      const status: FlashSlotStatus = now < start ? "upcoming" : now < end ? "live" : "ended";
-      const grouped = new Map<string, FlashSaleItem>();
-      for (const it of fs.items ?? []) {
-        if (it.status && it.status !== "APPROVED") continue;
-        const product = productBySku.get(it.sku_id);
-        if (!product) continue;
-        const prev = grouped.get(product.id);
-        if (!prev) {
-          grouped.set(product.id, {
-            id: it.id,
-            productId: product.id,
-            flashPrice: it.flash_price_vnd,
-            originalPrice: product.price,
-            totalQuota: it.total_slots,
-            remainingQuota: Math.max(0, it.remaining_slots),
-            limitPerBuyer: it.per_user_limit,
-            itemIdBySku: { [it.sku_id]: it.id },
-          });
-          continue;
-        }
-        prev.flashPrice = Math.min(prev.flashPrice, it.flash_price_vnd);
-        prev.totalQuota += it.total_slots;
-        prev.remainingQuota += Math.max(0, it.remaining_slots);
-        prev.limitPerBuyer = Math.max(prev.limitPerBuyer, it.per_user_limit);
-        prev.itemIdBySku = { ...prev.itemIdBySku, [it.sku_id]: it.id };
+  const out: FlashSaleSlot[] = [];
+  for (const fs of [...gw].sort(
+    (a, b) => Date.parse(a.starts_at ?? "") - Date.parse(b.starts_at ?? "")
+  )) {
+    if (fs.name && /^E2E\s/i.test(fs.name.trim())) continue;
+    const start = Date.parse(fs.starts_at ?? "");
+    const end = Date.parse(fs.ends_at ?? "");
+    const status: FlashSlotStatus = now < start ? "upcoming" : now < end ? "live" : "ended";
+    const rawItems = fs.items ?? [];
+    const grouped = new Map<string, FlashSaleItem>();
+    for (const it of rawItems) {
+      if (it.status && it.status !== "APPROVED") continue;
+      const product = productBySku.get(it.sku_id);
+      if (!product) continue;
+      const prev = grouped.get(product.id);
+      if (!prev) {
+        grouped.set(product.id, {
+          id: it.id,
+          productId: product.id,
+          flashPrice: it.flash_price_vnd,
+          originalPrice: product.price,
+          totalQuota: it.total_slots,
+          remainingQuota: Math.max(0, it.remaining_slots),
+          limitPerBuyer: it.per_user_limit,
+          itemIdBySku: { [it.sku_id]: it.id },
+        });
+        continue;
       }
-      const label = vnClock(fs.starts_at);
-      return {
-        id: fs.id,
-        label,
-        startTime: label,
-        endTime: vnClock(fs.ends_at),
-        startsAt: fs.starts_at,
-        endsAt: fs.ends_at,
-        status,
-        statusLabel: STATUS_LABELS[status],
-        items: [...grouped.values()],
-      };
+      prev.flashPrice = Math.min(prev.flashPrice, it.flash_price_vnd);
+      prev.totalQuota += it.total_slots;
+      prev.remainingQuota += Math.max(0, it.remaining_slots);
+      prev.limitPerBuyer = Math.max(prev.limitPerBuyer, it.per_user_limit);
+      prev.itemIdBySku = { ...prev.itemIdBySku, [it.sku_id]: it.id };
+    }
+    // Drop foreign-vertical windows whose backend items belong entirely outside the storefront.
+    if (rawItems.length > 0 && grouped.size === 0) continue;
+    const label = vnClock(fs.starts_at);
+    out.push({
+      id: fs.id,
+      label,
+      startTime: label,
+      endTime: vnClock(fs.ends_at),
+      startsAt: fs.starts_at,
+      endsAt: fs.ends_at,
+      status,
+      statusLabel: STATUS_LABELS[status],
+      items: [...grouped.values()],
     });
+  }
+  return out;
 }
 
 /** Marks products that sit in a live or upcoming flash sale window. */
@@ -373,4 +424,161 @@ export function markFlashProducts(products: Product[], slots: FlashSaleSlot[]): 
     slots.filter((s) => s.status !== "ended").flatMap((s) => s.items.map((i) => i.productId))
   );
   return products.map((p) => ({ ...p, isFlashSale: ids.has(p.id) }));
+}
+
+export function pickDefaultFlashSlot(
+  slots: FlashSaleSlot[],
+  preferredId?: string | null
+): FlashSaleSlot | null {
+  if (!slots.length) return null;
+  if (preferredId) {
+    const exact = slots.find((s) => s.id === preferredId);
+    if (exact) return exact;
+  }
+  return (
+    slots.find((s) => s.status === "live") ??
+    slots.find((s) => s.status === "upcoming") ??
+    slots[0] ??
+    null
+  );
+}
+
+export function secondsUntilSlotEdge(slot: FlashSaleSlot | null, nowMs: number): number {
+  if (!slot) return 0;
+  const iso =
+    slot.status === "live" ? slot.endsAt : slot.status === "upcoming" ? slot.startsAt : undefined;
+  if (!iso) return 0;
+  const target = Date.parse(iso);
+  if (Number.isNaN(target)) return 0;
+  return Math.max(0, Math.floor((target - nowMs) / 1000));
+}
+
+export function findProductByParam(products: Product[], slugOrId: string): Product | undefined {
+  return products.find((p) => p.slug === slugOrId || p.backendId === slugOrId || p.id === slugOrId);
+}
+
+export function findShopByParam(shops: Shop[], slugOrId: string): Shop | undefined {
+  return shops.find((s) => s.slug === slugOrId || s.backendId === slugOrId || s.id === slugOrId);
+}
+
+export interface CatalogLookups {
+  product(idOrSlug: string): Product | undefined;
+  shop(idOrSlug: string): Shop | undefined;
+  productBySkuId(skuIdOrCode: string): Product | undefined;
+}
+
+export function buildCatalogLookups(products: Product[], shops: Shop[]): CatalogLookups {
+  const byProd = new Map<string, Product>();
+  const bySku = new Map<string, Product>();
+  for (const p of products) {
+    byProd.set(p.id, p);
+    byProd.set(p.slug, p);
+    if (p.backendId) byProd.set(p.backendId, p);
+    for (const s of p.skus) {
+      bySku.set(s.skuCode, p);
+      if (s.skuId) bySku.set(s.skuId, p);
+    }
+  }
+  const byShop = new Map<string, Shop>();
+  for (const s of shops) {
+    byShop.set(s.id, s);
+    byShop.set(s.slug, s);
+    if (s.backendId) byShop.set(s.backendId, s);
+  }
+  return {
+    product: (key) => byProd.get(key),
+    shop: (key) => byShop.get(key),
+    productBySkuId: (key) => bySku.get(key),
+  };
+}
+
+export interface LiveVoucherCheck {
+  valid: boolean;
+  discount: number;
+  reason?: string;
+}
+
+/** Validates a live backend voucher against an order subtotal without reading mock tables. */
+export function checkLiveVoucher(
+  v: Voucher,
+  opts: { eligibleAmount: number; shopId?: string; hasOutletItems?: boolean; nowMs?: number }
+): LiveVoucherCheck {
+  const nowMs = opts.nowMs ?? Date.now();
+  if (v.expiresAt) {
+    const exp = Date.parse(v.expiresAt);
+    if (!Number.isNaN(exp) && exp < nowMs) {
+      return { valid: false, discount: 0, reason: "Mã đã hết hạn sử dụng." };
+    }
+  }
+  if (v.remainingUses <= 0) {
+    return { valid: false, discount: 0, reason: "Mã đã hết lượt sử dụng." };
+  }
+  if (v.scope === "shop" && v.shopId && opts.shopId && v.shopId !== opts.shopId) {
+    return { valid: false, discount: 0, reason: "Mã chỉ áp dụng cho gian hàng phát hành." };
+  }
+  if (v.excludeOutlet && opts.hasOutletItems) {
+    return { valid: false, discount: 0, reason: "Không áp dụng cho sản phẩm Outlet." };
+  }
+  if (opts.eligibleAmount < v.minOrderValue) {
+    const missing = v.minOrderValue - opts.eligibleAmount;
+    return {
+      valid: false,
+      discount: 0,
+      reason: `Cần thêm ${missing.toLocaleString("vi-VN")}₫ để đạt đơn tối thiểu.`,
+    };
+  }
+  const raw =
+    v.discountType === "fixed"
+      ? v.discountValue
+      : Math.floor((opts.eligibleAmount * v.discountValue) / 100);
+  const capped = v.maxDiscount ? Math.min(raw, v.maxDiscount) : raw;
+  const discount = Math.max(0, Math.min(capped, opts.eligibleAmount));
+  return { valid: true, discount };
+}
+
+export interface TtlCache<T> {
+  get(loader: () => Promise<T>, nowMs?: number): Promise<T>;
+  clear(): void;
+}
+
+/**
+ * Tiny in-process TTL cache with in-flight deduplication.
+ * Rejections are never cached so temporary gateway outages recover immediately.
+ */
+export function createTtlCache<T>(ttlMs: number): TtlCache<T> {
+  let value: T | undefined;
+  let hasValue = false;
+  let expiresAt = 0;
+  let inflight: Promise<T> | null = null;
+
+  return {
+    get(loader, nowMs) {
+      const t = nowMs ?? Date.now();
+      if (hasValue && t < expiresAt) {
+        return Promise.resolve(value as T);
+      }
+      if (inflight) return inflight;
+      const p = loader().then(
+        (res) => {
+          value = res;
+          hasValue = true;
+          expiresAt = (nowMs ?? Date.now()) + ttlMs;
+          inflight = null;
+          return res;
+        },
+        (err) => {
+          inflight = null;
+          throw err;
+        }
+      );
+      inflight = p;
+      return p;
+    },
+    clear() {
+      value = undefined;
+      hasValue = false;
+      expiresAt = 0;
+      inflight = null;
+    },
+  };
 }

@@ -607,10 +607,129 @@
   align-items: start;
 }
 
+.homeVoucherBlock {
+  margin-top: 36px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.homeVoucherHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+}
+
+.homeVoucherHeading {
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+  color: var(--ink);
+}
+
+.homeVoucherGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+.homeVoucherItem {
+  background: var(--surface-white);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.homeVoucherTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.homeVoucherCode {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  background: var(--accent-tint);
+  color: var(--accent-tint-ink);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.homeVoucherQuota {
+  font-size: 14px;
+  color: var(--ink-secondary);
+  white-space: nowrap;
+}
+
+.homeVoucherTitle {
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--ink);
+  flex: 1;
+}
+
+.homeVoucherFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.homeVoucherMin {
+  font-size: 14px;
+  color: var(--ink-secondary);
+}
+
+.homeVoucherBtn,
+.homeVoucherBtnSaved {
+  min-height: 36px;
+  padding: 0 14px;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.homeVoucherBtn {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.homeVoucherBtn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.homeVoucherBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.homeVoucherBtnSaved {
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+}
+
 @media (max-width: 1080px) {
   .productGrid4 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 24px 16px;
+  }
+
+  .homeVoucherGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -635,6 +754,10 @@
   .productGrid4 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 20px 12px;
+  }
+
+  .homeVoucherGrid {
+    grid-template-columns: 1fr;
   }
 }
 

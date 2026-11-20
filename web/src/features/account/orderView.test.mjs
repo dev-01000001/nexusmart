@@ -19,7 +19,8 @@ const lookups = {
           skus: [{ skuId: "s-1", skuCode: "BD-AT01-TRANG-L", colorCode: "TRANG", size: "L" }],
         }
       : undefined,
-  shop: (id) => (id === "shop-1" ? { slug: "xuong-det-bach-dang", name: "Xưởng Dệt Bạch Đằng" } : undefined),
+  shop: (id) =>
+    id === "shop-1" ? { slug: "xuong-det-bach-dang", name: "Xưởng Dệt Bạch Đằng" } : undefined,
 };
 
 function gwOrder(overrides = {}) {
@@ -126,7 +127,10 @@ test("falls back to backend names when the product is unknown to the catalog", (
 });
 
 test("subtotal shown excludes the flash sale discount already applied to line prices", () => {
-  const v = mapGatewayOrder(gwOrder({ subtotal_vnd: 400000, flash_sale_discount_vnd: 42000 }), lookups);
+  const v = mapGatewayOrder(
+    gwOrder({ subtotal_vnd: 400000, flash_sale_discount_vnd: 42000 }),
+    lookups
+  );
   assert.equal(v.subtotal, 358000);
 });
 
@@ -153,7 +157,13 @@ test("cancel reason is shown only when the buyer cancelled", () => {
     gwOrder({
       status: "CANCELLED",
       timeline: [
-        { id: "t", from_status: "CONFIRMED", to_status: "CANCELLED", actor_role: "buyer", note: "Đặt trùng" },
+        {
+          id: "t",
+          from_status: "CONFIRMED",
+          to_status: "CANCELLED",
+          actor_role: "buyer",
+          note: "Đặt trùng",
+        },
       ],
     }),
     lookups
@@ -167,7 +177,13 @@ test("cancel reason is shown only when the buyer cancelled", () => {
       status: "CANCELLED",
       payment_method: "VIETQR",
       timeline: [
-        { id: "t", from_status: "PENDING", to_status: "CANCELLED", actor_role: "system", note: "payment expired" },
+        {
+          id: "t",
+          from_status: "PENDING",
+          to_status: "CANCELLED",
+          actor_role: "system",
+          note: "payment expired",
+        },
       ],
     }),
     lookups

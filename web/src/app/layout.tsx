@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Work_Sans } from "next/font/google";
+import { SessionProvider } from "@/components/SessionProvider";
 import { StoreProvider } from "@/context/StoreContext";
+import { getSession, type SessionUser } from "@/lib/server/session";
 import "@/styles/tokens.css";
 import "@/styles/globals.css";
 
@@ -20,15 +22,26 @@ export const metadata: Metadata = {
     "Sàn thương mại điện tử đa gian hàng đồ basic nam nữ Việt Nam, minh bạch chất liệu và bảng size, giao hàng 34 tỉnh thành.",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  let initialUser: SessionUser | null = null;
+  try {
+    const session = await getSession();
+    initialUser = session?.user ?? null;
+  } catch {
+    // Public storefront stays accessible when gateway is temporarily unavailable;
+    // protected pages enforce real session/role via requireSession()/requireRole().
+  }
+
   return (
     <html lang="vi" className={workSans.variable}>
       <body>
-        <StoreProvider>{children}</StoreProvider>
+        <SessionProvider initialUser={initialUser}>
+          <StoreProvider>{children}</StoreProvider>
+        </SessionProvider>
       </body>
     </html>
   );

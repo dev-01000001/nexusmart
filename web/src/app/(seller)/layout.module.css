@@ -74,6 +74,33 @@ select.switcherSelect {
   font-weight: 500;
 }
 
+.shopIdentityBox {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border); /* taste-skill-ignore: seller authenticated shop badge per seller-sheet.md */
+  background: var(--card);
+  min-width: 0;
+}
+
+.shopIdentityName {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shopIdentityMeta {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
 .navGroup {
   display: flex;
   flex-direction: column;

@@ -10,6 +10,8 @@ import {
   type SizeCode,
 } from "@/data";
 import { useStore } from "@/context/StoreContext";
+import { useMockStore } from "@/mock/MockStoreContext";
+import { useSession } from "@/components/SessionProvider";
 import { Button, IconClose, IconStar } from "@/components";
 import { formatDateVi } from "@/lib/format";
 import styles from "./PdpReviews.module.css";
@@ -33,7 +35,9 @@ const FIT_ORDER: FitFeedback[] = ["chat", "dung", "rong"];
 const STAR_LEVELS: Array<5 | 4 | 3 | 2 | 1> = [5, 4, 3, 2, 1];
 
 export function PdpReviews({ product, shop, selectedColorName, selectedSize }: PdpReviewsProps) {
-  const { reviews, submitReview, bodyProfile, orders, user } = useStore();
+  const { bodyProfile } = useStore();
+  const { reviews, submitReview } = useMockStore();
+  const { user } = useSession();
 
   const [filter, setFilter] = useState<ReviewFilter>("all");
   const [formOpen, setFormOpen] = useState<boolean>(false);
@@ -49,7 +53,7 @@ export function PdpReviews({ product, shop, selectedColorName, selectedSize }: P
   }, [zoomPhoto]);
 
   // Form state
-  const [authorName, setAuthorName] = useState<string>(user.fullName);
+  const [authorName, setAuthorName] = useState<string>(user?.fullName ?? "");
   const [rating, setRating] = useState<number>(5);
   const [fitFeedback, setFitFeedback] = useState<FitFeedback>("dung");
   const [heightCm, setHeightCm] = useState<number>(bodyProfile.heightCm);
@@ -66,14 +70,6 @@ export function PdpReviews({ product, shop, selectedColorName, selectedSize }: P
   );
 
   const summary = useMemo(() => computeReviewSummary(reviews, product.id), [reviews, product.id]);
-
-  const hasDeliveredOrder = useMemo(
-    () =>
-      orders.some(
-        (o) => o.status === "da_giao" && o.items.some((it) => it.productId === product.id)
-      ),
-    [orders, product.id]
-  );
 
   const filteredReviews = useMemo(() => {
     return productReviews.filter((r) => {
@@ -104,7 +100,7 @@ export function PdpReviews({ product, shop, selectedColorName, selectedSize }: P
     const matchedColor = product.colors.find((c) => c.name === colorName);
     submitReview({
       productId: product.id,
-      authorName: authorName.trim() || user.fullName,
+      authorName: authorName.trim() || user?.fullName || "Khách hàng NexusMart",
       rating,
       fitFeedback,
       buyerHeightCm: Math.max(140, Math.min(210, Math.round(heightCm))),
@@ -204,9 +200,7 @@ export function PdpReviews({ product, shop, selectedColorName, selectedSize }: P
             {formOpen ? "Đóng biểu mẫu đánh giá" : "Viết đánh giá sản phẩm"}
           </Button>
           <p className={styles.eligibilityNote}>
-            {hasDeliveredOrder
-              ? "Đơn hàng đã giao của bạn có mẫu này, đủ điều kiện gửi đánh giá."
-              : "Chia sẻ cảm nhận về chất vải và độ vừa để giúp người mua sau chọn đúng size."}
+            Chia sẻ cảm nhận về chất vải và độ vừa để giúp người mua sau chọn đúng size.
           </p>
         </aside>
 
@@ -302,6 +296,7 @@ export function PdpReviews({ product, shop, selectedColorName, selectedSize }: P
                     value={authorName}
                     onChange={(e) => setAuthorName(e.target.value)}
                     className={styles.input}
+                    placeholder="Tên hiển thị"
                   />
                 </label>
 

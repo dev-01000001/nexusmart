@@ -40,8 +40,7 @@ export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
   }
   if (res.status === 204) return undefined as T;
   const data = (await res.json().catch(() => null)) as
-    | (T & { error?: { code?: string; message?: string } })
-    | null;
+    (T & { error?: { code?: string; message?: string } }) | null;
   if (!res.ok) {
     throw new ApiError(
       res.status,

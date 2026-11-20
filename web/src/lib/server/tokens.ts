@@ -1,6 +1,5 @@
-// Token cookies + refresh-token rotation. Safe to import from middleware (nodejs runtime),
-// route handlers and server actions; does not touch next/headers.
-import { createHash } from "node:crypto";
+// Token cookies + refresh-token rotation. Runtime-agnostic (uses Web Crypto + atob, no
+// node:crypto or next/headers) so it runs identically in middleware, route handlers and actions.
 import {
   ACCESS_COOKIE,
   GATEWAY_TIMEOUT_MS,
@@ -34,17 +33,55 @@ export function clearAuthCookies(jar: CookieWriter) {
 }
 
 /**
+ * Rebuild an incoming `Cookie` header with updated (or stripped, when `pair === null`) auth
+ * cookies so Server Components rendering the current request see rotated tokens immediately.
+ */
+export function applyAuthCookiesToHeader(
+  cookieHeader: string | null,
+  pair: TokenPair | null
+): string {
+  const parts = (cookieHeader ?? "")
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => {
+      const eq = part.indexOf("=");
+      const name = eq === -1 ? part : part.slice(0, eq).trim();
+      return name !== ACCESS_COOKIE && name !== REFRESH_COOKIE;
+    });
+  if (pair) {
+    parts.push(`${ACCESS_COOKIE}=${pair.accessToken}`);
+    parts.push(`${REFRESH_COOKIE}=${pair.refreshToken}`);
+  }
+  return parts.join("; ");
+}
+
+function decodeBase64Url(input: string): string {
+  const b64 = input.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
+  return atob(b64 + pad);
+}
+
+/**
  * True when the JWT is missing, malformed or expires within `skewS` seconds. Only used to decide
  * WHEN to refresh – the payload is not trusted for identity or role (the gateway verifies it).
  */
 export function accessExpiresSoon(token: string | undefined, skewS = 60): boolean {
   if (!token) return true;
   try {
-    const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString());
+    const segment = token.split(".")[1];
+    if (!segment) return true;
+    const payload = JSON.parse(decodeBase64Url(segment)) as { exp?: unknown };
     return typeof payload.exp !== "number" || payload.exp - skewS <= Date.now() / 1000;
   } catch {
     return true;
   }
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const data = new TextEncoder().encode(value);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // The user service revokes the whole token family when a refresh token is replayed (also for
@@ -60,10 +97,10 @@ const rotations: Map<string, Entry> = (g.__nmRotations ??= new Map());
  * expired / reused / account inactive). Throws GatewayError("unavailable") on outages so the
  * caller keeps the current cookies.
  */
-export function rotateRefreshToken(refreshToken: string): Promise<TokenPair | null> {
+export async function rotateRefreshToken(refreshToken: string): Promise<TokenPair | null> {
+  const key = await sha256Hex(refreshToken);
   const now = Date.now();
   for (const [k, v] of rotations) if (now - v.at > GRACE_MS) rotations.delete(k);
-  const key = createHash("sha256").update(refreshToken).digest("hex");
   const hit = rotations.get(key);
   if (hit) return hit.p;
   const p = callRefresh(refreshToken);

@@ -3,6 +3,7 @@
 import React, { useMemo, useState } from "react";
 import type { Product, ProductSku, SizeCode } from "@/data";
 import { useStore } from "@/context/StoreContext";
+import { useSession } from "@/components/SessionProvider";
 import { Button, IconCheck } from "@/components";
 import styles from "./PdpBackInStock.module.css";
 
@@ -23,15 +24,16 @@ export function PdpBackInStock({
   isOpen,
   onClose,
 }: PdpBackInStockProps) {
-  const { user, isAuthenticated, subscribeBackInStock, hasBackInStockAlert, backInStockAlerts } =
-    useStore();
+  const { showToast } = useStore();
+  const { user, isAuthenticated } = useSession();
 
   const outOfStockSkus = useMemo(() => product.skus.filter((s) => s.stock <= 0), [product.skus]);
 
   const [pickedSkuCode, setPickedSkuCode] = useState<string>("");
   const [contact, setContact] = useState<string>(() =>
-    isAuthenticated ? user.phone || user.email : ""
+    isAuthenticated && user ? user.phone || user.email : ""
   );
+  const [subscribedBySku, setSubscribedBySku] = useState<Record<string, string>>({});
   const [error, setError] = useState<string>("");
 
   if (!isOpen) return null;
@@ -48,8 +50,8 @@ export function PdpBackInStock({
   const targetColorName =
     product.colors.find((c) => c.code === targetSku.colorCode)?.name ?? colorName;
   const targetSize = targetSku.size ?? size;
-  const alreadySubscribed = hasBackInStockAlert(targetSku.skuCode);
-  const existingAlert = backInStockAlerts.find((a) => a.skuCode === targetSku.skuCode);
+  const savedContact = subscribedBySku[targetSku.skuCode];
+  const alreadySubscribed = Boolean(savedContact);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,13 +66,8 @@ export function PdpBackInStock({
     }
 
     setError("");
-    subscribeBackInStock({
-      productId: product.id,
-      skuCode: targetSku.skuCode,
-      colorName: targetColorName,
-      size: targetSize,
-      contact: cleaned,
-    });
+    setSubscribedBySku((prev) => ({ ...prev, [targetSku.skuCode]: cleaned }));
+    showToast(`Đã ghi nhận đăng ký báo có hàng cho ${targetColorName} · Size ${targetSize}.`);
   };
 
   return (
@@ -124,8 +121,7 @@ export function PdpBackInStock({
               Đã đăng ký báo có hàng cho {targetColorName} · Size {targetSize}
             </p>
             <p className={styles.confirmedDesc}>
-              Thông báo sẽ gửi tới <strong>{existingAlert?.contact ?? contact}</strong> ngay khi
-              xưởng có hàng trở lại.
+              Thông báo sẽ gửi tới <strong>{savedContact}</strong> ngay khi xưởng có hàng trở lại.
             </p>
           </div>
         </div>

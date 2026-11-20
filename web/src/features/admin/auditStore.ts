@@ -1,19 +1,34 @@
 "use client";
 
+/**
+ * In-memory mock state for Admin Portal screens/tabs that do NOT have backend RPCs yet:
+ * - /admin/noi-dung (CMS banners, mega-menu, search weights, CSR campaigns)
+ * - /admin/kiem-duyet mock tabs (reviews, Q&A, media moderation)
+ * - /admin/thanh-vien mock tabs (loyalty tiers, referrals, gift cards)
+ * - /admin/cau-hinh (platform config toggles & notification templates)
+ * - /admin/khieu-nai (tier-2 dispute arbitration)
+ *
+ * Real backend entities (shop approvals, payment ledger & reconciliation, audit logs,
+ * product review, platform vouchers & flash sales) come strictly from gateway via BFF.
+ * Zero localStorage usage anywhere in this store.
+ */
 import { useSyncExternalStore } from "react";
 import {
-  ADMIN_AUDIT_LOGS,
+  ADMIN_DISPUTES,
   INITIAL_ADMIN_CONTENT,
   INITIAL_ADMIN_LOYALTY,
   INITIAL_ADMIN_MODERATION,
   INITIAL_EXTENDED_PLATFORM_CONFIG,
+  INITIAL_PLATFORM_CONFIG,
 } from "@/data";
 import type {
   AdminContentState,
+  AdminDispute,
   AdminExtendedPlatformConfig,
   AdminLoyaltyState,
   AdminModerationState,
   AuditLogEntry,
+  PlatformConfigState,
   VulnerablePriorityGroup,
 } from "@/data";
 
@@ -44,13 +59,13 @@ const INITIAL_EXTRA_CONFIG: ExtraOpsConfig = {
   autoCheckTaxAndPhoto: true,
 };
 
-const EMPTY_NOTES: Record<string, string> = {};
 const EMPTY_DISPUTE_OVERRIDES: Record<string, DisputeLiveOverride> = {};
 
-let auditLogsState: AuditLogEntry[] = [...ADMIN_AUDIT_LOGS];
-let reconNotesState: Record<string, string> = {};
+let mockAuditLogsState: AuditLogEntry[] = [];
 let extraConfigState: ExtraOpsConfig = { ...INITIAL_EXTRA_CONFIG };
+let platformConfigState: PlatformConfigState = INITIAL_PLATFORM_CONFIG;
 let extendedConfigState: AdminExtendedPlatformConfig = INITIAL_EXTENDED_PLATFORM_CONFIG;
+let disputesState: AdminDispute[] = [...ADMIN_DISPUTES];
 let disputeOverridesState: Record<string, DisputeLiveOverride> = {};
 let contentState: AdminContentState = INITIAL_ADMIN_CONTENT;
 let moderationState: AdminModerationState = INITIAL_ADMIN_MODERATION;
@@ -58,9 +73,10 @@ let loyaltyState: AdminLoyaltyState = INITIAL_ADMIN_LOYALTY;
 let traceCounter = 100;
 
 const auditListeners = new Set<() => void>();
-const reconNoteListeners = new Set<() => void>();
 const extraConfigListeners = new Set<() => void>();
+const platformConfigListeners = new Set<() => void>();
 const extendedConfigListeners = new Set<() => void>();
+const disputesListeners = new Set<() => void>();
 const disputeOverrideListeners = new Set<() => void>();
 const contentListeners = new Set<() => void>();
 const moderationListeners = new Set<() => void>();
@@ -80,9 +96,10 @@ function makeSubscriber(set: Set<() => void>) {
 }
 
 const subscribeAudit = makeSubscriber(auditListeners);
-const subscribeReconNotes = makeSubscriber(reconNoteListeners);
 const subscribeExtraConfig = makeSubscriber(extraConfigListeners);
+const subscribePlatformConfig = makeSubscriber(platformConfigListeners);
 const subscribeExtendedConfig = makeSubscriber(extendedConfigListeners);
+const subscribeDisputes = makeSubscriber(disputesListeners);
 const subscribeDisputeOverrides = makeSubscriber(disputeOverrideListeners);
 const subscribeContent = makeSubscriber(contentListeners);
 const subscribeModeration = makeSubscriber(moderationListeners);
@@ -94,11 +111,12 @@ function nextTraceId(): string {
   return `tr-${hex}`;
 }
 
+/** Records in-memory mock actions performed on mock-only Admin tabs (never mixed into real /admin/audit-log). */
 export function appendAdminAuditLog(input: AppendAuditInput): AuditLogEntry {
   const entry: AuditLogEntry = {
-    id: `aud-live-${Date.now()}-${traceCounter}`,
+    id: `aud-mock-${Date.now()}-${traceCounter}`,
     timestamp: new Date().toISOString(),
-    actor: input.actor ?? "Trần Quốc Huy",
+    actor: input.actor ?? "Quản trị viên",
     role: input.role ?? "Quản trị viên",
     action: input.action,
     module: input.module,
@@ -106,22 +124,19 @@ export function appendAdminAuditLog(input: AppendAuditInput): AuditLogEntry {
     changeSummary: input.changeSummary,
     traceId: nextTraceId(),
   };
-  auditLogsState = [entry, ...auditLogsState];
+  mockAuditLogsState = [entry, ...mockAuditLogsState];
   emit(auditListeners);
   return entry;
-}
-
-export function setAdminReconNote(batchId: string, note: string): void {
-  reconNotesState = {
-    ...reconNotesState,
-    [batchId]: note,
-  };
-  emit(reconNoteListeners);
 }
 
 export function updateAdminExtraConfig(next: ExtraOpsConfig): void {
   extraConfigState = { ...next };
   emit(extraConfigListeners);
+}
+
+export function updateAdminPlatformConfig(next: PlatformConfigState): void {
+  platformConfigState = { ...next };
+  emit(platformConfigListeners);
 }
 
 export function updateAdminExtendedConfig(
@@ -132,6 +147,17 @@ export function updateAdminExtendedConfig(
   extendedConfigState =
     typeof updater === "function" ? updater(extendedConfigState) : { ...updater };
   emit(extendedConfigListeners);
+}
+
+export function updateAdminDisputeStatus(
+  id: string,
+  status: AdminDispute["status"],
+  note?: string
+): void {
+  disputesState = disputesState.map((d) =>
+    d.id === id ? { ...d, status, evidenceNote: note ?? d.evidenceNote } : d
+  );
+  emit(disputesListeners);
 }
 
 export function confirmDisputeAckSla(disputeId: string): void {
@@ -181,19 +207,11 @@ export function updateAdminLoyaltyState(
   emit(loyaltyListeners);
 }
 
-export function useAdminAuditLogs(): AuditLogEntry[] {
+export function useMockAdminAuditLogs(): AuditLogEntry[] {
   return useSyncExternalStore(
     subscribeAudit,
-    () => auditLogsState,
-    () => ADMIN_AUDIT_LOGS
-  );
-}
-
-export function useAdminReconNotes(): Record<string, string> {
-  return useSyncExternalStore(
-    subscribeReconNotes,
-    () => reconNotesState,
-    () => EMPTY_NOTES
+    () => mockAuditLogsState,
+    () => []
   );
 }
 
@@ -205,11 +223,27 @@ export function useAdminExtraConfig(): ExtraOpsConfig {
   );
 }
 
+export function useAdminPlatformConfig(): PlatformConfigState {
+  return useSyncExternalStore(
+    subscribePlatformConfig,
+    () => platformConfigState,
+    () => INITIAL_PLATFORM_CONFIG
+  );
+}
+
 export function useAdminExtendedConfig(): AdminExtendedPlatformConfig {
   return useSyncExternalStore(
     subscribeExtendedConfig,
     () => extendedConfigState,
     () => INITIAL_EXTENDED_PLATFORM_CONFIG
+  );
+}
+
+export function useAdminDisputes(): AdminDispute[] {
+  return useSyncExternalStore(
+    subscribeDisputes,
+    () => disputesState,
+    () => ADMIN_DISPUTES
   );
 }
 

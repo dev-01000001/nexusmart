@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { PRODUCTS, SHOPS, type CategorySlug } from "@/data";
+import { PRODUCTS, SHOPS, type CategorySlug, type Product, type Shop } from "@/data";
 import { useStore } from "@/context/StoreContext";
 import { formatVnd } from "@/lib/format";
 import { BODY_SHAPE_LABELS, recommendSize, type BodyShape, type FitPreference } from "@/lib/sizing";
@@ -12,6 +12,8 @@ type GarmentGroup = "ao" | "quan" | "dolot";
 
 export interface SizeFinderProps {
   defaultShopId?: string;
+  products?: Product[];
+  shops?: Shop[];
 }
 
 const GROUP_CATEGORIES: Record<GarmentGroup, CategorySlug[]> = {
@@ -46,7 +48,7 @@ const FIT_BIAS_SHORT: Record<"slim" | "regular" | "relaxed", string> = {
   relaxed: "Form thoáng",
 };
 
-export function SizeFinder({ defaultShopId }: SizeFinderProps) {
+export function SizeFinder({ defaultShopId, products = PRODUCTS, shops = SHOPS }: SizeFinderProps) {
   const { bodyProfile, updateBodyProfile, showToast } = useStore();
 
   const [heightCm, setHeightCm] = useState<number>(bodyProfile.heightCm);
@@ -58,7 +60,7 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
   const [group, setGroup] = useState<GarmentGroup>("ao");
   const [selectedShopId, setSelectedShopId] = useState<string>(defaultShopId ?? "all");
 
-  // Sync after client hydration when persisted bodyProfile is loaded from localStorage
+  // Sync after client hydration when saved bodyProfile is restored in StoreContext
   useEffect(() => {
     setHeightCm(bodyProfile.heightCm);
     setWeightKg(bodyProfile.weightKg);
@@ -101,7 +103,7 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
   const matchingProducts = useMemo(() => {
     const allowedCats = GROUP_CATEGORIES[group];
     const inShopPool =
-      selectedShopId === "all" ? PRODUCTS : PRODUCTS.filter((p) => p.shopId === selectedShopId);
+      selectedShopId === "all" ? products : products.filter((p) => p.shopId === selectedShopId);
     const primaryMatches = inShopPool
       .filter((p) => allowedCats.includes(p.categorySlug))
       .map((product) => {
@@ -114,8 +116,8 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
 
     if (primaryMatches.length > 0) return primaryMatches.slice(0, 3);
 
-    // Fallback across all shops when a specific workshop does not produce the chosen garment group
-    return PRODUCTS.filter((p) => allowedCats.includes(p.categorySlug))
+    return products
+      .filter((p) => allowedCats.includes(p.categorySlug))
       .map((product) => {
         const sizeStock = product.skus
           .filter((s) => s.size === recommendedSize)
@@ -124,7 +126,7 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
       })
       .filter((entry) => entry.sizeStock > 0)
       .slice(0, 3);
-  }, [group, recommendedSize, selectedShopId]);
+  }, [group, products, recommendedSize, selectedShopId]);
 
   const referenceSpec = useMemo(() => {
     if (recommendation.measurements) {
@@ -135,9 +137,10 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
         lengthCm: recommendation.measurements.lengthCm,
       };
     }
-    const sample = matchingProducts[0]?.product ?? PRODUCTS[0];
+    const sample = matchingProducts[0]?.product ?? products[0];
+    if (!sample) return undefined;
     return sample.sizeChart.find((row) => row.size === recommendedSize) ?? sample.sizeChart[2];
-  }, [matchingProducts, recommendation.measurements, recommendedSize]);
+  }, [matchingProducts, products, recommendation.measurements, recommendedSize]);
 
   const clampHeight = (v: number) => Math.max(155, Math.min(190, v));
   const clampWeight = (v: number) => Math.max(48, Math.min(95, v));
@@ -168,7 +171,7 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
             >
               Chuẩn NexusMart
             </button>
-            {SHOPS.map((shop) => {
+            {shops.map((shop) => {
               const active = selectedShopId === shop.id;
               const bias = shop.sizeCharts?.fitBias ?? "regular";
               return (
@@ -368,7 +371,8 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
               <span className={styles.matchInfo}>
                 <span className={styles.matchName}>{product.shortName}</span>
                 <span className={styles.matchStock}>
-                  {product.gsm}gsm · Còn {sizeStock} chiếc size {recommendedSize}
+                  {product.gsm > 0 ? `${product.gsm}gsm · ` : ""}Còn {sizeStock} chiếc size{" "}
+                  {recommendedSize}
                 </span>
               </span>
               <span className={styles.matchPrice}>{formatVnd(product.price)}</span>

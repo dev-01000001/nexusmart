@@ -1,18 +1,16 @@
 import React, { Suspense } from "react";
-import { CAMPAIGNS } from "@/data";
+import { loadCatalog } from "@/lib/catalog";
 import { StateView } from "@/components";
 import { CampaignDetailClient } from "./CampaignDetailClient";
 
-export function generateStaticParams() {
-  return CAMPAIGNS.map((c) => ({ slug: c.slug }));
-}
+export const dynamic = "force-dynamic";
 
 export default async function CampaignDetailPage({
   params,
 }: {
   params: Promise<{ slug: string }>;
 }) {
-  const { slug } = await params;
+  const [{ slug }, catalog] = await Promise.all([params, loadCatalog()]);
 
   return (
     <Suspense
@@ -22,7 +20,12 @@ export default async function CampaignDetailPage({
         </div>
       }
     >
-      <CampaignDetailClient slug={slug} />
+      <CampaignDetailClient
+        slug={slug}
+        products={catalog.products}
+        shops={catalog.shops}
+        loadError={catalog.error}
+      />
     </Suspense>
   );
 }

@@ -3,6 +3,8 @@
 import React, { useMemo, useState } from "react";
 import type { Product, Shop } from "@/data";
 import { useStore } from "@/context/StoreContext";
+import { useMockStore } from "@/mock/MockStoreContext";
+import { useSession } from "@/components/SessionProvider";
 import { Button, IconChat, IconSpark } from "@/components";
 import { formatDateVi } from "@/lib/format";
 import styles from "./PdpQuestions.module.css";
@@ -13,8 +15,10 @@ export interface PdpQuestionsProps {
 }
 
 export function PdpQuestions({ product, shop }: PdpQuestionsProps) {
-  const { productQAs, submitProductQA, openChat, openAi, user } = useStore();
-  const [askerName, setAskerName] = useState<string>(user.fullName);
+  const { openChat, openAi } = useStore();
+  const { productQAs, submitProductQA } = useMockStore();
+  const { user } = useSession();
+  const [askerName, setAskerName] = useState<string>(user?.fullName ?? "");
   const [question, setQuestion] = useState<string>("");
   const [error, setError] = useState<string>("");
 
@@ -36,7 +40,7 @@ export function PdpQuestions({ product, shop }: PdpQuestionsProps) {
       },
       {
         question: "Thời gian giao hàng từ kho xưởng mất bao lâu?",
-        answer: `Hàng xuất trực tiếp từ kho ${shop.city}, giao tiêu chuẩn 1-4 ngày làm việc toàn quốc 34 tỉnh và hỗ trợ đồng kiểm ngoại quan.`,
+        answer: `Hàng xuất trực tiếp từ kho ${shop.city || "xưởng đối tác"}, giao tiêu chuẩn 1-4 ngày làm việc toàn quốc 34 tỉnh và hỗ trợ đồng kiểm ngoại quan.`,
       },
     ];
   }, [product, shop.city]);
@@ -49,7 +53,7 @@ export function PdpQuestions({ product, shop }: PdpQuestionsProps) {
     }
     submitProductQA({
       productId: product.id,
-      askerName: askerName.trim() || user.fullName,
+      askerName: askerName.trim() || user?.fullName || "Khách hàng NexusMart",
       question: question.trim(),
     });
     setQuestion("");
@@ -81,8 +85,8 @@ export function PdpQuestions({ product, shop }: PdpQuestionsProps) {
           <div className={styles.directHelpBox}>
             <p className={styles.directHelpTitle}>Cần tư vấn nhanh về cỡ hoặc chất vải?</p>
             <p className={styles.directHelpDesc}>
-              {shop.name} phản hồi trung bình {shop.responseTime.toLowerCase()}. Trợ lý AI gợi ý
-              nhanh kích cỡ theo số đo và hỗ trợ tra cứu đơn hàng của bạn.
+              {shop.name} phản hồi trung bình {(shop.responseTime || "trong 15 phút").toLowerCase()}
+              . Trợ lý AI gợi ý nhanh kích cỡ theo số đo và hỗ trợ tra cứu đơn hàng của bạn.
             </p>
             <div className={styles.directHelpBtns}>
               <Button variant="ink" size="md" onClick={() => openChat(shop.id)}>
@@ -169,7 +173,8 @@ export function PdpQuestions({ product, shop }: PdpQuestionsProps) {
                     </div>
                   ) : (
                     <p className={styles.pendingNote}>
-                      Đã gửi tới {shop.name}, dự kiến phản hồi {shop.responseTime.toLowerCase()}.
+                      Đã gửi tới {shop.name}, dự kiến phản hồi{" "}
+                      {(shop.responseTime || "trong 15 phút").toLowerCase()}.
                     </p>
                   )}
                 </article>

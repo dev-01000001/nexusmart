@@ -54,6 +54,16 @@ export interface SupportTicket {
   createdAt: string;
 }
 
+export interface BackInStockAlert {
+  id: string;
+  productId: string;
+  skuCode: string;
+  colorName: string;
+  size: string;
+  contact: string;
+  createdAt: string;
+}
+
 export interface SubmitSupportTicketInput {
   kind: SupportTicket["kind"];
   orderCode?: string;
@@ -100,13 +110,16 @@ export interface MockStoreValue {
   applyGiftCardCode: (code: string | null) => { ok: boolean; message: string };
   verifyEduEmail: (email: string) => { ok: boolean; message: string };
 
-  // Đánh giá, hỏi đáp & phiếu hỗ trợ (mẫu)
+  // Đánh giá, hỏi đáp, báo có hàng & phiếu hỗ trợ (mẫu)
   reviews: ProductReview[];
   submitReview: (input: SubmitReviewInput) => ProductReview;
   productQAs: ProductQA[];
   submitProductQA: (input: SubmitQAInput) => ProductQA;
   supportTickets: SupportTicket[];
   submitSupportTicket: (input: SubmitSupportTicketInput) => SupportTicket;
+  backInStockAlerts: BackInStockAlert[];
+  subscribeBackInStock: (input: Omit<BackInStockAlert, "id" | "createdAt">) => BackInStockAlert;
+  hasBackInStockAlert: (skuCode: string) => boolean;
 
   // Chat người mua - gian hàng (mẫu)
   chatThreads: ChatThread[];
@@ -167,6 +180,7 @@ export function MockStoreProvider({
   const [reviews, setReviews] = useState<ProductReview[]>(SAMPLE_REVIEWS);
   const [productQAs, setProductQAs] = useState<ProductQA[]>(SAMPLE_QAS);
   const [supportTickets, setSupportTickets] = useState<SupportTicket[]>(INITIAL_SUPPORT_TICKETS);
+  const [backInStockAlerts, setBackInStockAlerts] = useState<BackInStockAlert[]>([]);
   const [chatThreads, setChatThreads] = useState<ChatThread[]>(INITIAL_CHAT_THREADS);
   const [activeSellerShopId, setActiveSellerShopId] = useState<string>(SHOPS[0].id);
   const [shopApprovals, setShopApprovals] =
@@ -366,6 +380,25 @@ export function MockStoreProvider({
     [notify]
   );
 
+  const subscribeBackInStock = useCallback(
+    (input: Omit<BackInStockAlert, "id" | "createdAt">): BackInStockAlert => {
+      const created: BackInStockAlert = {
+        ...input,
+        id: `bis-${Date.now()}`,
+        createdAt: new Date().toISOString(),
+      };
+      setBackInStockAlerts((prev) => [created, ...prev.filter((a) => a.skuCode !== input.skuCode)]);
+      notify(`Đã đăng ký báo khi có hàng cho mã ${input.skuCode}.`);
+      return created;
+    },
+    [notify]
+  );
+
+  const hasBackInStockAlert = useCallback(
+    (skuCode: string): boolean => backInStockAlerts.some((a) => a.skuCode === skuCode),
+    [backInStockAlerts]
+  );
+
   const sendChatMessage = useCallback(
     (threadId: string, sender: "buyer" | "seller", text: string, buyerName?: string) => {
       const clean = text.trim();
@@ -468,6 +501,9 @@ export function MockStoreProvider({
     submitProductQA,
     supportTickets,
     submitSupportTicket,
+    backInStockAlerts,
+    subscribeBackInStock,
+    hasBackInStockAlert,
     chatThreads,
     sendChatMessage,
     markChatReadByBuyer,
