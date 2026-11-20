@@ -34,13 +34,45 @@ const (
 // true = also accepts a service token (saga/job/consumer calls with no end user);
 // false = needs the forwarded end-user JWT. Every other RPC rejects service tokens.
 var internalRPCs = map[string]bool{
-	"/nexusmart.user.v1.UserService/GetAddress":                 true,
-	"/nexusmart.user.v1.UserService/GetProfile":                 true,
-	"/nexusmart.product.v1.ProductService/ReleaseStock":         true,
-	"/nexusmart.product.v1.ProductService/ConfirmStock":         true,
-	"/nexusmart.product.v1.ProductService/ReserveStock":         false,
-	"/nexusmart.promotion.v1.PromotionService/ReleasePromotion": true,
-	"/nexusmart.promotion.v1.PromotionService/ReservePromotion": false,
+	// UserService
+	"/nexusmart.user.v1.UserService/GetAddress":    true,
+	"/nexusmart.user.v1.UserService/GetProfile":    true,
+	"/nexusmart.user.v1.UserService/ValidateUser":  false,
+	"/nexusmart.user.v1.UserService/WriteAuditLog": true,
+	"/nexusmart.user.v1.UserService/Logout":        false,
+	// ProductService
+	"/nexusmart.product.v1.ProductService/UpdateStock":  true,
+	"/nexusmart.product.v1.ProductService/ReleaseStock": true,
+	"/nexusmart.product.v1.ProductService/ConfirmStock": true,
+	"/nexusmart.product.v1.ProductService/ReserveStock": false,
+	// CartService
+	"/nexusmart.cart.v1.CartService/GetCart":       false,
+	"/nexusmart.cart.v1.CartService/AddItem":       false,
+	"/nexusmart.cart.v1.CartService/UpdateItemQty": false,
+	"/nexusmart.cart.v1.CartService/RemoveItem":    false,
+	"/nexusmart.cart.v1.CartService/ClearItems":    false,
+	// PromotionService
+	"/nexusmart.promotion.v1.PromotionService/CreateVoucher":         false,
+	"/nexusmart.promotion.v1.PromotionService/SaveVoucher":           false,
+	"/nexusmart.promotion.v1.PromotionService/CreateFlashSale":       false,
+	"/nexusmart.promotion.v1.PromotionService/RegisterFlashSaleItem": false,
+	"/nexusmart.promotion.v1.PromotionService/ApproveFlashSaleItem":  false,
+	"/nexusmart.promotion.v1.PromotionService/GetCoinBalance":        false,
+	"/nexusmart.promotion.v1.PromotionService/CreditCoins":           false,
+	"/nexusmart.promotion.v1.PromotionService/PreviewDiscounts":      false,
+	"/nexusmart.promotion.v1.PromotionService/ReservePromotion":      false,
+	"/nexusmart.promotion.v1.PromotionService/ReleasePromotion":      true,
+	// OrderService
+	"/nexusmart.order.v1.OrderService/MarkPaymentResult": true,
+	// ShippingService
+	"/nexusmart.shipping.v1.ShippingService/CreateShipment": false,
+	"/nexusmart.shipping.v1.ShippingService/CancelShipment": false,
+	"/nexusmart.shipping.v1.ShippingService/GetShipment":    false,
+	// NotificationService
+	"/nexusmart.notification.v1.NotificationService/ListNotifications": false,
+	"/nexusmart.notification.v1.NotificationService/MarkRead":          false,
+	"/nexusmart.notification.v1.NotificationService/GetPreferences":    false,
+	"/nexusmart.notification.v1.NotificationService/UpdatePreferences": false,
 }
 
 var (

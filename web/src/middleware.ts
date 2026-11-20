@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ACCESS_COOKIE, REFRESH_COOKIE } from "@/lib/server/config";
+import { buildLoginRedirectUrl } from "@/lib/server/http";
 import {
   accessExpiresSoon,
   applyAuthCookiesToHeader,
@@ -17,19 +18,7 @@ function isProtectedPath(pathname: string): boolean {
 }
 
 function redirectToLogin(req: NextRequest, clearCookies: boolean): NextResponse {
-  const nextTarget = `${req.nextUrl.pathname}${req.nextUrl.search}`;
-  const proto =
-    req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() ||
-    req.nextUrl.protocol.replace(/:$/, "") ||
-    "http";
-  const host =
-    req.headers.get("x-forwarded-host")?.split(",")[0]?.trim() ||
-    req.headers.get("host") ||
-    req.nextUrl.host;
-  const target = new URL("/dang-nhap", `${proto}://${host}`);
-  if (nextTarget.startsWith("/") && !nextTarget.startsWith("//")) {
-    target.searchParams.set("next", nextTarget);
-  }
+  const target = buildLoginRedirectUrl(req);
   const res = NextResponse.redirect(target);
   if (clearCookies) clearAuthCookies(res.cookies);
   return res;

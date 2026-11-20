@@ -1,5 +1,10 @@
 // Shared DTO types and pure view helpers for Seller Center backend integration.
 import type { OrderStatusMeta } from "@/data";
+import {
+  normalizeSalesChannel,
+  normalizeStorefrontShopId,
+  type SalesChannel,
+} from "../../lib/salesChannel";
 
 export interface GwSellerShop {
   id: string;
@@ -123,9 +128,20 @@ export interface GwSellerOrder {
   shipping_address?: GwSellerAddressSnapshot | null;
   items: GwSellerOrderItem[];
   timeline: GwSellerOrderTimeline[];
+  sales_channel?: SalesChannel | string;
+  storefront_shop_id?: string;
   payment_expires_at?: string;
   created_at?: string;
   updated_at?: string;
+}
+
+export function normalizeSellerOrder(order: GwSellerOrder): GwSellerOrder {
+  const salesChannel = normalizeSalesChannel(order.sales_channel);
+  return {
+    ...order,
+    sales_channel: salesChannel,
+    storefront_shop_id: normalizeStorefrontShopId(order.storefront_shop_id, salesChannel),
+  };
 }
 
 export interface GwSellerBalance {

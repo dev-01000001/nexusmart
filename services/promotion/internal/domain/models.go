@@ -16,6 +16,9 @@ const (
 
 	ReservationStatusReserved = "RESERVED"
 	ReservationStatusReleased = "RELEASED"
+
+	SalesChannelMarketplace = "MARKETPLACE"
+	SalesChannelStorefront  = "STOREFRONT"
 )
 
 // Voucher represents a persisted promotion voucher.

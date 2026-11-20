@@ -292,8 +292,19 @@ func TestCartRemoveClearAndOwnership(t *testing.T) {
 		t.Fatalf("expected 2 items after RemoveItem, got %+v err=%v", remResp, err)
 	}
 
-	// Internal OrderService ClearItems for specific sku-2 (no user claims, passes user_id)
-	clrResp, err := srv.ClearItems(context.Background(), &cartv1.ClearItemsRequest{
+	// Unauthenticated GetCart and ClearItems MUST be rejected (B1).
+	if _, err := srv.GetCart(context.Background(), &cartv1.GetCartRequest{UserId: "buyer-a"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated for anonymous GetCart, got %v", err)
+	}
+	if _, err := srv.ClearItems(context.Background(), &cartv1.ClearItemsRequest{
+		UserId: "buyer-a",
+		SkuIds: []string{"sku-2"},
+	}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated for anonymous ClearItems, got %v", err)
+	}
+
+	// Authenticated buyer-a (forwarded buyer JWT during OrderService checkout) clears specific sku-2.
+	clrResp, err := srv.ClearItems(ctxA, &cartv1.ClearItemsRequest{
 		UserId: "buyer-a",
 		SkuIds: []string{"sku-2"},
 	})
@@ -312,6 +323,92 @@ func TestCartRemoveClearAndOwnership(t *testing.T) {
 	afterAll, err := srv.GetCart(ctxA, &cartv1.GetCartRequest{})
 	if err != nil || afterAll.Cart.TotalItems != 0 || len(afterAll.Cart.ShopGroups) != 0 {
 		t.Fatalf("expected completely empty cart, got %+v err=%v", afterAll, err)
+	}
+}
+
+func TestCartShopFilterReadAndClearLeavesOtherShopsIntact(t *testing.T) {
+	prod := &fakeProductClient{
+		skus: map[string]*productv1.SKU{
+			"sku-a1": {Id: "sku-a1", ProductId: "p1", ShopId: "shop-a", ProductName: "A1", Name: "M", PriceVnd: 100000, AvailableStock: 10, WeightGrams: 200, IsActive: true},
+			"sku-a2": {Id: "sku-a2", ProductId: "p2", ShopId: "shop-a", ProductName: "A2", Name: "L", PriceVnd: 50000, AvailableStock: 10, WeightGrams: 150, IsActive: true},
+			"sku-b1": {Id: "sku-b1", ProductId: "p3", ShopId: "shop-b", ProductName: "B1", Name: "S", PriceVnd: 80000, AvailableStock: 10, WeightGrams: 300, IsActive: true},
+		},
+	}
+	usr := &fakeUserClient{
+		shops: map[string]string{
+			"shop-a": "Shop Alpha",
+			"shop-b": "Shop Beta",
+		},
+	}
+
+	srv, mr := newTestCartServer(t, prod, usr)
+	ctx := buyerCtx("buyer-channel")
+
+	_, _ = srv.AddItem(ctx, &cartv1.AddItemRequest{SkuId: "sku-a1", Quantity: 2})
+	_, _ = srv.AddItem(ctx, &cartv1.AddItemRequest{SkuId: "sku-a2", Quantity: 1})
+	_, _ = srv.AddItem(ctx, &cartv1.AddItemRequest{SkuId: "sku-b1", Quantity: 3})
+
+	// Single Redis key invariant: only cart:<user_id> exists.
+	if keys := mr.Keys(); len(keys) != 1 || keys[0] != "cart:buyer-channel" {
+		t.Fatalf("expected single Redis key cart:buyer-channel, got %v", keys)
+	}
+
+	// Filtered GetCart(shop_id="shop-a") returns only shop-a items & recalculated totals.
+	filtered, err := srv.GetCart(ctx, &cartv1.GetCartRequest{ShopId: "shop-a"})
+	if err != nil {
+		t.Fatalf("GetCart(shop-a): %v", err)
+	}
+	if len(filtered.Cart.ShopGroups) != 1 || filtered.Cart.ShopGroups[0].ShopId != "shop-a" {
+		t.Fatalf("expected only shop-a group, got %+v", filtered.Cart.ShopGroups)
+	}
+	if filtered.Cart.TotalItems != 3 || filtered.Cart.TotalVnd != 250000 || filtered.Cart.ShopGroups[0].TotalWeightGrams != 550 {
+		t.Fatalf("unexpected filtered totals: %+v", filtered.Cart)
+	}
+
+	// Filtered GetCart for a shop with no items in cart returns empty without modifying Redis.
+	emptyShop, err := srv.GetCart(ctx, &cartv1.GetCartRequest{ShopId: "shop-other"})
+	if err != nil || len(emptyShop.Cart.ShopGroups) != 0 || emptyShop.Cart.TotalItems != 0 || emptyShop.Cart.TotalVnd != 0 {
+		t.Fatalf("expected empty cart for shop-other, got %+v err=%v", emptyShop, err)
+	}
+
+	// Unfiltered GetCart STILL returns both shops untouched in Redis!
+	full, err := srv.GetCart(ctx, &cartv1.GetCartRequest{})
+	if err != nil || len(full.Cart.ShopGroups) != 2 || full.Cart.TotalItems != 6 || full.Cart.TotalVnd != 490000 {
+		t.Fatalf("filtered GetCart must not mutate Redis cart; got %+v err=%v", full, err)
+	}
+
+	// ClearItems with BOTH shop_id="shop-a" and mixed sku_ids=["sku-a1", "sku-b1"] must ONLY clear sku-a1!
+	if _, err := srv.ClearItems(ctx, &cartv1.ClearItemsRequest{
+		ShopId: "shop-a",
+		SkuIds: []string{"sku-a1", "sku-b1"},
+	}); err != nil {
+		t.Fatalf("ClearItems(shop-a, mixed skus): %v", err)
+	}
+	afterMixed, err := srv.GetCart(ctx, &cartv1.GetCartRequest{})
+	if err != nil || len(afterMixed.Cart.ShopGroups) != 2 || afterMixed.Cart.TotalItems != 4 {
+		t.Fatalf("expected sku-a2 and sku-b1 remaining (total_items=4), got %+v err=%v", afterMixed, err)
+	}
+	if len(afterMixed.Cart.ShopGroups[0].Items) != 1 || afterMixed.Cart.ShopGroups[0].Items[0].SkuId != "sku-a2" {
+		t.Fatalf("expected only sku-a2 left in shop-a, got %+v", afterMixed.Cart.ShopGroups[0].Items)
+	}
+
+	// ClearItems with shop_id="shop-a" (empty sku_ids) clears remaining shop-a items, leaving shop-b intact!
+	if _, err := srv.ClearItems(ctx, &cartv1.ClearItemsRequest{ShopId: "shop-a"}); err != nil {
+		t.Fatalf("ClearItems(shop-a): %v", err)
+	}
+	afterShopClear, err := srv.GetCart(ctx, &cartv1.GetCartRequest{})
+	if err != nil {
+		t.Fatalf("GetCart after shop clear: %v", err)
+	}
+	if len(afterShopClear.Cart.ShopGroups) != 1 || afterShopClear.Cart.ShopGroups[0].ShopId != "shop-b" {
+		t.Fatalf("expected only shop-b remaining after clearing shop-a, got %+v", afterShopClear.Cart.ShopGroups)
+	}
+	if afterShopClear.Cart.TotalItems != 3 || afterShopClear.Cart.TotalVnd != 240000 {
+		t.Fatalf("expected shop-b intact (3 items, 240000 VND), got %+v", afterShopClear.Cart)
+	}
+	// Still single Redis key.
+	if keys := mr.Keys(); len(keys) != 1 || keys[0] != "cart:buyer-channel" {
+		t.Fatalf("expected single Redis key cart:buyer-channel, got %v", keys)
 	}
 }
 

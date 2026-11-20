@@ -2,14 +2,15 @@
 import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { assertRole, requireRole, SELLER_ROLES, type Session } from "@/lib/server/session";
-import type {
-  GwCategory,
-  GwFlashSale,
-  GwSellerBalance,
-  GwSellerOrder,
-  GwSellerProduct,
-  GwSellerShop,
-  GwSellerVoucher,
+import {
+  normalizeSellerOrder,
+  type GwCategory,
+  type GwFlashSale,
+  type GwSellerBalance,
+  type GwSellerOrder,
+  type GwSellerProduct,
+  type GwSellerShop,
+  type GwSellerVoucher,
 } from "./sellerApiTypes";
 
 export interface LoadResult<T> {
@@ -92,7 +93,10 @@ export async function loadSellerOrders(
       query: { page: 1, page_size: pageSize },
     });
     return {
-      data: { items: res.items ?? [], total: res.total ?? 0 },
+      data: {
+        items: (res.items ?? []).map(normalizeSellerOrder),
+        total: res.total ?? 0,
+      },
       error: null,
     };
   } catch (err) {
@@ -112,7 +116,7 @@ export async function loadSellerOrderById(
     if (!order || order.shop_id !== expectedShopId) {
       return { data: null, error: null };
     }
-    return { data: order, error: null };
+    return { data: normalizeSellerOrder(order), error: null };
   } catch (err) {
     if (err instanceof GatewayError && (err.kind === "not_found" || err.kind === "forbidden")) {
       return { data: null, error: null };

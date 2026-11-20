@@ -3,6 +3,7 @@ package grpcserver
 import (
 	"context"
 	"errors"
+	"strings"
 
 	shippingv1 "github.com/nexusmart/core/gen/go/nexusmart/shipping/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
@@ -109,14 +110,16 @@ func (s *Server) CalculateFee(ctx context.Context, req *shippingv1.CalculateFeeR
 }
 
 func (s *Server) CreateShipment(ctx context.Context, req *shippingv1.CreateShipmentRequest) (*shippingv1.CreateShipmentResponse, error) {
-	if claims, ok := auth.ClaimsFromContext(ctx); ok {
-		if !auth.HasRole(claims, "seller", "admin", "super_admin") {
-			return nil, status.Error(codes.PermissionDenied, "only seller or admin may create shipments")
-		}
-		if auth.HasRole(claims, "seller") {
-			if claims.ShopID == "" || req.GetShopId() == "" || claims.ShopID != req.GetShopId() {
-				return nil, status.Error(codes.PermissionDenied, "seller cannot create shipment for another shop")
-			}
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok || strings.TrimSpace(claims.UserID()) == "" {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if !auth.HasRole(claims, "seller", "admin", "super_admin") {
+		return nil, status.Error(codes.PermissionDenied, "only seller or admin may create shipments")
+	}
+	if auth.HasRole(claims, "seller") {
+		if claims.ShopID == "" || req.GetShopId() == "" || claims.ShopID != req.GetShopId() {
+			return nil, status.Error(codes.PermissionDenied, "seller cannot create shipment for another shop")
 		}
 	}
 
@@ -159,21 +162,23 @@ func (s *Server) CreateShipment(ctx context.Context, req *shippingv1.CreateShipm
 }
 
 func (s *Server) CancelShipment(ctx context.Context, req *shippingv1.CancelShipmentRequest) (*shippingv1.CancelShipmentResponse, error) {
-	if claims, ok := auth.ClaimsFromContext(ctx); ok {
-		if !auth.HasRole(claims, "seller", "admin", "super_admin") {
-			return nil, status.Error(codes.PermissionDenied, "only seller or admin may cancel shipments")
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok || strings.TrimSpace(claims.UserID()) == "" {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if !auth.HasRole(claims, "seller", "admin", "super_admin") {
+		return nil, status.Error(codes.PermissionDenied, "only seller or admin may cancel shipments")
+	}
+	if auth.HasRole(claims, "seller") {
+		if claims.ShopID == "" {
+			return nil, status.Error(codes.PermissionDenied, "seller token missing shop_id")
 		}
-		if auth.HasRole(claims, "seller") {
-			if claims.ShopID == "" {
-				return nil, status.Error(codes.PermissionDenied, "seller token missing shop_id")
-			}
-			existing, _, getErr := s.svc.GetShipment(ctx, req.GetOrderId(), "")
-			if getErr != nil {
-				return nil, mapError(getErr)
-			}
-			if existing.ShopID != claims.ShopID {
-				return nil, status.Error(codes.PermissionDenied, "seller cannot cancel another shop's shipment")
-			}
+		existing, _, getErr := s.svc.GetShipment(ctx, req.GetOrderId(), "")
+		if getErr != nil {
+			return nil, mapError(getErr)
+		}
+		if existing.ShopID != claims.ShopID {
+			return nil, status.Error(codes.PermissionDenied, "seller cannot cancel another shop's shipment")
 		}
 	}
 	sh, err := s.svc.CancelShipment(ctx, req.GetOrderId(), req.GetReason())
@@ -186,15 +191,17 @@ func (s *Server) CancelShipment(ctx context.Context, req *shippingv1.CancelShipm
 }
 
 func (s *Server) GetShipment(ctx context.Context, req *shippingv1.GetShipmentRequest) (*shippingv1.GetShipmentResponse, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok || strings.TrimSpace(claims.UserID()) == "" {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
 	sh, evList, err := s.svc.GetShipment(ctx, req.GetOrderId(), req.GetTrackingCode())
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if claims, ok := auth.ClaimsFromContext(ctx); ok {
-		if auth.HasRole(claims, "seller") {
-			if claims.ShopID == "" || sh.ShopID != claims.ShopID {
-				return nil, status.Error(codes.PermissionDenied, "seller cannot access another shop's shipment")
-			}
+	if auth.HasRole(claims, "seller") {
+		if claims.ShopID == "" || sh.ShopID != claims.ShopID {
+			return nil, status.Error(codes.PermissionDenied, "seller cannot access another shop's shipment")
 		}
 	}
 

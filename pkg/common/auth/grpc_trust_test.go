@@ -93,3 +93,33 @@ func TestGRPCInterceptorServiceTokens(t *testing.T) {
 		t.Fatalf("service token must not verify as a user token")
 	}
 }
+
+func TestGRPCInterceptorInternalRPCMatrix(t *testing.T) {
+	users, _ := NewManager("user-key", 15*time.Minute)
+	svc, _ := NewManager("service-key", ServiceTokenTTL)
+
+	svcTok, _ := svc.SignServiceToken("order-service")
+	userTok, _, _, _ := users.SignAccessToken("buyer-1", "buyer", "")
+
+	// Every internal RPC must reject anonymous callers with Unauthenticated.
+	// RPCs marked true accept service tokens; RPCs marked false reject service tokens with PermissionDenied.
+	for method, allowSvc := range internalRPCs {
+		if _, err := callInterceptor(t, users, svc, method); status.Code(err) != codes.Unauthenticated {
+			t.Errorf("anonymous %s: want Unauthenticated, got %v", method, err)
+		}
+		claims, err := callInterceptor(t, users, svc, method, MDAuthorization, "Bearer "+userTok)
+		if err != nil || claims == nil || claims.UserID() != "buyer-1" {
+			t.Errorf("user JWT %s: want buyer-1 claims, got claims=%+v err=%v", method, claims, err)
+		}
+		svcClaims, svcErr := callInterceptor(t, users, svc, method, MDAuthorization, "Bearer "+svcTok)
+		if allowSvc {
+			if svcErr != nil || svcClaims == nil || svcClaims.Service != "order-service" {
+				t.Errorf("service token on allowed %s: want order-service claims, got claims=%+v err=%v", method, svcClaims, svcErr)
+			}
+		} else {
+			if status.Code(svcErr) != codes.PermissionDenied {
+				t.Errorf("service token on user-only %s: want PermissionDenied, got %v", method, svcErr)
+			}
+		}
+	}
+}

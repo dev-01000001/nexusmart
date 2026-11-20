@@ -1,8 +1,10 @@
 -- name: CreateCheckoutGroup :one
 INSERT INTO checkout_groups (
-    id, buyer_id, idempotency_key, status, payment_method, total_payable_vnd
+    id, buyer_id, idempotency_key, status, payment_method, total_payable_vnd,
+    sales_channel, storefront_shop_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6
+    $1, $2, $3, $4, $5, $6,
+    $7, $8
 )
 RETURNING *;
 
@@ -54,7 +56,8 @@ INSERT INTO orders (
     platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd,
     shipping_fee_vnd, commission_vnd, total_payable_vnd,
     carrier_code, service_code, tracking_code, label_url, cancel_reason,
-    shipping_address_json, payment_expires_at
+    shipping_address_json, payment_expires_at,
+    sales_channel, storefront_shop_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
     $7, $8, $9,
@@ -62,7 +65,8 @@ INSERT INTO orders (
     $13, $14, $15,
     $16, $17, $18,
     $19, $20, $21, $22, $23,
-    $24, $25
+    $24, $25,
+    $26, $27
 )
 RETURNING *;
 
@@ -128,6 +132,7 @@ FROM orders
 WHERE (sqlc.arg(buyer_id)::text = '' OR buyer_id = sqlc.arg(buyer_id)::text)
   AND (sqlc.arg(shop_id)::text = '' OR shop_id = sqlc.arg(shop_id)::text)
   AND (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text)
+  AND (sqlc.arg(sales_channel)::text = '' OR sales_channel = sqlc.arg(sales_channel)::text)
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 
@@ -136,7 +141,8 @@ SELECT COUNT(*)
 FROM orders
 WHERE (sqlc.arg(buyer_id)::text = '' OR buyer_id = sqlc.arg(buyer_id)::text)
   AND (sqlc.arg(shop_id)::text = '' OR shop_id = sqlc.arg(shop_id)::text)
-  AND (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text);
+  AND (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text)
+  AND (sqlc.arg(sales_channel)::text = '' OR sales_channel = sqlc.arg(sales_channel)::text);
 
 -- name: UpdateOrderPaymentInfoByGroup :exec
 UPDATE orders

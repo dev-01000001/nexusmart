@@ -401,6 +401,8 @@ type PreviewDiscountsRequest struct {
 	PlatformVoucherID string                 `json:"platform_voucher_id,omitempty"`
 	FreeshipVoucherID string                 `json:"freeship_voucher_id,omitempty"`
 	CoinsToUse        int64                  `json:"coins_to_use,omitempty"`
+	SalesChannel      string                 `json:"sales_channel,omitempty"`
+	StorefrontShopID  string                 `json:"storefront_shop_id,omitempty"`
 }
 
 type DiscountBreakdownDTO struct {
@@ -500,6 +502,8 @@ type CheckoutRequest struct {
 	CoinsToUse        int64                   `json:"coins_to_use,omitempty"`
 	PaymentMethod     string                  `json:"payment_method"`
 	ShippingChoices   []ShopShippingChoiceDTO `json:"shipping_choices,omitempty"`
+	SalesChannel      string                  `json:"sales_channel,omitempty"`
+	StorefrontShopID  string                  `json:"storefront_shop_id,omitempty"`
 }
 
 type OrderItemDTO struct {
@@ -550,6 +554,8 @@ type OrderDTO struct {
 	ServiceCode              string                  `json:"service_code"`
 	TrackingCode             string                  `json:"tracking_code"`
 	LabelURL                 string                  `json:"label_url"`
+	SalesChannel             string                  `json:"sales_channel"`
+	StorefrontShopID         string                  `json:"storefront_shop_id"`
 	Items                    []OrderItemDTO          `json:"items"`
 	Timeline                 []OrderTimelineEventDTO `json:"timeline"`
 }
@@ -565,6 +571,8 @@ type CheckoutResponse struct {
 	PaymentExpiresAt string     `json:"payment_expires_at"`
 	TotalPayableVND  int64      `json:"total_payable_vnd"`
 	IdempotentReplay bool       `json:"idempotent_replay"`
+	SalesChannel     string     `json:"sales_channel"`
+	StorefrontShopID string     `json:"storefront_shop_id"`
 }
 
 type OrderResponse struct {
@@ -595,17 +603,30 @@ type SellerShipResponse struct {
 
 // --- Payments, Webhooks & Ledger ---
 
+type ShopAllocationDTO struct {
+	OrderID          string `json:"order_id"`
+	ShopID           string `json:"shop_id"`
+	SubtotalVND      int64  `json:"subtotal_vnd"`
+	CommissionVND    int64  `json:"commission_vnd"`
+	ShippingFeeVND   int64  `json:"shipping_fee_vnd"`
+	SalesChannel     string `json:"sales_channel"`
+	StorefrontShopID string `json:"storefront_shop_id"`
+}
+
 type PaymentDTO struct {
-	PaymentID    string `json:"payment_id"`
-	ID           string `json:"id"`
-	OrderGroupID string `json:"order_group_id"`
-	OrderID      string `json:"order_id"`
-	UserID       string `json:"user_id"`
-	AmountVND    int64  `json:"amount_vnd"`
-	Method       string `json:"method"`
-	Status       string `json:"status"`
-	QRURL        string `json:"qr_url"`
-	QRCode       string `json:"qr_code"`
+	PaymentID        string              `json:"payment_id"`
+	ID               string              `json:"id"`
+	OrderGroupID     string              `json:"order_group_id"`
+	OrderID          string              `json:"order_id"`
+	UserID           string              `json:"user_id"`
+	AmountVND        int64               `json:"amount_vnd"`
+	Method           string              `json:"method"`
+	Status           string              `json:"status"`
+	QRURL            string              `json:"qr_url"`
+	QRCode           string              `json:"qr_code"`
+	SalesChannel     string              `json:"sales_channel"`
+	StorefrontShopID string              `json:"storefront_shop_id"`
+	ShopAllocations  []ShopAllocationDTO `json:"shop_allocations"`
 }
 
 type PaymentResponse struct {
@@ -671,6 +692,33 @@ type LedgerSummaryResponse struct {
 	TotalCreditsVND int64               `json:"total_credits_vnd"`
 	IsBalanced      bool                `json:"is_balanced"`
 	Accounts        []AccountBalanceDTO `json:"accounts"`
+	SalesChannel    string              `json:"sales_channel"`
+}
+
+type ReconciliationItemDTO struct {
+	PaymentID         string `json:"payment_id"`
+	ProviderTxID      string `json:"provider_tx_id"`
+	LocalAmountVND    int64  `json:"local_amount_vnd"`
+	ProviderAmountVND int64  `json:"provider_amount_vnd"`
+	Status            string `json:"status"`
+	Note              string `json:"note"`
+	SalesChannel      string `json:"sales_channel"`
+	StorefrontShopID  string `json:"storefront_shop_id"`
+}
+
+type ReconciliationRequest struct {
+	Date         string `json:"date,omitempty"`
+	SalesChannel string `json:"sales_channel,omitempty"`
+}
+
+type ReconciliationResponse struct {
+	RunID                string                  `json:"run_id"`
+	MatchedCount         int32                   `json:"matched_count"`
+	MissingLocalCount    int32                   `json:"missing_local_count"`
+	MissingProviderCount int32                   `json:"missing_provider_count"`
+	AmountMismatchCount  int32                   `json:"amount_mismatch_count"`
+	Items                []ReconciliationItemDTO `json:"items"`
+	SalesChannel         string                  `json:"sales_channel"`
 }
 
 // --- Notifications ---

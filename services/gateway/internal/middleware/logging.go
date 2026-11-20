@@ -55,7 +55,7 @@ func (w *flushingStatusWriter) Unwrap() http.ResponseWriter {
 }
 
 // RequestLogger emits structured JSON request logs with trace_id and redacted sensitive values.
-func RequestLogger(log *slog.Logger) func(http.Handler) http.Handler {
+func RequestLogger(log *slog.Logger, trusted *TrustedProxies) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -80,7 +80,7 @@ func RequestLogger(log *slog.Logger) func(http.Handler) http.Handler {
 				slog.Int("status", sw.status),
 				slog.Int("bytes", sw.bytes),
 				slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000.0),
-				slog.String("client_ip", ClientIP(r)),
+				slog.String("client_ip", trusted.ClientIP(r)),
 			}
 			if uid := auth.UserIDFromContext(r.Context()); uid != "" {
 				attrs = append(attrs, slog.String("user_id", uid))

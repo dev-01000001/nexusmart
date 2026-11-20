@@ -1,8 +1,9 @@
-import { before, describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { payVietQR } from "./lib/bank.mjs";
 import { config } from "./lib/config.mjs";
 import { WebSession, expectStatus, pollUntil } from "./lib/http.mjs";
+import { resetRateLimitKeys } from "./lib/redis.mjs";
 import {
   assertNoInternalErrorLeak,
   createShippingAddress,
@@ -28,9 +29,14 @@ describe("02. Buyer Commerce & Security Suite (Cart, Voucher, COD, VietQR, Idemp
   let buyerAVietqrPaymentId;
 
   before(async () => {
+    await resetRateLimitKeys();
     [sku1, sku2] = await discoverTwoShopSkus({ minStock: 5 });
     buyerA = await registerVerifyLoginBuyer("buyer-a");
     addrA = await createShippingAddress(buyerA.session, "buyer-a");
+  });
+
+  after(async () => {
+    await resetRateLimitKeys();
   });
 
   it("(b)(c)(d) adds items from 2 seeded shops, applies a real voucher, checks out COD, and verifies orders", async () => {

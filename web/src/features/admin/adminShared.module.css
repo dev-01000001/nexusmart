@@ -315,6 +315,29 @@ select.toolbarSelect {
   color: var(--pill-neutral-ink);
 }
 
+/* Sales channel origin badges (distinct hairline chip, never competing with lifecycle StatusPill) */
+.channelBadge {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: var(--radius-chip);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  flex: none;
+  background: var(--pill-neutral-bg);
+  color: var(--pill-neutral-ink);
+  border: 1px solid #d7dfe3; /* taste-skill-ignore: quiet sales channel origin badge */
+}
+
+.channelBadgeStorefront {
+  background: var(--accent-tint);
+  color: var(--accent-tint-ink);
+  border-color: var(--accent-tint-strong);
+}
+
 /* Borderless table directly on white sheet ground */
 .tableWrap {
   width: 100%;

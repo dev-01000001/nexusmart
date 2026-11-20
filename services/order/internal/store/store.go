@@ -188,7 +188,7 @@ type Store interface {
 
 	GetOrderWithDetails(ctx context.Context, orderID string) (*OrderAggregate, error)
 	ListOrdersByCheckoutGroup(ctx context.Context, checkoutGroupID string) ([]OrderAggregate, error)
-	ListOrdersFiltered(ctx context.Context, buyerID, shopID, status string, limit, offset int32) ([]OrderAggregate, int64, error)
+	ListOrdersFiltered(ctx context.Context, buyerID, shopID, status, salesChannel string, limit, offset int32) ([]OrderAggregate, int64, error)
 	GetOrderTimeline(ctx context.Context, orderID string) ([]db.OrderTimelineEvent, error)
 
 	TransitionOrdersPaymentResult(ctx context.Context, params PaymentResultTransitionParams) (*PaymentResultTransitionOutcome, error)

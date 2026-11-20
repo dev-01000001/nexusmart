@@ -537,6 +537,29 @@ td.numCol {
   color: var(--pill-negative-ink);
 }
 
+/* Sales channel origin badges (4px hairline tag, distinct from 999px lifecycle status pills) */
+.channelTag {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: var(--radius-chip);
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 500;
+  white-space: nowrap;
+  flex: none;
+  background: var(--pill-neutral-bg);
+  color: var(--pill-neutral-ink);
+  border: 1px solid var(--border); /* taste-skill-ignore: quiet sales channel origin badge */
+}
+
+.channelTagStorefront {
+  background: var(--accent-tint);
+  color: var(--accent-tint-ink);
+  border-color: var(--accent-tint-strong);
+}
+
 /* Semantic delta text */
 .deltaPos {
   color: var(--positive);

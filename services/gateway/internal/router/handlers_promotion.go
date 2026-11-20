@@ -281,14 +281,21 @@ type createVoucherBody struct {
 
 func (h *handler) handleListVouchers(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	salesChannel, storefrontShopID, errMsg := validateSalesChannelInput(q.Get("sales_channel"), q.Get("storefront_shop_id"))
+	if errMsg != "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", errMsg)
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Promotion.ListAvailableVouchers(ctx, &promotionv1.ListAvailableVouchersRequest{
-		UserId:         auth.UserIDFromContext(r.Context()),
-		ShopId:         q.Get("shop_id"),
-		Scope:          parseVoucherScope(q.Get("scope")),
-		OrderAmountVnd: httpx.ParseInt64Query(r, "order_amount_vnd", 0),
+		UserId:           auth.UserIDFromContext(r.Context()),
+		ShopId:           q.Get("shop_id"),
+		Scope:            parseVoucherScope(q.Get("scope")),
+		OrderAmountVnd:   httpx.ParseInt64Query(r, "order_amount_vnd", 0),
+		SalesChannel:     salesChannel,
+		StorefrontShopId: storefrontShopID,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -303,12 +310,16 @@ func (h *handler) handleListVouchers(w http.ResponseWriter, r *http.Request) {
 
 // handleSellerListVouchers lists SHOP vouchers scoped strictly to the caller's JWT shop_id.
 func (h *handler) handleSellerListVouchers(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Promotion.ListAvailableVouchers(ctx, &promotionv1.ListAvailableVouchersRequest{
 		UserId: auth.UserIDFromContext(r.Context()),
-		ShopId: auth.ShopIDFromContext(r.Context()),
+		ShopId: shopID,
 		Scope:  promotionv1.VoucherScope_VOUCHER_SCOPE_SHOP,
 	})
 	if err != nil {
@@ -349,6 +360,10 @@ func (h *handler) handleSaveVoucher(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleSellerCreateVoucher(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	var body createVoucherBody
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
@@ -372,7 +387,7 @@ func (h *handler) handleSellerCreateVoucher(w http.ResponseWriter, r *http.Reque
 		Code:            body.Code,
 		Name:            body.Name,
 		Scope:           promotionv1.VoucherScope_VOUCHER_SCOPE_SHOP,
-		ShopId:          auth.ShopIDFromContext(r.Context()),
+		ShopId:          shopID,
 		DiscountType:    parseDiscountType(body.DiscountType),
 		ValueVnd:        body.ValueVND,
 		DiscountPercent: body.DiscountPercent,
@@ -497,6 +512,10 @@ func (h *handler) handleAdminCreateFlashSale(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *handler) handleSellerRegisterFlashSaleItem(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	var body struct {
 		SKUID         string `json:"sku_id"`
 		FlashPriceVND int64  `json:"flash_price_vnd"`
@@ -512,7 +531,7 @@ func (h *handler) handleSellerRegisterFlashSaleItem(w http.ResponseWriter, r *ht
 
 	resp, err := h.clients.Promotion.RegisterFlashSaleItem(ctx, &promotionv1.RegisterFlashSaleItemRequest{
 		FlashSaleId:   chi.URLParam(r, "id"),
-		ShopId:        auth.ShopIDFromContext(r.Context()),
+		ShopId:        shopID,
 		SkuId:         body.SKUID,
 		FlashPriceVnd: body.FlashPriceVND,
 		TotalSlots:    body.TotalSlots,
@@ -627,9 +646,16 @@ func (h *handler) handlePreviewDiscounts(w http.ResponseWriter, r *http.Request)
 		PlatformVoucherID string            `json:"platform_voucher_id"`
 		FreeshipVoucherID string            `json:"freeship_voucher_id"`
 		CoinsToUse        int64             `json:"coins_to_use"`
+		SalesChannel      string            `json:"sales_channel"`
+		StorefrontShopID  string            `json:"storefront_shop_id"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		return
+	}
+	salesChannel, storefrontShopID, errMsg := validateSalesChannelInput(body.SalesChannel, body.StorefrontShopID)
+	if errMsg != "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", errMsg)
 		return
 	}
 
@@ -662,6 +688,8 @@ func (h *handler) handlePreviewDiscounts(w http.ResponseWriter, r *http.Request)
 		PlatformVoucherId: body.PlatformVoucherID,
 		FreeshipVoucherId: body.FreeshipVoucherID,
 		CoinsToUse:        body.CoinsToUse,
+		SalesChannel:      salesChannel,
+		StorefrontShopId:  storefrontShopID,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)

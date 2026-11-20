@@ -1,5 +1,10 @@
 // Shared DTO types and pure display helpers for Admin Portal backend integration.
 import type { PillTone } from "./adminMeta";
+import {
+  normalizeSalesChannel,
+  normalizeStorefrontShopId,
+  type SalesChannel,
+} from "../../lib/salesChannel";
 
 export interface GwAdminShop {
   id: string;
@@ -27,6 +32,7 @@ export interface GwLedgerSummary {
   total_debits_vnd: number;
   total_credits_vnd: number;
   is_balanced: boolean;
+  sales_channel?: string;
   accounts: GwAccountBalance[];
 }
 
@@ -37,6 +43,8 @@ export interface GwReconciliationItem {
   provider_amount_vnd: number;
   status: string;
   note: string;
+  sales_channel?: string;
+  storefront_shop_id?: string;
 }
 
 export interface GwReconciliationReport {
@@ -45,6 +53,7 @@ export interface GwReconciliationReport {
   missing_local_count: number;
   missing_provider_count: number;
   amount_mismatch_count: number;
+  sales_channel?: string;
   items: GwReconciliationItem[];
 }
 
@@ -73,7 +82,43 @@ export interface GwAdminOrder {
   subtotal_vnd: number;
   commission_vnd: number;
   total_payable_vnd: number;
+  sales_channel?: SalesChannel | string;
+  storefront_shop_id?: string;
   created_at?: string;
+}
+
+export function normalizeAdminOrder(order: GwAdminOrder): GwAdminOrder {
+  const salesChannel = normalizeSalesChannel(order.sales_channel);
+  return {
+    ...order,
+    sales_channel: salesChannel,
+    storefront_shop_id: normalizeStorefrontShopId(order.storefront_shop_id, salesChannel),
+  };
+}
+
+export function getAdminOrderStatusMeta(status: string): { label: string; tone: PillTone } {
+  switch (status.toUpperCase()) {
+    case "PENDING":
+      return { label: "Chờ thanh toán", tone: "warning" };
+    case "CONFIRMED":
+      return { label: "Chờ xác nhận", tone: "warning" };
+    case "PREPARING":
+      return { label: "Đang chuẩn bị", tone: "neutral" };
+    case "SHIPPING":
+      return { label: "Đang giao", tone: "neutral" };
+    case "DELIVERED":
+      return { label: "Đã giao", tone: "positive" };
+    case "COMPLETED":
+      return { label: "Hoàn tất", tone: "positive" };
+    case "RETURN_REQUESTED":
+      return { label: "Yêu cầu trả hàng", tone: "warning" };
+    case "RETURNED":
+      return { label: "Đã trả hàng", tone: "negative" };
+    case "CANCELLED":
+      return { label: "Đã hủy", tone: "negative" };
+    default:
+      return { label: status || "Đang xử lý", tone: "neutral" };
+  }
 }
 
 export interface GwAdminProduct {

@@ -111,10 +111,11 @@ func TestService_1000Concurrent_FlashSale_100Slots_AndRelease(t *testing.T) {
 			defer wg.Done()
 			<-startCh
 
+			buyerID := fmt.Sprintf("buyer-%04d", idx)
 			orderID := fmt.Sprintf("flash-ord-%04d", idx)
-			resp, rErr := svc.ReservePromotion(context.Background(), &promotionv1.ReservePromotionRequest{
+			resp, rErr := svc.ReservePromotion(ctxWithRole(buyerID, "buyer", ""), &promotionv1.ReservePromotionRequest{
 				OrderId: orderID,
-				UserId:  fmt.Sprintf("buyer-%04d", idx),
+				UserId:  buyerID,
 				FlashSaleItems: []*promotionv1.FlashSaleReservationItem{
 					{FlashSaleItemId: itemID, SkuId: "sku-flash-1", Quantity: 1},
 				},
@@ -160,11 +161,11 @@ func TestService_1000Concurrent_FlashSale_100Slots_AndRelease(t *testing.T) {
 
 	// Release 25 winning orders (twice each to verify idempotency) -> remaining_slots must become 25
 	for i := 0; i < 25; i++ {
-		rel1, err := svc.ReleasePromotion(context.Background(), &promotionv1.ReleasePromotionRequest{OrderId: winnerOrder[i]})
+		rel1, err := svc.ReleasePromotion(adminCtx, &promotionv1.ReleasePromotionRequest{OrderId: winnerOrder[i]})
 		if err != nil || !rel1.Released || rel1.AlreadyReleased {
 			t.Fatalf("1st ReleasePromotion failed: resp=%+v err=%v", rel1, err)
 		}
-		rel2, err := svc.ReleasePromotion(context.Background(), &promotionv1.ReleasePromotionRequest{OrderId: winnerOrder[i]})
+		rel2, err := svc.ReleasePromotion(adminCtx, &promotionv1.ReleasePromotionRequest{OrderId: winnerOrder[i]})
 		if err != nil || !rel2.Released || !rel2.AlreadyReleased {
 			t.Fatalf("2nd ReleasePromotion should be idempotent: resp=%+v err=%v", rel2, err)
 		}
@@ -457,7 +458,7 @@ func TestService_FullCheckoutSagaReserveRelease_AndCoinLedgerInvariant(t *testin
 		},
 	}
 
-	res1, err := svc.ReservePromotion(context.Background(), reserveReq)
+	res1, err := svc.ReservePromotion(buyerCtx, reserveReq)
 	if err != nil {
 		t.Fatalf("ReservePromotion 1st: %v", err)
 	}
@@ -473,7 +474,7 @@ func TestService_FullCheckoutSagaReserveRelease_AndCoinLedgerInvariant(t *testin
 	}
 
 	// Idempotent retry of ReservePromotion with same order_id
-	res2, err := svc.ReservePromotion(context.Background(), reserveReq)
+	res2, err := svc.ReservePromotion(buyerCtx, reserveReq)
 	if err != nil || !res2.Reserved || !res2.AlreadyReserved {
 		t.Fatalf("idempotent ReservePromotion unexpected: %+v err=%v", res2, err)
 	}
@@ -499,11 +500,11 @@ func TestService_FullCheckoutSagaReserveRelease_AndCoinLedgerInvariant(t *testin
 	}
 
 	// 3. Saga compensation: ReleasePromotion (called twice to prove idempotency!)
-	rel1, err := svc.ReleasePromotion(context.Background(), &promotionv1.ReleasePromotionRequest{OrderId: "saga-order-1"})
+	rel1, err := svc.ReleasePromotion(adminCtx, &promotionv1.ReleasePromotionRequest{OrderId: "saga-order-1"})
 	if err != nil || !rel1.Released || rel1.AlreadyReleased {
 		t.Fatalf("1st ReleasePromotion unexpected: %+v err=%v", rel1, err)
 	}
-	rel2, err := svc.ReleasePromotion(context.Background(), &promotionv1.ReleasePromotionRequest{OrderId: "saga-order-1"})
+	rel2, err := svc.ReleasePromotion(adminCtx, &promotionv1.ReleasePromotionRequest{OrderId: "saga-order-1"})
 	if err != nil || !rel2.Released || !rel2.AlreadyReleased {
 		t.Fatalf("2nd ReleasePromotion unexpected: %+v err=%v", rel2, err)
 	}
@@ -558,7 +559,7 @@ func TestService_PostgresCoinFailureCompensatesRedis(t *testing.T) {
 
 	// Bare ReservePromotion passes Redis Lua for voucher, then fails coin deduction in Postgres (needs 8000 > 5000)!
 	// Must automatically compensate Redis via release_atomic.lua!
-	_, err = svc.ReservePromotion(context.Background(), &promotionv1.ReservePromotionRequest{
+	_, err = svc.ReservePromotion(ctxWithRole("buyer-poor", "buyer", ""), &promotionv1.ReservePromotionRequest{
 		OrderId:        "order-coin-fail",
 		UserId:         "buyer-poor",
 		ShopVoucherIds: map[string]string{"shop-1": vResp.Voucher.Id},
@@ -618,12 +619,13 @@ func TestService_ConcurrentCoinsRace_CompensatesRedisAndPreservesInvariant(t *te
 		failed    atomic.Int64
 	)
 
+	buyerRaceCtx := ctxWithRole("buyer-race", "buyer", "")
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			<-startCh
-			resp, rErr := svc.ReservePromotion(context.Background(), &promotionv1.ReservePromotionRequest{
+			resp, rErr := svc.ReservePromotion(buyerRaceCtx, &promotionv1.ReservePromotionRequest{
 				OrderId:        fmt.Sprintf("coin-race-ord-%02d", idx),
 				UserId:         "buyer-race",
 				ShopVoucherIds: map[string]string{"shop-1": vResp.Voucher.Id},
@@ -694,12 +696,13 @@ func TestService_ConcurrentDuplicateOrderID_Idempotent(t *testing.T) {
 		startCh = make(chan struct{})
 		errs    atomic.Int64
 	)
+	buyerIdemCtx := ctxWithRole("buyer-idem", "buyer", "")
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-startCh
-			resp, rErr := svc.ReservePromotion(context.Background(), &promotionv1.ReservePromotionRequest{
+			resp, rErr := svc.ReservePromotion(buyerIdemCtx, &promotionv1.ReservePromotionRequest{
 				OrderId:        "same-order-id-99",
 				UserId:         "buyer-idem",
 				ShopVoucherIds: map[string]string{"shop-1": vResp.Voucher.Id},
@@ -761,7 +764,7 @@ func TestService_ListAvailableVouchers_EligibilityReasons(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReservePromotion(context.Background(), &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(ctxWithRole("other-buyer", "buyer", ""), &promotionv1.ReservePromotionRequest{
 		OrderId:           "consume-quota-1",
 		UserId:            "other-buyer",
 		PlatformVoucherId: vOut.Voucher.Id,
@@ -769,7 +772,7 @@ func TestService_ListAvailableVouchers_EligibilityReasons(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	listResp, err := svc.ListAvailableVouchers(context.Background(), &promotionv1.ListAvailableVouchersRequest{
+	listResp, err := svc.ListAvailableVouchers(ctxWithRole("buyer-x", "buyer", ""), &promotionv1.ListAvailableVouchersRequest{
 		UserId:         "buyer-x",
 		Scope:          promotionv1.VoucherScope_VOUCHER_SCOPE_PLATFORM,
 		OrderAmountVnd: 100000,
@@ -931,11 +934,12 @@ func TestService_ConcurrentDuplicateOrderID_CommitFailureNeverReturnsReserved(t 
 		wg         sync.WaitGroup
 	)
 
+	buyer1Ctx := ctxWithRole("buyer-1", "buyer", "")
 	// Caller A wins reserve_atomic.lua and pauses inside CommitReservation.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		resA, errA = svc.ReservePromotion(context.Background(), req)
+		resA, errA = svc.ReservePromotion(buyer1Ctx, req)
 	}()
 
 	<-fStore.entered
@@ -944,7 +948,7 @@ func TestService_ConcurrentDuplicateOrderID_CommitFailureNeverReturnsReserved(t 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		resB, errB = svc.ReservePromotion(context.Background(), req)
+		resB, errB = svc.ReservePromotion(buyer1Ctx, req)
 	}()
 
 	// Let B enter polling, then unblock A so A fails CommitReservation & runs compensateRedisRelease.
@@ -1005,7 +1009,7 @@ func TestService_FlashSaleReapprovalPreservesRemainingSlots(t *testing.T) {
 	}
 
 	// Reserve 3 slots -> 7 remaining in both Redis and Postgres
-	if _, err := svc.ReservePromotion(context.Background(), &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(ctxWithRole("buyer-1", "buyer", ""), &promotionv1.ReservePromotionRequest{
 		OrderId: "reapprove-ord-1",
 		UserId:  "buyer-1",
 		FlashSaleItems: []*promotionv1.FlashSaleReservationItem{

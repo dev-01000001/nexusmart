@@ -791,6 +791,10 @@ func (s *Server) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequ
 }
 
 func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRequest) (*productv1.ReserveStockResponse, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok || strings.TrimSpace(claims.UserID()) == "" {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
 	orderID := strings.TrimSpace(req.GetOrderId())
 	if orderID == "" {
 		return nil, status.Error(codes.InvalidArgument, "order_id is required")
@@ -913,6 +917,9 @@ func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRe
 }
 
 func (s *Server) ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRequest) (*productv1.ReleaseStockResponse, error) {
+	if _, err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
 	orderID := strings.TrimSpace(req.GetOrderId())
 	if orderID == "" {
 		return nil, status.Error(codes.InvalidArgument, "order_id is required")
@@ -1013,6 +1020,9 @@ func (s *Server) ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRe
 }
 
 func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRequest) (*productv1.ConfirmStockResponse, error) {
+	if _, err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
 	orderID := strings.TrimSpace(req.GetOrderId())
 	if orderID == "" {
 		return nil, status.Error(codes.InvalidArgument, "order_id is required")

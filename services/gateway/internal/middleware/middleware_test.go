@@ -62,7 +62,7 @@ func TestRateLimitByIPAndDisableWhenNonPositive(t *testing.T) {
 	})
 
 	// Limit of 2 per min -> 1st & 2nd pass, 3rd returns 429 with Retry-After.
-	h := RateLimitByIP(lim, 2, log)(okHandler)
+	h := RateLimitByIP(lim, 2, nil, log)(okHandler)
 	for i := 1; i <= 2; i++ {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/products", nil)
@@ -89,7 +89,7 @@ func TestRateLimitByIPAndDisableWhenNonPositive(t *testing.T) {
 	}
 
 	// Disabled when limit <= 0.
-	disabled := RateLimitByIP(lim, 0, log)(okHandler)
+	disabled := RateLimitByIP(lim, 0, nil, log)(okHandler)
 	for i := 0; i < 5; i++ {
 		r2 := httptest.NewRecorder()
 		req2 := httptest.NewRequest(http.MethodGet, "/api/v1/products", nil)
@@ -185,17 +185,172 @@ func TestRecovererReturnsCanonicalJSONEnvelope(t *testing.T) {
 }
 
 func TestClientIPExtraction(t *testing.T) {
+	// Default (empty TRUSTED_PROXY_CIDRS / nil TrustedProxies): MUST ignore XFF and X-Real-IP.
+	emptyTrusted, err := ParseTrustedProxies("")
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies empty: %v", err)
+	}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "192.168.1.10:5555"
-	if got := ClientIP(req); got != "192.168.1.10" {
-		t.Fatalf("got %q, want 192.168.1.10", got)
-	}
 	req.Header.Set("X-Real-IP", "203.0.113.9")
-	if got := ClientIP(req); got != "203.0.113.9" {
-		t.Fatalf("got %q, want 203.0.113.9", got)
-	}
 	req.Header.Set("X-Forwarded-For", "198.51.100.7, 203.0.113.9")
-	if got := ClientIP(req); got != "198.51.100.7" {
-		t.Fatalf("got %q, want 198.51.100.7", got)
+	if got := ClientIP(req); got != "192.168.1.10" {
+		t.Fatalf("ClientIP default got %q, want 192.168.1.10", got)
+	}
+	if got := emptyTrusted.ClientIP(req); got != "192.168.1.10" {
+		t.Fatalf("emptyTrusted.ClientIP got %q, want 192.168.1.10", got)
+	}
+
+	// Configured trusted CIDRs: untrusted RemoteAddr still ignores XFF and X-Real-IP.
+	trusted, err := ParseTrustedProxies("172.31.250.0/28, 10.10.0.0/16")
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies valid: %v", err)
+	}
+	for _, tc := range []struct {
+		peer string
+		want string
+	}{
+		{peer: "172.30.13.1:54321", want: "172.30.13.1"},
+		{peer: "172.30.13.17:4444", want: "172.30.13.17"},
+		{peer: "203.0.113.50:8080", want: "203.0.113.50"},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = tc.peer
+		r.Header.Set("X-Forwarded-For", "198.51.100.7")
+		r.Header.Set("X-Real-IP", "203.0.113.9")
+		if got := trusted.ClientIP(r); got != tc.want {
+			t.Fatalf("untrusted peer %s: got %q, want %q", tc.peer, got, tc.want)
+		}
+	}
+
+	// Trusted RemoteAddr: single XFF entry.
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "172.31.250.3:50000"
+	r.Header.Set("X-Forwarded-For", "203.0.113.10")
+	if got := trusted.ClientIP(r); got != "203.0.113.10" {
+		t.Fatalf("trusted single XFF got %q, want 203.0.113.10", got)
+	}
+
+	// Trusted RemoteAddr: spoofed left-most XFF MUST be ignored; pick right-most untrusted IP.
+	r = httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "172.31.250.3:50000"
+	r.Header.Set("X-Forwarded-For", "1.1.1.1, 198.51.100.7")
+	if got := trusted.ClientIP(r); got != "198.51.100.7" {
+		t.Fatalf("trusted spoofed left-most XFF got %q, want 198.51.100.7", got)
+	}
+
+	// Multi-hop trusted proxies: skip right-most trusted proxy hops, pick right-most untrusted IP.
+	r = httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "172.31.250.3:50000"
+	r.Header.Set("X-Forwarded-For", "1.1.1.1, 198.51.100.7, 10.10.1.5, 172.31.250.4")
+	if got := trusted.ClientIP(r); got != "198.51.100.7" {
+		t.Fatalf("multi-hop XFF got %q, want 198.51.100.7", got)
+	}
+
+	// Multiple X-Forwarded-For header lines combined in order.
+	r = httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "172.31.250.3:50000"
+	r.Header.Add("X-Forwarded-For", "1.1.1.1")
+	r.Header.Add("X-Forwarded-For", "198.51.100.8, 10.10.2.2")
+	if got := trusted.ClientIP(r); got != "198.51.100.8" {
+		t.Fatalf("multi-header XFF got %q, want 198.51.100.8", got)
+	}
+
+	// Trusted RemoteAddr with X-Real-IP fallback when XFF is absent.
+	r = httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "172.31.250.3:50000"
+	r.Header.Set("X-Real-IP", "203.0.113.9")
+	if got := trusted.ClientIP(r); got != "203.0.113.9" {
+		t.Fatalf("trusted X-Real-IP got %q, want 203.0.113.9", got)
+	}
+
+	// Trusted RemoteAddr with malformed XFF falls back to RemoteAddr (never trusts garbage).
+	r = httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "172.31.250.3:50000"
+	r.Header.Set("X-Forwarded-For", "198.51.100.7, not-an-ip")
+	if got := trusted.ClientIP(r); got != "172.31.250.3" {
+		t.Fatalf("malformed XFF got %q, want 172.31.250.3", got)
+	}
+
+	// IPv4-mapped IPv6 RemoteAddr matches IPv4 trusted CIDR.
+	r = httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "[::ffff:172.31.250.3]:50000"
+	r.Header.Set("X-Forwarded-For", "203.0.113.11")
+	if got := trusted.ClientIP(r); got != "203.0.113.11" {
+		t.Fatalf("ipv4-mapped ipv6 peer got %q, want 203.0.113.11", got)
+	}
+
+	// All hops trusted -> returns left-most valid hop.
+	r = httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "172.31.250.3:50000"
+	r.Header.Set("X-Forwarded-For", "10.10.0.5, 172.31.250.4")
+	if got := trusted.ClientIP(r); got != "10.10.0.5" {
+		t.Fatalf("all-trusted XFF got %q, want 10.10.0.5", got)
+	}
+}
+
+func TestParseTrustedProxiesInvalidCIDR(t *testing.T) {
+	for _, bad := range []string{"not-a-cidr", "10.0.0.1", "10.0.0.0/99", "172.31.250.0/28, bogus"} {
+		if _, err := ParseTrustedProxies(bad); err == nil {
+			t.Fatalf("expected error for invalid CIDR %q, got nil", bad)
+		}
+	}
+	tp, err := ParseTrustedProxies(" 172.31.250.5/28 , fd00::/8 , ")
+	if err != nil {
+		t.Fatalf("expected valid CIDRs to parse, got %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "[fd00::1]:443"
+	req.Header.Set("X-Forwarded-For", "203.0.113.42")
+	if got := tp.ClientIP(req); got != "203.0.113.42" {
+		t.Fatalf("ipv6 trusted CIDR got %q, want 203.0.113.42", got)
+	}
+}
+
+func TestRateLimitCannotBeBypassedBySpoofedXFF(t *testing.T) {
+	log := logger.New("gw-test", logger.WithWriter(io.Discard))
+	trusted, err := ParseTrustedProxies("172.31.250.0/28")
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies: %v", err)
+	}
+	okHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Untrusted caller rotates X-Forwarded-For & X-Real-IP on every request -> still hits 429 on 3rd req.
+	lim := newMemRateLimiter()
+	h := RateLimitByIP(lim, 2, trusted, log)(okHandler)
+	for i, fakeIP := range []string{"198.51.100.1", "198.51.100.2", "198.51.100.3"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/products", nil)
+		req.RemoteAddr = "172.30.13.1:45000"
+		req.Header.Set("X-Forwarded-For", fakeIP)
+		req.Header.Set("X-Real-IP", fakeIP)
+		h.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 2 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("untrusted spoof req %d: got %d, want %d", i+1, rec.Code, want)
+		}
+	}
+
+	// Trusted proxy with spoofed left-most IP rotating for same real client -> still hits 429 on 3rd req.
+	lim2 := newMemRateLimiter()
+	h2 := RateLimitByIP(lim2, 2, trusted, log)(okHandler)
+	for i, fakeLeft := range []string{"1.1.1.1", "2.2.2.2", "3.3.3.3"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/products", nil)
+		req.RemoteAddr = "172.31.250.3:45000"
+		req.Header.Set("X-Forwarded-For", fakeLeft+", 203.0.113.77")
+		h2.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 2 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("trusted spoofed-left req %d: got %d, want %d", i+1, rec.Code, want)
+		}
 	}
 }

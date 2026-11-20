@@ -43,6 +43,10 @@ message ShopAllocation {
   int64 subtotal_vnd = 3;
   int64 commission_vnd = 4;
   int64 shipping_fee_vnd = 5;
+  // Immutable sales channel: "MARKETPLACE" or "STOREFRONT".
+  string sales_channel = 6;
+  // Immutable storefront shop ID when sales_channel is "STOREFRONT"; empty otherwise.
+  string storefront_shop_id = 7;
 }
 
 message Payment {
@@ -61,6 +65,8 @@ message Payment {
   google.protobuf.Timestamp expires_at = 13;
   google.protobuf.Timestamp created_at = 14;
   google.protobuf.Timestamp updated_at = 15;
+  string sales_channel = 16;
+  string storefront_shop_id = 17;
 }
 
 message Refund {
@@ -89,6 +95,8 @@ message ReconciliationItem {
   int64 provider_amount_vnd = 4;
   ReconciliationStatus status = 5;
   string note = 6;
+  string sales_channel = 7;
+  string storefront_shop_id = 8;
 }
 
 message CreatePaymentRequest {
@@ -101,6 +109,10 @@ message CreatePaymentRequest {
   google.protobuf.Timestamp expires_at = 7;
   string idempotency_key = 8;
   bool supersede_previous = 9;
+  // Optional sales channel: "" (defaults to "MARKETPLACE"), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 10;
+  // Required matching shop ID when sales_channel is "STOREFRONT"; empty for "MARKETPLACE".
+  string storefront_shop_id = 11;
 }
 
 message CreatePaymentResponse {
@@ -140,13 +152,18 @@ message CreateRefundResponse {
   bool already_existed = 2;
 }
 
-message GetLedgerSummaryRequest {}
+message GetLedgerSummaryRequest {
+  // Optional sales channel filter: "" (all channels), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 1;
+}
 
 message GetLedgerSummaryResponse {
   int64 total_debits_vnd = 1;
   int64 total_credits_vnd = 2;
   bool is_balanced = 3;
   repeated AccountBalance accounts = 4;
+  // Applied sales channel filter: "" (all), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 5;
 }
 
 message GetSellerBalanceRequest {
@@ -173,6 +190,8 @@ message ReleaseEscrowResponse {
 
 message RunReconciliationRequest {
   string date = 1;
+  // Optional sales channel filter: "" (all channels), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 2;
 }
 
 message RunReconciliationResponse {
@@ -182,6 +201,8 @@ message RunReconciliationResponse {
   int32 missing_provider_count = 4;
   int32 amount_mismatch_count = 5;
   repeated ReconciliationItem items = 6;
+  // Applied sales channel filter: "" (all), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 7;
 }
 
 service PaymentService {

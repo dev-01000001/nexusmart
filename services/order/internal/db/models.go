@@ -23,6 +23,8 @@ type CheckoutGroup struct {
 	ResponseSnapshotJSON []byte     `json:"response_snapshot_json"`
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
+	SalesChannel         string     `json:"sales_channel"`
+	StorefrontShopID     string     `json:"storefront_shop_id"`
 }
 
 type DeadLetterEvent struct {
@@ -65,6 +67,8 @@ type Order struct {
 	CompletedAt                *time.Time `json:"completed_at"`
 	CreatedAt                  time.Time  `json:"created_at"`
 	UpdatedAt                  time.Time  `json:"updated_at"`
+	SalesChannel               string     `json:"sales_channel"`
+	StorefrontShopID           string     `json:"storefront_shop_id"`
 }
 
 type OrderItem struct {

@@ -683,11 +683,15 @@ func (h *handler) handleListShops(w http.ResponseWriter, r *http.Request) {
 
 // handleSellerGetShop returns the caller's own shop; the shop id comes from the JWT.
 func (h *handler) handleSellerGetShop(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.User.GetShop(ctx, &userv1.GetShopRequest{
-		ShopId: auth.ShopIDFromContext(r.Context()),
+		ShopId: shopID,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)

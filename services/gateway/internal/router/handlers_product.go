@@ -345,13 +345,17 @@ func (h *handler) handleGetProduct(w http.ResponseWriter, r *http.Request) {
 // handleSellerListProducts lists every product of the caller's shop (any status).
 // The shop id comes from the JWT, never from the query string.
 func (h *handler) handleSellerListProducts(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	page, pageSize := httpx.ParsePagination(r)
 	q := r.URL.Query()
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Product.ListProducts(ctx, &productv1.ListProductsRequest{
-		ShopId:     auth.ShopIDFromContext(r.Context()),
+		ShopId:     shopID,
 		CategoryId: q.Get("category_id"),
 		Keyword:    q.Get("keyword"),
 		Status:     parseProductStatus(q.Get("status")),
@@ -376,6 +380,10 @@ func (h *handler) handleSellerListProducts(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *handler) handleSellerCreateProduct(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	var body struct {
 		CategoryID  string         `json:"category_id"`
 		Name        string         `json:"name"`
@@ -391,7 +399,7 @@ func (h *handler) handleSellerCreateProduct(w http.ResponseWriter, r *http.Reque
 	defer cancel()
 
 	resp, err := h.clients.Product.CreateProduct(ctx, &productv1.CreateProductRequest{
-		ShopId:      auth.ShopIDFromContext(r.Context()),
+		ShopId:      shopID,
 		CategoryId:  body.CategoryID,
 		Name:        body.Name,
 		Description: body.Description,
@@ -406,6 +414,10 @@ func (h *handler) handleSellerCreateProduct(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *handler) handleSellerUpdateProduct(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	var body struct {
 		CategoryID  string         `json:"category_id"`
 		Name        string         `json:"name"`
@@ -423,7 +435,7 @@ func (h *handler) handleSellerUpdateProduct(w http.ResponseWriter, r *http.Reque
 
 	resp, err := h.clients.Product.UpdateProduct(ctx, &productv1.UpdateProductRequest{
 		Id:          chi.URLParam(r, "id"),
-		ShopId:      auth.ShopIDFromContext(r.Context()),
+		ShopId:      shopID,
 		CategoryId:  body.CategoryID,
 		Name:        body.Name,
 		Description: body.Description,
@@ -439,12 +451,16 @@ func (h *handler) handleSellerUpdateProduct(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *handler) handleSellerDeleteProduct(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Product.DeleteProduct(ctx, &productv1.DeleteProductRequest{
 		Id:     chi.URLParam(r, "id"),
-		ShopId: auth.ShopIDFromContext(r.Context()),
+		ShopId: shopID,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -454,6 +470,10 @@ func (h *handler) handleSellerDeleteProduct(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *handler) handleSellerUpdateStock(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	var body struct {
 		NewStock        int32 `json:"new_stock"`
 		ExpectedVersion int64 `json:"expected_version"`
@@ -467,7 +487,7 @@ func (h *handler) handleSellerUpdateStock(w http.ResponseWriter, r *http.Request
 
 	resp, err := h.clients.Product.UpdateStock(ctx, &productv1.UpdateStockRequest{
 		SkuId:           chi.URLParam(r, "sku_id"),
-		ShopId:          auth.ShopIDFromContext(r.Context()),
+		ShopId:          shopID,
 		NewStock:        body.NewStock,
 		ExpectedVersion: body.ExpectedVersion,
 	})

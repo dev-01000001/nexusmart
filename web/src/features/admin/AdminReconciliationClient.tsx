@@ -1,10 +1,11 @@
 "use client";
 
-import React, { Suspense, useMemo, useState } from "react";
+import React, { Suspense, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button, IconSearch, StateView } from "@/components";
 import { api, ApiError } from "@/lib/api";
 import { formatInt, formatSignedVnd, formatVnd } from "@/lib/format";
+import { getSalesChannelMeta, type SalesChannelFilter } from "@/lib/salesChannel";
 import { EMPTY_DASH } from "./adminMeta";
 import { AdminStateGate, AdminSuspenseFallback } from "./AdminStateGate";
 import { useAdminContext } from "./AdminShell";
@@ -17,6 +18,24 @@ import {
 } from "./adminApiTypes";
 import shared from "./adminShared.module.css";
 import styles from "@/app/(admin)/admin/doi-soat/page.module.css";
+
+const CHANNEL_TABS: Array<{ id: SalesChannelFilter; label: string }> = [
+  { id: "", label: "Tất cả kênh" },
+  { id: "MARKETPLACE", label: "Sàn NexusMart" },
+  { id: "STOREFRONT", label: "Site riêng" },
+];
+
+function channelScopeLabel(channel: SalesChannelFilter): string {
+  if (channel === "MARKETPLACE") return "Sàn NexusMart";
+  if (channel === "STOREFRONT") return "Site riêng";
+  return "tất cả kênh";
+}
+
+function ledgerUrlFor(channel: SalesChannelFilter): string {
+  return channel
+    ? `/api/admin/ledger?sales_channel=${encodeURIComponent(channel)}`
+    : "/api/admin/ledger";
+}
 
 function todayDateString(): string {
   const vnNow = new Date(Date.now() + 7 * 3600_000);
@@ -41,12 +60,41 @@ function ReconciliationContent({
   const { showToast } = useAdminContext();
 
   const [ledger, setLedger] = useState<GwLedgerSummary | null>(initialLedger);
+  const [channelFilter, setChannelFilter] = useState<SalesChannelFilter>("");
+  const [loadingChannel, setLoadingChannel] = useState(false);
+  const [channelError, setChannelError] = useState<string | null>(null);
+  const channelReqSeq = useRef(0);
   const [query, setQuery] = useState(initialQuery);
   const [accountTypeFilter, setAccountTypeFilter] = useState<string>("all");
   const [runDate, setRunDate] = useState<string>(todayDateString);
   const [running, setRunning] = useState(false);
   const [report, setReport] = useState<GwReconciliationReport | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+
+  const handleSelectChannel = async (nextChannel: SalesChannelFilter) => {
+    if (nextChannel === channelFilter && !channelError) return;
+    setChannelFilter(nextChannel);
+    setChannelError(null);
+    setRunError(null);
+    setReport(null);
+    setLoadingChannel(true);
+    const reqId = ++channelReqSeq.current;
+    try {
+      const fresh = await api<GwLedgerSummary>(ledgerUrlFor(nextChannel));
+      if (channelReqSeq.current !== reqId) return;
+      setLedger(fresh);
+    } catch (err) {
+      if (channelReqSeq.current !== reqId) return;
+      const msg =
+        err instanceof ApiError ? err.message : "Không thể tải số liệu sổ cái cho kênh bán này.";
+      setChannelError(msg);
+      showToast(msg);
+    } finally {
+      if (channelReqSeq.current === reqId) {
+        setLoadingChannel(false);
+      }
+    }
+  };
 
   const filteredAccounts = useMemo(() => {
     const accounts = ledger?.accounts ?? [];
@@ -87,13 +135,14 @@ function ReconciliationContent({
     if (running) return;
     setRunning(true);
     setRunError(null);
+    const activeChannel = channelFilter;
     try {
       const [reconRes, freshLedger] = await Promise.all([
         api<GwReconciliationReport>("/api/admin/reconcile", {
           method: "POST",
-          body: { date: runDate },
+          body: activeChannel ? { date: runDate, sales_channel: activeChannel } : { date: runDate },
         }),
-        api<GwLedgerSummary>("/api/admin/ledger"),
+        api<GwLedgerSummary>(ledgerUrlFor(activeChannel)),
       ]);
       setReport(reconRes);
       setLedger(freshLedger);
@@ -101,10 +150,11 @@ function ReconciliationContent({
         reconRes.missing_local_count +
         reconRes.missing_provider_count +
         reconRes.amount_mismatch_count;
+      const scopeSuffix = activeChannel ? ` (${channelScopeLabel(activeChannel)})` : "";
       showToast(
         issues === 0
-          ? `Đối soát ngày ${runDate} hoàn tất: ${formatInt(reconRes.matched_count)} giao dịch khớp tuyệt đối.`
-          : `Đối soát ngày ${runDate} phát hiện ${formatInt(issues)} mục cần kiểm tra.`
+          ? `Đối soát ngày ${runDate}${scopeSuffix} hoàn tất: ${formatInt(reconRes.matched_count)} giao dịch khớp tuyệt đối.`
+          : `Đối soát ngày ${runDate}${scopeSuffix} phát hiện ${formatInt(issues)} mục cần kiểm tra.`
       );
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : "Không thể chạy phiên đối soát lúc này.";
@@ -115,9 +165,10 @@ function ReconciliationContent({
     }
   };
 
+  const activeScopeLabel = channelScopeLabel(channelFilter);
   const subtitle = isBalanced
-    ? `Sổ cái ghi kép cân đối tuyệt đối (Tổng Nợ = Tổng Có = ${formatVnd(totalCredits)}) trên ${formatInt(ledger?.accounts.length ?? 0)} tài khoản.`
-    : `Phát hiện chênh lệch sổ cái ${formatSignedVnd(diff)}: chạy đối soát theo ngày để kiểm tra giao dịch lệch.`;
+    ? `Sổ cái ghi kép (${activeScopeLabel}) cân đối tuyệt đối (Tổng Nợ = Tổng Có = ${formatVnd(totalCredits)}) trên ${formatInt(ledger?.accounts.length ?? 0)} tài khoản.`
+    : `Phát hiện chênh lệch sổ cái (${activeScopeLabel}) ${formatSignedVnd(diff)}: chạy đối soát theo ngày để kiểm tra giao dịch lệch.`;
 
   return (
     <div className={shared.page}>
@@ -127,6 +178,42 @@ function ReconciliationContent({
           <p className={shared.pageSubtitle}>{subtitle}</p>
         </div>
       </header>
+
+      <div className={shared.tabsBar}>
+        <div
+          className={shared.tabList}
+          role="tablist"
+          aria-label="Lọc sổ cái và đối soát theo kênh bán"
+        >
+          {CHANNEL_TABS.map((tab) => {
+            const active = channelFilter === tab.id;
+            return (
+              <button
+                key={tab.id || "ALL"}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                data-channel-tab={tab.id || "ALL"}
+                className={`${shared.tabBtn} ${active ? shared.tabBtnActive : ""}`}
+                onClick={() => void handleSelectChannel(tab.id)}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+        <div className={shared.tabsMeta}>
+          <span className={shared.resultCount}>
+            {loadingChannel ? "Đang tải sổ cái..." : `Phạm vi: ${activeScopeLabel}`}
+          </span>
+        </div>
+      </div>
+
+      {channelError && (
+        <p className={shared.validationError} style={{ marginTop: 10 }}>
+          {channelError}
+        </p>
+      )}
 
       <section
         className={`${shared.kpiStrip} ${styles.kpiSpacer}`}
@@ -221,6 +308,7 @@ function ReconciliationContent({
                     <tr>
                       <th>Mã giao dịch nội bộ</th>
                       <th>Mã tham chiếu cổng</th>
+                      <th>Kênh bán</th>
                       <th className={shared.colNum}>Số tiền nội bộ</th>
                       <th className={shared.colNum}>Số tiền sao kê</th>
                       <th>Trạng thái</th>
@@ -230,10 +318,19 @@ function ReconciliationContent({
                   <tbody>
                     {report.items.map((item, idx) => {
                       const meta = getReconItemStatusMeta(item.status);
+                      const channelMeta = getSalesChannelMeta(item.sales_channel);
                       return (
                         <tr key={`${item.payment_id}-${item.provider_tx_id}-${idx}`}>
                           <td className={shared.cellPrimary}>{item.payment_id || EMPTY_DASH}</td>
                           <td>{item.provider_tx_id || EMPTY_DASH}</td>
+                          <td>
+                            <span
+                              className={`${shared.channelBadge} ${channelMeta.isStorefront ? shared.channelBadgeStorefront : ""}`}
+                              data-sales-channel={channelMeta.value}
+                            >
+                              {channelMeta.label}
+                            </span>
+                          </td>
                           <td className={shared.colNum}>{formatVnd(item.local_amount_vnd)}</td>
                           <td className={shared.colNum}>{formatVnd(item.provider_amount_vnd)}</td>
                           <td>

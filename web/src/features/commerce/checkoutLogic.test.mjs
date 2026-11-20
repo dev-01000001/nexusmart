@@ -11,6 +11,12 @@ import {
   formatVoucherHeadline,
   formatVoucherIneligibleReason,
 } from "./cartEnrich.ts";
+import { buildMarketplaceCheckoutPayload } from "./checkoutPayload.ts";
+import {
+  getSalesChannelMeta,
+  normalizeSalesChannel,
+  parseSalesChannelFilter,
+} from "../../lib/salesChannel.ts";
 
 test("translatePromotionWarning maps English promotion warnings to clean Vietnamese without raw internals", () => {
   assert.match(translatePromotionWarning("voucher ABC not found"), /không tồn tại/i);
@@ -173,4 +179,55 @@ test("voucher formatting and eligibility reasons handle fixed, percent, exhauste
     formatVoucherIneligibleReason({ ...pct, remaining_quota: 0 }, 350000) ?? "",
     /hết lượt/i
   );
+});
+
+test("buildMarketplaceCheckoutPayload strips client sales_channel and storefront_shop_id and always sends MARKETPLACE", () => {
+  const res = buildMarketplaceCheckoutPayload({
+    address_id: " addr-1 ",
+    from_cart: true,
+    payment_method: "cod",
+    sales_channel: "STOREFRONT",
+    storefront_shop_id: "shop-evil-123",
+    coins_to_use: 5000,
+    platform_voucher_id: " v-plat ",
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.payload.address_id, "addr-1");
+  assert.equal(res.payload.payment_method, "COD");
+  assert.equal(res.payload.sales_channel, "MARKETPLACE");
+  assert.equal("storefront_shop_id" in res.payload, false);
+  assert.equal(res.payload.coins_to_use, 5000);
+  assert.equal(res.payload.platform_voucher_id, "v-plat");
+
+  const missingAddr = buildMarketplaceCheckoutPayload({
+    payment_method: "VIETQR",
+    sales_channel: "STOREFRONT",
+  });
+  assert.deepEqual(missingAddr, { ok: false, code: "MISSING_ADDRESS" });
+
+  const badMethod = buildMarketplaceCheckoutPayload({
+    address_id: "addr-1",
+    payment_method: "CRYPTO",
+  });
+  assert.deepEqual(badMethod, { ok: false, code: "INVALID_PAYMENT_METHOD" });
+});
+
+test("salesChannel helpers normalize, validate filters, and provide clean Vietnamese labels", () => {
+  assert.equal(normalizeSalesChannel(undefined), "MARKETPLACE");
+  assert.equal(normalizeSalesChannel(""), "MARKETPLACE");
+  assert.equal(normalizeSalesChannel("marketplace"), "MARKETPLACE");
+  assert.equal(normalizeSalesChannel("storefront"), "STOREFRONT");
+  assert.equal(normalizeSalesChannel("UNKNOWN"), "MARKETPLACE");
+
+  assert.equal(parseSalesChannelFilter(null), "");
+  assert.equal(parseSalesChannelFilter(""), "");
+  assert.equal(parseSalesChannelFilter("marketplace"), "MARKETPLACE");
+  assert.equal(parseSalesChannelFilter("STOREFRONT"), "STOREFRONT");
+  assert.equal(parseSalesChannelFilter("ALL"), null);
+  assert.equal(parseSalesChannelFilter("DIRECT"), null);
+
+  assert.equal(getSalesChannelMeta("MARKETPLACE").label, "Sàn NexusMart");
+  assert.equal(getSalesChannelMeta("MARKETPLACE").isStorefront, false);
+  assert.equal(getSalesChannelMeta("STOREFRONT").label, "Site riêng");
+  assert.equal(getSalesChannelMeta("STOREFRONT").isStorefront, true);
 });

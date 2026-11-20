@@ -489,19 +489,22 @@ func (s *Server) RefreshToken(ctx context.Context, req *userv1.RefreshTokenReque
 }
 
 func (s *Server) Logout(ctx context.Context, req *userv1.LogoutRequest) (*userv1.LogoutResponse, error) {
-	claims, hasClaims := auth.ClaimsFromContext(ctx)
+	claims, err := s.requireAuthClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if rawToken := strings.TrimSpace(req.GetRefreshToken()); rawToken != "" {
 		tokenHash := hashToken(rawToken)
-		existing, err := s.store.GetRefreshTokenByHash(ctx, tokenHash)
-		if err == nil {
-			if hasClaims && !isAdminRole(claims.Role) && existing.UserID != claims.UserID() {
+		existing, lookupErr := s.store.GetRefreshTokenByHash(ctx, tokenHash)
+		if lookupErr == nil {
+			if !isAdminRole(claims.Role) && existing.UserID != claims.UserID() {
 				return nil, status.Error(codes.PermissionDenied, "cannot revoke another user's refresh token")
 			}
 			_ = s.store.RevokeRefreshTokenFamily(ctx, existing.FamilyID)
 		}
 	}
 
-	if hasClaims && claims.JTI() != "" {
+	if claims.JTI() != "" {
 		ttl := s.opts.AccessTTL
 		if claims.ExpiresAt != nil {
 			if rem := time.Until(claims.ExpiresAt.Time); rem > 0 {
@@ -515,18 +518,16 @@ func (s *Server) Logout(ctx context.Context, req *userv1.LogoutRequest) (*userv1
 }
 
 func (s *Server) GetProfile(ctx context.Context, req *userv1.GetProfileRequest) (*userv1.GetProfileResponse, error) {
+	claims, err := s.requireAuthClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
 	targetID := strings.TrimSpace(req.GetUserId())
-	if _, ok := auth.ClaimsFromContext(ctx); ok {
-		claims, err := s.requireAuthClaims(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if targetID == "" {
-			targetID = claims.UserID()
-		}
-		if targetID != claims.UserID() && !isAdminRole(claims.Role) {
-			return nil, status.Error(codes.PermissionDenied, "cannot read another user's profile")
-		}
+	if targetID == "" {
+		targetID = claims.UserID()
+	}
+	if targetID != claims.UserID() && !isAdminRole(claims.Role) {
+		return nil, status.Error(codes.PermissionDenied, "cannot read another user's profile")
 	}
 	if targetID == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id is required")
@@ -597,14 +598,16 @@ func (s *Server) UpdateProfile(ctx context.Context, req *userv1.UpdateProfileReq
 }
 
 func (s *Server) ValidateUser(ctx context.Context, req *userv1.ValidateUserRequest) (*userv1.ValidateUserResponse, error) {
+	claims, err := s.requireAuthClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
 	targetID := strings.TrimSpace(req.GetUserId())
 	if targetID == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id is required")
 	}
-	if claims, ok := auth.ClaimsFromContext(ctx); ok && claims.UserID() != "" {
-		if targetID != claims.UserID() && !isAdminRole(claims.Role) {
-			return nil, status.Error(codes.PermissionDenied, "cannot validate another user")
-		}
+	if targetID != claims.UserID() && !isAdminRole(claims.Role) {
+		return nil, status.Error(codes.PermissionDenied, "cannot validate another user")
 	}
 	if !isValidUUID(targetID) {
 		return &userv1.ValidateUserResponse{Valid: false}, nil
@@ -1148,6 +1151,10 @@ func (s *Server) ListAddresses(ctx context.Context, req *userv1.ListAddressesReq
 }
 
 func (s *Server) GetAddress(ctx context.Context, req *userv1.GetAddressRequest) (*userv1.GetAddressResponse, error) {
+	claims, err := s.requireAuthClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
 	addressID := strings.TrimSpace(req.GetAddressId())
 	if addressID == "" {
 		return nil, status.Error(codes.InvalidArgument, "address_id is required")
@@ -1164,12 +1171,8 @@ func (s *Server) GetAddress(ctx context.Context, req *userv1.GetAddressRequest) 
 		return nil, status.Error(codes.Internal, "failed to load address")
 	}
 
-	if claims, ok := auth.ClaimsFromContext(ctx); ok && claims.UserID() != "" {
-		if !isAdminRole(claims.Role) && addr.UserID != claims.UserID() {
-			return nil, status.Error(codes.PermissionDenied, "cannot access another user's address")
-		}
-	} else if reqUserID := strings.TrimSpace(req.GetUserId()); reqUserID != "" && addr.UserID != reqUserID {
-		return nil, status.Error(codes.PermissionDenied, "address does not belong to user")
+	if !isAdminRole(claims.Role) && addr.UserID != claims.UserID() {
+		return nil, status.Error(codes.PermissionDenied, "cannot access another user's address")
 	}
 
 	return &userv1.GetAddressResponse{Address: toProtoAddress(addr)}, nil
@@ -1293,19 +1296,17 @@ func (s *Server) DeleteAddress(ctx context.Context, req *userv1.DeleteAddressReq
 }
 
 func (s *Server) WriteAuditLog(ctx context.Context, req *userv1.WriteAuditLogRequest) (*userv1.WriteAuditLogResponse, error) {
+	claims, err := s.requireAdminClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
 	actorID := strings.TrimSpace(req.GetActorId())
 	actorRole := strings.TrimSpace(req.GetActorRole())
-	if _, ok := auth.ClaimsFromContext(ctx); ok {
-		claims, err := s.requireAdminClaims(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if actorID == "" {
-			actorID = claims.UserID()
-		}
-		if actorRole == "" {
-			actorRole = claims.Role
-		}
+	if actorID == "" {
+		actorID = claims.UserID()
+	}
+	if actorRole == "" {
+		actorRole = claims.Role
 	}
 
 	action := strings.TrimSpace(req.GetAction())

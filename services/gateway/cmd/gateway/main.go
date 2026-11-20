@@ -98,6 +98,11 @@ func run() error {
 	}
 	opsHandler := metrics.NewOpsHandler(cfg.ServiceName, readyFn, reg)
 
+	trustedProxies, err := middleware.ParseTrustedProxies(cfg.TrustedProxyCIDRs)
+	if err != nil {
+		return fmt.Errorf("parse trusted proxy CIDRs: %w", err)
+	}
+
 	rateLimiter := middleware.NewRedisRateLimiter(rdb)
 	revocationChecker := middleware.NewRedisRevocationChecker(rdb)
 
@@ -110,6 +115,7 @@ func run() error {
 		RateLimitIPPerMin:    cfg.RateLimitIPPerMin,
 		RateLimitUserPerMin:  cfg.RateLimitUserPerMin,
 		RateLimitFlashPerMin: cfg.RateLimitFlashPerMin,
+		TrustedProxies:       trustedProxies,
 		RED:                  red,
 		OpsHandler:           opsHandler,
 		PaymentWebhookProxy:  paymentWebhookProxy,

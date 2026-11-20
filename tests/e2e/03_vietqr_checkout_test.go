@@ -63,6 +63,12 @@ func TestE2E_MultiShopCheckout_VietQRMock(t *testing.T) {
 		if !StatusEquals(o.Status, "PENDING") {
 			t.Fatalf("expected VietQR sub-order %s to start PENDING, got %q", o.ID, o.Status)
 		}
+		if o.SalesChannel != "MARKETPLACE" {
+			t.Fatalf("expected default VietQR sub-order %s sales_channel=MARKETPLACE, got %q", o.ID, o.SalesChannel)
+		}
+		if o.StorefrontShopID != "" {
+			t.Fatalf("expected default VietQR sub-order %s storefront_shop_id empty, got %q", o.ID, o.StorefrontShopID)
+		}
 	}
 	if checkout.PaymentID == "" {
 		t.Fatalf("expected non-empty payment_id for VietQR checkout: %s", string(checkoutResp.Body))

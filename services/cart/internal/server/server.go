@@ -57,11 +57,11 @@ func New(st store.Store, productClient ProductClient, userClient UserClient, log
 }
 
 func (s *Server) GetCart(ctx context.Context, req *cartv1.GetCartRequest) (*cartv1.GetCartResponse, error) {
-	userID, err := resolveUserID(ctx, req.GetUserId(), false)
+	userID, err := resolveUserID(ctx, req.GetUserId())
 	if err != nil {
 		return nil, err
 	}
-	cart, err := s.buildCart(ctx, userID)
+	cart, err := s.buildCart(ctx, userID, strings.TrimSpace(req.GetShopId()))
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +69,7 @@ func (s *Server) GetCart(ctx context.Context, req *cartv1.GetCartRequest) (*cart
 }
 
 func (s *Server) AddItem(ctx context.Context, req *cartv1.AddItemRequest) (*cartv1.AddItemResponse, error) {
-	userID, err := resolveUserID(ctx, req.GetUserId(), true)
+	userID, err := resolveUserID(ctx, req.GetUserId())
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ func (s *Server) AddItem(ctx context.Context, req *cartv1.AddItemRequest) (*cart
 		return nil, status.Errorf(codes.Internal, "save cart item: %v", err)
 	}
 
-	cart, err := s.buildCart(ctx, userID)
+	cart, err := s.buildCart(ctx, userID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +132,7 @@ func (s *Server) AddItem(ctx context.Context, req *cartv1.AddItemRequest) (*cart
 }
 
 func (s *Server) UpdateItemQty(ctx context.Context, req *cartv1.UpdateItemQtyRequest) (*cartv1.UpdateItemQtyResponse, error) {
-	userID, err := resolveUserID(ctx, req.GetUserId(), true)
+	userID, err := resolveUserID(ctx, req.GetUserId())
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +148,7 @@ func (s *Server) UpdateItemQty(ctx context.Context, req *cartv1.UpdateItemQtyReq
 		if err := s.store.Delete(ctx, userID, skuID); err != nil {
 			return nil, status.Errorf(codes.Internal, "remove cart item: %v", err)
 		}
-		cart, err := s.buildCart(ctx, userID)
+		cart, err := s.buildCart(ctx, userID, "")
 		if err != nil {
 			return nil, err
 		}
@@ -195,7 +195,7 @@ func (s *Server) UpdateItemQty(ctx context.Context, req *cartv1.UpdateItemQtyReq
 		return nil, status.Errorf(codes.Internal, "update cart item: %v", err)
 	}
 
-	cart, err := s.buildCart(ctx, userID)
+	cart, err := s.buildCart(ctx, userID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +206,7 @@ func (s *Server) UpdateItemQty(ctx context.Context, req *cartv1.UpdateItemQtyReq
 }
 
 func (s *Server) RemoveItem(ctx context.Context, req *cartv1.RemoveItemRequest) (*cartv1.RemoveItemResponse, error) {
-	userID, err := resolveUserID(ctx, req.GetUserId(), true)
+	userID, err := resolveUserID(ctx, req.GetUserId())
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +219,7 @@ func (s *Server) RemoveItem(ctx context.Context, req *cartv1.RemoveItemRequest) 
 		return nil, status.Errorf(codes.Internal, "remove cart item: %v", err)
 	}
 
-	cart, err := s.buildCart(ctx, userID)
+	cart, err := s.buildCart(ctx, userID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -227,18 +227,14 @@ func (s *Server) RemoveItem(ctx context.Context, req *cartv1.RemoveItemRequest) 
 }
 
 func (s *Server) ClearItems(ctx context.Context, req *cartv1.ClearItemsRequest) (*cartv1.ClearItemsResponse, error) {
-	userID, err := resolveUserID(ctx, req.GetUserId(), false)
+	userID, err := resolveUserID(ctx, req.GetUserId())
 	if err != nil {
 		return nil, err
 	}
 
+	shopID := strings.TrimSpace(req.GetShopId())
 	rawIDs := req.GetSkuIds()
-	if len(rawIDs) == 0 {
-		if err := s.store.ClearAll(ctx, userID); err != nil {
-			return nil, status.Errorf(codes.Internal, "clear cart: %v", err)
-		}
-		return &cartv1.ClearItemsResponse{Ok: true}, nil
-	}
+	hasRawIDs := len(rawIDs) > 0
 
 	cleanIDs := make([]string, 0, len(rawIDs))
 	for _, id := range rawIDs {
@@ -247,9 +243,56 @@ func (s *Server) ClearItems(ctx context.Context, req *cartv1.ClearItemsRequest) 
 			cleanIDs = append(cleanIDs, id)
 		}
 	}
-	if len(cleanIDs) > 0 {
+
+	if !hasRawIDs && shopID == "" {
+		if err := s.store.ClearAll(ctx, userID); err != nil {
+			return nil, status.Errorf(codes.Internal, "clear cart: %v", err)
+		}
+		return &cartv1.ClearItemsResponse{Ok: true}, nil
+	}
+
+	if hasRawIDs && len(cleanIDs) == 0 {
+		return &cartv1.ClearItemsResponse{Ok: true}, nil
+	}
+
+	if shopID == "" {
 		if err := s.store.Delete(ctx, userID, cleanIDs...); err != nil {
 			return nil, status.Errorf(codes.Internal, "clear cart items: %v", err)
+		}
+		return &cartv1.ClearItemsResponse{Ok: true}, nil
+	}
+
+	var candidateIDs []string
+	if len(cleanIDs) > 0 {
+		candidateIDs = cleanIDs
+	} else {
+		storedItems, err := s.store.GetAll(ctx, userID)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "load cart from redis: %v", err)
+		}
+		if len(storedItems) == 0 {
+			return &cartv1.ClearItemsResponse{Ok: true}, nil
+		}
+		candidateIDs = make([]string, 0, len(storedItems))
+		for skuID := range storedItems {
+			candidateIDs = append(candidateIDs, skuID)
+		}
+		sort.Strings(candidateIDs)
+	}
+
+	skuMap, err := s.fetchSKUsBatch(ctx, candidateIDs)
+	if err != nil {
+		return nil, err
+	}
+	toDelete := make([]string, 0, len(candidateIDs))
+	for _, skuID := range candidateIDs {
+		if sku, ok := skuMap[skuID]; ok && sku.GetShopId() == shopID {
+			toDelete = append(toDelete, skuID)
+		}
+	}
+	if len(toDelete) > 0 {
+		if err := s.store.Delete(ctx, userID, toDelete...); err != nil {
+			return nil, status.Errorf(codes.Internal, "clear shop cart items: %v", err)
 		}
 	}
 	return &cartv1.ClearItemsResponse{Ok: true}, nil
@@ -321,7 +364,7 @@ func (s *Server) fetchShopName(ctx context.Context, shopID string) string {
 	return resp.GetShop().GetName()
 }
 
-func (s *Server) buildCart(ctx context.Context, userID string) (*cartv1.Cart, error) {
+func (s *Server) buildCart(ctx context.Context, userID, shopFilter string) (*cartv1.Cart, error) {
 	storedItems, err := s.store.GetAll(ctx, userID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "load cart from redis: %v", err)
@@ -351,6 +394,9 @@ func (s *Server) buildCart(ctx context.Context, userID string) (*cartv1.Cart, er
 		stItem := storedItems[skuID]
 		sku, ok := skuMap[skuID]
 		if !ok || !sku.GetIsActive() {
+			continue
+		}
+		if shopFilter != "" && sku.GetShopId() != shopFilter {
 			continue
 		}
 
@@ -416,29 +462,23 @@ func (s *Server) buildCart(ctx context.Context, userID string) (*cartv1.Cart, er
 	}, nil
 }
 
-// resolveUserID enforces authenticated user_id ownership.
-// When requireAuth is true (buyer mutations), missing claims return Unauthenticated.
-// When requireAuth is false (GetCart/ClearItems, also callable internally by OrderService),
-// if claims ARE present, ownership is strictly enforced; otherwise reqUserID is used.
-func resolveUserID(ctx context.Context, reqUserID string, requireAuth bool) (string, error) {
+// resolveUserID enforces authenticated user_id ownership across all Cart RPCs.
+// Anonymous callers are always rejected with Unauthenticated.
+// Admins (and authorized service tokens if permitted by the gRPC interceptor) may act on reqUserID;
+// regular users may only access their own cart.
+func resolveUserID(ctx context.Context, reqUserID string) (string, error) {
 	reqUserID = strings.TrimSpace(reqUserID)
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
-		if requireAuth {
-			return "", status.Error(codes.Unauthenticated, "authentication required")
-		}
-		if reqUserID == "" {
-			return "", status.Error(codes.Unauthenticated, "user_id or authentication required")
-		}
-		return reqUserID, nil
+		return "", status.Error(codes.Unauthenticated, "authentication required")
 	}
 
 	if auth.HasRole(claims, "admin", "super_admin") {
 		if reqUserID != "" {
 			return reqUserID, nil
 		}
-		if claims.UserID() != "" {
-			return claims.UserID(), nil
+		if uid := strings.TrimSpace(claims.UserID()); uid != "" {
+			return uid, nil
 		}
 		return "", status.Error(codes.InvalidArgument, "user_id is required")
 	}

@@ -212,21 +212,37 @@ func (s *PromotionService) CreateVoucher(ctx context.Context, req *promotionv1.C
 
 // ListAvailableVouchers filters vouchers and computes live Redis eligibility + reasons.
 func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promotionv1.ListAvailableVouchersRequest) (*promotionv1.ListAvailableVouchersResponse, error) {
+	channel, storefrontShopID, err := normalizeSalesChannel(req.GetSalesChannel(), req.GetStorefrontShopId())
+	if err != nil {
+		return nil, err
+	}
+
 	var scopeFilter string
 	if req.GetScope() != promotionv1.VoucherScope_VOUCHER_SCOPE_UNSPECIFIED {
-		var err error
 		scopeFilter, err = protoScopeToDomain(req.GetScope())
 		if err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 	}
 
-	userID := strings.TrimSpace(req.GetUserId())
-	if userID == "" {
-		userID = auth.UserIDFromContext(ctx)
+	userID, err := resolveOptionalUserID(ctx, req.GetUserId())
+	if err != nil {
+		return nil, err
 	}
 
-	vouchers, err := s.store.ListVouchers(ctx, strings.TrimSpace(req.GetShopId()), scopeFilter)
+	shopFilter := strings.TrimSpace(req.GetShopId())
+	if channel == domain.SalesChannelStorefront {
+		if shopFilter != "" && shopFilter != storefrontShopID {
+			return nil, status.Errorf(codes.InvalidArgument, "STOREFRONT_SHOP_MISMATCH: shop_id %q does not match storefront_shop_id %q", shopFilter, storefrontShopID)
+		}
+		if scopeFilter != "" && scopeFilter != domain.VoucherScopeShop {
+			return &promotionv1.ListAvailableVouchersResponse{}, nil
+		}
+		shopFilter = storefrontShopID
+		scopeFilter = domain.VoucherScopeShop
+	}
+
+	vouchers, err := s.store.ListVouchers(ctx, shopFilter, scopeFilter)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list vouchers: %v", err)
 	}
@@ -234,9 +250,12 @@ func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promo
 		return &promotionv1.ListAvailableVouchersResponse{}, nil
 	}
 
-	savedMap, err := s.store.GetUserSavedVoucherIDs(ctx, userID)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "load saved vouchers: %v", err)
+	savedMap := map[string]bool{}
+	if userID != "" {
+		savedMap, err = s.store.GetUserSavedVoucherIDs(ctx, userID)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "load saved vouchers: %v", err)
+		}
 	}
 
 	redisKeys := make([]string, 0, len(vouchers)*3)
@@ -553,10 +572,12 @@ func (s *PromotionService) GetCoinBalance(ctx context.Context, req *promotionv1.
 
 // CreditCoins atomically and idempotently (by reference_id) credits coins to a user's ledger.
 func (s *PromotionService) CreditCoins(ctx context.Context, req *promotionv1.CreditCoinsRequest) (*promotionv1.CreditCoinsResponse, error) {
-	if claims, ok := auth.ClaimsFromContext(ctx); ok {
-		if !isAdmin(claims) {
-			return nil, status.Error(codes.PermissionDenied, "only admins can credit coins")
-		}
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if !isAdmin(claims) {
+		return nil, status.Error(codes.PermissionDenied, "only admins can credit coins")
 	}
 
 	userID := strings.TrimSpace(req.GetUserId())
@@ -596,6 +617,25 @@ func (s *PromotionService) PreviewDiscounts(ctx context.Context, req *promotionv
 		return nil, status.Error(codes.InvalidArgument, "coins_to_use must be non-negative")
 	}
 
+	channel, storefrontShopID, err := normalizeSalesChannel(req.GetSalesChannel(), req.GetStorefrontShopId())
+	if err != nil {
+		return nil, err
+	}
+	if channel == domain.SalesChannelStorefront {
+		if err := s.validateStorefrontPromotion(
+			ctx,
+			storefrontShopID,
+			req.GetShopItems(),
+			req.GetShopVoucherIds(),
+			req.GetPlatformVoucherId(),
+			req.GetFreeshipVoucherId(),
+			req.GetCoinsToUse(),
+			nil,
+		); err != nil {
+			return nil, err
+		}
+	}
+
 	calcInput, err := s.buildCalcInput(ctx, userID, req.GetShopItems(), req.GetShopVoucherIds(), req.GetPlatformVoucherId(), req.GetFreeshipVoucherId(), req.GetCoinsToUse(), false)
 	if err != nil {
 		return nil, err
@@ -631,6 +671,25 @@ func (s *PromotionService) ReservePromotion(ctx context.Context, req *promotionv
 	}
 	if req.GetCoinsToUse() < 0 {
 		return nil, status.Error(codes.InvalidArgument, "coins_to_use must be non-negative")
+	}
+
+	channel, storefrontShopID, err := normalizeSalesChannel(req.GetSalesChannel(), req.GetStorefrontShopId())
+	if err != nil {
+		return nil, err
+	}
+	if channel == domain.SalesChannelStorefront {
+		if err := s.validateStorefrontPromotion(
+			ctx,
+			storefrontShopID,
+			req.GetShopItems(),
+			req.GetShopVoucherIds(),
+			req.GetPlatformVoucherId(),
+			req.GetFreeshipVoucherId(),
+			req.GetCoinsToUse(),
+			req.GetFlashSaleItems(),
+		); err != nil {
+			return nil, err
+		}
 	}
 
 	// Fast idempotency check in Postgres
@@ -796,6 +855,14 @@ func (s *PromotionService) ReservePromotion(ctx context.Context, req *promotionv
 // ReleasePromotion idempotently compensates Redis flash-sale slots, voucher quotas/budgets,
 // per-user usage counters, and Postgres coin deductions for an order.
 func (s *PromotionService) ReleasePromotion(ctx context.Context, req *promotionv1.ReleasePromotionRequest) (*promotionv1.ReleasePromotionResponse, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if !isAdmin(claims) {
+		return nil, status.Error(codes.PermissionDenied, "only admins or internal services can release promotions")
+	}
+
 	orderID := strings.TrimSpace(req.GetOrderId())
 	if orderID == "" {
 		return nil, status.Error(codes.InvalidArgument, "order_id is required")
@@ -1384,19 +1451,168 @@ func domainFlashStatusToProto(st string) promotionv1.FlashSaleItemStatus {
 	}
 }
 
+func normalizeSalesChannel(rawChannel, rawStorefrontShopID string) (string, string, error) {
+	ch := strings.ToUpper(strings.TrimSpace(rawChannel))
+	shopID := strings.TrimSpace(rawStorefrontShopID)
+	if ch == "" {
+		ch = domain.SalesChannelMarketplace
+	}
+	switch ch {
+	case domain.SalesChannelMarketplace:
+		if shopID != "" {
+			return "", "", status.Error(codes.InvalidArgument, "storefront_shop_id must be empty when sales_channel is MARKETPLACE")
+		}
+		return domain.SalesChannelMarketplace, "", nil
+	case domain.SalesChannelStorefront:
+		if shopID == "" {
+			return "", "", status.Error(codes.InvalidArgument, "storefront_shop_id is required when sales_channel is STOREFRONT")
+		}
+		return domain.SalesChannelStorefront, shopID, nil
+	default:
+		return "", "", status.Errorf(codes.InvalidArgument, "invalid sales_channel %q: must be MARKETPLACE or STOREFRONT", rawChannel)
+	}
+}
+
+func (s *PromotionService) validateStorefrontPromotion(
+	ctx context.Context,
+	storefrontShopID string,
+	shopItems []*promotionv1.ShopDiscountInput,
+	shopVoucherIDs map[string]string,
+	platformVoucherID string,
+	freeshipVoucherID string,
+	coinsToUse int64,
+	explicitFlashItems []*promotionv1.FlashSaleReservationItem,
+) error {
+	if strings.TrimSpace(platformVoucherID) != "" {
+		return status.Error(codes.InvalidArgument, "STOREFRONT_VOUCHER_NOT_ALLOWED: platform vouchers cannot be used on STOREFRONT channel")
+	}
+	if strings.TrimSpace(freeshipVoucherID) != "" {
+		return status.Error(codes.InvalidArgument, "STOREFRONT_VOUCHER_NOT_ALLOWED: freeship vouchers cannot be used on STOREFRONT channel")
+	}
+	if coinsToUse > 0 {
+		return status.Error(codes.InvalidArgument, "STOREFRONT_COINS_NOT_ALLOWED: platform coins cannot be used on STOREFRONT channel")
+	}
+
+	checkedFlash := make(map[string]bool)
+	checkFlashShop := func(fiID string) error {
+		fiID = strings.TrimSpace(fiID)
+		if fiID == "" || checkedFlash[fiID] {
+			return nil
+		}
+		checkedFlash[fiID] = true
+		fi, err := s.store.GetFlashSaleItem(ctx, fiID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil
+			}
+			return status.Errorf(codes.Internal, "load flash sale item %s: %v", fiID, err)
+		}
+		if fi.ShopID != storefrontShopID {
+			return status.Errorf(codes.InvalidArgument, "STOREFRONT_FLASH_SALE_SHOP_MISMATCH: flash sale item %s belongs to shop %q, not storefront shop %q", fiID, fi.ShopID, storefrontShopID)
+		}
+		return nil
+	}
+
+	for _, ps := range shopItems {
+		sid := strings.TrimSpace(ps.GetShopId())
+		if sid != storefrontShopID {
+			return status.Errorf(codes.InvalidArgument, "STOREFRONT_SHOP_MISMATCH: shop %q does not match storefront shop %q", sid, storefrontShopID)
+		}
+		for _, line := range ps.GetItems() {
+			if err := checkFlashShop(line.GetFlashSaleItemId()); err != nil {
+				return err
+			}
+		}
+	}
+	for _, f := range explicitFlashItems {
+		if err := checkFlashShop(f.GetFlashSaleItemId()); err != nil {
+			return err
+		}
+	}
+
+	shopKeys := make([]string, 0, len(shopVoucherIDs))
+	for k := range shopVoucherIDs {
+		shopKeys = append(shopKeys, k)
+	}
+	sort.Strings(shopKeys)
+	for _, rawShopID := range shopKeys {
+		vid := strings.TrimSpace(shopVoucherIDs[rawShopID])
+		if vid == "" {
+			continue
+		}
+		mapShopID := strings.TrimSpace(rawShopID)
+		if mapShopID != storefrontShopID {
+			return status.Errorf(codes.InvalidArgument, "STOREFRONT_VOUCHER_SHOP_MISMATCH: shop voucher for shop %q is not allowed on storefront shop %q", mapShopID, storefrontShopID)
+		}
+		v, err := s.store.GetVoucherByIDOrCode(ctx, vid)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			return status.Errorf(codes.Internal, "load voucher %s: %v", vid, err)
+		}
+		if v.Scope != domain.VoucherScopeShop {
+			return status.Errorf(codes.InvalidArgument, "STOREFRONT_VOUCHER_NOT_ALLOWED: voucher %s has scope %s; only SHOP vouchers are allowed on STOREFRONT channel", v.Code, v.Scope)
+		}
+		if v.ShopID != storefrontShopID {
+			return status.Errorf(codes.InvalidArgument, "STOREFRONT_VOUCHER_SHOP_MISMATCH: shop voucher %s belongs to shop %q, not storefront shop %q", v.Code, v.ShopID, storefrontShopID)
+		}
+	}
+	return nil
+}
+
+// resolveUserID requires valid authentication claims and enforces user_id ownership.
+// Anonymous callers are always rejected with Unauthenticated.
 func resolveUserID(ctx context.Context, reqUserID string) (string, error) {
 	reqUserID = strings.TrimSpace(reqUserID)
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
-		return reqUserID, nil
+		return "", status.Error(codes.Unauthenticated, "authentication required")
 	}
-	if reqUserID == "" {
-		return claims.UserID(), nil
+	if isAdmin(claims) {
+		if reqUserID != "" {
+			return reqUserID, nil
+		}
+		if uid := strings.TrimSpace(claims.UserID()); uid != "" {
+			return uid, nil
+		}
+		return "", status.Error(codes.InvalidArgument, "user_id is required")
 	}
-	if reqUserID != claims.UserID() && !isAdmin(claims) {
+	claimUID := strings.TrimSpace(claims.UserID())
+	if claimUID == "" {
+		return "", status.Error(codes.Unauthenticated, "invalid authentication claims")
+	}
+	if reqUserID != "" && reqUserID != claimUID {
 		return "", status.Error(codes.PermissionDenied, "cannot access another user's resources")
 	}
-	return reqUserID, nil
+	return claimUID, nil
+}
+
+// resolveOptionalUserID is used by public-readable RPCs (ListAvailableVouchers) where anonymous
+// browsing is allowed (returning empty userID) while preventing anonymous or cross-user IDOR.
+func resolveOptionalUserID(ctx context.Context, reqUserID string) (string, error) {
+	reqUserID = strings.TrimSpace(reqUserID)
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		if reqUserID != "" {
+			return "", status.Error(codes.Unauthenticated, "authentication required to query user-specific voucher state")
+		}
+		return "", nil
+	}
+	if isAdmin(claims) {
+		if reqUserID != "" {
+			return reqUserID, nil
+		}
+		return strings.TrimSpace(claims.UserID()), nil
+	}
+	claimUID := strings.TrimSpace(claims.UserID())
+	if claimUID == "" {
+		return "", status.Error(codes.Unauthenticated, "invalid authentication claims")
+	}
+	if reqUserID != "" && reqUserID != claimUID {
+		return "", status.Error(codes.PermissionDenied, "cannot inspect another user's voucher eligibility")
+	}
+	return claimUID, nil
 }
 
 func isAdmin(claims *auth.Claims) bool {

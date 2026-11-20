@@ -9,6 +9,7 @@ import {
   baseCookie,
 } from "./config";
 import { GatewayError, errorFromResponse } from "./errors";
+import { resolveForwardedClientIp } from "./http";
 import { clearAuthCookies, rotateRefreshToken, setAuthCookies } from "./tokens";
 
 type QueryValue = string | number | boolean | null | undefined;
@@ -51,9 +52,10 @@ export async function gw<T>(path: string, opts: GwOptions = {}): Promise<T> {
   let store: Awaited<ReturnType<typeof cookies>> | undefined;
   let access: string | undefined;
   if (!cacheable) {
-    // Forward the browser IP so gateway per-IP rate limits apply per visitor, not to the BFF.
+    // Forward the browser IP only when proxy headers are explicitly trusted so untrusted
+    // callers cannot smuggle spoofed X-Forwarded-For/X-Real-IP headers through the BFF.
     const h = await headers();
-    const ip = h.get("x-forwarded-for")?.split(",")[0]?.trim() || h.get("x-real-ip");
+    const ip = resolveForwardedClientIp(h);
     if (ip) reqHeaders["X-Forwarded-For"] = ip;
     if (opts.auth !== "none") {
       store = await cookies();

@@ -154,6 +154,12 @@ func TestE2E_MultiShopCheckout_COD(t *testing.T) {
 		if !StatusEquals(o.Status, "CONFIRMED") {
 			t.Fatalf("expected COD sub-order %s status CONFIRMED, got %q", o.ID, o.Status)
 		}
+		if o.SalesChannel != "MARKETPLACE" {
+			t.Fatalf("expected default COD sub-order %s sales_channel=MARKETPLACE, got %q", o.ID, o.SalesChannel)
+		}
+		if o.StorefrontShopID != "" {
+			t.Fatalf("expected default COD sub-order %s storefront_shop_id empty, got %q", o.ID, o.StorefrontShopID)
+		}
 		switch o.ShopID {
 		case seller1.ShopID:
 			shop1Order = o

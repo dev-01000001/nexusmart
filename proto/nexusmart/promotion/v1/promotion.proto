@@ -158,6 +158,10 @@ message ListAvailableVouchersRequest {
   string shop_id = 2;
   VoucherScope scope = 3;
   int64 order_amount_vnd = 4;
+  // Optional sales channel: "" (defaults to "MARKETPLACE"), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 5;
+  // Storefront shop ID when sales_channel is "STOREFRONT".
+  string storefront_shop_id = 6;
 }
 
 message ListAvailableVouchersResponse {
@@ -248,6 +252,10 @@ message PreviewDiscountsRequest {
   string platform_voucher_id = 4;
   string freeship_voucher_id = 5;
   int64 coins_to_use = 6;
+  // Optional sales channel: "" (defaults to "MARKETPLACE"), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 7;
+  // Required shop ID when sales_channel is "STOREFRONT"; empty for "MARKETPLACE".
+  string storefront_shop_id = 8;
 }
 
 message PreviewDiscountsResponse {
@@ -263,6 +271,10 @@ message ReservePromotionRequest {
   int64 coins_to_use = 6;
   repeated FlashSaleReservationItem flash_sale_items = 7;
   repeated ShopDiscountInput shop_items = 8;
+  // Optional sales channel: "" (defaults to "MARKETPLACE"), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 9;
+  // Required shop ID when sales_channel is "STOREFRONT"; empty for "MARKETPLACE".
+  string storefront_shop_id = 10;
 }
 
 message ReservePromotionResponse {

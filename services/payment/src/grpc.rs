@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::auth::GrpcAuth;
 use crate::domain::{
     CreatePaymentInput, CreateRefundInput, PaymentMethod as DomainMethod, PaymentWithAllocations,
-    ReconciliationItemRecord, RefundRecord, ShopAllocationInput,
+    ReconciliationItemRecord, RefundRecord, SalesChannel, ShopAllocationInput,
 };
 use crate::service::PaymentService;
 use crate::telemetry::extract_or_generate_trace_id;
@@ -28,7 +28,7 @@ use pb::{
     RunReconciliationRequest, RunReconciliationResponse, ShopAllocation,
 };
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct CallerAuth {
     role: String,
     user_id: String,
@@ -51,17 +51,13 @@ impl CallerAuth {
         })
     }
 
-    fn has_role(&self) -> bool {
-        !self.role.is_empty()
-    }
-
     fn is_admin(&self) -> bool {
         matches!(self.role.as_str(), "admin" | "super_admin")
     }
 
     #[allow(clippy::result_large_err)]
     fn require_admin(&self, op: &str) -> Result<(), Status> {
-        if self.has_role() && !self.is_admin() {
+        if !self.is_admin() {
             return Err(Status::permission_denied(format!(
                 "forbidden: {op} requires admin role"
             )));
@@ -71,7 +67,7 @@ impl CallerAuth {
 
     #[allow(clippy::result_large_err)]
     fn require_payment_read_access(&self, pwa: &PaymentWithAllocations) -> Result<(), Status> {
-        if !self.has_role() || self.is_admin() {
+        if self.is_admin() {
             return Ok(());
         }
         match self.role.as_str() {
@@ -97,10 +93,10 @@ impl CallerAuth {
 
     #[allow(clippy::result_large_err)]
     fn require_payment_owner(&self, owner_user_id: &str, op: &str) -> Result<(), Status> {
-        if !self.has_role() || self.is_admin() {
+        if self.is_admin() {
             return Ok(());
         }
-        if !self.user_id.is_empty() && owner_user_id == self.user_id {
+        if !self.user_id.is_empty() && owner_user_id.trim() == self.user_id {
             return Ok(());
         }
         Err(Status::permission_denied(format!(
@@ -110,10 +106,14 @@ impl CallerAuth {
 
     #[allow(clippy::result_large_err)]
     fn require_seller_shop_access(&self, target_shop_id: &str) -> Result<(), Status> {
-        if !self.has_role() || self.is_admin() {
+        if self.is_admin() {
             return Ok(());
         }
-        if self.role == "seller" && !self.shop_id.is_empty() && self.shop_id == target_shop_id {
+        if self.role == "seller"
+            && !self.shop_id.is_empty()
+            && !target_shop_id.is_empty()
+            && self.shop_id == target_shop_id
+        {
             return Ok(());
         }
         Err(Status::permission_denied(
@@ -193,6 +193,8 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                     subtotal_vnd: a.subtotal_vnd,
                     commission_vnd: a.commission_vnd,
                     shipping_fee_vnd: a.shipping_fee_vnd,
+                    sales_channel: a.sales_channel,
+                    storefront_shop_id: a.storefront_shop_id,
                 })
                 .collect();
 
@@ -215,6 +217,8 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                     expires_at,
                     idempotency_key,
                     supersede_previous: req.supersede_previous,
+                    sales_channel: req.sales_channel,
+                    storefront_shop_id: req.storefront_shop_id,
                     trace_id,
                 })
                 .await
@@ -278,11 +282,11 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 .map_err(|e| e.to_tonic_status())?;
             let order_group_id = non_empty(&req.order_group_id);
 
-            // Defense-in-depth ownership check BEFORE cancelling when caller role metadata is present.
-            if caller.has_role() && !caller.is_admin() {
+            // Ownership check BEFORE cancelling for non-admin callers.
+            if !caller.is_admin() {
                 if caller.user_id.is_empty() {
                     return Err(Status::permission_denied(
-                        "forbidden: missing x-user-id for CancelPayment",
+                        "forbidden: missing caller subject for CancelPayment",
                     ));
                 }
                 let existing = self
@@ -354,14 +358,18 @@ impl PaymentServiceTrait for PaymentGrpcServer {
     ) -> Result<Response<GetLedgerSummaryResponse>, Status> {
         let start = Instant::now();
         let caller = CallerAuth::from_request(&self.auth, &request, "GetLedgerSummary");
+        let req = request.into_inner();
 
         let result = async {
             let caller = caller?;
             caller.require_admin("GetLedgerSummary")?;
 
+            let channel_filter =
+                SalesChannel::parse_filter(&req.sales_channel).map_err(|e| e.to_tonic_status())?;
+
             let summary = self
                 .service
-                .get_ledger_summary()
+                .get_ledger_summary(channel_filter)
                 .await
                 .map_err(|e| e.to_tonic_status())?;
 
@@ -382,6 +390,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 total_credits_vnd: summary.total_credits_vnd,
                 is_balanced: summary.is_balanced,
                 accounts,
+                sales_channel: summary.sales_channel,
             }))
         }
         .await;
@@ -469,9 +478,12 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                     .map_err(|_| Status::invalid_argument("date must be formatted as YYYY-MM-DD"))?
             };
 
+            let channel_filter =
+                SalesChannel::parse_filter(&req.sales_channel).map_err(|e| e.to_tonic_status())?;
+
             let report = self
                 .service
-                .run_reconciliation(run_date)
+                .run_reconciliation(run_date, channel_filter)
                 .await
                 .map_err(|e| e.to_tonic_status())?;
 
@@ -488,6 +500,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 missing_provider_count: report.run.missing_provider_count,
                 amount_mismatch_count: report.run.amount_mismatch_count,
                 items,
+                sales_channel: report.run.sales_channel,
             }))
         }
         .await;
@@ -559,15 +572,30 @@ fn to_proto_payment(pwa: PaymentWithAllocations) -> Payment {
         .clone()
         .unwrap_or_else(|| p.provider_order_code.clone());
 
+    let payment_channel = if p.sales_channel.trim().is_empty() {
+        SalesChannel::Marketplace.as_str().to_string()
+    } else {
+        p.sales_channel
+    };
+
     let shop_allocations = pwa
         .allocations
         .into_iter()
-        .map(|a| ShopAllocation {
-            order_id: a.order_id,
-            shop_id: a.shop_id,
-            subtotal_vnd: a.subtotal_vnd,
-            commission_vnd: a.commission_vnd,
-            shipping_fee_vnd: a.shipping_fee_vnd,
+        .map(|a| {
+            let alloc_channel = if a.sales_channel.trim().is_empty() {
+                SalesChannel::Marketplace.as_str().to_string()
+            } else {
+                a.sales_channel
+            };
+            ShopAllocation {
+                order_id: a.order_id,
+                shop_id: a.shop_id,
+                subtotal_vnd: a.subtotal_vnd,
+                commission_vnd: a.commission_vnd,
+                shipping_fee_vnd: a.shipping_fee_vnd,
+                sales_channel: alloc_channel,
+                storefront_shop_id: a.storefront_shop_id,
+            }
         })
         .collect();
 
@@ -587,6 +615,8 @@ fn to_proto_payment(pwa: PaymentWithAllocations) -> Payment {
         expires_at: p.expires_at.map(chrono_to_proto),
         created_at: Some(chrono_to_proto(p.created_at)),
         updated_at: Some(chrono_to_proto(p.updated_at)),
+        sales_channel: payment_channel,
+        storefront_shop_id: p.storefront_shop_id,
     }
 }
 
@@ -626,6 +656,8 @@ fn to_proto_reconciliation_item(item: ReconciliationItemRecord) -> Reconciliatio
         provider_amount_vnd: item.provider_amount_vnd.unwrap_or(0),
         status,
         note: item.details.unwrap_or_default(),
+        sales_channel: item.sales_channel,
+        storefront_shop_id: item.storefront_shop_id,
     }
 }
 
@@ -638,6 +670,7 @@ mod tests {
     use tonic::metadata::MetadataValue;
 
     const TEST_USER_KEY: &str = "grpc-test-user-key";
+    const TEST_SVC_KEY: &str = "grpc-test-service-key";
 
     fn test_grpc_server() -> (PaymentGrpcServer, Metrics) {
         let cfg = Config::from_env();
@@ -646,8 +679,39 @@ mod tests {
             .expect("lazy pool");
         let metrics = Metrics::new();
         let svc = PaymentService::new(pool, cfg, metrics.clone());
-        let auth = GrpcAuth::new(TEST_USER_KEY, "grpc-test-service-key").unwrap();
+        let auth = GrpcAuth::new(TEST_USER_KEY, TEST_SVC_KEY).unwrap();
         (PaymentGrpcServer::new(svc, auth), metrics)
+    }
+
+    fn with_service_auth<T>(payload: T) -> Request<T> {
+        let tok = crate::auth::sign_hs256(
+            TEST_SVC_KEY,
+            serde_json::json!({
+                "sub": "order-service",
+                "role": "admin",
+                "service": "order-service",
+                "exp": Utc::now().timestamp() + 60,
+            }),
+        );
+        let mut req = Request::new(payload);
+        req.metadata_mut().insert(
+            "authorization",
+            MetadataValue::try_from(format!("Bearer {tok}")).unwrap(),
+        );
+        req
+    }
+
+    fn with_spoofed_metadata<T>(payload: T) -> Request<T> {
+        let mut req = Request::new(payload);
+        for (k, v) in [
+            ("x-user-id", "attacker"),
+            ("x-user-role", "admin"),
+            ("x-shop-id", "shop-b"),
+        ] {
+            req.metadata_mut()
+                .insert(k, MetadataValue::try_from(v).unwrap());
+        }
+        req
     }
 
     /// Request carrying a valid end-user JWT (the only identity the server trusts).
@@ -702,6 +766,8 @@ mod tests {
                     expires_at: None,
                     idempotency_key: String::new(),
                     supersede_previous: false,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                 },
                 "admin",
                 "admin-1",
@@ -715,6 +781,7 @@ mod tests {
             .run_reconciliation(with_auth(
                 RunReconciliationRequest {
                     date: "20-11-2026".into(),
+                    sales_channel: String::new(),
                 },
                 "admin",
                 "admin-1",
@@ -752,7 +819,14 @@ mod tests {
 
         // Buyer cannot read global ledger summary
         let err = server
-            .get_ledger_summary(with_auth(GetLedgerSummaryRequest {}, "buyer", "u-1", ""))
+            .get_ledger_summary(with_auth(
+                GetLedgerSummaryRequest {
+                    sales_channel: String::new(),
+                },
+                "buyer",
+                "u-1",
+                "",
+            ))
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::PermissionDenied);
@@ -780,6 +854,7 @@ mod tests {
             .run_reconciliation(with_auth(
                 RunReconciliationRequest {
                     date: "2026-11-20".into(),
+                    sales_channel: String::new(),
                 },
                 "buyer",
                 "u-1",
@@ -798,6 +873,20 @@ mod tests {
                 "seller",
                 "u-2",
                 "shop-mine",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+
+        // Seller with empty shop_id in JWT cannot bypass by sending empty shop_id
+        let err = server
+            .get_seller_balance(with_auth(
+                GetSellerBalanceRequest {
+                    shop_id: String::new(),
+                },
+                "seller",
+                "u-2",
+                "",
             ))
             .await
             .unwrap_err();
@@ -830,6 +919,8 @@ mod tests {
                     expires_at: None,
                     idempotency_key: String::new(),
                     supersede_previous: false,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                 },
                 "buyer",
                 "u-attacker",
@@ -872,27 +963,420 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_grpc_spoofed_metadata_without_jwt_is_unauthenticated() {
+    async fn test_b1_all_rpcs_reject_anonymous_and_spoofed_metadata_and_disallowed_service_tokens()
+    {
         let (server, _) = test_grpc_server();
-        let mut req = Request::new(GetLedgerSummaryRequest {});
-        for (k, v) in [
-            ("x-user-id", "attacker"),
-            ("x-user-role", "admin"),
-            ("x-shop-id", "shop-b"),
-        ] {
-            req.metadata_mut()
-                .insert(k, MetadataValue::try_from(v).unwrap());
-        }
-        let err = server.get_ledger_summary(req).await.unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unauthenticated);
 
-        let err = server
-            .release_escrow(Request::new(ReleaseEscrowRequest {
+        // Every single RPC MUST reject anonymous callers AND spoofed x-user-* metadata without JWT
+        for req in [
+            Request::new(CreatePaymentRequest {
+                order_group_id: "grp-1".into(),
+                order_id: "ord-1".into(),
+                user_id: "u-1".into(),
+                amount_vnd: 100_000,
+                method: PaymentMethod::Cod as i32,
+                shop_allocations: vec![],
+                expires_at: None,
+                idempotency_key: String::new(),
+                supersede_previous: false,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
+            }),
+            with_spoofed_metadata(CreatePaymentRequest {
+                order_group_id: "grp-1".into(),
+                order_id: "ord-1".into(),
+                user_id: "u-1".into(),
+                amount_vnd: 100_000,
+                method: PaymentMethod::Cod as i32,
+                shop_allocations: vec![],
+                expires_at: None,
+                idempotency_key: String::new(),
+                supersede_previous: false,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
+            }),
+        ] {
+            assert_eq!(
+                server.create_payment(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        for req in [
+            Request::new(GetPaymentRequest {
+                payment_id: String::new(),
+                order_group_id: "grp-1".into(),
+                order_id: String::new(),
+            }),
+            with_spoofed_metadata(GetPaymentRequest {
+                payment_id: String::new(),
+                order_group_id: "grp-1".into(),
+                order_id: String::new(),
+            }),
+        ] {
+            assert_eq!(
+                server.get_payment(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        for req in [
+            Request::new(CancelPaymentRequest {
+                payment_id: String::new(),
+                order_group_id: "grp-1".into(),
+                reason: "test".into(),
+            }),
+            with_spoofed_metadata(CancelPaymentRequest {
+                payment_id: String::new(),
+                order_group_id: "grp-1".into(),
+                reason: "test".into(),
+            }),
+        ] {
+            assert_eq!(
+                server.cancel_payment(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        for req in [
+            Request::new(CreateRefundRequest {
+                payment_id: String::new(),
+                order_id: "ord-1".into(),
+                amount_vnd: 10_000,
+                reason: "test".into(),
+                idempotency_key: "k1".into(),
+            }),
+            with_spoofed_metadata(CreateRefundRequest {
+                payment_id: String::new(),
+                order_id: "ord-1".into(),
+                amount_vnd: 10_000,
+                reason: "test".into(),
+                idempotency_key: "k1".into(),
+            }),
+        ] {
+            assert_eq!(
+                server.create_refund(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        for req in [
+            Request::new(GetLedgerSummaryRequest {
+                sales_channel: String::new(),
+            }),
+            with_spoofed_metadata(GetLedgerSummaryRequest {
+                sales_channel: String::new(),
+            }),
+        ] {
+            assert_eq!(
+                server.get_ledger_summary(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        for req in [
+            Request::new(GetSellerBalanceRequest {
+                shop_id: "shop-1".into(),
+            }),
+            with_spoofed_metadata(GetSellerBalanceRequest {
+                shop_id: "shop-1".into(),
+            }),
+        ] {
+            assert_eq!(
+                server.get_seller_balance(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        for req in [
+            Request::new(ReleaseEscrowRequest {
                 order_id: "ord-1".into(),
                 shop_id: "shop-1".into(),
-            }))
+            }),
+            with_spoofed_metadata(ReleaseEscrowRequest {
+                order_id: "ord-1".into(),
+                shop_id: "shop-1".into(),
+            }),
+        ] {
+            assert_eq!(
+                server.release_escrow(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        for req in [
+            Request::new(RunReconciliationRequest {
+                date: "2026-11-20".into(),
+                sales_channel: String::new(),
+            }),
+            with_spoofed_metadata(RunReconciliationRequest {
+                date: "2026-11-20".into(),
+                sales_channel: String::new(),
+            }),
+        ] {
+            assert_eq!(
+                server.run_reconciliation(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        // Valid service tokens MUST be rejected with PermissionDenied on non-SERVICE_METHODS RPCs
+        assert_eq!(
+            server
+                .create_payment(with_service_auth(CreatePaymentRequest {
+                    order_group_id: "grp-1".into(),
+                    order_id: "ord-1".into(),
+                    user_id: "u-1".into(),
+                    amount_vnd: 100_000,
+                    method: PaymentMethod::Cod as i32,
+                    shop_allocations: vec![],
+                    expires_at: None,
+                    idempotency_key: String::new(),
+                    supersede_previous: false,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
+                }))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            server
+                .get_ledger_summary(with_service_auth(GetLedgerSummaryRequest {
+                    sales_channel: String::new(),
+                }))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            server
+                .get_seller_balance(with_service_auth(GetSellerBalanceRequest {
+                    shop_id: "shop-1".into(),
+                }))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            server
+                .run_reconciliation(with_service_auth(RunReconciliationRequest {
+                    date: "2026-11-20".into(),
+                    sales_channel: String::new(),
+                }))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+    }
+
+    #[tokio::test]
+    async fn test_grpc_sales_channel_validation_on_create_summary_and_reconcile() {
+        let (server, _) = test_grpc_server();
+
+        // Unknown sales_channel -> InvalidArgument
+        let err = server
+            .create_payment(with_auth(
+                CreatePaymentRequest {
+                    order_group_id: "grp-1".into(),
+                    order_id: "ord-1".into(),
+                    user_id: "u-1".into(),
+                    amount_vnd: 100_000,
+                    method: PaymentMethod::Cod as i32,
+                    shop_allocations: vec![],
+                    expires_at: None,
+                    idempotency_key: String::new(),
+                    supersede_previous: false,
+                    sales_channel: "DIRECT".into(),
+                    storefront_shop_id: String::new(),
+                },
+                "buyer",
+                "u-1",
+                "",
+            ))
             .await
             .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        // STOREFRONT without storefront_shop_id -> InvalidArgument
+        let err = server
+            .create_payment(with_auth(
+                CreatePaymentRequest {
+                    order_group_id: "grp-1".into(),
+                    order_id: "ord-1".into(),
+                    user_id: "u-1".into(),
+                    amount_vnd: 100_000,
+                    method: PaymentMethod::Cod as i32,
+                    shop_allocations: vec![],
+                    expires_at: None,
+                    idempotency_key: String::new(),
+                    supersede_previous: false,
+                    sales_channel: "STOREFRONT".into(),
+                    storefront_shop_id: String::new(),
+                },
+                "buyer",
+                "u-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        // STOREFRONT with cross-shop allocation -> InvalidArgument
+        let err = server
+            .create_payment(with_auth(
+                CreatePaymentRequest {
+                    order_group_id: "grp-1".into(),
+                    order_id: "ord-1".into(),
+                    user_id: "u-1".into(),
+                    amount_vnd: 100_000,
+                    method: PaymentMethod::Cod as i32,
+                    shop_allocations: vec![ShopAllocation {
+                        order_id: "sub-1".into(),
+                        shop_id: "shop-B".into(),
+                        subtotal_vnd: 80_000,
+                        commission_vnd: 4_000,
+                        shipping_fee_vnd: 20_000,
+                        sales_channel: "STOREFRONT".into(),
+                        storefront_shop_id: "shop-A".into(),
+                    }],
+                    expires_at: None,
+                    idempotency_key: String::new(),
+                    supersede_previous: false,
+                    sales_channel: "STOREFRONT".into(),
+                    storefront_shop_id: "shop-A".into(),
+                },
+                "buyer",
+                "u-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        // Invalid sales_channel filter on GetLedgerSummary & RunReconciliation -> InvalidArgument
+        let err = server
+            .get_ledger_summary(with_auth(
+                GetLedgerSummaryRequest {
+                    sales_channel: "UNKNOWN".into(),
+                },
+                "admin",
+                "admin-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        let err = server
+            .run_reconciliation(with_auth(
+                RunReconciliationRequest {
+                    date: "2026-11-20".into(),
+                    sales_channel: "UNKNOWN".into(),
+                },
+                "admin",
+                "admin-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn test_to_proto_payment_legacy_default_and_storefront_mapping() {
+        let now = Utc::now();
+        let pid = Uuid::new_v4();
+        let legacy = to_proto_payment(PaymentWithAllocations {
+            payment: crate::domain::PaymentRecord {
+                id: pid,
+                order_group_id: "grp-legacy".into(),
+                order_id: "ord-legacy".into(),
+                user_id: "u-1".into(),
+                method: "COD".into(),
+                provider: "cod".into(),
+                amount_vnd: 100_000,
+                status: "succeeded".into(),
+                provider_tx_id: None,
+                provider_order_code: "NM0000000001".into(),
+                qr_code: None,
+                qr_url: None,
+                idempotency_key: None,
+                expires_at: None,
+                paid_at: Some(now),
+                trace_id: String::new(),
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
+                created_at: now,
+                updated_at: now,
+            },
+            allocations: vec![crate::domain::ShopAllocationRecord {
+                id: Uuid::new_v4(),
+                payment_id: pid,
+                order_id: "sub-legacy".into(),
+                shop_id: "shop-1".into(),
+                subtotal_vnd: 80_000,
+                commission_vnd: 4_000,
+                shipping_fee_vnd: 20_000,
+                escrow_status: "held".into(),
+                settled_at: None,
+                released_at: None,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
+                created_at: now,
+            }],
+        });
+        assert_eq!(legacy.sales_channel, "MARKETPLACE");
+        assert_eq!(legacy.storefront_shop_id, "");
+        assert_eq!(legacy.shop_allocations[0].sales_channel, "MARKETPLACE");
+        assert_eq!(legacy.shop_allocations[0].storefront_shop_id, "");
+
+        let sf = to_proto_payment(PaymentWithAllocations {
+            payment: crate::domain::PaymentRecord {
+                id: pid,
+                order_group_id: "grp-sf".into(),
+                order_id: "ord-sf".into(),
+                user_id: "u-1".into(),
+                method: "VIETQR".into(),
+                provider: "vietqr_mock".into(),
+                amount_vnd: 120_000,
+                status: "pending".into(),
+                provider_tx_id: None,
+                provider_order_code: "NM0000000002".into(),
+                qr_code: None,
+                qr_url: None,
+                idempotency_key: None,
+                expires_at: None,
+                paid_at: None,
+                trace_id: String::new(),
+                sales_channel: "STOREFRONT".into(),
+                storefront_shop_id: "shop-sf".into(),
+                created_at: now,
+                updated_at: now,
+            },
+            allocations: vec![crate::domain::ShopAllocationRecord {
+                id: Uuid::new_v4(),
+                payment_id: pid,
+                order_id: "sub-sf".into(),
+                shop_id: "shop-sf".into(),
+                subtotal_vnd: 100_000,
+                commission_vnd: 5_000,
+                shipping_fee_vnd: 20_000,
+                escrow_status: "held".into(),
+                settled_at: None,
+                released_at: None,
+                sales_channel: "STOREFRONT".into(),
+                storefront_shop_id: "shop-sf".into(),
+                created_at: now,
+            }],
+        });
+        assert_eq!(sf.sales_channel, "STOREFRONT");
+        assert_eq!(sf.storefront_shop_id, "shop-sf");
+        assert_eq!(sf.shop_allocations[0].sales_channel, "STOREFRONT");
+        assert_eq!(sf.shop_allocations[0].storefront_shop_id, "shop-sf");
     }
 }

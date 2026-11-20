@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -99,10 +100,126 @@ func (l *RedisRateLimiter) Allow(ctx context.Context, key string, limit int, win
 	}, nil
 }
 
+// TrustedProxies holds CIDR ranges whose X-Forwarded-For / X-Real-IP headers are trusted.
+// A nil or empty TrustedProxies trusts no proxy headers and always uses RemoteAddr.
+type TrustedProxies struct {
+	prefixes []netip.Prefix
+}
+
+// ParseTrustedProxies parses a comma-separated list of CIDRs (e.g. "172.31.250.0/28,10.0.0.0/8").
+// Empty input returns an empty TrustedProxies that trusts no proxy headers.
+func ParseTrustedProxies(raw string) (*TrustedProxies, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return &TrustedProxies{}, nil
+	}
+	var prefixes []netip.Prefix
+	for _, part := range strings.Split(raw, ",") {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(token)
+		if err != nil {
+			return nil, fmt.Errorf("invalid trusted proxy CIDR %q: %w", token, err)
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return &TrustedProxies{prefixes: prefixes}, nil
+}
+
+// Contains reports whether addr falls within any configured trusted proxy CIDR.
+func (tp *TrustedProxies) Contains(addr netip.Addr) bool {
+	if tp == nil || len(tp.prefixes) == 0 || !addr.IsValid() {
+		return false
+	}
+	unmapped := addr.Unmap()
+	for _, p := range tp.prefixes {
+		if p.Contains(unmapped) {
+			return true
+		}
+	}
+	return false
+}
+
+// ClientIP extracts the caller IP using only RemoteAddr unless RemoteAddr belongs to tp.
+// When RemoteAddr is trusted, X-Forwarded-For is parsed right-to-left to pick the right-most
+// untrusted IP (preventing spoofed left-most XFF entries); X-Real-IP is used only as fallback.
+func (tp *TrustedProxies) ClientIP(r *http.Request) string {
+	if r == nil {
+		return "unknown"
+	}
+	remote := strings.TrimSpace(r.RemoteAddr)
+	peerAddr, peerOK := parseIPAddr(remote)
+	if !peerOK {
+		host, _, err := net.SplitHostPort(remote)
+		if err == nil && host != "" {
+			return host
+		}
+		if remote != "" {
+			return remote
+		}
+		return "unknown"
+	}
+	if !tp.Contains(peerAddr) {
+		return peerAddr.String()
+	}
+
+	var hops []string
+	for _, hdr := range r.Header.Values("X-Forwarded-For") {
+		for _, part := range strings.Split(hdr, ",") {
+			if s := strings.TrimSpace(part); s != "" {
+				hops = append(hops, s)
+			}
+		}
+	}
+	if len(hops) > 0 {
+		var lastValid netip.Addr
+		for i := len(hops) - 1; i >= 0; i-- {
+			hopAddr, ok := parseIPAddr(hops[i])
+			if !ok {
+				break
+			}
+			lastValid = hopAddr
+			if !tp.Contains(hopAddr) {
+				return hopAddr.String()
+			}
+		}
+		if lastValid.IsValid() {
+			return lastValid.String()
+		}
+	}
+
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		if realAddr, ok := parseIPAddr(xri); ok {
+			return realAddr.String()
+		}
+	}
+	return peerAddr.String()
+}
+
+func parseIPAddr(raw string) (netip.Addr, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return netip.Addr{}, false
+	}
+	if host, _, err := net.SplitHostPort(s); err == nil && host != "" {
+		s = host
+	}
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		s = strings.TrimSuffix(strings.TrimPrefix(s, "["), "]")
+	}
+	addr, err := netip.ParseAddr(s)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return addr.Unmap(), true
+}
+
 // RateLimitByIP enforces per-IP rate limiting (disabled when limitPerMin <= 0).
-func RateLimitByIP(limiter RateLimiter, limitPerMin int, log *slog.Logger) func(http.Handler) http.Handler {
+func RateLimitByIP(limiter RateLimiter, limitPerMin int, trusted *TrustedProxies, log *slog.Logger) func(http.Handler) http.Handler {
 	return rateLimitMiddleware(limiter, limitPerMin, time.Minute, log, func(r *http.Request) string {
-		return "rl:ip:" + ClientIP(r)
+		return "rl:ip:" + trusted.ClientIP(r)
 	})
 }
 
@@ -117,12 +234,12 @@ func RateLimitByUser(limiter RateLimiter, limitPerMin int, log *slog.Logger) fun
 }
 
 // RateLimitFlashSale enforces stricter rate limits on flash-sale routes (disabled when limitPerMin <= 0).
-func RateLimitFlashSale(limiter RateLimiter, limitPerMin int, log *slog.Logger) func(http.Handler) http.Handler {
+func RateLimitFlashSale(limiter RateLimiter, limitPerMin int, trusted *TrustedProxies, log *slog.Logger) func(http.Handler) http.Handler {
 	return rateLimitMiddleware(limiter, limitPerMin, time.Minute, log, func(r *http.Request) string {
 		if uid := auth.UserIDFromContext(r.Context()); uid != "" {
 			return "rl:flash:user:" + uid
 		}
-		return "rl:flash:ip:" + ClientIP(r)
+		return "rl:flash:ip:" + trusted.ClientIP(r)
 	})
 }
 
@@ -171,23 +288,8 @@ func rateLimitMiddleware(
 	}
 }
 
-// ClientIP extracts the caller IP from X-Forwarded-For, X-Real-IP, or RemoteAddr.
+// ClientIP extracts the caller IP strictly from RemoteAddr without trusting proxy headers.
+// To honor proxy headers from configured CIDRs, use (*TrustedProxies).ClientIP.
 func ClientIP(r *http.Request) string {
-	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
-		parts := strings.Split(xff, ",")
-		if first := strings.TrimSpace(parts[0]); first != "" {
-			return first
-		}
-	}
-	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
-		return xri
-	}
-	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
-	if err == nil && host != "" {
-		return host
-	}
-	if r.RemoteAddr != "" {
-		return r.RemoteAddr
-	}
-	return "unknown"
+	return (*TrustedProxies)(nil).ClientIP(r)
 }

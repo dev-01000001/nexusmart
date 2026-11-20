@@ -13,6 +13,8 @@ use sha2::Sha256;
 use tonic::metadata::MetadataMap;
 use tonic::Status;
 
+use crate::error::PaymentError;
+
 /// RPCs on which an internal service token (order saga / expiry watchdog) is accepted.
 const SERVICE_METHODS: &[&str] = &[
     "GetPayment",
@@ -21,12 +23,18 @@ const SERVICE_METHODS: &[&str] = &[
     "ReleaseEscrow",
 ];
 
-/// Authenticated caller as seen by handlers.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Authenticated caller as seen by gRPC and HTTP handlers.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Caller {
     pub role: String,
     pub user_id: String,
     pub shop_id: String,
+}
+
+impl Caller {
+    pub fn is_admin(&self) -> bool {
+        matches!(self.role.as_str(), "admin" | "super_admin")
+    }
 }
 
 #[derive(Deserialize)]
@@ -63,22 +71,16 @@ impl GrpcAuth {
     /// Authenticates the caller of `method` (bare RPC name, e.g. "GetPayment").
     #[allow(clippy::result_large_err)]
     pub fn authenticate(&self, md: &MetadataMap, method: &str) -> Result<Caller, Status> {
-        let token = md
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .map(str::trim)
-            .and_then(|v| {
-                v.strip_prefix("Bearer ")
-                    .or_else(|| v.strip_prefix("bearer "))
-            })
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
+        let token = extract_bearer(md.get("authorization").and_then(|v| v.to_str().ok()))
             .ok_or_else(|| Status::unauthenticated("authentication required"))?;
 
-        if let Some(c) = verify_hs256(token, &self.user_key).filter(|c| c.service.is_empty()) {
+        if let Some(c) = verify_hs256(token, &self.user_key).filter(|c| c.service.trim().is_empty())
+        {
             return to_caller(c);
         }
-        if let Some(c) = verify_hs256(token, &self.service_key).filter(|c| !c.service.is_empty()) {
+        if let Some(c) =
+            verify_hs256(token, &self.service_key).filter(|c| !c.service.trim().is_empty())
+        {
             if !SERVICE_METHODS.contains(&method) {
                 return Err(Status::permission_denied(
                     "service identity not allowed for this RPC",
@@ -88,6 +90,56 @@ impl GrpcAuth {
         }
         Err(Status::unauthenticated("invalid access token"))
     }
+
+    /// Authenticates an HTTP caller using a verified end-user Bearer JWT.
+    /// Plain X-User-* headers are never trusted; internal service tokens are rejected on HTTP routes.
+    pub fn authenticate_http_user(
+        &self,
+        auth_header: Option<&str>,
+    ) -> crate::error::Result<Caller> {
+        let token = extract_bearer(auth_header)
+            .ok_or_else(|| PaymentError::Unauthorized("authentication required".to_string()))?;
+
+        if let Some(c) = verify_hs256(token, &self.user_key).filter(|c| c.service.trim().is_empty())
+        {
+            return to_caller(c).map_err(|s| PaymentError::Unauthorized(s.message().to_string()));
+        }
+        if verify_hs256(token, &self.service_key)
+            .filter(|c| !c.service.trim().is_empty())
+            .is_some()
+        {
+            return Err(PaymentError::Forbidden(
+                "service identity not allowed for this HTTP endpoint".to_string(),
+            ));
+        }
+        Err(PaymentError::Unauthorized(
+            "invalid access token".to_string(),
+        ))
+    }
+
+    /// Authenticates an HTTP caller and enforces `admin` or `super_admin` role.
+    pub fn authenticate_http_admin(
+        &self,
+        auth_header: Option<&str>,
+    ) -> crate::error::Result<Caller> {
+        let caller = self.authenticate_http_user(auth_header)?;
+        if !caller.is_admin() {
+            return Err(PaymentError::Forbidden(
+                "forbidden: admin role required".to_string(),
+            ));
+        }
+        Ok(caller)
+    }
+}
+
+fn extract_bearer(raw: Option<&str>) -> Option<&str> {
+    raw.map(str::trim)
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
 }
 
 #[allow(clippy::result_large_err)]
@@ -216,10 +268,17 @@ mod tests {
             .unwrap();
         assert_eq!(ok.role, "admin");
 
-        let denied = a
-            .authenticate(&md(&[bearer(svc(SVC_KEY, exp_in(60)))]), "GetLedgerSummary")
-            .unwrap_err();
-        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        for method in [
+            "CreatePayment",
+            "GetLedgerSummary",
+            "GetSellerBalance",
+            "RunReconciliation",
+        ] {
+            let denied = a
+                .authenticate(&md(&[bearer(svc(SVC_KEY, exp_in(60)))]), method)
+                .unwrap_err();
+            assert_eq!(denied.code(), tonic::Code::PermissionDenied, "{method}");
+        }
 
         for (name, tok) in [
             ("wrong key", svc("guessed-key", exp_in(60))),
@@ -232,6 +291,50 @@ mod tests {
                 .unwrap_err();
             assert_eq!(err.code(), tonic::Code::Unauthenticated, "{name}");
         }
+    }
+
+    #[test]
+    fn http_auth_enforces_user_jwt_and_admin_role() {
+        let a = auth();
+        assert!(matches!(
+            a.authenticate_http_user(None),
+            Err(PaymentError::Unauthorized(_))
+        ));
+        assert!(matches!(
+            a.authenticate_http_admin(Some("Bearer invalid.token.sig")),
+            Err(PaymentError::Unauthorized(_))
+        ));
+
+        let svc_tok = sign_hs256(
+            SVC_KEY,
+            json!({"sub":"order-service","role":"admin","service":"order-service","exp":exp_in(60)}),
+        );
+        assert!(matches!(
+            a.authenticate_http_admin(Some(&format!("Bearer {svc_tok}"))),
+            Err(PaymentError::Forbidden(_))
+        ));
+
+        let buyer_tok = sign_hs256(
+            USER_KEY,
+            json!({"sub":"buyer-1","role":"buyer","exp":exp_in(60)}),
+        );
+        let buyer = a
+            .authenticate_http_user(Some(&format!("Bearer {buyer_tok}")))
+            .unwrap();
+        assert_eq!(buyer.user_id, "buyer-1");
+        assert!(matches!(
+            a.authenticate_http_admin(Some(&format!("Bearer {buyer_tok}"))),
+            Err(PaymentError::Forbidden(_))
+        ));
+
+        let admin_tok = sign_hs256(
+            USER_KEY,
+            json!({"sub":"admin-1","role":"admin","exp":exp_in(60)}),
+        );
+        let admin = a
+            .authenticate_http_admin(Some(&format!("Bearer {admin_tok}")))
+            .unwrap();
+        assert!(admin.is_admin());
     }
 
     #[test]

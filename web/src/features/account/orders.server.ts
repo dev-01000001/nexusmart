@@ -16,7 +16,13 @@ export interface BuyerOrdersResult {
 }
 
 export async function fetchBuyerOrders(
-  opts: { status?: string; page?: number; pageSize?: number; includeExtras?: boolean } = {}
+  opts: {
+    status?: string;
+    salesChannel?: string;
+    page?: number;
+    pageSize?: number;
+    includeExtras?: boolean;
+  } = {}
 ): Promise<BuyerOrdersResult> {
   const page = Math.max(1, Math.trunc(opts.page ?? 1));
   const pageSize = Math.max(1, Math.min(100, Math.trunc(opts.pageSize ?? 50)));
@@ -28,6 +34,7 @@ export async function fetchBuyerOrders(
   }>("/api/v1/orders", {
     query: {
       status: opts.status || undefined,
+      sales_channel: opts.salesChannel || undefined,
       page,
       page_size: pageSize,
     },

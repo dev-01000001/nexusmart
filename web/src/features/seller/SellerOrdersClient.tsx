@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Button, IconCheck, IconSearch, StateView } from "@/components";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
+import { getSalesChannelMeta, normalizeSalesChannel } from "@/lib/salesChannel";
 import { useSellerContext } from "./SellerShell";
 import {
   computeSellerNetReceivable,
@@ -63,6 +64,7 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
   );
   const [query, setQuery] = useState("");
   const [paymentFilter, setPaymentFilter] = useState<"all" | "COD" | "VIETQR">("all");
+  const [channelFilter, setChannelFilter] = useState<"all" | "MARKETPLACE" | "STOREFRONT">("all");
 
   const counts = useMemo(
     () => ({
@@ -86,6 +88,8 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
     return orders.filter((o) => {
       if (filter !== "all" && bucketOf(o.status) !== filter) return false;
       if (paymentFilter !== "all" && o.payment_method.toUpperCase() !== paymentFilter) return false;
+      if (channelFilter !== "all" && normalizeSalesChannel(o.sales_channel) !== channelFilter)
+        return false;
       if (q) {
         const addr = o.shipping_address;
         const summary = summarizeOrderItems(o.items).toLowerCase();
@@ -99,7 +103,7 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
       }
       return true;
     });
-  }, [orders, filter, paymentFilter, query]);
+  }, [orders, filter, paymentFilter, channelFilter, query]);
 
   const handleAction = async (order: GwSellerOrder) => {
     const action = getNextBackendOrderAction(order.status);
@@ -302,6 +306,19 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
                   <option value="VIETQR">VietQR</option>
                   <option value="COD">Thu hộ COD</option>
                 </select>
+
+                <select
+                  className={common.filterSelect}
+                  value={channelFilter}
+                  onChange={(e) =>
+                    setChannelFilter(e.target.value as "all" | "MARKETPLACE" | "STOREFRONT")
+                  }
+                  aria-label="Lọc theo kênh bán"
+                >
+                  <option value="all">Mọi kênh bán</option>
+                  <option value="MARKETPLACE">Sàn NexusMart</option>
+                  <option value="STOREFRONT">Site riêng</option>
+                </select>
               </div>
               <span className={common.cardMeta}>
                 Hiển thị {formatInt(filteredOrders.length)} trên {formatInt(orders.length)} đơn hàng
@@ -319,6 +336,7 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
                     <thead>
                       <tr>
                         <th>Mã đơn</th>
+                        <th>Kênh bán</th>
                         <th>Người mua</th>
                         <th>Sản phẩm & thanh toán</th>
                         <th className={common.numCol}>SL</th>
@@ -331,6 +349,7 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
                     <tbody>
                       {filteredOrders.map((o) => {
                         const meta = getSellerOrderStatusMeta(o.status);
+                        const channelMeta = getSalesChannelMeta(o.sales_channel);
                         const nextAction = getNextBackendOrderAction(o.status);
                         const totalQty = (o.items ?? []).reduce((s, it) => s + it.quantity, 0);
                         const netVnd = computeSellerNetReceivable(o);
@@ -351,6 +370,14 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
                               </Link>
                               <span className={common.cellSub}>
                                 {o.created_at ? formatDateTimeVi(o.created_at) : ""}
+                              </span>
+                            </td>
+                            <td>
+                              <span
+                                className={`${common.channelTag} ${channelMeta.isStorefront ? common.channelTagStorefront : ""}`}
+                                data-sales-channel={channelMeta.value}
+                              >
+                                {channelMeta.label}
                               </span>
                             </td>
                             <td>
@@ -405,6 +432,7 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
                 <div className={common.mobileList}>
                   {filteredOrders.map((o) => {
                     const meta = getSellerOrderStatusMeta(o.status);
+                    const channelMeta = getSalesChannelMeta(o.sales_channel);
                     const nextAction = getNextBackendOrderAction(o.status);
                     const recipient = o.shipping_address?.recipient_name || "Người mua";
                     const province = o.shipping_address?.province_name || "";
@@ -429,7 +457,15 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
                         </div>
                         <p className={styles.mobileOrderSummary}>{summarizeOrderItems(o.items)}</p>
                         <div className={common.mobileRowMeta}>
-                          <span className={pillCls(meta.tone)}>{meta.label}</span>
+                          <div className={styles.actionGroup}>
+                            <span className={pillCls(meta.tone)}>{meta.label}</span>
+                            <span
+                              className={`${common.channelTag} ${channelMeta.isStorefront ? common.channelTagStorefront : ""}`}
+                              data-sales-channel={channelMeta.value}
+                            >
+                              {channelMeta.label}
+                            </span>
+                          </div>
                           <div className={styles.actionGroup}>
                             {nextAction && (
                               <button

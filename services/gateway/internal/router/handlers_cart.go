@@ -2,6 +2,7 @@ package router
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	cartv1 "github.com/nexusmart/core/gen/go/nexusmart/cart/v1"
@@ -86,6 +87,7 @@ func (h *handler) handleGetCart(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.clients.Cart.GetCart(ctx, &cartv1.GetCartRequest{
 		UserId: auth.UserIDFromContext(r.Context()),
+		ShopId: strings.TrimSpace(r.URL.Query().Get("shop_id")),
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -165,10 +167,15 @@ func (h *handler) handleRemoveCartItem(w http.ResponseWriter, r *http.Request) {
 func (h *handler) handleClearCart(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SKUIDs []string `json:"sku_ids"`
+		ShopID string   `json:"shop_id"`
 	}
 	if err := httpx.DecodeOptionalJSON(r, &body); err != nil {
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 		return
+	}
+	shopID := strings.TrimSpace(body.ShopID)
+	if shopID == "" {
+		shopID = strings.TrimSpace(r.URL.Query().Get("shop_id"))
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
@@ -176,6 +183,7 @@ func (h *handler) handleClearCart(w http.ResponseWriter, r *http.Request) {
 	resp, err := h.clients.Cart.ClearItems(ctx, &cartv1.ClearItemsRequest{
 		UserId: auth.UserIDFromContext(r.Context()),
 		SkuIds: body.SKUIDs,
+		ShopId: shopID,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)

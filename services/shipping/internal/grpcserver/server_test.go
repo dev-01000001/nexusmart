@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -15,8 +16,12 @@ import (
 	"github.com/nexusmart/core/services/shipping/internal/carrier"
 	"github.com/nexusmart/core/services/shipping/internal/service"
 	"github.com/nexusmart/core/services/shipping/internal/store"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 type stubRepo struct {
@@ -193,5 +198,108 @@ func TestShippingGRPCRBACAndShopOwnership(t *testing.T) {
 	// Owner seller succeeds.
 	if resp, err := srv.CancelShipment(sellerOwnerCtx, cancelReq); err != nil || resp.GetShipment().GetStatus() != shippingv1.ShipmentStatus_SHIPMENT_STATUS_CANCELLED {
 		t.Fatalf("expected owner seller CancelShipment to succeed, got resp=%+v err=%v", resp, err)
+	}
+}
+
+func TestShippingGRPCTrust_B1RejectsAnonymousAndServiceTokens(t *testing.T) {
+	repo := newStubRepo()
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)), carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock"}))
+	svc := service.NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := New(svc)
+
+	// Direct handler calls without claims must NEVER be treated as internal/trusted.
+	createReq := &shippingv1.CreateShipmentRequest{
+		OrderId:     "ord-b1-1",
+		ShopId:      "shop-1",
+		CarrierCode: "ghn",
+		WeightGrams: 500,
+	}
+	if _, err := srv.CreateShipment(context.Background(), createReq); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("direct anonymous CreateShipment: want Unauthenticated, got %v", err)
+	}
+	if _, err := srv.CancelShipment(context.Background(), &shippingv1.CancelShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("direct anonymous CancelShipment: want Unauthenticated, got %v", err)
+	}
+	if _, err := srv.GetShipment(context.Background(), &shippingv1.GetShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("direct anonymous GetShipment: want Unauthenticated, got %v", err)
+	}
+
+	// Full gRPC bufconn stack with auth.GRPCUnaryServerInterceptor.
+	users, _ := auth.NewManager("shipping-test-user-key", 15*time.Minute)
+	svcMgr, _ := auth.NewManager("shipping-test-service-key", auth.ServiceTokenTTL)
+
+	lis := bufconn.Listen(1 << 20)
+	gs := grpc.NewServer(grpc.ChainUnaryInterceptor(auth.GRPCUnaryServerInterceptor(users, svcMgr)))
+	shippingv1.RegisterShippingServiceServer(gs, srv)
+	go func() { _ = gs.Serve(lis) }()
+	t.Cleanup(gs.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial bufconn: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	client := shippingv1.NewShippingServiceClient(conn)
+
+	md := func(kv ...string) context.Context {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		t.Cleanup(cancel)
+		return metadata.NewOutgoingContext(ctx, metadata.Pairs(kv...))
+	}
+	bearer := func(tok string, kv ...string) context.Context {
+		return md(append(kv, "authorization", "Bearer "+tok)...)
+	}
+
+	buyerTok, _, _, _ := users.SignAccessToken("buyer-1", "buyer", "")
+	seller1Tok, _, _, _ := users.SignAccessToken("seller-1", "seller", "shop-1")
+	seller2Tok, _, _, _ := users.SignAccessToken("seller-2", "seller", "shop-2")
+	svcTok, _ := svcMgr.SignServiceToken("order-service")
+
+	// Spoofed metadata without JWT -> Unauthenticated on all 3 RPCs.
+	spoof := []string{"x-user-id", "attacker", "x-user-role", "admin", "x-shop-id", "shop-1"}
+	if _, err := client.CreateShipment(md(spoof...), createReq); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("bufconn anon CreateShipment: want Unauthenticated, got %v", err)
+	}
+	if _, err := client.CancelShipment(md(spoof...), &shippingv1.CancelShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("bufconn anon CancelShipment: want Unauthenticated, got %v", err)
+	}
+	if _, err := client.GetShipment(md(spoof...), &shippingv1.GetShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("bufconn anon GetShipment: want Unauthenticated, got %v", err)
+	}
+
+	// Service tokens are disallowed on CreateShipment/CancelShipment/GetShipment -> PermissionDenied.
+	if _, err := client.CreateShipment(bearer(svcTok), createReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("service token CreateShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.CancelShipment(bearer(svcTok), &shippingv1.CancelShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("service token CancelShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.GetShipment(bearer(svcTok), &shippingv1.GetShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("service token GetShipment: want PermissionDenied, got %v", err)
+	}
+
+	// Buyer and mismatched seller rejected; owning seller succeeds.
+	if _, err := client.CreateShipment(bearer(buyerTok), createReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("buyer CreateShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.CreateShipment(bearer(seller2Tok), createReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("other seller CreateShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.CreateShipment(bearer(seller1Tok), createReq); err != nil {
+		t.Fatalf("owner seller CreateShipment: %v", err)
+	}
+	if _, err := client.GetShipment(bearer(seller2Tok), &shippingv1.GetShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("other seller GetShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.GetShipment(bearer(seller1Tok), &shippingv1.GetShipmentRequest{OrderId: "ord-b1-1"}); err != nil {
+		t.Fatalf("owner seller GetShipment: %v", err)
+	}
+	if _, err := client.CancelShipment(bearer(seller2Tok), &shippingv1.CancelShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("other seller CancelShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.CancelShipment(bearer(seller1Tok), &shippingv1.CancelShipmentRequest{OrderId: "ord-b1-1"}); err != nil {
+		t.Fatalf("owner seller CancelShipment: %v", err)
 	}
 }

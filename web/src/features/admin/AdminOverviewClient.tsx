@@ -5,11 +5,17 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { BarChart, Button, LineChart, StateView } from "@/components";
 import { formatCompactVnd, formatInt, formatSignedVnd, formatVnd } from "@/lib/format";
+import {
+  getSalesChannelMeta,
+  normalizeSalesChannel,
+  type SalesChannelFilter,
+} from "@/lib/salesChannel";
 import { formatShortTimeDateVi } from "./adminMeta";
 import { AdminStateGate, AdminSuspenseFallback } from "./AdminStateGate";
 import { StatusPill } from "./StatusPill";
 import {
   getAccountTypeLabelVi,
+  getAdminOrderStatusMeta,
   getAdminShopStatusMeta,
   getAuditActionLabelVi,
   getAuditTargetLabelVi,
@@ -84,6 +90,30 @@ function AdminOverviewContent({
 }: AdminOverviewClientProps) {
   const router = useRouter();
   const [scope, setScope] = useState<OverviewScope>("toan_san");
+  const [orderChannelFilter, setOrderChannelFilter] = useState<SalesChannelFilter>("");
+
+  const shopNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const sh of shops) map.set(sh.id, sh.name);
+    return map;
+  }, [shops]);
+
+  const filteredRecentOrders = useMemo(() => {
+    const list = orderChannelFilter
+      ? orders.filter((o) => normalizeSalesChannel(o.sales_channel) === orderChannelFilter)
+      : orders;
+    return list.slice(0, 12);
+  }, [orders, orderChannelFilter]);
+
+  const channelCounts = useMemo(() => {
+    let marketplace = 0;
+    let storefront = 0;
+    for (const o of orders) {
+      if (normalizeSalesChannel(o.sales_channel) === "STOREFRONT") storefront += 1;
+      else marketplace += 1;
+    }
+    return { marketplace, storefront };
+  }, [orders]);
 
   const validOrders = useMemo(
     () => orders.filter((o) => o.status.toUpperCase() !== "CANCELLED"),
@@ -277,6 +307,119 @@ function AdminOverviewContent({
               </span>
               <span>{formatInt(ledger?.accounts.length ?? 0)} tài khoản sổ cái đang theo dõi</span>
             </div>
+          </section>
+
+          <section className={shared.panel} aria-labelledby="admin-orders-heading">
+            <div className={shared.panelHeader}>
+              <div>
+                <h2 id="admin-orders-heading" className={shared.panelTitle}>
+                  Đơn hàng toàn sàn gần đây
+                </h2>
+                <p className={shared.cellSub}>
+                  {formatInt(channelCounts.marketplace)} đơn Sàn NexusMart ·{" "}
+                  {formatInt(channelCounts.storefront)} đơn Site riêng
+                </p>
+              </div>
+              <div className={styles.panelControls}>
+                <select
+                  className={shared.toolbarSelect}
+                  value={orderChannelFilter}
+                  onChange={(e) => setOrderChannelFilter(e.target.value as SalesChannelFilter)}
+                  aria-label="Lọc đơn hàng theo kênh bán"
+                >
+                  <option value="">Tất cả kênh ({formatInt(orders.length)})</option>
+                  <option value="MARKETPLACE">
+                    Sàn NexusMart ({formatInt(channelCounts.marketplace)})
+                  </option>
+                  <option value="STOREFRONT">
+                    Site riêng ({formatInt(channelCounts.storefront)})
+                  </option>
+                </select>
+              </div>
+            </div>
+
+            {filteredRecentOrders.length === 0 ? (
+              <p className={shared.emptyRow}>Chưa có đơn hàng nào thuộc kênh bán đang chọn.</p>
+            ) : (
+              <>
+                <div className={styles.channelTableWrap}>
+                  <table className={styles.channelTable}>
+                    <thead>
+                      <tr>
+                        <th>Mã đơn</th>
+                        <th>Gian hàng</th>
+                        <th>Kênh bán</th>
+                        <th className={shared.colNum}>Tổng tiền</th>
+                        <th>Trạng thái</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredRecentOrders.map((order) => {
+                        const statusMeta = getAdminOrderStatusMeta(order.status);
+                        const channelMeta = getSalesChannelMeta(order.sales_channel);
+                        const shopName =
+                          shopNameById.get(order.shop_id) ?? order.shop_id.slice(0, 8);
+                        return (
+                          <tr key={order.id}>
+                            <td>
+                              <span className={shared.cellPrimary}>{order.order_code}</span>
+                              {order.created_at && (
+                                <span className={styles.channelMeta}>
+                                  {formatShortTimeDateVi(order.created_at)}
+                                </span>
+                              )}
+                            </td>
+                            <td>{shopName}</td>
+                            <td>
+                              <span
+                                className={`${shared.channelBadge} ${channelMeta.isStorefront ? shared.channelBadgeStorefront : ""}`}
+                                data-sales-channel={channelMeta.value}
+                              >
+                                {channelMeta.label}
+                              </span>
+                            </td>
+                            <td className={shared.colNum}>{formatVnd(order.total_payable_vnd)}</td>
+                            <td>
+                              <StatusPill label={statusMeta.label} tone={statusMeta.tone} />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className={styles.channelMobileList}>
+                  {filteredRecentOrders.map((order) => {
+                    const statusMeta = getAdminOrderStatusMeta(order.status);
+                    const channelMeta = getSalesChannelMeta(order.sales_channel);
+                    const shopName = shopNameById.get(order.shop_id) ?? order.shop_id.slice(0, 8);
+                    return (
+                      <div key={order.id} className={styles.channelMobileRow}>
+                        <div className={styles.channelMobileLine}>
+                          <span className={shared.cellPrimary}>{order.order_code}</span>
+                          <span className={shared.cellPrimary}>
+                            {formatVnd(order.total_payable_vnd)}
+                          </span>
+                        </div>
+                        <div className={styles.channelMobileLine}>
+                          <span className={shared.cellSub}>{shopName}</span>
+                          <div className={styles.badgeCluster}>
+                            <span
+                              className={`${shared.channelBadge} ${channelMeta.isStorefront ? shared.channelBadgeStorefront : ""}`}
+                              data-sales-channel={channelMeta.value}
+                            >
+                              {channelMeta.label}
+                            </span>
+                            <StatusPill label={statusMeta.label} tone={statusMeta.tone} />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </section>
 
           <section className={shared.panel} aria-labelledby="channel-recon-heading">

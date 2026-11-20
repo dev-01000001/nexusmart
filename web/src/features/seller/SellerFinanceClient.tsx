@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { StateView } from "@/components";
 import { formatDateVi, formatInt, formatVnd } from "@/lib/format";
+import { getSalesChannelMeta } from "@/lib/salesChannel";
 import { useSellerContext } from "./SellerShell";
 import {
   computeSellerNetReceivable,
@@ -222,6 +223,7 @@ export function SellerFinanceClient({
                     <tbody>
                       {filteredOrders.map((o) => {
                         const meta = getSellerOrderStatusMeta(o.status);
+                        const channelMeta = getSalesChannelMeta(o.sales_channel);
                         const net = computeSellerNetReceivable(o);
                         return (
                           <tr key={o.id}>
@@ -230,6 +232,7 @@ export function SellerFinanceClient({
                               <Link href={`/seller/don-hang/${o.id}`} className={common.cellLink}>
                                 {o.order_code}
                               </Link>
+                              <span className={common.cellSub}>{channelMeta.label}</span>
                             </td>
                             <td>{formatPaymentMethodVi(o.payment_method)}</td>
                             <td className={`${common.numCol} ${styles.creditCell}`}>

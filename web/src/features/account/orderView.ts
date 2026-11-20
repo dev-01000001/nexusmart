@@ -10,6 +10,11 @@ import type {
   PaymentMethod,
   PaymentStatus,
 } from "@/data";
+import {
+  normalizeSalesChannel,
+  normalizeStorefrontShopId,
+  type SalesChannel,
+} from "../../lib/salesChannel";
 
 export interface GwAddressSnapshot {
   recipient_name: string;
@@ -66,6 +71,8 @@ export interface GwOrder {
   shipping_address?: GwAddressSnapshot | null;
   items: GwOrderItem[] | null;
   timeline: GwTimelineEvent[] | null;
+  sales_channel?: string;
+  storefront_shop_id?: string;
   payment_expires_at?: string;
   created_at?: string;
   updated_at?: string;
@@ -95,6 +102,10 @@ export interface OrderView extends Order {
   checkoutGroupId: string;
   backendStatus: string;
   paymentId: string;
+  salesChannel: SalesChannel;
+  storefrontShopId: string;
+  sales_channel: SalesChannel;
+  storefront_shop_id: string;
   shopSlug?: string;
   itemSkuIds: Record<string, string>;
   canCancel: boolean;
@@ -271,11 +282,17 @@ export function mapGatewayOrder(o: GwOrder, lookups: OrderLookups): OrderView {
       itemSkuIds[line.skuCode] = raw.sku_id;
     }
   });
+  const salesChannel = normalizeSalesChannel(o.sales_channel);
+  const storefrontShopId = normalizeStorefrontShopId(o.storefront_shop_id, salesChannel);
 
   return {
     id: o.id,
     orderCode: o.order_code,
     checkoutGroupId: o.checkout_group_id,
+    salesChannel,
+    storefrontShopId,
+    sales_channel: salesChannel,
+    storefront_shop_id: storefrontShopId,
     shopId: o.shop_id,
     shopName: shop?.name ?? "Gian hàng NexusMart",
     shopSlug: shop?.slug,

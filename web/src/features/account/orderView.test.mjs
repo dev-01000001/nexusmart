@@ -223,3 +223,20 @@ test("status helpers", () => {
   assert.equal(mapPaymentStatus("REFUNDED"), "da_hoan_tien");
   assert.deepEqual(backendStatusesFor("da_giao"), ["DELIVERED", "COMPLETED"]);
 });
+
+test("preserves sales_channel and storefront_shop_id with legacy MARKETPLACE default", () => {
+  const legacy = mapGatewayOrder(gwOrder(), lookups);
+  assert.equal(legacy.salesChannel, "MARKETPLACE");
+  assert.equal(legacy.sales_channel, "MARKETPLACE");
+  assert.equal(legacy.storefrontShopId, "");
+  assert.equal(legacy.storefront_shop_id, "");
+
+  const storefront = mapGatewayOrder(
+    gwOrder({ sales_channel: "STOREFRONT", storefront_shop_id: "shop-1" }),
+    lookups
+  );
+  assert.equal(storefront.salesChannel, "STOREFRONT");
+  assert.equal(storefront.sales_channel, "STOREFRONT");
+  assert.equal(storefront.storefrontShopId, "shop-1");
+  assert.equal(storefront.storefront_shop_id, "shop-1");
+});

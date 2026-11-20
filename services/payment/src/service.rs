@@ -11,10 +11,11 @@ use uuid::Uuid;
 use crate::config::Config;
 use crate::domain::{
     compute_allocation_split, compute_suborder_refund_amount, order_cancel_refund_key,
-    validate_suborder_refund_cap, CreatePaymentInput, CreateRefundInput, CreateRefundOutput,
-    PaymentMethod, PaymentRecord, PaymentSseEvent, PaymentWithAllocations,
-    ReconciliationItemRecord, ReconciliationQueueItem, ReconciliationReport,
-    ReconciliationRunRecord, RefundRecord, SellerPayoutRecord, ShopAllocationRecord,
+    reconciliation_channel_matches, validate_suborder_refund_cap, ChannelAttribution,
+    CreatePaymentInput, CreateRefundInput, CreateRefundOutput, PaymentMethod, PaymentRecord,
+    PaymentSseEvent, PaymentWithAllocations, ReconciliationItemRecord, ReconciliationQueueItem,
+    ReconciliationReport, ReconciliationRunRecord, RefundRecord, SalesChannel, SellerPayoutRecord,
+    ShopAllocationRecord,
 };
 use crate::error::{PaymentError, Result};
 use crate::ledger::{
@@ -140,6 +141,10 @@ impl PaymentService {
             ));
         }
 
+        let channel =
+            ChannelAttribution::from_parts(&input.sales_channel, &input.storefront_shop_id)?;
+        channel.validate_allocations(&input.shop_allocations)?;
+
         // Validate shop allocations upfront
         for alloc in &input.shop_allocations {
             let alloc_order_id = alloc
@@ -258,6 +263,30 @@ impl PaymentService {
             )));
         }
 
+        // Enforce immutability of sales_channel & storefront_shop_id across payment retries
+        let prior_channel: Option<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT sales_channel, storefront_shop_id
+            FROM payments
+            WHERE order_id = $1 OR order_group_id = $2
+            ORDER BY created_at ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(&order_id)
+        .bind(&order_group_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if let Some((prior_ch, prior_shop)) = prior_channel {
+            let prior_attr = ChannelAttribution::from_db(&prior_ch, &prior_shop);
+            if prior_attr != channel {
+                return Err(PaymentError::Validation(format!(
+                    "sales_channel and storefront_shop_id are immutable for order {order_id}"
+                )));
+            }
+        }
+
         // UC-B25: supersede prior pending intents for the same order / order_group
         if input.supersede_previous {
             sqlx::query(
@@ -289,9 +318,10 @@ impl PaymentService {
             INSERT INTO payments (
                 id, order_group_id, order_id, user_id, method, provider,
                 amount_vnd, status, provider_order_code, qr_code, qr_url,
-                idempotency_key, expires_at, paid_at, trace_id
+                idempotency_key, expires_at, paid_at, trace_id,
+                sales_channel, storefront_shop_id
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             RETURNING *
             "#,
         )
@@ -315,6 +345,8 @@ impl PaymentService {
         .bind(expires_at)
         .bind(paid_at)
         .bind(&input.trace_id)
+        .bind(channel.sales_channel.as_str())
+        .bind(&channel.storefront_shop_id)
         .fetch_one(&mut *tx)
         .await;
 
@@ -359,9 +391,10 @@ impl PaymentService {
             let rec = sqlx::query_as::<_, ShopAllocationRecord>(
                 r#"
                 INSERT INTO payment_shop_allocations (
-                    payment_id, order_id, shop_id, subtotal_vnd, commission_vnd, shipping_fee_vnd
+                    payment_id, order_id, shop_id, subtotal_vnd, commission_vnd, shipping_fee_vnd,
+                    sales_channel, storefront_shop_id
                 )
-                VALUES ($1, $2, $3, $4, $5, $6)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING *
                 "#,
             )
@@ -371,6 +404,8 @@ impl PaymentService {
             .bind(alloc.subtotal_vnd)
             .bind(alloc.commission_vnd)
             .bind(alloc.shipping_fee_vnd)
+            .bind(channel.sales_channel.as_str())
+            .bind(&channel.storefront_shop_id)
             .fetch_one(&mut *tx)
             .await?;
             allocations.push(rec);
@@ -378,7 +413,8 @@ impl PaymentService {
 
         // For COD: immediately post double-entry ledger (cod_receivable -> escrow_liability) and outbox
         if input.method == PaymentMethod::Cod {
-            let ledger_draft = build_cod_confirm_tx(payment.id, payment.amount_vnd);
+            let ledger_draft =
+                build_cod_confirm_tx(payment.id, payment.amount_vnd, channel.clone());
             if ledger::post_transaction(&mut tx, &ledger_draft)
                 .await?
                 .is_some()
@@ -399,6 +435,8 @@ impl PaymentService {
                     "amount_vnd": payment.amount_vnd,
                     "method": "COD",
                     "provider_tx_id": payment.provider_order_code,
+                    "sales_channel": payment.sales_channel,
+                    "storefront_shop_id": payment.storefront_shop_id,
                 }),
             )
             .await?;
@@ -795,9 +833,13 @@ impl PaymentService {
 
             WebhookDecision::LatePaymentRefund { reason } => {
                 let p = payment.expect("payment present for LatePaymentRefund");
+                let channel = ChannelAttribution::from_db(&p.sales_channel, &p.storefront_shop_id);
 
-                let ledger_draft =
-                    build_late_payment_refund_tx(&payload.provider_tx_id, payload.amount_vnd);
+                let ledger_draft = build_late_payment_refund_tx(
+                    &payload.provider_tx_id,
+                    payload.amount_vnd,
+                    channel,
+                );
                 if ledger::post_transaction(&mut tx, &ledger_draft)
                     .await?
                     .is_some()
@@ -834,6 +876,8 @@ impl PaymentService {
                         "user_id": p.user_id,
                         "amount_vnd": payload.amount_vnd,
                         "reason": reason,
+                        "sales_channel": p.sales_channel,
+                        "storefront_shop_id": p.storefront_shop_id,
                     }),
                 )
                 .await?;
@@ -1084,7 +1128,14 @@ impl PaymentService {
             Err(err) => return Err(PaymentError::Database(err)),
         };
 
-        let draft = build_refund_tx(refund.id, payment.id, refund.amount_vnd, &refund.reason);
+        let channel = resolve_refund_channel_tx(&mut tx, &payment, &order_id).await?;
+        let draft = build_refund_tx(
+            refund.id,
+            payment.id,
+            refund.amount_vnd,
+            &refund.reason,
+            channel.clone(),
+        );
         if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
             self.metrics.record_ledger_tx("refund");
         }
@@ -1137,6 +1188,8 @@ impl PaymentService {
                 "user_id": payment.user_id,
                 "amount_vnd": refund.amount_vnd,
                 "reason": refund.reason,
+                "sales_channel": channel.sales_channel.as_str(),
+                "storefront_shop_id": channel.storefront_shop_id,
             }),
         )
         .await?;
@@ -1237,8 +1290,14 @@ impl PaymentService {
             )?;
 
             if split.seller_net_vnd > 0 {
-                let draft =
-                    build_escrow_release_tx(&alloc.order_id, &alloc.shop_id, split.seller_net_vnd)?;
+                let channel =
+                    ChannelAttribution::from_db(&alloc.sales_channel, &alloc.storefront_shop_id);
+                let draft = build_escrow_release_tx(
+                    &alloc.order_id,
+                    &alloc.shop_id,
+                    split.seller_net_vnd,
+                    channel,
+                )?;
                 if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
                     self.metrics.record_ledger_tx("escrow_release");
                 }
@@ -1329,7 +1388,12 @@ impl PaymentService {
         .fetch_one(&mut *tx)
         .await?;
 
-        let draft = build_seller_payout_tx(payout.id, shop_id, amount_vnd)?;
+        let draft = build_seller_payout_tx(
+            payout.id,
+            shop_id,
+            amount_vnd,
+            ChannelAttribution::marketplace(),
+        )?;
         if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
             self.metrics.record_ledger_tx("payout");
         }
@@ -1338,8 +1402,11 @@ impl PaymentService {
         Ok(payout)
     }
 
-    pub async fn get_ledger_summary(&self) -> Result<LedgerSummary> {
-        ledger::get_ledger_summary(&self.pool).await
+    pub async fn get_ledger_summary(
+        &self,
+        channel_filter: Option<SalesChannel>,
+    ) -> Result<LedgerSummary> {
+        ledger::get_ledger_summary(&self.pool, channel_filter).await
     }
 
     pub async fn get_seller_balance(&self, shop_id: &str) -> Result<SellerBalance> {
@@ -1485,8 +1552,16 @@ impl PaymentService {
     }
 
     /// Runs reconciliation comparing local VietQR payments vs provider transaction feed (UC-PAY07).
-    pub async fn run_reconciliation(&self, run_date: NaiveDate) -> Result<ReconciliationReport> {
+    /// Supports optional `channel_filter` (`MARKETPLACE` or `STOREFRONT`) so channel-scoped runs
+    /// partition local VietQR payments without misclassifying the other channel's provider transactions
+    /// as `missing_local`.
+    pub async fn run_reconciliation(
+        &self,
+        run_date: NaiveDate,
+        channel_filter: Option<SalesChannel>,
+    ) -> Result<ReconciliationReport> {
         let provider_name = self.vietqr.mode().as_str().to_string();
+        let filter_str = channel_filter.map(SalesChannel::as_str).unwrap_or("");
         // Filter provider transactions to `run_date` to match `local_payments` (`created_at::date = $1`).
         let provider_txs: Vec<ProviderTransaction> = self
             .vietqr
@@ -1500,16 +1575,19 @@ impl PaymentService {
 
         let run_id: Uuid = sqlx::query_scalar(
             r#"
-            INSERT INTO reconciliation_runs (provider, run_date, status)
-            VALUES ($1, $2, 'running')
+            INSERT INTO reconciliation_runs (provider, run_date, sales_channel, status)
+            VALUES ($1, $2, $3, 'running')
             RETURNING id
             "#,
         )
         .bind(&provider_name)
         .bind(run_date)
+        .bind(filter_str)
         .fetch_one(&mut *tx)
         .await?;
 
+        // Load ALL local VietQR payments for `run_date` across every channel so provider txs
+        // belonging to another channel are recognized and excluded rather than reported as missing_local.
         let local_payments = sqlx::query_as::<_, PaymentRecord>(
             r#"
             SELECT * FROM payments
@@ -1547,23 +1625,35 @@ impl PaymentService {
 
             match local_opt {
                 None => {
-                    missing_local_count += 1;
-                    items.push(
-                        insert_reconciliation_item(
-                            &mut tx,
-                            run_id,
-                            "missing_local",
-                            None,
-                            Some(&ptx.provider_tx_id),
-                            None,
-                            Some(ptx.amount_vnd),
-                            "present in provider feed but missing in local payments",
-                        )
-                        .await?,
-                    );
+                    // Provider-only transactions have no local channel; report only on unfiltered runs.
+                    if channel_filter.is_none() {
+                        missing_local_count += 1;
+                        items.push(
+                            insert_reconciliation_item(
+                                &mut tx,
+                                run_id,
+                                "missing_local",
+                                None,
+                                Some(&ptx.provider_tx_id),
+                                None,
+                                Some(ptx.amount_vnd),
+                                "present in provider feed but missing in local payments",
+                                "",
+                                "",
+                            )
+                            .await?,
+                        );
+                    }
                 }
                 Some(local) => {
                     matched_payment_ids.insert(local.id);
+                    if !reconciliation_channel_matches(&local.sales_channel, channel_filter) {
+                        continue;
+                    }
+                    let local_ch = ChannelAttribution::from_db(
+                        &local.sales_channel,
+                        &local.storefront_shop_id,
+                    );
                     if local.amount_vnd != ptx.amount_vnd {
                         amount_mismatch_count += 1;
                         items.push(
@@ -1576,6 +1666,8 @@ impl PaymentService {
                                 Some(local.amount_vnd),
                                 Some(ptx.amount_vnd),
                                 "amount mismatch between local payment and provider",
+                                local_ch.sales_channel.as_str(),
+                                &local_ch.storefront_shop_id,
                             )
                             .await?,
                         );
@@ -1627,6 +1719,8 @@ impl PaymentService {
                                     Some(local.amount_vnd),
                                     Some(ptx.amount_vnd),
                                     "order already succeeded; queued automatic refund for duplicate intent",
+                                    local_ch.sales_channel.as_str(),
+                                    &local_ch.storefront_shop_id,
                                 )
                                 .await?,
                             );
@@ -1652,6 +1746,8 @@ impl PaymentService {
                                     Some(local.amount_vnd),
                                     Some(ptx.amount_vnd),
                                     "auto-healed missing webhook callback",
+                                    local_ch.sales_channel.as_str(),
+                                    &local_ch.storefront_shop_id,
                                 )
                                 .await?,
                             );
@@ -1668,6 +1764,8 @@ impl PaymentService {
                                 Some(local.amount_vnd),
                                 Some(ptx.amount_vnd),
                                 "matched",
+                                local_ch.sales_channel.as_str(),
+                                &local_ch.storefront_shop_id,
                             )
                             .await?,
                         );
@@ -1677,7 +1775,12 @@ impl PaymentService {
         }
 
         for local in &local_payments {
-            if local.status == "succeeded" && !matched_payment_ids.contains(&local.id) {
+            if local.status == "succeeded"
+                && !matched_payment_ids.contains(&local.id)
+                && reconciliation_channel_matches(&local.sales_channel, channel_filter)
+            {
+                let local_ch =
+                    ChannelAttribution::from_db(&local.sales_channel, &local.storefront_shop_id);
                 missing_provider_count += 1;
                 items.push(
                     insert_reconciliation_item(
@@ -1689,6 +1792,8 @@ impl PaymentService {
                         Some(local.amount_vnd),
                         None,
                         "local succeeded payment absent from provider report",
+                        local_ch.sales_channel.as_str(),
+                        &local_ch.storefront_shop_id,
                     )
                     .await?,
                 );
@@ -1965,11 +2070,14 @@ impl PaymentService {
                     .await?;
 
                     if let Some(refund) = inserted_refund {
+                        let channel =
+                            resolve_refund_channel_tx(&mut tx, &payment, order_id).await?;
                         let draft = build_refund_tx(
                             refund.id,
                             payment.id,
                             refund.amount_vnd,
                             &refund.reason,
+                            channel.clone(),
                         );
                         if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
                             self.metrics.record_ledger_tx("refund");
@@ -2024,6 +2132,8 @@ impl PaymentService {
                                 "user_id": payment.user_id,
                                 "amount_vnd": refund.amount_vnd,
                                 "reason": refund.reason,
+                                "sales_channel": channel.sales_channel.as_str(),
+                                "storefront_shop_id": channel.storefront_shop_id,
                             }),
                         )
                         .await?;
@@ -2102,7 +2212,8 @@ async fn record_late_duplicate_refund_tx(
     .execute(&mut **tx)
     .await?;
 
-    let ledger_draft = build_late_payment_refund_tx(provider_tx_id, amount_vnd);
+    let channel = ChannelAttribution::from_db(&payment.sales_channel, &payment.storefront_shop_id);
+    let ledger_draft = build_late_payment_refund_tx(provider_tx_id, amount_vnd, channel);
     if ledger::post_transaction(tx, &ledger_draft).await?.is_some() {
         metrics.record_ledger_tx("late_payment_refund");
     }
@@ -2136,11 +2247,38 @@ async fn record_late_duplicate_refund_tx(
             "user_id": payment.user_id,
             "amount_vnd": amount_vnd,
             "reason": reason,
+            "sales_channel": payment.sales_channel,
+            "storefront_shop_id": payment.storefront_shop_id,
         }),
     )
     .await?;
 
     Ok(())
+}
+
+async fn resolve_refund_channel_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    payment: &PaymentRecord,
+    order_id: &str,
+) -> Result<ChannelAttribution> {
+    let alloc_channel: Option<(String, String)> = sqlx::query_as(
+        r#"
+        SELECT sales_channel, storefront_shop_id
+        FROM payment_shop_allocations
+        WHERE payment_id = $1 AND order_id = $2
+        ORDER BY created_at ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(payment.id)
+    .bind(order_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    Ok(match alloc_channel {
+        Some((ch, shop)) => ChannelAttribution::from_db(&ch, &shop),
+        None => ChannelAttribution::from_db(&payment.sales_channel, &payment.storefront_shop_id),
+    })
 }
 
 async fn fetch_allocations_pool(
@@ -2253,7 +2391,8 @@ async fn confirm_vietqr_payment_tx(
     .fetch_one(&mut **tx)
     .await?;
 
-    let draft = build_vietqr_confirm_tx(updated.id, updated.amount_vnd);
+    let channel = ChannelAttribution::from_db(&updated.sales_channel, &updated.storefront_shop_id);
+    let draft = build_vietqr_confirm_tx(updated.id, updated.amount_vnd, channel);
     if ledger::post_transaction(tx, &draft).await?.is_some() {
         metrics.record_ledger_tx("payment_vietqr");
     }
@@ -2271,6 +2410,8 @@ async fn confirm_vietqr_payment_tx(
             "amount_vnd": updated.amount_vnd,
             "method": updated.method,
             "provider_tx_id": provider_tx_id,
+            "sales_channel": updated.sales_channel,
+            "storefront_shop_id": updated.storefront_shop_id,
         }),
     )
     .await?;
@@ -2311,12 +2452,14 @@ async fn settle_order_to_pending_tx(
             alloc.shipping_fee_vnd,
         )?;
 
+        let channel = ChannelAttribution::from_db(&alloc.sales_channel, &alloc.storefront_shop_id);
         let draft = build_escrow_settle_tx(
             &alloc.order_id,
             &alloc.shop_id,
             split.seller_net_vnd,
             split.commission_vnd,
             split.shipping_fee_vnd,
+            channel,
         )?;
         if ledger::post_transaction(tx, &draft).await?.is_some() {
             metrics.record_ledger_tx("escrow_settle");
@@ -2372,14 +2515,17 @@ async fn insert_reconciliation_item(
     local_amount_vnd: Option<i64>,
     provider_amount_vnd: Option<i64>,
     details: &str,
+    sales_channel: &str,
+    storefront_shop_id: &str,
 ) -> Result<ReconciliationItemRecord> {
     let rec = sqlx::query_as::<_, ReconciliationItemRecord>(
         r#"
         INSERT INTO reconciliation_items (
             run_id, classification, payment_id, provider_tx_id,
-            local_amount_vnd, provider_amount_vnd, details
+            local_amount_vnd, provider_amount_vnd, details,
+            sales_channel, storefront_shop_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING *
         "#,
     )
@@ -2390,6 +2536,8 @@ async fn insert_reconciliation_item(
     .bind(local_amount_vnd)
     .bind(provider_amount_vnd)
     .bind(details)
+    .bind(sales_channel)
+    .bind(storefront_shop_id)
     .fetch_one(&mut **tx)
     .await?;
     Ok(rec)

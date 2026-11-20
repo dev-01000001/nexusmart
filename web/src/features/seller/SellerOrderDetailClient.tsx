@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { IconCheck, IconFileText, IconTruck, StateView } from "@/components";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
+import { getSalesChannelMeta } from "@/lib/salesChannel";
 import { useSellerContext } from "./SellerShell";
 import {
   computeSellerNetReceivable,
@@ -81,6 +82,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
   }
 
   const meta = getSellerOrderStatusMeta(order.status);
+  const channelMeta = getSalesChannelMeta(order.sales_channel);
   const nextAction = getNextBackendOrderAction(order.status);
   const totalQty = (order.items ?? []).reduce((s, it) => s + it.quantity, 0);
   const netReceivable = computeSellerNetReceivable(order);
@@ -142,6 +144,12 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
             <div className={styles.objectTitleRow}>
               <h1 className={styles.objectTitle}>{order.order_code}</h1>
               <span className={pillCls(meta.tone)}>{meta.label}</span>
+              <span
+                className={`${common.channelTag} ${channelMeta.isStorefront ? common.channelTagStorefront : ""}`}
+                data-sales-channel={channelMeta.value}
+              >
+                {channelMeta.label}
+              </span>
               <button
                 type="button"
                 className={styles.iconBtn28}
@@ -324,6 +332,17 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
               </div>
 
               <div className={styles.kvList}>
+                <div className={styles.kvRow}>
+                  <span className={styles.kvKey}>Kênh bán</span>
+                  <span className={styles.kvVal}>
+                    <span
+                      className={`${common.channelTag} ${channelMeta.isStorefront ? common.channelTagStorefront : ""}`}
+                      data-sales-channel={channelMeta.value}
+                    >
+                      {channelMeta.label}
+                    </span>
+                  </span>
+                </div>
                 <div className={styles.kvRow}>
                   <span className={styles.kvKey}>Người nhận</span>
                   <span className={styles.kvVal}>{addr?.recipient_name || EMPTY_DASH}</span>

@@ -131,6 +131,10 @@ func (s *OrderService) ListOrders(ctx context.Context, req *orderv1.ListOrdersRe
 	if req.GetStatus() != orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED {
 		statusFilter = statemachine.StatusToString(req.GetStatus())
 	}
+	salesChannelFilter, err := normalizeSalesChannelFilter(req.GetSalesChannel())
+	if err != nil {
+		return nil, err
+	}
 
 	page := req.GetPage()
 	if page < 1 {
@@ -145,7 +149,7 @@ func (s *OrderService) ListOrders(ctx context.Context, req *orderv1.ListOrdersRe
 	}
 	offset := (page - 1) * pageSize
 
-	aggs, total, err := s.store.ListOrdersFiltered(ctx, buyerFilter, shopFilter, statusFilter, pageSize, offset)
+	aggs, total, err := s.store.ListOrdersFiltered(ctx, buyerFilter, shopFilter, statusFilter, salesChannelFilter, pageSize, offset)
 	if err != nil {
 		return nil, mapStoreError(err)
 	}

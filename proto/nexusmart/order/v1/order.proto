@@ -98,6 +98,10 @@ message Order {
   google.protobuf.Timestamp payment_expires_at = 27;
   google.protobuf.Timestamp created_at = 28;
   google.protobuf.Timestamp updated_at = 29;
+  // Immutable sales channel recorded at creation: "MARKETPLACE" or "STOREFRONT".
+  string sales_channel = 30;
+  // Immutable shop ID for STOREFRONT orders; empty for MARKETPLACE orders.
+  string storefront_shop_id = 31;
 }
 
 message CheckoutItemInput {
@@ -124,6 +128,10 @@ message CreateCheckoutRequest {
   int64 coins_to_use = 9;
   OrderPaymentMethod payment_method = 10;
   repeated ShopShippingChoice shipping_choices = 11;
+  // Optional sales channel: "" (defaults to "MARKETPLACE"), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 12;
+  // Required active shop ID when sales_channel is "STOREFRONT"; must be empty for "MARKETPLACE".
+  string storefront_shop_id = 13;
 }
 
 message CreateCheckoutResponse {
@@ -137,6 +145,8 @@ message CreateCheckoutResponse {
   google.protobuf.Timestamp payment_expires_at = 8;
   int64 total_payable_vnd = 9;
   bool idempotent_replay = 10;
+  string sales_channel = 11;
+  string storefront_shop_id = 12;
 }
 
 message GetOrderRequest {
@@ -157,6 +167,8 @@ message ListOrdersRequest {
   string role_scope = 4;
   int32 page = 5;
   int32 page_size = 6;
+  // Optional sales channel filter: "" (all), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 7;
 }
 
 message ListOrdersResponse {

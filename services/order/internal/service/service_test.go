@@ -84,8 +84,10 @@ func newMockUserClient() *mockUserClient {
 			},
 		},
 		shops: map[string]*userv1.Shop{
-			"shop-1": {Id: "shop-1", OwnerUserId: "seller-1", Name: "Shop Alpha", PickupAddressId: "addr-shop-1", ContactPhone: "0911111111"},
-			"shop-2": {Id: "shop-2", OwnerUserId: "seller-2", Name: "Shop Beta", ContactPhone: "0922222222"},
+			"shop-1":         {Id: "shop-1", OwnerUserId: "seller-1", Name: "Shop Alpha", PickupAddressId: "addr-shop-1", ContactPhone: "0911111111", Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE},
+			"shop-2":         {Id: "shop-2", OwnerUserId: "seller-2", Name: "Shop Beta", ContactPhone: "0922222222", Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE},
+			"shop-pending":   {Id: "shop-pending", OwnerUserId: "seller-3", Name: "Pending Shop", Status: userv1.ShopStatus_SHOP_STATUS_PENDING},
+			"shop-suspended": {Id: "shop-suspended", OwnerUserId: "seller-4", Name: "Suspended Shop", Status: userv1.ShopStatus_SHOP_STATUS_SUSPENDED},
 		},
 	}
 }
@@ -255,9 +257,11 @@ func (m *mockProductClient) ConfirmStock(_ context.Context, req *productv1.Confi
 }
 
 type mockCartClient struct {
-	mu         sync.Mutex
-	cart       *cartv1.Cart
-	clearCalls [][]string
+	mu            sync.Mutex
+	cart          *cartv1.Cart
+	getCartCalls  []*cartv1.GetCartRequest
+	clearCalls    [][]string
+	clearReqCalls []*cartv1.ClearItemsRequest
 }
 
 func newMockCartClient() *mockCartClient {
@@ -282,16 +286,58 @@ func newMockCartClient() *mockCartClient {
 	}
 }
 
-func (m *mockCartClient) GetCart(_ context.Context, _ *cartv1.GetCartRequest, _ ...grpc.CallOption) (*cartv1.GetCartResponse, error) {
+func (m *mockCartClient) GetCart(_ context.Context, req *cartv1.GetCartRequest, _ ...grpc.CallOption) (*cartv1.GetCartResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return &cartv1.GetCartResponse{Cart: m.cart}, nil
+	m.getCartCalls = append(m.getCartCalls, req)
+	if m.cart == nil {
+		return &cartv1.GetCartResponse{}, nil
+	}
+	filterShop := req.GetShopId()
+	if filterShop == "" {
+		return &cartv1.GetCartResponse{Cart: m.cart}, nil
+	}
+	filtered := &cartv1.Cart{UserId: m.cart.GetUserId()}
+	for _, grp := range m.cart.GetShopGroups() {
+		if grp.GetShopId() == filterShop {
+			filtered.ShopGroups = append(filtered.ShopGroups, grp)
+			for _, it := range grp.GetItems() {
+				filtered.TotalItems += it.GetQuantity()
+				filtered.TotalVnd += it.GetPriceVnd() * int64(it.GetQuantity())
+			}
+		}
+	}
+	return &cartv1.GetCartResponse{Cart: filtered}, nil
 }
 
 func (m *mockCartClient) ClearItems(_ context.Context, req *cartv1.ClearItemsRequest, _ ...grpc.CallOption) (*cartv1.ClearItemsResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.clearCalls = append(m.clearCalls, append([]string(nil), req.GetSkuIds()...))
+	m.clearReqCalls = append(m.clearReqCalls, req)
+	if m.cart != nil && len(req.GetSkuIds()) > 0 {
+		toRemove := make(map[string]bool, len(req.GetSkuIds()))
+		for _, id := range req.GetSkuIds() {
+			toRemove[id] = true
+		}
+		var remainingGroups []*cartv1.CartShopGroup
+		for _, grp := range m.cart.ShopGroups {
+			var kept []*cartv1.CartItem
+			for _, it := range grp.Items {
+				if !toRemove[it.SkuId] {
+					kept = append(kept, it)
+				}
+			}
+			if len(kept) > 0 {
+				remainingGroups = append(remainingGroups, &cartv1.CartShopGroup{
+					ShopId:   grp.GetShopId(),
+					ShopName: grp.GetShopName(),
+					Items:    kept,
+				})
+			}
+		}
+		m.cart.ShopGroups = remainingGroups
+	}
 	return &cartv1.ClearItemsResponse{Ok: true}, nil
 }
 
@@ -301,6 +347,7 @@ type mockPromotionClient struct {
 	breakdown    *promotionv1.DiscountBreakdown
 	flashSales   []*promotionv1.FlashSale
 	reserveCalls []string
+	reserveReqs  []*promotionv1.ReservePromotionRequest
 	releaseCalls []string
 }
 
@@ -320,6 +367,7 @@ func (m *mockPromotionClient) ReservePromotion(_ context.Context, req *promotion
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.reserveCalls = append(m.reserveCalls, req.GetOrderId())
+	m.reserveReqs = append(m.reserveReqs, req)
 	if m.reserveErr != nil {
 		return nil, m.reserveErr
 	}

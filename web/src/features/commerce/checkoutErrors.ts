@@ -219,6 +219,13 @@ export function mapCheckoutError(code: string, detail: string): MappedClientErro
       message: "Tài khoản chưa sẵn sàng đặt hàng. Vui lòng xác thực tài khoản hoặc liên hệ hỗ trợ.",
     };
   }
+  if (d.includes("storefront_")) {
+    return {
+      code: "INVALID_SALES_CHANNEL",
+      status: 400,
+      message: "Ưu đãi hoặc sản phẩm chưa hợp lệ cho kênh đặt hàng hiện tại.",
+    };
+  }
   return {
     code: code || "CHECKOUT_FAILED",
     message: "Không thể hoàn tất đặt hàng lúc này. Bạn vui lòng kiểm tra lại giỏ hàng và thử lại.",

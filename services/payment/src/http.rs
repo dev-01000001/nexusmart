@@ -2,20 +2,23 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use futures_util::stream::{self, Stream, StreamExt};
+use serde::Deserialize;
 use serde_json::json;
 use tokio_stream::wrappers::BroadcastStream;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::auth::{Caller, GrpcAuth};
+use crate::domain::{PaymentWithAllocations, SalesChannel};
 use crate::error::PaymentError;
 use crate::metrics::red_metrics_middleware;
 use crate::service::PaymentService;
@@ -25,11 +28,26 @@ use crate::webhook_security::{verify_webhook_request, IncomingWebhookPayload};
 #[derive(Clone)]
 pub struct HttpState {
     pub service: PaymentService,
+    pub auth: GrpcAuth,
 }
 
-pub fn build_router(service: PaymentService) -> Router {
+#[derive(Debug, Default, Deserialize)]
+struct LedgerSummaryQuery {
+    #[serde(default)]
+    sales_channel: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ReconciliationQuery {
+    #[serde(default)]
+    date: String,
+    #[serde(default)]
+    sales_channel: String,
+}
+
+pub fn build_router(service: PaymentService, auth: GrpcAuth) -> Router {
     let metrics = service.metrics().clone();
-    let state = HttpState { service };
+    let state = HttpState { service, auth };
 
     Router::new()
         .route("/healthz", get(healthz))
@@ -159,42 +177,69 @@ async fn process_webhook_http(
     Ok((StatusCode::OK, Json(result)))
 }
 
+fn check_payment_read_access(
+    caller: &Caller,
+    pwa: &PaymentWithAllocations,
+) -> Result<(), PaymentError> {
+    if caller.is_admin() {
+        return Ok(());
+    }
+    match caller.role.as_str() {
+        "buyer" if !caller.user_id.is_empty() && pwa.payment.user_id == caller.user_id => Ok(()),
+        "seller" => {
+            let owns_as_buyer = !caller.user_id.is_empty() && pwa.payment.user_id == caller.user_id;
+            let owns_shop_alloc = !caller.shop_id.is_empty()
+                && pwa.allocations.iter().any(|a| a.shop_id == caller.shop_id);
+            if owns_as_buyer || owns_shop_alloc {
+                Ok(())
+            } else {
+                Err(PaymentError::Forbidden(
+                    "forbidden: cannot subscribe to another user's payment events".to_string(),
+                ))
+            }
+        }
+        _ => Err(PaymentError::Forbidden(
+            "forbidden: cannot subscribe to another user's payment events".to_string(),
+        )),
+    }
+}
+
 /// Server-Sent Events stream for checkout payment status updates (UC-PAY01).
+/// Enforces Bearer JWT authentication and payment ownership (defense-in-depth behind gateway).
 async fn payment_events_sse(
     State(state): State<HttpState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, PaymentError> {
+    let caller = state
+        .auth
+        .authenticate_http_user(header_str(&headers, "authorization"))?;
+
     let parsed_uuid = Uuid::parse_str(&id).ok();
 
-    let initial_payment = if let Some(pid) = parsed_uuid {
-        state.service.get_payment(Some(pid), None, None).await.ok()
+    let pwa = if let Some(pid) = parsed_uuid {
+        state.service.get_payment(Some(pid), None, None).await?
     } else {
         state
             .service
             .get_payment(None, Some(&id), Some(&id))
-            .await
-            .ok()
+            .await?
     };
 
-    let initial_event = match initial_payment {
-        Some(pwa) => {
-            let p = pwa.payment;
-            let event_name = status_to_sse_event_name(&p.status);
-            let data = json!({
-                "payment_id": p.id,
-                "order_group_id": p.order_group_id,
-                "order_id": p.order_id,
-                "status": p.status,
-                "amount_vnd": p.amount_vnd,
-                "provider_tx_id": p.provider_tx_id,
-                "updated_at": p.updated_at,
-            });
-            Event::default().event(event_name).data(data.to_string())
-        }
-        None => Event::default()
-            .event("payment.status")
-            .data(json!({ "id": id, "status": "unknown" }).to_string()),
-    };
+    check_payment_read_access(&caller, &pwa)?;
+
+    let p = pwa.payment;
+    let event_name = status_to_sse_event_name(&p.status);
+    let data = json!({
+        "payment_id": p.id,
+        "order_group_id": p.order_group_id,
+        "order_id": p.order_id,
+        "status": p.status,
+        "amount_vnd": p.amount_vnd,
+        "provider_tx_id": p.provider_tx_id,
+        "updated_at": p.updated_at,
+    });
+    let initial_event = Event::default().event(event_name).data(data.to_string());
 
     let rx = state.service.subscribe_sse();
     let filter_id = id.clone();
@@ -227,11 +272,11 @@ async fn payment_events_sse(
     let combined =
         stream::once(async move { Ok::<Event, Infallible>(initial_event) }).chain(live_stream);
 
-    Sse::new(combined).keep_alive(
+    Ok(Sse::new(combined).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
-    )
+    ))
 }
 
 fn status_to_sse_event_name(status: &str) -> &'static str {
@@ -246,23 +291,48 @@ fn status_to_sse_event_name(status: &str) -> &'static str {
 
 async fn internal_ledger_summary(
     State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<LedgerSummaryQuery>,
 ) -> Result<impl IntoResponse, PaymentError> {
-    let summary = state.service.get_ledger_summary().await?;
+    let _caller = state
+        .auth
+        .authenticate_http_admin(header_str(&headers, "authorization"))?;
+    let channel_filter = SalesChannel::parse_filter(&query.sales_channel)?;
+    let summary = state.service.get_ledger_summary(channel_filter).await?;
     Ok((StatusCode::OK, Json(summary)))
 }
 
 async fn internal_reconciliation_queue(
     State(state): State<HttpState>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, PaymentError> {
+    let _caller = state
+        .auth
+        .authenticate_http_admin(header_str(&headers, "authorization"))?;
     let items = state.service.list_reconciliation_queue().await?;
     Ok((StatusCode::OK, Json(json!({ "items": items }))))
 }
 
 async fn internal_reconciliation_run(
     State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<ReconciliationQuery>,
 ) -> Result<impl IntoResponse, PaymentError> {
-    let today = Utc::now().date_naive();
-    let report = state.service.run_reconciliation(today).await?;
+    let _caller = state
+        .auth
+        .authenticate_http_admin(header_str(&headers, "authorization"))?;
+    let run_date = if query.date.trim().is_empty() {
+        Utc::now().date_naive()
+    } else {
+        NaiveDate::parse_from_str(query.date.trim(), "%Y-%m-%d").map_err(|_| {
+            PaymentError::Validation("date must be formatted as YYYY-MM-DD".to_string())
+        })?
+    };
+    let channel_filter = SalesChannel::parse_filter(&query.sales_channel)?;
+    let report = state
+        .service
+        .run_reconciliation(run_date, channel_filter)
+        .await?;
     Ok((StatusCode::OK, Json(report)))
 }
 
@@ -282,6 +352,9 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
     use tower::ServiceExt;
 
+    const HTTP_TEST_USER_KEY: &str = "http-test-user-key";
+    const HTTP_TEST_SVC_KEY: &str = "http-test-service-key";
+
     fn test_router() -> (Router, Config) {
         let mut cfg = Config::from_env();
         cfg.webhook_secret = "unit-test-secret".to_string();
@@ -289,7 +362,34 @@ mod tests {
             .connect_lazy(&cfg.database_url)
             .expect("lazy pool");
         let svc = PaymentService::new(pool, cfg.clone(), Metrics::new());
-        (build_router(svc), cfg)
+        let auth = GrpcAuth::new(HTTP_TEST_USER_KEY, HTTP_TEST_SVC_KEY).unwrap();
+        (build_router(svc, auth), cfg)
+    }
+
+    fn bearer_user(role: &str, user_id: &str, shop_id: &str) -> String {
+        let tok = crate::auth::sign_hs256(
+            HTTP_TEST_USER_KEY,
+            json!({
+                "sub": user_id,
+                "role": role,
+                "shop_id": shop_id,
+                "exp": Utc::now().timestamp() + 60,
+            }),
+        );
+        format!("Bearer {tok}")
+    }
+
+    fn bearer_service() -> String {
+        let tok = crate::auth::sign_hs256(
+            HTTP_TEST_SVC_KEY,
+            json!({
+                "sub": "order-service",
+                "role": "admin",
+                "service": "order-service",
+                "exp": Utc::now().timestamp() + 60,
+            }),
+        );
+        format!("Bearer {tok}")
     }
 
     #[tokio::test]
@@ -402,5 +502,102 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp_stale.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_b1_http_sse_and_internal_routes_reject_anonymous_spoofed_and_non_admin() {
+        let (app, _) = test_router();
+
+        // Anonymous & spoofed X-User-Role headers -> 401 on SSE & all /internal/* endpoints
+        for (method, uri) in [
+            (Method::GET, "/payments/pay-1/events"),
+            (Method::GET, "/internal/ledger/summary"),
+            (Method::GET, "/internal/reconciliation/queue"),
+            (Method::POST, "/internal/reconciliation/run"),
+        ] {
+            let anon = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(anon.status(), StatusCode::UNAUTHORIZED, "anon {uri}");
+
+            let spoofed = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("x-user-id", "attacker")
+                        .header("x-user-role", "admin")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(spoofed.status(), StatusCode::UNAUTHORIZED, "spoofed {uri}");
+        }
+
+        // Buyer JWT, Seller JWT, and service token -> 403 on /internal/* endpoints
+        for auth_header in [
+            bearer_user("buyer", "u-1", ""),
+            bearer_user("seller", "u-2", "shop-1"),
+            bearer_service(),
+        ] {
+            for (method, uri) in [
+                (Method::GET, "/internal/ledger/summary"),
+                (Method::GET, "/internal/reconciliation/queue"),
+                (Method::POST, "/internal/reconciliation/run"),
+            ] {
+                let resp = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(uri)
+                            .header("authorization", &auth_header)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{uri}");
+            }
+        }
+
+        // Admin JWT with invalid sales_channel filter -> 400 Bad Request
+        let admin = bearer_user("admin", "admin-1", "");
+        let bad_ledger = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/ledger/summary?sales_channel=INVALID")
+                    .header("authorization", &admin)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_ledger.status(), StatusCode::BAD_REQUEST);
+
+        let bad_recon = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/internal/reconciliation/run?sales_channel=INVALID")
+                    .header("authorization", &admin)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_recon.status(), StatusCode::BAD_REQUEST);
     }
 }

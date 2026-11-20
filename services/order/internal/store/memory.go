@@ -70,6 +70,15 @@ func (m *MemoryStore) SetOrderPaymentExpiresAt(orderID string, t time.Time) {
 	}
 }
 
+// SeedLegacyOrder inserts a raw order (potentially with empty SalesChannel simulating a pre-migration row) for tests.
+func (m *MemoryStore) SeedLegacyOrder(group db.CheckoutGroup, ord db.Order, items []db.OrderItem) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.groups[group.ID] = group
+	m.orders[ord.ID] = ord
+	m.items[ord.ID] = append([]db.OrderItem(nil), items...)
+}
+
 func (m *MemoryStore) Ping(_ context.Context) error { return nil }
 
 func (m *MemoryStore) GetActiveCheckoutGroup(_ context.Context, buyerID, idempotencyKey string) (*db.CheckoutGroup, error) {
@@ -104,15 +113,21 @@ func (m *MemoryStore) CreateCheckoutGroup(_ context.Context, arg db.CreateChecko
 		}
 	}
 	now := time.Now().UTC()
+	ch := arg.SalesChannel
+	if ch == "" {
+		ch = "MARKETPLACE"
+	}
 	g := db.CheckoutGroup{
-		ID:              arg.ID,
-		BuyerID:         arg.BuyerID,
-		IdempotencyKey:  arg.IdempotencyKey,
-		Status:          arg.Status,
-		PaymentMethod:   arg.PaymentMethod,
-		TotalPayableVND: arg.TotalPayableVND,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:               arg.ID,
+		BuyerID:          arg.BuyerID,
+		IdempotencyKey:   arg.IdempotencyKey,
+		Status:           arg.Status,
+		PaymentMethod:    arg.PaymentMethod,
+		TotalPayableVND:  arg.TotalPayableVND,
+		SalesChannel:     ch,
+		StorefrontShopID: arg.StorefrontShopID,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	m.groups[g.ID] = g
 	cp := g
@@ -139,6 +154,10 @@ func (m *MemoryStore) PersistCheckoutBatch(_ context.Context, batch CheckoutBatc
 	out := make([]OrderAggregate, 0, len(batch.Orders))
 
 	for _, rec := range batch.Orders {
+		ordChannel := rec.Order.SalesChannel
+		if ordChannel == "" {
+			ordChannel = "MARKETPLACE"
+		}
 		ord := db.Order{
 			ID:                         rec.Order.ID,
 			OrderCode:                  rec.Order.OrderCode,
@@ -165,6 +184,8 @@ func (m *MemoryStore) PersistCheckoutBatch(_ context.Context, batch CheckoutBatc
 			CancelReason:               rec.Order.CancelReason,
 			ShippingAddressJSON:        rec.Order.ShippingAddressJSON,
 			PaymentExpiresAt:           rec.Order.PaymentExpiresAt,
+			SalesChannel:               ordChannel,
+			StorefrontShopID:           rec.Order.StorefrontShopID,
 			CreatedAt:                  now,
 			UpdatedAt:                  now,
 		}
@@ -334,7 +355,7 @@ func (m *MemoryStore) ListOrdersByCheckoutGroup(_ context.Context, checkoutGroup
 	return aggs, nil
 }
 
-func (m *MemoryStore) ListOrdersFiltered(_ context.Context, buyerID, shopID, status string, limit, offset int32) ([]OrderAggregate, int64, error) {
+func (m *MemoryStore) ListOrdersFiltered(_ context.Context, buyerID, shopID, status, salesChannel string, limit, offset int32) ([]OrderAggregate, int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var matched []OrderAggregate
@@ -347,6 +368,15 @@ func (m *MemoryStore) ListOrdersFiltered(_ context.Context, buyerID, shopID, sta
 		}
 		if status != "" && ord.Status != status {
 			continue
+		}
+		if salesChannel != "" {
+			ordCh := ord.SalesChannel
+			if ordCh == "" {
+				ordCh = "MARKETPLACE"
+			}
+			if ordCh != salesChannel {
+				continue
+			}
 		}
 		agg, _ := m.getOrderLocked(ord.ID)
 		matched = append(matched, *agg)

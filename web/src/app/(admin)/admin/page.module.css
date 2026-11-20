@@ -222,6 +222,20 @@
   white-space: nowrap;
 }
 
+.panelControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.badgeCluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 @media (max-width: 1120px) {
   .overviewGrid {
     grid-template-columns: minmax(0, 1fr);

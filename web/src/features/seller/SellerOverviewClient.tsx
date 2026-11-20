@@ -13,6 +13,7 @@ import {
   formatVnd,
 } from "@/lib/format";
 import { SellerTrendChart } from "./SellerTrendChart";
+import { getSalesChannelMeta } from "@/lib/salesChannel";
 import { useSellerContext } from "./SellerShell";
 import {
   computeSellerNetReceivable,
@@ -563,6 +564,7 @@ export function SellerOverviewClient({
                 <div className={styles.opRows}>
                   {topOrders.map((order) => {
                     const meta = getSellerOrderStatusMeta(order.status);
+                    const channelMeta = getSalesChannelMeta(order.sales_channel);
                     const nextAction = getNextBackendOrderAction(order.status);
                     const recipient = order.shipping_address?.recipient_name || "Người mua";
                     const province = order.shipping_address?.province_name || "";
@@ -577,7 +579,7 @@ export function SellerOverviewClient({
                               {order.order_code} · {recipient}
                             </Link>
                             <span className={styles.opSecondary}>
-                              {summarizeOrderItems(order.items)}
+                              {channelMeta.label} · {summarizeOrderItems(order.items)}
                               {province ? ` · ${province}` : ""}
                             </span>
                           </div>

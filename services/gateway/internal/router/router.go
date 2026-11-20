@@ -24,6 +24,7 @@ type Dependencies struct {
 	RateLimitIPPerMin    int
 	RateLimitUserPerMin  int
 	RateLimitFlashPerMin int
+	TrustedProxies       *middleware.TrustedProxies
 	RED                  *metrics.RED
 	OpsHandler           http.Handler
 	PaymentWebhookProxy  http.Handler
@@ -66,8 +67,8 @@ func New(deps Dependencies) http.Handler {
 		if deps.RED != nil {
 			sse.Use(deps.RED.HTTPMiddleware())
 		}
-		sse.Use(middleware.RequestLogger(deps.Logger))
-		sse.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger))
+		sse.Use(middleware.RequestLogger(deps.Logger, deps.TrustedProxies))
+		sse.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.TrustedProxies, deps.Logger))
 		sse.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, true))
 		sse.Use(middleware.RateLimitByUser(deps.RateLimiter, deps.RateLimitUserPerMin, deps.Logger))
 
@@ -104,7 +105,7 @@ func New(deps Dependencies) http.Handler {
 		if deps.RED != nil {
 			main.Use(deps.RED.HTTPMiddleware())
 		}
-		main.Use(middleware.RequestLogger(deps.Logger))
+		main.Use(middleware.RequestLogger(deps.Logger, deps.TrustedProxies))
 
 		// Section 4.9 Webhooks (no JWT; HMAC verified by upstream; exact raw body & headers preserved).
 		if deps.PaymentWebhookProxy != nil {
@@ -117,7 +118,7 @@ func New(deps Dependencies) http.Handler {
 
 		// Public & authenticated REST API v1 routes with per-IP rate limiting.
 		main.Route("/api/v1", func(api chi.Router) {
-			api.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger))
+			api.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.TrustedProxies, deps.Logger))
 
 			// --- Public routes ---
 			api.Post("/auth/register", h.handleRegister)
@@ -145,7 +146,7 @@ func New(deps Dependencies) http.Handler {
 			// Public flash-sales list with flash-sale rate limit if configured.
 			api.Group(func(fl chi.Router) {
 				fl.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, false))
-				fl.Use(middleware.RateLimitFlashSale(deps.RateLimiter, deps.RateLimitFlashPerMin, deps.Logger))
+				fl.Use(middleware.RateLimitFlashSale(deps.RateLimiter, deps.RateLimitFlashPerMin, deps.TrustedProxies, deps.Logger))
 				fl.Get("/flash-sales", h.handleListFlashSales)
 			})
 
@@ -221,7 +222,7 @@ func New(deps Dependencies) http.Handler {
 					// Section 4.4 Seller Vouchers & Flash Sales
 					seller.Get("/vouchers", h.handleSellerListVouchers)
 					seller.Post("/vouchers", h.handleSellerCreateVoucher)
-					seller.With(middleware.RateLimitFlashSale(deps.RateLimiter, deps.RateLimitFlashPerMin, deps.Logger)).
+					seller.With(middleware.RateLimitFlashSale(deps.RateLimiter, deps.RateLimitFlashPerMin, deps.TrustedProxies, deps.Logger)).
 						Post("/flash-sales/{id}/items", h.handleSellerRegisterFlashSaleItem)
 
 					// Section 4.5 Seller Orders

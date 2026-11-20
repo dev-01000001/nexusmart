@@ -19,10 +19,16 @@ type Config struct {
 	ShippingHTTPURL     string
 	NotificationHTTPURL string
 
-	PromotionGRPCAddr string
-	ProductGRPCAddr   string
-	PaymentGRPCAddr   string
+	UserGRPCAddr         string
+	ProductGRPCAddr      string
+	CartGRPCAddr         string
+	PromotionGRPCAddr    string
+	OrderGRPCAddr        string
+	PaymentGRPCAddr      string
+	ShippingGRPCAddr     string
+	NotificationGRPCAddr string
 
+	RedisAddr  string
 	MailpitURL string
 
 	AdminEmail            string
@@ -55,10 +61,16 @@ func LoadConfig() Config {
 		ShippingHTTPURL:     envOr("SHIPPING_HTTP_URL", "http://localhost:8087"),
 		NotificationHTTPURL: envOr("NOTIFICATION_HTTP_URL", "http://localhost:8088"),
 
-		PromotionGRPCAddr: envOr("PROMOTION_GRPC_ADDR", "localhost:50054"),
-		ProductGRPCAddr:   envOr("PRODUCT_GRPC_ADDR", "localhost:50052"),
-		PaymentGRPCAddr:   envOr("PAYMENT_GRPC_ADDR", "localhost:50056"),
+		UserGRPCAddr:         envOr("USER_GRPC_ADDR", "localhost:50051"),
+		ProductGRPCAddr:      envOr("PRODUCT_GRPC_ADDR", "localhost:50052"),
+		CartGRPCAddr:         envOr("CART_GRPC_ADDR", "localhost:50053"),
+		PromotionGRPCAddr:    envOr("PROMOTION_GRPC_ADDR", "localhost:50054"),
+		OrderGRPCAddr:        envOr("ORDER_GRPC_ADDR", "localhost:50055"),
+		PaymentGRPCAddr:      envOr("PAYMENT_GRPC_ADDR", "localhost:50056"),
+		ShippingGRPCAddr:     envOr("SHIPPING_GRPC_ADDR", "localhost:50057"),
+		NotificationGRPCAddr: envOr("NOTIFICATION_GRPC_ADDR", "localhost:50058"),
 
+		RedisAddr:  defaultRedisAddr(envOr("GATEWAY_URL", "http://localhost:8080")),
 		MailpitURL: envOr("MAILPIT_URL", "http://localhost:8025"),
 
 		AdminEmail:            envOrMulti([]string{"ADMIN_EMAIL", "ADMIN_BOOTSTRAP_EMAIL"}, "admin@nexusmart.local"),
@@ -101,4 +113,14 @@ func envOrMulti(keys []string, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+func defaultRedisAddr(gatewayURL string) string {
+	if v := strings.TrimSpace(os.Getenv("REDIS_ADDR")); v != "" {
+		return v
+	}
+	if strings.Contains(gatewayURL, "://gateway:") {
+		return "redis:6379"
+	}
+	return ""
 }

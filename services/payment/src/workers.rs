@@ -261,7 +261,7 @@ pub async fn run_reconciliation_scheduler(
             }
             _ = ticker.tick() => {
                 let today = Utc::now().date_naive();
-                if let Err(e) = service.run_reconciliation(today).await {
+                if let Err(e) = service.run_reconciliation(today, None).await {
                     error!(error = %e, "scheduled reconciliation failed");
                 }
             }

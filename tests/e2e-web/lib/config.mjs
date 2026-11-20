@@ -13,9 +13,13 @@ export const config = {
   // Gateway is only used to play the external bank: the VietQR mock webhook
   // is HMAC-signed and posted the way the payment provider would.
   gatewayURL: env("GATEWAY_URL", "http://gateway:8080").replace(/\/$/, ""),
+  redisAddr: env("REDIS_ADDR", ""),
   paymentWebhookSecret: env("PAYMENT_WEBHOOK_SECRET", "dev-only-payment-webhook-hmac-secret"),
   httpTimeoutMs: Number(env("HTTP_TIMEOUT_MS", "20000")),
   pollTimeoutMs: Number(env("POLL_TIMEOUT_MS", "30000")),
 };
 
 if (!config.webOrigin) config.webOrigin = new URL(config.webURL).origin;
+if (!config.redisAddr && config.gatewayURL.includes("://gateway:")) {
+  config.redisAddr = "redis:6379";
+}

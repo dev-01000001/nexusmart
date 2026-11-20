@@ -2,8 +2,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GatewayError, SAFE_MESSAGES, errorFromResponse, errorResponse } from "./errors.ts";
-import { assertSameOrigin } from "./http.ts";
-import { ACCESS_COOKIE, COOKIE_SECURE, REFRESH_COOKIE, baseCookie } from "./config.ts";
+import {
+  assertSameOrigin,
+  buildLoginRedirectUrl,
+  resolveForwardedClientIp,
+  resolveRequestHost,
+  resolveRequestProto,
+} from "./http.ts";
+import {
+  ACCESS_COOKIE,
+  COOKIE_SECURE,
+  REFRESH_COOKIE,
+  TRUST_PROXY_HEADERS,
+  baseCookie,
+} from "./config.ts";
 import {
   accessExpiresSoon,
   applyAuthCookiesToHeader,
@@ -208,4 +220,113 @@ test("toGatewayAddressBody normalizes camelCase/snake_case and never includes us
   });
   assert.equal(item.recipientName, "Nguyễn An");
   assert.equal(item.isDefault, true);
+});
+
+test("TRUST_PROXY_HEADERS defaults to false and ignores spoofed x-forwarded-host/proto in CSRF checks", () => {
+  assert.equal(TRUST_PROXY_HEADERS, false);
+
+  const spoofedHostReq = makeReq("http://localhost:3300/api/checkout", {
+    host: "localhost:3300",
+    "x-forwarded-host": "evil.example",
+    "x-forwarded-proto": "https",
+    origin: "https://evil.example",
+  });
+  assert.throws(
+    () => assertSameOrigin(spoofedHostReq),
+    (err) => err instanceof GatewayError && err.status === 403 && err.code === "BAD_ORIGIN"
+  );
+
+  const spoofedProtoReq = makeReq("http://localhost:3300/api/checkout", {
+    host: "localhost:3300",
+    "x-forwarded-proto": "https",
+    origin: "https://localhost:3300",
+  });
+  assert.throws(
+    () => assertSameOrigin(spoofedProtoReq),
+    (err) => err instanceof GatewayError && err.status === 403 && err.code === "BAD_ORIGIN"
+  );
+
+  // Legitimate request matching Host + http still succeeds even if attacker injects x-forwarded-*.
+  const legitReqWithSpoofedHeaders = makeReq("http://localhost:3300/api/checkout", {
+    host: "localhost:3300",
+    "x-forwarded-host": "evil.example",
+    "x-forwarded-proto": "https",
+    origin: "http://localhost:3300",
+  });
+  assert.doesNotThrow(() => assertSameOrigin(legitReqWithSpoofedHeaders));
+});
+
+test("assertSameOrigin honors x-forwarded-host/proto ONLY when TRUST_PROXY_HEADERS=true", () => {
+  const prev = process.env.TRUST_PROXY_HEADERS;
+  try {
+    process.env.TRUST_PROXY_HEADERS = "true";
+
+    const proxiedReq = makeReq("http://web:3000/api/checkout", {
+      host: "web:3000",
+      "x-forwarded-host": "nexusmart.vn, internal-lb",
+      "x-forwarded-proto": "https, http",
+      origin: "https://nexusmart.vn",
+    });
+    assert.doesNotThrow(() => assertSameOrigin(proxiedReq));
+
+    // When proxy headers are trusted, the internal container origin no longer matches.
+    const internalOriginReq = makeReq("http://web:3000/api/checkout", {
+      host: "web:3000",
+      "x-forwarded-host": "nexusmart.vn",
+      "x-forwarded-proto": "https",
+      origin: "http://web:3000",
+    });
+    assert.throws(
+      () => assertSameOrigin(internalOriginReq),
+      (err) => err instanceof GatewayError && err.status === 403 && err.code === "BAD_ORIGIN"
+    );
+  } finally {
+    if (prev === undefined) delete process.env.TRUST_PROXY_HEADERS;
+    else process.env.TRUST_PROXY_HEADERS = prev;
+  }
+});
+
+test("buildLoginRedirectUrl and proxy helpers ignore x-forwarded-* by default and honor when TRUST_PROXY_HEADERS=true", () => {
+  const prev = process.env.TRUST_PROXY_HEADERS;
+  try {
+    delete process.env.TRUST_PROXY_HEADERS;
+    const req = makeReq(
+      "http://localhost:3300/seller/don-hang?status=CONFIRMED",
+      {
+        host: "localhost:3300",
+        "x-forwarded-host": "evil.example",
+        "x-forwarded-proto": "https",
+        "x-forwarded-for": "203.0.113.9, 10.0.0.1",
+        "x-real-ip": "203.0.113.10",
+      },
+      "GET"
+    );
+
+    assert.equal(resolveRequestHost(req.headers, "fallback"), "localhost:3300");
+    assert.equal(resolveRequestProto(req.headers, req.url), "http");
+    assert.equal(resolveForwardedClientIp(req.headers), null);
+    assert.equal(
+      buildLoginRedirectUrl(req).toString(),
+      "http://localhost:3300/dang-nhap?next=%2Fseller%2Fdon-hang%3Fstatus%3DCONFIRMED"
+    );
+
+    process.env.TRUST_PROXY_HEADERS = "true";
+    assert.equal(resolveRequestHost(req.headers, "fallback"), "evil.example");
+    assert.equal(resolveRequestProto(req.headers, req.url), "https");
+    assert.equal(resolveForwardedClientIp(req.headers), "203.0.113.9");
+    assert.equal(
+      buildLoginRedirectUrl(req).toString(),
+      "https://evil.example/dang-nhap?next=%2Fseller%2Fdon-hang%3Fstatus%3DCONFIRMED"
+    );
+
+    // Invalid x-forwarded-proto is rejected even when TRUST_PROXY_HEADERS=true.
+    const badProtoHeaders = new Headers({
+      host: "localhost:3300",
+      "x-forwarded-proto": "javascript",
+    });
+    assert.equal(resolveRequestProto(badProtoHeaders, "http://localhost:3300/tai-khoan"), "http");
+  } finally {
+    if (prev === undefined) delete process.env.TRUST_PROXY_HEADERS;
+    else process.env.TRUST_PROXY_HEADERS = prev;
+  }
 });

@@ -39,3 +39,15 @@ export const APP_ORIGINS = (process.env.APP_ORIGIN || "")
   .split(",")
   .map((s) => s.trim().replace(/\/+$/, ""))
   .filter(Boolean);
+
+/**
+ * Trust reverse-proxy forwarding headers (`x-forwarded-host`, `x-forwarded-proto`,
+ * `x-forwarded-for`, `x-real-ip`) ONLY when Next.js sits exclusively behind a trusted proxy
+ * that strips client-supplied copies. Default `false` so spoofed headers are ignored.
+ */
+export const TRUST_PROXY_HEADERS = process.env.TRUST_PROXY_HEADERS === "true";
+
+/** Runtime check matching `TRUST_PROXY_HEADERS` (reflects env changes in tests). */
+export function isTrustedProxyHeadersEnabled(): boolean {
+  return process.env.TRUST_PROXY_HEADERS === "true";
+}

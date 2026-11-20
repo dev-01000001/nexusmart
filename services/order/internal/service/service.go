@@ -24,6 +24,49 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+const (
+	SalesChannelMarketplace = "MARKETPLACE"
+	SalesChannelStorefront  = "STOREFRONT"
+)
+
+func normalizeSalesChannel(rawChannel, rawStorefrontShopID string) (string, string, error) {
+	ch := strings.ToUpper(strings.TrimSpace(rawChannel))
+	shopID := strings.TrimSpace(rawStorefrontShopID)
+	switch ch {
+	case "", SalesChannelMarketplace:
+		if shopID != "" {
+			return "", "", status.Error(codes.InvalidArgument, "INVALID_SALES_CHANNEL: storefront_shop_id must be empty for MARKETPLACE orders")
+		}
+		return SalesChannelMarketplace, "", nil
+	case SalesChannelStorefront:
+		if shopID == "" {
+			return "", "", status.Error(codes.InvalidArgument, "STOREFRONT_SHOP_REQUIRED: storefront_shop_id is required for STOREFRONT orders")
+		}
+		return SalesChannelStorefront, shopID, nil
+	default:
+		return "", "", status.Errorf(codes.InvalidArgument, "INVALID_SALES_CHANNEL: unsupported sales_channel %q (must be MARKETPLACE or STOREFRONT)", rawChannel)
+	}
+}
+
+func normalizeSalesChannelFilter(rawChannel string) (string, error) {
+	ch := strings.ToUpper(strings.TrimSpace(rawChannel))
+	switch ch {
+	case "":
+		return "", nil
+	case SalesChannelMarketplace, SalesChannelStorefront:
+		return ch, nil
+	default:
+		return "", status.Errorf(codes.InvalidArgument, "INVALID_SALES_CHANNEL: unsupported sales_channel filter %q (must be MARKETPLACE or STOREFRONT)", rawChannel)
+	}
+}
+
+func effectiveSalesChannel(ch string) string {
+	if strings.TrimSpace(ch) == "" {
+		return SalesChannelMarketplace
+	}
+	return ch
+}
+
 // OrderService implements all Order domain workflows, checkout saga, RBAC, and async handlers.
 type OrderService struct {
 	cfg           config.Config
@@ -272,6 +315,8 @@ func aggregateToProto(agg store.OrderAggregate) *orderv1.Order {
 		Timeline:                   timeline,
 		CreatedAt:                  timestamppb.New(ord.CreatedAt),
 		UpdatedAt:                  timestamppb.New(ord.UpdatedAt),
+		SalesChannel:               effectiveSalesChannel(ord.SalesChannel),
+		StorefrontShopId:           ord.StorefrontShopID,
 	}
 	if ord.PaymentExpiresAt != nil {
 		out.PaymentExpiresAt = timestamppb.New(*ord.PaymentExpiresAt)

@@ -273,22 +273,24 @@ func (s *PostgresStore) ListOrdersByCheckoutGroup(ctx context.Context, checkoutG
 	return aggs, nil
 }
 
-func (s *PostgresStore) ListOrdersFiltered(ctx context.Context, buyerID, shopID, status string, limit, offset int32) ([]OrderAggregate, int64, error) {
+func (s *PostgresStore) ListOrdersFiltered(ctx context.Context, buyerID, shopID, status, salesChannel string, limit, offset int32) ([]OrderAggregate, int64, error) {
 	total, err := s.queries.CountOrdersFiltered(ctx, db.CountOrdersFilteredParams{
-		BuyerID: buyerID,
-		ShopID:  shopID,
-		Status:  status,
+		BuyerID:      buyerID,
+		ShopID:       shopID,
+		Status:       status,
+		SalesChannel: salesChannel,
 	})
 	if err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := s.queries.ListOrdersFiltered(ctx, db.ListOrdersFilteredParams{
-		BuyerID:    buyerID,
-		ShopID:     shopID,
-		Status:     status,
-		PageLimit:  limit,
-		PageOffset: offset,
+		BuyerID:      buyerID,
+		ShopID:       shopID,
+		Status:       status,
+		SalesChannel: salesChannel,
+		PageLimit:    limit,
+		PageOffset:   offset,
 	})
 	if err != nil {
 		return nil, 0, err

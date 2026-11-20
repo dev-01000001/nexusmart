@@ -1,6 +1,7 @@
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { WebSession, expectStatus } from "./lib/http.mjs";
+import { resetRateLimitKeys } from "./lib/redis.mjs";
 import {
   assertAuthCookieHeaders,
   assertNoTokenLeak,
@@ -11,6 +12,13 @@ import {
 const HTML_HEADERS = { accept: "text/html,application/xhtml+xml" };
 
 describe("01. Buyer Auth Lifecycle, Unauthenticated Page Guards & Seeded Storefront SSR", () => {
+  before(async () => {
+    await resetRateLimitKeys();
+  });
+
+  after(async () => {
+    await resetRateLimitKeys();
+  });
   it("(a) registers a fresh buyer, verifies Mailpit OTP, logs in with HttpOnly host-only cookies and no token leak, refreshes, and logs out", async () => {
     const { session, user, authCookies } = await registerVerifyLoginBuyer("auth");
 

@@ -2,14 +2,16 @@
 import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { ADMIN_ROLES, assertRole, requireRole, type Session } from "@/lib/server/session";
-import type {
-  GwAdminFlashSale,
-  GwAdminOrder,
-  GwAdminProduct,
-  GwAdminShop,
-  GwAdminVoucher,
-  GwAuditLog,
-  GwLedgerSummary,
+import type { SalesChannelFilter } from "@/lib/salesChannel";
+import {
+  normalizeAdminOrder,
+  type GwAdminFlashSale,
+  type GwAdminOrder,
+  type GwAdminProduct,
+  type GwAdminShop,
+  type GwAdminVoucher,
+  type GwAuditLog,
+  type GwLedgerSummary,
 } from "./adminApiTypes";
 
 export interface AdminLoadResult<T> {
@@ -49,26 +51,42 @@ export async function loadAdminShops(
 }
 
 export async function loadAdminOrders(
-  pageSize = 100
+  pageSize = 100,
+  salesChannel?: SalesChannelFilter
 ): Promise<AdminLoadResult<{ items: GwAdminOrder[]; total: number }>> {
   try {
     const res = await gw<{ items: GwAdminOrder[]; total: number }>("/api/v1/admin/orders", {
-      query: { page: 1, page_size: pageSize },
+      query: {
+        page: 1,
+        page_size: pageSize,
+        sales_channel: salesChannel || undefined,
+      },
     });
-    return { data: { items: res.items ?? [], total: res.total ?? 0 }, error: null };
+    return {
+      data: {
+        items: (res.items ?? []).map(normalizeAdminOrder),
+        total: res.total ?? 0,
+      },
+      error: null,
+    };
   } catch (err) {
     return { data: null, error: safeLoadError(err) };
   }
 }
 
-export async function loadAdminLedgerSummary(): Promise<AdminLoadResult<GwLedgerSummary>> {
+export async function loadAdminLedgerSummary(
+  salesChannel?: SalesChannelFilter
+): Promise<AdminLoadResult<GwLedgerSummary>> {
   try {
-    const res = await gw<GwLedgerSummary>("/api/v1/admin/ledger/summary");
+    const res = await gw<GwLedgerSummary>("/api/v1/admin/ledger/summary", {
+      query: { sales_channel: salesChannel || undefined },
+    });
     return {
       data: {
         total_debits_vnd: res.total_debits_vnd ?? 0,
         total_credits_vnd: res.total_credits_vnd ?? 0,
         is_balanced: Boolean(res.is_balanced),
+        sales_channel: res.sales_channel ?? (salesChannel || ""),
         accounts: res.accounts ?? [],
       },
       error: null,

@@ -1,19 +1,113 @@
-// Route-handler plumbing: CSRF origin check + uniform error handling.
+// Route-handler plumbing: CSRF origin check, proxy-header trust gating, and uniform error handling.
 import type { NextRequest } from "next/server";
-import { APP_ORIGINS } from "./config";
+import { APP_ORIGINS, isTrustedProxyHeadersEnabled } from "./config";
 import { GatewayError, errorResponse } from "./errors";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+export interface ProxyTrustOptions {
+  /** Override `TRUST_PROXY_HEADERS` env check (mainly for unit tests). */
+  trustProxyHeaders?: boolean;
+}
+
+function firstForwardedValue(raw: string | null): string {
+  if (!raw) return "";
+  return raw.split(",")[0]?.trim() ?? "";
+}
+
+/**
+ * Resolve the effective request host. Ignores `x-forwarded-host` unless `TRUST_PROXY_HEADERS=true`,
+ * falling back to the HTTP `Host` header (then `fallbackHost`).
+ */
+export function resolveRequestHost(
+  headers: Pick<Headers, "get">,
+  fallbackHost = "",
+  opts: ProxyTrustOptions = {}
+): string {
+  const trustProxy = opts.trustProxyHeaders ?? isTrustedProxyHeadersEnabled();
+  if (trustProxy) {
+    const forwarded = firstForwardedValue(headers.get("x-forwarded-host"));
+    if (forwarded) return forwarded;
+  }
+  return headers.get("host")?.trim() || fallbackHost;
+}
+
+/**
+ * Resolve the effective request protocol (`http` or `https`). Ignores `x-forwarded-proto` unless
+ * `TRUST_PROXY_HEADERS=true`, falling back to the incoming request URL protocol.
+ */
+export function resolveRequestProto(
+  headers: Pick<Headers, "get">,
+  rawUrl: string,
+  opts: ProxyTrustOptions = {}
+): string {
+  const trustProxy = opts.trustProxyHeaders ?? isTrustedProxyHeadersEnabled();
+  if (trustProxy) {
+    const forwarded = firstForwardedValue(headers.get("x-forwarded-proto")).toLowerCase();
+    if (forwarded === "http" || forwarded === "https") return forwarded;
+  }
+  return safeUrlProtocol(rawUrl);
+}
+
+/**
+ * Resolve the forwarded visitor IP to pass to the gateway. Returns `null` when
+ * `TRUST_PROXY_HEADERS` is disabled so untrusted clients cannot smuggle spoofed
+ * `X-Forwarded-For` / `X-Real-IP` headers through the BFF.
+ */
+export function resolveForwardedClientIp(
+  headers: Pick<Headers, "get">,
+  opts: ProxyTrustOptions = {}
+): string | null {
+  const trustProxy = opts.trustProxyHeaders ?? isTrustedProxyHeadersEnabled();
+  if (!trustProxy) return null;
+  const xff = firstForwardedValue(headers.get("x-forwarded-for"));
+  if (xff) return xff;
+  const realIp = headers.get("x-real-ip")?.trim();
+  return realIp || null;
+}
+
+/**
+ * Build the login redirect URL used by middleware for unauthenticated protected routes,
+ * honoring `x-forwarded-host`/`x-forwarded-proto` ONLY when `TRUST_PROXY_HEADERS=true`.
+ */
+export function buildLoginRedirectUrl(
+  req: {
+    url: string;
+    headers: Pick<Headers, "get">;
+    nextUrl?: { pathname: string; search: string; protocol: string; host: string };
+  },
+  opts: ProxyTrustOptions = {}
+): URL {
+  const urlObj = req.nextUrl ?? new URL(req.url);
+  const nextTarget = `${urlObj.pathname}${urlObj.search}`;
+  const proto =
+    resolveRequestProto(req.headers, req.url, opts) ||
+    urlObj.protocol.replace(/:$/, "").toLowerCase() ||
+    "http";
+  const host = resolveRequestHost(req.headers, urlObj.host, opts);
+
+  let target: URL;
+  try {
+    target = new URL("/dang-nhap", `${proto}://${host}`);
+  } catch {
+    target = new URL("/dang-nhap", req.url);
+  }
+  if (nextTarget.startsWith("/") && !nextTarget.startsWith("//")) {
+    target.searchParams.set("next", nextTarget);
+  }
+  return target;
+}
+
 /**
  * CSRF guard for write requests. Checks Fetch-Metadata (`Sec-Fetch-Site`), then validates the
  * `Origin` header (or `Referer` fallback ONLY when `Origin` is absent) against `APP_ORIGINS` or
- * the request host/protocol. Rejects foreign origins, `Origin: null`, cross-site/same-site
+ * the request host/protocol (ignoring `x-forwarded-host`/`x-forwarded-proto` unless
+ * `TRUST_PROXY_HEADERS=true`). Rejects foreign origins, `Origin: null`, cross-site/same-site
  * Fetch-Metadata, and requests carrying neither `Origin` nor `Referer` with 403 `BAD_ORIGIN`.
  * Server actions are already origin-checked by Next; route handlers must call this
  * (`apiRoute` does it automatically for non-GET/HEAD/OPTIONS methods).
  */
-export function assertSameOrigin(req: Request): void {
+export function assertSameOrigin(req: Request, opts: ProxyTrustOptions = {}): void {
   const bad = () => new GatewayError("forbidden", "BAD_ORIGIN");
   const fetchSite = req.headers.get("sec-fetch-site");
   if (fetchSite === "cross-site" || fetchSite === "same-site") throw bad();
@@ -42,12 +136,10 @@ export function assertSameOrigin(req: Request): void {
     return;
   }
 
-  const host =
-    req.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || req.headers.get("host");
+  const host = resolveRequestHost(req.headers, "", opts);
   if (!host || parsed.host !== host) throw bad();
 
-  const forwardedProto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
-  const expectedProto = forwardedProto || safeUrlProtocol(req.url);
+  const expectedProto = resolveRequestProto(req.headers, req.url, opts);
   if (
     (expectedProto === "http" || expectedProto === "https") &&
     parsed.protocol !== `${expectedProto}:`

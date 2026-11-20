@@ -271,9 +271,10 @@ func TestUpdateStockOptimisticLockingAndHistory(t *testing.T) {
 	})
 	skuID := prod.Skus[0].Id
 	sellerCtx := ctxWithRole("seller-shop-1", "seller", "shop-1")
+	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
 
 	// Reserve 4 units first so reserved_stock == 4
-	if _, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	if _, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: "order-1",
 		Items:   []*productv1.StockReservationItem{{SkuId: skuID, Quantity: 4}},
 	}); err != nil {
@@ -335,9 +336,11 @@ func TestReserveReleaseConfirmIdempotencyAndAtomicRollback(t *testing.T) {
 	})
 	skuA := prod.Skus[0].Id
 	skuB := prod.Skus[1].Id
+	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
+	adminCtx := ctxWithRole("admin-1", "admin", "")
 
 	// 1. Atomic rollback: SKU-A has enough (5 <= 10) but SKU-B lacks stock (5 > 2) -> ENTIRE TX must roll back!
-	_, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	_, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: "order-fail",
 		Items: []*productv1.StockReservationItem{
 			{SkuId: skuA, Quantity: 5},
@@ -358,7 +361,7 @@ func TestReserveReleaseConfirmIdempotencyAndAtomicRollback(t *testing.T) {
 	}
 
 	// 2. Idempotent ReserveStock: calling twice with same order_id reserves ONCE
-	res1, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	res1, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: "order-idem-1",
 		Items: []*productv1.StockReservationItem{
 			{SkuId: skuB, Quantity: 1},
@@ -369,7 +372,7 @@ func TestReserveReleaseConfirmIdempotencyAndAtomicRollback(t *testing.T) {
 		t.Fatalf("first ReserveStock failed: resp=%+v err=%v", res1, err)
 	}
 
-	res2, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	res2, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: "order-idem-1",
 		Items: []*productv1.StockReservationItem{
 			{SkuId: skuB, Quantity: 1},
@@ -387,11 +390,11 @@ func TestReserveReleaseConfirmIdempotencyAndAtomicRollback(t *testing.T) {
 	}
 
 	// 3. Idempotent ReleaseStock: calling twice only decrements reserved_stock ONCE
-	rel1, err := srv.ReleaseStock(context.Background(), &productv1.ReleaseStockRequest{OrderId: "order-idem-1"})
+	rel1, err := srv.ReleaseStock(adminCtx, &productv1.ReleaseStockRequest{OrderId: "order-idem-1"})
 	if err != nil || !rel1.Released || rel1.AlreadyReleased {
 		t.Fatalf("first ReleaseStock: resp=%+v err=%v", rel1, err)
 	}
-	rel2, err := srv.ReleaseStock(context.Background(), &productv1.ReleaseStockRequest{OrderId: "order-idem-1"})
+	rel2, err := srv.ReleaseStock(adminCtx, &productv1.ReleaseStockRequest{OrderId: "order-idem-1"})
 	if err != nil || !rel2.Released || !rel2.AlreadyReleased {
 		t.Fatalf("second ReleaseStock should be idempotent no-op: resp=%+v err=%v", rel2, err)
 	}
@@ -402,24 +405,24 @@ func TestReserveReleaseConfirmIdempotencyAndAtomicRollback(t *testing.T) {
 	}
 
 	// Unknown order_id release is graceful no-op
-	relUnknown, err := srv.ReleaseStock(context.Background(), &productv1.ReleaseStockRequest{OrderId: "does-not-exist"})
+	relUnknown, err := srv.ReleaseStock(adminCtx, &productv1.ReleaseStockRequest{OrderId: "does-not-exist"})
 	if err != nil || relUnknown.Released {
 		t.Fatalf("expected graceful no-op for unknown order_id release, got %+v err=%v", relUnknown, err)
 	}
 
 	// 4. ConfirmStock idempotency & out-of-stock transition
-	if _, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	if _, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: "order-confirm-1",
 		Items:   []*productv1.StockReservationItem{{SkuId: skuB, Quantity: 2}},
 	}); err != nil {
 		t.Fatalf("ReserveStock for confirm: %v", err)
 	}
 
-	conf1, err := srv.ConfirmStock(context.Background(), &productv1.ConfirmStockRequest{OrderId: "order-confirm-1"})
+	conf1, err := srv.ConfirmStock(adminCtx, &productv1.ConfirmStockRequest{OrderId: "order-confirm-1"})
 	if err != nil || !conf1.Confirmed || conf1.AlreadyConfirmed {
 		t.Fatalf("first ConfirmStock: resp=%+v err=%v", conf1, err)
 	}
-	conf2, err := srv.ConfirmStock(context.Background(), &productv1.ConfirmStockRequest{OrderId: "order-confirm-1"})
+	conf2, err := srv.ConfirmStock(adminCtx, &productv1.ConfirmStockRequest{OrderId: "order-confirm-1"})
 	if err != nil || !conf2.Confirmed || !conf2.AlreadyConfirmed {
 		t.Fatalf("second ConfirmStock should be idempotent: resp=%+v err=%v", conf2, err)
 	}
@@ -430,7 +433,7 @@ func TestReserveReleaseConfirmIdempotencyAndAtomicRollback(t *testing.T) {
 	}
 
 	// Confirming an already-released order must fail with FailedPrecondition
-	_, err = srv.ConfirmStock(context.Background(), &productv1.ConfirmStockRequest{OrderId: "order-idem-1"})
+	_, err = srv.ConfirmStock(adminCtx, &productv1.ConfirmStockRequest{OrderId: "order-idem-1"})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition confirming released order, got %v", err)
 	}
@@ -444,6 +447,8 @@ func TestReserveStockConcurrentNoOversellAndRetry(t *testing.T) {
 		{SkuCode: "HOT-1", Name: "Limited Edition", PriceVnd: 500000, Stock: 10, WeightGrams: 500},
 	})
 	skuID := prod.Skus[0].Id
+	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
+	adminCtx := ctxWithRole("admin-1", "admin", "")
 
 	// Test 1: Deterministic optimistic-lock conflict retry using BeforeReserveWrite hook
 	var hookTriggered atomic.Int32
@@ -453,7 +458,7 @@ func TestReserveStockConcurrentNoOversellAndRetry(t *testing.T) {
 			_, _ = st.UpdateSKUStockOptimistic(context.Background(), skuID, 10, 1)
 		}
 	}
-	res, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	res, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: "order-retry-check",
 		Items:   []*productv1.StockReservationItem{{SkuId: skuID, Quantity: 2}},
 	})
@@ -466,7 +471,7 @@ func TestReserveStockConcurrentNoOversellAndRetry(t *testing.T) {
 	}
 
 	// Release that test reservation so stock available returns to 10
-	if _, err := srv.ReleaseStock(context.Background(), &productv1.ReleaseStockRequest{OrderId: "order-retry-check"}); err != nil {
+	if _, err := srv.ReleaseStock(adminCtx, &productv1.ReleaseStockRequest{OrderId: "order-retry-check"}); err != nil {
 		t.Fatalf("ReleaseStock: %v", err)
 	}
 
@@ -487,7 +492,7 @@ func TestReserveStockConcurrentNoOversellAndRetry(t *testing.T) {
 		go func(oid string) {
 			defer wg.Done()
 			<-startCh
-			_, callErr := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+			_, callErr := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 				OrderId: oid,
 				Items:   []*productv1.StockReservationItem{{SkuId: skuID, Quantity: 1}},
 			})
@@ -524,7 +529,7 @@ func TestReserveStockConcurrentNoOversellAndRetry(t *testing.T) {
 		go func() {
 			defer wg2.Done()
 			<-start2
-			_, callErr := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+			_, callErr := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 				OrderId: "same-order-race",
 				Items:   []*productv1.StockReservationItem{{SkuId: sku2, Quantity: 3}},
 			})
@@ -789,7 +794,8 @@ func TestProductUpdateRejectAndOutOfStockTransitions(t *testing.T) {
 
 	// Reserve & Confirm all stock of BOTH SKUs -> product transitions to OUT_OF_STOCK
 	sku2ID := approved.Product.Skus[1].Id
-	if _, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
+	if _, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: "ord-drain-all",
 		Items: []*productv1.StockReservationItem{
 			{SkuId: skuID, Quantity: 2},
@@ -798,7 +804,7 @@ func TestProductUpdateRejectAndOutOfStockTransitions(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ReserveStock drain: %v", err)
 	}
-	if _, err := srv.ConfirmStock(context.Background(), &productv1.ConfirmStockRequest{OrderId: "ord-drain-all"}); err != nil {
+	if _, err := srv.ConfirmStock(adminCtx, &productv1.ConfirmStockRequest{OrderId: "ord-drain-all"}); err != nil {
 		t.Fatalf("ConfirmStock drain: %v", err)
 	}
 

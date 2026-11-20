@@ -144,6 +144,8 @@ export interface GwShopAllocation {
   subtotal_vnd: number;
   commission_vnd: number;
   shipping_fee_vnd: number;
+  sales_channel?: string;
+  storefront_shop_id?: string;
 }
 
 export interface GwPayment {
@@ -158,6 +160,8 @@ export interface GwPayment {
   qr_code: string;
   provider: string;
   provider_ref: string;
+  sales_channel?: string;
+  storefront_shop_id?: string;
   shop_allocations: GwShopAllocation[];
   expires_at?: string;
   created_at?: string;
@@ -174,6 +178,8 @@ export interface GwCheckoutOrderSummary {
   payment_id: string;
   payment_status: string;
   total_payable_vnd: number;
+  sales_channel?: string;
+  storefront_shop_id?: string;
 }
 
 export interface GwCheckoutResponse {
@@ -188,4 +194,6 @@ export interface GwCheckoutResponse {
   total_payable_vnd: number;
   idempotent_replay: boolean;
   idempotency_key?: string;
+  sales_channel?: string;
+  storefront_shop_id?: string;
 }

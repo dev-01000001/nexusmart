@@ -37,6 +37,8 @@ message Cart {
 
 message GetCartRequest {
   string user_id = 1;
+  // Optional shop filter: returns only items belonging to shop_id without modifying Redis state.
+  string shop_id = 2;
 }
 
 message GetCartResponse {
@@ -77,6 +79,8 @@ message RemoveItemResponse {
 message ClearItemsRequest {
   string user_id = 1;
   repeated string sku_ids = 2;
+  // Optional shop filter: when sku_ids is empty, clears only items belonging to shop_id.
+  string shop_id = 3;
 }
 
 message ClearItemsResponse {
