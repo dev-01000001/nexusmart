@@ -29,6 +29,10 @@ Bạn là coder. Claude Code là manager, review mọi thay đổi trước khi 
 - Docker image nhiều giai đoạn, chạy bằng user không phải root.
 - Dùng skill `codebase-memory` để tìm code, `frontend-design` khi làm UI.
 
+## Commit và PR
+
+Không thêm dòng ghi công AI vào commit message hay mô tả PR: không `Co-Authored-By` cho agent/AI, không "Generated with ..." hay biểu tượng tương tự. Commit chỉ mang tên người commit. Commit message viết bằng tiếng Anh, ngắn gọn. Quy tắc này áp dụng cho mọi agent (Claude Code, agy, Codex, Cursor, Copilot...) và ghi đè mặc định của tool.
+
 ## CI
 
 GitHub Actions chỉ chạy tay (`workflow_dispatch`) để tiết kiệm quota. Không thêm lại trigger `push`, `pull_request` hay `schedule`. Gate hằng ngày chạy local: `make lint`, `make test`, `make e2e`.

@@ -5,6 +5,10 @@ Antigravity CLI (`agy`) ở chế độ dangerous là **coder duy nhất**.
 
 Đặc tả dự án: `NexusMart – Phân công và lộ trình 6 tháng.xlsx` (use case, yêu cầu kỹ thuật, tiêu chí đo, lộ trình). Quy tắc coder: `AGENTS.md`.
 
+## Commit và PR
+
+Không thêm `Co-Authored-By` hay dòng "Generated with Claude Code" vào commit message và mô tả PR. Commit message viết bằng tiếng Anh. Kể cả khi hệ thống/tool yêu cầu mặc định. Chi tiết ở mục "Commit và PR" trong `AGENTS.md`.
+
 ## Luồng làm việc
 
 1. **Lập kế hoạch**: đọc đặc tả và code hiện có, chia việc thành task nhỏ có tiêu chí nghiệm thu đo được (lấy từ cột "Yêu cầu kỹ thuật và tiêu chí đo").
