@@ -342,6 +342,39 @@ func (h *handler) handleGetProduct(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"product": mapProduct(resp.GetProduct())})
 }
 
+// handleSellerListProducts lists every product of the caller's shop (any status).
+// The shop id comes from the JWT, never from the query string.
+func (h *handler) handleSellerListProducts(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := httpx.ParsePagination(r)
+	q := r.URL.Query()
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Product.ListProducts(ctx, &productv1.ListProductsRequest{
+		ShopId:     auth.ShopIDFromContext(r.Context()),
+		CategoryId: q.Get("category_id"),
+		Keyword:    q.Get("keyword"),
+		Status:     parseProductStatus(q.Get("status")),
+		SortBy:     q.Get("sort_by"),
+		Page:       page,
+		PageSize:   pageSize,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	items := make([]*productDTO, 0, len(resp.GetProducts()))
+	for _, p := range resp.GetProducts() {
+		items = append(items, mapProduct(p))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"page":      page,
+		"page_size": pageSize,
+		"total":     resp.GetTotal(),
+	})
+}
+
 func (h *handler) handleSellerCreateProduct(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		CategoryID  string         `json:"category_id"`

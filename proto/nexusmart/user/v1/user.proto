@@ -259,6 +259,17 @@ message AdminListShopsResponse {
   int64 total = 2;
 }
 
+// ListActiveShopsRequest lists storefront-visible (ACTIVE) shops; no auth required.
+message ListActiveShopsRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+}
+
+message ListActiveShopsResponse {
+  repeated Shop shops = 1;
+  int64 total = 2;
+}
+
 message AdminReviewShopRequest {
   string admin_id = 1;
   string shop_id = 2;
@@ -379,6 +390,7 @@ service UserService {
   rpc RegisterShop(RegisterShopRequest) returns (RegisterShopResponse);
   rpc GetShop(GetShopRequest) returns (GetShopResponse);
   rpc AdminListShops(AdminListShopsRequest) returns (AdminListShopsResponse);
+  rpc ListActiveShops(ListActiveShopsRequest) returns (ListActiveShopsResponse);
   rpc AdminReviewShop(AdminReviewShopRequest) returns (AdminReviewShopResponse);
   rpc CreateAddress(CreateAddressRequest) returns (CreateAddressResponse);
   rpc ListAddresses(ListAddressesRequest) returns (ListAddressesResponse);

@@ -34,6 +34,7 @@ const (
 	UserService_RegisterShop_FullMethodName          = "/nexusmart.user.v1.UserService/RegisterShop"
 	UserService_GetShop_FullMethodName               = "/nexusmart.user.v1.UserService/GetShop"
 	UserService_AdminListShops_FullMethodName        = "/nexusmart.user.v1.UserService/AdminListShops"
+	UserService_ListActiveShops_FullMethodName       = "/nexusmart.user.v1.UserService/ListActiveShops"
 	UserService_AdminReviewShop_FullMethodName       = "/nexusmart.user.v1.UserService/AdminReviewShop"
 	UserService_CreateAddress_FullMethodName         = "/nexusmart.user.v1.UserService/CreateAddress"
 	UserService_ListAddresses_FullMethodName         = "/nexusmart.user.v1.UserService/ListAddresses"
@@ -63,6 +64,7 @@ type UserServiceClient interface {
 	RegisterShop(ctx context.Context, in *RegisterShopRequest, opts ...grpc.CallOption) (*RegisterShopResponse, error)
 	GetShop(ctx context.Context, in *GetShopRequest, opts ...grpc.CallOption) (*GetShopResponse, error)
 	AdminListShops(ctx context.Context, in *AdminListShopsRequest, opts ...grpc.CallOption) (*AdminListShopsResponse, error)
+	ListActiveShops(ctx context.Context, in *ListActiveShopsRequest, opts ...grpc.CallOption) (*ListActiveShopsResponse, error)
 	AdminReviewShop(ctx context.Context, in *AdminReviewShopRequest, opts ...grpc.CallOption) (*AdminReviewShopResponse, error)
 	CreateAddress(ctx context.Context, in *CreateAddressRequest, opts ...grpc.CallOption) (*CreateAddressResponse, error)
 	ListAddresses(ctx context.Context, in *ListAddressesRequest, opts ...grpc.CallOption) (*ListAddressesResponse, error)
@@ -231,6 +233,16 @@ func (c *userServiceClient) AdminListShops(ctx context.Context, in *AdminListSho
 	return out, nil
 }
 
+func (c *userServiceClient) ListActiveShops(ctx context.Context, in *ListActiveShopsRequest, opts ...grpc.CallOption) (*ListActiveShopsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListActiveShopsResponse)
+	err := c.cc.Invoke(ctx, UserService_ListActiveShops_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *userServiceClient) AdminReviewShop(ctx context.Context, in *AdminReviewShopRequest, opts ...grpc.CallOption) (*AdminReviewShopResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AdminReviewShopResponse)
@@ -330,6 +342,7 @@ type UserServiceServer interface {
 	RegisterShop(context.Context, *RegisterShopRequest) (*RegisterShopResponse, error)
 	GetShop(context.Context, *GetShopRequest) (*GetShopResponse, error)
 	AdminListShops(context.Context, *AdminListShopsRequest) (*AdminListShopsResponse, error)
+	ListActiveShops(context.Context, *ListActiveShopsRequest) (*ListActiveShopsResponse, error)
 	AdminReviewShop(context.Context, *AdminReviewShopRequest) (*AdminReviewShopResponse, error)
 	CreateAddress(context.Context, *CreateAddressRequest) (*CreateAddressResponse, error)
 	ListAddresses(context.Context, *ListAddressesRequest) (*ListAddressesResponse, error)
@@ -392,6 +405,9 @@ func (UnimplementedUserServiceServer) GetShop(context.Context, *GetShopRequest) 
 }
 func (UnimplementedUserServiceServer) AdminListShops(context.Context, *AdminListShopsRequest) (*AdminListShopsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AdminListShops not implemented")
+}
+func (UnimplementedUserServiceServer) ListActiveShops(context.Context, *ListActiveShopsRequest) (*ListActiveShopsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListActiveShops not implemented")
 }
 func (UnimplementedUserServiceServer) AdminReviewShop(context.Context, *AdminReviewShopRequest) (*AdminReviewShopResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AdminReviewShop not implemented")
@@ -708,6 +724,24 @@ func _UserService_AdminListShops_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserService_ListActiveShops_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListActiveShopsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).ListActiveShops(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_ListActiveShops_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).ListActiveShops(ctx, req.(*ListActiveShopsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _UserService_AdminReviewShop_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(AdminReviewShopRequest)
 	if err := dec(in); err != nil {
@@ -918,6 +952,10 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AdminListShops",
 			Handler:    _UserService_AdminListShops_Handler,
+		},
+		{
+			MethodName: "ListActiveShops",
+			Handler:    _UserService_ListActiveShops_Handler,
 		},
 		{
 			MethodName: "AdminReviewShop",

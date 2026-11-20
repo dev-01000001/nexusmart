@@ -126,7 +126,7 @@ func New(deps Dependencies) http.Handler {
 			api.Post("/auth/login", h.handleLogin)
 			api.Post("/auth/refresh", h.handleRefreshToken)
 
-			api.Get("/shops/{id}", h.handleGetShop)
+			api.Get("/shops", h.handleListShops)
 			api.Get("/categories", h.handleListCategories)
 
 			api.Get("/shipping/provinces", h.handleListProvinces)
@@ -139,6 +139,7 @@ func New(deps Dependencies) http.Handler {
 				opt.Get("/products", h.handleListProducts)
 				opt.Get("/products/{id}", h.handleGetProduct)
 				opt.Get("/vouchers", h.handleListVouchers)
+				opt.Get("/shops/{id}", h.handleGetShop)
 			})
 
 			// Public flash-sales list with flash-sale rate limit if configured.
@@ -208,7 +209,10 @@ func New(deps Dependencies) http.Handler {
 					seller.Use(middleware.RequireRoles("seller"))
 					seller.Use(middleware.RequireSellerShop())
 
+					seller.Get("/shop", h.handleSellerGetShop)
+
 					// Section 4.2 Seller Products & Stock
+					seller.Get("/products", h.handleSellerListProducts)
 					seller.Post("/products", h.handleSellerCreateProduct)
 					seller.Put("/products/{id}", h.handleSellerUpdateProduct)
 					seller.Delete("/products/{id}", h.handleSellerDeleteProduct)

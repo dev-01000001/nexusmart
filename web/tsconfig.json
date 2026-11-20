@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["dom", "dom.iterable", "esnext"],
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
@@ -19,9 +23,32 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": [
+        "./src/*"
+      ]
     }
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next-bff/types/**/*.ts",
+    ".next-catalog/types/**/*.ts",
+    ".next-checkout/types/**/*.ts",
+    ".next-account/types/**/*.ts",
+    ".next-seller/types/**/*.ts",
+    ".next-qa/types/**/*.ts",
+    ".next-verifier/types/**/*.ts",
+    ".next-platform/types/**/*.ts",
+    ".next-gateway/types/**/*.ts",
+    ".next-coordinator/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".next/standalone",
+    ".next-*/standalone",
+    ".next/cache",
+    ".next-*/cache"
+  ]
 }

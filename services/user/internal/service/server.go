@@ -958,6 +958,29 @@ func (s *Server) AdminListShops(ctx context.Context, req *userv1.AdminListShopsR
 	}, nil
 }
 
+// ListActiveShops is the public storefront listing: only ACTIVE shops, no auth required.
+// Callers (the gateway) must project the result onto public fields.
+func (s *Server) ListActiveShops(ctx context.Context, req *userv1.ListActiveShopsRequest) (*userv1.ListActiveShopsResponse, error) {
+	page, pageSize := normalizePagination(req.GetPage(), req.GetPageSize())
+	shops, err := s.store.ListShops(ctx, db.ListShopsParams{
+		Status:     ShopStatusActive,
+		PageLimit:  pageSize,
+		PageOffset: (page - 1) * pageSize,
+	})
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to list shops")
+	}
+	total, err := s.store.CountShops(ctx, ShopStatusActive)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to count shops")
+	}
+	out := make([]*userv1.Shop, 0, len(shops))
+	for _, sh := range shops {
+		out = append(out, toProtoShop(sh))
+	}
+	return &userv1.ListActiveShopsResponse{Shops: out, Total: total}, nil
+}
+
 func (s *Server) AdminReviewShop(ctx context.Context, req *userv1.AdminReviewShopRequest) (*userv1.AdminReviewShopResponse, error) {
 	claims, err := s.requireAdminClaims(ctx)
 	if err != nil {

@@ -20,6 +20,8 @@ export interface Voucher {
   expiresAt: string;
   remainingUses: number;
   totalUses: number;
+  id?: string; // backend voucher id (save / apply)
+  saved?: boolean; // saved to the signed-in buyer wallet
   // Wave 2 conditions & validation metadata
   excludeOutlet?: boolean;
   maxPromoItemsPerOrder?: number;

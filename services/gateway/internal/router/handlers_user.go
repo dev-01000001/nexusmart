@@ -601,12 +601,93 @@ func (h *handler) handleRegisterShop(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"shop": mapShop(resp.GetShop())})
 }
 
+// publicShopDTO is the storefront view of a shop: no owner identity, contact phone,
+// license document or pickup address.
+type publicShopDTO struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	CreatedAt   string `json:"created_at,omitempty"`
+}
+
+func mapPublicShop(s *userv1.Shop) *publicShopDTO {
+	if s == nil {
+		return nil
+	}
+	return &publicShopDTO{
+		ID:          s.GetId(),
+		Name:        s.GetName(),
+		Description: s.GetDescription(),
+		Status:      shopStatusString(s.GetStatus()),
+		CreatedAt:   httpx.FormatTimestamp(s.GetCreatedAt()),
+	}
+}
+
+// handleGetShop serves the public storefront view. Owners and admins get the full
+// record; everyone else only sees ACTIVE shops and only public fields.
 func (h *handler) handleGetShop(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.User.GetShop(ctx, &userv1.GetShopRequest{
 		ShopId: chi.URLParam(r, "id"),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	shop := resp.GetShop()
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	privileged := claims != nil && shop != nil && (auth.HasRole(claims, "admin", "super_admin") ||
+		(claims.UserID() != "" && claims.UserID() == shop.GetOwnerUserId()) ||
+		(claims.ShopID != "" && claims.ShopID == shop.GetId()))
+	if privileged {
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"shop": mapShop(shop)})
+		return
+	}
+	if shop == nil || shop.GetStatus() != userv1.ShopStatus_SHOP_STATUS_ACTIVE {
+		httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "shop not found")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"shop": mapPublicShop(shop)})
+}
+
+// handleListShops is the public storefront shop list (ACTIVE only, public fields only).
+func (h *handler) handleListShops(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := httpx.ParsePagination(r)
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.ListActiveShops(ctx, &userv1.ListActiveShopsRequest{
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	items := make([]*publicShopDTO, 0, len(resp.GetShops()))
+	for _, s := range resp.GetShops() {
+		if s.GetStatus() == userv1.ShopStatus_SHOP_STATUS_ACTIVE {
+			items = append(items, mapPublicShop(s))
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"page":      page,
+		"page_size": pageSize,
+		"total":     resp.GetTotal(),
+	})
+}
+
+// handleSellerGetShop returns the caller's own shop; the shop id comes from the JWT.
+func (h *handler) handleSellerGetShop(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.GetShop(ctx, &userv1.GetShopRequest{
+		ShopId: auth.ShopIDFromContext(r.Context()),
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)

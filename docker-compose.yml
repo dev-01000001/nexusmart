@@ -422,6 +422,28 @@ services:
       timeout: 3s
       retries: 20
 
+  # Next.js storefront / seller center / admin (BFF). Talks to the gateway inside the network only.
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      GATEWAY_URL: http://gateway:8080
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${WEB_PORT:-3300}:3000"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:3000/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 10
+
   # E2E suite (profile "e2e", started by `make e2e`). Runs inside the compose network because
   # service gRPC ports are deliberately not published to the host.
   e2e:
@@ -454,6 +476,22 @@ services:
       SHIPPING_WEBHOOK_SECRET: ${SHIPPING_WEBHOOK_SECRET:-dev-only-shipping-webhook-hmac-secret}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
     command: ["go", "test", "-v", "-count=1", "-timeout", "5m", "./..."]
+
+  # Web E2E suite through the BFF (profile "e2e-web", started by `make e2e-web`, which brings
+  # `web` up with --no-deps first so running backend containers are never recreated).
+  e2e-web:
+    image: node:22-alpine
+    profiles: ["e2e-web"]
+    working_dir: /src
+    volumes:
+      - ./tests/e2e-web:/src:ro
+    environment:
+      WEB_URL: http://web:3000
+      WEB_ORIGIN: ${E2E_WEB_ORIGIN:-}
+      MAILPIT_URL: http://mailpit:8025
+      GATEWAY_URL: http://gateway:8080
+      PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-dev-only-payment-webhook-hmac-secret}
+    command: ["node", "--test", "--test-concurrency=1", "--test-reporter=spec"]
 
 volumes:
   postgres_data:

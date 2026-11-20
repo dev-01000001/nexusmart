@@ -8,6 +8,7 @@ export interface FlashSaleItem {
   totalQuota: number;
   remainingQuota: number;
   limitPerBuyer: number;
+  itemIdBySku?: Record<string, string>; // backend flash sale item id per SKU id
 }
 
 export interface FlashSaleSlot {
@@ -17,6 +18,8 @@ export interface FlashSaleSlot {
   endTime: string;
   status: FlashSlotStatus;
   statusLabel: string;
+  startsAt?: string; // ISO instant from the gateway
+  endsAt?: string;
   maxItemsPerOrder?: number;
   items: FlashSaleItem[];
 }

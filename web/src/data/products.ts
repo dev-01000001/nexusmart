@@ -63,6 +63,7 @@ export interface ProductSku {
   size: SizeCode;
   stock: number; // integer >= 0
   price: number; // integer VND
+  skuId?: string; // backend SKU id (cart, flash sale, stock)
 }
 
 export interface SizeMeasurement {
@@ -117,6 +118,7 @@ export interface ProductFaqItem {
 
 export interface Product {
   id: string;
+  backendId?: string; // backend product id when loaded from the gateway
   slug: string;
   name: string;
   shortName: string;
