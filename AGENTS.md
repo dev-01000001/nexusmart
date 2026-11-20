@@ -28,3 +28,7 @@ Bạn là coder. Claude Code là manager, review mọi thay đổi trước khi 
 - Build và test liên quan chạy xanh. Logic không tầm thường phải có test.
 - Docker image nhiều giai đoạn, chạy bằng user không phải root.
 - Dùng skill `codebase-memory` để tìm code, `frontend-design` khi làm UI.
+
+## CI
+
+GitHub Actions chỉ chạy tay (`workflow_dispatch`) để tiết kiệm quota. Không thêm lại trigger `push`, `pull_request` hay `schedule`. Gate hằng ngày chạy local: `make lint`, `make test`, `make e2e`.
