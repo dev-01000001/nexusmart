@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSession } from "@/components/SessionProvider";
+import { IconClose, IconMenu } from "@/components/Icons";
 import { useStore } from "@/context/StoreContext";
 import { useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import { SITE_NAV_ITEMS, type SiteNavKey } from "./siteNav";
@@ -29,7 +30,10 @@ function isActive(pathname: string, href: string): boolean {
 export function SiteNav({ previewMode = false }: { previewMode?: boolean }) {
   const pathname = useSitePathname();
   return (
-    <nav className={styles.headerNav} aria-label="Điều hướng cửa hàng">
+    <nav
+      className={`${styles.headerNav} ${previewMode ? styles.headerNavPreview : ""}`}
+      aria-label="Điều hướng cửa hàng"
+    >
       {SITE_NAV_ITEMS.map((item) => {
         const active = !previewMode && isActive(pathname, item.href);
         const className = `${styles.navLink} ${active ? styles.navLinkActive : ""}`;
@@ -55,54 +59,210 @@ export function SiteNav({ previewMode = false }: { previewMode?: boolean }) {
   );
 }
 
-/** Search, account and cart actions in the site header (live session + cart state). */
-export function SiteHeaderActions() {
+/** Search, account and cart actions in the site header (desktop row + compact mobile drawer). */
+export function SiteHeaderActions({ brandName = "Cửa hàng" }: { brandName?: string }) {
   const pathname = useSitePathname();
   const { user, isAuthenticated } = useSession();
   const { cartCount } = useStore();
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
   const loginHref =
     pathname === "/" || pathname.startsWith("/dang-")
       ? "/dang-nhap"
       : `/dang-nhap?next=${encodeURIComponent(pathname)}`;
 
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDrawerOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [drawerOpen]);
+
   return (
-    <div className={styles.headerActions}>
-      <form action="/tim-kiem" method="get" role="search" className={styles.headerSearch}>
-        <label htmlFor="site-search" className="sr-only">
-          Tìm trong cửa hàng
-        </label>
-        <input
-          id="site-search"
-          name="q"
-          type="search"
-          placeholder="Tìm sản phẩm"
-          className={styles.headerSearchInput}
-          enterKeyHint="search"
-        />
-      </form>
-      {isAuthenticated && user ? (
-        <>
-          <Link href="/don-hang" className={styles.headerTextAction}>
-            Đơn hàng
+    <>
+      <div className={styles.headerActionsDesktop}>
+        <form action="/tim-kiem" method="get" role="search" className={styles.headerSearch}>
+          <label htmlFor="site-search" className="sr-only">
+            Tìm trong cửa hàng
+          </label>
+          <input
+            id="site-search"
+            name="q"
+            type="search"
+            placeholder="Tìm sản phẩm"
+            className={styles.headerSearchInput}
+            enterKeyHint="search"
+          />
+        </form>
+        {isAuthenticated && user ? (
+          <>
+            <Link href="/don-hang" className={styles.headerTextAction}>
+              Đơn hàng
+            </Link>
+            <Link href="/tai-khoan" className={styles.headerTextAction}>
+              Tài khoản
+            </Link>
+          </>
+        ) : (
+          <Link href={loginHref} className={styles.headerTextAction}>
+            Đăng nhập
           </Link>
-          <Link href="/tai-khoan" className={styles.headerTextAction}>
-            Tài khoản
-          </Link>
-        </>
-      ) : (
-        <Link href={loginHref} className={styles.headerTextAction}>
-          Đăng nhập
+        )}
+        <Link
+          href="/gio-hang"
+          className={styles.headerAction}
+          aria-label={cartCount > 0 ? `Giỏ hàng, ${cartCount} sản phẩm` : "Giỏ hàng"}
+        >
+          Giỏ hàng
+          {cartCount > 0 && <span className={`${styles.headerCartCount} num`}>{cartCount}</span>}
         </Link>
+      </div>
+
+      <div className={styles.headerActionsMobile}>
+        <Link
+          href="/gio-hang"
+          className={styles.headerActionCompact}
+          aria-label={cartCount > 0 ? `Giỏ hàng, ${cartCount} sản phẩm` : "Giỏ hàng"}
+        >
+          Giỏ hàng
+          {cartCount > 0 && <span className={`${styles.headerCartCount} num`}>{cartCount}</span>}
+        </Link>
+        <button
+          type="button"
+          className={styles.mobileMenuBtn}
+          onClick={() => setDrawerOpen(true)}
+          aria-expanded={drawerOpen}
+          aria-label="Mở trình đơn cửa hàng"
+        >
+          <IconMenu size={18} />
+          <span>Menu</span>
+        </button>
+      </div>
+
+      {drawerOpen && (
+        <div
+          className={styles.siteDrawerBackdrop}
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setDrawerOpen(false);
+          }}
+        >
+          <div
+            className={styles.siteDrawerPanel}
+            data-ui="site-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Điều hướng ${brandName}`}
+          >
+            <div className={styles.siteDrawerHead}>
+              <span className={styles.siteDrawerBrand}>{brandName}</span>
+              <button
+                type="button"
+                className={styles.siteDrawerClose}
+                onClick={() => setDrawerOpen(false)}
+                aria-label="Đóng trình đơn"
+              >
+                <IconClose size={18} />
+              </button>
+            </div>
+
+            <form
+              action="/tim-kiem"
+              method="get"
+              role="search"
+              className={styles.siteDrawerSearch}
+              onSubmit={() => setDrawerOpen(false)}
+            >
+              <label htmlFor="site-drawer-search" className="sr-only">
+                Tìm sản phẩm trong {brandName}
+              </label>
+              <input
+                id="site-drawer-search"
+                name="q"
+                type="search"
+                placeholder="Tìm sản phẩm..."
+                className={styles.siteDrawerSearchInput}
+                enterKeyHint="search"
+              />
+              <button type="submit" className={styles.siteDrawerSearchBtn}>
+                Tìm
+              </button>
+            </form>
+
+            <nav className={styles.siteDrawerNav} aria-label="Điều hướng di động">
+              {SITE_NAV_ITEMS.map((item) => (
+                <Link
+                  key={item.key}
+                  href={item.href}
+                  className={`${styles.siteDrawerLink} ${isActive(pathname, item.href) ? styles.siteDrawerLinkActive : ""}`}
+                  onClick={() => setDrawerOpen(false)}
+                >
+                  {item.label}
+                </Link>
+              ))}
+              <Link
+                href="/chinh-sach"
+                className={`${styles.siteDrawerLink} ${isActive(pathname, "/chinh-sach") ? styles.siteDrawerLinkActive : ""}`}
+                onClick={() => setDrawerOpen(false)}
+              >
+                Chính sách mua hàng
+              </Link>
+            </nav>
+
+            <div className={styles.siteDrawerActions}>
+              {isAuthenticated && user ? (
+                <>
+                  <Link
+                    href="/don-hang"
+                    className={styles.siteDrawerPrimary}
+                    onClick={() => setDrawerOpen(false)}
+                  >
+                    Đơn hàng của tôi
+                  </Link>
+                  <Link
+                    href="/tai-khoan"
+                    className={styles.siteDrawerSecondary}
+                    onClick={() => setDrawerOpen(false)}
+                  >
+                    Tài khoản
+                  </Link>
+                </>
+              ) : (
+                <>
+                  <Link
+                    href={loginHref}
+                    className={styles.siteDrawerPrimary}
+                    onClick={() => setDrawerOpen(false)}
+                  >
+                    Đăng nhập
+                  </Link>
+                  <Link
+                    href="/dang-ky"
+                    className={styles.siteDrawerSecondary}
+                    onClick={() => setDrawerOpen(false)}
+                  >
+                    Tạo tài khoản
+                  </Link>
+                </>
+              )}
+              <Link
+                href="/tra-cuu-don-hang"
+                className={styles.siteDrawerSecondary}
+                onClick={() => setDrawerOpen(false)}
+              >
+                Tra cứu đơn hàng
+              </Link>
+            </div>
+          </div>
+        </div>
       )}
-      <Link
-        href="/gio-hang"
-        className={styles.headerAction}
-        aria-label={cartCount > 0 ? `Giỏ hàng, ${cartCount} sản phẩm` : "Giỏ hàng"}
-      >
-        Giỏ hàng
-        {cartCount > 0 && <span className={`${styles.headerCartCount} num`}>{cartCount}</span>}
-      </Link>
-    </div>
+    </>
   );
 }
 

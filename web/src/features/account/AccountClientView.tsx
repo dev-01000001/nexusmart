@@ -14,6 +14,7 @@ import { formatDateVi, formatVnd } from "@/lib/format";
 import { useSession, type SessionUser } from "@/components/SessionProvider";
 import { useStore } from "@/context/StoreContext";
 import { Button, Price, ProductCard, StateView } from "@/components";
+import { formatAddressLine } from "@/features/commerce/cartEnrich";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./AccountClientView.module.css";
@@ -686,9 +687,7 @@ function AccountClientInner({
                         )}
                       </div>
                       <p className={styles.bodyCopy}>
-                        {[addr.streetDetail, addr.wardName, addr.provinceName]
-                          .filter(Boolean)
-                          .join(", ")}
+                        {formatAddressLine(addr.streetDetail, addr.wardName, addr.provinceName)}
                       </p>
                       <p className={styles.metaNote}>
                         Giao dự kiến {previewProv?.etaDays ?? "1–3 ngày"}

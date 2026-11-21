@@ -110,3 +110,70 @@ export function formatVoucherIneligibleReason(v: GwVoucher, currentAmount: numbe
   if (raw.includes("inactive")) return "Mã ưu đãi hiện không còn hiệu lực.";
   return null;
 }
+
+function foldVietnamese(input: string): string {
+  return input
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[đĐ]/g, "d")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/** Joins street, ward, and province without repeating segments already present in street_address. */
+export function formatAddressLine(street?: string, ward?: string, province?: string): string {
+  const parts: string[] = [];
+  const streetClean = (street ?? "").trim();
+  if (streetClean) parts.push(streetClean);
+
+  const wardClean = (ward ?? "").trim();
+  if (wardClean) {
+    const foldedSoFar = foldVietnamese(parts.join(", "));
+    const foldedWard = foldVietnamese(wardClean);
+    if (!foldedWard || !foldedSoFar.includes(foldedWard)) {
+      parts.push(wardClean);
+    }
+  }
+
+  const provinceClean = (province ?? "").trim();
+  if (provinceClean) {
+    const foldedSoFar = foldVietnamese(parts.join(", "));
+    const foldedProv = foldVietnamese(provinceClean);
+    if (!foldedProv || !foldedSoFar.includes(foldedProv)) {
+      parts.push(provinceClean);
+    }
+  }
+
+  return parts.join(", ");
+}
+
+/** Buyer-facing Vietnamese carrier name (hides internal/mock gateway labels like "Mock Express"). */
+export function formatCarrierLabel(carrierCode?: string, carrierName?: string): string {
+  const rawName = (carrierName ?? "").trim();
+  const rawCode = (carrierCode ?? "").trim();
+  if (/mock|sandbox|test/i.test(rawName) || /mock|sandbox|test/i.test(rawCode)) {
+    return "Giao hàng NexusFast";
+  }
+  return rawName || rawCode || "Đơn vị vận chuyển";
+}
+
+/** Buyer-facing Vietnamese shipping tier label (strips internal/mock prefixes). */
+export function formatServiceLabel(serviceCode?: string, serviceName?: string): string {
+  const stripped = (serviceName ?? "")
+    .replace(/^\s*(mock(\s+express)?|sandbox|test)\s*[-:·]?\s*/i, "")
+    .trim();
+  const folded = foldVietnamese(stripped);
+  const codeUpper = (serviceCode ?? "").trim().toUpperCase();
+
+  if (folded === "tieu chuan" || (!stripped && (codeUpper === "STD" || codeUpper === "STANDARD"))) {
+    return "Giao tiêu chuẩn";
+  }
+  if (
+    folded === "nhanh" ||
+    (!stripped && (codeUpper === "EXP" || codeUpper === "EXPRESS" || codeUpper === "FAST"))
+  ) {
+    return "Giao nhanh";
+  }
+  return stripped || "Giao tiêu chuẩn";
+}

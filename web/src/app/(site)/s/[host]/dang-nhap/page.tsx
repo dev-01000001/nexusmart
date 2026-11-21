@@ -59,7 +59,9 @@ export default async function SiteLoginPage({ params }: PageProps) {
             </p>
           </div>
 
-          <LoginForm variant="site" registerHref="/dang-ky" />
+          <div data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
+            <LoginForm variant="site" registerHref="/dang-ky" />
+          </div>
         </div>
 
         <aside className={styles.authSideCol}>
@@ -70,20 +72,32 @@ export default async function SiteLoginPage({ params }: PageProps) {
           >
             <h2 className={styles.authPerksTitle}>Mua sắm trực tiếp tại {brandName}</h2>
             <ul className={styles.authPerksList}>
-              <li className={styles.authPerkItem}>
+              <li
+                className={styles.authPerkItem}
+                data-rise=""
+                style={{ "--i": 3 } as React.CSSProperties}
+              >
                 <span className={styles.authPerkHeading}>Thanh toán linh hoạt</span>
                 <p className={styles.authPerkBody}>
                   Hỗ trợ thanh toán khi nhận hàng (COD) đồng kiểm hoặc chuyển khoản VietQR xác nhận
                   tự động.
                 </p>
               </li>
-              <li className={styles.authPerkItem}>
+              <li
+                className={styles.authPerkItem}
+                data-rise=""
+                style={{ "--i": 4 } as React.CSSProperties}
+              >
                 <span className={styles.authPerkHeading}>Mã giảm giá riêng của cửa hàng</span>
                 <p className={styles.authPerkBody}>
                   Lưu và áp dụng trực tiếp ưu đãi của {brandName} ngay trong giỏ hàng.
                 </p>
               </li>
-              <li className={styles.authPerkItem}>
+              <li
+                className={styles.authPerkItem}
+                data-rise=""
+                style={{ "--i": 5 } as React.CSSProperties}
+              >
                 <span className={styles.authPerkHeading}>Theo dõi đơn hàng minh bạch</span>
                 <p className={styles.authPerkBody}>
                   Cập nhật trạng thái chuẩn bị, giao hàng, hủy đơn hoặc yêu cầu đổi trả ngay trên
@@ -95,7 +109,7 @@ export default async function SiteLoginPage({ params }: PageProps) {
 
           {showcase.length > 0 && (
             <div className={styles.authPhotoStrip}>
-              {showcase.map((product) => {
+              {showcase.map((product, idx) => {
                 const imgSrc =
                   sanitizeSafeUrl(product.onModelImage) ||
                   sanitizeSafeUrl(product.image) ||
@@ -105,6 +119,8 @@ export default async function SiteLoginPage({ params }: PageProps) {
                     key={product.id}
                     href={`/san-pham/${encodeURIComponent(product.slug)}`}
                     className={styles.authPhotoLink}
+                    data-reveal=""
+                    style={{ "--i": idx + 3 } as React.CSSProperties}
                   >
                     <div className={styles.authPhotoFrame}>
                       <img

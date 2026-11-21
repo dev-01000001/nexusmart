@@ -60,7 +60,9 @@ export default async function SiteRegisterPage({ params }: PageProps) {
             </p>
           </div>
 
-          <RegisterForm variant="site" loginHref="/dang-nhap" />
+          <div data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
+            <RegisterForm variant="site" loginHref="/dang-nhap" />
+          </div>
         </div>
 
         <aside className={styles.authSideCol}>
@@ -71,19 +73,31 @@ export default async function SiteRegisterPage({ params }: PageProps) {
           >
             <h2 className={styles.authPerksTitle}>Quyền lợi khi có tài khoản</h2>
             <ul className={styles.authPerksList}>
-              <li className={styles.authPerkItem}>
+              <li
+                className={styles.authPerkItem}
+                data-rise=""
+                style={{ "--i": 3 } as React.CSSProperties}
+              >
                 <span className={styles.authPerkHeading}>Sổ địa chỉ nhận hàng</span>
                 <p className={styles.authPerkBody}>
                   Lưu sẵn nhiều địa chỉ tỉnh thành, phường xã để đặt đơn nhanh không cần nhập lại.
                 </p>
               </li>
-              <li className={styles.authPerkItem}>
+              <li
+                className={styles.authPerkItem}
+                data-rise=""
+                style={{ "--i": 4 } as React.CSSProperties}
+              >
                 <span className={styles.authPerkHeading}>Lưu mã giảm giá cửa hàng</span>
                 <p className={styles.authPerkBody}>
                   Giữ các mã ưu đãi của {brandName} và áp dụng ngay khi kiểm tra giỏ hàng.
                 </p>
               </li>
-              <li className={styles.authPerkItem}>
+              <li
+                className={styles.authPerkItem}
+                data-rise=""
+                style={{ "--i": 5 } as React.CSSProperties}
+              >
                 <span className={styles.authPerkHeading}>
                   Phiên đăng nhập riêng tư theo từng cửa hàng
                 </span>
@@ -96,7 +110,7 @@ export default async function SiteRegisterPage({ params }: PageProps) {
 
           {showcase.length > 0 && (
             <div className={styles.authPhotoStrip}>
-              {showcase.map((product) => {
+              {showcase.map((product, idx) => {
                 const imgSrc =
                   sanitizeSafeUrl(product.onModelImage) ||
                   sanitizeSafeUrl(product.image) ||
@@ -106,6 +120,8 @@ export default async function SiteRegisterPage({ params }: PageProps) {
                     key={product.id}
                     href={`/san-pham/${encodeURIComponent(product.slug)}`}
                     className={styles.authPhotoLink}
+                    data-reveal=""
+                    style={{ "--i": idx + 3 } as React.CSSProperties}
                   >
                     <div className={styles.authPhotoFrame}>
                       <img

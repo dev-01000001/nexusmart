@@ -1,0 +1,1486 @@
+{
+ "url": "http://bach-dang.nexusmart.localhost:3300/san-pham/ao-thun-cotton-compact-trang",
+ "at": "2026-11-21T03:23:07.148Z",
+ "allow": [],
+ "viewports": [
+  {
+   "width": 1440,
+   "height": 900,
+   "load": "load",
+   "screens": 3,
+   "filled": [
+    1,
+    1,
+    1
+   ],
+   "motion": {
+    "elements": 12,
+    "css": 3,
+    "transitions": 9,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "page": {
+     "height": 2605,
+     "screens": 2.9,
+     "words": 332,
+     "img": 9,
+     "video": 0,
+     "canvas": 0,
+     "svg": 0,
+     "sections": 2,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 1,
+     "uiAbuse": false,
+     "realPictures": 8,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "model-ao-thun-trang.jpg",
+      "model-ao-thun-trang.jpg",
+      "ao-thun-cotton-trang.png",
+      "ao-thun-cotton-xam-da.png",
+      "ao-thun-cotton-xanh-than.png",
+      "model-mac-nha-modal.jpg",
+      "model-ao-thun-xanh-than.jpg",
+      "model-ao-thun-xam-da.jpg"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Áo thun Cotton Compact 220gsm Trắng",
+     "words": 6,
+     "chars": 35,
+     "lines": 2,
+     "size": 40,
+     "vw": 2.8,
+     "font": "Work Sans",
+     "weight": 500,
+     "tracking": -0.025,
+     "leading": 1.12,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "right",
+     "widthRatio": 0.41,
+     "top": 174,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Áo thun Cotton Compact 220gsm Trắng",
+     "words": 6,
+     "lines": 2,
+     "size": 40,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Áo thun Cotton Compact 220gsm Trắng",
+      "words": 6,
+      "chars": 35,
+      "lines": 2,
+      "size": 40,
+      "vw": 2.8,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.12,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "right",
+      "widthRatio": 0.41,
+      "top": 174,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "149.000₫",
+      "words": 1,
+      "chars": 8,
+      "lines": 1,
+      "size": 28,
+      "vw": 1.9,
+      "font": "Work Sans",
+      "weight": 600,
+      "tracking": 0,
+      "leading": 1.55,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "right",
+      "widthRatio": 0.09,
+      "top": 277,
+      "tag": "span",
+      "kind": "heading"
+     },
+     {
+      "text": "Sản phẩm khác của Xưởng Dệt Bạch Đằng",
+      "words": 8,
+      "chars": 37,
+      "lines": 1,
+      "size": 34,
+      "vw": 2.4,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.46,
+      "top": 1395,
+      "tag": "h2",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 3,
+     "maxLines": 2,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 8,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      14,
+      15,
+      16,
+      18,
+      22,
+      28,
+      34,
+      40
+     ],
+     "sizeCount": 8,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 14,
+      "leading": 1.45,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 8.9
+     },
+     "measureChars": 75,
+     "max": {
+      "size": 40,
+      "vw": 2.8,
+      "font": "Work Sans",
+      "text": "Áo thun Cotton Compact 220gsm Trắng"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0.01,
+     "centerShare": 0.05,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f8f6f1",
+       "top": 0,
+       "hsl": {
+        "h": 43,
+        "s": 0.33,
+        "l": 0.96
+       }
+      },
+      {
+       "color": "#ffffff",
+       "top": 140,
+       "hsl": {
+        "h": 0,
+        "s": 0,
+        "l": 1
+       }
+      },
+      {
+       "color": "#182026",
+       "top": 2254,
+       "hsl": {
+        "h": 206,
+        "s": 0.23,
+        "l": 0.12
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#182026",
+       "share": 0.48
+      },
+      {
+       "color": "#454b4f",
+       "share": 0.3
+      },
+      {
+       "color": "#f8f6f1",
+       "share": 0.16
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.04
+      },
+      {
+       "color": "#1d4ed8",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#1d4ed8",
+      "hsl": {
+       "h": 224,
+       "s": 0.76,
+       "l": 0.48
+      },
+      "fg": "#ffffff"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 6,
+     "inHero": 5,
+     "radius": 0,
+     "height": 40,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Giỏ hàng",
+      "Trắng tinh",
+      "Xám đá",
+      "Xanh than",
+      "Mua ngay · 149.000₫"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 4,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 3,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 1470
+      }
+     ]
+    },
+    "heroMedia": [
+     {
+      "type": "img",
+      "ratio": 0.39
+     }
+    ],
+    "nav": {
+     "links": 7,
+     "fixed": true,
+     "height": 70,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "pageH": 2605,
+    "margins": {
+     "left": 32,
+     "right": 32
+    },
+    "sections": [
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 70,
+      "height": 1253,
+      "words": 177,
+      "media": 5,
+      "middle": 82,
+      "heading": {
+       "text": "Áo thun Cotton Compact 220gsm Trắng",
+       "size": 40,
+       "tag": "h1"
+      },
+      "left": 32,
+      "right": 66,
+      "textLeft": 32,
+      "textRight": 84,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionSurface__3cC",
+      "tag": "section",
+      "top": 1323,
+      "height": 931,
+      "words": 69,
+      "media": 3,
+      "middle": 24,
+      "heading": {
+       "text": "Sản phẩm khác của",
+       "size": 34,
+       "tag": "h2"
+      },
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 32,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "footer.site_siteFooter__9HNzV",
+      "tag": "footer",
+      "top": 2254,
+      "height": 350,
+      "words": 53,
+      "media": 0,
+      "middle": 189,
+      "heading": {
+       "text": "Xưởng Dệt Bạch Đằng",
+       "size": 22,
+       "tag": "p"
+      },
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 32,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Áo thun Cotton Compact 220gsm Trắng",
+      "size": 40,
+      "top": 174,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 778,
+      "n": 5
+     },
+     {
+      "x": 32,
+      "n": 1
+     },
+     {
+      "x": 355,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 7,
+    "bodySize": 16,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0.06,
+    "voidBox": {
+     "x": 1140,
+     "y": 480,
+     "w": 300,
+     "h": 240
+    }
+   },
+   "app": null,
+   "consoleErrors": []
+  },
+  {
+   "width": 768,
+   "height": 1024,
+   "load": "load",
+   "screens": 4,
+   "filled": [
+    1,
+    1,
+    1,
+    1
+   ],
+   "motion": {
+    "elements": 12,
+    "css": 3,
+    "transitions": 9,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "page": {
+     "height": 4034,
+     "screens": 3.9,
+     "words": 332,
+     "img": 9,
+     "video": 0,
+     "canvas": 0,
+     "svg": 0,
+     "sections": 2,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 1,
+     "uiAbuse": false,
+     "realPictures": 8,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "model-ao-thun-trang.jpg",
+      "model-ao-thun-trang.jpg",
+      "ao-thun-cotton-trang.png",
+      "ao-thun-cotton-xam-da.png",
+      "ao-thun-cotton-xanh-than.png",
+      "model-mac-nha-modal.jpg",
+      "model-ao-thun-xanh-than.jpg",
+      "model-ao-thun-xam-da.jpg"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Áo thun Cotton Compact 220gsm Trắng",
+     "words": 6,
+     "chars": 35,
+     "lines": 1,
+     "size": 36,
+     "vw": 4.7,
+     "font": "Work Sans",
+     "weight": 500,
+     "tracking": -0.025,
+     "leading": 1.12,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "center",
+     "widthRatio": 0.9,
+     "top": 216,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Áo thun Cotton Compact 220gsm Trắng",
+     "words": 6,
+     "lines": 1,
+     "size": 36,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Áo thun Cotton Compact 220gsm Trắng",
+      "words": 6,
+      "chars": 35,
+      "lines": 1,
+      "size": 36,
+      "vw": 4.7,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.12,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.9,
+      "top": 216,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "149.000₫",
+      "words": 1,
+      "chars": 8,
+      "lines": 1,
+      "size": 28,
+      "vw": 3.6,
+      "font": "Work Sans",
+      "weight": 600,
+      "tracking": 0,
+      "leading": 1.55,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.17,
+      "top": 270,
+      "tag": "span",
+      "kind": "heading"
+     },
+     {
+      "text": "Sản phẩm khác của Xưởng Dệt Bạch Đằng",
+      "words": 8,
+      "chars": 37,
+      "lines": 1,
+      "size": 26,
+      "vw": 3.4,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.66,
+      "top": 2026,
+      "tag": "h2",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 3,
+     "maxLines": 1,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 8,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      14,
+      15,
+      16,
+      18,
+      22,
+      26,
+      28,
+      36
+     ],
+     "sizeCount": 8,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 14,
+      "leading": 1.45,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 8.9
+     },
+     "measureChars": 77,
+     "max": {
+      "size": 36,
+      "vw": 4.7,
+      "font": "Work Sans",
+      "text": "Áo thun Cotton Compact 220gsm Trắng"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0.01,
+     "centerShare": 0.05,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f8f6f1",
+       "top": 0,
+       "hsl": {
+        "h": 43,
+        "s": 0.33,
+        "l": 0.96
+       }
+      },
+      {
+       "color": "#ffffff",
+       "top": 351,
+       "hsl": {
+        "h": 0,
+        "s": 0,
+        "l": 1
+       }
+      },
+      {
+       "color": "#182026",
+       "top": 3399,
+       "hsl": {
+        "h": 206,
+        "s": 0.23,
+        "l": 0.12
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#182026",
+       "share": 0.48
+      },
+      {
+       "color": "#454b4f",
+       "share": 0.3
+      },
+      {
+       "color": "#f8f6f1",
+       "share": 0.16
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.04
+      },
+      {
+       "color": "#1d4ed8",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#1d4ed8",
+      "hsl": {
+       "h": 224,
+       "s": 0.76,
+       "l": 0.48
+      },
+      "fg": "#ffffff"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 6,
+     "inHero": 1,
+     "radius": 0,
+     "height": 40,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Giỏ hàng"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 4,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 3,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 2080
+      }
+     ]
+    },
+    "heroMedia": [
+     {
+      "type": "img",
+      "ratio": 0.49
+     }
+    ],
+    "nav": {
+     "links": 7,
+     "fixed": true,
+     "height": 126,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "pageH": 4034,
+    "margins": {
+     "left": 17,
+     "right": 17
+    },
+    "sections": [
+     {
+      "sel": "header.site_siteHeader__igtvc",
+      "tag": "header",
+      "top": 0,
+      "height": 126,
+      "words": 17,
+      "media": 0,
+      "middle": 32,
+      "heading": null,
+      "left": 17,
+      "right": 17,
+      "textLeft": 69,
+      "textRight": 17,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": true
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 126,
+      "height": 1860,
+      "words": 177,
+      "media": 5,
+      "middle": 0,
+      "heading": {
+       "text": "Áo thun Cotton Compact 220gsm Trắng",
+       "size": 36,
+       "tag": "h1"
+      },
+      "left": 17,
+      "right": 17,
+      "textLeft": 17,
+      "textRight": 43,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionSurface__3cC",
+      "tag": "section",
+      "top": 1986,
+      "height": 1413,
+      "words": 69,
+      "media": 3,
+      "middle": 0,
+      "heading": {
+       "text": "Sản phẩm khác của",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 17,
+      "right": 17,
+      "textLeft": 17,
+      "textRight": 17,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "footer.site_siteFooter__9HNzV",
+      "tag": "footer",
+      "top": 3399,
+      "height": 635,
+      "words": 53,
+      "media": 0,
+      "middle": 162,
+      "heading": {
+       "text": "Xưởng Dệt Bạch Đằng",
+       "size": 22,
+       "tag": "p"
+      },
+      "left": 17,
+      "right": 17,
+      "textLeft": 17,
+      "textRight": 17,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Áo thun Cotton Compact 220gsm Trắng",
+      "size": 36,
+      "top": 216,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 37,
+      "n": 5
+     },
+     {
+      "x": 17,
+      "n": 1
+     },
+     {
+      "x": 264,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 7,
+    "bodySize": 16,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": null,
+   "consoleErrors": []
+  },
+  {
+   "width": 390,
+   "height": 844,
+   "load": "load",
+   "screens": 5,
+   "filled": [
+    1,
+    1,
+    1,
+    1,
+    1
+   ],
+   "motion": {
+    "elements": 12,
+    "css": 3,
+    "transitions": 9,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "page": {
+     "height": 3990,
+     "screens": 4.7,
+     "words": 332,
+     "img": 9,
+     "video": 0,
+     "canvas": 0,
+     "svg": 0,
+     "sections": 2,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 1,
+     "uiAbuse": false,
+     "realPictures": 4,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "model-ao-thun-trang.jpg",
+      "model-mac-nha-modal.jpg",
+      "model-ao-thun-xanh-than.jpg",
+      "model-ao-thun-xam-da.jpg"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "149.000₫",
+     "words": 1,
+     "chars": 8,
+     "lines": 1,
+     "size": 28,
+     "vw": 7.2,
+     "font": "Work Sans",
+     "weight": 600,
+     "tracking": 0,
+     "leading": 1.55,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "left",
+     "widthRatio": 0.33,
+     "top": 405,
+     "tag": "span",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Áo thun Cotton Compact 220gsm Trắng",
+     "words": 6,
+     "lines": 2,
+     "size": 26,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Áo thun Cotton Compact 220gsm Trắng",
+      "words": 6,
+      "chars": 35,
+      "lines": 2,
+      "size": 26,
+      "vw": 6.7,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.12,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.84,
+      "top": 333,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "149.000₫",
+      "words": 1,
+      "chars": 8,
+      "lines": 1,
+      "size": 28,
+      "vw": 7.2,
+      "font": "Work Sans",
+      "weight": 600,
+      "tracking": 0,
+      "leading": 1.55,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.33,
+      "top": 405,
+      "tag": "span",
+      "kind": "heading"
+     },
+     {
+      "text": "Sản phẩm khác của Xưởng Dệt Bạch Đằng",
+      "words": 8,
+      "chars": 37,
+      "lines": 2,
+      "size": 26,
+      "vw": 6.7,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 2213,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Xưởng Dệt Bạch Đằng",
+      "words": 4,
+      "chars": 19,
+      "lines": 1,
+      "size": 22,
+      "vw": 5.6,
+      "font": "Work Sans",
+      "weight": 600,
+      "tracking": 0,
+      "leading": 1.55,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 3360,
+      "tag": "p",
+      "kind": "statement"
+     }
+    ],
+    "headingSummary": {
+     "count": 4,
+     "maxLines": 2,
+     "over2Lines": 0,
+     "statements": 1,
+     "centered": 0,
+     "medianWords": 6,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      14,
+      15,
+      16,
+      18,
+      22,
+      26,
+      28
+     ],
+     "sizeCount": 7,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 14,
+      "leading": 1.45,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 8.9
+     },
+     "measureChars": 41,
+     "max": {
+      "size": 28,
+      "vw": 7.2,
+      "font": "Work Sans",
+      "text": "149.000₫"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0.01,
+     "centerShare": 0.05,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f8f6f1",
+       "top": 0,
+       "hsl": {
+        "h": 43,
+        "s": 0.33,
+        "l": 0.96
+       }
+      },
+      {
+       "color": "#ffffff",
+       "top": 483,
+       "hsl": {
+        "h": 0,
+        "s": 0,
+        "l": 1
+       }
+      },
+      {
+       "color": "#182026",
+       "top": 3324,
+       "hsl": {
+        "h": 206,
+        "s": 0.23,
+        "l": 0.12
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#182026",
+       "share": 0.48
+      },
+      {
+       "color": "#454b4f",
+       "share": 0.3
+      },
+      {
+       "color": "#f8f6f1",
+       "share": 0.16
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.04
+      },
+      {
+       "color": "#1d4ed8",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#1d4ed8",
+      "hsl": {
+       "h": 224,
+       "s": 0.76,
+       "l": 0.48
+      },
+      "fg": "#ffffff"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 6,
+     "inHero": 1,
+     "radius": 0,
+     "height": 40,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Giỏ hàng"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 1,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 3,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 2342
+      }
+     ]
+    },
+    "heroMedia": [
+     {
+      "type": "img",
+      "ratio": 0.39
+     }
+    ],
+    "nav": {
+     "links": 5,
+     "fixed": true,
+     "height": 218,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "pageH": 3990,
+    "margins": {
+     "left": 16,
+     "right": 16
+    },
+    "sections": [
+     {
+      "sel": "header.site_siteHeader__igtvc",
+      "tag": "header",
+      "top": 0,
+      "height": 218,
+      "words": 17,
+      "media": 0,
+      "middle": 0,
+      "heading": null,
+      "left": 16,
+      "right": 38,
+      "textLeft": 16,
+      "textRight": 38,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": true
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 218,
+      "height": 1955,
+      "words": 177,
+      "media": 1,
+      "middle": 0,
+      "heading": {
+       "text": "149.000₫",
+       "size": 28,
+       "tag": "span"
+      },
+      "left": 16,
+      "right": 16,
+      "textLeft": 16,
+      "textRight": 33,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionSurface__3cC",
+      "tag": "section",
+      "top": 2173,
+      "height": 1151,
+      "words": 69,
+      "media": 3,
+      "middle": 0,
+      "heading": {
+       "text": "Sản phẩm khác của",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 16,
+      "right": 16,
+      "textLeft": 16,
+      "textRight": 34,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "footer.site_siteFooter__9HNzV",
+      "tag": "footer",
+      "top": 3324,
+      "height": 666,
+      "words": 53,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Xưởng Dệt Bạch Đằng",
+       "size": 22,
+       "tag": "p"
+      },
+      "left": 16,
+      "right": 38,
+      "textLeft": 16,
+      "textRight": 38,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Áo thun Cotton Compact 220gsm Trắng",
+      "size": 26,
+      "top": 333,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 32,
+      "n": 5
+     },
+     {
+      "x": 16,
+      "n": 2
+     }
+    ],
+    "leftBlocks": 7,
+    "bodySize": 16,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": null,
+   "consoleErrors": []
+  }
+ ],
+ "findings": [
+  {
+   "level": "WARN",
+   "id": "palette-cream",
+   "width": 1440,
+   "message": "Yellow-cream background (section #f8f6f1, text #f8f6f1).",
+   "fix": "Use the drawn palette. If you want warmth, take a low-chroma stone or bone, not a yellow cream.",
+   "alsoAt": [
+    768,
+    390
+   ]
+  },
+  {
+   "level": "FAIL",
+   "id": "body-size",
+   "width": 1440,
+   "message": "Body text is 14px (the size most of the running text is set in).",
+   "fix": "Body copy 16–20px. Map small sizes from blueprints onto your body step.",
+   "alsoAt": [
+    768,
+    390
+   ]
+  },
+  {
+   "level": "WARN",
+   "id": "no-footage",
+   "width": 1440,
+   "message": "No video anywhere on the page.",
+   "fix": "Look for one honest clip with scripts/assets.mjs --video (the place, the material, the process) and use it as a muted loop with a poster frame. Defend its absence only if no clip fits the subject."
+  },
+  {
+   "level": "WARN",
+   "id": "still-page",
+   "width": 1440,
+   "message": "Little motion: 12 element(s) moved while the page loaded and scrolled.",
+   "fix": "Give every section an entrance for its parts (not one fade of the whole block) and add one moving picture: a looping clip or a slow move on a photograph."
+  }
+ ],
+ "images": [
+  {
+   "viewport": "desktop",
+   "width": 1440,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run1/04-bd-pdp/desktop-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run1/04-bd-pdp/desktop-page-01.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "tablet",
+   "width": 768,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run1/04-bd-pdp/tablet-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run1/04-bd-pdp/tablet-page-01.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "mobile",
+   "width": 390,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run1/04-bd-pdp/mobile-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run1/04-bd-pdp/mobile-page-01.jpg"
+   ],
+   "film": []
+  }
+ ]
+}

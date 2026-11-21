@@ -33,13 +33,14 @@
 }
 
 .tabBtnActive {
-  background: var(--band-dark);
-  color: var(--band-dark-ink);
-  font-weight: 500;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
 }
 
 .tabBtnActive:hover {
-  background: var(--band-dark);
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .tabCount {

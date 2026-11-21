@@ -144,20 +144,23 @@
 }
 
 .deliveryOptionActive {
-  background: var(--band-dark);
-  color: var(--band-dark-ink);
+  background: var(--accent-tint);
+  color: var(--accent-tint-ink);
+  border-left: 4px solid var(--accent);
+  padding-left: 14px;
 }
 
 .deliveryOptionActive:hover:not(:disabled) {
-  background: var(--band-dark);
+  background: var(--accent-tint);
 }
 
 .deliveryOptionActive .paymentTitle {
-  color: var(--band-dark-ink);
+  color: var(--accent-tint-ink);
 }
 
 .deliveryOptionActive .addressShipLine {
-  color: var(--band-dark-muted);
+  color: var(--accent-tint-ink);
+  opacity: 0.92;
 }
 
 .deliveryOptionBtn:disabled {
@@ -221,12 +224,12 @@
 }
 
 .freeshipBtnActive {
-  background: var(--band-dark);
-  color: var(--band-dark-ink);
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .freeshipBtnActive:hover:not(:disabled) {
-  background: var(--band-dark);
+  background: var(--accent);
 }
 
 .freeshipBtn:disabled {

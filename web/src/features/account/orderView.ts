@@ -10,6 +10,7 @@ import type {
   PaymentMethod,
   PaymentStatus,
 } from "../../data/orders";
+import { formatAddressLine } from "../commerce/cartEnrich";
 import {
   normalizeSalesChannel,
   normalizeStorefrontShopId,
@@ -299,7 +300,7 @@ export function mapGatewayOrder(o: GwOrder, lookups: OrderLookups): OrderView {
     buyerName: addr?.recipient_name ?? "",
     buyerPhone: addr?.recipient_phone ?? "",
     shippingAddress: addr
-      ? [addr.street_address, addr.ward_name, addr.province_name].filter(Boolean).join(", ")
+      ? formatAddressLine(addr.street_address, addr.ward_name, addr.province_name)
       : "",
     provinceCode: addr?.province_code ?? "",
     status: mapOrderStatus(backendStatus),

@@ -495,14 +495,14 @@
 }
 
 .sizeBtnActive {
-  background: var(--band-dark);
-  color: var(--band-dark-ink);
-  font-weight: 500;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
 }
 
 .sizeBtnActive:hover:not(:disabled) {
-  background: var(--band-dark);
-  color: var(--band-dark-ink);
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .sizeBtn:disabled {

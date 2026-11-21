@@ -134,7 +134,7 @@ export function SiteCatalogView({
               id="site-catalog-search"
               type="search"
               className={styles.searchInput}
-              placeholder="Tìm theo tên hoặc chất liệu..."
+              placeholder="Tìm tên, chất liệu..."
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);

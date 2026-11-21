@@ -8,6 +8,9 @@ import {
 } from "./checkoutErrors.ts";
 import {
   enrichCartGroups,
+  formatAddressLine,
+  formatCarrierLabel,
+  formatServiceLabel,
   formatVoucherHeadline,
   formatVoucherIneligibleReason,
 } from "./cartEnrich.ts";
@@ -194,5 +197,32 @@ test("voucher formatting and eligibility reasons handle fixed, percent, exhauste
   assert.match(
     formatVoucherIneligibleReason({ ...pct, remaining_quota: 0 }, 350000) ?? "",
     /hết lượt/i
+  );
+});
+
+test("formatCarrierLabel and formatServiceLabel replace internal Mock Express copy with natural Vietnamese", () => {
+  assert.equal(formatCarrierLabel("MOCK", "Mock Express"), "Giao hàng NexusFast");
+  assert.equal(formatCarrierLabel("GHN", "Giao Hàng Nhanh"), "Giao Hàng Nhanh");
+  assert.equal(formatServiceLabel("STD", "Mock Express Tiêu Chuẩn"), "Giao tiêu chuẩn");
+  assert.equal(formatServiceLabel("EXP", "Mock Express Nhanh"), "Giao nhanh");
+  assert.equal(formatServiceLabel("FAST", ""), "Giao nhanh");
+});
+
+test("formatAddressLine avoids duplicating ward or province already embedded in street_address", () => {
+  assert.equal(
+    formatAddressLine("Số 248 Võ Văn Tần", "Phường Xuân Hòa", "Thành phố Hồ Chí Minh"),
+    "Số 248 Võ Văn Tần, Phường Xuân Hòa, Thành phố Hồ Chí Minh"
+  );
+  assert.equal(
+    formatAddressLine(
+      "Số 12 Hàng Trống, Phường Hoàn Kiếm, Thành phố Hà Nội",
+      "Phường Hoàn Kiếm",
+      "Thành phố Hà Nội"
+    ),
+    "Số 12 Hàng Trống, Phường Hoàn Kiếm, Thành phố Hà Nội"
+  );
+  assert.equal(
+    formatAddressLine("Số 12 Hàng Trống, Phường Hoàn Kiếm", "Phường Hoàn Kiếm", "Thành phố Hà Nội"),
+    "Số 12 Hàng Trống, Phường Hoàn Kiếm, Thành phố Hà Nội"
   );
 });

@@ -103,7 +103,7 @@ export function SiteShell({
             </Link>
           )}
           <SiteNav previewMode={previewMode} />
-          {!previewMode && <SiteHeaderActions />}
+          {!previewMode && <SiteHeaderActions brandName={brandName} />}
         </div>
       </header>
 

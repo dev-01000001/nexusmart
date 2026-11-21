@@ -112,13 +112,14 @@
 }
 
 .tabBtnActive {
-  background: var(--band-dark);
-  color: var(--band-dark-ink);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
 }
 
 .tabBtnActive:hover {
-  background: var(--band-dark);
-  color: var(--band-dark-ink);
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .voucherGrid {

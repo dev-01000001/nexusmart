@@ -14,6 +14,9 @@ import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
 import { useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import {
   enrichCartGroups,
+  formatAddressLine,
+  formatCarrierLabel,
+  formatServiceLabel,
   formatVoucherHeadline,
   formatVoucherIneligibleReason,
 } from "@/features/commerce/cartEnrich";
@@ -665,7 +668,11 @@ export function CheckoutClient({
                           </div>
                         </div>
                         <p className={styles.addressLine}>
-                          {addr.street_address}, {addr.ward_name}, {addr.province_name}
+                          {formatAddressLine(
+                            addr.street_address,
+                            addr.ward_name,
+                            addr.province_name
+                          )}
                         </p>
                       </button>
                     );
@@ -755,11 +762,12 @@ export function CheckoutClient({
                               }
                             >
                               <span className={styles.paymentTitle}>
-                                {q.carrier_name || q.carrier_code} ·{" "}
+                                {formatCarrierLabel(q.carrier_code, q.carrier_name)} ·{" "}
                                 <span className="num">{formatVnd(q.fee_vnd)}</span>
                               </span>
                               <span className={styles.addressShipLine}>
-                                {q.service_name || q.service_code} · Dự kiến {q.estimated_days} ngày
+                                {formatServiceLabel(q.service_code, q.service_name)} · Dự kiến{" "}
+                                {q.estimated_days} ngày
                               </span>
                             </button>
                           );

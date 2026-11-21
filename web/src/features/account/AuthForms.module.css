@@ -44,6 +44,11 @@ input.input {
   transition: border-color var(--t-hover) ease;
 }
 
+input.input::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
 input.input:focus {
   border-color: var(--accent);
 }
@@ -81,7 +86,7 @@ input.otp {
   padding: 14px 18px;
   font-size: 16px;
   line-height: 1.55;
-  color: var(--ink);
+  color: var(--accent-tint-ink);
 }
 
 .sessionBar {
