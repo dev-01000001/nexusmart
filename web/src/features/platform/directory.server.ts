@@ -59,6 +59,7 @@ export async function loadSiteDirectory(
     logServer("warn", "site_directory_fetch_failed", {
       page,
       kind: err instanceof GatewayError ? err.kind : "unknown",
+      trace_id: err instanceof GatewayError ? err.traceId : "",
     });
     return { ok: false, page, pageSize: size };
   }
