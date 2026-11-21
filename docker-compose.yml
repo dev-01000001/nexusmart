@@ -766,7 +766,7 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
     ports:
-      - "127.0.0.1:${TELEGRAM_RELAY_PORT:-8099}:8099"
+      - "127.0.0.1:${TELEGRAM_RELAY_PORT:-18099}:8099"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8099/healthz || exit 1"]
       interval: 10s
@@ -853,6 +853,7 @@ services:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health || exit 1"]
       interval: 10s
       timeout: 5s
+      start_period: 90s
       retries: 15
 
   aiops:
