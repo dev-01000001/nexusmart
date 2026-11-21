@@ -172,10 +172,7 @@ export function parseSearchQueryParams(
   source: URLSearchParams | Record<string, string | null | undefined>
 ): SearchQueryParams {
   const q = cleanText(readParam(source, "q"), MAX_SEARCH_QUERY_LEN);
-  const category = cleanText(
-    readParam(source, "category") ?? readParam(source, "cat"),
-    100
-  );
+  const category = cleanText(readParam(source, "category") ?? readParam(source, "cat"), 100);
   const min_price = parseNonNegativeInt(readParam(source, "min_price"));
   const max_price = parseNonNegativeInt(readParam(source, "max_price"));
   const sort = normalizeSearchSort(readParam(source, "sort"));
@@ -272,9 +269,7 @@ function normalizeSearchItem(raw: unknown): SearchResultItem | null {
   );
   const categoryName = cleanText(obj.category_name ?? obj.categoryName, 120);
 
-  const rawPrice = Number(
-    obj.min_price_vnd ?? obj.price_vnd ?? obj.price ?? obj.minPriceVnd ?? 0
-  );
+  const rawPrice = Number(obj.min_price_vnd ?? obj.price_vnd ?? obj.price ?? obj.minPriceVnd ?? 0);
   const priceVnd = Number.isFinite(rawPrice) && rawPrice > 0 ? Math.trunc(rawPrice) : 0;
 
   const rawMaxPrice = Number(obj.max_price_vnd ?? obj.maxPriceVnd ?? 0);
@@ -293,9 +288,7 @@ function normalizeSearchItem(raw: unknown): SearchResultItem | null {
       if (typeof img === "string") imageCandidates.push(img);
     }
   }
-  const images = Array.from(
-    new Set(imageCandidates.map(sanitizeSearchImageUrl).filter(Boolean))
-  );
+  const images = Array.from(new Set(imageCandidates.map(sanitizeSearchImageUrl).filter(Boolean)));
   const image = images[0] ?? "";
 
   const rawStock = Number(obj.total_stock ?? obj.stock ?? NaN);
@@ -307,7 +300,8 @@ function normalizeSearchItem(raw: unknown): SearchResultItem | null {
         : Number.isFinite(rawStock)
           ? rawStock > 0
           : true;
-  const totalStock = Number.isFinite(rawStock) && rawStock >= 0 ? Math.trunc(rawStock) : inStock ? 1 : 0;
+  const totalStock =
+    Number.isFinite(rawStock) && rawStock >= 0 ? Math.trunc(rawStock) : inStock ? 1 : 0;
 
   const rawGsm = Number(obj.gsm ?? 0);
   const gsm = Number.isFinite(rawGsm) && rawGsm > 0 ? Math.trunc(rawGsm) : undefined;
@@ -368,9 +362,7 @@ export function normalizeSearchResponse(
         ? obj.products
         : [];
 
-  let items = rawItems
-    .map(normalizeSearchItem)
-    .filter((it): it is SearchResultItem => it !== null);
+  let items = rawItems.map(normalizeSearchItem).filter((it): it is SearchResultItem => it !== null);
 
   if (defaults.shopId) {
     const requiredShop = defaults.shopId;
@@ -593,7 +585,7 @@ export function runFallbackProductSearch(
 }
 
 export function recentSearchStorageKey(shopId: string | undefined, brandName: string): string {
-  const scope = (shopId || brandName || "site").trim().toLowerCase();
+  const scope = (shopId || brandName || "site").trim();
   return `nm_recent_search:${scope}`;
 }
 

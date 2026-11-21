@@ -181,18 +181,12 @@ export function SiteSearchResults({
       } catch {
         if (controller.signal.aborted) return;
         if (Array.isArray(fallbackProducts)) {
-          const localResult = runFallbackProductSearch(
-            fallbackProducts,
-            params,
-            searchProducts
-          );
+          const localResult = runFallbackProductSearch(fallbackProducts, params, searchProducts);
           setResult(localResult);
           setErrorMessage(null);
           setHasLoadedOnce(true);
         } else {
-          setErrorMessage(
-            "Không thể kết nối dịch vụ tìm kiếm lúc này. Bạn vui lòng thử tải lại."
-          );
+          setErrorMessage("Không thể kết nối dịch vụ tìm kiếm lúc này. Bạn vui lòng thử tải lại.");
           setHasLoadedOnce(true);
         }
       } finally {
@@ -235,17 +229,14 @@ export function SiteSearchResults({
 
   const totalPages = Math.max(1, Math.ceil(result.total / result.page_size));
   const safePage = Math.min(page, totalPages);
-  const pageNumbers = useMemo(
-    () => buildPageNumbers(safePage, totalPages),
-    [safePage, totalPages]
-  );
+  const pageNumbers = useMemo(() => buildPageNumbers(safePage, totalPages), [safePage, totalPages]);
 
   const hasActiveFilters = Boolean(
     query.trim() ||
-      category ||
-      minPrice !== undefined ||
-      maxPrice !== undefined ||
-      sort !== "relevance"
+    category ||
+    minPrice !== undefined ||
+    maxPrice !== undefined ||
+    sort !== "relevance"
   );
 
   const handleSearchNavigate = useCallback((nextQ: string) => {
@@ -526,11 +517,7 @@ export function SiteSearchResults({
                 const hasDiscount =
                   typeof item.originalPriceVnd === "number" &&
                   item.originalPriceVnd > item.priceVnd;
-                const metaLine = [
-                  item.categoryName,
-                  item.fabric,
-                  item.gsm ? `${item.gsm}gsm` : "",
-                ]
+                const metaLine = [item.categoryName, item.fabric, item.gsm ? `${item.gsm}gsm` : ""]
                   .filter(Boolean)
                   .slice(0, 2)
                   .join(" · ");

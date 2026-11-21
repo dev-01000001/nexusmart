@@ -42,10 +42,7 @@ export function SiteSearchBar({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  const storageKey = useMemo(
-    () => recentSearchStorageKey(shopId, brandName),
-    [shopId, brandName]
-  );
+  const storageKey = useMemo(() => recentSearchStorageKey(shopId, brandName), [shopId, brandName]);
 
   const [value, setValue] = useState(initialQuery);
   const [open, setOpen] = useState(false);
@@ -163,9 +160,7 @@ export function SiteSearchBar({
     setActiveIndex(-1);
   }, [options.length, trimmedValue]);
 
-  const showDropdown =
-    open &&
-    (options.length > 0 || (!isShowingRecent && loading));
+  const showDropdown = open && (options.length > 0 || (!isShowingRecent && loading));
 
   const executeSearch = useCallback(
     (rawQuery: string) => {
@@ -241,15 +236,9 @@ export function SiteSearchBar({
   };
 
   const activeOptionId =
-    showDropdown && activeIndex >= 0 && options[activeIndex]
-      ? options[activeIndex].id
-      : undefined;
+    showDropdown && activeIndex >= 0 && options[activeIndex] ? options[activeIndex].id : undefined;
 
-  const rootClass = [
-    styles.root,
-    compact ? styles.compact : "",
-    className ?? "",
-  ]
+  const rootClass = [styles.root, compact ? styles.compact : "", className ?? ""]
     .filter(Boolean)
     .join(" ");
 
@@ -352,11 +341,7 @@ export function SiteSearchBar({
                   >
                     <span className={styles.optionMain}>
                       <span className={styles.optionIcon} aria-hidden="true">
-                        {opt.kind === "recent" ? (
-                          <IconClock size={14} />
-                        ) : (
-                          <IconSearch size={14} />
-                        )}
+                        {opt.kind === "recent" ? <IconClock size={14} /> : <IconSearch size={14} />}
                       </span>
                       <span className={styles.optionText}>{opt.text}</span>
                     </span>
