@@ -539,6 +539,7 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(resp.headers().get("access-control-allow-origin").is_none());
+        assert!(resp.headers().get("x-trace-id").is_some());
 
         let metrics_resp = app
             .oneshot(

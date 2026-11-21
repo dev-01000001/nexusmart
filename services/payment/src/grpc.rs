@@ -910,7 +910,7 @@ mod tests {
         assert!(prom.contains("grpc_requests_total"));
         assert!(prom.contains("grpc_errors_total"));
         assert!(prom.contains("grpc_request_duration_seconds"));
-        assert!(prom.contains("method=\"CreatePayment\""));
+        assert!(prom.contains("method=\"/nexusmart.payment.v1.PaymentService/CreatePayment\""));
     }
 
     #[tokio::test]
