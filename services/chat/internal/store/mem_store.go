@@ -367,7 +367,7 @@ func (m *MemStore) ListMissedMessages(_ context.Context, userID, shopID, afterCu
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	afterSeq, err := m.resolveGlobalCursorLocked(afterCursor)
+	afterSeq, err := m.resolveGlobalCursorLocked(userID, shopID, afterCursor)
 	if err != nil {
 		return ListMissedResult{}, err
 	}
@@ -537,7 +537,7 @@ func (m *MemStore) resolveCursorLocked(convID, raw string, allowZero bool) (int6
 	return 0, fmt.Errorf("%w: cursor message not found", ErrInvalidCursor)
 }
 
-func (m *MemStore) resolveGlobalCursorLocked(raw string) (int64, error) {
+func (m *MemStore) resolveGlobalCursorLocked(userID, shopID, raw string) (int64, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return 0, nil
@@ -551,11 +551,15 @@ func (m *MemStore) resolveGlobalCursorLocked(raw string) (int64, error) {
 	if _, err := uuid.Parse(raw); err != nil {
 		return 0, fmt.Errorf("%w: invalid cursor format", ErrInvalidCursor)
 	}
-	seq, ok := m.msgByID[raw]
-	if !ok {
-		return 0, fmt.Errorf("%w: cursor message not found", ErrInvalidCursor)
+	for _, msg := range m.messages {
+		if msg.ID == raw {
+			if c, ok := m.convsByID[msg.ConversationID]; ok && (c.BuyerID == userID || (shopID != "" && c.ShopID == shopID)) {
+				return msg.Seq, nil
+			}
+			break
+		}
 	}
-	return seq, nil
+	return 0, fmt.Errorf("%w: cursor message not found", ErrInvalidCursor)
 }
 
 func cloneAutoReplyConfig(in AutoReplyConfig) AutoReplyConfig {

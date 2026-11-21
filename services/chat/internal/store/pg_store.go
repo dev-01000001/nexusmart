@@ -420,7 +420,7 @@ func (s *PGStore) ListMessages(ctx context.Context, in ListMessagesInput) (ListM
 }
 
 func (s *PGStore) ListMissedMessages(ctx context.Context, userID, shopID, afterCursor string, limit int32) (ListMissedResult, error) {
-	afterSeq, err := s.resolveGlobalCursor(ctx, afterCursor)
+	afterSeq, err := s.resolveGlobalCursor(ctx, userID, shopID, afterCursor)
 	if err != nil {
 		return ListMissedResult{}, err
 	}
@@ -712,7 +712,7 @@ func (s *PGStore) resolveConversationCursor(ctx context.Context, convUUID uuid.U
 	return seq, nil
 }
 
-func (s *PGStore) resolveGlobalCursor(ctx context.Context, raw string) (int64, error) {
+func (s *PGStore) resolveGlobalCursor(ctx context.Context, userID, shopID, raw string) (int64, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return 0, nil
@@ -728,7 +728,12 @@ func (s *PGStore) resolveGlobalCursor(ctx context.Context, raw string) (int64, e
 		return 0, fmt.Errorf("%w: cursor must be numeric seq or message uuid", ErrInvalidCursor)
 	}
 	var seq int64
-	if err := s.pool.QueryRow(ctx, `SELECT seq FROM chat_messages WHERE id = $1`, msgUUID).Scan(&seq); err != nil {
+	if err := s.pool.QueryRow(ctx, `
+		SELECT m.seq
+		FROM chat_messages m
+		JOIN chat_conversations c ON c.id = m.conversation_id
+		WHERE m.id = $1 AND (c.buyer_id = $2 OR ($3 <> '' AND c.shop_id = $3))
+	`, msgUUID, userID, strings.TrimSpace(shopID)).Scan(&seq); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, fmt.Errorf("%w: cursor message not found", ErrInvalidCursor)
 		}
