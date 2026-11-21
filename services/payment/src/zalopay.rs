@@ -11,15 +11,16 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 pub use crate::config::ZaloPayMode;
-use crate::config::{is_placeholder_secret, Config};
+use crate::config::{
+    is_placeholder_secret, Config, DEFAULT_ZALOPAY_MOCK_KEY1, DEFAULT_ZALOPAY_MOCK_KEY2,
+};
 use crate::error::{PaymentError, Result};
 use crate::vietqr::{CircuitBreaker, ProviderTransaction, VietQrAdapter};
-use crate::webhook_security::{compute_hmac_hex, IncomingWebhookPayload};
+use crate::webhook_security::{
+    compute_hmac_hex, ensure_webhook_secret_usable, IncomingWebhookPayload,
+};
 
 type HmacSha256 = Hmac<Sha256>;
-
-const DEFAULT_MOCK_KEY1: &str = "zalopay-mock-key1-dev";
-const DEFAULT_MOCK_KEY2: &str = "zalopay-mock-key2-dev";
 
 /// ZaloPay v2 create-order intent returned to callers and persisted on `payments`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +116,12 @@ pub fn verify_zalopay_callback(
     replay_window_secs: i64,
     now: DateTime<Utc>,
 ) -> Result<VerifiedZaloPayCallback> {
+    if key2.trim().is_empty() {
+        return Err(PaymentError::Unauthorized(
+            "ZaloPay callback verification key is not configured".to_string(),
+        ));
+    }
+
     let raw_json: serde_json::Value = serde_json::from_slice(raw_body).map_err(|e| {
         PaymentError::Validation(format!("invalid JSON ZaloPay callback body: {e}"))
     })?;
@@ -278,6 +285,7 @@ fn parse_embed_data(
 
 #[derive(Clone)]
 pub struct ZaloPayAdapter {
+    is_production: bool,
     mode: ZaloPayMode,
     app_id: i64,
     key1: String,
@@ -297,6 +305,7 @@ impl ZaloPayAdapter {
             .build()
             .expect("reqwest client build");
 
+        let is_production = cfg.is_production();
         let effective_mode = if cfg.zalopay_mode == ZaloPayMode::Sandbox
             && !is_placeholder_secret(&cfg.zalopay_key1)
             && !is_placeholder_secret(&cfg.zalopay_key2)
@@ -306,18 +315,20 @@ impl ZaloPayAdapter {
             ZaloPayMode::Mock
         };
 
-        let key1 = if cfg.zalopay_key1.trim().is_empty() {
-            DEFAULT_MOCK_KEY1.to_string()
+        // Never fall back to repo-committed mock keys in production.
+        let key1 = if !is_production && cfg.zalopay_key1.trim().is_empty() {
+            DEFAULT_ZALOPAY_MOCK_KEY1.to_string()
         } else {
             cfg.zalopay_key1.clone()
         };
-        let key2 = if cfg.zalopay_key2.trim().is_empty() {
-            DEFAULT_MOCK_KEY2.to_string()
+        let key2 = if !is_production && cfg.zalopay_key2.trim().is_empty() {
+            DEFAULT_ZALOPAY_MOCK_KEY2.to_string()
         } else {
             cfg.zalopay_key2.clone()
         };
 
         Self {
+            is_production,
             mode: effective_mode,
             app_id: cfg.zalopay_app_id,
             key1,
@@ -634,6 +645,8 @@ impl ZaloPayAdapter {
     }
 
     /// Verifies an incoming ZaloPay callback using this adapter's `key2`.
+    /// In production, callbacks are refused unless running in non-mock `Sandbox` mode
+    /// with a non-placeholder, non-repo-default `key2`.
     pub fn verify_callback(
         &self,
         raw_body: &[u8],
@@ -641,6 +654,12 @@ impl ZaloPayAdapter {
         replay_window_secs: i64,
         now: DateTime<Utc>,
     ) -> Result<VerifiedZaloPayCallback> {
+        if self.is_production && self.mode != ZaloPayMode::Sandbox {
+            return Err(PaymentError::ServiceUnavailable(
+                "ZaloPay callbacks disabled: mock mode is not allowed in production".to_string(),
+            ));
+        }
+        ensure_webhook_secret_usable(&self.key2, self.is_production)?;
         verify_zalopay_callback(
             &self.key2,
             raw_body,
@@ -793,6 +812,7 @@ mod tests {
 
     fn mock_config() -> Config {
         let mut cfg = Config::from_env();
+        cfg.app_env = crate::config::AppEnv::Development;
         cfg.zalopay_mode = ZaloPayMode::Mock;
         cfg.zalopay_app_id = 2554;
         cfg.zalopay_key1 = "test-key1-secret".to_string();
@@ -800,6 +820,112 @@ mod tests {
         cfg.external_max_retries = 2;
         cfg.external_http_timeout = Duration::from_secs(2);
         cfg
+    }
+
+    #[test]
+    fn test_production_rejects_mock_key_callback_while_dev_accepts() {
+        let now = Utc::now();
+        let pid = Uuid::new_v4();
+
+        // Dev default config (APP_ENV=development, empty keys -> mock default key2).
+        let mut dev_cfg = Config::from_env();
+        dev_cfg.app_env = crate::config::AppEnv::Development;
+        dev_cfg.zalopay_mode = ZaloPayMode::Mock;
+        dev_cfg.zalopay_key1.clear();
+        dev_cfg.zalopay_key2.clear();
+        let dev_adapter = ZaloPayAdapter::from_config(&dev_cfg);
+
+        // Attacker / local dev signs callback using repo constant `zalopay-mock-key2-dev`.
+        let forged_body = dev_adapter.build_mock_callback_signed(
+            Some(pid),
+            Some("grp-forged".into()),
+            Some("ord-forged".into()),
+            "261121_NMFORGED0001",
+            "ZP-FORGED-0001",
+            500_000,
+            now.timestamp_millis(),
+        );
+
+        // Dev config accepts the mock-signed callback.
+        assert!(dev_adapter
+            .verify_callback(&forged_body, None, 300, now)
+            .is_ok());
+
+        // Production with valid Sandbox keys rejects callback signed with `zalopay-mock-key2-dev` (401).
+        let mut prod_valid_cfg = dev_cfg.clone();
+        prod_valid_cfg.app_env = crate::config::AppEnv::Production;
+        prod_valid_cfg.zalopay_mode = ZaloPayMode::Sandbox;
+        prod_valid_cfg.zalopay_key1 = "prod-real-key1-987654321".to_string();
+        prod_valid_cfg.zalopay_key2 = "prod-real-key2-abcdef123".to_string();
+        let prod_valid_adapter = ZaloPayAdapter::from_config(&prod_valid_cfg);
+        assert_eq!(prod_valid_adapter.mode(), ZaloPayMode::Sandbox);
+        assert!(matches!(
+            prod_valid_adapter.verify_callback(&forged_body, None, 300, now),
+            Err(PaymentError::Unauthorized(_))
+        ));
+        // Real production key2 succeeds.
+        let real_body = prod_valid_adapter.build_mock_callback_signed(
+            Some(pid),
+            Some("grp-forged".into()),
+            Some("ord-forged".into()),
+            "261121_NMFORGED0001",
+            "ZP-REAL-0001",
+            500_000,
+            now.timestamp_millis(),
+        );
+        assert!(prod_valid_adapter
+            .verify_callback(&real_body, None, 300, now)
+            .is_ok());
+
+        // Production with mock mode, empty key2, repo mock key2, or placeholder key2 -> 503.
+        for (mode, key1, key2) in [
+            (ZaloPayMode::Mock, "", ""),
+            (ZaloPayMode::Sandbox, "", ""),
+            (
+                ZaloPayMode::Sandbox,
+                DEFAULT_ZALOPAY_MOCK_KEY1,
+                DEFAULT_ZALOPAY_MOCK_KEY2,
+            ),
+            (
+                ZaloPayMode::Sandbox,
+                "sandbox-zalopay-key1-placeholder",
+                "sandbox-zalopay-key2-placeholder",
+            ),
+        ] {
+            let mut bad_prod = dev_cfg.clone();
+            bad_prod.app_env = crate::config::AppEnv::Production;
+            bad_prod.zalopay_mode = mode;
+            bad_prod.zalopay_key1 = key1.to_string();
+            bad_prod.zalopay_key2 = key2.to_string();
+            let adapter = ZaloPayAdapter::from_config(&bad_prod);
+            assert!(
+                matches!(
+                    adapter.verify_callback(&forged_body, None, 300, now),
+                    Err(PaymentError::ServiceUnavailable(_))
+                ),
+                "expected ServiceUnavailable for prod mode={mode:?}, key2={key2:?}"
+            );
+        }
+
+        // Direct verify_zalopay_callback rejects empty key2 even if signed with "".
+        let empty_key_data = serde_json::json!({
+            "app_trans_id": "261121_NMEMPTY",
+            "amount": 100_000,
+            "zp_trans_id": "ZP-EMPTY",
+            "server_time": now.timestamp_millis(),
+        })
+        .to_string();
+        let empty_key_mac = compute_hmac_hex("", empty_key_data.as_bytes());
+        let empty_key_body = serde_json::to_vec(&serde_json::json!({
+            "data": empty_key_data,
+            "mac": empty_key_mac,
+            "type": 1,
+        }))
+        .unwrap();
+        assert!(matches!(
+            verify_zalopay_callback("", &empty_key_body, None, 300, now),
+            Err(PaymentError::Unauthorized(_))
+        ));
     }
 
     #[test]

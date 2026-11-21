@@ -42,6 +42,9 @@ pub enum PaymentError {
     #[error("provider circuit breaker is open")]
     CircuitOpen,
 
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
+
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 
@@ -60,6 +63,7 @@ impl PaymentError {
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::Provider(_) | Self::CircuitOpen => StatusCode::BAD_GATEWAY,
+            Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::LedgerInvariant(_) | Self::Database(_) | Self::Internal(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -78,6 +82,7 @@ impl PaymentError {
             Self::RefundExceedsPaid { .. } => "REFUND_EXCEEDS_PAID",
             Self::Provider(_) => "PROVIDER_ERROR",
             Self::CircuitOpen => "PROVIDER_CIRCUIT_OPEN",
+            Self::ServiceUnavailable(_) => "SERVICE_UNAVAILABLE",
             Self::Database(_) => "DATABASE_ERROR",
             Self::Internal(_) => "INTERNAL_ERROR",
         }
@@ -95,6 +100,7 @@ impl PaymentError {
             }
             Self::Provider(m) => tonic::Status::unavailable(m.clone()),
             Self::CircuitOpen => tonic::Status::unavailable("payment provider circuit open"),
+            Self::ServiceUnavailable(m) => tonic::Status::unavailable(m.clone()),
             Self::LedgerInvariant(m) => tonic::Status::internal(m.clone()),
             Self::Database(_) => tonic::Status::internal("database error"),
             Self::Internal(m) => tonic::Status::internal(m.clone()),
@@ -193,6 +199,12 @@ mod tests {
                 PaymentError::CircuitOpen,
                 StatusCode::BAD_GATEWAY,
                 "PROVIDER_CIRCUIT_OPEN",
+                tonic::Code::Unavailable,
+            ),
+            (
+                PaymentError::ServiceUnavailable("webhook disabled".into()),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SERVICE_UNAVAILABLE",
                 tonic::Code::Unavailable,
             ),
             (

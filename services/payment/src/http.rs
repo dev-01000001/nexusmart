@@ -19,12 +19,15 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::auth::{Caller, GrpcAuth};
+use crate::config::VietQrMode;
 use crate::domain::{PaymentWithAllocations, SalesChannel};
 use crate::error::PaymentError;
 use crate::metrics::red_metrics_middleware;
 use crate::service::PaymentService;
 use crate::telemetry::{extract_http_context, extract_or_generate_trace_id, mask_secret};
-use crate::webhook_security::{verify_webhook_request, IncomingWebhookPayload};
+use crate::webhook_security::{
+    ensure_webhook_secret_usable, verify_webhook_request, IncomingWebhookPayload,
+};
 
 #[derive(Clone)]
 pub struct HttpState {
@@ -164,7 +167,7 @@ async fn handle_payment_webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, PaymentError> {
-    process_webhook_http(state, headers, body, "payment_gateway").await
+    process_webhook_http(state, headers, body, "payment_gateway", false).await
 }
 
 async fn handle_vietqr_webhook(
@@ -173,7 +176,7 @@ async fn handle_vietqr_webhook(
     body: Bytes,
 ) -> Result<impl IntoResponse, PaymentError> {
     let default_provider = state.service.vietqr().mode().as_str();
-    process_webhook_http(state, headers, body, default_provider).await
+    process_webhook_http(state, headers, body, default_provider, true).await
 }
 
 async fn handle_zalopay_webhook(
@@ -195,17 +198,17 @@ async fn handle_zalopay_webhook(
     ) {
         Ok(v) => v,
         Err(err) => {
-            let metric_label = if matches!(err, PaymentError::Unauthorized(_)) {
-                "rejected_signature"
-            } else {
-                "rejected_payload"
+            let metric_label = match err {
+                PaymentError::ServiceUnavailable(_) => "rejected_misconfigured",
+                PaymentError::Unauthorized(_) => "rejected_signature",
+                _ => "rejected_payload",
             };
             state.service.metrics().record_webhook(metric_label);
             warn!(
                 trace_id = %trace_id,
                 has_timestamp = timestamp.is_some(),
                 reason = %err,
-                "rejected ZaloPay callback due to invalid MAC, replay window, or schema"
+                "rejected ZaloPay callback due to invalid MAC, replay window, mode, or schema"
             );
             return Err(err);
         }
@@ -240,21 +243,55 @@ async fn process_webhook_http(
     headers: HeaderMap,
     body: Bytes,
     default_provider: &str,
+    require_non_mock_vietqr_in_prod: bool,
 ) -> Result<impl IntoResponse, PaymentError> {
     let trace_id = extract_or_generate_trace_id(
         header_str(&headers, "traceparent"),
         header_str(&headers, "x-trace-id"),
     );
 
+    let cfg = state.service.config();
+    if require_non_mock_vietqr_in_prod
+        && cfg.is_production()
+        && state.service.vietqr().mode() == VietQrMode::Mock
+    {
+        state
+            .service
+            .metrics()
+            .record_webhook("rejected_misconfigured");
+        warn!(
+            trace_id = %trace_id,
+            "rejected VietQR webhook: mock mode is not allowed in production"
+        );
+        return Err(PaymentError::ServiceUnavailable(
+            "VietQR webhooks disabled: mock mode is not allowed in production".to_string(),
+        ));
+    }
+
+    if let Err(err) = ensure_webhook_secret_usable(&cfg.webhook_secret, cfg.is_production()) {
+        let metric_label = if matches!(err, PaymentError::ServiceUnavailable(_)) {
+            "rejected_misconfigured"
+        } else {
+            "rejected_signature"
+        };
+        state.service.metrics().record_webhook(metric_label);
+        warn!(
+            trace_id = %trace_id,
+            reason = %err,
+            "rejected webhook: webhook secret is missing or placeholder"
+        );
+        return Err(err);
+    }
+
     let signature = header_str(&headers, "x-signature");
     let timestamp = header_str(&headers, "x-timestamp");
 
     if let Err(err) = verify_webhook_request(
-        &state.service.config().webhook_secret,
+        &cfg.webhook_secret,
         &body,
         signature,
         timestamp,
-        state.service.config().webhook_replay_window_secs,
+        cfg.webhook_replay_window_secs,
         Utc::now(),
     ) {
         state.service.metrics().record_webhook("rejected_signature");
@@ -485,15 +522,20 @@ mod tests {
     const HTTP_TEST_USER_KEY: &str = "http-test-user-key";
     const HTTP_TEST_SVC_KEY: &str = "http-test-service-key";
 
-    fn test_router() -> (Router, Config) {
-        let mut cfg = Config::from_env();
-        cfg.webhook_secret = "unit-test-secret".to_string();
+    fn test_router_with_config(cfg: Config) -> (Router, Config) {
         let pool = PgPoolOptions::new()
             .connect_lazy(&cfg.database_url)
             .expect("lazy pool");
         let svc = PaymentService::new(pool, cfg.clone(), Metrics::new());
         let auth = GrpcAuth::new(HTTP_TEST_USER_KEY, HTTP_TEST_SVC_KEY).unwrap();
         (build_router(svc, auth), cfg)
+    }
+
+    fn test_router() -> (Router, Config) {
+        let mut cfg = Config::from_env();
+        cfg.app_env = crate::config::AppEnv::Development;
+        cfg.webhook_secret = "unit-test-secret".to_string();
+        test_router_with_config(cfg)
     }
 
     fn bearer_user(role: &str, user_id: &str, shop_id: &str) -> String {
@@ -854,6 +896,184 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bad_filter.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_production_http_webhooks_reject_repo_mock_keys_while_dev_accepts() {
+        use crate::config::{
+            AppEnv, ZaloPayMode, DEFAULT_WEBHOOK_SECRET, DEFAULT_ZALOPAY_MOCK_KEY2,
+        };
+
+        let now = Utc::now();
+        let fresh_ts = now.timestamp().to_string();
+
+        // Build a forged ZaloPay callback signed with the public repo constant `zalopay-mock-key2-dev`.
+        let mut signer_cfg = Config::from_env();
+        signer_cfg.app_env = AppEnv::Development;
+        signer_cfg.zalopay_mode = ZaloPayMode::Mock;
+        signer_cfg.zalopay_key2 = DEFAULT_ZALOPAY_MOCK_KEY2.to_string();
+        let signer = crate::zalopay::ZaloPayAdapter::from_config(&signer_cfg);
+        let forged_zp_body = signer.build_mock_callback_signed(
+            None,
+            Some("grp-attacker".into()),
+            Some("ord-attacker".into()),
+            "261121_NMATTACK0001",
+            "ZP-ATTACK-1",
+            250_000,
+            now.timestamp_millis(),
+        );
+
+        // 1a. Production with real Sandbox keys rejects `zalopay-mock-key2-dev` callback (401).
+        let mut prod_cfg = Config::from_env();
+        prod_cfg.app_env = AppEnv::Production;
+        prod_cfg.zalopay_mode = ZaloPayMode::Sandbox;
+        prod_cfg.zalopay_key1 = "prod-real-key1-987654321".to_string();
+        prod_cfg.zalopay_key2 = "prod-real-key2-abcdef123".to_string();
+        prod_cfg.vietqr_mode = VietQrMode::PayOs;
+        prod_cfg.webhook_secret = "prod-real-webhook-secret-998877".to_string();
+        let (prod_app, _) = test_router_with_config(prod_cfg);
+
+        let zp_resp = prod_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/zalopay")
+                    .header("content-type", "application/json")
+                    .body(Body::from(forged_zp_body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(zp_resp.status(), StatusCode::UNAUTHORIZED);
+
+        // 1b. Production rejects /webhooks/payment and /webhooks/vietqr signed with repo secrets (401).
+        let wh_body = r#"{"provider_tx_id":"TX-ATK","order_group_id":"grp-1","amount_vnd":100000,"status":"SUCCEEDED"}"#;
+        for repo_secret in [
+            DEFAULT_WEBHOOK_SECRET,
+            "dev-only-payment-webhook-hmac-secret",
+        ] {
+            let forged_sig = compute_hmac_hex(repo_secret, wh_body.as_bytes());
+            for uri in ["/webhooks/payment", "/webhooks/vietqr"] {
+                let resp = prod_app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(Method::POST)
+                            .uri(uri)
+                            .header("content-type", "application/json")
+                            .header("x-signature", &forged_sig)
+                            .header("x-timestamp", &fresh_ts)
+                            .body(Body::from(wh_body))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    resp.status(),
+                    StatusCode::UNAUTHORIZED,
+                    "{uri} {repo_secret}"
+                );
+            }
+        }
+
+        // 2. Misconfigured production router (mock mode / empty or placeholder secrets) returns 503.
+        let mut mis_prod = Config::from_env();
+        mis_prod.app_env = AppEnv::Production;
+        mis_prod.zalopay_mode = ZaloPayMode::Mock;
+        mis_prod.zalopay_key1.clear();
+        mis_prod.zalopay_key2.clear();
+        mis_prod.vietqr_mode = VietQrMode::Mock;
+        mis_prod.webhook_secret = "dev-only-payment-webhook-hmac-secret".to_string();
+        let (mis_app, _) = test_router_with_config(mis_prod);
+
+        let zp_mis_resp = mis_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/zalopay")
+                    .header("content-type", "application/json")
+                    .body(Body::from(forged_zp_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(zp_mis_resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let dev_sig = compute_hmac_hex("dev-only-payment-webhook-hmac-secret", wh_body.as_bytes());
+        for uri in ["/webhooks/payment", "/webhooks/vietqr"] {
+            let resp = mis_app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .header("x-signature", &dev_sig)
+                        .header("x-timestamp", &fresh_ts)
+                        .body(Body::from(wh_body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+        }
+
+        // 3. Dev config still accepts signatures made with `zalopay-mock-key2-dev` and dev webhook secret
+        //    (reaches payload validation -> 400 BAD_REQUEST on amount=0, proving HMAC passed).
+        let mut dev_cfg = Config::from_env();
+        dev_cfg.app_env = AppEnv::Development;
+        dev_cfg.zalopay_mode = ZaloPayMode::Mock;
+        dev_cfg.zalopay_key1.clear();
+        dev_cfg.zalopay_key2.clear();
+        dev_cfg.vietqr_mode = VietQrMode::Mock;
+        dev_cfg.webhook_secret = "dev-only-payment-webhook-hmac-secret".to_string();
+        let (dev_app, _) = test_router_with_config(dev_cfg);
+
+        let dev_zp_zero_amt = signer.build_mock_callback_signed(
+            None,
+            Some("grp-dev".into()),
+            Some("ord-dev".into()),
+            "261121_NMDEV0001",
+            "ZP-DEV-1",
+            0,
+            now.timestamp_millis(),
+        );
+        let dev_zp_resp = dev_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/zalopay")
+                    .header("content-type", "application/json")
+                    .body(Body::from(dev_zp_zero_amt))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dev_zp_resp.status(), StatusCode::BAD_REQUEST);
+
+        let dev_wh_invalid_schema =
+            r#"{"provider_tx_id":"TX-DEV","amount_vnd":0,"status":"SUCCEEDED"}"#;
+        let dev_wh_sig = compute_hmac_hex(
+            "dev-only-payment-webhook-hmac-secret",
+            dev_wh_invalid_schema.as_bytes(),
+        );
+        let dev_vq_resp = dev_app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/vietqr")
+                    .header("content-type", "application/json")
+                    .header("x-signature", &dev_wh_sig)
+                    .header("x-timestamp", &fresh_ts)
+                    .body(Body::from(dev_wh_invalid_schema))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dev_vq_resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]

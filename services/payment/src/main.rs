@@ -22,6 +22,15 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env();
     let _tracer_provider = init_telemetry(&config.service_name, config.otel_endpoint.as_deref());
 
+    if let Err(err) = config.validate() {
+        error!(
+            service = "payment",
+            error = %err,
+            "refusing to start NexusMart Payment service with unsafe production configuration"
+        );
+        return Err(err);
+    }
+
     info!(?config, "starting NexusMart Payment service");
 
     let pool = PgPoolOptions::new()
