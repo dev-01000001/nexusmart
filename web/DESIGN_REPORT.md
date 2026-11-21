@@ -1,8 +1,101 @@
-# Báo cáo Thiết kế & Nghiệm thu Giao diện Web — NexusMart (Đợt 1 + Đợt 2 + Đợt 3)
+# Báo cáo Thiết kế & Nghiệm thu Giao diện Web — NexusMart (Giai đoạn 4 + Lịch sử Đợt 1–3)
 
-Ngày nghiệm thu Đợt 3: `2026-11-20` · Phạm vi: Toàn bộ giao diện web mock (`web/`) bằng Next.js `15.5.29` (App Router, TypeScript) và CSS thuần (CSS Modules + 1 tệp token `src/styles/tokens.css`, không UI kit, không Tailwind, không thư viện state/icon ngoài, không thêm dependency mới). Toàn bộ **55/55 tính năng** trên cả 3 khu vực Người mua, Người bán và Quản trị đã hoàn thiện UI thực thụ (hết cảm giác wireframe/sơ sài) và vượt qua **100% gate kiểm định tĩnh, real-browser `inspect.mjs` trên toàn bộ 44/44 route chuẩn (`0 FAIL`, giảm `66,1%` WARN so với `review4`), và kiểm tra ảnh chụp màn hình desktop/mobile**.
+Ngày nghiệm thu Giai đoạn 4: `2026-11-21` · Phạm vi: Chuyển đổi toàn diện kiến trúc web (`web/`, Next.js `15.5.29` App Router + TypeScript + CSS Modules) từ mô hình sàn thương mại điện tử sang **mô hình nền tảng đa cửa hàng độc lập theo tên miền phụ** (nhánh `phase-0b`, nối trực tiếp 11 microservice backend thật qua BFF Next.js và API Gateway `:28080`). Toàn bộ **17/17 URL nghiệm thu bắt buộc** (host gốc `/`, 7 tuyến đại diện của site giao diện sáng `bach-dang`, 7 tuyến đại diện của site giao diện tối `sai-gon`, `/seller` và `/admin` chế độ `--app`) đều đạt **`0 FAIL`** ở cả 3 kích thước `1440 / 768 / 390` (**51/51 lượt đo**, `0px` tràn ngang, `0` ảnh vỡ), kết hợp kiểm tra trực tiếp ảnh chụp màn hình desktop/mobile sau vòng Look-and-Fix.
 
 ---
+
+## GIAI ĐOẠN 4 — Bỏ trang sàn, mở mô hình nền tảng & cửa hàng độc lập theo subdomain (`2026-11-21`)
+
+### G4.1 Chuyển đổi kiến trúc giao diện & phân tách theo `Host`
+
+| Khu vực | Host phục vụ | Art direction & Token | Phạm vi giao diện sau Giai đoạn 4 |
+| --- | --- | --- | --- |
+| **Nền tảng gốc `(shop)`** | `nexusmart.localhost` (và `localhost`, IP) | **Frost & Slate** (`#f7f9fa` / `#ffffff` / `#1f3038` / `#0d7480`) · `Work Sans` | Trang giới thiệu nền tảng 6 section cho Người bán (CTA chính `Mở gian hàng`, xem thử tên miền phụ, lộ trình 4 bước) và Khách ghé (**Danh bạ gian hàng đang mở bán** nạp thật `no-store` từ `GET /api/v1/sites` có phân trang `?trang=`, kèm logo, ảnh bìa, tagline, link thẳng subdomain). Tuyệt đối không có lưới sản phẩm, giá VND, giỏ hàng hay tìm kiếm sản phẩm. Giữ `/dang-nhap`, `/dang-ky` (`AuthForms` `variant="platform"`), `/ve-nexusmart`, `/tro-giup`, `308` redirect cho `/gian-hang/[slug]` và `/san-pham/[slug]` khi site PUBLISHED, cùng `robots.txt`/`sitemap.xml` theo `Host`. |
+| **Cửa hàng độc lập `(site)`** | `<sub>.nexusmart.localhost` (`bach-dang`, `sai-gon`, `da-nang`, `ha-noi`) | **Token động `--site-*`** theo cấu hình xuất bản của từng gian hàng (hỗ trợ cả giao diện sáng như `bach-dang` `#f8f6f1` / `#1d4ed8` / `Work Sans` lẫn giao diện tối như `sai-gon` `#14181c` / `#d97706` / `Be Vietnam Pro`, đạt tương phản WCAG `>= 4.5:1`) | Cửa hàng đầy đủ khép kín 18 route: trang chủ section, danh sách `/san-pham`, chi tiết `/san-pham/[slug]` (self-canonical), `/tim-kiem`, `/flash-sale`, `/voucher` (chỉ mã `SHOP`), `/gio-hang`, `/thanh-toan` (COD & VietQR, luôn khóa `sales_channel="STOREFRONT"` + `storefront_shop_id` từ `Host`), `/thanh-toan/cho/[id]`, `/dang-nhap`, `/dang-ky` (OTP), `/tai-khoan`, `/don-hang`, `/don-hang/[id]`, `/tra-cuu-don-hang` (+ `/tra-cuu-don`), `/chinh-sach`, `/gioi-thieu`. Phiên cookie `HttpOnly` host-only (không `Domain=`), CSRF kiểm `Origin` trùng đúng host. |
+| **Kênh người bán `(seller)`** | Chỉ host gốc (`404` trên host site) | **Achromatic ledger** (`Open plane`, `Work Sans`) | 13 route quản trị gian hàng; bổ sung khối trạng thái site (`Đang hoạt động` / `Bản nháp` / `Chưa thiết lập` / `Tạm khóa`) kèm nút `Xem site ↗` và lời nhắc rõ khi chưa xuất bản. Bỏ các tab/khối cấp sàn (`Combo & Mua kèm` hội viên, `Chiến dịch & BST sàn`, `Lookbook & Bài viết`, freeship sàn `249k`). |
+| **Cổng quản trị `(admin)`** | Chỉ host gốc (`404` trên host site) | **Framed sheet** (`Tinted frame, white sheet`, `Work Sans`) | Thu gọn còn **7 route vận hành thật**: `/admin`, `/admin/gian-hang`, `/admin/kiem-duyet`, `/admin/sites`, `/admin/flash-sale` (mới), `/admin/doi-soat`, `/admin/audit-log`. Gỡ 4 màn mock/sàn chết (`/admin/cau-hinh`, `/admin/khieu-nai`, `/admin/noi-dung`, `/admin/thanh-vien`). Giữ khả năng xem & lọc chỉ-đọc các đơn lịch sử kênh `Sàn NexusMart` bên cạnh `Site riêng`. |
+
+---
+
+### G4.2 Kiểm kê route thay đổi (`web/src/app`: `111 → 100` tệp route)
+
+Đối chiếu với baseline trước Giai đoạn 4 (`.taste-skill/inspect-p4/baseline-routes.txt` — `111` tệp `page.tsx`/`route.ts`): **gỡ bỏ 27 tệp**, **bổ sung 16 tệp**, **giữ lại 84 tệp** (tổng `100` tệp):
+
+- **Đã xóa khỏi host gốc `(shop)` — 21 trang sàn cũ:**
+  - *Chuyển sang `(site)/s/[host]/` (11 trang):* `gio-hang`, `thanh-toan`, `thanh-toan/cho/[id]`, `don-hang`, `don-hang/[id]`, `tai-khoan`, `tra-cuu-don-hang`, `tra-cuu-don`, `tim-kiem`, `flash-sale`, `voucher`.
+  - *Thay bằng route handler `308` sang site PUBLISHED (2 trang):* `gian-hang/[slug]/page.tsx` → `route.ts`, `san-pham/[slug]/page.tsx` → `route.ts`.
+  - *Gỡ bỏ hoàn toàn vì chỉ có nghĩa với sàn (8 trang):* `danh-muc`, `bo-suu-tap`, `bo-suu-tap/[slug]`, `chien-dich/[slug]`, `tap-chi`, `tap-chi/[slug]`, `hoi-vien`, `the-qua-tang`.
+- **Đã xóa khỏi `(admin)` & `api/` — 6 tệp:**
+  - `(admin)/admin/{cau-hinh,khieu-nai,noi-dung,thanh-vien}/page.tsx`, `api/admin/vouchers/route.ts`, `api/vouchers/coins/route.ts`.
+- **Đã xóa mã nguồn/mock chết liên quan:** `src/components/{ShopHeader,ShopFooter}.*`, `src/mock/**`, `src/data/{admin,chat,content,membership}.ts`, `src/features/product/**`, `src/features/catalog/{CatalogExplorer,SizeFinder}.*`, `src/features/commerce/{BuyerChatPanel,AiAssistantPanel,StorefrontBanner,OverlayPanel}.*`, `src/features/seller/{PromotionsBundleTab,PromotionsCampaignTab,PromotionsExtra.module.css}`, `src/features/admin/{auditStore,ToggleSwitch}.*`.
+- **Đã thêm mới — 16 tệp:**
+  - `13` trang trên `(site)/s/[host]/`: `dang-nhap`, `dang-ky`, `tim-kiem`, `flash-sale`, `voucher`, `gio-hang`, `thanh-toan`, `thanh-toan/cho/[id]`, `tai-khoan`, `don-hang`, `don-hang/[id]`, `tra-cuu-don-hang`, `tra-cuu-don`.
+  - `2` redirect handler trên `(shop)`: `gian-hang/[slug]/route.ts`, `san-pham/[slug]/route.ts`.
+  - `1` trang quản trị thật: `(admin)/admin/flash-sale/page.tsx`.
+
+---
+
+### G4.3 Kết quả kiểm định tĩnh, Grep gate & E2E Giai đoạn 4
+
+| Hạng mục kiểm định | Lệnh / phạm vi kiểm tra | Kết quả cuối Giai đoạn 4 |
+| --- | --- | --- |
+| Kiểm kê cây route `web/src/app` | `find web/src/app -type f \| sort` | **PASS** — `0` route/component người mua của sàn còn lại ngoài `(site)` |
+| Grep `"MARKETPLACE"` gửi đi từ `web/src` | `grep -rn "MARKETPLACE" web/src` | **PASS** — **`0` chỗ gửi đi** trong checkout/buyer/write BFF. Chỉ còn 4 vị trí **chỉ-đọc hiển thị/lọc đơn lịch sử** (`src/lib/salesChannel.ts`, `AdminOverviewClient.tsx`, `AdminReconciliationClient.tsx`, type `src/data/orders.ts` & unit test `orderView.test.mjs`) |
+| Link chết & rò rỉ ngôn ngữ kỹ thuật/sàn trên UI người mua | `grep` toàn bộ `(shop)`, `(site)`, `features/{platform,site,commerce,account}`, `(seller)`, `(admin)` | **PASS** — `0` link nội bộ trỏ tới route đã xóa; `0` thuật ngữ nội bộ (`JWT`, `IDEM-`, `Sandbox`, `Redis Lua`, `HMAC`, `Saga`, `Mock Express`) lộ ra UI người mua; `0` số liệu/logo/lời khen bịa trên host gốc `/` |
+| Design Taste Static Lint (toàn bộ `web/src`) | `node <skill>/scripts/lint.mjs web/src` | **PASS** — `289 file(s)` · **`0 FAIL, 11 WARN`** (`10× padStart(2, "0")` định dạng ngày/đồng hồ, `5` em-dash toàn mã nguồn) |
+| Design Taste Static Lint (`--app` Seller + Admin) | `node <skill>/scripts/lint.mjs --app "web/src/app/(seller)" web/src/features/seller "web/src/app/(admin)" web/src/features/admin` | **PASS** — `83 file(s)` · **`0 FAIL, 6 WARN`** (`6× padStart(2, "0")` định dạng ngày) |
+| E2E Web thật (`container web :3300`) | `make e2e-web` (qua `#27` sau vòng Look-and-Fix) | **PASS** — **25/25 PASS, 0 FAIL** (`12,79s`), `nexus_ecom-web-1 Healthy` |
+
+---
+
+### G4.4 Kết quả real-browser `inspect.mjs` (`1440 / 768 / 390`) — Toàn bộ 17/17 URL bắt buộc
+
+Chạy trực tiếp trên container `web` bản cuối tại `:3300` (các URL cần đăng nhập đi qua proxy phiên tạm `:3421` đã tắt sạch sau khi đo, kiểm tra đầy đủ dữ liệu thật: giỏ có 2 sản phẩm thật, thanh toán có hàng & báo giá vận chuyển thật, đơn hàng có đơn COD thật của đúng từng site, `/seller` & `/admin` vào thẳng bảng điều khiển).
+
+- **Tổng hợp Vòng 1 → Vòng 2:** **`7 FAIL` (trên 5/17 URL) → `0 FAIL` (trên toàn bộ 17/17 URL / 51/51 lượt đo viewport)**, **`0px` tràn ngang** trên cả 51/51 lượt đo, **`0` ảnh vỡ**.
+- **Tổng WARN Vòng 2:** `38` (toàn bộ là WARN kiến trúc/chủ đích của nền tảng đa theme: `palette-cream` do màu nền ấm `#f8f6f1` seeded của `bach-dang`, `font-not-dealt` do phông `Be Vietnam Pro` seeded riêng của `sai-gon`, `no-footage`/`still-page` trên các trang giao dịch tĩnh, `card-rows` trên danh bạ/section).
+
+| # | URL kiểm định | Chế độ | Phiên / Dữ liệu thật | V1 (F/W) | V2 (F/W) | H1 (`1440/768/390` px) | Body (`1440`) | Phông chữ | Tràn ngang | Giải trình WARN V2 |
+| --- | --- | :---: | --- | :---: | :---: | --- | :---: | --- | :---: | --- |
+| 1 | `nexusmart.localhost/` | page | Công khai (4 site PUBLISHED) | `0 / 1` | **`0 / 1`** | `67.7 / 36.1 / 32` | `16px` | Work Sans | `0/0/0` | `card-rows@1440` (lưới danh bạ 4 gian hàng & 4 khối năng lực) |
+| 2 | `bach-dang.../` | page | Công khai (theme sáng) | **`1 / 3`** | **`0 / 3`** | `43.9 / 36 / 26` | `16px` | Work Sans | `0/0/0` | Đã xóa FAIL `covered-text@390`; còn `card-rows`, `palette-cream` (`#f8f6f1` của theme shop), `no-footage` |
+| 3 | `bach-dang.../san-pham` | page | Công khai (4 SP thật) | `0 / 3` | **`0 / 3`** | `69.1 / 36.9 / 34` | `18px` | Work Sans | `0/0/0` | `palette-cream`, `no-footage`, `still-page` (trang lọc danh mục tĩnh) |
+| 4 | `bach-dang.../san-pham/ao-thun-cotton-compact-trang` | page | Công khai (PDP thật) | **`1 / 3`** | **`0 / 3`** | `40 / 36 / 26` | `16px` | Work Sans | `0/0/0` | Đã xóa FAIL `body-size@1440`; còn `palette-cream`, `no-footage`, `still-page` |
+| 5 | `bach-dang.../gio-hang` | page | Buyer đăng nhập, **2 SP trong giỏ** (`408.000₫`) | `0 / 2` | **`0 / 2`** | `66.2 / 36 / 36` | `16px` | Work Sans | `0/0/0` | `palette-cream`, `no-footage` (trang giỏ hàng giao dịch tĩnh) |
+| 6 | `bach-dang.../thanh-toan` | page | Buyer đăng nhập, **2 SP + cước thật** (`426.000₫`) | `0 / 2` | **`0 / 2`** | `66.2 / 36 / 36` | `16px` | Work Sans | `0/0/0` | `palette-cream`, `no-footage` (trang thanh toán giao dịch tĩnh) |
+| 7 | `bach-dang.../dang-nhap` | page | Công khai | **`2 / 3`** | **`0 / 3`** | `69.1 / 36.9 / 34` | `16px` | Work Sans | `0/0/0` | Đã xóa 2 FAIL `focal-point@1440` & `still-page@1440`; còn `palette-cream`, `no-footage`, `still-page` (14 phần tử) |
+| 8 | `bach-dang.../don-hang` | page | Buyer đăng nhập, **1 đơn thật** (`NM-20261121-5FBE308D`) | `0 / 3` | **`0 / 3`** | `66.2 / 36 / 36` | `18px` | Work Sans | `0/0/0` | `palette-cream`, `no-footage`, `still-page` (trang đơn hàng tĩnh) |
+| 9 | `sai-gon.../` | page | Công khai (theme tối `#14181c`) | **`1 / 3`** | **`0 / 3`** | `43.9 / 36 / 26` | `16px` | Be Vietnam Pro | `0/0/0` | Đã xóa FAIL `covered-text@390`; còn `card-rows`, `no-footage`, `font-not-dealt` (theme shop chọn `Be Vietnam Pro`) |
+| 10 | `sai-gon.../san-pham` | page | Công khai (5 SP thật) | `0 / 3` | **`0 / 3`** | `69.1 / 36.9 / 34` | `16px` | Be Vietnam Pro | `0/0/0` | `no-footage`, `font-not-dealt`, `still-page` |
+| 11 | `sai-gon.../san-pham/ao-thun-the-thao-dryfit-xanh-co-vit` | page | Công khai (PDP thật) | `0 / 4` | **`0 / 3`** | `40 / 36 / 26` | `16px` | Be Vietnam Pro | `0/0/0` | **Đã xóa WARN `contrast` (`3.5:1 → >8:1`)**; còn `no-footage`, `font-not-dealt`, `still-page` |
+| 12 | `sai-gon.../gio-hang` | page | Buyer đăng nhập, **2 SP trong giỏ** (`588.000₫`) | `0 / 2` | **`0 / 2`** | `66.2 / 36 / 36` | `16px` | Be Vietnam Pro | `0/0/0` | `no-footage`, `font-not-dealt` |
+| 13 | `sai-gon.../thanh-toan` | page | Buyer đăng nhập, **2 SP + cước thật** (`606.000₫`) | `0 / 2` | **`0 / 2`** | `66.2 / 36 / 36` | `16px` | Be Vietnam Pro | `0/0/0` | `no-footage`, `font-not-dealt` |
+| 14 | `sai-gon.../dang-nhap` | page | Công khai | **`2 / 4`** | **`0 / 3`** | `69.1 / 36.9 / 34` | `16px` | Be Vietnam Pro | `0/0/0` | Đã xóa 2 FAIL (`focal-point`, `still-page`) + 2 WARN (`body-size`, `measure`); còn `no-footage`, `font-not-dealt`, `still-page` |
+| 15 | `sai-gon.../don-hang` | page | Buyer đăng nhập, **1 đơn thật** (`NM-20261121-1318540F`) | `0 / 3` | **`0 / 2`** | `66.2 / 36 / 36` | `18px` | Be Vietnam Pro | `0/0/0` | `no-footage`, `font-not-dealt` |
+| 16 | `nexusmart.localhost/seller` | `--app` | `seller@nexusmart.local` (Xưởng Dệt Bạch Đằng) | `0 / 0` | **`0 / 0`** | `24 / 24 / 21` | `13px` | Work Sans | `0/0/0` | Sạch tuyệt đối (`0 FAIL, 0 WARN`) |
+| 17 | `nexusmart.localhost/admin` | `--app` | `admin@nexusmart.local` (Super Admin) | `0 / 0` | **`0 / 0`** | `24 / 24 / 22` | `14px` | Work Sans | `0/0/0` | Sạch tuyệt đối (`0 FAIL, 0 WARN`) |
+
+---
+
+### G4.5 Nhật ký mở ảnh chụp màn hình & Look-and-Fix Giai đoạn 4
+
+Đã mở trực tiếp ảnh chụp `desktop-fold.jpg`, `desktop-page-01..02.jpg`, `mobile-fold.jpg`, `mobile-page-01..02.jpg` ở cả Vòng 1 (`.taste-skill/inspect-p4/run1/`) và Vòng 2 (`.taste-skill/inspect-p4/run2/`) cho toàn bộ 17 URL. **Host gốc `/`, `/seller` và `/admin` sạch ngay từ Vòng 1**; khu `(site)` phát hiện **7 nhóm lỗi (7 FAIL + 5 lỗi trực quan)** và đã được `@web-site` sửa dứt điểm (`#25`), `@qa` rebuild container `web` xanh `25/25 E2E` (`#27`), xác nhận sạch trên ảnh Vòng 2:
+
+1. **Header site di động 4–5 hàng che mất tiêu đề (`FAIL [covered-text@390]` trên `bach-dang /` & `sai-gon /`):** Ảnh Vòng 1 cho thấy `.siteHeader` bám dính `position: sticky` rớt xuống 4 hàng (~220px) khi chưa đăng nhập và 5 hàng (~265px, >31% chiều cao màn hình) khi đã đăng nhập, cắt ngang tiêu đề section (`"Dòng áo thun Cotton Compact 220gsm"`, `"Thiết kế bán chạy cho tập luyện"`, `"Chuẩn đường may 4 kim 6 chỉ tại Tân Thuận"`) và tiêu đề chân trang. **Đã sửa:** gom header site từ `<= 1024px` về đúng **1 hàng gọn `58px`** (logo + tên cửa hàng bên trái, `Giỏ hàng` có badge + nút `≡ Menu` mở drawer `data-ui="site-drawer"` bên phải). Ảnh Vòng 2 xác nhận trên mobile 390px món hàng đầu tiên ở `/gio-hang` và ảnh thu nhỏ ở PDP hiện ngay trong khung đầu tiên, `0` dòng chữ bị che.
+2. **Cỡ chữ thân PDP bị 14px (`FAIL [body-size@1440]` trên `bach-dang` PDP):** `.productSpec`, `.pdpHandoffNote`, `.productStockTag` đặt `14px` áp đảo cỡ `16px`. **Đã sửa:** nâng `.productSpec` & `.pdpHandoffNote` lên `16px`, `.productStockTag` lên `15px` → PDP về chuẩn `body 16px`, `0 FAIL`.
+3. **Trang `/dang-nhap` & `/dang-ky` site thiếu tiêu điểm và chuyển động (`FAIL [focal-point@1440]` & `FAIL [still-page@1440]` trên cả `bach-dang` và `sai-gon`):** `.pageTitle` chặn trần `60px` (`4.2vw < 4.5vw`) và chỉ có 6 phần tử chuyển động (`< 8`), kèm WARN `body-size` (`15px`) & `measure` (`92ch`) ở 768px. **Đã sửa:** nâng `.pageTitle` lên `clamp(34px, 4.8vw, 70px)` (`69.1px = 4.8vw` ở 1440px), gắn `data-rise`/`data-reveal` lệch nhịp cho form, 3 quyền lợi và 4 ảnh sản phẩm (`14` phần tử), nâng `.authPerkBody` lên `16px` và giới hạn `max-width: 56ch`.
+4. **Tương phản thấp trên dark theme `sai-gon` PDP (`WARN [contrast]` `3.5:1 < 4.5:1`):** Liên kết `"Xem kho mã"` trong `.pdpShopVoucherBox` dùng màu `--site-accent` (`#d97706`) trên nền nâu tối `--site-accent-soft`. **Đã sửa:** áp `color: var(--site-accent-soft-ink)` cho liên kết trong `.pdpShopVoucherBox` và `.pdpAddedNotice` → xóa sạch `WARN [contrast]`, chữ trắng sắc nét trên nền tối.
+5. **Trạng thái đang chọn bị chìm nền trên dark theme `sai-gon` (`/thanh-toan` & `/don-hang`):** Ảnh Vòng 1 phát hiện ô hãng vận chuyển đang chọn (`.deliveryOptionActive`) và tab lọc đơn hàng đang chọn (`.tabBtnActive`) dùng `background: var(--band-dark)` (`#12161b`), hòa lẫn vào nền tối `sai-gon` trông như chưa được chọn. **Đã sửa:** chuyển `.deliveryOptionActive` sang `background: var(--accent-tint); border-left: 4px solid var(--accent);` (đồng bộ `.paymentOptionSelected`) và `.tabBtnActive` sang `background: var(--accent); color: var(--accent-ink);`. Ảnh Vòng 2 xác nhận trạng thái active nổi bật rõ rệt trên cả `bach-dang` (xanh lam) lẫn `sai-gon` (hổ phách).
+6. **Lộ tên hãng vận chuyển thử nghiệm `"Mock Express"` & lặp phường/tỉnh trên `/thanh-toan`:** Ảnh Vòng 1 lộ `"Mock Express · 18.000₫"` / `"Mock Express Tiêu Chuẩn"` và `"Số 24 phố Lý Thường Kiệt, Phường Hoàn Kiếm, Thành phố Hà Nội, Phường Hoàn Kiếm, Thành phố Hà Nội"`. **Đã sửa:** bổ sung `formatCarrierLabel`/`formatServiceLabel` (hiển thị `"Giao hàng NexusFast"` / `"Giao tiêu chuẩn"` / `"Giao nhanh"`, giữ nguyên mã gửi API) và `formatAddressLine` chống lặp phường/tỉnh, kèm 2 unit test mới.
+7. **Placeholder tìm kiếm bị cắt chữ trên `/san-pham` & mờ trên dark theme:** `"Tìm theo tên hoặc chất liệu..."` bị cắt thành `"Tìm theo tên hoặc chất li"` ở 1440px. **Đã sửa:** rút gọn thành `"Tìm tên, chất liệu..."`, tăng `min-width: 240px` và đặt `::placeholder { color: var(--site-muted); opacity: 1; }`.
+
+*Ghi nhận minh bạch cho pha sau (không chặn nghiệm thu):* Trên `/don-hang` và `/admin`, `report.json` ghi nhận cảnh báo hydration văn bản React `#418` ở console khi trình duyệt ở múi giờ `+07:00` khác múi giờ UTC của container Docker (do định dạng giờ `formatDateTimeVi`/`formatShortTimeDateVi` không cố định `timeZone: "Asia/Ho_Chi_Minh"`); không gây lỗi hiển thị, vỡ khung hay lỗi chức năng.
+
+---
+
+## Phần II — Lịch sử nghiệm thu Đợt 1 + Đợt 2 + Đợt 3 (Giai đoạn UI mock trước khi bỏ trang sàn)
+
+> *Ghi chú lịch sử: Các mục Đợt 3 và Đợt 1–2 dưới đây được giữ nguyên làm hồ sơ đối chiếu tiến hóa giao diện. Từ Giai đoạn 4 (`2026-11-21`), toàn bộ trang sàn trên host gốc và lớp mock tương ứng đã được gỡ bỏ theo đặc tả `.agents/briefs/sites-4-no-marketplace.md`.*
 
 ## ĐỢT 3 — Nâng cấp hoàn thiện giao diện hết "sơ sài" (Mục A–G)
 

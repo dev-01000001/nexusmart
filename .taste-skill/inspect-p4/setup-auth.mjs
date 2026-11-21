@@ -148,7 +148,10 @@ for (const s of SITES) {
   // Ensure cart has 2 items for /gio-hang and /thanh-toan screenshots
   const cartBefore = await req(s.host, "GET", "/api/cart", { cookie });
   cookie = cartBefore.cookie;
-  const existingItems = cartBefore.data?.items || [];
+  const existingItems =
+    cartBefore.data?.cart?.shop_groups?.flatMap((g) => g.items || []) ||
+    cartBefore.data?.items ||
+    [];
   console.log(`[${s.host}] cart before add: ${existingItems.length} item(s)`);
   for (const skuId of s.skus) {
     if (!existingItems.some((it) => (it.sku_id || it.skuId) === skuId)) {
@@ -162,10 +165,14 @@ for (const s of SITES) {
   }
   const cartAfter = await req(s.host, "GET", "/api/cart", { cookie });
   cookie = cartAfter.cookie;
+  const finalCartItems =
+    cartAfter.data?.cart?.shop_groups?.flatMap((g) => g.items || []) ||
+    cartAfter.data?.items ||
+    [];
   const ordersAfter = await req(s.host, "GET", "/api/orders", { cookie });
   cookie = ordersAfter.cookie;
   console.log(
-    `[${s.host}] FINAL cart items=${(cartAfter.data?.items || []).length}, orders=${(ordersAfter.data?.orders || ordersAfter.data?.items || []).length}`,
+    `[${s.host}] FINAL cart items=${finalCartItems.length}, orders=${(ordersAfter.data?.orders || ordersAfter.data?.items || []).length}`,
   );
   buyerJar[s.host] = cookie;
 }
