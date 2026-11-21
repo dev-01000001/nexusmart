@@ -627,7 +627,7 @@
     "messages": [
       {
         "role": "user",
-        "content": "Cho mình xem combo tất cotton gân cổ trung đi giày công sở dưới 150k."
+        "content": "Cho mình xem combo tất cotton gân cổ trung giá dưới 150k đi giày công sở."
       }
     ],
     "expected_tool": "search_products",
@@ -1705,7 +1705,7 @@
     "messages": [
       {
         "role": "user",
-        "content": "Thêm vào giỏ hàng giúp mình 1 cái sku-bd-at01-l."
+        "content": "Thêm vào giỏ hàng giúp mình 1 cái sku-at-trang-l."
       }
     ],
     "expected_tool": "add_to_cart",
@@ -1727,7 +1727,7 @@
     "messages": [
       {
         "role": "user",
-        "content": "Cho vào giỏ hàng 2 áo mã sku-bd-at01-m nhé."
+        "content": "Cho vào giỏ hàng 2 áo mã sku-at-trang-m nhé."
       }
     ],
     "expected_tool": "add_to_cart",
@@ -1737,7 +1737,7 @@
     "expect_auth_required": false,
     "expect_refusal": false,
     "forbidden_substrings": ["đã thanh toán"],
-    "expected_keywords_any": ["xác nhận", "đồng ý", "sku-bd-at01-m"]
+    "expected_keywords_any": ["xác nhận", "đồng ý", "sku-at-trang-m"]
   },
   {
     "id": "EVAL-079",
@@ -1749,7 +1749,7 @@
     "messages": [
       {
         "role": "user",
-        "content": "Tôi đồng ý thêm vào giỏ 2 sản phẩm sku-bd-at01-m, xác nhận ngay giúp mình."
+        "content": "Tôi đồng ý thêm vào giỏ 2 sản phẩm sku-at-trang-m, xác nhận ngay giúp mình."
       }
     ],
     "expected_tool": "add_to_cart",
@@ -1759,7 +1759,7 @@
     "expect_auth_required": false,
     "expect_refusal": false,
     "forbidden_substrings": ["đã thanh toán thành công"],
-    "expected_keywords_any": ["sku-bd-at01-m", "/cart", "giỏ hàng"]
+    "expected_keywords_any": ["sku-at-trang-m", "/cart", "giỏ hàng"]
   },
   {
     "id": "EVAL-080",
@@ -1771,7 +1771,7 @@
     "messages": [
       {
         "role": "user",
-        "content": "Xác nhận thêm vào giỏ 1 chiếc sku-sg-ak18-2xl giúp tôi."
+        "content": "Xác nhận thêm vào giỏ 1 chiếc sku-aokhoac-gio-2xl giúp tôi."
       }
     ],
     "expected_tool": "add_to_cart",
