@@ -538,10 +538,11 @@ describe("07. Buyer returns, Seller real pages + AI BFF & Admin complaints/confi
     );
     assert.equal(escalated.status, "OPEN");
 
-    // Resolve escalated complaint via Admin BFF.
+    // Resolve escalated complaint via Admin BFF (contract: { resolution, note, require_return_shipping }).
     const resolveRes = await adminRoot.post(`/api/admin/complaints/${encodeURIComponent(escalated.id)}/resolve`, {
-      decision: "REJECT_COMPLAINT",
+      resolution: "DISMISS",
       note: `Đã kiểm tra đầy đủ bằng chứng từ hai bên (E2E ${uid()})`,
+      require_return_shipping: false,
     });
     const resolveData = expectStatus(
       resolveRes,
@@ -586,7 +587,7 @@ describe("07. Buyer returns, Seller real pages + AI BFF & Admin complaints/confi
         () =>
           adminRoot.post(
             `/api/admin/complaints/${encodeURIComponent(escalated.id)}/resolve`,
-            { decision: "REJECT_COMPLAINT", note: "CSRF attempt" },
+            { resolution: "DISMISS", note: "CSRF attempt", require_return_shipping: false },
             { origin: "https://evil.example" }
           ),
       ],
