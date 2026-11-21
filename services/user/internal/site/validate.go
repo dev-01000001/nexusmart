@@ -538,10 +538,7 @@ func isDisallowedImageHost(rawHost string) bool {
 	}
 
 	tld := labels[len(labels)-1]
-	if isNumericOrHexLabel(tld) {
-		return true
-	}
-	return false
+	return isNumericOrHexLabel(tld)
 }
 
 func isNumericOrHexLabel(label string) bool {
@@ -698,7 +695,7 @@ func validateJSONStructure(raw []byte) error {
 		}
 	}
 
-	if _, err := dec.Token(); err != io.EOF {
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return errors.New("INVALID_SITE_CONFIG: unexpected trailing JSON token")
 		}

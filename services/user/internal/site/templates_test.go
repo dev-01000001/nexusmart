@@ -293,14 +293,21 @@ func TestStructuralLimitsDuplicateKeysUnknownFieldsAndCounts(t *testing.T) {
 	}
 
 	// 4. Unknown fields rejected in v2 (root, layout, page, block).
-	var doc map[string]any
-	_ = json.Unmarshal(baseBytes, &doc)
+	freshDoc := func() map[string]any {
+		var m map[string]any
+		if err := json.Unmarshal(baseBytes, &m); err != nil {
+			t.Fatalf("unmarshal base: %v", err)
+		}
+		return m
+	}
+
+	doc := freshDoc()
 	doc["injected_css"] = "body{}"
 	if _, _, err := ValidateAndCanonicalizeConfigV2(mustMarshal(t, doc)); err == nil {
 		t.Fatalf("expected unknown root field error in v2")
 	}
 
-	_ = json.Unmarshal(baseBytes, &doc)
+	doc = freshDoc()
 	doc["layout"].(map[string]any)["raw_header"] = "<div>"
 	if _, _, err := ValidateAndCanonicalizeConfigV2(mustMarshal(t, doc)); err == nil {
 		t.Fatalf("expected unknown layout field error in v2")
@@ -313,14 +320,14 @@ func TestStructuralLimitsDuplicateKeysUnknownFieldsAndCounts(t *testing.T) {
 	}
 
 	// 6. Unsupported schema_version rejected.
-	_ = json.Unmarshal(baseBytes, &doc)
+	doc = freshDoc()
 	doc["schema_version"] = 3
 	if _, _, err := ValidateAndCanonicalizeConfig(mustMarshal(t, doc)); err == nil {
 		t.Fatalf("expected error for schema_version=3")
 	}
 
 	// 7. >20 home sections rejected.
-	_ = json.Unmarshal(baseBytes, &doc)
+	doc = freshDoc()
 	manySecs := make([]any, 21)
 	for i := range manySecs {
 		manySecs[i] = map[string]any{
@@ -336,13 +343,13 @@ func TestStructuralLimitsDuplicateKeysUnknownFieldsAndCounts(t *testing.T) {
 	}
 
 	// 8. >12 blocks in a section rejected.
-	_ = json.Unmarshal(baseBytes, &doc)
+	doc = freshDoc()
 	manyBlocks := make([]any, 13)
 	for i := range manyBlocks {
 		manyBlocks[i] = map[string]any{
 			"id":    "b",
 			"type":  "badge",
-			"props": map[string]any{"label": "OK", "tone": "default"},
+			"props": map[string]any{"label": "OK", "tone": "neutral"},
 		}
 	}
 	doc["sections"] = []any{
@@ -359,7 +366,7 @@ func TestStructuralLimitsDuplicateKeysUnknownFieldsAndCounts(t *testing.T) {
 	}
 
 	// 9. >8 sections on a sub-page rejected & >32 total sections across home + pages rejected.
-	_ = json.Unmarshal(baseBytes, &doc)
+	doc = freshDoc()
 	ninePageSecs := make([]any, 9)
 	for i := range ninePageSecs {
 		ninePageSecs[i] = map[string]any{
@@ -374,7 +381,7 @@ func TestStructuralLimitsDuplicateKeysUnknownFieldsAndCounts(t *testing.T) {
 		t.Fatalf("expected TOO_MANY_SECTIONS for >8 catalog page sections, got %v", err)
 	}
 
-	_ = json.Unmarshal(baseBytes, &doc)
+	doc = freshDoc()
 	home20 := make([]any, 20)
 	for i := range home20 {
 		home20[i] = map[string]any{"id": "h", "type": "text", "visible": true, "props": map[string]any{"title": "T", "body": "B"}}

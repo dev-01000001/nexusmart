@@ -134,114 +134,103 @@ var (
 		"hero": {
 			"":               {},
 			"split":          {},
-			"full-bleed":     {},
+			"fullbleed":      {},
 			"editorial":      {},
-			"minimal":        {},
-			"framed":         {},
-			"bold-sport":     {},
-			"luxury-maison":  {},
-			"compact-launch": {},
+			"centered":       {},
+			"compact-bar":    {},
+			"atelier":        {},
+			"sport-diagonal": {},
+			"luxury-framed":  {},
 		},
 		"featured_products": {
 			"":               {},
-			"grid":           {},
-			"editorial":      {},
-			"dense":          {},
-			"spotlight":      {},
-			"carousel-strip": {},
-			"compact-rows":   {},
+			"grid-4":         {},
+			"grid-3":         {},
+			"grid-2":         {},
+			"dense-5":        {},
+			"editorial-asym": {},
+			"list-sku":       {},
 		},
 		"collection": {
-			"":        {},
-			"split":   {},
-			"cards":   {},
-			"banner":  {},
-			"gallery": {},
-			"compact": {},
+			"":          {},
+			"split":     {},
+			"editorial": {},
+			"compact":   {},
+			"cards":     {},
 		},
 		"text": {
-			"":            {},
-			"default":     {},
-			"editorial":   {},
-			"split-quote": {},
-			"manifesto":   {},
-			"framed":      {},
+			"":          {},
+			"split":     {},
+			"centered":  {},
+			"pullquote": {},
+			"monograph": {},
 		},
 		"banner": {
 			"":            {},
-			"split":       {},
-			"full-bleed":  {},
+			"band":        {},
+			"split-image": {},
 			"framed":      {},
-			"minimal":     {},
-			"promo-strip": {},
+			"compact":     {},
 		},
 		"voucher_strip": {
-			"":           {},
-			"grid":       {},
-			"inline-bar": {},
-			"tickets":    {},
-			"minimal":    {},
-		},
-		"policies": {
 			"":            {},
 			"grid":        {},
-			"list":        {},
 			"compact-bar": {},
 			"cards":       {},
-			"timeline":    {},
+		},
+		"policies": {
+			"":             {},
+			"grid":         {},
+			"timeline":     {},
+			"compact-list": {},
+			"cards":        {},
 		},
 		"lookbook": {
-			"":                {},
-			"editorial-grid":  {},
-			"mosaic":          {},
-			"horizontal-film": {},
-			"framed-gallery":  {},
-			"split-feature":   {},
+			"":          {},
+			"asym-3":    {},
+			"duo-split": {},
+			"strip-4":   {},
 		},
 		"metrics_strip": {
-			"":           {},
-			"grid":       {},
-			"inline-bar": {},
-			"cards":      {},
-			"telemetry":  {},
+			"":          {},
+			"bar-4":     {},
+			"cards-3":   {},
+			"telemetry": {},
 		},
 		"sku_matrix": {
-			"":                {},
-			"table":           {},
-			"compact-grid":    {},
-			"wholesale-sheet": {},
+			"":              {},
+			"compact-table": {},
+			"grouped":       {},
 		},
 		"testimonials": {
 			"":                 {},
-			"grid":             {},
+			"grid-3":           {},
 			"editorial-quotes": {},
-			"cards":            {},
-			"single-feature":   {},
 		},
+	}
+	allowedHeadingLevels = map[string]struct{}{
+		"":   {},
+		"h2": {},
+		"h3": {},
 	}
 	allowedBadgeTones = map[string]struct{}{
 		"":        {},
-		"default": {},
+		"neutral": {},
 		"accent":  {},
-		"subtle":  {},
-		"outline": {},
-		"dark":    {},
+		"band":    {},
 	}
 	allowedCTAStyles = map[string]struct{}{
 		"":          {},
 		"primary":   {},
 		"secondary": {},
-		"outline":   {},
-		"ghost":     {},
 		"link":      {},
 	}
 	allowedImageAspects = map[string]struct{}{
-		"":          {},
-		"auto":      {},
-		"square":    {},
-		"portrait":  {},
-		"landscape": {},
-		"wide":      {},
+		"":     {},
+		"16:9": {},
+		"4:3":  {},
+		"3:4":  {},
+		"1:1":  {},
 	}
 )
 
@@ -365,7 +354,7 @@ type TestimonialsProps struct {
 // Block props structs (9 block types).
 type HeadingBlockProps struct {
 	Text  string `json:"text"`
-	Level int    `json:"level"`
+	Level string `json:"level,omitempty"`
 }
 
 type ParagraphBlockProps struct {
@@ -902,14 +891,12 @@ func validateBlockV2(prefix string, rb rawBlockV2) (SectionBlock, error) {
 		if err := decodeStrictJSON(rawProps, &p); err != nil {
 			return SectionBlock{}, fmt.Errorf("INVALID_SITE_CONFIG: %s.props: %w", prefix, err)
 		}
-		if p.Text, err = validateText(prefix+".props.text", p.Text, 1, 160, false); err != nil {
+		if p.Text, err = validateText(prefix+".props.text", p.Text, 1, 120, false); err != nil {
 			return SectionBlock{}, err
 		}
-		if p.Level == 0 {
-			p.Level = 2
-		}
-		if p.Level < 1 || p.Level > 4 {
-			return SectionBlock{}, fmt.Errorf("INVALID_SITE_CONFIG: %s.props.level must be between 1 and 4", prefix)
+		p.Level = strings.TrimSpace(p.Level)
+		if _, ok := allowedHeadingLevels[p.Level]; !ok {
+			return SectionBlock{}, fmt.Errorf("INVALID_SITE_CONFIG: %s.props.level %q is not allowed", prefix, p.Level)
 		}
 		props = p
 
@@ -918,7 +905,7 @@ func validateBlockV2(prefix string, rb rawBlockV2) (SectionBlock, error) {
 		if err := decodeStrictJSON(rawProps, &p); err != nil {
 			return SectionBlock{}, fmt.Errorf("INVALID_SITE_CONFIG: %s.props: %w", prefix, err)
 		}
-		if p.Text, err = validateText(prefix+".props.text", p.Text, 1, 2000, true); err != nil {
+		if p.Text, err = validateText(prefix+".props.text", p.Text, 1, 800, true); err != nil {
 			return SectionBlock{}, err
 		}
 		props = p
@@ -928,7 +915,7 @@ func validateBlockV2(prefix string, rb rawBlockV2) (SectionBlock, error) {
 		if err := decodeStrictJSON(rawProps, &p); err != nil {
 			return SectionBlock{}, fmt.Errorf("INVALID_SITE_CONFIG: %s.props: %w", prefix, err)
 		}
-		if p.Label, err = validateText(prefix+".props.label", p.Label, 1, 60, false); err != nil {
+		if p.Label, err = validateText(prefix+".props.label", p.Label, 1, 48, false); err != nil {
 			return SectionBlock{}, err
 		}
 		p.Tone = strings.TrimSpace(p.Tone)
@@ -942,11 +929,14 @@ func validateBlockV2(prefix string, rb rawBlockV2) (SectionBlock, error) {
 		if err := decodeStrictJSON(rawProps, &p); err != nil {
 			return SectionBlock{}, fmt.Errorf("INVALID_SITE_CONFIG: %s.props: %w", prefix, err)
 		}
-		if p.Label, err = validateText(prefix+".props.label", p.Label, 1, 60, false); err != nil {
+		if p.Label, err = validateText(prefix+".props.label", p.Label, 1, 48, false); err != nil {
 			return SectionBlock{}, err
 		}
 		if p.Href, err = ValidateSafeURL(p.Href); err != nil {
 			return SectionBlock{}, fmt.Errorf("%s.props.href: %w", prefix, err)
+		}
+		if p.Href == "" {
+			return SectionBlock{}, fmt.Errorf("INVALID_SITE_CONFIG: %s.props.href is required", prefix)
 		}
 		p.Style = strings.TrimSpace(p.Style)
 		if _, ok := allowedCTAStyles[p.Style]; !ok {
@@ -962,10 +952,13 @@ func validateBlockV2(prefix string, rb rawBlockV2) (SectionBlock, error) {
 		if p.ImageURL, err = ValidateImageURL(p.ImageURL); err != nil {
 			return SectionBlock{}, fmt.Errorf("%s.props.image_url: %w", prefix, err)
 		}
-		if p.Alt, err = validateText(prefix+".props.alt", p.Alt, 0, 200, false); err != nil {
+		if p.ImageURL == "" {
+			return SectionBlock{}, fmt.Errorf("INVALID_SITE_CONFIG: %s.props.image_url is required", prefix)
+		}
+		if p.Alt, err = validateText(prefix+".props.alt", p.Alt, 0, 140, false); err != nil {
 			return SectionBlock{}, err
 		}
-		if p.Caption, err = validateText(prefix+".props.caption", p.Caption, 0, 240, true); err != nil {
+		if p.Caption, err = validateText(prefix+".props.caption", p.Caption, 0, 200, false); err != nil {
 			return SectionBlock{}, err
 		}
 		p.Aspect = strings.TrimSpace(p.Aspect)
@@ -979,13 +972,13 @@ func validateBlockV2(prefix string, rb rawBlockV2) (SectionBlock, error) {
 		if err := decodeStrictJSON(rawProps, &p); err != nil {
 			return SectionBlock{}, fmt.Errorf("INVALID_SITE_CONFIG: %s.props: %w", prefix, err)
 		}
-		if p.Value, err = validateText(prefix+".props.value", p.Value, 1, 40, false); err != nil {
+		if p.Value, err = validateText(prefix+".props.value", p.Value, 1, 32, false); err != nil {
 			return SectionBlock{}, err
 		}
-		if p.Label, err = validateText(prefix+".props.label", p.Label, 1, 80, false); err != nil {
+		if p.Label, err = validateText(prefix+".props.label", p.Label, 1, 60, false); err != nil {
 			return SectionBlock{}, err
 		}
-		if p.Note, err = validateText(prefix+".props.note", p.Note, 0, 160, false); err != nil {
+		if p.Note, err = validateText(prefix+".props.note", p.Note, 0, 140, false); err != nil {
 			return SectionBlock{}, err
 		}
 		props = p
@@ -1008,7 +1001,7 @@ func validateBlockV2(prefix string, rb rawBlockV2) (SectionBlock, error) {
 		if err := decodeStrictJSON(rawProps, &p); err != nil {
 			return SectionBlock{}, fmt.Errorf("INVALID_SITE_CONFIG: %s.props: %w", prefix, err)
 		}
-		if p.Body, err = validateText(prefix+".props.body", p.Body, 1, 600, true); err != nil {
+		if p.Body, err = validateText(prefix+".props.body", p.Body, 1, 400, true); err != nil {
 			return SectionBlock{}, err
 		}
 		if p.Author, err = validateText(prefix+".props.author", p.Author, 1, 80, false); err != nil {
@@ -1024,10 +1017,10 @@ func validateBlockV2(prefix string, rb rawBlockV2) (SectionBlock, error) {
 		if err := decodeStrictJSON(rawProps, &p); err != nil {
 			return SectionBlock{}, fmt.Errorf("INVALID_SITE_CONFIG: %s.props: %w", prefix, err)
 		}
-		if p.Title, err = validateText(prefix+".props.title", p.Title, 1, 100, false); err != nil {
+		if p.Title, err = validateText(prefix+".props.title", p.Title, 1, 80, false); err != nil {
 			return SectionBlock{}, err
 		}
-		if p.Detail, err = validateText(prefix+".props.detail", p.Detail, 1, 400, true); err != nil {
+		if p.Detail, err = validateText(prefix+".props.detail", p.Detail, 1, 300, true); err != nil {
 			return SectionBlock{}, err
 		}
 		if p.Tag, err = validateText(prefix+".props.tag", p.Tag, 0, 40, false); err != nil {
