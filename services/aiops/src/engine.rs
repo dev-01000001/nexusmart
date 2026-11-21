@@ -245,7 +245,8 @@ impl AiopsEngine {
             active_services.insert(root_cause_service.clone());
 
             // Secondary deduplication if RCA resolved to a root_cause_service that already has an open incident
-            if let Some((dedup_id, _)) = self.find_open_incident_for(&root_cause_service, &signals) {
+            if let Some((dedup_id, _)) = self.find_open_incident_for(&root_cause_service, &signals)
+            {
                 let mut guard = self.incidents.write().expect("incidents write lock");
                 if let Some(inc) = guard.iter_mut().find(|i| i.id == dedup_id) {
                     inc.updated_at = scanned_at;
