@@ -1315,4 +1315,193 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_zalopay_confirm_and_settled_refund_pending_available_payout_invariants() {
+        let mut ledger = InMemoryLedger::default();
+        let mp = ChannelAttribution::marketplace();
+
+        // 1. ZaloPay payment confirmed (330,000 VND = 300k subtotal [15k fee, 285k seller] + 30k ship)
+        let pay_zp = Uuid::new_v4();
+        let confirm_draft = build_zalopay_confirm_tx(pay_zp, 330_000, mp.clone());
+        assert_eq!(confirm_draft.reference_type, "payment_zalopay");
+        assert!(ledger.post(&confirm_draft).unwrap());
+        // Duplicate confirm idempotent
+        assert!(!ledger.post(&confirm_draft).unwrap());
+        assert_eq!(ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 330_000);
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 330_000);
+
+        // 2. Order completes -> settle to seller_pending
+        let settle =
+            build_escrow_settle_tx("ord-zp-1", "shop-Z", 285_000, 15_000, 30_000, mp.clone())
+                .unwrap();
+        assert!(ledger.post(&settle).unwrap());
+        assert_eq!(
+            ledger.balance_of(&account_seller_pending("shop-Z")),
+            285_000
+        );
+        assert_eq!(ledger.balance_of(ACCOUNT_PLATFORM_FEE_REVENUE), 15_000);
+        assert_eq!(ledger.balance_of(ACCOUNT_SHIPPING_FEE_PAYABLE), 30_000);
+
+        // 3. Full return refund while allocation is in `pending_release` -> reverses seller_pending
+        let ref_pending = Uuid::new_v4();
+        let draft_pending = build_settled_refund_tx(
+            ref_pending,
+            pay_zp,
+            "shop-Z",
+            false,
+            285_000,
+            15_000,
+            30_000,
+            330_000,
+            "buyer return before release",
+            mp.clone(),
+        )
+        .unwrap();
+        assert!(ledger.post(&draft_pending).unwrap());
+        assert_eq!(ledger.balance_of(&account_seller_pending("shop-Z")), 0);
+        assert_eq!(ledger.balance_of(ACCOUNT_PLATFORM_FEE_REVENUE), 0);
+        assert_eq!(ledger.balance_of(ACCOUNT_SHIPPING_FEE_PAYABLE), 0);
+        assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 330_000);
+        assert!(ledger.summary().is_balanced);
+
+        // 4. Second ZaloPay order settles -> releases to seller_available -> partial payout -> partial return refund
+        let pay_zp2 = Uuid::new_v4();
+        assert!(ledger
+            .post(&build_zalopay_confirm_tx(pay_zp2, 230_000, mp.clone()))
+            .unwrap());
+        assert!(ledger
+            .post(
+                &build_escrow_settle_tx("ord-zp-2", "shop-Z", 190_000, 10_000, 30_000, mp.clone())
+                    .unwrap()
+            )
+            .unwrap());
+        assert!(ledger
+            .post(&build_escrow_release_tx("ord-zp-2", "shop-Z", 190_000, mp.clone()).unwrap())
+            .unwrap());
+        assert_eq!(
+            ledger.balance_of(&account_seller_available("shop-Z")),
+            190_000
+        );
+
+        let payout_id = Uuid::new_v4();
+        assert!(ledger
+            .post(&build_seller_payout_tx(payout_id, "shop-Z", 50_000, mp.clone()).unwrap())
+            .unwrap());
+        assert_eq!(
+            ledger.balance_of(&account_seller_available("shop-Z")),
+            140_000
+        );
+
+        // Partial settled refund (115,000 VND = exact 50% of 230,000) from `released` -> reverses seller_available
+        let ref_rel = Uuid::new_v4();
+        let draft_rel = build_settled_refund_tx(
+            ref_rel,
+            pay_zp2,
+            "shop-Z",
+            true,
+            190_000,
+            10_000,
+            30_000,
+            115_000,
+            "partial return after release",
+            mp.clone(),
+        )
+        .unwrap();
+        assert!(ledger.post(&draft_rel).unwrap());
+        assert_eq!(
+            ledger.balance_of(&account_seller_available("shop-Z")),
+            45_000 // 140,000 - 95,000
+        );
+        assert_eq!(ledger.balance_of(ACCOUNT_PLATFORM_FEE_REVENUE), 5_000);
+        assert_eq!(ledger.balance_of(ACCOUNT_SHIPPING_FEE_PAYABLE), 15_000);
+        assert!(ledger.summary().is_balanced);
+
+        // 5. Indivisible VND partial refund + zero-seller-net edge case stay strictly balanced
+        let draft_odd = build_settled_refund_tx(
+            Uuid::new_v4(),
+            pay_zp2,
+            "shop-Z",
+            true,
+            94_999,
+            5_001,
+            15_000,
+            33_333,
+            "odd partial",
+            mp.clone(),
+        )
+        .unwrap();
+        assert!(draft_odd.validate().is_ok());
+
+        let draft_zero_seller = build_settled_refund_tx(
+            Uuid::new_v4(),
+            pay_zp2,
+            "shop-Z",
+            false,
+            0,
+            100,
+            100,
+            1,
+            "1 vnd edge",
+            mp.clone(),
+        )
+        .unwrap();
+        assert!(draft_zero_seller.validate().is_ok());
+        assert!(!draft_zero_seller
+            .lines
+            .iter()
+            .any(|l| l.account_id == account_seller_pending("shop-Z")));
+
+        // 6. Invalid settled refund inputs rejected
+        assert!(build_settled_refund_tx(
+            Uuid::new_v4(),
+            pay_zp2,
+            " ",
+            false,
+            100,
+            0,
+            0,
+            50,
+            "bad shop",
+            mp.clone(),
+        )
+        .is_err());
+        assert!(build_settled_refund_tx(
+            Uuid::new_v4(),
+            pay_zp2,
+            "shop-Z",
+            false,
+            100,
+            10,
+            10,
+            0,
+            "zero",
+            mp.clone(),
+        )
+        .is_err());
+        assert!(build_settled_refund_tx(
+            Uuid::new_v4(),
+            pay_zp2,
+            "shop-Z",
+            false,
+            100,
+            10,
+            10,
+            121,
+            "exceeds",
+            mp,
+        )
+        .is_err());
+
+        // AccountType coverage
+        assert_eq!(AccountType::parse("ASSET"), AccountType::Asset);
+        assert_eq!(AccountType::parse("REVENUE"), AccountType::Revenue);
+        assert_eq!(AccountType::parse("EXPENSE"), AccountType::Expense);
+        assert_eq!(AccountType::parse("EQUITY"), AccountType::Equity);
+        assert_eq!(AccountType::parse("LIABILITY"), AccountType::Liability);
+        assert_eq!(AccountType::Expense.as_str(), "EXPENSE");
+        assert_eq!(AccountType::Equity.as_str(), "EQUITY");
+        assert_eq!(AccountType::Expense.signed_balance(500, 100), 400);
+        assert_eq!(AccountType::Equity.signed_balance(100, 500), 400);
+    }
 }

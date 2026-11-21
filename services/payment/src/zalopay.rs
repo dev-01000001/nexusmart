@@ -115,8 +115,9 @@ pub fn verify_zalopay_callback(
     replay_window_secs: i64,
     now: DateTime<Utc>,
 ) -> Result<VerifiedZaloPayCallback> {
-    let raw_json: serde_json::Value = serde_json::from_slice(raw_body)
-        .map_err(|e| PaymentError::Validation(format!("invalid JSON ZaloPay callback body: {e}")))?;
+    let raw_json: serde_json::Value = serde_json::from_slice(raw_body).map_err(|e| {
+        PaymentError::Validation(format!("invalid JSON ZaloPay callback body: {e}"))
+    })?;
 
     let raw_mac = raw_json
         .get("mac")
@@ -640,7 +641,13 @@ impl ZaloPayAdapter {
         replay_window_secs: i64,
         now: DateTime<Utc>,
     ) -> Result<VerifiedZaloPayCallback> {
-        verify_zalopay_callback(&self.key2, raw_body, timestamp_header, replay_window_secs, now)
+        verify_zalopay_callback(
+            &self.key2,
+            raw_body,
+            timestamp_header,
+            replay_window_secs,
+            now,
+        )
     }
 
     /// Builds a validly HMAC-SHA256 signed ZaloPay callback JSON body for unit/integration tests.
@@ -1177,7 +1184,11 @@ mod tests {
         assert!(matches!(err, PaymentError::Provider(_)));
 
         // Sandbox list_provider_transactions returns empty vec cleanly
-        assert!(adapter.list_provider_transactions().await.unwrap().is_empty());
+        assert!(adapter
+            .list_provider_transactions()
+            .await
+            .unwrap()
+            .is_empty());
 
         server_handle.abort();
     }

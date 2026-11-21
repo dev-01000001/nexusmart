@@ -209,3 +209,54 @@ pub async fn red_metrics_middleware(
 
     response
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::middleware;
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn test_metrics_recording_and_red_middleware() {
+        let metrics = Metrics::default();
+        metrics.record_grpc("CreatePayment", "OK", false, 0.015);
+        metrics.record_grpc("CreatePayment", "InvalidArgument", true, 0.004);
+        metrics.record_webhook("confirmed");
+        metrics.record_ledger_tx("payment_zalopay");
+
+        let app = Router::new()
+            .route("/ok", get(|| async { StatusCode::OK }))
+            .route("/fail", get(|| async { StatusCode::INTERNAL_SERVER_ERROR }))
+            .layer(middleware::from_fn_with_state(
+                metrics.clone(),
+                red_metrics_middleware,
+            ));
+
+        let ok_resp = app
+            .clone()
+            .oneshot(Request::builder().uri("/ok").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(ok_resp.status(), StatusCode::OK);
+
+        let err_resp = app
+            .oneshot(Request::builder().uri("/fail").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(err_resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let prom = metrics.render_prometheus();
+        assert!(prom.contains("http_requests_total"));
+        assert!(prom.contains("http_errors_total"));
+        assert!(prom.contains("http_request_duration_seconds"));
+        assert!(prom.contains("grpc_requests_total"));
+        assert!(prom.contains("grpc_errors_total"));
+        assert!(prom.contains("payment_webhooks_total"));
+        assert!(prom.contains("payment_ledger_transactions_total"));
+        assert!(prom.contains("payment_zalopay"));
+    }
+}

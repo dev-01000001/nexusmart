@@ -181,7 +181,12 @@ async fn handle_zalopay_webhook(
     let default_provider = state.service.zalopay().mode().as_str();
     let result = state
         .service
-        .process_verified_webhook(verified.payload, verified.raw_json, default_provider, &trace_id)
+        .process_verified_webhook(
+            verified.payload,
+            verified.raw_json,
+            default_provider,
+            &trace_id,
+        )
         .await?;
 
     Ok((
@@ -682,5 +687,228 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bad_recon.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_zalopay_webhook_validation_and_reconciliation_reports_rbac() {
+        let (app, mut cfg) = test_router();
+        cfg.zalopay_key2 = "zalopay-mock-key2-dev".to_string();
+
+        // 1. /webhooks/zalopay rejects malformed JSON (400), missing mac (401), invalid mac (401),
+        //    missing timestamp (401), stale server_time (401)
+        let bad_json = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/zalopay")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_json.status(), StatusCode::BAD_REQUEST);
+
+        let missing_mac = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/zalopay")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"data":"{}","type":1}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_mac.status(), StatusCode::UNAUTHORIZED);
+
+        let bad_mac = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/zalopay")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"data":"{\"app_trans_id\":\"261121_NM1\",\"amount\":100000,\"zp_trans_id\":\"1\",\"server_time\":1999999999999}","mac":"deadbeef","type":1}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_mac.status(), StatusCode::UNAUTHORIZED);
+
+        let adapter = crate::zalopay::ZaloPayAdapter::from_config(&cfg);
+        let stale_body = adapter.build_mock_callback_signed(
+            None,
+            None,
+            Some("ord-stale".into()),
+            "261121_NMSTALE0001",
+            "ZP-STALE-1",
+            100_000,
+            (Utc::now() - chrono::Duration::seconds(600)).timestamp_millis(),
+        );
+        let stale_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/zalopay")
+                    .header("content-type", "application/json")
+                    .body(Body::from(stale_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stale_resp.status(), StatusCode::UNAUTHORIZED);
+
+        // 2. /internal/reconciliation/reports RBAC
+        let anon = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/reconciliation/reports")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(anon.status(), StatusCode::UNAUTHORIZED);
+
+        for hdr in [
+            bearer_user("buyer", "u-1", ""),
+            bearer_user("seller", "u-2", "shop-1"),
+            bearer_service(),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::GET)
+                        .uri("/internal/reconciliation/reports")
+                        .header("authorization", hdr)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        }
+
+        let admin = bearer_user("admin", "admin-1", "");
+        let bad_filter = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/reconciliation/reports?sales_channel=INVALID")
+                    .header("authorization", admin)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_filter.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_sse_event_names_and_read_access_rules() {
+        assert_eq!(status_to_sse_event_name("succeeded"), "payment.succeeded");
+        assert_eq!(status_to_sse_event_name("expired"), "payment.expired");
+        assert_eq!(status_to_sse_event_name("failed"), "payment.failed");
+        assert_eq!(status_to_sse_event_name("cancelled"), "payment.failed");
+        assert_eq!(status_to_sse_event_name("superseded"), "payment.failed");
+        assert_eq!(status_to_sse_event_name("refunded"), "payment.refunded");
+        assert_eq!(status_to_sse_event_name("pending"), "payment.pending");
+
+        let now = Utc::now();
+        let pid = Uuid::new_v4();
+        let pwa = PaymentWithAllocations {
+            payment: crate::domain::PaymentRecord {
+                id: pid,
+                order_group_id: "grp-1".into(),
+                order_id: "ord-1".into(),
+                user_id: "buyer-1".into(),
+                method: "ZALOPAY".into(),
+                provider: "zalopay_mock".into(),
+                amount_vnd: 150_000,
+                status: "pending".into(),
+                provider_tx_id: None,
+                provider_order_code: "261121_NM1234567890".into(),
+                qr_code: None,
+                qr_url: None,
+                idempotency_key: None,
+                expires_at: None,
+                paid_at: None,
+                trace_id: String::new(),
+                sales_channel: "MARKETPLACE".into(),
+                storefront_shop_id: String::new(),
+                created_at: now,
+                updated_at: now,
+            },
+            allocations: vec![crate::domain::ShopAllocationRecord {
+                id: Uuid::new_v4(),
+                payment_id: pid,
+                order_id: "ord-1".into(),
+                shop_id: "shop-A".into(),
+                subtotal_vnd: 120_000,
+                commission_vnd: 6_000,
+                shipping_fee_vnd: 30_000,
+                escrow_status: "held".into(),
+                settled_at: None,
+                released_at: None,
+                sales_channel: "MARKETPLACE".into(),
+                storefront_shop_id: String::new(),
+                created_at: now,
+            }],
+        };
+
+        assert!(check_payment_read_access(
+            &Caller {
+                role: "admin".into(),
+                user_id: "a1".into(),
+                shop_id: String::new()
+            },
+            &pwa
+        )
+        .is_ok());
+        assert!(check_payment_read_access(
+            &Caller {
+                role: "buyer".into(),
+                user_id: "buyer-1".into(),
+                shop_id: String::new()
+            },
+            &pwa
+        )
+        .is_ok());
+        assert!(check_payment_read_access(
+            &Caller {
+                role: "buyer".into(),
+                user_id: "buyer-other".into(),
+                shop_id: String::new()
+            },
+            &pwa
+        )
+        .is_err());
+        assert!(check_payment_read_access(
+            &Caller {
+                role: "seller".into(),
+                user_id: "seller-1".into(),
+                shop_id: "shop-A".into()
+            },
+            &pwa
+        )
+        .is_ok());
+        assert!(check_payment_read_access(
+            &Caller {
+                role: "seller".into(),
+                user_id: "seller-2".into(),
+                shop_id: "shop-B".into()
+            },
+            &pwa
+        )
+        .is_err());
     }
 }

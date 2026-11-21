@@ -1436,5 +1436,204 @@ mod tests {
         assert_eq!(sf.storefront_shop_id, "shop-sf");
         assert_eq!(sf.shop_allocations[0].sales_channel, "STOREFRONT");
         assert_eq!(sf.shop_allocations[0].storefront_shop_id, "shop-sf");
+
+        // ZALOPAY mapping & proto helpers roundtrip
+        let zp = to_proto_payment(PaymentWithAllocations {
+            payment: crate::domain::PaymentRecord {
+                id: pid,
+                order_group_id: "grp-zp".into(),
+                order_id: "ord-zp".into(),
+                user_id: "u-zp".into(),
+                method: "ZALOPAY".into(),
+                provider: "zalopay_mock".into(),
+                amount_vnd: 250_000,
+                status: "refunded".into(),
+                provider_tx_id: Some("ZP-TX-99".into()),
+                provider_order_code: "261121_NM1122334455".into(),
+                qr_code: Some("ZPTOK123".into()),
+                qr_url: Some("https://sbgateway.zalopay.vn/openinapp?order=ZPTOK123".into()),
+                idempotency_key: None,
+                expires_at: Some(now),
+                paid_at: Some(now),
+                trace_id: String::new(),
+                sales_channel: "MARKETPLACE".into(),
+                storefront_shop_id: String::new(),
+                created_at: now,
+                updated_at: now,
+            },
+            allocations: vec![],
+        });
+        assert_eq!(zp.method, PaymentMethod::Zalopay as i32);
+        assert_eq!(zp.status, PaymentStatus::Refunded as i32);
+        assert_eq!(zp.provider_ref, "ZP-TX-99");
+        assert_eq!(zp.qr_code, "ZPTOK123");
+
+        let refund_pb = to_proto_refund(RefundRecord {
+            id: Uuid::new_v4(),
+            payment_id: pid,
+            order_id: "ord-zp".into(),
+            amount_vnd: 50_000,
+            reason: "return".into(),
+            status: "completed".into(),
+            idempotency_key: "ref-k1".into(),
+            provider_refund_id: Some("zpmock_ref_1".into()),
+            created_at: now,
+            updated_at: now,
+        });
+        assert_eq!(refund_pb.status, RefundStatus::Done as i32);
+        assert_eq!(refund_pb.amount_vnd, 50_000);
+
+        let item_pb = to_proto_reconciliation_item(ReconciliationItemRecord {
+            id: Uuid::new_v4(),
+            run_id: Uuid::new_v4(),
+            classification: "amount_mismatch".into(),
+            payment_id: Some(pid),
+            provider_tx_id: Some("ZP-TX-99".into()),
+            local_amount_vnd: Some(250_000),
+            provider_amount_vnd: Some(240_000),
+            details: Some("mismatch".into()),
+            sales_channel: "MARKETPLACE".into(),
+            storefront_shop_id: String::new(),
+            created_at: now,
+        });
+        assert_eq!(item_pb.status, ReconciliationStatus::AmountMismatch as i32);
+        assert_eq!(item_pb.local_amount_vnd, 250_000);
+        assert_eq!(item_pb.provider_amount_vnd, 240_000);
+
+        let run_id = Uuid::new_v4();
+        let report_pb = to_proto_reconciliation_report_summary(ReconciliationRunRecord {
+            id: run_id,
+            provider: "vietqr_mock+zalopay_mock".into(),
+            run_date: NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
+            sales_channel: "MARKETPLACE".into(),
+            matched_count: 5,
+            missing_local_count: 1,
+            missing_provider_count: 2,
+            amount_mismatch_count: 1,
+            auto_healed_count: 3,
+            status: "completed".into(),
+            created_at: now,
+            completed_at: Some(now),
+        });
+        assert_eq!(report_pb.run_id, run_id.to_string());
+        assert_eq!(report_pb.provider, "vietqr_mock+zalopay_mock");
+        assert_eq!(report_pb.run_date, "2026-11-21");
+        assert_eq!(report_pb.auto_healed_count, 3);
+        assert_eq!(report_pb.matched_count, 5);
+        assert!(report_pb.created_at.is_some());
+        assert!(report_pb.completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_grpc_list_reconciliation_reports_rbac_and_zalopay_create_validation() {
+        let (server, _) = test_grpc_server();
+
+        // Anonymous & spoofed metadata -> Unauthenticated
+        for req in [
+            Request::new(ListReconciliationReportsRequest {
+                limit: 10,
+                sales_channel: String::new(),
+            }),
+            with_spoofed_metadata(ListReconciliationReportsRequest {
+                limit: 10,
+                sales_channel: String::new(),
+            }),
+        ] {
+            assert_eq!(
+                server
+                    .list_reconciliation_reports(req)
+                    .await
+                    .unwrap_err()
+                    .code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        // Buyer, Seller, and Service tokens -> PermissionDenied
+        assert_eq!(
+            server
+                .list_reconciliation_reports(with_auth(
+                    ListReconciliationReportsRequest {
+                        limit: 10,
+                        sales_channel: String::new(),
+                    },
+                    "buyer",
+                    "u-1",
+                    "",
+                ))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            server
+                .list_reconciliation_reports(with_auth(
+                    ListReconciliationReportsRequest {
+                        limit: 10,
+                        sales_channel: String::new(),
+                    },
+                    "seller",
+                    "u-2",
+                    "shop-1",
+                ))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            server
+                .list_reconciliation_reports(with_service_auth(ListReconciliationReportsRequest {
+                    limit: 10,
+                    sales_channel: String::new(),
+                }))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+
+        // Admin with invalid sales_channel filter -> InvalidArgument
+        assert_eq!(
+            server
+                .list_reconciliation_reports(with_auth(
+                    ListReconciliationReportsRequest {
+                        limit: 10,
+                        sales_channel: "INVALID".into(),
+                    },
+                    "admin",
+                    "admin-1",
+                    "",
+                ))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
+        );
+
+        // CreatePayment with PAYMENT_METHOD_ZALOPAY validates positive VND amount before DB
+        let err = server
+            .create_payment(with_auth(
+                CreatePaymentRequest {
+                    order_group_id: "grp-zp".into(),
+                    order_id: "ord-zp".into(),
+                    user_id: "u-1".into(),
+                    amount_vnd: 0,
+                    method: PaymentMethod::Zalopay as i32,
+                    shop_allocations: vec![],
+                    expires_at: None,
+                    idempotency_key: String::new(),
+                    supersede_previous: false,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
+                },
+                "buyer",
+                "u-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 }

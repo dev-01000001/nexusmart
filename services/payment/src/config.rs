@@ -234,3 +234,78 @@ fn env_i64(key: &str, default: i64) -> i64 {
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(default)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vietqr_and_zalopay_mode_parsing() {
+        assert_eq!(VietQrMode::parse("payos"), VietQrMode::PayOs);
+        assert_eq!(VietQrMode::parse("  SEPAY "), VietQrMode::Sepay);
+        assert_eq!(VietQrMode::parse("mock"), VietQrMode::Mock);
+        assert_eq!(VietQrMode::parse("unknown"), VietQrMode::Mock);
+        assert_eq!(VietQrMode::Mock.as_str(), "vietqr_mock");
+        assert_eq!(VietQrMode::PayOs.as_str(), "payos");
+        assert_eq!(VietQrMode::Sepay.as_str(), "sepay");
+
+        assert_eq!(ZaloPayMode::parse("sandbox"), ZaloPayMode::Sandbox);
+        assert_eq!(ZaloPayMode::parse("  SANDBOX "), ZaloPayMode::Sandbox);
+        assert_eq!(ZaloPayMode::parse("mock"), ZaloPayMode::Mock);
+        assert_eq!(ZaloPayMode::parse("other"), ZaloPayMode::Mock);
+        assert_eq!(ZaloPayMode::Mock.as_str(), "zalopay_mock");
+        assert_eq!(ZaloPayMode::Sandbox.as_str(), "zalopay");
+    }
+
+    #[test]
+    fn test_is_placeholder_secret() {
+        assert!(is_placeholder_secret(""));
+        assert!(is_placeholder_secret("   "));
+        assert!(is_placeholder_secret("my-placeholder-key"));
+        assert!(is_placeholder_secret("dev-secret-change-me"));
+        assert!(is_placeholder_secret("CHANGEME"));
+        assert!(is_placeholder_secret("your_api_key"));
+        assert!(is_placeholder_secret("your-secret"));
+        assert!(is_placeholder_secret("<insert-key>"));
+        assert!(!is_placeholder_secret("real-zalopay-key-987654"));
+    }
+
+    #[test]
+    fn test_config_debug_redacts_all_secrets_including_zalopay_keys() {
+        let mut cfg = Config::from_env();
+        cfg.database_url = "postgres://user:super_db_pass@db:5432/pay".to_string();
+        cfg.webhook_secret = "super-webhook-secret-xyz".to_string();
+        cfg.jwt_secret = "super-jwt-secret-xyz".to_string();
+        cfg.service_jwt_secret = "super-svc-jwt-secret-xyz".to_string();
+        cfg.payos_client_id = "payos-client-secret".to_string();
+        cfg.payos_api_key = "payos-api-secret".to_string();
+        cfg.payos_checksum_key = "payos-checksum-secret".to_string();
+        cfg.sepay_api_token = "sepay-token-secret".to_string();
+        cfg.zalopay_key1 = "zalopay-super-secret-key1".to_string();
+        cfg.zalopay_key2 = "zalopay-super-secret-key2".to_string();
+
+        let dbg = format!("{cfg:?}");
+        assert!(dbg.contains("[REDACTED]"));
+        assert!(dbg.contains("zalopay_mode"));
+        assert!(dbg.contains("zalopay_app_id"));
+        assert!(dbg.contains("zalopay_base_url"));
+        assert!(dbg.contains("zalopay_callback_url"));
+        for secret in [
+            "super_db_pass",
+            "super-webhook-secret-xyz",
+            "super-jwt-secret-xyz",
+            "super-svc-jwt-secret-xyz",
+            "payos-client-secret",
+            "payos-api-secret",
+            "payos-checksum-secret",
+            "sepay-token-secret",
+            "zalopay-super-secret-key1",
+            "zalopay-super-secret-key2",
+        ] {
+            assert!(
+                !dbg.contains(secret),
+                "Config Debug leaked secret '{secret}': {dbg}"
+            );
+        }
+    }
+}

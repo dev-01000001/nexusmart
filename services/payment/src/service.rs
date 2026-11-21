@@ -191,11 +191,11 @@ impl PaymentService {
         let payment_id = Uuid::new_v4();
         let expires_at = match input.method {
             PaymentMethod::Cod => None,
-            PaymentMethod::VietQr | PaymentMethod::ZaloPay => Some(
-                input
-                    .expires_at
-                    .unwrap_or_else(|| Utc::now() + Duration::seconds(self.config.vietqr_expiry_secs)),
-            ),
+            PaymentMethod::VietQr | PaymentMethod::ZaloPay => {
+                Some(input.expires_at.unwrap_or_else(|| {
+                    Utc::now() + Duration::seconds(self.config.vietqr_expiry_secs)
+                }))
+            }
         };
 
         let (provider, provider_order_code, qr_code, qr_url, initial_status, paid_at) =
@@ -1226,9 +1226,9 @@ impl PaymentService {
         };
 
         let channel = resolve_refund_channel_tx(&mut tx, &payment, &order_id).await?;
-        let draft = if let Some(alloc) = target_alloc.filter(|a| {
-            a.escrow_status == "pending_release" || a.escrow_status == "released"
-        }) {
+        let draft = if let Some(alloc) = target_alloc
+            .filter(|a| a.escrow_status == "pending_release" || a.escrow_status == "released")
+        {
             let split = compute_allocation_split(
                 &alloc.order_id,
                 &alloc.shop_id,

@@ -441,4 +441,34 @@ mod tests {
         assert!(should_route_to_dlq(5, MAX_NATS_DELIVERIES));
         assert!(should_route_to_dlq(6, MAX_NATS_DELIVERIES));
     }
+
+    #[tokio::test]
+    async fn test_workers_shutdown_cleanly_and_nats_fallback() {
+        use crate::config::Config;
+        use crate::metrics::Metrics;
+        use sqlx::postgres::PgPoolOptions;
+
+        // Unreachable NATS returns None gracefully instead of panicking
+        let res = connect_jetstream("nats://127.0.0.1:1", "NEXUSMART").await;
+        assert!(res.is_none());
+
+        let mut cfg = Config::from_env();
+        cfg.expiration_scan_interval = Duration::from_secs(60);
+        cfg.reconciliation_interval = Duration::from_secs(60);
+        cfg.outbox_poll_interval = Duration::from_secs(60);
+        let pool = PgPoolOptions::new()
+            .connect_lazy(&cfg.database_url)
+            .expect("lazy pool");
+        let svc = PaymentService::new(pool, cfg, Metrics::new());
+
+        let (tx, rx) = watch::channel(false);
+        let h_recon = tokio::spawn(run_reconciliation_scheduler(svc.clone(), rx.clone()));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let _ = tx.send(true);
+        h_recon.await.unwrap();
+
+        let (tx2, rx2) = watch::channel(true);
+        let _ = tx2;
+        run_nats_order_consumer(svc, rx2).await;
+    }
 }
