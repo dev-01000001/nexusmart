@@ -1,6 +1,6 @@
 // Pure multi-tenant host normalization, classification, blocked-path rules, and cross-host URL derivation.
 // Zero I/O so it runs identically in Edge/Node middleware, Server Components, and unit tests.
-import { isValidCustomHostname, validateCustomHostname } from "./domains.ts";
+import { validateCustomHostname } from "./domains.ts";
 
 export const SUBDOMAIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$/;
 
@@ -232,15 +232,15 @@ export function classifyHost(
 
   const suffix = `.${cleanRoot}`;
   if (!hostname.endsWith(suffix)) {
-    if (isValidCustomHostname(hostname, cleanRoot)) {
+    const validation = validateCustomHostname(hostname, cleanRoot);
+    if (validation.ok) {
       return { kind: "custom", hostname, port };
     }
-    const validation = validateCustomHostname(hostname, cleanRoot);
     return {
       kind: "unknown",
       hostname,
       port,
-      reason: validation.ok ? "invalid_custom_host" : validation.reason,
+      reason: validation.reason,
     };
   }
 
@@ -419,13 +419,9 @@ export function resolveCanonicalHostRedirect(opts: CanonicalHostRedirectInput): 
 
   const targetHost = parsedPrimary.hostname;
   const isDevLocal =
-    Boolean(opts.hostClass.port) ||
-    cleanRoot === "localhost" ||
-    cleanRoot.endsWith(".localhost");
+    Boolean(opts.hostClass.port) || cleanRoot === "localhost" || cleanRoot.endsWith(".localhost");
   const scheme = isDevLocal ? (opts.proto === "https" ? "https" : "http") : "https";
-  const authority = isDevLocal
-    ? formatHostWithPort(targetHost, opts.hostClass.port)
-    : targetHost;
+  const authority = isDevLocal ? formatHostWithPort(targetHost, opts.hostClass.port) : targetHost;
 
   return `${scheme}://${authority}${opts.pathname}${opts.search || ""}`;
 }

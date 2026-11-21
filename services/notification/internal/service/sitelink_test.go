@@ -250,17 +250,52 @@ func TestSiteOrderURL(t *testing.T) {
 	cases := map[string]struct {
 		host, order, want string
 	}{
-		"plain":            {"ha-noi.nexusmart.vn", "abc", "https://ha-noi.nexusmart.vn/don-hang/abc"},
-		"stored port":      {"ha-noi.nexusmart.vn:8443", "abc", "https://ha-noi.nexusmart.vn/don-hang/abc"},
-		"empty host":       {"", "abc", ""},
-		"single label":     {"localhost", "abc", ""},
-		"userinfo":         {"user@evil.com", "abc", ""},
-		"order with slash": {"ha-noi.nexusmart.vn", "../admin", ""},
-		"empty order":      {"ha-noi.nexusmart.vn", " ", ""},
+		"plain":                  {"ha-noi.nexusmart.vn", "abc", "https://ha-noi.nexusmart.vn/don-hang/abc"},
+		"custom domain":          {"shop.hanoiknit.vn", "abc", "https://shop.hanoiknit.vn/don-hang/abc"},
+		"punycode custom domain": {"xn--ca-hng-9ta87a.vn", "abc", "https://xn--ca-hng-9ta87a.vn/don-hang/abc"},
+		"stored port":            {"ha-noi.nexusmart.vn:8443", "abc", "https://ha-noi.nexusmart.vn/don-hang/abc"},
+		"empty host":             {"", "abc", ""},
+		"single label":           {"localhost", "abc", ""},
+		"userinfo":               {"user@evil.com", "abc", ""},
+		"order with slash":       {"ha-noi.nexusmart.vn", "../admin", ""},
+		"empty order":            {"ha-noi.nexusmart.vn", " ", ""},
 	}
 	for name, tc := range cases {
 		if got := cfg.siteOrderURL(tc.host, tc.order); got != tc.want {
 			t.Errorf("%s: siteOrderURL(%q,%q) = %q, want %q", name, tc.host, tc.order, got, tc.want)
 		}
+	}
+}
+
+func TestStorefrontOrderLinksToCustomPrimaryHost(t *testing.T) {
+	resolver := &stubSiteResolver{hosts: map[string]string{siteShopID: "shop.hanoiknit.vn"}}
+	svc, repo, mail := newSiteLinkService(t, resolver, SiteLinkConfig{})
+
+	processOrderEvent(t, svc, "evt-custom-created", "order.created", map[string]any{
+		"order_id": siteOrder, "order_code": "NM-CUSTOM-1", "buyer_id": "buyer-site",
+		"shop_id": siteShopID, "storefront_shop_id": siteShopID,
+		"payment_method": "VIETQR", "total_payable_vnd": 250000,
+	})
+
+	want := "https://shop.hanoiknit.vn/don-hang/" + siteOrder
+	if got := lastNotification(t, repo).Link; got != want {
+		t.Fatalf("custom primary_host in-app link = %q, want %q", got, want)
+	}
+	if len(mail.sent) != 1 || !strings.Contains(mail.sent[0].Body, want) {
+		t.Fatalf("custom primary_host email must contain %q, got %+v", want, mail.sent)
+	}
+
+	groupID := "44444444-4444-4444-4444-444444444444"
+	processOrderEvent(t, svc, "evt-custom-paid-group", "payment.succeeded", map[string]any{
+		"payment_id": "pay-custom-1", "order_group_id": groupID, "order_id": groupID,
+		"user_id": "buyer-site", "amount_vnd": 250000, "method": "VIETQR",
+		"provider_tx_id": "tx-custom-1", "storefront_shop_id": siteShopID,
+	})
+	wantList := "https://shop.hanoiknit.vn/don-hang"
+	if got := lastNotification(t, repo).Link; got != wantList {
+		t.Fatalf("custom primary_host group payment link = %q, want %q", got, wantList)
+	}
+	if len(mail.sent) != 2 || !strings.Contains(mail.sent[1].Body, wantList) {
+		t.Fatalf("custom primary_host group email must contain %q, got %+v", wantList, mail.sent[1].Body)
 	}
 }

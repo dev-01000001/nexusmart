@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -9,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
+	"github.com/nexusmart/core/services/user/internal/cloudflare"
 	"github.com/nexusmart/core/services/user/internal/db"
 	"github.com/nexusmart/core/services/user/internal/site"
 	"google.golang.org/grpc/codes"
@@ -212,11 +214,51 @@ func (s *Server) SaveSiteDraft(ctx context.Context, req *userv1.SaveSiteDraftReq
 
 	primaryHost := sub + "." + s.opts.SiteRootDomain
 
-	// Early uniqueness check (concurrent races are also caught by unique index 23505 below).
+	preSite, preErr := s.store.GetSiteByShopID(ctx, shopID)
+	if preErr != nil && !isNotFoundErr(preErr) {
+		return nil, status.Error(codes.Internal, "failed to load site")
+	}
+	hasExistingSite := preErr == nil
+
+	// Early uniqueness checks (concurrent races are also caught by unique index 23505 below).
 	if other, lookupErr := s.store.GetSiteBySubdomain(ctx, sub); lookupErr == nil && other.ShopID != shopID {
 		return nil, status.Error(codes.AlreadyExists, "SUBDOMAIN_TAKEN: subdomain is already in use")
 	} else if lookupErr != nil && !isNotFoundErr(lookupErr) {
 		return nil, status.Error(codes.Internal, "failed to check subdomain uniqueness")
+	}
+	if otherDom, domErr := s.store.GetDomainByHost(ctx, primaryHost); domErr == nil {
+		if !hasExistingSite || otherDom.SiteID != preSite.ID {
+			return nil, status.Error(codes.AlreadyExists, "SUBDOMAIN_TAKEN: domain host is already in use")
+		}
+	} else if !isNotFoundErr(domErr) {
+		return nil, status.Error(codes.Internal, "failed to check domain uniqueness")
+	}
+
+	var (
+		oldRecordID string
+		newRecordID string
+	)
+	if hasExistingSite && !strings.EqualFold(preSite.Subdomain, sub) {
+		if subDom, subErr := s.store.GetSiteSubdomainDomain(ctx, preSite.ID); subErr == nil {
+			if subDom.CfRecordID != nil {
+				oldRecordID = strings.TrimSpace(*subDom.CfRecordID)
+			}
+		} else if !isNotFoundErr(subErr) {
+			return nil, status.Error(codes.Internal, "failed to load site subdomain record")
+		}
+
+		if preSite.Status == SiteStatusPublished {
+			var cfErr error
+			newRecordID, cfErr = s.cf.EnsureSubdomainRecord(ctx, primaryHost)
+			if cfErr != nil {
+				s.log.WarnContext(ctx, "cloudflare ensure subdomain record failed on subdomain change",
+					slog.String("shop_id", shopID),
+					slog.String("host", primaryHost),
+					slog.String("error", cloudflare.SanitizeError(cfErr)),
+				)
+				return nil, status.Error(codes.Unavailable, "failed to provision subdomain DNS record")
+			}
+		}
 	}
 
 	var detail db.GetSiteDetailByIDRow
@@ -261,12 +303,26 @@ func (s *Server) SaveSiteDraft(ctx context.Context, req *userv1.SaveSiteDraftReq
 			return txErr
 		}
 
-		if _, txErr = q.UpsertSiteSubdomainDomain(ctx, db.UpsertSiteSubdomainDomainParams{
+		subDom, txErr := q.UpsertSiteSubdomainDomain(ctx, db.UpsertSiteSubdomainDomainParams{
 			ID:     uuid.NewString(),
 			SiteID: saved.ID,
 			Lower:  primaryHost,
-		}); txErr != nil {
+		})
+		if txErr != nil {
 			return txErr
+		}
+		if !isCreate && !strings.EqualFold(existing.Subdomain, sub) {
+			var recPtr *string
+			if existing.Status == SiteStatusPublished && newRecordID != "" {
+				rec := newRecordID
+				recPtr = &rec
+			}
+			if _, txErr = q.UpdateDomainCFRecordID(ctx, db.UpdateDomainCFRecordIDParams{
+				ID:         subDom.ID,
+				CfRecordID: recPtr,
+			}); txErr != nil {
+				return txErr
+			}
 		}
 
 		if _, txErr = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
@@ -295,6 +351,16 @@ func (s *Server) SaveSiteDraft(ctx context.Context, req *userv1.SaveSiteDraftReq
 			return nil, status.Error(codes.AlreadyExists, "SUBDOMAIN_TAKEN: subdomain is already in use")
 		}
 		return nil, status.Error(codes.Internal, "failed to save site draft")
+	}
+
+	if oldRecordID != "" && oldRecordID != newRecordID {
+		if delErr := s.cf.DeleteDNSRecord(ctx, oldRecordID); delErr != nil {
+			s.log.WarnContext(ctx, "cloudflare delete old subdomain dns record failed",
+				slog.String("shop_id", shopID),
+				slog.String("record_id", oldRecordID),
+				slog.String("error", cloudflare.SanitizeError(delErr)),
+			)
+		}
 	}
 
 	return &userv1.SaveSiteDraftResponse{
@@ -335,6 +401,59 @@ func (s *Server) PublishSite(ctx context.Context, req *userv1.PublishSiteRequest
 		return nil, status.Error(codes.FailedPrecondition, "SHOP_NOT_ACTIVE: shop must be ACTIVE to publish site")
 	}
 
+	preSite, err := s.store.GetSiteByShopID(ctx, shopID)
+	if err != nil {
+		if isNotFoundErr(err) {
+			return nil, status.Error(codes.NotFound, "site draft not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load site")
+	}
+	if preSite.Status == SiteStatusSuspended {
+		return nil, status.Error(codes.FailedPrecondition, "SITE_SUSPENDED: suspended site cannot be published")
+	}
+	preSub, err := site.ValidateSubdomain(preSite.Subdomain)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if _, _, err := site.ValidateAndCanonicalizeConfig(preSite.DraftConfig); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	preHost := preSub + "." + s.opts.SiteRootDomain
+	var (
+		cfRecordID  string
+		oldRecordID string
+	)
+	subDom, domErr := s.store.GetSiteSubdomainDomain(ctx, preSite.ID)
+	needProvision := false
+	if domErr != nil {
+		if !isNotFoundErr(domErr) {
+			return nil, status.Error(codes.Internal, "failed to load site subdomain record")
+		}
+		needProvision = true
+	} else {
+		hasRecord := subDom.CfRecordID != nil && strings.TrimSpace(*subDom.CfRecordID) != ""
+		hostChanged := !strings.EqualFold(subDom.Host, preHost)
+		if !hasRecord || hostChanged {
+			needProvision = true
+			if hostChanged && hasRecord {
+				oldRecordID = strings.TrimSpace(*subDom.CfRecordID)
+			}
+		}
+	}
+	if needProvision {
+		var cfErr error
+		cfRecordID, cfErr = s.cf.EnsureSubdomainRecord(ctx, preHost)
+		if cfErr != nil {
+			s.log.WarnContext(ctx, "cloudflare ensure subdomain record failed on publish",
+				slog.String("shop_id", shopID),
+				slog.String("host", preHost),
+				slog.String("error", cloudflare.SanitizeError(cfErr)),
+			)
+			return nil, status.Error(codes.Unavailable, "failed to provision subdomain DNS record")
+		}
+	}
+
 	var (
 		detail  db.GetSiteDetailByIDRow
 		version db.SiteVersion
@@ -360,12 +479,22 @@ func (s *Server) PublishSite(ctx context.Context, req *userv1.PublishSiteRequest
 			return status.Error(codes.InvalidArgument, vErr.Error())
 		}
 
-		if _, txErr = q.UpsertSiteSubdomainDomain(ctx, db.UpsertSiteSubdomainDomainParams{
+		upsertedSub, txErr := q.UpsertSiteSubdomainDomain(ctx, db.UpsertSiteSubdomainDomainParams{
 			ID:     uuid.NewString(),
 			SiteID: existing.ID,
 			Lower:  sub + "." + s.opts.SiteRootDomain,
-		}); txErr != nil {
+		})
+		if txErr != nil {
 			return txErr
+		}
+		if cfRecordID != "" && strings.EqualFold(sub, preSub) {
+			recID := cfRecordID
+			if _, txErr = q.UpdateDomainCFRecordID(ctx, db.UpdateDomainCFRecordIDParams{
+				ID:         upsertedSub.ID,
+				CfRecordID: &recID,
+			}); txErr != nil {
+				return txErr
+			}
 		}
 
 		maxVer, txErr := q.GetMaxSiteVersionNumber(ctx, existing.ID)
@@ -422,6 +551,16 @@ func (s *Server) PublishSite(ctx context.Context, req *userv1.PublishSiteRequest
 			return nil, status.Error(codes.AlreadyExists, "SUBDOMAIN_TAKEN: subdomain is already in use")
 		}
 		return nil, status.Error(codes.Internal, "failed to publish site")
+	}
+
+	if oldRecordID != "" && oldRecordID != cfRecordID {
+		if delErr := s.cf.DeleteDNSRecord(ctx, oldRecordID); delErr != nil {
+			s.log.WarnContext(ctx, "cloudflare delete stale subdomain dns record failed",
+				slog.String("shop_id", shopID),
+				slog.String("record_id", oldRecordID),
+				slog.String("error", cloudflare.SanitizeError(delErr)),
+			)
+		}
 	}
 
 	return &userv1.PublishSiteResponse{

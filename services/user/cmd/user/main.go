@@ -20,6 +20,7 @@ import (
 	"github.com/nexusmart/core/pkg/common/logger"
 	"github.com/nexusmart/core/pkg/common/metrics"
 	"github.com/nexusmart/core/pkg/common/telemetry"
+	"github.com/nexusmart/core/services/user/internal/cloudflare"
 	"github.com/nexusmart/core/services/user/internal/config"
 	"github.com/nexusmart/core/services/user/internal/db"
 	"github.com/nexusmart/core/services/user/internal/events"
@@ -111,6 +112,24 @@ func run() error {
 		return fmt.Errorf("bootstrap admin: %w", err)
 	}
 
+	var cfClient cloudflare.Client
+	switch cfg.CFMode {
+	case "mock":
+		cfClient = cloudflare.NewMock(cfg.CFCNAMETarget)
+	case "live":
+		cfClient, err = cloudflare.NewLive(cloudflare.LiveConfig{
+			APIToken:    cfg.CFAPIToken,
+			ZoneID:      cfg.CFZoneID,
+			OriginHost:  cfg.CFOriginHost,
+			CNAMETarget: cfg.CFCNAMETarget,
+		})
+		if err != nil {
+			return fmt.Errorf("init cloudflare live client: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported CF_MODE %q (expected mock or live)", cfg.CFMode)
+	}
+
 	reg := prometheus.NewRegistry()
 	red := metrics.NewRED(cfg.ServiceName, reg)
 
@@ -129,6 +148,9 @@ func run() error {
 		LoginMaxFailedAttempts: cfg.LoginMaxFailedAttempts,
 		LoginLockoutDuration:   cfg.LoginLockoutDuration,
 		SiteRootDomain:         cfg.SiteRootDomain,
+		Cloudflare:             cfClient,
+		CFMode:                 cfg.CFMode,
+		CFPollInterval:         cfg.CFPollInterval,
 	})
 	userv1.RegisterUserServiceServer(grpcSrv, userSrv)
 	reflection.Register(grpcSrv)
@@ -155,6 +177,10 @@ func run() error {
 		Handler:           metrics.NewOpsHandler(cfg.ServiceName, readyFn, reg),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	pollerCtx, stopPoller := context.WithCancel(ctx)
+	defer stopPoller()
+	go userSrv.RunDomainPoller(pollerCtx)
 
 	errCh := make(chan error, 2)
 	go func() {

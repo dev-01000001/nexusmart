@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
+	"github.com/nexusmart/core/services/user/internal/cloudflare"
 	"github.com/nexusmart/core/services/user/internal/db"
 	"github.com/nexusmart/core/services/user/internal/events"
 	"github.com/nexusmart/core/services/user/internal/password"
@@ -20,7 +21,7 @@ import (
 
 var errRefreshTokenConcurrentReplay = errors.New("refresh token concurrent replay")
 
-// Options configures auth/security timings for Server.
+// Options configures auth/security timings and integrations for Server.
 type Options struct {
 	AccessTTL              time.Duration
 	RefreshTTL             time.Duration
@@ -29,6 +30,10 @@ type Options struct {
 	LoginMaxFailedAttempts int
 	LoginLockoutDuration   time.Duration
 	SiteRootDomain         string
+	Cloudflare             cloudflare.Client
+	CFMode                 string
+	CFPollInterval         time.Duration
+	Now                    func() time.Time
 }
 
 func (o Options) withDefaults() Options {
@@ -54,6 +59,19 @@ func (o Options) withDefaults() Options {
 	if o.SiteRootDomain == "" {
 		o.SiteRootDomain = "nexusmart.localhost"
 	}
+	o.CFMode = strings.ToLower(strings.TrimSpace(o.CFMode))
+	if o.CFMode == "" {
+		o.CFMode = "mock"
+	}
+	if o.CFPollInterval <= 0 {
+		o.CFPollInterval = 5 * time.Minute
+	}
+	if o.Cloudflare == nil {
+		o.Cloudflare = cloudflare.NewMock("shops." + o.SiteRootDomain)
+	}
+	if o.Now == nil {
+		o.Now = time.Now
+	}
 	return o
 }
 
@@ -67,6 +85,7 @@ type Server struct {
 	authMgr *auth.Manager
 	pub     events.Publisher
 	log     *slog.Logger
+	cf      cloudflare.Client
 	opts    Options
 }
 
@@ -80,6 +99,7 @@ func NewServer(
 	log *slog.Logger,
 	opts Options,
 ) *Server {
+	resolved := opts.withDefaults()
 	return &Server{
 		store:   store,
 		sec:     sec,
@@ -87,8 +107,16 @@ func NewServer(
 		authMgr: authMgr,
 		pub:     pub,
 		log:     log,
-		opts:    opts.withDefaults(),
+		cf:      resolved.Cloudflare,
+		opts:    resolved,
 	}
+}
+
+func (s *Server) now() time.Time {
+	if s.opts.Now != nil {
+		return s.opts.Now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func (s *Server) requireAuthClaims(ctx context.Context) (*auth.Claims, error) {

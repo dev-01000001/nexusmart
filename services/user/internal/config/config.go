@@ -27,6 +27,12 @@ type Config struct {
 	AdminBootstrapEmail    string
 	AdminBootstrapPassword string
 	SiteRootDomain         string
+	CFMode                 string
+	CFAPIToken             string
+	CFZoneID               string
+	CFOriginHost           string
+	CFCNAMETarget          string
+	CFPollInterval         time.Duration
 	OTLPEndpoint           string
 	OTLPInsecure           bool
 	LogLevel               string
@@ -37,6 +43,14 @@ func Load() Config {
 	rootDomain := strings.Trim(strings.ToLower(strings.TrimSpace(env.EnvString("SITE_ROOT_DOMAIN", "nexusmart.localhost"))), ".")
 	if rootDomain == "" {
 		rootDomain = "nexusmart.localhost"
+	}
+	cfMode := strings.ToLower(strings.TrimSpace(env.EnvString("CF_MODE", "mock")))
+	if cfMode == "" {
+		cfMode = "mock"
+	}
+	cfPollInterval := env.EnvDuration("CF_POLL_INTERVAL", 5*time.Minute)
+	if cfPollInterval <= 0 {
+		cfPollInterval = 5 * time.Minute
 	}
 	return Config{
 		ServiceName:            env.EnvString("SERVICE_NAME", "user"),
@@ -57,6 +71,12 @@ func Load() Config {
 		AdminBootstrapEmail:    env.EnvString("ADMIN_BOOTSTRAP_EMAIL", "admin@nexusmart.local"),
 		AdminBootstrapPassword: env.EnvString("ADMIN_BOOTSTRAP_PASSWORD", "AdminDevPassword123!"),
 		SiteRootDomain:         rootDomain,
+		CFMode:                 cfMode,
+		CFAPIToken:             env.EnvString("CF_API_TOKEN", ""),
+		CFZoneID:               env.EnvString("CF_ZONE_ID", ""),
+		CFOriginHost:           env.EnvString("CF_ORIGIN_HOST", "origin."+rootDomain),
+		CFCNAMETarget:          env.EnvString("CF_CNAME_TARGET", "shops."+rootDomain),
+		CFPollInterval:         cfPollInterval,
 		OTLPEndpoint:           env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		OTLPInsecure:           env.EnvBool("OTEL_EXPORTER_OTLP_INSECURE", true),
 		LogLevel:               env.EnvString("LOG_LEVEL", "info"),

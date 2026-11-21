@@ -637,7 +637,7 @@ func (m *memStore) GetSiteBySubdomain(_ context.Context, lower string) (db.Site,
 
 func (m *memStore) primaryHostLocked(siteID string) string {
 	for _, d := range m.domains {
-		if d.SiteID == siteID && d.IsPrimary {
+		if d.SiteID == siteID && d.IsPrimary && d.Status == DomainStatusActive {
 			return d.Host
 		}
 	}
@@ -715,7 +715,7 @@ func (m *memStore) GetPublishedSiteByHost(_ context.Context, lower string) (db.G
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, d := range m.domains {
-		if !strings.EqualFold(d.Host, lower) {
+		if !strings.EqualFold(d.Host, lower) || d.Status != DomainStatusActive {
 			continue
 		}
 		st, ok := m.sites[d.SiteID]
@@ -980,38 +980,262 @@ func (m *memStore) GetDomainByHost(_ context.Context, lower string) (db.Domain, 
 	return db.Domain{}, pgx.ErrNoRows
 }
 
+func (m *memStore) GetDomainByID(_ context.Context, id string) (db.Domain, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.domains[id]
+	if !ok {
+		return db.Domain{}, pgx.ErrNoRows
+	}
+	return d, nil
+}
+
+func (m *memStore) ListDomainsBySiteID(_ context.Context, siteID string) ([]db.Domain, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]db.Domain, 0)
+	for _, d := range m.domains {
+		if d.SiteID == siteID {
+			out = append(out, d)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].IsPrimary != out[j].IsPrimary {
+			return out[i].IsPrimary
+		}
+		ki, kj := 1, 1
+		if out[i].Kind == DomainKindCustom {
+			ki = 0
+		}
+		if out[j].Kind == DomainKindCustom {
+			kj = 0
+		}
+		if ki != kj {
+			return ki < kj
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+func (m *memStore) GetSiteSubdomainDomain(_ context.Context, siteID string) (db.Domain, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, d := range m.domains {
+		if d.SiteID == siteID && d.Kind == DomainKindSubdomain {
+			return d, nil
+		}
+	}
+	return db.Domain{}, pgx.ErrNoRows
+}
+
+func (m *memStore) GetSiteCustomDomain(_ context.Context, siteID string) (db.Domain, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, d := range m.domains {
+		if d.SiteID == siteID && d.Kind == DomainKindCustom {
+			return d, nil
+		}
+	}
+	return db.Domain{}, pgx.ErrNoRows
+}
+
 func (m *memStore) UpsertSiteSubdomainDomain(_ context.Context, arg db.UpsertSiteSubdomainDomainParams) (db.Domain, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	host := strings.ToLower(arg.Lower)
 	for _, d := range m.domains {
-		if strings.EqualFold(d.Host, host) && !(d.SiteID == arg.SiteID && d.Kind == "SUBDOMAIN") {
-			return db.Domain{}, &pgconn.PgError{Code: "23505"}
+		if strings.EqualFold(d.Host, host) && !(d.SiteID == arg.SiteID && d.Kind == DomainKindSubdomain) {
+			return db.Domain{}, &pgconn.PgError{Code: "23505", ConstraintName: "idx_domains_host_lower"}
 		}
 	}
 	now := time.Now().UTC()
 	for id, d := range m.domains {
-		if d.SiteID == arg.SiteID && d.Kind == "SUBDOMAIN" {
+		if d.SiteID == arg.SiteID && d.Kind == DomainKindSubdomain {
 			d.Host = host
 			d.VerifiedAt = &now
 			d.UpdatedAt = now
+			if d.Status == "" {
+				d.Status = DomainStatusActive
+			}
 			m.domains[id] = d
 			return d, nil
 		}
 	}
+	hasPrimary := false
+	for _, d := range m.domains {
+		if d.SiteID == arg.SiteID && d.IsPrimary {
+			hasPrimary = true
+			break
+		}
+	}
 	d := db.Domain{
-		ID:         arg.ID,
-		SiteID:     arg.SiteID,
-		Host:       host,
-		Kind:       "SUBDOMAIN",
-		IsPrimary:  true,
-		VerifiedAt: &now,
-		TlsStatus:  "MANAGED",
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:           arg.ID,
+		SiteID:       arg.SiteID,
+		Host:         host,
+		Kind:         DomainKindSubdomain,
+		IsPrimary:    !hasPrimary,
+		VerifiedAt:   &now,
+		TlsStatus:    "MANAGED",
+		Status:       DomainStatusActive,
+		Verification: []byte("[]"),
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 	m.domains[d.ID] = d
 	return d, nil
+}
+
+func (m *memStore) CreateCustomDomain(_ context.Context, arg db.CreateCustomDomainParams) (db.Domain, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	host := strings.ToLower(arg.Lower)
+	for _, d := range m.domains {
+		if d.SiteID == arg.SiteID && d.Kind == DomainKindCustom {
+			return db.Domain{}, &pgconn.PgError{Code: "23505", ConstraintName: "idx_domains_site_custom"}
+		}
+		if strings.EqualFold(d.Host, host) {
+			return db.Domain{}, &pgconn.PgError{Code: "23505", ConstraintName: "idx_domains_host_lower"}
+		}
+		if arg.IsPrimary && d.SiteID == arg.SiteID && d.IsPrimary {
+			return db.Domain{}, &pgconn.PgError{Code: "23505", ConstraintName: "idx_domains_site_primary"}
+		}
+	}
+	now := time.Now().UTC()
+	ver := append([]byte(nil), arg.Verification...)
+	if len(ver) == 0 {
+		ver = []byte("[]")
+	}
+	d := db.Domain{
+		ID:                 arg.ID,
+		SiteID:             arg.SiteID,
+		Host:               host,
+		Kind:               DomainKindCustom,
+		IsPrimary:          arg.IsPrimary,
+		VerifiedAt:         arg.VerifiedAt,
+		TlsStatus:          arg.TlsStatus,
+		Status:             arg.Status,
+		CfCustomHostnameID: arg.CfCustomHostnameID,
+		Verification:       ver,
+		LastCheckedAt:      arg.LastCheckedAt,
+		LastError:          arg.LastError,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}
+	m.domains[d.ID] = d
+	return d, nil
+}
+
+func (m *memStore) UpdateDomainCFRecordID(_ context.Context, arg db.UpdateDomainCFRecordIDParams) (db.Domain, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.domains[arg.ID]
+	if !ok {
+		return db.Domain{}, pgx.ErrNoRows
+	}
+	d.CfRecordID = arg.CfRecordID
+	d.UpdatedAt = time.Now().UTC()
+	m.domains[d.ID] = d
+	return d, nil
+}
+
+func (m *memStore) UpdateDomainVerificationState(_ context.Context, arg db.UpdateDomainVerificationStateParams) (db.Domain, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.domains[arg.ID]
+	if !ok {
+		return db.Domain{}, pgx.ErrNoRows
+	}
+	if arg.IsPrimary {
+		for id, other := range m.domains {
+			if id != d.ID && other.SiteID == d.SiteID && other.IsPrimary {
+				return db.Domain{}, &pgconn.PgError{Code: "23505", ConstraintName: "idx_domains_site_primary"}
+			}
+		}
+	}
+	d.Status = arg.Status
+	d.IsPrimary = arg.IsPrimary
+	if d.VerifiedAt == nil {
+		d.VerifiedAt = arg.VerifiedAt
+	}
+	d.TlsStatus = arg.TlsStatus
+	d.Verification = append([]byte(nil), arg.Verification...)
+	d.LastCheckedAt = arg.LastCheckedAt
+	d.LastError = arg.LastError
+	d.UpdatedAt = time.Now().UTC()
+	m.domains[d.ID] = d
+	return d, nil
+}
+
+func (m *memStore) UpdateDomainError(_ context.Context, arg db.UpdateDomainErrorParams) (db.Domain, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.domains[arg.ID]
+	if !ok {
+		return db.Domain{}, pgx.ErrNoRows
+	}
+	d.LastCheckedAt = arg.LastCheckedAt
+	d.LastError = arg.LastError
+	d.UpdatedAt = time.Now().UTC()
+	m.domains[d.ID] = d
+	return d, nil
+}
+
+func (m *memStore) SetSiteDomainPrimary(_ context.Context, arg db.SetSiteDomainPrimaryParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if arg.IsPrimary {
+		for _, other := range m.domains {
+			if other.SiteID == arg.SiteID && other.Kind != arg.Kind && other.IsPrimary {
+				return &pgconn.PgError{Code: "23505", ConstraintName: "idx_domains_site_primary"}
+			}
+		}
+	}
+	now := time.Now().UTC()
+	for id, d := range m.domains {
+		if d.SiteID == arg.SiteID && d.Kind == arg.Kind {
+			d.IsPrimary = arg.IsPrimary
+			d.UpdatedAt = now
+			m.domains[id] = d
+		}
+	}
+	return nil
+}
+
+func (m *memStore) MarkCustomDomainRemoving(_ context.Context, id string) (db.Domain, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.domains[id]
+	if !ok {
+		return db.Domain{}, pgx.ErrNoRows
+	}
+	d.Status = DomainStatusRemoving
+	d.IsPrimary = false
+	d.UpdatedAt = time.Now().UTC()
+	m.domains[d.ID] = d
+	return d, nil
+}
+
+func (m *memStore) DeleteDomain(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.domains, id)
+	return nil
+}
+
+func (m *memStore) ListCustomDomainsByStatus(_ context.Context, st string) ([]db.Domain, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]db.Domain, 0)
+	for _, d := range m.domains {
+		if d.Kind == DomainKindCustom && d.Status == st {
+			out = append(out, d)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
 }
 
 type memOTP struct {

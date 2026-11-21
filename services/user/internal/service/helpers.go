@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
+	"github.com/nexusmart/core/services/user/internal/cloudflare"
 	"github.com/nexusmart/core/services/user/internal/db"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/peer"
@@ -42,6 +43,14 @@ const (
 	SiteStatusDraft     = "DRAFT"
 	SiteStatusPublished = "PUBLISHED"
 	SiteStatusSuspended = "SUSPENDED"
+
+	DomainKindSubdomain = "SUBDOMAIN"
+	DomainKindCustom    = "CUSTOM"
+
+	DomainStatusPending  = "PENDING"
+	DomainStatusActive   = "ACTIVE"
+	DomainStatusFailed   = "FAILED"
+	DomainStatusRemoving = "REMOVING"
 )
 
 func normalizeEmail(email string) string {
@@ -68,6 +77,14 @@ func isUniqueViolation(err error) bool {
 		return pgErr.Code == "23505"
 	}
 	return false
+}
+
+func uniqueConstraintName(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return pgErr.ConstraintName
+	}
+	return ""
 }
 
 func isNotFoundErr(err error) bool {
@@ -373,5 +390,59 @@ func auditSiteSnapshot(s db.Site) map[string]any {
 		"status":               s.Status,
 		"published_version_id": pubVerID,
 		"suspended_reason":     s.SuspendedReason,
+	}
+}
+
+func toProtoDomain(d db.Domain) *userv1.Domain {
+	var records []*userv1.DomainVerificationRecord
+	if len(d.Verification) > 0 {
+		var parsed []cloudflare.VerificationRecord
+		if err := json.Unmarshal(d.Verification, &parsed); err == nil && len(parsed) > 0 {
+			records = make([]*userv1.DomainVerificationRecord, 0, len(parsed))
+			for _, rec := range parsed {
+				records = append(records, &userv1.DomainVerificationRecord{
+					Type:  rec.Type,
+					Name:  rec.Name,
+					Value: rec.Value,
+				})
+			}
+		}
+	}
+
+	out := &userv1.Domain{
+		Id:           d.ID,
+		Host:         d.Host,
+		Kind:         d.Kind,
+		Status:       d.Status,
+		IsPrimary:    d.IsPrimary,
+		Verification: records,
+		CreatedAt:    timestamppb.New(d.CreatedAt),
+	}
+	if d.LastError != nil {
+		out.LastError = *d.LastError
+	}
+	if d.VerifiedAt != nil {
+		out.VerifiedAt = timestamppb.New(*d.VerifiedAt)
+	}
+	return out
+}
+
+func auditDomainSnapshot(d db.Domain) map[string]any {
+	var cfHostnameID, lastErr string
+	if d.CfCustomHostnameID != nil {
+		cfHostnameID = *d.CfCustomHostnameID
+	}
+	if d.LastError != nil {
+		lastErr = *d.LastError
+	}
+	return map[string]any{
+		"id":                    d.ID,
+		"site_id":               d.SiteID,
+		"host":                  d.Host,
+		"kind":                  d.Kind,
+		"status":                d.Status,
+		"is_primary":            d.IsPrimary,
+		"cf_custom_hostname_id": cfHostnameID,
+		"last_error":            lastErr,
 	}
 }

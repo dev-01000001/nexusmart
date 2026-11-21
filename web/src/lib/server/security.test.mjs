@@ -301,10 +301,7 @@ test("applyAuthCookiesToHeader replaces or removes auth cookies while preserving
     refreshToken: "new_rt",
     expiresIn: 900,
   });
-  assert.equal(
-    replaced,
-    `theme=light; other=1; ${ACCESS_COOKIE}=new_at; ${REFRESH_COOKIE}=new_rt`
-  );
+  assert.equal(replaced, `theme=light; other=1; ${ACCESS_COOKIE}=new_at; ${REFRESH_COOKIE}=new_rt`);
 
   const cleared = applyAuthCookiesToHeader(orig, null);
   assert.equal(cleared, "theme=light; other=1");
@@ -494,7 +491,13 @@ test("storefront tenant scoping isolates cart, orders, payments, and vouchers to
         subtotal_vnd: 200000,
         total_weight_grams: 400,
         items: [
-          { sku_id: "sku-a1", shop_id: "shop-a", price_vnd: 100000, quantity: 2, weight_grams: 200 },
+          {
+            sku_id: "sku-a1",
+            shop_id: "shop-a",
+            price_vnd: 100000,
+            quantity: 2,
+            weight_grams: 200,
+          },
         ],
       },
       {
@@ -503,7 +506,13 @@ test("storefront tenant scoping isolates cart, orders, payments, and vouchers to
         subtotal_vnd: 350000,
         total_weight_grams: 500,
         items: [
-          { sku_id: "sku-b1", shop_id: "shop-b", price_vnd: 350000, quantity: 1, weight_grams: 500 },
+          {
+            sku_id: "sku-b1",
+            shop_id: "shop-b",
+            price_vnd: 350000,
+            quantity: 1,
+            weight_grams: 500,
+          },
         ],
       },
     ],
@@ -532,7 +541,8 @@ test("storefront tenant scoping isolates cart, orders, payments, and vouchers to
 
   // Cross-site order/payment throws 404 (not 403)
   assert.throws(
-    () => assertInStorefront({ sales_channel: "STOREFRONT", storefront_shop_id: "shop-b" }, "shop-a"),
+    () =>
+      assertInStorefront({ sales_channel: "STOREFRONT", storefront_shop_id: "shop-b" }, "shop-a"),
     (err) => err instanceof GatewayError && err.status === 404
   );
   assert.throws(
@@ -579,12 +589,12 @@ test("storefront tenant scoping isolates cart, orders, payments, and vouchers to
   assert.deepEqual(resolveSiteShopVoucherMap({ shop_voucher_id: "v-a" }, "shop-a"), {
     "shop-a": "v-a",
   });
-  assert.deepEqual(
-    resolveSiteShopVoucherMap({ shop_voucher_ids: { "shop-a": "v-a" } }, "shop-a"),
-    { "shop-a": "v-a" }
-  );
+  assert.deepEqual(resolveSiteShopVoucherMap({ shop_voucher_ids: { "shop-a": "v-a" } }, "shop-a"), {
+    "shop-a": "v-a",
+  });
   assert.throws(
     () => resolveSiteShopVoucherMap({ shop_voucher_ids: { "shop-b": "v-b" } }, "shop-a"),
-    (err) => err instanceof GatewayError && err.status === 400 && err.code === "FOREIGN_SHOP_VOUCHER"
+    (err) =>
+      err instanceof GatewayError && err.status === 400 && err.code === "FOREIGN_SHOP_VOUCHER"
   );
 });

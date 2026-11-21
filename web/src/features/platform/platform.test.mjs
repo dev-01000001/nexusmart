@@ -11,7 +11,11 @@ import { checkSubdomain, suggestSubdomain } from "./subdomain.ts";
 import { legacySiteTarget, shopMatchesLegacySlug } from "./legacyModel.ts";
 import { legacyNotFound, legacyRedirect, safeDecode } from "./legacyResponse.ts";
 
-const ctx = { rootDomain: "nexusmart.localhost", rawHost: "nexusmart.localhost:3401", proto: "http" };
+const ctx = {
+  rootDomain: "nexusmart.localhost",
+  rawHost: "nexusmart.localhost:3401",
+  proto: "http",
+};
 
 const row = (over = {}) => ({
   site_id: "site-1",
@@ -38,10 +42,11 @@ test("directory site accepts custom primary_host, falls back to subdomain, and r
   assert.equal(custom.host, "hanoi-knit.verified.test");
   assert.equal(custom.origin, "http://hanoi-knit.verified.test:3401");
 
-  const prodCustom = normalizeDirectorySite(
-    row({ primary_host: "shop.brand.vn" }),
-    { rootDomain: "nexusmart.vn", rawHost: "nexusmart.vn", proto: "https" }
-  );
+  const prodCustom = normalizeDirectorySite(row({ primary_host: "shop.brand.vn" }), {
+    rootDomain: "nexusmart.vn",
+    rawHost: "nexusmart.vn",
+    proto: "https",
+  });
   assert.equal(prodCustom.host, "shop.brand.vn");
   assert.equal(prodCustom.origin, "https://shop.brand.vn");
 
@@ -85,7 +90,12 @@ test("directory site accepts custom primary_host, falls back to subdomain, and r
 test("directory response dedupes rows, caps page size and derives page count", () => {
   const page = normalizeDirectoryResponse(
     {
-      sites: [row(), row(), row({ site_id: "site-2", subdomain: "sai-gon", primary_host: "" }), null],
+      sites: [
+        row(),
+        row(),
+        row({ site_id: "site-2", subdomain: "sai-gon", primary_host: "" }),
+        null,
+      ],
       total: 50,
       page: 2,
       page_size: 500,
