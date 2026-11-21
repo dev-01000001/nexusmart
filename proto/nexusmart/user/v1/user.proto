@@ -582,6 +582,47 @@ message ListSiteDomainsResponse {
   repeated Domain domains = 1;
 }
 
+message SiteTemplate {
+  string id = 1;
+  string slug = 2;
+  string name = 3;
+  string category = 4;
+  string archetype = 5;
+  string description = 6;
+  string preview_image_url = 7;
+  repeated string tags = 8;
+  string config_json = 9;
+  bool is_active = 10;
+  int32 sort_order = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+
+message ListSiteTemplatesRequest {}
+
+message ListSiteTemplatesResponse {
+  repeated SiteTemplate templates = 1;
+}
+
+message GetSiteTemplateRequest {
+  string id = 1;
+}
+
+message GetSiteTemplateResponse {
+  SiteTemplate template = 1;
+}
+
+message ApplySiteTemplateRequest {
+  string shop_id = 1;
+  string template_id = 2;
+  string subdomain = 3;
+}
+
+message ApplySiteTemplateResponse {
+  Site site = 1;
+  SiteTemplate template = 2;
+}
+
 service UserService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   rpc VerifyOTP(VerifyOTPRequest) returns (VerifyOTPResponse);
@@ -621,4 +662,7 @@ service UserService {
   rpc CheckCustomDomain(CheckCustomDomainRequest) returns (CheckCustomDomainResponse);
   rpc RemoveCustomDomain(RemoveCustomDomainRequest) returns (RemoveCustomDomainResponse);
   rpc ListSiteDomains(ListSiteDomainsRequest) returns (ListSiteDomainsResponse);
+  rpc ListSiteTemplates(ListSiteTemplatesRequest) returns (ListSiteTemplatesResponse);
+  rpc GetSiteTemplate(GetSiteTemplateRequest) returns (GetSiteTemplateResponse);
+  rpc ApplySiteTemplate(ApplySiteTemplateRequest) returns (ApplySiteTemplateResponse);
 }
