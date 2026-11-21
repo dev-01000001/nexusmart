@@ -1,0 +1,903 @@
+//! PostgreSQL integration tests for ZaloPay full payment lifecycle, HMAC + anti-replay IPN,
+//! 10x webhook idempotency, double-entry VND ledger invariants, settled return refunds,
+//! seller balance (pending -> available -> payout), expiry watchdog, order.cancelled auto-refund,
+//! daily reconciliation (VietQR + ZaloPay + auto-heal), and ListReconciliationReports (gRPC & HTTP).
+//!
+//! Runs against an isolated database created on the server pointed to by `PAYMENT_TEST_DATABASE_URL`
+//! (and skips cleanly when `PAYMENT_TEST_DATABASE_URL` is unset).
+
+use axum::body::Body;
+use axum::http::{Method, Request, StatusCode};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use chrono::{Duration, Utc};
+use hmac::{Hmac, Mac};
+use http_body_util::BodyExt;
+use serde_json::json;
+use sha2::Sha256;
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{Executor, PgPool};
+use tonic::metadata::MetadataValue;
+use tower::ServiceExt;
+use uuid::Uuid;
+
+use nexusmart_payment::auth::GrpcAuth;
+use nexusmart_payment::config::{Config, ZaloPayMode};
+use nexusmart_payment::domain::{
+    CreatePaymentInput, CreateRefundInput, PaymentMethod, SalesChannel, ShopAllocationInput,
+};
+use nexusmart_payment::error::PaymentError;
+use nexusmart_payment::grpc::pb::payment_service_server::PaymentService as PaymentServiceGrpc;
+use nexusmart_payment::grpc::pb::{
+    CancelPaymentRequest, CreatePaymentRequest, CreateRefundRequest, GetLedgerSummaryRequest,
+    GetPaymentRequest, GetSellerBalanceRequest, ListReconciliationReportsRequest,
+    PaymentMethod as ProtoMethod, ReleaseEscrowRequest, RunReconciliationRequest, ShopAllocation,
+};
+use nexusmart_payment::grpc::PaymentGrpcServer;
+use nexusmart_payment::http::build_router;
+use nexusmart_payment::ledger;
+use nexusmart_payment::metrics::Metrics;
+use nexusmart_payment::service::PaymentService;
+use nexusmart_payment::vietqr::ProviderTransaction;
+
+const TEST_USER_JWT_SECRET: &str = "it-user-jwt-secret-key";
+const TEST_SVC_JWT_SECRET: &str = "it-service-jwt-secret-key";
+
+fn sign_test_jwt(secret: &str, claims: serde_json::Value) -> String {
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
+    let payload = URL_SAFE_NO_PAD.encode(claims.to_string());
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(format!("{header}.{payload}").as_bytes());
+    let sig = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+    format!("{header}.{payload}.{sig}")
+}
+
+fn user_bearer(role: &str, user_id: &str, shop_id: &str) -> String {
+    let tok = sign_test_jwt(
+        TEST_USER_JWT_SECRET,
+        json!({
+            "sub": user_id,
+            "role": role,
+            "shop_id": shop_id,
+            "exp": Utc::now().timestamp() + 300,
+        }),
+    );
+    format!("Bearer {tok}")
+}
+
+fn grpc_req<T>(payload: T, role: &str, user_id: &str, shop_id: &str) -> tonic::Request<T> {
+    let mut req = tonic::Request::new(payload);
+    let hdr = user_bearer(role, user_id, shop_id);
+    req.metadata_mut()
+        .insert("authorization", MetadataValue::try_from(hdr).unwrap());
+    req
+}
+
+async fn setup_isolated_db(base_db_url: &str) -> (PgPool, PgPool, String, String) {
+    let admin_pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(base_db_url)
+        .await
+        .expect("connect to base test Postgres");
+
+    let db_name = format!("payment_it_{}", &Uuid::new_v4().simple().to_string()[..12]);
+    admin_pool
+        .execute(format!("CREATE DATABASE {db_name}").as_str())
+        .await
+        .expect("create isolated test database");
+
+    let (prefix, query) = match base_db_url.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (base_db_url, None),
+    };
+    let slash_idx = prefix.rfind('/').expect("valid postgres URL with db path");
+    let isolated_url = match query {
+        Some(q) => format!("{}/{db_name}?{q}", &prefix[..slash_idx]),
+        None => format!("{}/{db_name}", &prefix[..slash_idx]),
+    };
+
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&isolated_url)
+        .await
+        .expect("connect to isolated test database");
+
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("apply embedded sqlx migrations (0001..0003)");
+
+    (admin_pool, pool, db_name, isolated_url)
+}
+
+async fn teardown_isolated_db(admin_pool: PgPool, pool: PgPool, db_name: &str) {
+    pool.close().await;
+    let _ = admin_pool
+        .execute(format!("DROP DATABASE IF EXISTS {db_name} WITH (FORCE)").as_str())
+        .await;
+    admin_pool.close().await;
+}
+
+#[tokio::test]
+async fn test_pg_zalopay_full_lifecycle_refunds_seller_balance_and_reconciliation_reports() {
+    let Ok(base_db_url) = std::env::var("PAYMENT_TEST_DATABASE_URL") else {
+        eprintln!(
+            "skipping PG integration test (set PAYMENT_TEST_DATABASE_URL to run against Postgres)"
+        );
+        return;
+    };
+
+    let (admin_pool, pool, db_name, isolated_url) = setup_isolated_db(&base_db_url).await;
+
+    let mut cfg = Config::from_env();
+    cfg.database_url = isolated_url;
+    cfg.webhook_secret = "it-vietqr-webhook-secret".to_string();
+    cfg.jwt_secret = TEST_USER_JWT_SECRET.to_string();
+    cfg.service_jwt_secret = TEST_SVC_JWT_SECRET.to_string();
+    cfg.zalopay_mode = ZaloPayMode::Mock;
+    cfg.zalopay_app_id = 2554;
+    cfg.zalopay_key1 = "it-zalopay-key1".to_string();
+    cfg.zalopay_key2 = "it-zalopay-key2".to_string();
+
+    let svc = PaymentService::new(pool.clone(), cfg.clone(), Metrics::new());
+    let auth = GrpcAuth::new(TEST_USER_JWT_SECRET, TEST_SVC_JWT_SECRET).unwrap();
+    let app = build_router(svc.clone(), auth.clone());
+    let grpc = PaymentGrpcServer::new(svc.clone(), auth);
+
+    // -------------------------------------------------------------------------
+    // 1. Create ZaloPay payment via gRPC (PAYMENT_METHOD_ZALOPAY) + idempotency
+    // -------------------------------------------------------------------------
+    let create_req = CreatePaymentRequest {
+        order_group_id: "grp-zp-1".into(),
+        order_id: "ord-zp-1".into(),
+        user_id: "buyer-zp-1".into(),
+        amount_vnd: 330_000,
+        method: ProtoMethod::Zalopay as i32,
+        shop_allocations: vec![ShopAllocation {
+            order_id: "ord-zp-1".into(),
+            shop_id: "shop-zp-1".into(),
+            subtotal_vnd: 300_000,
+            commission_vnd: 15_000,
+            shipping_fee_vnd: 30_000,
+            sales_channel: "MARKETPLACE".into(),
+            storefront_shop_id: String::new(),
+        }],
+        expires_at: None,
+        idempotency_key: "idem-zp-1".into(),
+        supersede_previous: false,
+        sales_channel: "MARKETPLACE".into(),
+        storefront_shop_id: String::new(),
+    };
+    let created_pb = grpc
+        .create_payment(grpc_req(create_req.clone(), "buyer", "buyer-zp-1", ""))
+        .await
+        .expect("gRPC CreatePayment ZALOPAY")
+        .into_inner()
+        .payment
+        .expect("payment present");
+    assert_eq!(created_pb.method, ProtoMethod::Zalopay as i32);
+    assert_eq!(created_pb.provider, "zalopay_mock");
+    assert!(created_pb.provider_ref.contains("_NM"));
+    assert!(created_pb.qr_code.starts_with("ZPTOK"));
+    assert!(created_pb.qr_url.contains("openinapp"));
+    assert!(created_pb.expires_at.is_some());
+
+    // Duplicate idempotency_key returns exact same payment ID
+    let created_pb_dup = grpc
+        .create_payment(grpc_req(create_req, "buyer", "buyer-zp-1", ""))
+        .await
+        .expect("idempotent CreatePayment")
+        .into_inner()
+        .payment
+        .unwrap();
+    assert_eq!(created_pb_dup.payment_id, created_pb.payment_id);
+
+    let zp1_id = Uuid::parse_str(&created_pb.payment_id).unwrap();
+    let zp1_app_trans_id = created_pb.provider_ref.clone();
+
+    // -------------------------------------------------------------------------
+    // 2. HTTP /webhooks/zalopay: invalid MAC (401), stale timestamp (401),
+    //    then 10x duplicate valid callback -> ledger posted ONCE!
+    // -------------------------------------------------------------------------
+    let valid_cb_body = svc.zalopay().build_mock_callback_signed(
+        Some(zp1_id),
+        Some("grp-zp-1".into()),
+        Some("ord-zp-1".into()),
+        &zp1_app_trans_id,
+        "26112100001001",
+        330_000,
+        Utc::now().timestamp_millis(),
+    );
+
+    for attempt in 0..10 {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/zalopay")
+                    .header("content-type", "application/json")
+                    .body(Body::from(valid_cb_body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let json_body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json_body["return_code"], 1);
+        assert_eq!(json_body["return_message"], "success");
+        assert_eq!(json_body["provider_tx_id"], "26112100001001");
+        if attempt == 0 {
+            assert_eq!(json_body["duplicate"], false);
+            assert_eq!(json_body["status"], "processed");
+        } else {
+            assert_eq!(json_body["duplicate"], true);
+            assert_eq!(json_body["status"], "duplicate_ignored");
+        }
+    }
+
+    // Exactly ONE double-entry ledger transaction posted for payment_zalopay
+    let zp_ledger_tx_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM ledger_transactions WHERE reference_type = 'payment_zalopay' AND reference_id = $1",
+    )
+    .bind(zp1_id.to_string())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(zp_ledger_tx_count, 1);
+
+    // Outbox has payment.succeeded with method = ZALOPAY
+    let outbox_method: String = sqlx::query_scalar(
+        "SELECT payload->>'method' FROM outbox_events WHERE event_type = 'payment.succeeded' AND aggregate_id = 'grp-zp-1' LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(outbox_method, "ZALOPAY");
+
+    // GetPayment via gRPC (owner allowed, other buyer forbidden)
+    let got = grpc
+        .get_payment(grpc_req(
+            GetPaymentRequest {
+                payment_id: zp1_id.to_string(),
+                order_group_id: String::new(),
+                order_id: String::new(),
+            },
+            "buyer",
+            "buyer-zp-1",
+            "",
+        ))
+        .await
+        .expect("owner GetPayment")
+        .into_inner()
+        .payment
+        .unwrap();
+    assert_eq!(got.provider_ref, "26112100001001");
+
+    let denied = grpc
+        .get_payment(grpc_req(
+            GetPaymentRequest {
+                payment_id: zp1_id.to_string(),
+                order_group_id: String::new(),
+                order_id: String::new(),
+            },
+            "buyer",
+            "other-buyer",
+            "",
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+
+    // -------------------------------------------------------------------------
+    // 3. Order completed -> seller_pending -> release_escrow -> seller_available -> payout
+    // -------------------------------------------------------------------------
+    assert!(svc
+        .process_order_completed_event("evt-complete-zp-1", "ord-zp-1")
+        .await
+        .unwrap());
+    // Duplicate NATS event ignored idempotently
+    assert!(!svc
+        .process_order_completed_event("evt-complete-zp-1", "ord-zp-1")
+        .await
+        .unwrap());
+
+    let bal_pending = grpc
+        .get_seller_balance(grpc_req(
+            GetSellerBalanceRequest {
+                shop_id: "shop-zp-1".into(),
+            },
+            "seller",
+            "seller-zp-1",
+            "shop-zp-1",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(bal_pending.pending_vnd, 285_000);
+    assert_eq!(bal_pending.available_vnd, 0);
+    assert_eq!(bal_pending.total_earned_vnd, 285_000);
+
+    // Release escrow via gRPC
+    let rel1 = grpc
+        .release_escrow(grpc_req(
+            ReleaseEscrowRequest {
+                order_id: "ord-zp-1".into(),
+                shop_id: "shop-zp-1".into(),
+            },
+            "admin",
+            "admin-1",
+            "",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(rel1.released);
+    assert_eq!(rel1.released_amount_vnd, 285_000);
+    assert!(!rel1.already_released);
+
+    // Idempotent second release
+    let rel2 = svc
+        .release_escrow("ord-zp-1", Some("shop-zp-1"))
+        .await
+        .unwrap();
+    assert!(rel2.already_released);
+    assert_eq!(rel2.released_amount_vnd, 0);
+
+    let bal_avail = svc.get_seller_balance("shop-zp-1").await.unwrap();
+    assert_eq!(bal_avail.pending_vnd, 0);
+    assert_eq!(bal_avail.available_vnd, 285_000);
+
+    // Seller payout: over-withdrawal rejected, valid partial payout succeeds & idempotent
+    let over_err = svc
+        .request_seller_payout("shop-zp-1", 285_001, "19034567890123", "payout-over")
+        .await
+        .unwrap_err();
+    assert!(matches!(over_err, PaymentError::InsufficientBalance { .. }));
+
+    let payout1 = svc
+        .request_seller_payout("shop-zp-1", 100_000, "19034567890123", "payout-zp-1")
+        .await
+        .unwrap();
+    assert_eq!(payout1.bank_account_masked, "****0123");
+    let payout1_dup = svc
+        .request_seller_payout("shop-zp-1", 100_000, "19034567890123", "payout-zp-1")
+        .await
+        .unwrap();
+    assert_eq!(payout1_dup.id, payout1.id);
+
+    let bal_after_payout = svc.get_seller_balance("shop-zp-1").await.unwrap();
+    assert_eq!(bal_after_payout.available_vnd, 185_000);
+
+    // -------------------------------------------------------------------------
+    // 4. Post-release Return Refund on ZaloPay (reverses seller_available!)
+    //    AND post-completion (pending_release) Return Refund (reverses seller_pending!)
+    // -------------------------------------------------------------------------
+    // 4a. Partial return refund (165,000 = 50% of 330,000) on RELEASED allocation ord-zp-1
+    let ref_released_resp = grpc
+        .create_refund(grpc_req(
+            CreateRefundRequest {
+                payment_id: zp1_id.to_string(),
+                order_id: "ord-zp-1".into(),
+                amount_vnd: 165_000,
+                reason: "partial post-release return".into(),
+                idempotency_key: "refund-zp-released-1".into(),
+            },
+            "admin",
+            "admin-1",
+            "",
+        ))
+        .await
+        .expect("CreateRefund on released ZaloPay allocation")
+        .into_inner();
+    assert!(!ref_released_resp.already_existed);
+    let ref_released = ref_released_resp.refund.unwrap();
+    assert_eq!(ref_released.amount_vnd, 165_000);
+
+    // Verify provider_refund_id saved in DB for ZaloPay refund
+    let provider_ref_id: Option<String> =
+        sqlx::query_scalar("SELECT provider_refund_id FROM refunds WHERE id = $1")
+            .bind(Uuid::parse_str(&ref_released.refund_id).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        provider_ref_id
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("zpmock_ref_2554_"),
+        "expected deterministic ZaloPay mock refund ID, got {provider_ref_id:?}"
+    );
+
+    // Seller available balance MUST decrease by 50% of 285,000 = 142,500 (185,000 -> 42,500)
+    let bal_after_ret = svc.get_seller_balance("shop-zp-1").await.unwrap();
+    assert_eq!(bal_after_ret.available_vnd, 42_500);
+
+    // 4b. Second ZaloPay payment settled to `pending_release`, then fully refunded!
+    let zp2 = svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: "grp-zp-2".into(),
+            order_id: "ord-zp-2".into(),
+            user_id: "buyer-zp-2".into(),
+            amount_vnd: 230_000,
+            method: PaymentMethod::ZaloPay,
+            shop_allocations: vec![ShopAllocationInput {
+                order_id: Some("ord-zp-2".into()),
+                shop_id: "shop-zp-2".into(),
+                subtotal_vnd: 200_000,
+                commission_vnd: 10_000,
+                shipping_fee_vnd: 30_000,
+                sales_channel: "STOREFRONT".into(),
+                storefront_shop_id: "shop-zp-2".into(),
+            }],
+            expires_at: None,
+            idempotency_key: Some("idem-zp-2".into()),
+            supersede_previous: false,
+            sales_channel: "STOREFRONT".into(),
+            storefront_shop_id: "shop-zp-2".into(),
+            trace_id: "trace-zp-2".into(),
+        })
+        .await
+        .unwrap();
+    let cb2 = svc.zalopay().build_mock_callback_signed(
+        Some(zp2.payment.id),
+        Some("grp-zp-2".into()),
+        Some("ord-zp-2".into()),
+        &zp2.payment.provider_order_code,
+        "26112100001002",
+        230_000,
+        Utc::now().timestamp_millis(),
+    );
+    let verified2 = svc
+        .zalopay()
+        .verify_callback(&cb2, None, 300, Utc::now())
+        .unwrap();
+    svc.process_verified_webhook(verified2.payload, verified2.raw_json, "zalopay_mock", "t2")
+        .await
+        .unwrap();
+    assert_eq!(svc.settle_order_to_pending("ord-zp-2").await.unwrap(), 1);
+    assert_eq!(
+        svc.get_seller_balance("shop-zp-2")
+            .await
+            .unwrap()
+            .pending_vnd,
+        190_000
+    );
+
+    let full_ret = svc
+        .create_refund(CreateRefundInput {
+            payment_id: Some(zp2.payment.id),
+            order_id: "ord-zp-2".into(),
+            amount_vnd: 230_000,
+            reason: "full return while pending_release".into(),
+            idempotency_key: "refund-zp-pending-2".into(),
+            trace_id: "trace-ref-2".into(),
+        })
+        .await
+        .unwrap();
+    assert!(full_ret.refund.provider_refund_id.is_some());
+    assert_eq!(
+        svc.get_seller_balance("shop-zp-2")
+            .await
+            .unwrap()
+            .pending_vnd,
+        0
+    );
+    let zp2_after = svc
+        .get_payment(Some(zp2.payment.id), None, None)
+        .await
+        .unwrap();
+    assert_eq!(zp2_after.payment.status, "refunded");
+    assert_eq!(zp2_after.allocations[0].escrow_status, "refunded");
+
+    // -------------------------------------------------------------------------
+    // 5. ZaloPay expiry watchdog + late webhook auto-refund + order.cancelled
+    // -------------------------------------------------------------------------
+    let zp_exp_unpaid = svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: "grp-zp-exp-1".into(),
+            order_id: "ord-zp-exp-1".into(),
+            user_id: "buyer-exp".into(),
+            amount_vnd: 120_000,
+            method: PaymentMethod::ZaloPay,
+            shop_allocations: vec![],
+            expires_at: Some(Utc::now() - Duration::minutes(1)),
+            idempotency_key: Some("idem-zp-exp-1".into()),
+            supersede_previous: false,
+            sales_channel: "MARKETPLACE".into(),
+            storefront_shop_id: String::new(),
+            trace_id: "trace-exp-1".into(),
+        })
+        .await
+        .unwrap();
+
+    let zp_exp_paid = svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: "grp-zp-exp-2".into(),
+            order_id: "ord-zp-exp-2".into(),
+            user_id: "buyer-exp".into(),
+            amount_vnd: 140_000,
+            method: PaymentMethod::ZaloPay,
+            shop_allocations: vec![],
+            expires_at: Some(Utc::now() - Duration::minutes(1)),
+            idempotency_key: Some("idem-zp-exp-2".into()),
+            supersede_previous: false,
+            sales_channel: "MARKETPLACE".into(),
+            storefront_shop_id: String::new(),
+            trace_id: "trace-exp-2".into(),
+        })
+        .await
+        .unwrap();
+    // Simulate provider actually having confirmed zp_exp_paid right before expiry scan
+    svc.zalopay().record_mock_transaction(ProviderTransaction {
+        provider_tx_id: "26112100001099".into(),
+        provider_order_code: zp_exp_paid.payment.provider_order_code.clone(),
+        amount_vnd: 140_000,
+        status: "succeeded".into(),
+        occurred_at: Utc::now(),
+    });
+
+    let expired_count = svc.scan_expired_payments().await.unwrap();
+    assert_eq!(expired_count, 1);
+    assert_eq!(
+        svc.get_payment(Some(zp_exp_unpaid.payment.id), None, None)
+            .await
+            .unwrap()
+            .payment
+            .status,
+        "expired"
+    );
+    assert_eq!(
+        svc.get_payment(Some(zp_exp_paid.payment.id), None, None)
+            .await
+            .unwrap()
+            .payment
+            .status,
+        "succeeded"
+    );
+
+    // Late ZaloPay callback on expired payment -> late_payment_refund_queued!
+    let late_cb = svc.zalopay().build_mock_callback_signed(
+        Some(zp_exp_unpaid.payment.id),
+        Some("grp-zp-exp-1".into()),
+        Some("ord-zp-exp-1".into()),
+        &zp_exp_unpaid.payment.provider_order_code,
+        "26112100001088",
+        120_000,
+        Utc::now().timestamp_millis(),
+    );
+    let late_v = svc
+        .zalopay()
+        .verify_callback(&late_cb, None, 300, Utc::now())
+        .unwrap();
+    let late_res = svc
+        .process_verified_webhook(late_v.payload, late_v.raw_json, "zalopay_mock", "t-late")
+        .await
+        .unwrap();
+    assert_eq!(late_res.status, "late_payment_refund_queued");
+
+    // order.cancelled on succeeded ZaloPay payment -> auto-refund with provider_refund_id!
+    assert!(svc
+        .process_order_cancelled_event("evt-cancel-zp-exp-paid", "ord-zp-exp-2", "t-cancel")
+        .await
+        .unwrap());
+    assert!(!svc
+        .process_order_cancelled_event("evt-cancel-zp-exp-paid", "ord-zp-exp-2", "t-cancel")
+        .await
+        .unwrap());
+    assert_eq!(
+        svc.get_payment(Some(zp_exp_paid.payment.id), None, None)
+            .await
+            .unwrap()
+            .payment
+            .status,
+        "refunded"
+    );
+
+    // Cancel pending ZaloPay payment via gRPC
+    let zp_cancel = svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: "grp-zp-cancel".into(),
+            order_id: "ord-zp-cancel".into(),
+            user_id: "buyer-cancel".into(),
+            amount_vnd: 90_000,
+            method: PaymentMethod::ZaloPay,
+            shop_allocations: vec![],
+            expires_at: None,
+            idempotency_key: Some("idem-zp-cancel".into()),
+            supersede_previous: false,
+            sales_channel: "MARKETPLACE".into(),
+            storefront_shop_id: String::new(),
+            trace_id: "trace-cancel".into(),
+        })
+        .await
+        .unwrap();
+    let cancelled_pb = grpc
+        .cancel_payment(grpc_req(
+            CancelPaymentRequest {
+                payment_id: zp_cancel.payment.id.to_string(),
+                order_group_id: String::new(),
+                reason: "buyer changed mind".into(),
+            },
+            "buyer",
+            "buyer-cancel",
+            "",
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .payment
+        .unwrap();
+    assert_eq!(cancelled_pb.payment_id, zp_cancel.payment.id.to_string());
+
+    // -------------------------------------------------------------------------
+    // 6. Daily Reconciliation (VietQR + ZaloPay + Auto-Heal) + List Reports (gRPC & HTTP)
+    // -------------------------------------------------------------------------
+    // Add one VietQR payment (confirmed via /webhooks/vietqr) + one pending ZaloPay auto-heal
+    let vq = svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: "grp-vq-recon".into(),
+            order_id: "ord-vq-recon".into(),
+            user_id: "buyer-vq".into(),
+            amount_vnd: 200_000,
+            method: PaymentMethod::VietQr,
+            shop_allocations: vec![],
+            expires_at: None,
+            idempotency_key: Some("idem-vq-recon".into()),
+            supersede_previous: false,
+            sales_channel: "MARKETPLACE".into(),
+            storefront_shop_id: String::new(),
+            trace_id: "trace-vq".into(),
+        })
+        .await
+        .unwrap();
+    let (vq_body, vq_sig) = svc.vietqr().build_mock_webhook_signed(
+        Some(vq.payment.id),
+        Some("ord-vq-recon".into()),
+        Some(vq.payment.provider_order_code.clone()),
+        "VQ-TX-RECON-1".into(),
+        200_000,
+    );
+    let vq_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/webhooks/vietqr")
+                .header("content-type", "application/json")
+                .header("x-signature", vq_sig)
+                .header("x-timestamp", Utc::now().timestamp().to_string())
+                .body(Body::from(vq_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(vq_resp.status(), StatusCode::OK);
+
+    // Pending ZaloPay payment whose callback was missed but IS present in provider feed -> auto-healed!
+    let zp_heal = svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: "grp-zp-heal".into(),
+            order_id: "ord-zp-heal".into(),
+            user_id: "buyer-heal".into(),
+            amount_vnd: 175_000,
+            method: PaymentMethod::ZaloPay,
+            shop_allocations: vec![],
+            expires_at: None,
+            idempotency_key: Some("idem-zp-heal".into()),
+            supersede_previous: false,
+            sales_channel: "MARKETPLACE".into(),
+            storefront_shop_id: String::new(),
+            trace_id: "trace-heal".into(),
+        })
+        .await
+        .unwrap();
+    svc.zalopay().record_mock_transaction(ProviderTransaction {
+        provider_tx_id: "26112100009900".into(),
+        provider_order_code: zp_heal.payment.provider_order_code.clone(),
+        amount_vnd: 175_000,
+        status: "succeeded".into(),
+        occurred_at: Utc::now(),
+    });
+
+    // Run reconciliation via gRPC -> verifies auto_healed_count == 1 & VietQR + ZaloPay both matched!
+    let today_str = Utc::now().date_naive().format("%Y-%m-%d").to_string();
+    let recon_pb = grpc
+        .run_reconciliation(grpc_req(
+            RunReconciliationRequest {
+                date: today_str.clone(),
+                sales_channel: String::new(),
+            },
+            "admin",
+            "admin-1",
+            "",
+        ))
+        .await
+        .expect("gRPC RunReconciliation")
+        .into_inner();
+    assert_eq!(recon_pb.auto_healed_count, 1);
+    assert!(
+        recon_pb.matched_count >= 5,
+        "expected VietQR + ZaloPay matched (including healed), got {}",
+        recon_pb.matched_count
+    );
+
+    // Also run a STOREFRONT-scoped reconciliation via HTTP /internal/reconciliation/run
+    let admin_hdr = user_bearer("admin", "admin-1", "");
+    let http_run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/internal/reconciliation/run?date={today_str}&sales_channel=STOREFRONT"
+                ))
+                .header("authorization", &admin_hdr)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(http_run_resp.status(), StatusCode::OK);
+
+    // ListReconciliationReports via gRPC (unfiltered -> 2 runs, STOREFRONT -> 1 run)
+    let all_reports_pb = grpc
+        .list_reconciliation_reports(grpc_req(
+            ListReconciliationReportsRequest {
+                limit: 10,
+                sales_channel: String::new(),
+            },
+            "admin",
+            "admin-1",
+            "",
+        ))
+        .await
+        .expect("gRPC ListReconciliationReports")
+        .into_inner();
+    assert_eq!(all_reports_pb.reports.len(), 2);
+    assert_eq!(
+        all_reports_pb.reports[0].provider,
+        "vietqr_mock+zalopay_mock"
+    );
+    assert_eq!(all_reports_pb.reports[0].status, "completed");
+
+    let sf_reports_pb = grpc
+        .list_reconciliation_reports(grpc_req(
+            ListReconciliationReportsRequest {
+                limit: 10,
+                sales_channel: "STOREFRONT".into(),
+            },
+            "admin",
+            "admin-1",
+            "",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(sf_reports_pb.reports.len(), 1);
+    assert_eq!(sf_reports_pb.reports[0].sales_channel, "STOREFRONT");
+
+    // GET /internal/reconciliation/reports via HTTP
+    let http_reports_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/internal/reconciliation/reports?limit=5")
+                .header("authorization", &admin_hdr)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(http_reports_resp.status(), StatusCode::OK);
+    let reports_bytes = http_reports_resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let reports_json: serde_json::Value = serde_json::from_slice(&reports_bytes).unwrap();
+    assert_eq!(reports_json["reports"].as_array().unwrap().len(), 2);
+
+    // Check /readyz, /internal/ledger/summary, /internal/reconciliation/queue, and SSE /payments/{id}/events
+    let ready_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/readyz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ready_resp.status(), StatusCode::OK);
+
+    let ledger_http_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/internal/ledger/summary")
+                .header("authorization", &admin_hdr)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ledger_http_resp.status(), StatusCode::OK);
+
+    let queue_http_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/internal/reconciliation/queue")
+                .header("authorization", &admin_hdr)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(queue_http_resp.status(), StatusCode::OK);
+
+    let sse_owner_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/payments/{zp1_id}/events"))
+                .header("authorization", user_bearer("buyer", "buyer-zp-1", ""))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sse_owner_resp.status(), StatusCode::OK);
+
+    let sse_other_resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/payments/{zp1_id}/events"))
+                .header("authorization", user_bearer("buyer", "intruder", ""))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sse_other_resp.status(), StatusCode::FORBIDDEN);
+
+    // -------------------------------------------------------------------------
+    // 7. Global & Channel-Filtered Double-Entry Ledger Integrity Gate (100% balanced)
+    // -------------------------------------------------------------------------
+    let grpc_ledger = grpc
+        .get_ledger_summary(grpc_req(
+            GetLedgerSummaryRequest {
+                sales_channel: String::new(),
+            },
+            "admin",
+            "admin-1",
+            "",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(grpc_ledger.is_balanced);
+    assert_eq!(grpc_ledger.total_debits_vnd, grpc_ledger.total_credits_vnd);
+    assert!(grpc_ledger.total_debits_vnd > 0);
+
+    let mp_summary = ledger::get_ledger_summary(&pool, Some(SalesChannel::Marketplace))
+        .await
+        .unwrap();
+    let sf_summary = ledger::get_ledger_summary(&pool, Some(SalesChannel::Storefront))
+        .await
+        .unwrap();
+    assert!(mp_summary.is_balanced);
+    assert!(sf_summary.is_balanced);
+    assert_eq!(mp_summary.unbalanced_transactions, 0);
+    assert_eq!(sf_summary.unbalanced_transactions, 0);
+    assert_eq!(
+        mp_summary.total_debits_vnd + sf_summary.total_debits_vnd,
+        grpc_ledger.total_debits_vnd
+    );
+
+    teardown_isolated_db(admin_pool, pool, &db_name).await;
+}
