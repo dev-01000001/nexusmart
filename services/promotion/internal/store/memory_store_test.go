@@ -112,7 +112,7 @@ func TestMemoryStore_MigratePingAndVoucherCRUD(t *testing.T) {
 func TestMemoryStore_FlashSalesLifecycle(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemoryStore()
-	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 
 	fsActive, err := m.CreateFlashSale(ctx, domain.FlashSale{
 		Name:     "Active Sale",

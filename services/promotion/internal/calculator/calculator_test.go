@@ -251,3 +251,206 @@ func TestCalculate_FlashSaleDiscountCostBearer(t *testing.T) {
 		t.Fatalf("expected final payable 231000, got %d", bd.FinalPayableVnd)
 	}
 }
+
+func TestComputeVoucherDiscount_EdgeCases(t *testing.T) {
+	if got := calculator.ComputeVoucherDiscount(nil, 100000); got != 0 {
+		t.Fatalf("nil voucher: got %d, want 0", got)
+	}
+	fixed := &domain.Voucher{DiscountType: domain.DiscountTypeFixed, ValueVND: 50000}
+	if got := calculator.ComputeVoucherDiscount(fixed, 0); got != 0 {
+		t.Fatalf("zero base: got %d, want 0", got)
+	}
+	if got := calculator.ComputeVoucherDiscount(fixed, -1000); got != 0 {
+		t.Fatalf("negative base: got %d, want 0", got)
+	}
+	// Fixed exceeding subtotal capped at baseAmount
+	if got := calculator.ComputeVoucherDiscount(fixed, 30000); got != 30000 {
+		t.Fatalf("fixed exceeding base: got %d, want 30000", got)
+	}
+	// Negative fixed value clamped to 0
+	negFixed := &domain.Voucher{DiscountType: domain.DiscountTypeFixed, ValueVND: -500}
+	if got := calculator.ComputeVoucherDiscount(negFixed, 50000); got != 0 {
+		t.Fatalf("negative value: got %d, want 0", got)
+	}
+	// Percent with max cap vs uncapped
+	pctCapped := &domain.Voucher{DiscountType: domain.DiscountTypePercent, DiscountPercent: 25, MaxDiscountVND: 40000}
+	if got := calculator.ComputeVoucherDiscount(pctCapped, 300000); got != 40000 {
+		t.Fatalf("percent capped: got %d, want 40000", got)
+	}
+	pctUncapped := &domain.Voucher{DiscountType: domain.DiscountTypePercent, DiscountPercent: 15, MaxDiscountVND: 0}
+	if got := calculator.ComputeVoucherDiscount(pctUncapped, 200000); got != 30000 {
+		t.Fatalf("percent uncapped: got %d, want 30000", got)
+	}
+	// Unknown discount type returns 0
+	unknown := &domain.Voucher{DiscountType: "UNKNOWN", ValueVND: 10000}
+	if got := calculator.ComputeVoucherDiscount(unknown, 100000); got != 0 {
+		t.Fatalf("unknown type: got %d, want 0", got)
+	}
+}
+
+func TestCalculate_IneligibilityBranchesAndEdgeCases(t *testing.T) {
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+
+	// 1. All voucher ineligibility reasons in preview (warning) and strict (ErrVoucherIneligible)
+	makeCand := func(mutate func(*calculator.VoucherCandidate)) *calculator.VoucherCandidate {
+		c := activeVoucher("v1", "V1", domain.VoucherScopeShop, "shop-1", domain.DiscountTypeFixed, 20000, 0, 0, 50000, 50000, now)
+		mutate(c)
+		return c
+	}
+
+	voucherErrCases := []struct {
+		name    string
+		cand    *calculator.VoucherCandidate
+		wantSub string
+	}{
+		{"not_found", &calculator.VoucherCandidate{RequestedID: "missing", Found: false}, "not found"},
+		{"inactive", makeCand(func(c *calculator.VoucherCandidate) { c.Voucher.IsActive = false }), "inactive"},
+		{"wrong_scope", makeCand(func(c *calculator.VoucherCandidate) { c.Voucher.Scope = domain.VoucherScopePlatform }), "scope"},
+		{"wrong_shop", makeCand(func(c *calculator.VoucherCandidate) { c.Voucher.ShopID = "other-shop" }), "does not belong"},
+		{"not_started", makeCand(func(c *calculator.VoucherCandidate) { c.Voucher.StartsAt = now.Add(time.Hour) }), "not started"},
+		{"expired", makeCand(func(c *calculator.VoucherCandidate) { c.Voucher.EndsAt = now.Add(-time.Minute) }), "expired"},
+		{"out_of_quota", makeCand(func(c *calculator.VoucherCandidate) { c.RemainingQuota = 0 }), "out of quota"},
+		{"per_user_limit", makeCand(func(c *calculator.VoucherCandidate) { c.UserUsedCount = 1 }), "per-user limit"},
+		{"budget_exhausted", makeCand(func(c *calculator.VoucherCandidate) { c.RemainingBudget = 10000 }), "budget exhausted"},
+	}
+	for _, tc := range voucherErrCases {
+		t.Run("shop_voucher_"+tc.name, func(t *testing.T) {
+			in := calculator.Input{
+				Now:          now,
+				Shops:        []calculator.ShopInput{{ShopID: "shop-1", SubtotalVND: 100000, ShippingFeeVND: 15000}},
+				ShopVouchers: map[string]*calculator.VoucherCandidate{"shop-1": tc.cand},
+			}
+			prev, err := calculator.Calculate(in)
+			if err != nil {
+				t.Fatalf("preview error: %v", err)
+			}
+			if len(prev.Breakdown.Warnings) != 1 || !strings.Contains(prev.Breakdown.Warnings[0], tc.wantSub) {
+				t.Fatalf("expected warning containing %q, got %v", tc.wantSub, prev.Breakdown.Warnings)
+			}
+			in.Strict = true
+			if _, err := calculator.Calculate(in); !errors.Is(err, calculator.ErrVoucherIneligible) {
+				t.Fatalf("strict: want ErrVoucherIneligible, got %v", err)
+			}
+		})
+	}
+
+	// 2. Extra shop voucher for a shop not present in items
+	extraIn := calculator.Input{
+		Now:   now,
+		Shops: []calculator.ShopInput{{ShopID: "shop-1", SubtotalVND: 100000}},
+		ShopVouchers: map[string]*calculator.VoucherCandidate{
+			"shop-ghost": activeVoucher("vg", "VG", domain.VoucherScopeShop, "shop-ghost", domain.DiscountTypeFixed, 10000, 0, 0, 0, 0, now),
+		},
+	}
+	prevExtra, err := calculator.Calculate(extraIn)
+	if err != nil || len(prevExtra.Breakdown.Warnings) != 1 {
+		t.Fatalf("extra shop preview unexpected: out=%+v err=%v", prevExtra, err)
+	}
+	extraIn.Strict = true
+	if _, err := calculator.Calculate(extraIn); !errors.Is(err, calculator.ErrVoucherIneligible) {
+		t.Fatalf("extra shop strict: want ErrVoucherIneligible, got %v", err)
+	}
+
+	// 3. Freeship ineligible in preview & strict
+	badFreeship := activeVoucher("vf", "VF", domain.VoucherScopeFreeship, "", domain.DiscountTypeFixed, 15000, 0, 0, 500000, 0, now)
+	fsIn := calculator.Input{
+		Now:             now,
+		Shops:           []calculator.ShopInput{{ShopID: "shop-1", SubtotalVND: 100000, ShippingFeeVND: 20000}},
+		FreeshipVoucher: badFreeship,
+	}
+	if prev, err := calculator.Calculate(fsIn); err != nil || len(prev.Breakdown.Warnings) != 1 {
+		t.Fatalf("freeship preview unexpected: %+v err=%v", prev, err)
+	}
+	fsIn.Strict = true
+	if _, err := calculator.Calculate(fsIn); !errors.Is(err, calculator.ErrVoucherIneligible) {
+		t.Fatalf("freeship strict: want ErrVoucherIneligible, got %v", err)
+	}
+
+	// 4. Flash sale item errors (not found, unapproved, ended/inactive, SKU mismatch) + flash discount capped at subtotal
+	flashErrCases := []struct {
+		name string
+		cand calculator.FlashItemCandidate
+	}{
+		{"not_found", calculator.FlashItemCandidate{Found: false}},
+		{"not_approved", calculator.FlashItemCandidate{Found: true, Item: &domain.FlashSaleItem{ID: "fi", Status: domain.FlashStatusPending, StartsAt: now.Add(-time.Hour), EndsAt: now.Add(time.Hour)}}},
+		{"ended_window", calculator.FlashItemCandidate{Found: true, Item: &domain.FlashSaleItem{ID: "fi", Status: domain.FlashStatusApproved, WindowStatus: domain.FlashWindowStatusEnded, StartsAt: now.Add(-time.Hour), EndsAt: now.Add(time.Hour)}}},
+		{"sku_mismatch", calculator.FlashItemCandidate{Found: true, Item: &domain.FlashSaleItem{ID: "fi", SKUID: "sku-other", Status: domain.FlashStatusApproved, StartsAt: now.Add(-time.Hour), EndsAt: now.Add(time.Hour)}}},
+	}
+	for _, tc := range flashErrCases {
+		t.Run("flash_"+tc.name, func(t *testing.T) {
+			in := calculator.Input{
+				Now: now,
+				Shops: []calculator.ShopInput{{
+					ShopID: "shop-1", SubtotalVND: 100000,
+					Items: []calculator.LineItemInput{{SKUID: "sku-1", Quantity: 1, UnitPriceVND: 100000, FlashSaleItemID: "fi"}},
+				}},
+				FlashItems: map[string]calculator.FlashItemCandidate{"fi": tc.cand},
+			}
+			prev, err := calculator.Calculate(in)
+			if err != nil || len(prev.Breakdown.Warnings) != 1 {
+				t.Fatalf("preview flash %s unexpected: %+v err=%v", tc.name, prev, err)
+			}
+			in.Strict = true
+			if _, err := calculator.Calculate(in); !errors.Is(err, calculator.ErrInvalidFlashSaleItem) {
+				t.Fatalf("strict flash %s: want ErrInvalidFlashSaleItem, got %v", tc.name, err)
+			}
+		})
+	}
+
+	// Flash discount exceeding subtotal is capped at subtotal; negative subtotal/shipping clamped to 0; zero-time Now defaulted
+	capOut, err := calculator.Calculate(calculator.Input{
+		Shops: []calculator.ShopInput{
+			{ShopID: "s-neg", SubtotalVND: -500, ShippingFeeVND: -100},
+			{
+				ShopID: "s-cap", SubtotalVND: 50000, ShippingFeeVND: 0,
+				Items: []calculator.LineItemInput{{SKUID: "sku-1", Quantity: 2, UnitPriceVND: 100000, FlashSaleItemID: "fi-cap"}},
+			},
+		},
+		FlashItems: map[string]calculator.FlashItemCandidate{
+			"fi-cap": {Found: true, Item: &domain.FlashSaleItem{
+				ID: "fi-cap", SKUID: "sku-1", FlashPriceVND: 10000, Status: domain.FlashStatusApproved,
+				StartsAt: time.Now().UTC().Add(-time.Hour), EndsAt: time.Now().UTC().Add(time.Hour),
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("capOut failed: %v", err)
+	}
+	if capOut.Breakdown.Shops[0].SubtotalVnd != 0 || capOut.Breakdown.Shops[0].ShippingFeeVnd != 0 {
+		t.Fatalf("negative subtotal/shipping not clamped: %+v", capOut.Breakdown.Shops[0])
+	}
+	if capOut.Breakdown.Shops[1].FlashSaleDiscountVnd != 50000 || capOut.Breakdown.FinalPayableVnd != 0 {
+		t.Fatalf("flash discount should cap at 50000 subtotal: %+v", capOut.Breakdown)
+	}
+
+	// 5. Coins strict insufficient, negative available coins, preview warning, and empty shops
+	coinsIn := calculator.Input{
+		Now:            now,
+		Strict:         true,
+		Shops:          []calculator.ShopInput{{ShopID: "s1", SubtotalVND: 100000}},
+		CoinsToUse:     5000,
+		AvailableCoins: -100,
+	}
+	if _, err := calculator.Calculate(coinsIn); !errors.Is(err, calculator.ErrInsufficientCoins) {
+		t.Fatalf("expected ErrInsufficientCoins, got %v", err)
+	}
+	coinsIn.Strict = false
+	coinsIn.AvailableCoins = 2000
+	prevCoins, err := calculator.Calculate(coinsIn)
+	if err != nil || prevCoins.CoinsUsed != 2000 || len(prevCoins.Breakdown.Warnings) != 1 {
+		t.Fatalf("preview insufficient coins unexpected: out=%+v err=%v", prevCoins, err)
+	}
+
+	// Zero-weight shops + platform voucher exceeding totalWeight exercises allocateProportional edge paths
+	zeroOut, err := calculator.Calculate(calculator.Input{
+		Now: now,
+		Shops: []calculator.ShopInput{
+			{ShopID: "s1", SubtotalVND: 0, ShippingFeeVND: 0},
+			{ShopID: "s2", SubtotalVND: 10000, ShippingFeeVND: 0},
+		},
+		PlatformVoucher: activeVoucher("vp", "VP", domain.VoucherScopePlatform, "", domain.DiscountTypeFixed, 10000, 0, 0, 0, 0, now),
+	})
+	if err != nil || zeroOut.Breakdown.Shops[1].PlatformVoucherDiscountVnd != 10000 {
+		t.Fatalf("zero-weight proportional alloc unexpected: %+v err=%v", zeroOut, err)
+	}
+}
