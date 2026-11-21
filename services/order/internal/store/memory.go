@@ -1385,14 +1385,15 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 
 	cur := statemachine.StringToStatus(ord.Status)
 	shipStatus := strings.ToLower(strings.TrimSpace(params.ShipmentStatus))
+	isReturnDir := strings.EqualFold(strings.TrimSpace(params.Direction), "return")
 	note := strings.TrimSpace(params.Description)
 	if note == "" {
 		note = fmt.Sprintf("Shipment update: %s", shipStatus)
 	}
 	outcome := &ShipmentUpdateOutcome{}
 
-	switch shipStatus {
-	case "delivered":
+	switch {
+	case shipStatus == "delivered" && !isReturnDir:
 		if cur == orderv1.OrderStatus_ORDER_STATUS_SHIPPING {
 			prev := ord.Status
 			ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_DELIVERED)
@@ -1430,8 +1431,12 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 			})
 			outcome.TransitionedTo = orderv1.OrderStatus_ORDER_STATUS_DELIVERED
 		}
-	case "returned":
-		if cur == orderv1.OrderStatus_ORDER_STATUS_SHIPPING || cur == orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED {
+	case shipStatus == "returned":
+		canReturn := cur == orderv1.OrderStatus_ORDER_STATUS_SHIPPING ||
+			cur == orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED ||
+			cur == orderv1.OrderStatus_ORDER_STATUS_RETURNING ||
+			cur == orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED
+		if canReturn {
 			prev := ord.Status
 			ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURNED)
 			ord.UpdatedAt = now
@@ -1449,10 +1454,14 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 			outcome.TransitionedTo = orderv1.OrderStatus_ORDER_STATUS_RETURNED
 		}
 	default:
-		if params.TrackingCode != "" {
+		if params.TrackingCode != "" && !isReturnDir {
 			ord.TrackingCode = params.TrackingCode
 			ord.UpdatedAt = now
 			m.orders[ord.ID] = ord
+		}
+		tlNote := fmt.Sprintf("[%s] %s", shipStatus, note)
+		if isReturnDir {
+			tlNote = fmt.Sprintf("[return:%s] %s", shipStatus, note)
 		}
 		m.timelines[ord.ID] = append(m.timelines[ord.ID], db.OrderTimelineEvent{
 			ID:         uuid.NewString(),
@@ -1461,7 +1470,7 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 			ToStatus:   ord.Status,
 			ActorID:    "shipping-service",
 			ActorRole:  "system",
-			Note:       fmt.Sprintf("[%s] %s", shipStatus, note),
+			Note:       tlNote,
 			CreatedAt:  now,
 		})
 	}
@@ -1574,7 +1583,7 @@ func (m *MemoryStore) FindExpiredPendingGroups(_ context.Context, limit int32) (
 	seen := make(map[string]struct{})
 	var out []ExpiredGroupCandidate
 	for _, ord := range m.orders {
-		if ord.Status != "PENDING" || ord.PaymentMethod != "VIETQR" || ord.PaymentExpiresAt == nil {
+		if ord.Status != "PENDING" || !statemachine.IsOnlinePaymentMethodString(ord.PaymentMethod) || ord.PaymentExpiresAt == nil {
 			continue
 		}
 		if !ord.PaymentExpiresAt.After(now) {

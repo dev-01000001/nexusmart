@@ -681,64 +681,6 @@ func (s *OrderService) BuyerConfirmReceived(ctx context.Context, req *orderv1.Bu
 	}, nil
 }
 
-// RequestReturn transitions DELIVERED -> RETURN_REQUESTED and persists a return_requests record.
-func (s *OrderService) RequestReturn(ctx context.Context, req *orderv1.RequestReturnRequest) (*orderv1.RequestReturnResponse, error) {
-	caller, err := requireAuthenticatedCaller(ctx)
-	if err != nil {
-		return nil, err
-	}
-	orderID := strings.TrimSpace(req.GetOrderId())
-	if orderID == "" {
-		return nil, status.Error(codes.InvalidArgument, "order_id is required")
-	}
-	reason := strings.TrimSpace(req.GetReason())
-	if reason == "" {
-		return nil, status.Error(codes.InvalidArgument, "return reason is required")
-	}
-
-	agg, err := s.store.GetOrderWithDetails(ctx, orderID)
-	if err != nil {
-		return nil, mapStoreError(err)
-	}
-
-	if !canActAsBuyer(caller, agg.Order, req.GetBuyerId()) {
-		return nil, status.Error(codes.PermissionDenied, "only the buyer who owns this order can request a return")
-	}
-
-	if agg.Order.DeliveredAt != nil && s.nowFn().Sub(*agg.Order.DeliveredAt) > returnWindowDuration {
-		return nil, status.Error(codes.FailedPrecondition, "return request window (7 days) has expired")
-	}
-
-	evidence := req.GetEvidenceUrls()
-	if evidence == nil {
-		evidence = []string{}
-	}
-	evidenceJSON, err := json.Marshal(evidence)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "marshal evidence_urls: %v", err)
-	}
-
-	returnID := uuid.NewString()
-	updatedAgg, _, err := s.store.TransitionOrderReturnRequested(ctx, store.ReturnRequestParams{
-		OrderID:          agg.Order.ID,
-		BuyerID:          agg.Order.BuyerID,
-		ReturnRequestID:  returnID,
-		Reason:           reason,
-		EvidenceURLsJSON: evidenceJSON,
-		ActorID:          fallbackStr(caller.UserID, agg.Order.BuyerID),
-		ActorRole:        fallbackStr(caller.Role, "buyer"),
-		Note:             "Return requested: " + reason,
-	})
-	if err != nil {
-		return nil, mapStoreError(err)
-	}
-
-	return &orderv1.RequestReturnResponse{
-		Order:           aggregateToProto(*updatedAgg),
-		ReturnRequestId: returnID,
-	}, nil
-}
-
 // MarkPaymentResult handles explicit internal payment result notifications alongside NATS events.
 func (s *OrderService) MarkPaymentResult(ctx context.Context, req *orderv1.MarkPaymentResultRequest) (*orderv1.MarkPaymentResultResponse, error) {
 	caller, err := requireAuthenticatedCaller(ctx)

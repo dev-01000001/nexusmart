@@ -198,16 +198,43 @@ func (s *OrderService) HandlePaymentRefunded(ctx context.Context, eventID string
 
 // HandleShipmentUpdated processes shipment.updated events idempotently, updating timeline and state.
 func (s *OrderService) HandleShipmentUpdated(ctx context.Context, eventID string, payload events.ShipmentUpdatedPayload) error {
+	shipStatus := strings.ToLower(strings.TrimSpace(payload.Status))
+	isReturnDir := strings.EqualFold(strings.TrimSpace(payload.Direction), "return")
+
+	// Reverse shipment returned (direction == "return" OR order currently in RETURNING):
+	// transition RETURNING -> RETURNED and execute the full Refund Saga -> REFUNDED + order.refunded outbox.
+	if shipStatus == "returned" && strings.TrimSpace(payload.OrderID) != "" {
+		if eventID != "" {
+			processed, err := s.store.IsEventProcessed(ctx, eventID)
+			if err != nil {
+				return fmt.Errorf("check processed_events: %w", err)
+			}
+			if processed {
+				return nil
+			}
+		}
+
+		agg, err := s.store.GetOrderWithDetails(ctx, payload.OrderID)
+		if err == nil && agg != nil {
+			curStatus := statemachine.StringToStatus(agg.Order.Status)
+			if isReturnDir || curStatus == orderv1.OrderStatus_ORDER_STATUS_RETURNING {
+				return s.handleReverseShipmentReturned(ctx, eventID, agg, payload)
+			}
+		}
+	}
+
 	traceID, traceparent := traceMetaFromContext(ctx)
 	outcome, err := s.store.ApplyShipmentUpdate(ctx, store.ShipmentUpdateParams{
-		EventID:        eventID,
-		EventType:      events.SubjectShipmentUpdated,
-		OrderID:        payload.OrderID,
-		ShipmentStatus: payload.Status,
-		TrackingCode:   payload.TrackingCode,
-		Description:    payload.Description,
-		TraceID:        traceID,
-		Traceparent:    traceparent,
+		EventID:         eventID,
+		EventType:       events.SubjectShipmentUpdated,
+		OrderID:         payload.OrderID,
+		ShipmentStatus:  payload.Status,
+		TrackingCode:    payload.TrackingCode,
+		Description:     payload.Description,
+		Direction:       payload.Direction,
+		ReturnRequestID: payload.ReturnRequestID,
+		TraceID:         traceID,
+		Traceparent:     traceparent,
 	})
 	if err != nil {
 		return err
@@ -228,8 +255,8 @@ func (s *OrderService) HandleShipmentUpdated(ctx context.Context, eventID string
 		// Restock returned items.
 		s.restockOrderItems(compCtx, ord.ShopID, outcome.Order.Items)
 
-		// If order was paid online, initiate refund idempotently.
-		wasPaidOnline := statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+		// If order was paid online (VietQR or ZaloPay), initiate refund idempotently.
+		wasPaidOnline := statemachine.IsOnlinePaymentMethodString(ord.PaymentMethod) &&
 			strings.EqualFold(ord.PaymentStatus, "SUCCEEDED")
 		if wasPaidOnline && ord.PaymentID != "" && s.clients.Payment != nil {
 			if rErr := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
