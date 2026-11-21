@@ -60,6 +60,12 @@ export JWT_SECRET="..."
 export SERVICE_JWT_SECRET="..."
 export ADMIN_BOOTSTRAP_PASSWORD="..."
 export PAYMENT_WEBHOOK_SECRET="..."
+export ZALOPAY_KEY1="..."
+export ZALOPAY_KEY2="..."
+export VIETQR_MODE="payos" # or "sepay" (requires SEPAY_API_TOKEN instead of PAYOS_*)
+export PAYOS_CLIENT_ID="..."
+export PAYOS_API_KEY="..."
+export PAYOS_CHECKSUM_KEY="..."
 export SHIPPING_WEBHOOK_SECRET="..."
 export MEILI_MASTER_KEY="..."
 ./deploy/k8s/create-secrets.sh nexusmart-production

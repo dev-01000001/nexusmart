@@ -9,17 +9,60 @@ export PATH="${HOME}/.local/bin:${PATH}"
 
 NAMESPACE="${1:-nexusmart-staging}"
 
-if ! command -v kubectl >/dev/null 2>&1; then
-  echo "ERROR: kubectl not found in PATH" >&2
-  exit 1
-fi
-
 rand_hex() {
   local bytes="${1:-24}"
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex "${bytes}"
   else
     head -c "${bytes}" /dev/urandom | od -An -tx1 | tr -d ' \n'
+  fi
+}
+
+is_placeholder_secret() {
+  local raw="$1"
+  local lower
+  lower="$(printf '%s' "${raw}" | tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  if [[ -z "${lower}" ]]; then
+    return 0
+  fi
+  case "${lower}" in
+    dev-webhook-secret-change-me|\
+    dev-only-payment-webhook-hmac-secret|\
+    zalopay-mock-key1-dev|\
+    zalopay-mock-key2-dev|\
+    sandbox-client-id|\
+    sandbox-api-key|\
+    sandbox-checksum-key|\
+    sandbox-sepay-token|\
+    dev-only-*|your_*|your-*|'<'*|\
+    *placeholder*|*change-me*|*changeme*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+PROD_ERRORS=0
+
+require_prod_var() {
+  local var_name="$1"
+  local context="${2:-}"
+  local current_val="${!var_name:-}"
+  local suffix=""
+  if [[ -n "${context}" ]]; then
+    suffix=" (${context})"
+  fi
+  if [[ -z "${current_val}" ]]; then
+    echo "ERROR: ${var_name} must be explicitly provided via environment for ${NAMESPACE}${suffix}" >&2
+    PROD_ERRORS=$((PROD_ERRORS + 1))
+    return 0
+  fi
+  if is_placeholder_secret "${current_val}"; then
+    echo "ERROR: ${var_name} must not use a placeholder or dev/mock value for ${NAMESPACE}${suffix}" >&2
+    PROD_ERRORS=$((PROD_ERRORS + 1))
+    return 0
   fi
 }
 
@@ -47,8 +90,44 @@ POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 POSTGRES_USER="${POSTGRES_USER:-nexusmart}"
 if [[ "${NAMESPACE}" == "nexusmart-production" ]]; then
   POSTGRES_SSLMODE="${POSTGRES_SSLMODE:-require}"
+  # Matches deploy/helm/payment/values-production.yaml (VIETQR_MODE: "payos", ZALOPAY_MODE: "sandbox").
+  VIETQR_MODE="${VIETQR_MODE:-payos}"
 else
   POSTGRES_SSLMODE="${POSTGRES_SSLMODE:-disable}"
+  VIETQR_MODE="${VIETQR_MODE:-mock}"
+fi
+
+VIETQR_MODE_NORM="$(printf '%s' "${VIETQR_MODE}" | tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+if [[ "${NAMESPACE}" == "nexusmart-production" ]]; then
+  require_prod_var POSTGRES_PASSWORD
+  require_prod_var JWT_SECRET
+  require_prod_var SERVICE_JWT_SECRET
+  require_prod_var ADMIN_BOOTSTRAP_PASSWORD
+  require_prod_var PAYMENT_WEBHOOK_SECRET "required by payment Config::validate"
+  require_prod_var ZALOPAY_KEY1 "required by payment Config::validate"
+  require_prod_var ZALOPAY_KEY2 "required by payment Config::validate"
+  require_prod_var SHIPPING_WEBHOOK_SECRET
+  require_prod_var MEILI_MASTER_KEY
+
+  case "${VIETQR_MODE_NORM}" in
+    payos)
+      require_prod_var PAYOS_CLIENT_ID "required when VIETQR_MODE=payos"
+      require_prod_var PAYOS_API_KEY "required when VIETQR_MODE=payos"
+      require_prod_var PAYOS_CHECKSUM_KEY "required when VIETQR_MODE=payos"
+      ;;
+    sepay)
+      require_prod_var SEPAY_API_TOKEN "required when VIETQR_MODE=sepay"
+      ;;
+    *)
+      echo "ERROR: VIETQR_MODE must be 'payos' or 'sepay' for ${NAMESPACE} (got '${VIETQR_MODE}')" >&2
+      PROD_ERRORS=$((PROD_ERRORS + 1))
+      ;;
+  esac
+
+  if [[ "${PROD_ERRORS}" -gt 0 ]]; then
+    exit 1
+  fi
 fi
 
 POSTGRES_PASSWORD="$(require_or_generate POSTGRES_PASSWORD)"
@@ -60,13 +139,17 @@ PAYMENT_WEBHOOK_SECRET="$(require_or_generate PAYMENT_WEBHOOK_SECRET)"
 SHIPPING_WEBHOOK_SECRET="$(require_or_generate SHIPPING_WEBHOOK_SECRET)"
 MEILI_MASTER_KEY="$(require_or_generate MEILI_MASTER_KEY)"
 
-# Optional third-party sandbox/live credentials (empty in mock mode).
-CF_API_TOKEN="$(optional_env CF_API_TOKEN)"
-CF_ZONE_ID="$(optional_env CF_ZONE_ID)"
+# Payment provider credentials (required in nexusmart-production per payment Config::validate; optional/empty in mock mode).
+ZALOPAY_KEY1="$(optional_env ZALOPAY_KEY1)"
+ZALOPAY_KEY2="$(optional_env ZALOPAY_KEY2)"
 PAYOS_CLIENT_ID="$(optional_env PAYOS_CLIENT_ID)"
 PAYOS_API_KEY="$(optional_env PAYOS_API_KEY)"
 PAYOS_CHECKSUM_KEY="$(optional_env PAYOS_CHECKSUM_KEY)"
 SEPAY_API_TOKEN="$(optional_env SEPAY_API_TOKEN)"
+
+# Optional third-party sandbox/live credentials (empty in mock mode).
+CF_API_TOKEN="$(optional_env CF_API_TOKEN)"
+CF_ZONE_ID="$(optional_env CF_ZONE_ID)"
 GHN_TOKEN="$(optional_env GHN_TOKEN)"
 ANTHROPIC_API_KEY="$(optional_env ANTHROPIC_API_KEY)"
 VOYAGE_API_KEY="$(optional_env VOYAGE_API_KEY)"
@@ -75,6 +158,11 @@ TELEGRAM_CHAT_ID="$(optional_env TELEGRAM_CHAT_ID)"
 
 if [[ "${JWT_SECRET}" == "${SERVICE_JWT_SECRET}" ]]; then
   echo "ERROR: SERVICE_JWT_SECRET must differ from JWT_SECRET" >&2
+  exit 1
+fi
+
+if ! command -v kubectl >/dev/null 2>&1; then
+  echo "ERROR: kubectl not found in PATH" >&2
   exit 1
 fi
 
@@ -143,6 +231,8 @@ apply_secret nexusmart-payment-secret \
   --from-literal="JWT_SECRET=${JWT_SECRET}" \
   --from-literal="SERVICE_JWT_SECRET=${SERVICE_JWT_SECRET}" \
   --from-literal="PAYMENT_WEBHOOK_SECRET=${PAYMENT_WEBHOOK_SECRET}" \
+  --from-literal="ZALOPAY_KEY1=${ZALOPAY_KEY1}" \
+  --from-literal="ZALOPAY_KEY2=${ZALOPAY_KEY2}" \
   --from-literal="PAYOS_CLIENT_ID=${PAYOS_CLIENT_ID}" \
   --from-literal="PAYOS_API_KEY=${PAYOS_API_KEY}" \
   --from-literal="PAYOS_CHECKSUM_KEY=${PAYOS_CHECKSUM_KEY}" \
