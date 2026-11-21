@@ -91,7 +91,7 @@ flowchart LR
 
 2. **Tài chính nguyên VND & Sổ cái ghi kép bằng Rust (`services/payment`):**
    - Mọi số tiền lưu bằng `BIGINT`/`i64` đơn vị VND (không dùng float). Mọi giao dịch thanh toán, giải ngân ký quỹ và hoàn tiền (trước hoặc sau đối soát) đều sinh cặp bút toán đảm bảo bất biến `SUM(debit) == SUM(credit)`.
-   - Sau vòng review bảo mật (Swarm D2), bổ sung `Config::validate()` fail-fast ở `APP_ENV=production` và guard phòng thủ sâu tại route `/webhooks/{zalopay,vietqr,payment}` để **không bao giờ** chấp nhận chữ ký từ hằng/placeholder mock trong repo ở môi trường production, trong khi giữ nguyên khả năng demo/E2E ở `development`.
+   - Sau vòng review bảo mật (Swarm D2), bổ sung `Config::validate()` fail-fast ở `APP_ENV=production` và guard phòng thủ sâu tại route `/webhooks/{zalopay,vietqr,payment}` để **không bao giờ** chấp nhận chữ ký từ hằng/placeholder mock trong repo ở môi trường production, đồng bộ với `deploy/k8s/create-secrets.sh` (Swarm Z) nạp đầy đủ `ZALOPAY_KEY1`/`ZALOPAY_KEY2`, `PAYMENT_WEBHOOK_SECRET`, `PAYOS_*`/`SEPAY_API_TOKEN` và từ chối giá trị rỗng/placeholder ở `nexusmart-production`, trong khi giữ nguyên khả năng demo/E2E ở `development`.
 
 3. **Kiểm soát tranh chấp tồn kho & Flash Sale nguyên tử:**
    - Giữ tồn kho thông thường theo SKU bằng **optimistic locking** (`version`), tách bạch hạn mức `flash_sale_reserved_stock` (Phase 2b) để đơn thường không ăn vào suất Flash Sale và ngược lại.
@@ -127,6 +127,8 @@ flowchart LR
 | **T (`templates`)** | `services/user/internal/site`, `web/src/features/site`, Seller Studio | ADR-0001 (3–0), **8 template** bố cục độc lập phủ 5 trang, visual ↔ JSON code editor, tích hợp 5 component Swarm G, chống XSS/SSRF/SVG | [t-templates.md](file:///home/dev/Documents/Nexus_Ecom/docs/reports/t-templates.md) |
 | **K (`core-fix`)** | `pkg/common`, `infra`, `gateway`, `cart`, `notification`, `chat`, `assistant`, `.dockerignore` | Vá `K-01`, `K-02`, `OBS-01` (OTel→Tempo), `OBS-03` (PII/JWT scrubber), `OBS-07/08/09/13`, `PLT-04/06` (`USER 10001:10001`, build context ~560 KB) | [k-core-fix.md](file:///home/dev/Documents/Nexus_Ecom/docs/reports/k-core-fix.md) |
 | **H (`qa-docs`)** | `tests/e2e/16..20`, `tests/e2e-web/06..08`, `tools/seed`, `docs/` | Tích hợp & dựng toàn stack 29 container, sửa `PLT-01` + nạp 20k SP idempotent, chạy `make lint`/`make test` xanh, `make e2e-web` **41/41 x2 PASS**, `16..20` **5/5 PASS**, đo live k6 Search 20k & Restore Drill 9 DB, phát hiện & lập hồ sơ `QA-01..QA-04` | [h.md](file:///home/dev/Documents/Nexus_Ecom/docs/reports/h.md) |
+| **Z (`z-cleanup`)** | `deploy/k8s/create-secrets.sh`, `services/user/cmd/user`, 2 file test web | Nạp `ZALOPAY_KEY1`/`ZALOPAY_KEY2` & fail-fast production trong `create-secrets.sh` khớp `payment` `Config::validate()` (7/7 test PASS); vá `OBS-09`/`OBS-13` phần `services/user` (`ProcessCollector`/`GoCollector`, HTTP RED/trace middleware, JSON fatal log + unit test PASS); Prettier 2 file test web | [z-cleanup.md](file:///home/dev/Documents/Nexus_Ecom/docs/reports/z-cleanup.md) |
+| **Q (`q-final-fix`)** | `tests/e2e/13_sites_backend_test.go`, `tests/playwright/specs/buyer-flow.spec.ts` | Vá `QA-03` (đổi fixture URL công khai, giữ nguyên chặn SSRF `.local`) và `QA-04` (selector `SiteSearchResults` + locator `/gio-hang`); gate cuối xanh toàn phần: `make e2e` **20/20 PASS** (`18.71 s`), `make seed` idempotent, `make e2e-web` **41/41 PASS** (`14.06 s`), Playwright `buyer-flow` **1/1 PASS** (`2.8 s`) | [q-final-fix.md](file:///home/dev/Documents/Nexus_Ecom/docs/reports/q-final-fix.md) |
 
 ---
 
@@ -134,17 +136,16 @@ flowchart LR
 
 Nhằm bảo đảm tính khách quan cho hội đồng đánh giá và người vận hành:
 
-1. **Hai lỗi hồi quy liên swarm phát hiện ở vòng tích hợp cuối (đã cô lập rõ nguyên nhân, chưa sửa do ngoài phạm vi sở hữu Swarm H):**
-   - **`QA-03` (High):** Quy tắc chặn `.local` trong `services/user/internal/site/validate.go:513` (Swarm T) xung đột với URL test cũ `https://sandbox.nexusmart.local/banners/site-hero.jpg` ở `tests/e2e/13_sites_backend_test.go:32` (ảnh hưởng bài `13` & `15`, khiến `make e2e` đạt `18/20` PASS). Chỉ cần đổi URL fixture bài `13` sang `https://cdn.example.com/...` là `make e2e` đạt `20/20` trong khi vẫn giữ nguyên bảo vệ SSRF `.local`.
-   - **`QA-04` (Medium):** `tests/playwright/specs/buyer-flow.spec.ts:94` (Swarm F) vẫn trỏ selector `#site-search-input` cũ sau khi trang `/tim-kiem` chuyển sang `SiteSearchResults` / `SiteSearchBar` (Swarm G/T). Chỉ cần cập nhật selector sang `main [role="combobox"]`.
+*Các điểm chặn phát hiện ở vòng tích hợp trước đã được khép và xác minh xanh:* `QA-03` & `QA-04` đã được Swarm Q sửa ([q-final-fix.md](file:///home/dev/Documents/Nexus_Ecom/docs/reports/q-final-fix.md)) giúp toàn bộ chuỗi gate cuối `make e2e` (**20/20 PASS**, giữ nguyên bảo vệ SSRF `.local`), `make seed` (idempotent), `make e2e-web` (**41/41 PASS**) và Playwright `buyer-flow` (**1/1 PASS**) đều đạt `EXIT 0`; `OBS-09`/`OBS-13` phần `services/user` và bổ sung `ZALOPAY_KEY1`/`ZALOPAY_KEY2` kèm kiểm tra fail-fast production trong `deploy/k8s/create-secrets.sh` (khớp khuyến nghị Swarm D2 tại [d2-payment-fix.md](file:///home/dev/Documents/Nexus_Ecom/docs/reports/d2-payment-fix.md)) đã được Swarm Z hoàn tất ([z-cleanup.md](file:///home/dev/Documents/Nexus_Ecom/docs/reports/z-cleanup.md)).
 
-2. **Tải đồng thời cao 200 VU trên môi trường Compose đơn lẻ (`PLT-07`):**
+Các giới hạn và hạng mục phát triển tiếp theo còn mở:
+
+1. **Tải đồng thời cao 200 VU trên môi trường Compose đơn lẻ (`PLT-07`):**
    - Trên máy sạch có rate limit tiêu chuẩn (`180 req/phút/user`), k6 200 VU tạo `3.381` đơn COD trong 30 giây đạt `Read p95 = 38.75 ms` (`< 300 ms`) và `Checkout p95 = 204.95 ms` (`< 1.000 ms`) với `0` lỗi 5xx. Tuy nhiên, khi chạy không giới hạn rate limit (0 lỗi 429) trên duy nhất 1 container Postgres + 1 replica Go chịu tải CPU nặng, p95 vượt ngưỡng (`1.914 ms` đọc / `7.946 ms` checkout, `0,23%` 5xx do tranh chấp optimistic lock). Triển khai sản xuất đòi hỏi kích hoạt HPA đa replica trên Kubernetes (đã chuẩn bị sẵn trong `deploy/helm/{gateway,order,search}`) và tối ưu `pgxpool` + backoff retry SKU.
 
-3. **Các tích hợp bên ngoài chạy ở chế độ mock mặc định khi không có secret:**
+2. **Các tích hợp bên ngoài chạy ở chế độ mock mặc định khi không có secret:**
    - Claude API (`LLM_MODE=anthropic`), Voyage Embedding (`EMBED_MODE=voyage`), ZaloPay Sandbox, payOS/SePay, GHN/GHTK thật và Telegram Bot API thật đều đã có adapter chuẩn kèm resilience và unit test HTTP mock, nhưng chưa gọi live trong vòng kiểm thử này do chính sách không commit khóa bí mật vào repo.
 
-4. **Một số hạng mục hoàn thiện vận hành nhỏ còn mở:**
-   - Hoàn thiện `OBS-09`/`OBS-13` & `PLT-04` cho `services/user` (`ProcessCollector`, JSON fatal log, `USER 10001:10001`), `PLT-04` cho `product`/`search`, `PLT-05` (multi-stage cho `telegram-relay`), và nâng Go toolchain từ `1.22` lên bản được hỗ trợ dài hạn (`PLT-06`).
-   - Bổ sung `ZALOPAY_KEY1`, `ZALOPAY_KEY2` vào `deploy/k8s/create-secrets.sh` cho môi trường `nexusmart-production` (theo khuyến nghị của Swarm D2).
+3. **Một số hạng mục hoàn thiện vận hành và tính năng nhỏ còn mở:**
+   - Hoàn thiện `PLT-04` (`USER 10001:10001` cho `services/user`, `services/product`, `services/search` và `USER 1000:1000` cho `web`/`telegram-relay`), `PLT-05` (multi-stage cho `deploy/observability/telegram-relay/Dockerfile`), `OBS-13` phần `services/product` (chuyển fatal log khởi động sang JSON và đọc `OTEL_EXPORTER_OTLP_INSECURE`), và nâng Go toolchain từ `1.22` lên bản được hỗ trợ dài hạn (`PLT-06`).
    - Bổ sung job nền nhập file CSV sản phẩm cho người bán (mục con trong hàng "Người bán và quản trị") và thông báo đẩy `chat.message_created` sang `notification` khi người nhận chat đang offline.
