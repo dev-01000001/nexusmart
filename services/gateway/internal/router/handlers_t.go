@@ -77,6 +77,7 @@ func (h *handler) handleListSiteTemplates(w http.ResponseWriter, r *http.Request
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"templates": templates,
+		"total":     len(templates),
 	})
 }
 
@@ -139,7 +140,8 @@ func (h *handler) handleSellerApplySiteTemplate(w http.ResponseWriter, r *http.R
 	}
 
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"site":     mapSite(resp.GetSite()),
-		"template": mapSiteTemplate(resp.GetTemplate()),
+		"site":        mapSite(resp.GetSite()),
+		"template":    mapSiteTemplate(resp.GetTemplate()),
+		"template_id": resp.GetTemplate().GetId(),
 	})
 }

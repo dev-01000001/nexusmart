@@ -160,9 +160,9 @@ func TestGatewaySiteTemplateRoutes(t *testing.T) {
 	}
 
 	for name, tok := range map[string]string{
-		"buyer":           buyerTok,
-		"admin":           adminTok,
-		"seller-no-shop":  sellerNoShopTok,
+		"buyer":          buyerTok,
+		"admin":          adminTok,
+		"seller-no-shop": sellerNoShopTok,
 	} {
 		rec = httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/seller/site/apply-template", strings.NewReader(`{"template_id":"editorial"}`))
