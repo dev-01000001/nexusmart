@@ -111,6 +111,9 @@ func run() error {
 	if err := service.BootstrapAdmin(ctx, store, hasher, log, cfg.AdminBootstrapEmail, cfg.AdminBootstrapPassword); err != nil {
 		return fmt.Errorf("bootstrap admin: %w", err)
 	}
+	if err := service.BootstrapSiteTemplates(ctx, store, log); err != nil {
+		return fmt.Errorf("bootstrap site templates: %w", err)
+	}
 
 	var cfClient cloudflare.Client
 	switch cfg.CFMode {
