@@ -21,11 +21,11 @@ type fakeMsg struct {
 	nakDelay     time.Duration
 }
 
-func (m *fakeMsg) Subject() string      { return m.subject }
-func (m *fakeMsg) Data() []byte         { return m.data }
+func (m *fakeMsg) Subject() string        { return m.subject }
+func (m *fakeMsg) Data() []byte           { return m.data }
 func (m *fakeMsg) Header(k string) string { return m.headers[k] }
-func (m *fakeMsg) NumDelivered() uint64 { return m.numDelivered }
-func (m *fakeMsg) Ack() error           { m.acked = true; return nil }
+func (m *fakeMsg) NumDelivered() uint64   { return m.numDelivered }
+func (m *fakeMsg) Ack() error             { m.acked = true; return nil }
 func (m *fakeMsg) NakWithDelay(d time.Duration) error {
 	m.naked = true
 	m.nakDelay = d

@@ -155,8 +155,17 @@ func (c *HTTPGatewayClient) ListSellerProducts(ctx context.Context, rawBearer st
 
 // CreateChatConversation calls POST /api/v1/chat/conversations using the buyer's JWT. Never retries POST.
 func (c *HTTPGatewayClient) CreateChatConversation(ctx context.Context, rawBearer, shopID string) (map[string]any, error) {
+	return c.CreateChatConversationWithMessage(ctx, rawBearer, shopID, "")
+}
+
+// CreateChatConversationWithMessage calls POST /api/v1/chat/conversations with an optional initial_message
+// (for AI handoff summary) using strictly the buyer's JWT. Never retries POST.
+func (c *HTTPGatewayClient) CreateChatConversationWithMessage(ctx context.Context, rawBearer, shopID, initialMessage string) (map[string]any, error) {
 	payload := map[string]any{
 		"shop_id": strings.TrimSpace(shopID),
+	}
+	if msg := strings.TrimSpace(initialMessage); msg != "" {
+		payload["initial_message"] = msg
 	}
 	body, err := c.doJSON(ctx, http.MethodPost, "/api/v1/chat/conversations", rawBearer, payload, false)
 	if err != nil {

@@ -113,9 +113,12 @@ func (r *RAG) Reload(ctx context.Context) error {
 		for _, ch := range parsed {
 			indexText := ch.DocTitle + " " + ch.Section + " " + ch.Section + " " + ch.Content
 			tokens := TokenizeVietnamese(indexText)
-			tf := make(map[string]int, len(tokens))
-			for _, tok := range tokens {
+			tf := make(map[string]int, len(tokens)*2)
+			for i, tok := range tokens {
 				tf[tok]++
+				if i+1 < len(tokens) {
+					tf[tok+"_"+tokens[i+1]]++
+				}
 			}
 			allChunks = append(allChunks, indexedChunk{
 				chunk:   ch,
@@ -171,7 +174,9 @@ func (r *RAG) Search(ctx context.Context, query string, topK int) ([]Chunk, erro
 		return []Chunk{}, nil
 	}
 
-	queryTokens := filterPolicyQueryTokens(TokenizeVietnamese(normQuery))
+	rawQueryTokens := TokenizeVietnamese(normQuery)
+	queryTokens := filterPolicyQueryTokens(rawQueryTokens)
+	queryBigrams := buildBigrams(rawQueryTokens)
 	queryVec := HashEmbed256(normQuery)
 
 	r.mu.RLock()
@@ -185,10 +190,13 @@ func (r *RAG) Search(ctx context.Context, query string, topK int) ([]Chunk, erro
 	}
 
 	type scored struct {
-		idx    int
-		bm25   float64
-		cosine float64
-		rrf    float64
+		idx         int
+		bm25        float64
+		cosine      float64
+		rrf         float64
+		bigramHits  int
+		unigramHits int
+		maxIDF      float64
 	}
 
 	items := make([]scored, len(chunks))
@@ -196,13 +204,22 @@ func (r *RAG) Search(ctx context.Context, query string, topK int) ([]Chunk, erro
 	vecOrder := make([]int, 0, len(chunks))
 
 	for i, ic := range chunks {
-		b := scoreBM25(queryTokens, ic.tf, ic.docLen, avgLen, idf)
+		b, uniHits, maxTokIDF := scoreBM25WithStats(queryTokens, ic.tf, ic.docLen, avgLen, idf)
+		biScore, biHits, _ := scoreBM25WithStats(queryBigrams, ic.tf, ic.docLen, avgLen, idf)
+		totalBM25 := b + 1.5*biScore
 		c := CosineSimilarity(queryVec, ic.vec)
-		items[i] = scored{idx: i, bm25: b, cosine: c}
-		if b > 0 {
+		items[i] = scored{
+			idx:         i,
+			bm25:        totalBM25,
+			cosine:      c,
+			bigramHits:  biHits,
+			unigramHits: uniHits,
+			maxIDF:      maxTokIDF,
+		}
+		if totalBM25 > 0 {
 			bm25Order = append(bm25Order, i)
 		}
-		if c >= 0.14 {
+		if c >= 0.16 {
 			vecOrder = append(vecOrder, i)
 		}
 	}
@@ -231,7 +248,23 @@ func (r *RAG) Search(ctx context.Context, query string, topK int) ([]Chunk, erro
 
 	candidates := make([]scored, 0, len(chunks))
 	for _, s := range items {
-		if s.bm25 > 0 || s.cosine >= 0.24 {
+		if len(chunks) < 5 {
+			if s.bm25 > 0 || s.cosine >= 0.24 {
+				candidates = append(candidates, s)
+			}
+			continue
+		}
+		if len(queryTokens) <= 2 {
+			if s.bm25 > 0 || s.cosine >= 0.30 {
+				candidates = append(candidates, s)
+			}
+			continue
+		}
+		// Multi-word Vietnamese queries must match at least one compound bigram
+		// (avoiding false positives from homonymous single syllables like du/thoi/ngay/nang)
+		// or exhibit strong vector cosine similarity / very high lexical overlap.
+		ratio := float64(s.unigramHits) / float64(len(queryTokens))
+		if s.bigramHits > 0 || (ratio >= 0.65 && s.maxIDF >= 1.8) || s.cosine >= 0.35 {
 			candidates = append(candidates, s)
 		}
 	}
@@ -460,12 +493,25 @@ func slugifyAnchor(heading string) string {
 	return out
 }
 
-func scoreBM25(queryTokens []string, tf map[string]int, docLen int, avgDocLen float64, idf map[string]float64) float64 {
+func buildBigrams(tokens []string) []string {
+	if len(tokens) < 2 {
+		return nil
+	}
+	out := make([]string, 0, len(tokens)-1)
+	for i := 0; i+1 < len(tokens); i++ {
+		out = append(out, tokens[i]+"_"+tokens[i+1])
+	}
+	return out
+}
+
+func scoreBM25WithStats(queryTokens []string, tf map[string]int, docLen int, avgDocLen float64, idf map[string]float64) (float64, int, float64) {
 	if len(queryTokens) == 0 || docLen == 0 {
-		return 0
+		return 0, 0, 0
 	}
 	seen := make(map[string]struct{}, len(queryTokens))
 	var total float64
+	var hits int
+	var maxIDF float64
 	for _, tok := range queryTokens {
 		if _, dup := seen[tok]; dup {
 			continue
@@ -475,14 +521,18 @@ func scoreBM25(queryTokens []string, tf map[string]int, docLen int, avgDocLen fl
 		if freq == 0 {
 			continue
 		}
+		hits++
 		tokenIDF := idf[tok]
 		if tokenIDF <= 0 {
 			tokenIDF = 0.1
 		}
+		if tokenIDF > maxIDF {
+			maxIDF = tokenIDF
+		}
 		denom := freq + bm25K1*(1.0-bm25B+bm25B*(float64(docLen)/avgDocLen))
 		total += tokenIDF * ((freq * (bm25K1 + 1.0)) / denom)
 	}
-	return total
+	return total, hits, maxIDF
 }
 
 var policyStopWords = map[string]struct{}{
@@ -491,6 +541,8 @@ var policyStopWords = map[string]struct{}{
 	"nao": {}, "gi": {}, "bao": {}, "nhieu": {}, "thi": {}, "sao": {}, "a": {}, "oi": {},
 	"nhe": {}, "voi": {}, "de": {}, "trong": {}, "tren": {}, "san": {}, "nexusmart": {},
 	"chinh": {}, "sach": {}, "quy": {}, "dinh": {}, "cac": {}, "mot": {}, "khi": {},
+	"da": {}, "se": {}, "dang": {}, "tai": {}, "tu": {}, "den": {}, "o": {}, "nay": {},
+	"mai": {}, "hom": {}, "cung": {}, "nhung": {}, "hay": {}, "neu": {}, "ma": {}, "vi": {},
 }
 
 func filterPolicyQueryTokens(tokens []string) []string {

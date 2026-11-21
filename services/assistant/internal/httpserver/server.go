@@ -141,7 +141,7 @@ func handleChatSSE(svc ChatStreamer, jwtMgr *auth.Manager, log *slog.Logger) htt
 		}
 
 		// Clear write deadline so long-lived SSE streams are not terminated prematurely.
-		rc := http.NewResponseController(w)
+		rc := http.NewResponseController(w) //nolint:bodyclose // wraps ResponseWriter, not an *http.Response body
 		_ = rc.SetWriteDeadline(time.Time{})
 
 		flusher, _ := w.(http.Flusher)

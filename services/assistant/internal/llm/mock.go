@@ -370,11 +370,36 @@ func isSellerReportIntent(folded string) bool {
 	if hasAnySubstr(folded, reportKeys...) {
 		return true
 	}
-	if strings.Contains(folded, "so du") {
+	if hasWordPhrase(folded, "so du") {
 		policyCues := []string{"chinh sach", "quy dinh", "escrow", "khoa rut", "24 gio", "24h", "otp", "rut tien nhu the nao"}
 		return !hasAnySubstr(folded, policyCues...)
 	}
 	return false
+}
+
+func hasWordPhrase(text, phrase string) bool {
+	if phrase == "" {
+		return false
+	}
+	start := 0
+	for {
+		idx := strings.Index(text[start:], phrase)
+		if idx < 0 {
+			return false
+		}
+		abs := start + idx
+		leftOK := abs == 0 || !isASCIIAlphaNum(text[abs-1])
+		end := abs + len(phrase)
+		rightOK := end == len(text) || !isASCIIAlphaNum(text[end])
+		if leftOK && rightOK {
+			return true
+		}
+		start = abs + 1
+	}
+}
+
+func isASCIIAlphaNum(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
 func parseReportPeriod(folded string) string {

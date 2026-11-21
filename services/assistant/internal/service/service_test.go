@@ -367,7 +367,7 @@ func TestStreamChatBudgetFallbackAndQuotaExceeded(t *testing.T) {
 		t.Fatalf("expected fallback model used, calls=%d model=%s", fallback.streamCalls, done.Model)
 	}
 
-	// Without fallback, daily budget exceeded returns ErrBudgetExceeded.
+	// Without fallback, daily budget exceeded returns ErrBudgetExceeded on an uncached query.
 	svcNoFallback := New(Deps{
 		Config:    config.Load(),
 		LLM:       &fakeLLM{},
@@ -376,17 +376,17 @@ func TestStreamChatBudgetFallbackAndQuotaExceeded(t *testing.T) {
 		Quota:     fq,
 	})
 	err = svcNoFallback.StreamChat(ctx, tools.CallContext{UserID: "u1"}, ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "Xin chào"}},
+		Messages: []ChatMessage{{Role: "user", Content: "Tư vấn áo polo nam"}},
 	}, func(SSEEvent) error { return nil })
 	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("expected ErrBudgetExceeded, got %v", err)
 	}
 
-	// User token quota exceeded returns ErrRateLimited.
+	// User token quota exceeded returns ErrRateLimited on an uncached query.
 	fq.costAllowed = true
 	fq.tokenAllowed = false
 	err = svcNoFallback.StreamChat(ctx, tools.CallContext{UserID: "u1"}, ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "Xin chào"}},
+		Messages: []ChatMessage{{Role: "user", Content: "Tư vấn quần short thể thao"}},
 	}, func(SSEEvent) error { return nil })
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("expected ErrRateLimited, got %v", err)

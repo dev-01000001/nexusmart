@@ -532,7 +532,21 @@ func (r *Registry) execHandoffToAgent(ctx context.Context, cc CallContext, args 
 		}
 	}
 
-	resp, err := r.gw.CreateChatConversation(ctx, cc.RawBearer, shopID)
+	initialMsg := summary
+	if initialMsg == "" {
+		initialMsg = reason
+	}
+	var (
+		resp map[string]any
+		err  error
+	)
+	if msgClient, ok := r.gw.(interface {
+		CreateChatConversationWithMessage(ctx context.Context, rawBearer, shopID, initialMessage string) (map[string]any, error)
+	}); ok && initialMsg != "" {
+		resp, err = msgClient.CreateChatConversationWithMessage(ctx, cc.RawBearer, shopID, initialMsg)
+	} else {
+		resp, err = r.gw.CreateChatConversation(ctx, cc.RawBearer, shopID)
+	}
 	if err != nil {
 		var statusErr *resilience.HTTPStatusError
 		if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized {

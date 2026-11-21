@@ -69,16 +69,16 @@ type ToolResultEventData struct {
 
 // DoneEventData is the payload for "done" SSE events.
 type DoneEventData struct {
-	ConversationID string                       `json:"conversation_id"`
-	MessageID      string                       `json:"message_id"`
-	Model          string                       `json:"model,omitempty"`
-	Usage          llm.Usage                    `json:"usage"`
-	TTFTMs         int64                        `json:"ttft_ms"`
-	LatencyMs      int64                        `json:"latency_ms"`
-	CacheHit       bool                         `json:"cache_hit"`
-	Blocked        bool                         `json:"blocked,omitempty"`
-	Citations      []string                     `json:"citations,omitempty"`
-	Products       []guardrail.GroundedProduct  `json:"products,omitempty"`
+	ConversationID string                      `json:"conversation_id"`
+	MessageID      string                      `json:"message_id"`
+	Model          string                      `json:"model,omitempty"`
+	Usage          llm.Usage                   `json:"usage"`
+	TTFTMs         int64                       `json:"ttft_ms"`
+	LatencyMs      int64                       `json:"latency_ms"`
+	CacheHit       bool                        `json:"cache_hit"`
+	Blocked        bool                        `json:"blocked,omitempty"`
+	Citations      []string                    `json:"citations,omitempty"`
+	Products       []guardrail.GroundedProduct `json:"products,omitempty"`
 }
 
 type cachedChatEntry struct {
@@ -279,6 +279,8 @@ func (s *Service) StreamChat(ctx context.Context, cc tools.CallContext, req Chat
 		totalUsage        llm.Usage
 		retrievedProducts []guardrail.GroundedProduct
 		retrievedSeen     = make(map[string]bool)
+		groundingItems    []guardrail.GroundedProduct
+		groundingSeen     = make(map[string]bool)
 		citations         []string
 		citationSeen      = make(map[string]bool)
 		toolCallAudit     []map[string]any
@@ -396,7 +398,7 @@ func (s *Service) StreamChat(ctx context.Context, cc tools.CallContext, req Chat
 				usedPrivateTool = true
 			}
 
-			collectRetrievedMetadata(res, &retrievedProducts, retrievedSeen, &citations, citationSeen)
+			collectRetrievedMetadata(cc.ShopID, res, &retrievedProducts, retrievedSeen, &groundingItems, groundingSeen, &citations, citationSeen)
 			toolCallAudit = append(toolCallAudit, map[string]any{
 				"id":   tc.ID,
 				"name": tc.Name,
@@ -441,7 +443,7 @@ func (s *Service) StreamChat(ctx context.Context, cc tools.CallContext, req Chat
 			finalText = clean
 		}
 		var reasons []string
-		hallucinated, reasons = s.guardrail.VerifyGrounding(finalText, cc.ShopID, retrievedProducts)
+		hallucinated, reasons = s.guardrail.VerifyGrounding(finalText, cc.ShopID, groundingItems)
 		if hallucinated {
 			s.metrics.IncGuardrailBlock("hallucination", "grounding")
 			s.logger.WarnContext(ctx, "grounding violation detected in assistant output",
@@ -567,52 +569,87 @@ QUY TẮC BẮT BUỘC:
 }
 
 func collectRetrievedMetadata(
+	allowedShopID string,
 	res tools.Result,
 	products *[]guardrail.GroundedProduct,
 	productSeen map[string]bool,
+	grounding *[]guardrail.GroundedProduct,
+	groundingSeen map[string]bool,
 	citations *[]string,
 	citationSeen map[string]bool,
 ) {
-	if !res.OK || len(res.Data) == 0 {
+	if len(res.Data) == 0 {
 		return
 	}
-	if rawProds, ok := res.Data["products"]; ok && rawProds != nil {
-		b, err := json.Marshal(rawProds)
-		if err == nil {
-			var parsed []struct {
-				ID     string `json:"id"`
-				ShopID string `json:"shop_id"`
-				Name   string `json:"name"`
-			}
-			if json.Unmarshal(b, &parsed) == nil {
-				for _, p := range parsed {
-					if p.ID == "" || productSeen[p.ID] {
-						continue
+	addGrounded := func(id, shopID, name string) {
+		if id == "" || groundingSeen[id] {
+			return
+		}
+		groundingSeen[id] = true
+		*grounding = append(*grounding, guardrail.GroundedProduct{
+			ID:     id,
+			ShopID: shopID,
+			Name:   name,
+		})
+	}
+	if res.OK {
+		if rawProds, ok := res.Data["products"]; ok && rawProds != nil {
+			b, err := json.Marshal(rawProds)
+			if err == nil {
+				var parsed []struct {
+					ID     string `json:"id"`
+					ShopID string `json:"shop_id"`
+					Name   string `json:"name"`
+					SKUs   []struct {
+						ID   string `json:"id"`
+						Name string `json:"name"`
+					} `json:"skus"`
+				}
+				if json.Unmarshal(b, &parsed) == nil {
+					for _, p := range parsed {
+						if p.ID != "" && !productSeen[p.ID] {
+							productSeen[p.ID] = true
+							*products = append(*products, guardrail.GroundedProduct{
+								ID:     p.ID,
+								ShopID: p.ShopID,
+								Name:   p.Name,
+							})
+						}
+						addGrounded(p.ID, p.ShopID, p.Name)
+						for _, sku := range p.SKUs {
+							addGrounded(sku.ID, p.ShopID, sku.Name)
+						}
 					}
-					productSeen[p.ID] = true
-					*products = append(*products, guardrail.GroundedProduct{
-						ID:     p.ID,
-						ShopID: p.ShopID,
-						Name:   p.Name,
-					})
+				}
+			}
+		}
+		if rawChunks, ok := res.Data["chunks"]; ok && rawChunks != nil {
+			b, err := json.Marshal(rawChunks)
+			if err == nil {
+				var parsed []struct {
+					Citation string `json:"citation"`
+				}
+				if json.Unmarshal(b, &parsed) == nil {
+					for _, c := range parsed {
+						if c.Citation == "" || citationSeen[c.Citation] {
+							continue
+						}
+						citationSeen[c.Citation] = true
+						*citations = append(*citations, c.Citation)
+					}
 				}
 			}
 		}
 	}
-	if rawChunks, ok := res.Data["chunks"]; ok && rawChunks != nil {
-		b, err := json.Marshal(rawChunks)
-		if err == nil {
-			var parsed []struct {
-				Citation string `json:"citation"`
-			}
-			if json.Unmarshal(b, &parsed) == nil {
-				for _, c := range parsed {
-					if c.Citation == "" || citationSeen[c.Citation] {
-						continue
-					}
-					citationSeen[c.Citation] = true
-					*citations = append(*citations, c.Citation)
-				}
+	if res.Name == "add_to_cart" && (res.OK || res.RequiresConfirmation) {
+		if skuID, ok := res.Data["sku_id"].(string); ok && skuID != "" {
+			prodName, _ := res.Data["product_name"].(string)
+			addGrounded(skuID, allowedShopID, prodName)
+		}
+		if cartMap, ok := res.Data["cart"].(map[string]any); ok {
+			if skuID, ok := cartMap["sku_id"].(string); ok && skuID != "" {
+				prodName, _ := cartMap["product_name"].(string)
+				addGrounded(skuID, allowedShopID, prodName)
 			}
 		}
 	}

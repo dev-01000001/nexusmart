@@ -441,6 +441,19 @@ func (s *Service) SuggestReply(ctx context.Context, cc tools.CallContext, req Su
 	}
 	if productHit != nil {
 		meta["product"] = productHit
+		meta["product_name"] = productHit.Name
+		meta["product_price_vnd"] = productHit.MinPriceVND
+	}
+	if len(policyChunks) > 0 {
+		parts := make([]string, 0, len(policyChunks))
+		for _, c := range policyChunks {
+			if strings.TrimSpace(c.Content) != "" {
+				parts = append(parts, strings.TrimSpace(c.Content))
+			}
+		}
+		if len(parts) > 0 {
+			meta["policy_summary"] = strings.Join(parts, " ")
+		}
 	}
 
 	resp, err := provider.Complete(ctx, llm.CompleteRequest{
