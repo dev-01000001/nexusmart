@@ -175,9 +175,10 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 match PaymentMethod::try_from(req.method).unwrap_or(PaymentMethod::Unspecified) {
                     PaymentMethod::Cod => DomainMethod::Cod,
                     PaymentMethod::Vietqr => DomainMethod::VietQr,
+                    PaymentMethod::Zalopay => DomainMethod::ZaloPay,
                     PaymentMethod::Unspecified => {
                         return Err(Status::invalid_argument(
-                            "method must be PAYMENT_METHOD_COD or PAYMENT_METHOD_VIETQR",
+                            "method must be PAYMENT_METHOD_COD, PAYMENT_METHOD_VIETQR, or PAYMENT_METHOD_ZALOPAY",
                         ));
                     }
                 };
@@ -503,11 +504,46 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 amount_mismatch_count: report.run.amount_mismatch_count,
                 items,
                 sales_channel: report.run.sales_channel,
+                auto_healed_count: report.run.auto_healed_count,
             }))
         }
         .await;
 
         self.record_metrics("RunReconciliation", start, &result);
+        result
+    }
+
+    async fn list_reconciliation_reports(
+        &self,
+        request: Request<ListReconciliationReportsRequest>,
+    ) -> Result<Response<ListReconciliationReportsResponse>, Status> {
+        let start = Instant::now();
+        let caller = CallerAuth::from_request(&self.auth, &request, "ListReconciliationReports");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            caller.require_admin("ListReconciliationReports")?;
+
+            let channel_filter =
+                SalesChannel::parse_filter(&req.sales_channel).map_err(|e| e.to_tonic_status())?;
+
+            let rows = self
+                .service
+                .list_reconciliation_reports(req.limit, channel_filter)
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            let reports = rows
+                .into_iter()
+                .map(to_proto_reconciliation_report_summary)
+                .collect();
+
+            Ok(Response::new(ListReconciliationReportsResponse { reports }))
+        }
+        .await;
+
+        self.record_metrics("ListReconciliationReports", start, &result);
         result
     }
 }
@@ -558,6 +594,7 @@ fn to_proto_payment(pwa: PaymentWithAllocations) -> Payment {
     let method = match p.method.as_str() {
         "COD" => PaymentMethod::Cod as i32,
         "VIETQR" => PaymentMethod::Vietqr as i32,
+        "ZALOPAY" => PaymentMethod::Zalopay as i32,
         _ => PaymentMethod::Unspecified as i32,
     };
     let status = match p.status.as_str() {
@@ -660,6 +697,25 @@ fn to_proto_reconciliation_item(item: ReconciliationItemRecord) -> Reconciliatio
         note: item.details.unwrap_or_default(),
         sales_channel: item.sales_channel,
         storefront_shop_id: item.storefront_shop_id,
+    }
+}
+
+fn to_proto_reconciliation_report_summary(
+    r: ReconciliationRunRecord,
+) -> ReconciliationReportSummary {
+    ReconciliationReportSummary {
+        run_id: r.id.to_string(),
+        provider: r.provider,
+        run_date: r.run_date.format("%Y-%m-%d").to_string(),
+        sales_channel: r.sales_channel,
+        matched_count: r.matched_count,
+        missing_local_count: r.missing_local_count,
+        missing_provider_count: r.missing_provider_count,
+        amount_mismatch_count: r.amount_mismatch_count,
+        auto_healed_count: r.auto_healed_count,
+        status: r.status,
+        created_at: Some(chrono_to_proto(r.created_at)),
+        completed_at: r.completed_at.map(chrono_to_proto),
     }
 }
 

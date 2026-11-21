@@ -189,13 +189,14 @@ impl PaymentService {
         }
 
         let payment_id = Uuid::new_v4();
-        let expires_at =
-            match input.method {
-                PaymentMethod::Cod => None,
-                PaymentMethod::VietQr => Some(input.expires_at.unwrap_or_else(|| {
-                    Utc::now() + Duration::seconds(self.config.vietqr_expiry_secs)
-                })),
-            };
+        let expires_at = match input.method {
+            PaymentMethod::Cod => None,
+            PaymentMethod::VietQr | PaymentMethod::ZaloPay => Some(
+                input
+                    .expires_at
+                    .unwrap_or_else(|| Utc::now() + Duration::seconds(self.config.vietqr_expiry_secs)),
+            ),
+        };
 
         let (provider, provider_order_code, qr_code, qr_url, initial_status, paid_at) =
             match input.method {
@@ -222,6 +223,27 @@ impl PaymentService {
                         intent.provider_order_code,
                         Some(intent.qr_code),
                         Some(intent.qr_url),
+                        "pending".to_string(),
+                        None,
+                    )
+                }
+                PaymentMethod::ZaloPay => {
+                    let intent = self
+                        .zalopay
+                        .create_order(
+                            payment_id,
+                            &order_group_id,
+                            &order_id,
+                            &input.user_id,
+                            input.amount_vnd,
+                            expires_at.unwrap_or_else(Utc::now),
+                        )
+                        .await?;
+                    (
+                        intent.provider,
+                        intent.app_trans_id,
+                        Some(intent.zp_trans_token),
+                        Some(intent.order_url),
                         "pending".to_string(),
                         None,
                     )
@@ -923,7 +945,7 @@ impl PaymentService {
 
             WebhookDecision::ConfirmPayment => {
                 let p = payment.expect("payment present for ConfirmPayment");
-                let updated = confirm_vietqr_payment_tx(
+                let updated = confirm_online_payment_tx(
                     &mut tx,
                     &p,
                     &payload.provider_tx_id,
@@ -946,13 +968,18 @@ impl PaymentService {
 
                 tx.commit().await?;
 
-                self.vietqr.record_mock_transaction(ProviderTransaction {
+                let mock_tx = ProviderTransaction {
                     provider_tx_id: payload.provider_tx_id.clone(),
                     provider_order_code: updated.provider_order_code.clone(),
                     amount_vnd: updated.amount_vnd,
                     status: "succeeded".to_string(),
                     occurred_at: Utc::now(),
-                });
+                };
+                if updated.method == "ZALOPAY" {
+                    self.zalopay.record_mock_transaction(mock_tx);
+                } else {
+                    self.vietqr.record_mock_transaction(mock_tx);
+                }
 
                 self.metrics.record_webhook("confirmed");
                 self.emit_sse(&updated);
@@ -961,9 +988,10 @@ impl PaymentService {
                     payment_id = %updated.id,
                     order_group_id = %updated.order_group_id,
                     order_id = %updated.order_id,
+                    method = %updated.method,
                     provider_tx_id = %payload.provider_tx_id,
                     amount_vnd = updated.amount_vnd,
-                    "VietQR payment confirmed via webhook"
+                    "online payment confirmed via webhook"
                 );
 
                 Ok(WebhookProcessResult {
@@ -1097,12 +1125,72 @@ impl PaymentService {
             input.amount_vnd,
         )?;
 
+        // Lock target allocation(s) to determine whether escrow is still `held` or already settled
+        // (`pending_release` / `released`) for accurate double-entry reversal.
+        let suborder_allocs = sqlx::query_as::<_, ShopAllocationRecord>(
+            r#"
+            SELECT * FROM payment_shop_allocations
+            WHERE payment_id = $1 AND order_id = $2
+            ORDER BY created_at ASC
+            FOR UPDATE
+            "#,
+        )
+        .bind(payment.id)
+        .bind(&order_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let fallback_single_alloc: Option<ShopAllocationRecord> = if suborder_allocs.is_empty()
+            && (order_id == payment.order_id || order_id == payment.order_group_id)
+        {
+            let all_allocs = sqlx::query_as::<_, ShopAllocationRecord>(
+                r#"
+                SELECT * FROM payment_shop_allocations
+                WHERE payment_id = $1
+                ORDER BY created_at ASC
+                FOR UPDATE
+                "#,
+            )
+            .bind(payment.id)
+            .fetch_all(&mut *tx)
+            .await?;
+            if all_allocs.len() == 1 {
+                all_allocs.into_iter().next()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let target_alloc: Option<&ShopAllocationRecord> = if suborder_allocs.len() == 1 {
+            suborder_allocs.first()
+        } else {
+            fallback_single_alloc.as_ref()
+        };
+
+        // Call ZaloPay refund API (mock or sandbox) for ZALOPAY payments and persist provider_refund_id.
+        let provider_refund_id = if payment.method == "ZALOPAY" {
+            let zp_tx_ref = payment
+                .provider_tx_id
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(&payment.provider_order_code);
+            let rid = self
+                .zalopay
+                .create_refund(zp_tx_ref, input.amount_vnd, &input.reason)
+                .await?;
+            Some(rid)
+        } else {
+            None
+        };
+
         let refund_insert = sqlx::query_as::<_, RefundRecord>(
             r#"
             INSERT INTO refunds (
-                payment_id, order_id, amount_vnd, reason, status, idempotency_key
+                payment_id, order_id, amount_vnd, reason, status, idempotency_key, provider_refund_id
             )
-            VALUES ($1, $2, $3, $4, 'completed', $5)
+            VALUES ($1, $2, $3, $4, 'completed', $5, $6)
             RETURNING *
             "#,
         )
@@ -1111,6 +1199,7 @@ impl PaymentService {
         .bind(input.amount_vnd)
         .bind(&input.reason)
         .bind(&input.idempotency_key)
+        .bind(&provider_refund_id)
         .fetch_one(&mut *tx)
         .await;
 
@@ -1137,13 +1226,48 @@ impl PaymentService {
         };
 
         let channel = resolve_refund_channel_tx(&mut tx, &payment, &order_id).await?;
-        let draft = build_refund_tx(
-            refund.id,
-            payment.id,
-            refund.amount_vnd,
-            &refund.reason,
-            channel.clone(),
-        );
+        let draft = if let Some(alloc) = target_alloc.filter(|a| {
+            a.escrow_status == "pending_release" || a.escrow_status == "released"
+        }) {
+            let split = compute_allocation_split(
+                &alloc.order_id,
+                &alloc.shop_id,
+                alloc.subtotal_vnd,
+                alloc.commission_vnd,
+                alloc.shipping_fee_vnd,
+            )?;
+            let from_available = alloc.escrow_status == "released";
+            if refund.amount_vnd <= split.total_escrow_debit_vnd {
+                build_settled_refund_tx(
+                    refund.id,
+                    payment.id,
+                    &alloc.shop_id,
+                    from_available,
+                    split.seller_net_vnd,
+                    split.commission_vnd,
+                    split.shipping_fee_vnd,
+                    refund.amount_vnd,
+                    &refund.reason,
+                    channel.clone(),
+                )?
+            } else {
+                build_refund_tx(
+                    refund.id,
+                    payment.id,
+                    refund.amount_vnd,
+                    &refund.reason,
+                    channel.clone(),
+                )
+            }
+        } else {
+            build_refund_tx(
+                refund.id,
+                payment.id,
+                refund.amount_vnd,
+                &refund.reason,
+                channel.clone(),
+            )
+        };
         if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
             self.metrics.record_ledger_tx("refund");
         }
@@ -1151,17 +1275,33 @@ impl PaymentService {
         // Mark only the refunded sub-order's allocation(s) as refunded when fully refunded
         // so partial refunds or sibling shops stay intact.
         if suborder_remaining_after == Some(0) || remaining_after == 0 {
-            sqlx::query(
-                r#"
-                UPDATE payment_shop_allocations
-                SET escrow_status = 'refunded'
-                WHERE payment_id = $1 AND order_id = $2 AND escrow_status = 'held'
-                "#,
-            )
-            .bind(payment.id)
-            .bind(&order_id)
-            .execute(&mut *tx)
-            .await?;
+            if !suborder_allocs.is_empty() {
+                sqlx::query(
+                    r#"
+                    UPDATE payment_shop_allocations
+                    SET escrow_status = 'refunded'
+                    WHERE payment_id = $1
+                      AND order_id = $2
+                      AND escrow_status IN ('held', 'pending_release', 'released')
+                    "#,
+                )
+                .bind(payment.id)
+                .bind(&order_id)
+                .execute(&mut *tx)
+                .await?;
+            } else if let Some(alloc) = fallback_single_alloc.as_ref() {
+                sqlx::query(
+                    r#"
+                    UPDATE payment_shop_allocations
+                    SET escrow_status = 'refunded'
+                    WHERE id = $1
+                      AND escrow_status IN ('held', 'pending_release', 'released')
+                    "#,
+                )
+                .bind(alloc.id)
+                .execute(&mut *tx)
+                .await?;
+            }
         }
 
         let remaining_active_allocs: i64 = sqlx::query_scalar(
@@ -1433,7 +1573,31 @@ impl PaymentService {
         Ok(rows)
     }
 
-    /// Background scanner for expired pending VietQR payments (UC-PAY06).
+    /// Lists historical daily reconciliation runs ordered newest-first (optionally filtered by sales channel).
+    pub async fn list_reconciliation_reports(
+        &self,
+        limit: i32,
+        channel_filter: Option<SalesChannel>,
+    ) -> Result<Vec<ReconciliationRunRecord>> {
+        let effective_limit = if limit <= 0 { 30 } else { limit.min(100) } as i64;
+        let filter_str = channel_filter.map(SalesChannel::as_str);
+        let rows = sqlx::query_as::<_, ReconciliationRunRecord>(
+            r#"
+            SELECT *
+            FROM reconciliation_runs
+            WHERE ($1::TEXT IS NULL OR sales_channel = $1)
+            ORDER BY created_at DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(filter_str)
+        .bind(effective_limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Background scanner for expired pending online payments (VietQR & ZaloPay, UC-PAY06).
     /// Uses `FOR UPDATE SKIP LOCKED` so concurrent scanners never double-expire the same payment.
     pub async fn scan_expired_payments(&self) -> Result<usize> {
         let mut tx = self.pool.begin().await?;
@@ -1442,7 +1606,7 @@ impl PaymentService {
             r#"
             SELECT * FROM payments
             WHERE status = 'pending'
-              AND method = 'VIETQR'
+              AND method IN ('VIETQR', 'ZALOPAY')
               AND expires_at IS NOT NULL
               AND expires_at <= NOW()
             ORDER BY expires_at ASC
@@ -1462,11 +1626,16 @@ impl PaymentService {
         let mut sse_updates = Vec::new();
 
         for payment in expired_candidates {
-            match self
-                .vietqr
-                .check_payment_status(&payment.provider_order_code)
-                .await
-            {
+            let status_check = if payment.method == "ZALOPAY" {
+                self.zalopay
+                    .query_order_status(&payment.provider_order_code)
+                    .await
+            } else {
+                self.vietqr
+                    .check_payment_status(&payment.provider_order_code)
+                    .await
+            };
+            match status_check {
                 Ok(Some(provider_tx)) if provider_tx.amount_vnd == payment.amount_vnd => {
                     if order_already_succeeded_tx(
                         &mut tx,
@@ -1487,7 +1656,7 @@ impl PaymentService {
                         )
                         .await?;
                     } else {
-                        let confirmed = confirm_vietqr_payment_tx(
+                        let confirmed = confirm_online_payment_tx(
                             &mut tx,
                             &payment,
                             &provider_tx.provider_tx_id,
@@ -1505,6 +1674,7 @@ impl PaymentService {
                 Err(e) => {
                     warn!(
                         payment_id = %payment.id,
+                        method = %payment.method,
                         error = %e,
                         "provider unreachable during expiration check; deferring expiry"
                     );
@@ -1553,31 +1723,42 @@ impl PaymentService {
         if expired_count > 0 {
             info!(
                 expired_count = expired_count,
-                "expired pending VietQR payments"
+                "expired pending online payments"
             );
         }
         Ok(expired_count)
     }
 
-    /// Runs reconciliation comparing local VietQR payments vs provider transaction feed (UC-PAY07).
+    /// Runs reconciliation comparing local VietQR + ZaloPay payments vs combined provider feeds (UC-PAY07).
     /// Supports optional `channel_filter` (`MARKETPLACE` or `STOREFRONT`) so channel-scoped runs
-    /// partition local VietQR payments without misclassifying the other channel's provider transactions
+    /// partition local online payments without misclassifying the other channel's provider transactions
     /// as `missing_local`.
     pub async fn run_reconciliation(
         &self,
         run_date: NaiveDate,
         channel_filter: Option<SalesChannel>,
     ) -> Result<ReconciliationReport> {
-        let provider_name = self.vietqr.mode().as_str().to_string();
+        let provider_name = format!(
+            "{}+{}",
+            self.vietqr.mode().as_str(),
+            self.zalopay.mode().as_str()
+        );
         let filter_str = channel_filter.map(SalesChannel::as_str).unwrap_or("");
-        // Filter provider transactions to `run_date` to match `local_payments` (`created_at::date = $1`).
-        let provider_txs: Vec<ProviderTransaction> = self
+        // Filter combined VietQR + ZaloPay provider transactions to `run_date` to match `local_payments`.
+        let mut provider_txs: Vec<ProviderTransaction> = self
             .vietqr
             .list_provider_transactions()
             .await?
             .into_iter()
             .filter(|ptx| ptx.occurred_at.date_naive() == run_date)
             .collect();
+        let zalopay_txs = self
+            .zalopay
+            .list_provider_transactions()
+            .await?
+            .into_iter()
+            .filter(|ptx| ptx.occurred_at.date_naive() == run_date);
+        provider_txs.extend(zalopay_txs);
 
         let mut tx = self.pool.begin().await?;
 
@@ -1594,12 +1775,13 @@ impl PaymentService {
         .fetch_one(&mut *tx)
         .await?;
 
-        // Load ALL local VietQR payments for `run_date` across every channel so provider txs
-        // belonging to another channel are recognized and excluded rather than reported as missing_local.
+        // Load ALL local online payments (VietQR & ZaloPay) for `run_date` across every channel
+        // so provider txs belonging to another channel are recognized and excluded rather than
+        // misreported as missing_local.
         let local_payments = sqlx::query_as::<_, PaymentRecord>(
             r#"
             SELECT * FROM payments
-            WHERE method = 'VIETQR'
+            WHERE method IN ('VIETQR', 'ZALOPAY')
               AND created_at::date = $1
             "#,
         )
@@ -1733,7 +1915,7 @@ impl PaymentService {
                                 .await?,
                             );
                         } else {
-                            let healed = confirm_vietqr_payment_tx(
+                            let healed = confirm_online_payment_tx(
                                 &mut tx,
                                 local,
                                 &ptx.provider_tx_id,
@@ -1999,7 +2181,7 @@ impl PaymentService {
                     sse_cancelled = Some(updated);
                 }
             }
-            "succeeded" if payment.method == "VIETQR" => {
+            "succeeded" if payment.method == "VIETQR" || payment.method == "ZALOPAY" => {
                 let already_refunded: i64 = sqlx::query_scalar(
                     r#"
                     SELECT COALESCE(SUM(amount_vnd), 0)::BIGINT
@@ -2078,6 +2260,24 @@ impl PaymentService {
                     .await?;
 
                     if let Some(refund) = inserted_refund {
+                        if payment.method == "ZALOPAY" {
+                            let zp_tx_ref = payment
+                                .provider_tx_id
+                                .as_deref()
+                                .filter(|s| !s.trim().is_empty())
+                                .unwrap_or(&payment.provider_order_code);
+                            let provider_refund_id = self
+                                .zalopay
+                                .create_refund(zp_tx_ref, refund.amount_vnd, &refund.reason)
+                                .await?;
+                            sqlx::query(
+                                "UPDATE refunds SET provider_refund_id = $1, updated_at = NOW() WHERE id = $2",
+                            )
+                            .bind(&provider_refund_id)
+                            .bind(refund.id)
+                            .execute(&mut *tx)
+                            .await?;
+                        }
                         let channel =
                             resolve_refund_channel_tx(&mut tx, &payment, order_id).await?;
                         let draft = build_refund_tx(
@@ -2376,7 +2576,7 @@ async fn find_payment_for_webhook_tx(
     Ok(None)
 }
 
-async fn confirm_vietqr_payment_tx(
+async fn confirm_online_payment_tx(
     tx: &mut Transaction<'_, Postgres>,
     payment: &PaymentRecord,
     provider_tx_id: &str,
@@ -2400,9 +2600,19 @@ async fn confirm_vietqr_payment_tx(
     .await?;
 
     let channel = ChannelAttribution::from_db(&updated.sales_channel, &updated.storefront_shop_id);
-    let draft = build_vietqr_confirm_tx(updated.id, updated.amount_vnd, channel);
+    let (draft, metric_type) = if updated.method == "ZALOPAY" {
+        (
+            build_zalopay_confirm_tx(updated.id, updated.amount_vnd, channel),
+            "payment_zalopay",
+        )
+    } else {
+        (
+            build_vietqr_confirm_tx(updated.id, updated.amount_vnd, channel),
+            "payment_vietqr",
+        )
+    };
     if ledger::post_transaction(tx, &draft).await?.is_some() {
-        metrics.record_ledger_tx("payment_vietqr");
+        metrics.record_ledger_tx(metric_type);
     }
 
     insert_outbox_event(

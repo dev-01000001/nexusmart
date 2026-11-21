@@ -72,7 +72,7 @@ pub async fn connect_jetstream(nats_url: &str, stream_name: &str) -> Option<jets
     Some(js)
 }
 
-/// Background worker 1: Scans expired pending VietQR payments (UC-PAY06).
+/// Background worker 1: Scans expired pending online payments (VietQR & ZaloPay, UC-PAY06).
 pub async fn run_expiration_scanner(service: PaymentService, mut shutdown: watch::Receiver<bool>) {
     let mut ticker = interval(service.config().expiration_scan_interval);
     info!(

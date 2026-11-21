@@ -143,6 +143,60 @@ async fn handle_vietqr_webhook(
     process_webhook_http(state, headers, body, default_provider).await
 }
 
+async fn handle_zalopay_webhook(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, PaymentError> {
+    let trace_id = extract_or_generate_trace_id(
+        header_str(&headers, "traceparent"),
+        header_str(&headers, "x-trace-id"),
+    );
+    let timestamp = header_str(&headers, "x-timestamp");
+
+    let verified = match state.service.zalopay().verify_callback(
+        &body,
+        timestamp,
+        state.service.config().webhook_replay_window_secs,
+        Utc::now(),
+    ) {
+        Ok(v) => v,
+        Err(err) => {
+            let metric_label = if matches!(err, PaymentError::Unauthorized(_)) {
+                "rejected_signature"
+            } else {
+                "rejected_payload"
+            };
+            state.service.metrics().record_webhook(metric_label);
+            warn!(
+                trace_id = %trace_id,
+                has_timestamp = timestamp.is_some(),
+                reason = %err,
+                "rejected ZaloPay callback due to invalid MAC, replay window, or schema"
+            );
+            return Err(err);
+        }
+    };
+
+    let default_provider = state.service.zalopay().mode().as_str();
+    let result = state
+        .service
+        .process_verified_webhook(verified.payload, verified.raw_json, default_provider, &trace_id)
+        .await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "return_code": 1,
+            "return_message": "success",
+            "status": result.status,
+            "provider_tx_id": result.provider_tx_id,
+            "payment_id": result.payment_id,
+            "duplicate": result.duplicate,
+        })),
+    ))
+}
+
 async fn process_webhook_http(
     state: HttpState,
     headers: HeaderMap,
@@ -347,6 +401,22 @@ async fn internal_reconciliation_run(
         .run_reconciliation(run_date, channel_filter)
         .await?;
     Ok((StatusCode::OK, Json(report)))
+}
+
+async fn internal_reconciliation_reports(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<ReconciliationReportsQuery>,
+) -> Result<impl IntoResponse, PaymentError> {
+    let _caller = state
+        .auth
+        .authenticate_http_admin(header_str(&headers, "authorization"))?;
+    let channel_filter = SalesChannel::parse_filter(&query.sales_channel)?;
+    let reports = state
+        .service
+        .list_reconciliation_reports(query.limit.unwrap_or(30), channel_filter)
+        .await?;
+    Ok((StatusCode::OK, Json(json!({ "reports": reports }))))
 }
 
 fn header_str<'a>(headers: &'a HeaderMap, key: &str) -> Option<&'a str> {
