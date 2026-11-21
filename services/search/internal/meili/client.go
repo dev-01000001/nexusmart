@@ -260,6 +260,9 @@ func (c *Client) EnsureIndex(ctx context.Context) error {
 		"faceting": map[string]any{
 			"maxValuesPerFacet": 100,
 		},
+		"pagination": map[string]any{
+			"maxTotalHits": 100000,
+		},
 		"typoTolerance": map[string]any{
 			"enabled": true,
 			"minWordSizeForTypos": map[string]int{

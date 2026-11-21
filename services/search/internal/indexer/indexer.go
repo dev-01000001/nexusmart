@@ -26,7 +26,7 @@ const (
 	minCategoryRefreshGap = 5 * time.Second
 	bulkChunkSize         = 1000
 	syncPageSize          = 100
-	syncFlushBatchSize    = 500
+	syncFlushBatchSize    = 1000
 )
 
 // SearchEngine abstracts Meilisearch write operations for indexing and unit tests.
