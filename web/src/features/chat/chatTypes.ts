@@ -16,6 +16,7 @@ export const ALLOWED_CHAT_MESSAGE_KINDS: readonly ChatMessageKind[] = [
 export const MAX_CHAT_BODY_LENGTH = 2000;
 export const MAX_CHAT_REF_ID_LENGTH = 120;
 export const MAX_AUTO_REPLY_LENGTH = 500;
+export const SELLER_AUTO_REPLY_GATEWAY_PATH = "/api/v1/seller/chat/auto-reply";
 
 export const OPEN_SITE_CHAT_EVENT = "nexusmart:open-chat";
 
@@ -168,18 +169,8 @@ function readIsoTimestamp(value: unknown): string {
 }
 
 function parseMetadata(raw: unknown): Record<string, unknown> | undefined {
-  if (isRecord(raw)) return raw;
-  if (typeof raw === "string") {
-    const trimmed = raw.trim();
-    if (!trimmed) return undefined;
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (isRecord(parsed)) return parsed;
-    } catch {
-      return undefined;
-    }
-  }
-  return undefined;
+  if (!isRecord(raw)) return undefined;
+  return Object.keys(raw).length > 0 ? raw : undefined;
 }
 
 export function normalizeMessageKind(raw: unknown): ChatMessageKind {
@@ -220,7 +211,7 @@ export function normalizeMessage(raw: unknown): ChatMessageDTO | null {
   const seq = seqVal > 0 ? seqVal : undefined;
   const isAutoReply = Boolean(raw.is_auto_reply ?? raw.isAutoReply);
   const clientMsgId = readStr(raw.client_msg_id ?? raw.clientMsgId).trim() || undefined;
-  const metadata = parseMetadata(raw.metadata ?? raw.metadata_json ?? raw.metadataJson);
+  const metadata = parseMetadata(raw.metadata);
   const createdAt = readIsoTimestamp(raw.created_at ?? raw.createdAt) || new Date(0).toISOString();
 
   return {
@@ -461,18 +452,81 @@ export function validateAutoReplyInput(
   return { ok: true, value: { enabled: input.enabled, message } };
 }
 
+export function parseGatewayConversationsResponse(
+  raw: unknown,
+  shopId: string,
+  opts: { allowEmptyShopId?: boolean } = {}
+): { conversations: ChatConversationDTO[]; total: number; total_unread: number } {
+  const rec = isRecord(raw) ? raw : {};
+  const rawItems = Array.isArray(rec.items) ? rec.items : [];
+  const conversations = rawItems
+    .map((item) => normalizeConversation(item))
+    .filter(
+      (c): c is ChatConversationDTO =>
+        c !== null && (c.shop_id === shopId || (Boolean(opts.allowEmptyShopId) && !c.shop_id))
+    );
+  const total = typeof rec.total === "number" ? rec.total : conversations.length;
+  const totalUnread =
+    typeof rec.total_unread === "number"
+      ? rec.total_unread
+      : conversations.reduce((sum, c) => sum + c.unread_count, 0);
+  return { conversations, total, total_unread: totalUnread };
+}
+
+export function parseGatewayMessagesResponse(raw: unknown): {
+  conversation: ChatConversationDTO | null;
+  messages: ChatMessageDTO[];
+  next_before: string;
+  latest_cursor: string;
+  has_more: boolean;
+} {
+  const rec = isRecord(raw) ? raw : {};
+  const conversation = normalizeConversation(rec.conversation);
+  const rawItems = Array.isArray(rec.items) ? rec.items : [];
+  const parsed = rawItems
+    .map((item) => normalizeMessage(item))
+    .filter((m): m is ChatMessageDTO => m !== null);
+  return {
+    conversation,
+    messages: mergeMessages([], parsed),
+    next_before: readStr(rec.next_before),
+    latest_cursor: readStr(rec.latest_cursor),
+    has_more: Boolean(rec.has_more),
+  };
+}
+
+export function buildGatewaySendMessageBody(
+  payload: ValidatedOutgoingMessage
+): Record<string, unknown> {
+  return {
+    kind: payload.kind,
+    body: payload.body,
+    ref_id: payload.ref_id,
+    ...(payload.client_msg_id ? { client_msg_id: payload.client_msg_id } : {}),
+    ...(payload.metadata ? { metadata: payload.metadata } : {}),
+  };
+}
+
+export function buildGatewayAutoReplyBody(input: { enabled: boolean; message: string }): {
+  enabled: boolean;
+  greeting_message: string;
+} {
+  return {
+    enabled: input.enabled,
+    greeting_message: input.message,
+  };
+}
+
 export function normalizeAutoReplyConfig(raw: unknown): ChatAutoReplyConfigDTO {
-  if (!isRecord(raw)) {
+  if (!isRecord(raw) || !isRecord(raw.config)) {
     return { enabled: false, message: "" };
   }
-  const src = isRecord(raw.config) ? raw.config : raw;
+  const src = raw.config;
   const enabled = Boolean(src.enabled);
-  const message = readStr(
-    src.message ?? src.greeting_message ?? src.greetingMessage ?? src.offline_message
-  ).trim();
+  const message = readStr(src.greeting_message).trim();
   const offlineEnabled = typeof src.offline_enabled === "boolean" ? src.offline_enabled : undefined;
-  const offlineMessage = readStr(src.offline_message ?? src.offlineMessage).trim() || undefined;
-  const updatedAt = readIsoTimestamp(src.updated_at ?? src.updatedAt) || undefined;
+  const offlineMessage = readStr(src.offline_message).trim() || undefined;
+  const updatedAt = readIsoTimestamp(src.updated_at) || undefined;
   return {
     enabled,
     message,

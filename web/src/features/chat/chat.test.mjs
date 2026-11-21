@@ -1,13 +1,19 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   OPEN_SITE_CHAT_EVENT,
+  SELLER_AUTO_REPLY_GATEWAY_PATH,
+  buildGatewayAutoReplyBody,
+  buildGatewaySendMessageBody,
   computeReconnectDelayMs,
   detectOffPlatformContact,
   mergeMessages,
   normalizeAutoReplyConfig,
   normalizeConversation,
   normalizeMessage,
+  parseGatewayConversationsResponse,
+  parseGatewayMessagesResponse,
   parseOrderRefCard,
   parseProductRefCard,
   parseWsIncomingEvent,
@@ -43,20 +49,20 @@ describe("chatTypes normalizers & mergeMessages", () => {
     assert.equal(normalizeConversation(null), null);
   });
 
-  it("normalizes messages across all kinds including proto enum strings", () => {
+  it("normalizes messages with gateway object metadata across all kinds", () => {
     const msg = normalizeMessage({
       id: "m-1",
       conversation_id: "conv-1",
       sender_id: "u-1",
       sender_role: "buyer",
-      kind: "MESSAGE_KIND_PRODUCT",
+      kind: "product",
       body: "Áo Polo Cotton Pique",
       ref_id: "prod-1",
-      metadata_json: JSON.stringify({
+      metadata: {
         slug: "ao-polo",
         price_vnd: 249000,
         image: "/products/p.jpg",
-      }),
+      },
       seq: 4,
       created_at: "2026-11-21T08:01:00Z",
     });
@@ -371,17 +377,21 @@ describe("createChatSocketManager", () => {
     assert.equal(manager.getStatus(), "connected");
     assert.equal(syncCount, 0);
 
-    // Send over open WebSocket returns true
+    // Send over open WebSocket returns true and sends metadata as an object (never metadata_json)
     const sentOk = manager.send({
       conversation_id: "c-1",
-      kind: "text",
+      kind: "product",
       body: "Xin chào shop",
+      ref_id: "prod-1",
       client_msg_id: "cli-1",
+      metadata: { slug: "ao-polo", price_vnd: 249000 },
     });
     assert.equal(sentOk, true);
     assert.equal(createdSockets[0].sent.length, 1);
     assert.equal(createdSockets[0].sent[0].type, "send");
     assert.equal(createdSockets[0].sent[0].body, "Xin chào shop");
+    assert.deepEqual(createdSockets[0].sent[0].metadata, { slug: "ao-polo", price_vnd: 249000 });
+    assert.equal("metadata_json" in createdSockets[0].sent[0], false);
 
     // Incoming message frame parsed and dispatched
     createdSockets[0].receive({
@@ -442,5 +452,250 @@ describe("createChatSocketManager", () => {
     assert.equal(manager.getStatus(), "offline");
     assert.equal(scheduled.length, 0);
     assert.deepEqual(statuses, ["connecting", "offline"]);
+  });
+});
+
+describe("QA-01 gateway chat REST contract (fixtures from router_chat_test.go)", () => {
+  const gatewayListConversationsPayload = {
+    items: [
+      {
+        id: "conv-1",
+        buyer_id: "buyer-1",
+        shop_id: "shop-42",
+        site_host: "shop42.nexusmart.local",
+        last_message_id: "msg-4",
+        last_message_seq: 4,
+        last_message_preview: "Order #NM-100",
+        last_message_sender_role: "buyer",
+        last_message_at: "2026-11-21T08:00:00Z",
+        buyer_last_read_seq: 4,
+        seller_last_read_seq: 2,
+        unread_count: 2,
+        created_at: "2026-11-21T08:00:00Z",
+        updated_at: "2026-11-21T08:00:00Z",
+      },
+      {
+        id: "conv-other",
+        buyer_id: "buyer-2",
+        shop_id: "shop-99",
+        site_host: "",
+        last_message_id: "",
+        last_message_seq: 0,
+        last_message_preview: "",
+        last_message_sender_role: "",
+        buyer_last_read_seq: 0,
+        seller_last_read_seq: 0,
+        unread_count: 0,
+        created_at: "2026-11-21T08:00:00Z",
+        updated_at: "2026-11-21T08:00:00Z",
+      },
+    ],
+    total: 1,
+    total_unread: 2,
+    page: 2,
+    page_size: 15,
+  };
+
+  const gatewayListMessagesPayload = {
+    conversation: gatewayListConversationsPayload.items[0],
+    items: [
+      {
+        id: "msg-1",
+        seq: 1,
+        conversation_id: "conv-1",
+        sender_id: "buyer-1",
+        sender_role: "buyer",
+        kind: "text",
+        body: "Hello shop",
+        ref_id: "",
+        metadata: {},
+        is_auto_reply: false,
+        client_msg_id: "c-1",
+        created_at: "2026-11-21T08:00:00Z",
+      },
+      {
+        id: "msg-2",
+        seq: 2,
+        conversation_id: "conv-1",
+        sender_id: "buyer-1",
+        sender_role: "buyer",
+        kind: "image",
+        body: "https://cdn.example.com/img.png",
+        ref_id: "",
+        metadata: { content_type: "image/png", size_bytes: 1024 },
+        is_auto_reply: false,
+        client_msg_id: "",
+        created_at: "2026-11-21T08:00:00Z",
+      },
+      {
+        id: "msg-3",
+        seq: 3,
+        conversation_id: "conv-1",
+        sender_id: "seller-1",
+        sender_role: "seller",
+        kind: "product",
+        body: "Check this product",
+        ref_id: "prod-123",
+        metadata: {},
+        is_auto_reply: false,
+        client_msg_id: "",
+        created_at: "2026-11-21T08:00:00Z",
+      },
+      {
+        id: "msg-4",
+        seq: 4,
+        conversation_id: "conv-1",
+        sender_id: "buyer-1",
+        sender_role: "buyer",
+        kind: "order",
+        body: "Order #NM-100",
+        ref_id: "ord-100",
+        metadata: {},
+        is_auto_reply: false,
+        client_msg_id: "",
+        created_at: "2026-11-21T08:00:00Z",
+      },
+    ],
+    next_before: "1",
+    latest_cursor: "4",
+    has_more: true,
+  };
+
+  const gatewayAutoReplyPayload = {
+    config: {
+      shop_id: "shop-42",
+      enabled: true,
+      greeting_message: "Welcome to Shop 42!",
+      offline_enabled: true,
+      offline_message: "We are offline",
+      work_start_hour: 8,
+      work_end_hour: 22,
+      timezone: "Asia/Ho_Chi_Minh",
+      cooldown_minutes: 15,
+      keyword_rules: [{ keywords: ["ship", "gia"], reply: "Free shipping over 200k" }],
+      updated_at: "2026-11-21T08:00:00Z",
+    },
+  };
+
+  it("parses gateway GET conversations strictly from `items` and enforces shop isolation", () => {
+    const buyerParsed = parseGatewayConversationsResponse(
+      gatewayListConversationsPayload,
+      "shop-42"
+    );
+    assert.equal(buyerParsed.conversations.length, 1);
+    assert.equal(buyerParsed.conversations[0].id, "conv-1");
+    assert.equal(buyerParsed.conversations[0].shop_id, "shop-42");
+    assert.equal(buyerParsed.conversations[0].unread_count, 2);
+    assert.equal(buyerParsed.total, 1);
+    assert.equal(buyerParsed.total_unread, 2);
+
+    // No dual-key fallback: legacy `conversations` key must NOT be read.
+    const wrongKey = parseGatewayConversationsResponse(
+      { conversations: gatewayListConversationsPayload.items },
+      "shop-42"
+    );
+    assert.deepEqual(wrongKey.conversations, []);
+  });
+
+  it("parses gateway GET messages strictly from `items` across all 4 message kinds", () => {
+    const parsed = parseGatewayMessagesResponse(gatewayListMessagesPayload);
+    assert.equal(parsed.conversation?.id, "conv-1");
+    assert.equal(parsed.messages.length, 4);
+    assert.deepEqual(
+      parsed.messages.map((m) => m.kind),
+      ["text", "image", "product", "order"]
+    );
+    assert.deepEqual(parsed.messages[1].metadata, {
+      content_type: "image/png",
+      size_bytes: 1024,
+    });
+    assert.equal(parsed.messages[0].metadata, undefined);
+    assert.equal(parsed.next_before, "1");
+    assert.equal(parsed.latest_cursor, "4");
+    assert.equal(parsed.has_more, true);
+
+    // No dual-key fallback: legacy `messages` key must NOT be read.
+    const wrongKey = parseGatewayMessagesResponse({
+      conversation: gatewayListMessagesPayload.conversation,
+      messages: gatewayListMessagesPayload.items,
+    });
+    assert.deepEqual(wrongKey.messages, []);
+  });
+
+  it("builds gateway POST message body with object `metadata` and never `metadata_json`", () => {
+    const validated = validateOutgoingMessage({
+      kind: "image",
+      body: "https://cdn.example.com/a.jpg",
+      client_msg_id: "cm-1",
+      metadata: { content_type: "image/jpeg", size_bytes: 2048 },
+    });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+
+    const gwBody = buildGatewaySendMessageBody(validated.value);
+    assert.deepEqual(gwBody, {
+      kind: "image",
+      body: "https://cdn.example.com/a.jpg",
+      ref_id: "",
+      client_msg_id: "cm-1",
+      metadata: { content_type: "image/jpeg", size_bytes: 2048 },
+    });
+    assert.equal("metadata_json" in gwBody, false);
+  });
+
+  it("maps seller auto-reply strictly to /api/v1/seller/chat/auto-reply and gateway config shape", () => {
+    assert.equal(SELLER_AUTO_REPLY_GATEWAY_PATH, "/api/v1/seller/chat/auto-reply");
+    assert.deepEqual(buildGatewayAutoReplyBody({ enabled: true, message: "Welcome to Shop 42!" }), {
+      enabled: true,
+      greeting_message: "Welcome to Shop 42!",
+    });
+
+    const cfg = normalizeAutoReplyConfig(gatewayAutoReplyPayload);
+    assert.deepEqual(cfg, {
+      enabled: true,
+      message: "Welcome to Shop 42!",
+      offline_enabled: true,
+      offline_message: "We are offline",
+      updated_at: "2026-11-21T08:00:00Z",
+    });
+
+    // Rejects unwrapped non-gateway response instead of dual-key fallback.
+    assert.deepEqual(normalizeAutoReplyConfig({ enabled: true, message: "Legacy" }), {
+      enabled: false,
+      message: "",
+    });
+  });
+
+  it("BFF chat routes contain no legacy metadata_json, dual-key reads, or /api/v1/chat/auto-reply probes", () => {
+    const routeFiles = [
+      new URL("../../app/api/chat/conversations/route.ts", import.meta.url),
+      new URL("../../app/api/chat/conversations/[id]/messages/route.ts", import.meta.url),
+      new URL("../../app/api/seller/chat/conversations/route.ts", import.meta.url),
+      new URL("../../app/api/seller/chat/conversations/[id]/messages/route.ts", import.meta.url),
+      new URL("../../app/api/seller/chat/auto-reply/route.ts", import.meta.url),
+    ];
+    for (const fileUrl of routeFiles) {
+      const src = readFileSync(fileUrl, "utf8");
+      assert.equal(
+        src.includes("metadata_json"),
+        false,
+        `${fileUrl.pathname} must not use metadata_json`
+      );
+      assert.equal(
+        src.includes("/api/v1/chat/auto-reply"),
+        false,
+        `${fileUrl.pathname} must not call /api/v1/chat/auto-reply`
+      );
+      assert.equal(
+        src.includes("res.conversations"),
+        false,
+        `${fileUrl.pathname} must read gateway items, not res.conversations`
+      );
+      assert.equal(
+        src.includes("res.messages"),
+        false,
+        `${fileUrl.pathname} must read gateway items, not res.messages`
+      );
+    }
   });
 });

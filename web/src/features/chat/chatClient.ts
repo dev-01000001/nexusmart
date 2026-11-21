@@ -250,7 +250,7 @@ export function createChatSocketManager(options: ChatSocketManagerOptions): Chat
         body: payload.body,
         ref_id: payload.ref_id ?? "",
         ...(payload.client_msg_id ? { client_msg_id: payload.client_msg_id } : {}),
-        ...(payload.metadata ? { metadata_json: JSON.stringify(payload.metadata) } : {}),
+        ...(payload.metadata ? { metadata: payload.metadata } : {}),
       });
     },
 
