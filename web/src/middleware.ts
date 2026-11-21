@@ -10,6 +10,7 @@ import {
   setAuthCookies,
   type TokenPair,
 } from "@/lib/server/tokens";
+import { resolveTraceContext, type TraceContext } from "@/lib/server/trace";
 import {
   classifyHost,
   isApiPath,
@@ -53,6 +54,7 @@ async function withSession(
   req: NextRequest,
   headers: Headers,
   protectedRoute: boolean,
+  trace: TraceContext,
   forward: Forward
 ): Promise<NextResponse> {
   const access = req.cookies.get(ACCESS_COOKIE)?.value;
@@ -83,7 +85,7 @@ async function withSession(
     return protectedRoute ? redirectToLogin(true) : forwardWithPair(null);
   }
   try {
-    const pair = await rotateRefreshToken(refresh);
+    const pair = await rotateRefreshToken(refresh, trace);
     if (pair) return forwardWithPair(pair);
     return protectedRoute ? redirectToLogin(true) : forwardWithPair(null);
   } catch {
@@ -107,14 +109,16 @@ export async function middleware(req: NextRequest) {
   if (hostClass.kind === "unknown") return notFoundResponse();
 
   const headers = strippedHeaders(req);
+  const trace = resolveTraceContext(req.headers);
+  headers.set("traceparent", trace.traceparent);
+  if (trace.tracestate) headers.set("tracestate", trace.tracestate);
 
   if (isTenantSiteHost(hostClass)) {
     // Seller/admin pages + APIs stay 404 on site & custom hosts without calling backend.
     if (isBlockedSitePath(pathname)) return notFoundResponse();
 
-    const lookup = await publishedSiteHostCache.resolve(
-      hostClass.hostname,
-      lookupPublishedSiteHost
+    const lookup = await publishedSiteHostCache.resolve(hostClass.hostname, (h) =>
+      lookupPublishedSiteHost(h, trace)
     );
     // 404 BEFORE any rewrite (prevents host cache poisoning & hides draft/suspended/unknown sites).
     if (lookup.status !== "found") return notFoundResponse();
@@ -150,7 +154,7 @@ export async function middleware(req: NextRequest) {
 
     const rewriteUrl = req.nextUrl.clone();
     rewriteUrl.pathname = `/s/${encodeURIComponent(hostClass.hostname)}${pathname === "/" ? "" : pathname}`;
-    return withSession(req, headers, isProtectedPagePath(pathname, "site"), (h) =>
+    return withSession(req, headers, isProtectedPagePath(pathname, "site"), trace, (h) =>
       NextResponse.rewrite(rewriteUrl, { request: { headers: h } })
     );
   }
@@ -160,7 +164,7 @@ export async function middleware(req: NextRequest) {
   if (isApiPath(pathname) || isSiteMetadataPath(pathname)) {
     return NextResponse.next({ request: { headers } });
   }
-  return withSession(req, headers, isProtectedPagePath(pathname, "root"), (h) =>
+  return withSession(req, headers, isProtectedPagePath(pathname, "root"), trace, (h) =>
     NextResponse.next({ request: { headers: h } })
   );
 }
