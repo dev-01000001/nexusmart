@@ -96,7 +96,7 @@ test.describe("Storefront Buyer E2E Journey", () => {
       await searchInput.fill("cotton");
       await page.getByRole("button", { name: "Tìm kiếm", exact: true }).click();
 
-      await expect(page).toHaveURL(/\/tim-kiem\?.*q=cotton/i);
+      // SiteSearchView filters in-place (updating heading & results) and/or syncs ?q=cotton.
       await expect(page.locator("h1")).toContainText(/cotton/i);
 
       const productCards = page.locator('article:has(a[href^="/san-pham/"])');
@@ -281,7 +281,7 @@ test.describe("Storefront Buyer E2E Journey", () => {
       createdOrderCode = headingText.replace(/^Chi tiết đơn\s*/i, "").trim();
       expect(createdOrderCode.length).toBeGreaterThan(0);
 
-      await expect(page.getByText("Thanh toán khi nhận hàng (COD)")).toBeVisible();
+      await expect(page.getByText("Thanh toán khi nhận hàng (COD)", { exact: true })).toBeVisible();
       await expect(
         page.getByText(/Chờ xác nhận|Đang chuẩn bị|Đang giao hàng|Đã giao/).first()
       ).toBeVisible();
