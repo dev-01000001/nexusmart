@@ -110,7 +110,8 @@ func TestPostgresStoreIntegration(t *testing.T) {
 		t.Fatalf("GetReviewSummary: %+v err=%v", gotSum, err)
 	}
 
-	tkt, err := pg.SaveHandoffTicket(ctx, store.HandoffTicket{
+	if err := pg.SaveHandoffTicket(ctx, store.HandoffTicket{
+		ID:                 "tkt-it-1",
 		UserID:             "buyer-it-1",
 		ShopID:             "shop-bach-dang",
 		ConversationID:     conv.ID,
@@ -118,9 +119,12 @@ func TestPostgresStoreIntegration(t *testing.T) {
 		Reason:             "Cần hỗ trợ đổi size",
 		Summary:            "Khách muốn đổi từ M sang L",
 		Status:             "transferred",
-	})
-	if err != nil || tkt.ID == "" {
-		t.Fatalf("SaveHandoffTicket: tkt=%+v err=%v", tkt, err)
+	}); err != nil {
+		t.Fatalf("SaveHandoffTicket: %v", err)
+	}
+	gotTkt, err := pg.GetHandoffTicket(ctx, "tkt-it-1")
+	if err != nil || gotTkt.ChatConversationID != "chat-conv-it-1" {
+		t.Fatalf("GetHandoffTicket: got=%+v err=%v", gotTkt, err)
 	}
 
 	if err := pg.SaveUsageLog(ctx, store.UsageLog{
@@ -143,11 +147,13 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if err != nil || processed {
 		t.Fatalf("expected evt-it-1 unprocessed, got %v err=%v", processed, err)
 	}
-	if err := pg.MarkEventProcessed(ctx, "evt-it-1", "product.review_created"); err != nil {
-		t.Fatalf("MarkEventProcessed: %v", err)
+	inserted, err := pg.MarkEventProcessed(ctx, "evt-it-1", "product.review_created")
+	if err != nil || !inserted {
+		t.Fatalf("MarkEventProcessed: inserted=%v err=%v", inserted, err)
 	}
-	if err := pg.MarkEventProcessed(ctx, "evt-it-1", "product.review_created"); err != nil {
-		t.Fatalf("duplicate MarkEventProcessed must be idempotent: %v", err)
+	inserted, err = pg.MarkEventProcessed(ctx, "evt-it-1", "product.review_created")
+	if err != nil || inserted {
+		t.Fatalf("duplicate MarkEventProcessed must be idempotent (inserted=false): inserted=%v err=%v", inserted, err)
 	}
 	processed, err = pg.IsEventProcessed(ctx, "evt-it-1")
 	if err != nil || !processed {
