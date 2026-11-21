@@ -251,7 +251,7 @@ func runStartupSync(ctx context.Context, idx *indexer.Indexer, log *slog.Logger)
 		if ctx.Err() != nil {
 			return
 		}
-		syncCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		syncCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 		_, err := idx.SyncAllFromProduct(syncCtx)
 		cancel()
 		if err == nil {
