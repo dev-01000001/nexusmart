@@ -2,6 +2,7 @@
 import type { NextRequest } from "next/server";
 import { isTrustedProxyHeadersEnabled } from "./config.ts";
 import { GatewayError, errorResponse } from "./errors.ts";
+import { extractTraceId } from "./trace.ts";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -179,7 +180,7 @@ export function apiRoute<C = unknown>(
     } catch (err) {
       // Let Next handle its own control-flow errors (redirect()/notFound()).
       if (isNextControlFlow(err)) throw err;
-      return errorResponse(err, opts.messages);
+      return errorResponse(err, opts.messages, extractTraceId(req.headers.get("traceparent")));
     }
   };
 }

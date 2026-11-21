@@ -1,7 +1,7 @@
 // Runtime-agnostic (Edge middleware + Node route handlers) lookup of a PUBLISHED site by host.
 // Uses only `fetch`, so middleware and the BFF share one definition of "this host is a live site".
 import { GATEWAY_URL, getSiteHostCacheTtls } from "./config.ts";
-import { generateTraceparent } from "./trace.ts";
+import { generateTraceparent, type TraceContext } from "./trace.ts";
 import { createSiteHostCache, type SiteHostLookupResult } from "../site/cache.ts";
 
 const SITE_LOOKUP_TIMEOUT_MS = 4000;
@@ -35,13 +35,21 @@ export function parsePublishedSiteHost(
 }
 
 /** Uncached gateway lookup. Never throws: upstream failures resolve to `{ status: "error" }`. */
-export async function lookupPublishedSiteHost(hostname: string): Promise<SiteHostLookupResult> {
+export async function lookupPublishedSiteHost(
+  hostname: string,
+  trace?: Pick<TraceContext, "traceparent" | "tracestate">
+): Promise<SiteHostLookupResult> {
+  const traceparent = trace?.traceparent || generateTraceparent();
   try {
     const res = await fetch(
       `${GATEWAY_URL}/api/v1/sites/by-host?host=${encodeURIComponent(hostname)}`,
       {
         method: "GET",
-        headers: { Accept: "application/json", traceparent: generateTraceparent() },
+        headers: {
+          Accept: "application/json",
+          traceparent,
+          ...(trace?.tracestate ? { tracestate: trace.tracestate } : {}),
+        },
         cache: "no-store",
         signal: AbortSignal.timeout(SITE_LOOKUP_TIMEOUT_MS),
       }

@@ -12,7 +12,14 @@ const BEARER_RE = /\bBearer\s+[A-Za-z0-9\-._~+/]+=*/gi;
 const JWT_RE = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
 const DSN_CRED_RE = /([a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:)[^/\s@]+(@)/gi;
 const EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
-const VN_PHONE_RE = /(?:\+84|84|0)(?:3|5|7|8|9)\d{8}\b/g;
+const VN_PHONE_RE =
+  /(?<![0-9a-fA-F])(?:\+84|84|0)[\s.-]?(?:3|5|7|8|9)(?:[\s.-]?\d){8}(?![0-9a-fA-F])/g;
+
+export interface TraceContext {
+  traceparent: string;
+  tracestate?: string;
+  traceId: string;
+}
 
 function randomHex(byteLen: number): string {
   const bytes = new Uint8Array(byteLen);
@@ -44,11 +51,7 @@ export function generateTraceparent(): string {
   return `00-${traceId}-${spanId}-01`;
 }
 
-export function resolveTraceContext(headers?: Pick<Headers, "get"> | null): {
-  traceparent: string;
-  tracestate?: string;
-  traceId: string;
-} {
+export function resolveTraceContext(headers?: Pick<Headers, "get"> | null): TraceContext {
   const incoming = headers?.get("traceparent")?.trim().toLowerCase();
   const traceparent = isValidTraceparent(incoming) ? (incoming as string) : generateTraceparent();
   const tracestate = headers?.get("tracestate")?.trim();
