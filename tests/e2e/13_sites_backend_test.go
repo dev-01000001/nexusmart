@@ -29,7 +29,7 @@ func validSiteConfigPayload(brandName, heroTitle, accentHex string) map[string]a
 			"accent_text_color": "#FFFFFF",
 			"font_family":       "work-sans",
 			"logo_url":          "/banners/vietnam-workshop.jpg",
-			"banner_url":        "https://sandbox.nexusmart.local/banners/site-hero.jpg",
+			"banner_url":        "https://cdn.example.com/banners/site-hero.jpg",
 			"brand_name":        brandName,
 			"tagline":           "Cửa hàng chính hãng vận hành trên NexusMart",
 		},
@@ -447,7 +447,7 @@ func TestE2E_SitesBackend_ValidationLifecycleRBACAndAudit(t *testing.T) {
 		}
 		if foundCard.ShopID != seller1.ShopID || foundCard.Subdomain != subA || foundCard.PrimaryHost != hostA ||
 			foundCard.ShopName == "" || foundCard.LogoURL != "/banners/vietnam-workshop.jpg" ||
-			foundCard.CoverURL != "https://sandbox.nexusmart.local/banners/site-hero.jpg" ||
+			foundCard.CoverURL != "https://cdn.example.com/banners/site-hero.jpg" ||
 			foundCard.Tagline != "Cửa hàng chính hãng vận hành trên NexusMart" {
 			t.Fatalf("unexpected public directory card: %+v", *foundCard)
 		}
