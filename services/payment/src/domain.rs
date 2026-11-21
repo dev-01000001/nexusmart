@@ -9,6 +9,7 @@ use crate::error::{PaymentError, Result};
 pub enum PaymentMethod {
     Cod,
     VietQr,
+    ZaloPay,
 }
 
 impl PaymentMethod {
@@ -16,13 +17,19 @@ impl PaymentMethod {
         match self {
             Self::Cod => "COD",
             Self::VietQr => "VIETQR",
+            Self::ZaloPay => "ZALOPAY",
         }
+    }
+
+    pub fn is_online(self) -> bool {
+        matches!(self, Self::VietQr | Self::ZaloPay)
     }
 
     pub fn parse(raw: &str) -> Result<Self> {
         match raw.trim().to_ascii_uppercase().as_str() {
             "COD" => Ok(Self::Cod),
             "VIETQR" | "VIET_QR" | "QR" => Ok(Self::VietQr),
+            "ZALOPAY" | "ZALO_PAY" | "ZLP" => Ok(Self::ZaloPay),
             other => Err(PaymentError::Validation(format!(
                 "unsupported payment method: {other}"
             ))),
@@ -880,5 +887,64 @@ mod tests {
             "MARKETPLACE",
             Some(SalesChannel::Storefront)
         ));
+    }
+
+    #[test]
+    fn test_payment_method_and_status_parsing_including_zalopay() {
+        assert_eq!(PaymentMethod::parse("COD").unwrap(), PaymentMethod::Cod);
+        assert_eq!(
+            PaymentMethod::parse("vietqr").unwrap(),
+            PaymentMethod::VietQr
+        );
+        assert_eq!(
+            PaymentMethod::parse("VIET_QR").unwrap(),
+            PaymentMethod::VietQr
+        );
+        assert_eq!(PaymentMethod::parse("qr").unwrap(), PaymentMethod::VietQr);
+        assert_eq!(
+            PaymentMethod::parse("ZALOPAY").unwrap(),
+            PaymentMethod::ZaloPay
+        );
+        assert_eq!(
+            PaymentMethod::parse("zalo_pay").unwrap(),
+            PaymentMethod::ZaloPay
+        );
+        assert_eq!(PaymentMethod::parse("zlp").unwrap(), PaymentMethod::ZaloPay);
+        assert!(PaymentMethod::parse("BITCOIN").is_err());
+
+        assert_eq!(PaymentMethod::Cod.as_str(), "COD");
+        assert_eq!(PaymentMethod::VietQr.as_str(), "VIETQR");
+        assert_eq!(PaymentMethod::ZaloPay.as_str(), "ZALOPAY");
+        assert!(!PaymentMethod::Cod.is_online());
+        assert!(PaymentMethod::VietQr.is_online());
+        assert!(PaymentMethod::ZaloPay.is_online());
+
+        for (raw, expected, s) in [
+            ("pending", PaymentStatus::Pending, "pending"),
+            ("succeeded", PaymentStatus::Succeeded, "succeeded"),
+            ("paid", PaymentStatus::Succeeded, "succeeded"),
+            ("failed", PaymentStatus::Failed, "failed"),
+            ("expired", PaymentStatus::Expired, "expired"),
+            ("cancelled", PaymentStatus::Cancelled, "cancelled"),
+            ("canceled", PaymentStatus::Cancelled, "cancelled"),
+            ("superseded", PaymentStatus::Superseded, "superseded"),
+            ("refunded", PaymentStatus::Refunded, "refunded"),
+            ("other", PaymentStatus::Pending, "pending"),
+        ] {
+            let parsed = PaymentStatus::parse(raw);
+            assert_eq!(parsed, expected);
+            assert_eq!(parsed.as_str(), s);
+        }
+
+        // Additional edge-case validations
+        assert!(compute_allocation_split("ord-1", " ", 100, 0, 0).is_err());
+        assert!(compute_allocation_split("ord-1", "s1", -1, 0, 0).is_err());
+        assert!(compute_allocation_split("ord-1", "s1", 0, 0, 0).is_err());
+        assert!(validate_refund_cap(0, 0, 100).is_err());
+        assert!(validate_refund_cap(100, -1, 50).is_err());
+        assert_eq!(
+            classify_reconciliation_pair(None, None),
+            ReconciliationDecision::Matched
+        );
     }
 }

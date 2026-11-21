@@ -64,6 +64,7 @@ type PaymentClient interface {
 type ShippingClient interface {
 	CalculateFee(ctx context.Context, req *shippingv1.CalculateFeeRequest, opts ...grpc.CallOption) (*shippingv1.CalculateFeeResponse, error)
 	CreateShipment(ctx context.Context, req *shippingv1.CreateShipmentRequest, opts ...grpc.CallOption) (*shippingv1.CreateShipmentResponse, error)
+	CreateReturnShipment(ctx context.Context, req *shippingv1.CreateReturnShipmentRequest, opts ...grpc.CallOption) (*shippingv1.CreateReturnShipmentResponse, error)
 	CancelShipment(ctx context.Context, req *shippingv1.CancelShipmentRequest, opts ...grpc.CallOption) (*shippingv1.CancelShipmentResponse, error)
 }
 
@@ -87,7 +88,7 @@ func DialAll(cfg config.Config, svc *auth.Manager) (*Bundle, error) {
 			addr,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithChainUnaryInterceptor(
-				timeoutAndAuthClientInterceptor(cfg.GRPCCallTimeout, svc),
+				TimeoutAndAuthClientInterceptor(cfg.GRPCCallTimeout, svc),
 				telemetry.GRPCUnaryClientInterceptor(cfg.ServiceName),
 			),
 		)
@@ -209,6 +210,12 @@ func isRetryable(err error) bool {
 	return code == codes.Unavailable || code == codes.DeadlineExceeded || code == codes.ResourceExhausted
 }
 
+// TimeoutAndAuthClientInterceptor enforces default call timeouts and propagates either an
+// internal service token (for WithInternalAdminContext calls) or the caller's end-user JWT.
+func TimeoutAndAuthClientInterceptor(defaultTimeout time.Duration, svc *auth.Manager) grpc.UnaryClientInterceptor {
+	return timeoutAndAuthClientInterceptor(defaultTimeout, svc)
+}
+
 func timeoutAndAuthClientInterceptor(defaultTimeout time.Duration, svc *auth.Manager) grpc.UnaryClientInterceptor {
 	return func(
 		ctx context.Context,
@@ -227,6 +234,9 @@ func timeoutAndAuthClientInterceptor(defaultTimeout time.Duration, svc *auth.Man
 		}
 
 		if claims, ok := auth.ClaimsFromContext(ctx); ok && claims.Service != "" {
+			if svc == nil {
+				return status.Error(codes.Internal, "service auth manager not configured")
+			}
 			tok, err := svc.SignServiceToken(claims.Service)
 			if err != nil {
 				return status.Error(codes.Internal, "sign service token")

@@ -6,12 +6,15 @@ use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use tokio::sync::watch;
 use tokio::time::interval;
-use tracing::{error, info, warn};
+use tracing::{error, info, info_span, warn, Instrument};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::domain::EventEnvelope;
 use crate::service::PaymentService;
-use crate::telemetry::format_traceparent;
+use crate::telemetry::{
+    extract_nats_context, extract_or_generate_trace_id, inject_nats_context, redact_url_credentials,
+};
 
 const MAX_OUTBOX_RETRIES: i32 = 10;
 const MAX_NATS_DELIVERIES: i64 = 5;
@@ -30,10 +33,11 @@ struct OutboxRow {
 /// Ensures the primary JetStream stream (`NEXUSMART`) and DLQ stream (`NEXUSMART_DLQ`) exist
 /// per `docs/contracts.md` Section 5.
 pub async fn connect_jetstream(nats_url: &str, stream_name: &str) -> Option<jetstream::Context> {
+    let safe_url = redact_url_credentials(nats_url);
     let client = match async_nats::connect(nats_url).await {
         Ok(c) => c,
         Err(e) => {
-            warn!(nats_url = %nats_url, error = %e, "NATS unavailable at startup; workers will retry");
+            warn!(service = "payment", nats_url = %safe_url, error = %e, "NATS unavailable at startup; workers will retry");
             return None;
         }
     };
@@ -68,11 +72,11 @@ pub async fn connect_jetstream(nats_url: &str, stream_name: &str) -> Option<jets
         }
     }
 
-    info!(nats_url = %nats_url, stream = %stream_name, "connected to NATS JetStream");
+    info!(service = "payment", nats_url = %safe_url, stream = %stream_name, "connected to NATS JetStream");
     Some(js)
 }
 
-/// Background worker 1: Scans expired pending VietQR payments (UC-PAY06).
+/// Background worker 1: Scans expired pending online payments (VietQR & ZaloPay, UC-PAY06).
 pub async fn run_expiration_scanner(service: PaymentService, mut shutdown: watch::Receiver<bool>) {
     let mut ticker = interval(service.config().expiration_scan_interval);
     info!(
@@ -158,6 +162,15 @@ async fn relay_outbox_batch(
     }
 
     for row in rows {
+        let pub_span = info_span!(
+            "nats.publish",
+            service = "payment",
+            messaging.destination = %row.event_type,
+            messaging.message_id = %row.id,
+            trace_id = %row.trace_id,
+            otel.kind = "producer",
+        );
+
         let envelope = EventEnvelope {
             event_id: row.id.to_string(),
             event_type: row.event_type.clone(),
@@ -169,17 +182,24 @@ async fn relay_outbox_batch(
         let bytes = serde_json::to_vec(&envelope)?;
         let mut headers = NatsHeaders::new();
         headers.insert("Nats-Msg-Id", row.id.to_string().as_str());
+        {
+            let _entered = pub_span.enter();
+            inject_nats_context(&mut headers, &row.trace_id);
+        }
         if !row.trace_id.is_empty() {
-            let tp = format_traceparent(&row.trace_id);
-            headers.insert("traceparent", tp.as_str());
             headers.insert("x-trace-id", row.trace_id.as_str());
         }
 
-        match js
+        let publish_res = js
             .publish_with_headers(row.event_type.clone(), headers, bytes.into())
-            .await
-        {
-            Ok(ack_future) => match ack_future.await {
+            .instrument(pub_span.clone())
+            .await;
+
+        match publish_res {
+            Ok(ack_future) => match async move { ack_future.await }
+                .instrument(pub_span.clone())
+                .await
+            {
                 Ok(_) => {
                     sqlx::query(
                         r#"
@@ -191,7 +211,9 @@ async fn relay_outbox_batch(
                     .bind(row.id)
                     .execute(&mut *tx)
                     .await?;
+                    let _entered = pub_span.enter();
                     info!(
+                        service = "payment",
                         event_id = %row.id,
                         event_type = %row.event_type,
                         trace_id = %row.trace_id,
@@ -357,76 +379,125 @@ async fn handle_order_event(
 ) {
     let subject = msg.subject.to_string();
     let delivered = msg.info().map(|i| i.delivered).unwrap_or(1);
+    let parent_cx = extract_nats_context(msg.headers.as_ref());
+    let hdr_traceparent = msg
+        .headers
+        .as_ref()
+        .and_then(|h| h.get("traceparent").map(|v| v.as_str()));
+    let hdr_x_trace = msg
+        .headers
+        .as_ref()
+        .and_then(|h| h.get("x-trace-id").map(|v| v.as_str()));
+    let trace_id = extract_or_generate_trace_id(hdr_traceparent, hdr_x_trace);
 
-    let envelope: EventEnvelope = match serde_json::from_slice(&msg.payload) {
-        Ok(e) => e,
-        Err(e) => {
-            // Permanent deserialization poison message -> straight to DLQ + ACK
-            warn!(subject = %subject, error = %e, "malformed NATS event payload; routing to DLQ");
-            let dlq_subject = format!("dlq.{subject}");
-            let _ = js.publish(dlq_subject, msg.payload.clone()).await;
+    let span = info_span!(
+        "nats.consume",
+        service = "payment",
+        messaging.destination = %subject,
+        trace_id = %trace_id,
+        otel.kind = "consumer",
+    );
+    span.set_parent(parent_cx);
+
+    async move {
+        let envelope: EventEnvelope = match serde_json::from_slice(&msg.payload) {
+            Ok(e) => e,
+            Err(e) => {
+                // Permanent deserialization poison message -> straight to DLQ + ACK
+                warn!(
+                    service = "payment",
+                    trace_id = %trace_id,
+                    subject = %subject,
+                    error = %e,
+                    "malformed NATS event payload; routing to DLQ"
+                );
+                let dlq_subject = format!("dlq.{subject}");
+                let mut dlq_headers = NatsHeaders::new();
+                inject_nats_context(&mut dlq_headers, &trace_id);
+                dlq_headers.insert("x-trace-id", trace_id.as_str());
+                let _ = js
+                    .publish_with_headers(dlq_subject, dlq_headers, msg.payload.clone())
+                    .await;
+                let _ = msg.ack().await;
+                return;
+            }
+        };
+
+        let effective_trace_id = if !envelope.trace_id.trim().is_empty() {
+            envelope.trace_id.clone()
+        } else {
+            trace_id.clone()
+        };
+
+        let order_id = envelope
+            .payload
+            .get("order_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if order_id.is_empty() {
             let _ = msg.ack().await;
             return;
         }
-    };
 
-    let order_id = envelope
-        .payload
-        .get("order_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+        // Both `processed_nats_events` claim AND business state mutation execute in ONE DB transaction.
+        let res = match envelope.event_type.as_str() {
+            "order.completed" => service
+                .process_order_completed_event(&envelope.event_id, &order_id)
+                .await
+                .map(|_| ()),
+            "order.cancelled" => service
+                .process_order_cancelled_event(&envelope.event_id, &order_id, &effective_trace_id)
+                .await
+                .map(|_| ()),
+            _ => Ok(()),
+        };
 
-    if order_id.is_empty() {
-        let _ = msg.ack().await;
-        return;
-    }
-
-    // Both `processed_nats_events` claim AND business state mutation execute in ONE DB transaction.
-    let res = match envelope.event_type.as_str() {
-        "order.completed" => service
-            .process_order_completed_event(&envelope.event_id, &order_id)
-            .await
-            .map(|_| ()),
-        "order.cancelled" => service
-            .process_order_cancelled_event(&envelope.event_id, &order_id, &envelope.trace_id)
-            .await
-            .map(|_| ()),
-        _ => Ok(()),
-    };
-
-    match res {
-        Ok(()) => {
-            let _ = msg.ack().await;
-        }
-        Err(e) => {
-            if should_route_to_dlq(delivered, MAX_NATS_DELIVERIES) {
-                warn!(
-                    event_id = %envelope.event_id,
-                    event_type = %envelope.event_type,
-                    order_id = %order_id,
-                    delivered = delivered,
-                    error = %e,
-                    "max NATS delivery attempts reached; routing to DLQ"
-                );
-                let dlq_subject = format!("dlq.{subject}");
-                let _ = js.publish(dlq_subject, msg.payload.clone()).await;
+        match res {
+            Ok(()) => {
                 let _ = msg.ack().await;
-            } else {
-                warn!(
-                    event_id = %envelope.event_id,
-                    event_type = %envelope.event_type,
-                    order_id = %order_id,
-                    delivered = delivered,
-                    max_deliver = MAX_NATS_DELIVERIES,
-                    error = %e,
-                    "transient error processing order event; NAKing for retry"
-                );
-                let backoff = Duration::from_secs(delivered.clamp(1, 5) as u64);
-                let _ = msg.ack_with(AckKind::Nak(Some(backoff))).await;
+            }
+            Err(e) => {
+                if should_route_to_dlq(delivered, MAX_NATS_DELIVERIES) {
+                    warn!(
+                        service = "payment",
+                        trace_id = %effective_trace_id,
+                        event_id = %envelope.event_id,
+                        event_type = %envelope.event_type,
+                        order_id = %order_id,
+                        delivered = delivered,
+                        error = %e,
+                        "max NATS delivery attempts reached; routing to DLQ"
+                    );
+                    let dlq_subject = format!("dlq.{subject}");
+                    let mut dlq_headers = NatsHeaders::new();
+                    inject_nats_context(&mut dlq_headers, &effective_trace_id);
+                    dlq_headers.insert("x-trace-id", effective_trace_id.as_str());
+                    let _ = js
+                        .publish_with_headers(dlq_subject, dlq_headers, msg.payload.clone())
+                        .await;
+                    let _ = msg.ack().await;
+                } else {
+                    warn!(
+                        service = "payment",
+                        trace_id = %effective_trace_id,
+                        event_id = %envelope.event_id,
+                        event_type = %envelope.event_type,
+                        order_id = %order_id,
+                        delivered = delivered,
+                        max_deliver = MAX_NATS_DELIVERIES,
+                        error = %e,
+                        "transient error processing order event; NAKing for retry"
+                    );
+                    let backoff = Duration::from_secs(delivered.clamp(1, 5) as u64);
+                    let _ = msg.ack_with(AckKind::Nak(Some(backoff))).await;
+                }
             }
         }
     }
+    .instrument(span)
+    .await;
 }
 
 #[cfg(test)]
@@ -440,5 +511,35 @@ mod tests {
         assert!(!should_route_to_dlq(4, MAX_NATS_DELIVERIES));
         assert!(should_route_to_dlq(5, MAX_NATS_DELIVERIES));
         assert!(should_route_to_dlq(6, MAX_NATS_DELIVERIES));
+    }
+
+    #[tokio::test]
+    async fn test_workers_shutdown_cleanly_and_nats_fallback() {
+        use crate::config::Config;
+        use crate::metrics::Metrics;
+        use sqlx::postgres::PgPoolOptions;
+
+        // Unreachable NATS returns None gracefully instead of panicking
+        let res = connect_jetstream("nats://127.0.0.1:1", "NEXUSMART").await;
+        assert!(res.is_none());
+
+        let mut cfg = Config::from_env();
+        cfg.expiration_scan_interval = Duration::from_secs(60);
+        cfg.reconciliation_interval = Duration::from_secs(60);
+        cfg.outbox_poll_interval = Duration::from_secs(60);
+        let pool = PgPoolOptions::new()
+            .connect_lazy(&cfg.database_url)
+            .expect("lazy pool");
+        let svc = PaymentService::new(pool, cfg, Metrics::new());
+
+        let (tx, rx) = watch::channel(false);
+        let h_recon = tokio::spawn(run_reconciliation_scheduler(svc.clone(), rx.clone()));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let _ = tx.send(true);
+        h_recon.await.unwrap();
+
+        let (tx2, rx2) = watch::channel(true);
+        let _ = tx2;
+        run_nats_order_consumer(svc, rx2).await;
     }
 }

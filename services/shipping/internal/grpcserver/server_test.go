@@ -33,22 +33,39 @@ func newStubRepo() *stubRepo {
 	return &stubRepo{shipments: make(map[string]*store.Shipment)}
 }
 
+func stubShipKey(orderID, direction string) string {
+	return orderID + "|" + store.NormalizeDirection(direction)
+}
+
 func (r *stubRepo) ListProvinces(_ context.Context, _ string) ([]address.Province, error) {
-	return nil, nil
+	return address.Provinces()[:2], nil
 }
-func (r *stubRepo) ListWards(_ context.Context, _, _ string) ([]address.Ward, error) {
-	return nil, nil
+func (r *stubRepo) ListWards(_ context.Context, provCode, _ string) ([]address.Ward, error) {
+	var out []address.Ward
+	for _, w := range address.Wards() {
+		if w.ProvinceCode == provCode {
+			out = append(out, w)
+		}
+	}
+	return out, nil
 }
-func (r *stubRepo) GetWard(_ context.Context, _ string) (*address.Ward, error) {
+func (r *stubRepo) GetWard(_ context.Context, code string) (*address.Ward, error) {
+	if w, ok := address.WardByCode(code); ok {
+		return &w, nil
+	}
 	return nil, store.ErrNotFound
 }
-func (r *stubRepo) MapLegacyAddress(_ context.Context, _, _, _ string) (*address.LegacyMatch, error) {
-	return &address.LegacyMatch{}, nil
+func (r *stubRepo) MapLegacyAddress(_ context.Context, p, d, w string) (*address.LegacyMatch, error) {
+	m := address.MapLegacyAddress(p, d, w)
+	return &m, nil
 }
-func (r *stubRepo) GetShipmentByOrderID(_ context.Context, orderID string) (*store.Shipment, error) {
+func (r *stubRepo) GetShipmentByOrderID(ctx context.Context, orderID string) (*store.Shipment, error) {
+	return r.GetShipmentByOrderIDAndDirection(ctx, orderID, store.DirectionForward)
+}
+func (r *stubRepo) GetShipmentByOrderIDAndDirection(_ context.Context, orderID, direction string) (*store.Shipment, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	sh, ok := r.shipments[orderID]
+	sh, ok := r.shipments[stubShipKey(orderID, direction)]
 	if !ok {
 		return nil, store.ErrNotFound
 	}
@@ -72,19 +89,21 @@ func (r *stubRepo) ListShipmentEvents(_ context.Context, _ string) ([]store.Ship
 func (r *stubRepo) CreateShipment(_ context.Context, sh *store.Shipment, _ *store.ShipmentEvent) (*store.Shipment, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if existing, ok := r.shipments[sh.OrderID]; ok {
+	sh.Direction = store.NormalizeDirection(sh.Direction)
+	k := stubShipKey(sh.OrderID, sh.Direction)
+	if existing, ok := r.shipments[k]; ok {
 		cp := *existing
 		return &cp, true, nil
 	}
 	cp := *sh
-	r.shipments[sh.OrderID] = &cp
+	r.shipments[k] = &cp
 	ret := cp
 	return &ret, false, nil
 }
 func (r *stubRepo) CancelShipment(_ context.Context, orderID, _ string) (*store.Shipment, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	sh, ok := r.shipments[orderID]
+	sh, ok := r.shipments[stubShipKey(orderID, store.DirectionForward)]
 	if !ok {
 		return nil, store.ErrNotFound
 	}
@@ -301,5 +320,167 @@ func TestShippingGRPCTrust_B1RejectsAnonymousAndServiceTokens(t *testing.T) {
 	}
 	if _, err := client.CancelShipment(bearer(seller1Tok), &shippingv1.CancelShipmentRequest{OrderId: "ord-b1-1"}); err != nil {
 		t.Fatalf("owner seller CancelShipment: %v", err)
+	}
+
+	// CreateReturnShipment through bufconn stack: anonymous -> Unauthenticated, service token -> PermissionDenied,
+	// buyer & cross-shop seller -> PermissionDenied, owning seller -> succeeds!
+	retReq := &shippingv1.CreateReturnShipmentRequest{
+		OrderId:         "ord-b1-1",
+		ReturnRequestId: "ret-b1-1",
+		ShopId:          "shop-1",
+		CarrierCode:     "ghn",
+		WeightGrams:     500,
+	}
+	if _, err := client.CreateReturnShipment(md(spoof...), retReq); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("bufconn anon CreateReturnShipment: want Unauthenticated, got %v", err)
+	}
+	if _, err := client.CreateReturnShipment(bearer(svcTok), retReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("service token CreateReturnShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.CreateReturnShipment(bearer(buyerTok), retReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("buyer CreateReturnShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.CreateReturnShipment(bearer(seller2Tok), retReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("other seller CreateReturnShipment: want PermissionDenied, got %v", err)
+	}
+	retResp, err := client.CreateReturnShipment(bearer(seller1Tok), retReq)
+	if err != nil {
+		t.Fatalf("owner seller CreateReturnShipment: %v", err)
+	}
+	if retResp.GetShipment().GetDirection() != "return" || retResp.GetShipment().GetReturnRequestId() != "ret-b1-1" || retResp.GetShipment().GetCodAmountVnd() != 0 {
+		t.Fatalf("unexpected CreateReturnShipment response: %+v", retResp)
+	}
+}
+
+func TestCreateReturnShipmentRBACAndGetShipmentDirection(t *testing.T) {
+	repo := newStubRepo()
+	agg := carrier.NewAggregator(
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock"}),
+		carrier.NewGHTKAdapter(carrier.GHTKConfig{Mode: "mock"}),
+	)
+	svc := service.NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := New(svc)
+
+	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
+	sellerEmptyShopCtx := ctxWithRole("seller-x", "seller", "")
+	sellerOtherShopCtx := ctxWithRole("seller-2", "seller", "shop-2")
+	sellerOwnerCtx := ctxWithRole("seller-1", "seller", "shop-1")
+	adminCtx := ctxWithRole("admin-1", "admin", "")
+	superAdminCtx := ctxWithRole("sa-1", "super_admin", "")
+
+	// Create forward shipment on ord-dir-1.
+	fwdResp, err := srv.CreateShipment(sellerOwnerCtx, &shippingv1.CreateShipmentRequest{
+		OrderId:      "ord-dir-1",
+		ShopId:       "shop-1",
+		CarrierCode:  "ghtk",
+		CodAmountVnd: 150000,
+		WeightGrams:  600,
+		FromAddress:  &shippingv1.ShipmentAddress{Name: "Shop", ProvinceCode: "79", WardCode: "79001"},
+		ToAddress:    &shippingv1.ShipmentAddress{Name: "Buyer", ProvinceCode: "01", WardCode: "01001"},
+	})
+	if err != nil || fwdResp.GetShipment().GetDirection() != "forward" {
+		t.Fatalf("forward CreateShipment failed: resp=%+v err=%v", fwdResp, err)
+	}
+
+	retReq := &shippingv1.CreateReturnShipmentRequest{
+		OrderId:         "ord-dir-1",
+		ReturnRequestId: "ret-100",
+		ShopId:          "shop-1",
+		CarrierCode:     "ghtk",
+		ServiceCode:     "ROAD",
+		WeightGrams:     600,
+		FromAddress:     &shippingv1.ShipmentAddress{Name: "Buyer", Phone: "0901", ProvinceCode: "01", WardCode: "01001", StreetAddress: "1 Hang Trong"},
+		ToAddress:       &shippingv1.ShipmentAddress{Name: "Shop", Phone: "0902", ProvinceCode: "79", WardCode: "79001", StreetAddress: "2 Le Loi"},
+		ItemsSummary:    "Return item",
+	}
+
+	// RBAC checks
+	if _, err := srv.CreateReturnShipment(context.Background(), retReq); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("want Unauthenticated, got %v", err)
+	}
+	if _, err := srv.CreateReturnShipment(buyerCtx, retReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied for buyer, got %v", err)
+	}
+	if _, err := srv.CreateReturnShipment(sellerEmptyShopCtx, retReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied for seller without shop, got %v", err)
+	}
+	if _, err := srv.CreateReturnShipment(sellerOtherShopCtx, retReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied for cross-shop seller, got %v", err)
+	}
+
+	// Owning seller creates return shipment
+	retResp, err := srv.CreateReturnShipment(sellerOwnerCtx, retReq)
+	if err != nil {
+		t.Fatalf("owner seller CreateReturnShipment failed: %v", err)
+	}
+	if retResp.GetAlreadyExisted() || retResp.GetShipment().GetDirection() != "return" ||
+		retResp.GetShipment().GetReturnRequestId() != "ret-100" || retResp.GetShipment().GetCodAmountVnd() != 0 {
+		t.Fatalf("unexpected return shipment response: %+v", retResp)
+	}
+
+	// Admin replay is idempotent (already_existed = true)
+	retReplay, err := srv.CreateReturnShipment(adminCtx, retReq)
+	if err != nil || !retReplay.GetAlreadyExisted() || retReplay.GetShipment().GetTrackingCode() != retResp.GetShipment().GetTrackingCode() {
+		t.Fatalf("expected idempotent replay for admin, got %+v err=%v", retReplay, err)
+	}
+
+	// Super admin can create return shipment on another order
+	retResp2, err := srv.CreateReturnShipment(superAdminCtx, &shippingv1.CreateReturnShipmentRequest{
+		OrderId:         "ord-dir-2",
+		ReturnRequestId: "ret-200",
+		ShopId:          "shop-2",
+		CarrierCode:     "ghtk",
+	})
+	if err != nil || retResp2.GetShipment().GetDirection() != "return" {
+		t.Fatalf("super_admin CreateReturnShipment failed: %+v err=%v", retResp2, err)
+	}
+
+	// GetShipment direction filtering
+	gotFwd, err := srv.GetShipment(sellerOwnerCtx, &shippingv1.GetShipmentRequest{OrderId: "ord-dir-1"})
+	if err != nil || gotFwd.GetShipment().GetDirection() != "forward" || gotFwd.GetShipment().GetTrackingCode() != fwdResp.GetShipment().GetTrackingCode() {
+		t.Fatalf("expected default GetShipment to return forward shipment, got %+v err=%v", gotFwd, err)
+	}
+	gotRet, err := srv.GetShipment(sellerOwnerCtx, &shippingv1.GetShipmentRequest{OrderId: "ord-dir-1", Direction: "return"})
+	if err != nil || gotRet.GetShipment().GetDirection() != "return" || gotRet.GetShipment().GetReturnRequestId() != "ret-100" {
+		t.Fatalf("expected GetShipment(return) to return reverse shipment, got %+v err=%v", gotRet, err)
+	}
+	if _, err := srv.GetShipment(sellerOwnerCtx, &shippingv1.GetShipmentRequest{OrderId: "ord-dir-1", Direction: "bogus"}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for bogus direction, got %v", err)
+	}
+
+	// Public catalog & fee RPCs
+	provs, err := srv.ListProvinces(context.Background(), &shippingv1.ListProvincesRequest{})
+	if err != nil || len(provs.GetProvinces()) == 0 {
+		t.Fatalf("ListProvinces failed: %+v err=%v", provs, err)
+	}
+	wards, err := srv.ListWards(context.Background(), &shippingv1.ListWardsRequest{ProvinceCode: "79"})
+	if err != nil || len(wards.GetWards()) == 0 {
+		t.Fatalf("ListWards failed: %+v err=%v", wards, err)
+	}
+	mapped, err := srv.MapLegacyAddress(context.Background(), &shippingv1.MapLegacyAddressRequest{LegacyProvince: "Binh Duong", LegacyDistrict: "Thu Dau Mot"})
+	if err != nil || !mapped.GetFound() || mapped.GetProvinceCode() != "79" {
+		t.Fatalf("MapLegacyAddress failed: %+v err=%v", mapped, err)
+	}
+	feeResp, err := srv.CalculateFee(context.Background(), &shippingv1.CalculateFeeRequest{
+		FromProvinceCode: "79", FromWardCode: "79001", ToProvinceCode: "01", ToWardCode: "01001", WeightGrams: 1000,
+	})
+	if err != nil || len(feeResp.GetQuotes()) != 4 {
+		t.Fatalf("CalculateFee failed: quotes=%d err=%v", len(feeResp.GetQuotes()), err)
+	}
+
+	// Verify all toProtoStatus & mapError branches.
+	for _, st := range []string{
+		carrier.StatusCreated, carrier.StatusPicking, carrier.StatusDelivering,
+		carrier.StatusDelivered, carrier.StatusFailed, carrier.StatusReturning,
+		carrier.StatusReturned, carrier.StatusCancelled, "unknown",
+	} {
+		_ = toProtoStatus(st)
+	}
+	if status.Code(mapError(store.ErrNotFound)) != codes.NotFound ||
+		status.Code(mapError(service.ErrInvalidArgument)) != codes.InvalidArgument ||
+		status.Code(mapError(service.ErrNotCancellable)) != codes.FailedPrecondition ||
+		status.Code(mapError(context.DeadlineExceeded)) != codes.Internal {
+		t.Fatalf("unexpected mapError codes")
 	}
 }

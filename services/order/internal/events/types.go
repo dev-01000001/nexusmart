@@ -7,12 +7,15 @@ import (
 
 // Event subject constants matching docs/contracts.md Section 5.
 const (
-	SubjectOrderCreated   = "order.created"
-	SubjectOrderConfirmed = "order.confirmed"
-	SubjectOrderCancelled = "order.cancelled"
-	SubjectOrderShipped   = "order.shipped"
-	SubjectOrderDelivered = "order.delivered"
-	SubjectOrderCompleted = "order.completed"
+	SubjectOrderCreated         = "order.created"
+	SubjectOrderConfirmed       = "order.confirmed"
+	SubjectOrderCancelled       = "order.cancelled"
+	SubjectOrderShipped         = "order.shipped"
+	SubjectOrderDelivered       = "order.delivered"
+	SubjectOrderCompleted       = "order.completed"
+	SubjectOrderReturnRequested = "order.return_requested"
+	SubjectOrderReturnApproved  = "order.return_approved"
+	SubjectOrderRefunded        = "order.refunded"
 
 	SubjectPaymentSucceeded = "payment.succeeded"
 	SubjectPaymentFailed    = "payment.failed"
@@ -101,6 +104,48 @@ type OrderCompletedPayload struct {
 	CoinsReward      int64  `json:"coins_reward"`
 }
 
+// OrderReturnRequestedPayload is emitted when a buyer requests a return on a delivered order.
+type OrderReturnRequestedPayload struct {
+	OrderID          string `json:"order_id"`
+	OrderCode        string `json:"order_code"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	StorefrontShopID string `json:"storefront_shop_id,omitempty"`
+	ReturnRequestID  string `json:"return_request_id"`
+	RefundAmountVND  int64  `json:"refund_amount_vnd"`
+	Reason           string `json:"reason"`
+}
+
+// OrderReturnApprovedPayload is emitted when a seller or admin approves a return request.
+type OrderReturnApprovedPayload struct {
+	OrderID             string `json:"order_id"`
+	OrderCode           string `json:"order_code"`
+	BuyerID             string `json:"buyer_id"`
+	ShopID              string `json:"shop_id"`
+	StorefrontShopID    string `json:"storefront_shop_id,omitempty"`
+	ReturnRequestID     string `json:"return_request_id"`
+	ImmediateRefund     bool   `json:"immediate_refund"`
+	ReverseTrackingCode string `json:"reverse_tracking_code,omitempty"`
+	ReverseLabelURL     string `json:"reverse_label_url,omitempty"`
+	RefundAmountVND     int64  `json:"refund_amount_vnd"`
+}
+
+// OrderRefundedPayload is emitted when a return refund saga completes and transitions an order to REFUNDED.
+type OrderRefundedPayload struct {
+	OrderID              string `json:"order_id"`
+	OrderCode            string `json:"order_code"`
+	CheckoutGroupID      string `json:"checkout_group_id"`
+	BuyerID              string `json:"buyer_id"`
+	ShopID               string `json:"shop_id"`
+	StorefrontShopID     string `json:"storefront_shop_id,omitempty"`
+	ReturnRequestID      string `json:"return_request_id"`
+	RefundID             string `json:"refund_id"`
+	RefundAmountVND      int64  `json:"refund_amount_vnd"`
+	CoinsDiscountVND     int64  `json:"coins_discount_vnd"`
+	AllGroupOrdersClosed bool   `json:"all_group_orders_closed"`
+	Reason               string `json:"reason"`
+}
+
 // PaymentSucceededPayload matches docs/contracts.md Section 5.
 type PaymentSucceededPayload struct {
 	PaymentID    string `json:"payment_id"`
@@ -133,13 +178,15 @@ type PaymentRefundedPayload struct {
 
 // ShipmentUpdatedPayload matches shipment.updated events.
 type ShipmentUpdatedPayload struct {
-	ShipmentID   string `json:"shipment_id"`
-	OrderID      string `json:"order_id"`
-	ShopID       string `json:"shop_id"`
-	CarrierCode  string `json:"carrier_code"`
-	TrackingCode string `json:"tracking_code"`
-	Status       string `json:"status"`
-	RawStatus    string `json:"raw_status"`
-	Description  string `json:"description"`
-	OccurredAt   string `json:"occurred_at"`
+	ShipmentID      string `json:"shipment_id"`
+	OrderID         string `json:"order_id"`
+	ShopID          string `json:"shop_id"`
+	CarrierCode     string `json:"carrier_code"`
+	TrackingCode    string `json:"tracking_code"`
+	Status          string `json:"status"`
+	RawStatus       string `json:"raw_status"`
+	Description     string `json:"description"`
+	OccurredAt      string `json:"occurred_at"`
+	Direction       string `json:"direction,omitempty"`
+	ReturnRequestID string `json:"return_request_id,omitempty"`
 }

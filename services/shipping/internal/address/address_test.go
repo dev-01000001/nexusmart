@@ -81,4 +81,118 @@ func TestNormalizeName(t *testing.T) {
 			t.Errorf("NormalizeName(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
+
+	// Extra shorthand & abbreviation normalization.
+	extra := []struct {
+		in   string
+		want string
+	}{
+		{"Q1", "1"},
+		{"Q.1", "1"},
+		{"Q7", "7"},
+		{"P1", "1"},
+		{"P. Bến Nghé", "ben nghe"},
+		{"BR-VT", "ba ria vung tau"},
+		{"TP.HN", "ha noi"},
+		{"TTH", "thua thien hue"},
+		{"Đắc Lắc", "dak lak"},
+		{"", ""},
+	}
+	for _, tc := range extra {
+		if got := NormalizeName(tc.in); got != tc.want {
+			t.Errorf("NormalizeName(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestMapLegacyAddressAll63ProvincesAndDetailed(t *testing.T) {
+	seenCodes := make(map[string]bool)
+	for _, m := range LegacyMappings() {
+		if m.LegacyDistrict != "" || m.LegacyWard != "" {
+			continue
+		}
+		// Match full accented name.
+		res := MapLegacyAddress(m.LegacyProvince, "", "")
+		if !res.Found || res.ProvinceCode != m.ProvinceCode || res.WardCode != m.WardCode {
+			t.Fatalf("MapLegacyAddress(%q) = %+v, want prov=%s ward=%s", m.LegacyProvince, res, m.ProvinceCode, m.WardCode)
+		}
+		// Match stripped/unaccented name.
+		norm := NormalizeName(m.LegacyProvince)
+		resNorm := MapLegacyAddress(norm, "", "")
+		if !resNorm.Found || resNorm.ProvinceCode != m.ProvinceCode {
+			t.Fatalf("MapLegacyAddress normalized(%q) = %+v, want prov=%s", norm, resNorm, m.ProvinceCode)
+		}
+		seenCodes[m.LegacyProvinceCode] = true
+	}
+	if len(seenCodes) != 63 {
+		t.Fatalf("expected all 63 legacy provinces verified, got %d", len(seenCodes))
+	}
+
+	// Detailed district/ward & abbreviations.
+	detailedCases := []struct {
+		prov, dist, ward string
+		wantProv         string
+		wantWard         string
+	}{
+		{"TP.HCM", "Q1", "P. Bến Nghé", "79", "79001"},
+		{"Saigon", "Q.7", "Tan Phu", "79", "79003"},
+		{"Binh Duong", "TP Thu Dau Mot", "Phu Cuong", "79", "79006"},
+		{"BR-VT", "TP. Vung Tau", "P1", "79", "79008"},
+		{"HN", "Hoan Kiem", "Hang Trong", "01", "01001"},
+		{"Quang Nam", "Hoi An", "", "48", "48005"},
+		{"TTH", "Hue", "Phu Hoi", "46", "46002"},
+		{"TP.HCM", "", "Ben Thanh", "79", "79002"},
+	}
+	for _, tc := range detailedCases {
+		res := MapLegacyAddress(tc.prov, tc.dist, tc.ward)
+		if !res.Found || res.ProvinceCode != tc.wantProv || res.WardCode != tc.wantWard {
+			t.Errorf("MapLegacyAddress(%q, %q, %q) = %+v, want prov=%s ward=%s", tc.prov, tc.dist, tc.ward, res, tc.wantProv, tc.wantWard)
+		}
+		if res.ProvinceName == "" || res.WardName == "" {
+			t.Errorf("expected populated province & ward names in %+v", res)
+		}
+	}
+
+	if miss := MapLegacyAddress("", "", ""); miss.Found {
+		t.Fatalf("expected empty province not found, got %+v", miss)
+	}
+	if miss := MapLegacyAddress("Atlantis", "", ""); miss.Found {
+		t.Fatalf("expected unknown province not found, got %+v", miss)
+	}
+}
+
+func TestProvinceWardAndLegacyFallbackLookups(t *testing.T) {
+	if p, ok := ProvinceByCode("79"); !ok || p.Name != "Thành phố Hồ Chí Minh" {
+		t.Fatalf("unexpected ProvinceByCode(79): %+v ok=%v", p, ok)
+	}
+	if ProvinceName("01") != "Thành phố Hà Nội" || ProvinceName("99") != "" || ProvinceName("") != "" {
+		t.Fatalf("unexpected ProvinceName lookups")
+	}
+	if w, ok := WardByCode("79001"); !ok || w.Name != "Phường Sài Gòn" {
+		t.Fatalf("unexpected WardByCode(79001): %+v ok=%v", w, ok)
+	}
+	if WardName("01001") != "Phường Hoàn Kiếm" || WardName("99999") != "" || WardName("") != "" {
+		t.Fatalf("unexpected WardName lookups")
+	}
+
+	// Detailed legacy reverse fallback (merged province: Binh Duong -> HCMC).
+	fbMerged := LookupLegacyFallback("79006")
+	if !fbMerged.Found || fbMerged.ProvinceName != "Thành phố Hồ Chí Minh" || fbMerged.WardName != "Phường Thủ Dầu Một" ||
+		fbMerged.LegacyProvince != "Tỉnh Bình Dương" || fbMerged.LegacyDistrict != "Thành phố Thủ Dầu Một" {
+		t.Fatalf("unexpected LookupLegacyFallback(79006): %+v", fbMerged)
+	}
+
+	// Ward without detailed 3-level entry falls back cleanly to province & ward name for district.
+	fbSimple := LookupLegacyFallback("04002")
+	if !fbSimple.Found || fbSimple.ProvinceName != "Tỉnh Cao Bằng" || fbSimple.LegacyProvince != "Tỉnh Cao Bằng" || fbSimple.LegacyDistrict != "Phường Nùng Trí Cao" {
+		t.Fatalf("unexpected LookupLegacyFallback(04002): %+v", fbSimple)
+	}
+
+	if fbUnknown := LookupLegacyFallback("00000"); fbUnknown.Found {
+		t.Fatalf("expected unknown ward fallback Found=false, got %+v", fbUnknown)
+	}
+
+	if RegionOfProvince("01") != RegionNorth || RegionOfProvince("48") != RegionCentral || RegionOfProvince("79") != RegionSouth || RegionOfProvince("unknown") != RegionCentral {
+		t.Fatalf("unexpected RegionOfProvince results")
+	}
 }

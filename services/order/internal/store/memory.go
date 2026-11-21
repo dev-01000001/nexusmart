@@ -24,6 +24,7 @@ type MemoryStore struct {
 	items           map[string][]db.OrderItem
 	timelines       map[string][]db.OrderTimelineEvent
 	returnRequests  map[string]db.ReturnRequest
+	complaints      map[string]db.Complaint
 	outbox          []db.OutboxEvent
 	processedEvents map[string]db.ProcessedEvent
 	deadLetters     []db.DeadLetterEvent
@@ -37,6 +38,7 @@ func NewMemoryStore() *MemoryStore {
 		items:           make(map[string][]db.OrderItem),
 		timelines:       make(map[string][]db.OrderTimelineEvent),
 		returnRequests:  make(map[string]db.ReturnRequest),
+		complaints:      make(map[string]db.Complaint),
 		processedEvents: make(map[string]db.ProcessedEvent),
 	}
 }
@@ -733,9 +735,12 @@ func (m *MemoryStore) TransitionOrderReturnRequested(_ context.Context, params R
 		ID:               params.ReturnRequestID,
 		OrderID:          params.OrderID,
 		BuyerID:          params.BuyerID,
+		ShopID:           params.ShopID,
+		ItemsJSON:        defaultJSONArray(params.ItemsJSON),
 		Reason:           params.Reason,
-		EvidenceURLsJSON: params.EvidenceURLsJSON,
+		EvidenceURLsJSON: defaultJSONArray(params.EvidenceURLsJSON),
 		Status:           "PENDING",
+		RefundAmountVND:  params.RefundAmountVND,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -752,8 +757,609 @@ func (m *MemoryStore) TransitionOrderReturnRequested(_ context.Context, params R
 		CreatedAt:  now,
 	})
 
+	if params.OutboxEvent.ID != "" {
+		m.outbox = append(m.outbox, db.OutboxEvent{
+			ID:          params.OutboxEvent.ID,
+			EventType:   params.OutboxEvent.EventType,
+			TraceID:     params.OutboxEvent.TraceID,
+			Traceparent: params.OutboxEvent.Traceparent,
+			PayloadJSON: params.OutboxEvent.PayloadJSON,
+			CreatedAt:   now,
+		})
+	}
+
 	agg, _ := m.getOrderLocked(ord.ID)
 	return agg, &rr, nil
+}
+
+func (m *MemoryStore) GetReturnRequestByID(_ context.Context, id string) (*db.ReturnRequest, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rr, ok := m.returnRequests[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := rr
+	return &cp, nil
+}
+
+func (m *MemoryStore) GetLatestReturnRequestByOrderID(_ context.Context, orderID string) (*db.ReturnRequest, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var matched []db.ReturnRequest
+	for _, rr := range m.returnRequests {
+		if rr.OrderID == orderID {
+			matched = append(matched, rr)
+		}
+	}
+	if len(matched) == 0 {
+		return nil, ErrNotFound
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
+			return matched[i].CreatedAt.After(matched[j].CreatedAt)
+		}
+		return matched[i].ID > matched[j].ID
+	})
+	cp := matched[0]
+	return &cp, nil
+}
+
+func (m *MemoryStore) ListReturnRequestsFiltered(_ context.Context, orderID, buyerID, shopID, status string, limit, offset int32) ([]db.ReturnRequest, int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var matched []db.ReturnRequest
+	for _, rr := range m.returnRequests {
+		if orderID != "" && rr.OrderID != orderID {
+			continue
+		}
+		if buyerID != "" && rr.BuyerID != buyerID {
+			continue
+		}
+		if shopID != "" && rr.ShopID != shopID {
+			continue
+		}
+		if status != "" && rr.Status != status {
+			continue
+		}
+		matched = append(matched, rr)
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
+			return matched[i].CreatedAt.After(matched[j].CreatedAt)
+		}
+		return matched[i].ID > matched[j].ID
+	})
+	total := int64(len(matched))
+	start := int(offset)
+	if start >= len(matched) {
+		return []db.ReturnRequest{}, total, nil
+	}
+	end := start + int(limit)
+	if end > len(matched) {
+		end = len(matched)
+	}
+	return matched[start:end], total, nil
+}
+
+func (m *MemoryStore) ApproveReturnReturning(_ context.Context, params ApproveReturnReturningParams) (*OrderAggregate, *db.ReturnRequest, *db.Complaint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+
+	var resolvedCP *db.Complaint
+	if params.ComplaintID != "" {
+		cp, ok := m.complaints[params.ComplaintID]
+		if !ok {
+			return nil, nil, nil, ErrNotFound
+		}
+		if cp.Status != "OPEN" {
+			return nil, nil, nil, ErrComplaintNotOpen
+		}
+	}
+
+	ord, ok := m.orders[params.OrderID]
+	if !ok {
+		return nil, nil, nil, ErrNotFound
+	}
+	rr, ok := m.returnRequests[params.ReturnRequestID]
+	if !ok {
+		return nil, nil, nil, ErrNotFound
+	}
+
+	cur := statemachine.StringToStatus(ord.Status)
+	if err := statemachine.ValidateTransition(cur, orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := statemachine.ValidateTransition(orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED, orderv1.OrderStatus_ORDER_STATUS_RETURNING); err != nil {
+		return nil, nil, nil, err
+	}
+
+	prev := ord.Status
+	ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURNING)
+	ord.UpdatedAt = now
+	m.orders[ord.ID] = ord
+
+	rr.Status = "RETURNING"
+	if params.SellerNote != "" {
+		rr.SellerNote = params.SellerNote
+	}
+	if params.ReverseTrackingCode != "" {
+		rr.ReverseTrackingCode = params.ReverseTrackingCode
+	}
+	if params.ReverseLabelURL != "" {
+		rr.ReverseLabelURL = params.ReverseLabelURL
+	}
+	rr.UpdatedAt = now
+	m.returnRequests[rr.ID] = rr
+
+	m.timelines[ord.ID] = append(m.timelines[ord.ID],
+		db.OrderTimelineEvent{
+			ID:         uuid.NewString(),
+			OrderID:    ord.ID,
+			FromStatus: prev,
+			ToStatus:   statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED),
+			ActorID:    params.ActorID,
+			ActorRole:  params.ActorRole,
+			Note:       params.ApproveNote,
+			CreatedAt:  now,
+		},
+		db.OrderTimelineEvent{
+			ID:         uuid.NewString(),
+			OrderID:    ord.ID,
+			FromStatus: statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED),
+			ToStatus:   statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURNING),
+			ActorID:    params.ActorID,
+			ActorRole:  params.ActorRole,
+			Note:       params.ReturningNote,
+			CreatedAt:  now,
+		},
+	)
+
+	if params.ComplaintID != "" {
+		cp := m.complaints[params.ComplaintID]
+		cp.Status = params.ComplaintStatus
+		cp.Resolution = params.ComplaintResolution
+		cp.AdminNote = params.AdminNote
+		cp.ResolvedBy = params.ResolvedBy
+		resolvedAt := now
+		cp.ResolvedAt = &resolvedAt
+		m.complaints[cp.ID] = cp
+		cpCopy := cp
+		resolvedCP = &cpCopy
+	}
+
+	for _, ob := range params.OutboxEvents {
+		if ob.ID != "" {
+			m.outbox = append(m.outbox, db.OutboxEvent{
+				ID:          ob.ID,
+				EventType:   ob.EventType,
+				TraceID:     ob.TraceID,
+				Traceparent: ob.Traceparent,
+				PayloadJSON: ob.PayloadJSON,
+				CreatedAt:   now,
+			})
+		}
+	}
+
+	agg, _ := m.getOrderLocked(ord.ID)
+	rrCopy := rr
+	return agg, &rrCopy, resolvedCP, nil
+}
+
+func (m *MemoryStore) CompleteReturnRefund(_ context.Context, params CompleteReturnRefundParams) (*CompleteReturnRefundOutcome, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+
+	if params.EventID != "" {
+		if _, exists := m.processedEvents[params.EventID]; exists {
+			return &CompleteReturnRefundOutcome{AlreadyProcessed: true}, nil
+		}
+	}
+
+	var resolvedCP *db.Complaint
+	if params.ComplaintID != "" {
+		cp, ok := m.complaints[params.ComplaintID]
+		if !ok {
+			return nil, ErrNotFound
+		}
+		if cp.Status != "OPEN" {
+			return nil, ErrComplaintNotOpen
+		}
+		cpCopy := cp
+		resolvedCP = &cpCopy
+	}
+
+	ord, ok := m.orders[params.OrderID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+
+	var rrPtr *db.ReturnRequest
+	if params.ReturnRequestID != "" {
+		rr, ok := m.returnRequests[params.ReturnRequestID]
+		if !ok {
+			return nil, ErrNotFound
+		}
+		rrCopy := rr
+		rrPtr = &rrCopy
+	}
+
+	cur := statemachine.StringToStatus(ord.Status)
+	if cur == orderv1.OrderStatus_ORDER_STATUS_REFUNDED {
+		if params.EventID != "" {
+			m.processedEvents[params.EventID] = db.ProcessedEvent{
+				EventID:     params.EventID,
+				EventType:   params.EventType,
+				ProcessedAt: now,
+			}
+		}
+		agg, _ := m.getOrderLocked(ord.ID)
+		return &CompleteReturnRefundOutcome{
+			AlreadyRefunded: true,
+			Order:           agg,
+			ReturnRequest:   rrPtr,
+			Complaint:       resolvedCP,
+		}, nil
+	}
+
+	fromForRefund := ord.Status
+	var newTimelines []db.OrderTimelineEvent
+	if params.IntermediateStatus != orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED && cur != params.IntermediateStatus {
+		if err := statemachine.ValidateTransition(cur, params.IntermediateStatus); err != nil {
+			return nil, err
+		}
+		if err := statemachine.ValidateTransition(params.IntermediateStatus, orderv1.OrderStatus_ORDER_STATUS_REFUNDED); err != nil {
+			return nil, err
+		}
+		interStr := statemachine.StatusToString(params.IntermediateStatus)
+		interActor := params.IntermediateActorID
+		if interActor == "" {
+			interActor = params.ActorID
+		}
+		interRole := params.IntermediateActorRole
+		if interRole == "" {
+			interRole = params.ActorRole
+		}
+		newTimelines = append(newTimelines, db.OrderTimelineEvent{
+			ID:         uuid.NewString(),
+			OrderID:    ord.ID,
+			FromStatus: ord.Status,
+			ToStatus:   interStr,
+			ActorID:    interActor,
+			ActorRole:  interRole,
+			Note:       params.IntermediateNote,
+			CreatedAt:  now,
+		})
+		fromForRefund = interStr
+	} else {
+		if err := statemachine.ValidateTransition(cur, orderv1.OrderStatus_ORDER_STATUS_REFUNDED); err != nil {
+			return nil, err
+		}
+	}
+
+	if params.EventID != "" {
+		m.processedEvents[params.EventID] = db.ProcessedEvent{
+			EventID:     params.EventID,
+			EventType:   params.EventType,
+			ProcessedAt: now,
+		}
+	}
+
+	ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_REFUNDED)
+	if params.PaymentStatus != "" {
+		ord.PaymentStatus = params.PaymentStatus
+	}
+	ord.UpdatedAt = now
+	m.orders[ord.ID] = ord
+
+	newTimelines = append(newTimelines, db.OrderTimelineEvent{
+		ID:         uuid.NewString(),
+		OrderID:    ord.ID,
+		FromStatus: fromForRefund,
+		ToStatus:   ord.Status,
+		ActorID:    params.ActorID,
+		ActorRole:  params.ActorRole,
+		Note:       params.Note,
+		CreatedAt:  now,
+	})
+	m.timelines[ord.ID] = append(m.timelines[ord.ID], newTimelines...)
+
+	if rrPtr != nil {
+		rr := *rrPtr
+		rr.Status = "REFUNDED"
+		if params.SellerNote != "" {
+			rr.SellerNote = params.SellerNote
+		}
+		if params.RefundAmountVND > 0 {
+			rr.RefundAmountVND = params.RefundAmountVND
+		}
+		if params.RefundID != "" {
+			rr.RefundID = params.RefundID
+		}
+		rr.UpdatedAt = now
+		m.returnRequests[rr.ID] = rr
+		rrCopy := rr
+		rrPtr = &rrCopy
+	}
+
+	if params.ComplaintID != "" {
+		cp := m.complaints[params.ComplaintID]
+		cp.Status = params.ComplaintStatus
+		cp.Resolution = params.ComplaintResolution
+		cp.AdminNote = params.AdminNote
+		cp.ResolvedBy = params.ResolvedBy
+		resolvedAt := now
+		cp.ResolvedAt = &resolvedAt
+		m.complaints[cp.ID] = cp
+		cpCopy := cp
+		resolvedCP = &cpCopy
+	}
+
+	for _, ob := range params.OutboxEvents {
+		if ob.ID != "" {
+			m.outbox = append(m.outbox, db.OutboxEvent{
+				ID:          ob.ID,
+				EventType:   ob.EventType,
+				TraceID:     ob.TraceID,
+				Traceparent: ob.Traceparent,
+				PayloadJSON: ob.PayloadJSON,
+				CreatedAt:   now,
+			})
+		}
+	}
+
+	agg, _ := m.getOrderLocked(ord.ID)
+	return &CompleteReturnRefundOutcome{
+		Order:         agg,
+		ReturnRequest: rrPtr,
+		Complaint:     resolvedCP,
+	}, nil
+}
+
+func (m *MemoryStore) RejectReturnAndCreateComplaint(_ context.Context, params RejectReturnParams) (*OrderAggregate, *db.ReturnRequest, *db.Complaint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+
+	ord, ok := m.orders[params.OrderID]
+	if !ok {
+		return nil, nil, nil, ErrNotFound
+	}
+	rr, ok := m.returnRequests[params.ReturnRequestID]
+	if !ok {
+		return nil, nil, nil, ErrNotFound
+	}
+
+	cur := statemachine.StringToStatus(ord.Status)
+	if err := statemachine.ValidateTransition(cur, orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED); err != nil {
+		return nil, nil, nil, err
+	}
+
+	prev := ord.Status
+	ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED)
+	ord.UpdatedAt = now
+	m.orders[ord.ID] = ord
+
+	rr.Status = "REJECTED"
+	rr.SellerNote = params.Reason
+	rr.UpdatedAt = now
+	m.returnRequests[rr.ID] = rr
+
+	m.timelines[ord.ID] = append(m.timelines[ord.ID], db.OrderTimelineEvent{
+		ID:         uuid.NewString(),
+		OrderID:    ord.ID,
+		FromStatus: prev,
+		ToStatus:   ord.Status,
+		ActorID:    params.ActorID,
+		ActorRole:  params.ActorRole,
+		Note:       params.Note,
+		CreatedAt:  now,
+	})
+
+	var cp db.Complaint
+	foundCP := false
+	for _, existing := range m.complaints {
+		if existing.ReturnRequestID == rr.ID {
+			cp = existing
+			foundCP = true
+			break
+		}
+	}
+	if !foundCP {
+		evJSON := params.EvidenceURLsJSON
+		if len(evJSON) == 0 {
+			evJSON = defaultJSONArray(rr.EvidenceURLsJSON)
+		}
+		shopID := rr.ShopID
+		if shopID == "" {
+			shopID = ord.ShopID
+		}
+		cp = db.Complaint{
+			ID:               params.ComplaintID,
+			ReturnRequestID:  rr.ID,
+			OrderID:          ord.ID,
+			BuyerID:          ord.BuyerID,
+			ShopID:           shopID,
+			Reason:           params.ComplaintReason,
+			EvidenceURLsJSON: defaultJSONArray(evJSON),
+			Status:           "OPEN",
+			CreatedAt:        now,
+		}
+		m.complaints[cp.ID] = cp
+	}
+
+	agg, _ := m.getOrderLocked(ord.ID)
+	rrCopy := rr
+	cpCopy := cp
+	return agg, &rrCopy, &cpCopy, nil
+}
+
+func (m *MemoryStore) GetComplaintByID(_ context.Context, id string) (*db.Complaint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp, ok := m.complaints[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cpCopy := cp
+	return &cpCopy, nil
+}
+
+func (m *MemoryStore) GetComplaintByReturnRequestID(_ context.Context, returnRequestID string) (*db.Complaint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, cp := range m.complaints {
+		if cp.ReturnRequestID == returnRequestID {
+			cpCopy := cp
+			return &cpCopy, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MemoryStore) UpsertOpenComplaint(_ context.Context, params UpsertComplaintParams) (*db.Complaint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+
+	for id, cp := range m.complaints {
+		if cp.ReturnRequestID == params.ReturnRequestID {
+			if cp.Status != "OPEN" {
+				return nil, ErrComplaintNotOpen
+			}
+			if params.Reason != "" {
+				cp.Reason = params.Reason
+			}
+			if params.UpdateEvidence {
+				cp.EvidenceURLsJSON = defaultJSONArray(params.EvidenceURLsJSON)
+			}
+			m.complaints[id] = cp
+			cpCopy := cp
+			return &cpCopy, nil
+		}
+	}
+
+	cp := db.Complaint{
+		ID:               params.ComplaintID,
+		ReturnRequestID:  params.ReturnRequestID,
+		OrderID:          params.OrderID,
+		BuyerID:          params.BuyerID,
+		ShopID:           params.ShopID,
+		Reason:           params.Reason,
+		EvidenceURLsJSON: defaultJSONArray(params.EvidenceURLsJSON),
+		Status:           "OPEN",
+		CreatedAt:        now,
+	}
+	m.complaints[cp.ID] = cp
+	cpCopy := cp
+	return &cpCopy, nil
+}
+
+func (m *MemoryStore) ListComplaintsFiltered(_ context.Context, status, orderID, shopID string, limit, offset int32) ([]db.Complaint, int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var matched []db.Complaint
+	for _, cp := range m.complaints {
+		if status != "" && cp.Status != status {
+			continue
+		}
+		if orderID != "" && cp.OrderID != orderID {
+			continue
+		}
+		if shopID != "" && cp.ShopID != shopID {
+			continue
+		}
+		matched = append(matched, cp)
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
+			return matched[i].CreatedAt.After(matched[j].CreatedAt)
+		}
+		return matched[i].ID > matched[j].ID
+	})
+	total := int64(len(matched))
+	start := int(offset)
+	if start >= len(matched) {
+		return []db.Complaint{}, total, nil
+	}
+	end := start + int(limit)
+	if end > len(matched) {
+		end = len(matched)
+	}
+	return matched[start:end], total, nil
+}
+
+func (m *MemoryStore) DismissComplaintAndCompleteOrder(_ context.Context, params DismissComplaintParams) (*OrderAggregate, *db.ReturnRequest, *db.Complaint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+
+	cp, ok := m.complaints[params.ComplaintID]
+	if !ok {
+		return nil, nil, nil, ErrNotFound
+	}
+	if cp.Status != "OPEN" {
+		return nil, nil, nil, ErrComplaintNotOpen
+	}
+
+	ord, ok := m.orders[params.OrderID]
+	if !ok {
+		return nil, nil, nil, ErrNotFound
+	}
+
+	cur := statemachine.StringToStatus(ord.Status)
+	if err := statemachine.ValidateTransition(cur, orderv1.OrderStatus_ORDER_STATUS_COMPLETED); err != nil {
+		return nil, nil, nil, err
+	}
+
+	prev := ord.Status
+	ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_COMPLETED)
+	completedAt := now
+	ord.CompletedAt = &completedAt
+	ord.UpdatedAt = now
+	m.orders[ord.ID] = ord
+
+	cp.Status = "DISMISSED"
+	cp.Resolution = "DISMISS"
+	cp.AdminNote = params.AdminNote
+	cp.ResolvedBy = params.ResolvedBy
+	resolvedAt := now
+	cp.ResolvedAt = &resolvedAt
+	m.complaints[cp.ID] = cp
+
+	m.timelines[ord.ID] = append(m.timelines[ord.ID], db.OrderTimelineEvent{
+		ID:         uuid.NewString(),
+		OrderID:    ord.ID,
+		FromStatus: prev,
+		ToStatus:   ord.Status,
+		ActorID:    params.ResolvedBy,
+		ActorRole:  params.ActorRole,
+		Note:       params.Note,
+		CreatedAt:  now,
+	})
+
+	if params.OutboxEvent.ID != "" {
+		m.outbox = append(m.outbox, db.OutboxEvent{
+			ID:          params.OutboxEvent.ID,
+			EventType:   params.OutboxEvent.EventType,
+			TraceID:     params.OutboxEvent.TraceID,
+			Traceparent: params.OutboxEvent.Traceparent,
+			PayloadJSON: params.OutboxEvent.PayloadJSON,
+			CreatedAt:   now,
+		})
+	}
+
+	var rrPtr *db.ReturnRequest
+	if rr, ok := m.returnRequests[cp.ReturnRequestID]; ok {
+		rrCopy := rr
+		rrPtr = &rrCopy
+	}
+
+	agg, _ := m.getOrderLocked(ord.ID)
+	cpCopy := cp
+	return agg, rrPtr, &cpCopy, nil
 }
 
 func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpdateParams) (*ShipmentUpdateOutcome, error) {
@@ -779,14 +1385,15 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 
 	cur := statemachine.StringToStatus(ord.Status)
 	shipStatus := strings.ToLower(strings.TrimSpace(params.ShipmentStatus))
+	isReturnDir := strings.EqualFold(strings.TrimSpace(params.Direction), "return")
 	note := strings.TrimSpace(params.Description)
 	if note == "" {
 		note = fmt.Sprintf("Shipment update: %s", shipStatus)
 	}
 	outcome := &ShipmentUpdateOutcome{}
 
-	switch shipStatus {
-	case "delivered":
+	switch {
+	case shipStatus == "delivered" && !isReturnDir:
 		if cur == orderv1.OrderStatus_ORDER_STATUS_SHIPPING {
 			prev := ord.Status
 			ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_DELIVERED)
@@ -824,8 +1431,12 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 			})
 			outcome.TransitionedTo = orderv1.OrderStatus_ORDER_STATUS_DELIVERED
 		}
-	case "returned":
-		if cur == orderv1.OrderStatus_ORDER_STATUS_SHIPPING || cur == orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED {
+	case shipStatus == "returned":
+		canReturn := cur == orderv1.OrderStatus_ORDER_STATUS_SHIPPING ||
+			cur == orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED ||
+			cur == orderv1.OrderStatus_ORDER_STATUS_RETURNING ||
+			cur == orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED
+		if canReturn {
 			prev := ord.Status
 			ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURNED)
 			ord.UpdatedAt = now
@@ -843,10 +1454,14 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 			outcome.TransitionedTo = orderv1.OrderStatus_ORDER_STATUS_RETURNED
 		}
 	default:
-		if params.TrackingCode != "" {
+		if params.TrackingCode != "" && !isReturnDir {
 			ord.TrackingCode = params.TrackingCode
 			ord.UpdatedAt = now
 			m.orders[ord.ID] = ord
+		}
+		tlNote := fmt.Sprintf("[%s] %s", shipStatus, note)
+		if isReturnDir {
+			tlNote = fmt.Sprintf("[return:%s] %s", shipStatus, note)
 		}
 		m.timelines[ord.ID] = append(m.timelines[ord.ID], db.OrderTimelineEvent{
 			ID:         uuid.NewString(),
@@ -855,7 +1470,7 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 			ToStatus:   ord.Status,
 			ActorID:    "shipping-service",
 			ActorRole:  "system",
-			Note:       fmt.Sprintf("[%s] %s", shipStatus, note),
+			Note:       tlNote,
 			CreatedAt:  now,
 		})
 	}
@@ -968,7 +1583,7 @@ func (m *MemoryStore) FindExpiredPendingGroups(_ context.Context, limit int32) (
 	seen := make(map[string]struct{})
 	var out []ExpiredGroupCandidate
 	for _, ord := range m.orders {
-		if ord.Status != "PENDING" || ord.PaymentMethod != "VIETQR" || ord.PaymentExpiresAt == nil {
+		if ord.Status != "PENDING" || !statemachine.IsOnlinePaymentMethodString(ord.PaymentMethod) || ord.PaymentExpiresAt == nil {
 			continue
 		}
 		if !ord.PaymentExpiresAt.After(now) {

@@ -207,6 +207,9 @@ func (c *Consumer) handleNATSMessage(baseCtx context.Context, msg *nats.Msg) {
 
 	procCtx, cancel := context.WithTimeout(baseCtx, 25*time.Second)
 	defer cancel()
+	if len(headers) > 0 {
+		procCtx = telemetry.ExtractTraceHeaders(procCtx, headers)
+	}
 
 	action, _ := c.ProcessRawMessage(procCtx, msg.Subject, msg.Data, headers, numDelivered)
 	switch action {
@@ -297,6 +300,11 @@ func (c *Consumer) sendToDLQ(ctx context.Context, subject, eventID string, paylo
 		dlqMsg.Header.Set("X-DLQ-Attempts", strconv.FormatUint(attempts, 10))
 		if eventID != "" {
 			dlqMsg.Header.Set("X-DLQ-Event-Id", eventID)
+		}
+		traceHdrs := map[string]string{}
+		telemetry.InjectTraceHeaders(ctx, traceHdrs)
+		for k, v := range traceHdrs {
+			dlqMsg.Header.Set(k, v)
 		}
 		if _, err := c.dlqPub.PublishMsg(dlqMsg); err != nil {
 			c.logger.ErrorContext(ctx, "failed to publish message to NATS DLQ", "dlq_subject", dlqMsg.Subject, "error", err)

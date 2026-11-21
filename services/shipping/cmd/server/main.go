@@ -113,6 +113,14 @@ func run() error {
 		})
 		enabledCarriers = append(enabledCarriers, carrier.NewResilientCarrier(ghn, resCfg))
 	}
+	if cfg.GHTKEnabled {
+		ghtk := carrier.NewGHTKAdapter(carrier.GHTKConfig{
+			Mode:    cfg.GHTKMode,
+			BaseURL: cfg.GHTKBaseURL,
+			Token:   cfg.GHTKToken,
+		})
+		enabledCarriers = append(enabledCarriers, carrier.NewResilientCarrier(ghtk, resCfg))
+	}
 	if cfg.MockCarrierOn {
 		mockExp := carrier.NewMockExpressAdapter()
 		enabledCarriers = append(enabledCarriers, carrier.NewResilientCarrier(mockExp, resCfg))

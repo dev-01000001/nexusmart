@@ -42,6 +42,9 @@ pub enum PaymentError {
     #[error("provider circuit breaker is open")]
     CircuitOpen,
 
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
+
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 
@@ -60,6 +63,7 @@ impl PaymentError {
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::Provider(_) | Self::CircuitOpen => StatusCode::BAD_GATEWAY,
+            Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::LedgerInvariant(_) | Self::Database(_) | Self::Internal(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -78,6 +82,7 @@ impl PaymentError {
             Self::RefundExceedsPaid { .. } => "REFUND_EXCEEDS_PAID",
             Self::Provider(_) => "PROVIDER_ERROR",
             Self::CircuitOpen => "PROVIDER_CIRCUIT_OPEN",
+            Self::ServiceUnavailable(_) => "SERVICE_UNAVAILABLE",
             Self::Database(_) => "DATABASE_ERROR",
             Self::Internal(_) => "INTERNAL_ERROR",
         }
@@ -95,6 +100,7 @@ impl PaymentError {
             }
             Self::Provider(m) => tonic::Status::unavailable(m.clone()),
             Self::CircuitOpen => tonic::Status::unavailable("payment provider circuit open"),
+            Self::ServiceUnavailable(m) => tonic::Status::unavailable(m.clone()),
             Self::LedgerInvariant(m) => tonic::Status::internal(m.clone()),
             Self::Database(_) => tonic::Status::internal("database error"),
             Self::Internal(m) => tonic::Status::internal(m.clone()),
@@ -120,3 +126,115 @@ impl IntoResponse for PaymentError {
 }
 
 pub type Result<T> = std::result::Result<T, PaymentError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt;
+
+    #[tokio::test]
+    async fn test_error_http_status_codes_tonic_mapping_and_db_redaction() {
+        let cases: Vec<(PaymentError, StatusCode, &str, tonic::Code)> = vec![
+            (
+                PaymentError::Validation("bad field".into()),
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_ERROR",
+                tonic::Code::InvalidArgument,
+            ),
+            (
+                PaymentError::NotFound("missing".into()),
+                StatusCode::NOT_FOUND,
+                "NOT_FOUND",
+                tonic::Code::NotFound,
+            ),
+            (
+                PaymentError::Conflict("dup".into()),
+                StatusCode::CONFLICT,
+                "CONFLICT",
+                tonic::Code::AlreadyExists,
+            ),
+            (
+                PaymentError::Unauthorized("bad mac".into()),
+                StatusCode::UNAUTHORIZED,
+                "UNAUTHORIZED",
+                tonic::Code::Unauthenticated,
+            ),
+            (
+                PaymentError::Forbidden("admin only".into()),
+                StatusCode::FORBIDDEN,
+                "FORBIDDEN",
+                tonic::Code::PermissionDenied,
+            ),
+            (
+                PaymentError::LedgerInvariant("unbalanced".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "LEDGER_INVARIANT_ERROR",
+                tonic::Code::Internal,
+            ),
+            (
+                PaymentError::InsufficientBalance {
+                    available_vnd: 100,
+                    requested_vnd: 200,
+                },
+                StatusCode::CONFLICT,
+                "INSUFFICIENT_BALANCE",
+                tonic::Code::FailedPrecondition,
+            ),
+            (
+                PaymentError::RefundExceedsPaid {
+                    remaining_vnd: 50,
+                    requested_vnd: 100,
+                },
+                StatusCode::CONFLICT,
+                "REFUND_EXCEEDS_PAID",
+                tonic::Code::FailedPrecondition,
+            ),
+            (
+                PaymentError::Provider("upstream 503".into()),
+                StatusCode::BAD_GATEWAY,
+                "PROVIDER_ERROR",
+                tonic::Code::Unavailable,
+            ),
+            (
+                PaymentError::CircuitOpen,
+                StatusCode::BAD_GATEWAY,
+                "PROVIDER_CIRCUIT_OPEN",
+                tonic::Code::Unavailable,
+            ),
+            (
+                PaymentError::ServiceUnavailable("webhook disabled".into()),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SERVICE_UNAVAILABLE",
+                tonic::Code::Unavailable,
+            ),
+            (
+                PaymentError::Database(sqlx::Error::RowNotFound),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DATABASE_ERROR",
+                tonic::Code::Internal,
+            ),
+            (
+                PaymentError::Internal("boom".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                tonic::Code::Internal,
+            ),
+        ];
+
+        for (err, expected_http, expected_code, expected_tonic) in cases {
+            assert_eq!(err.http_status(), expected_http);
+            assert_eq!(err.error_code(), expected_code);
+            assert_eq!(err.to_tonic_status().code(), expected_tonic);
+
+            let is_db = matches!(err, PaymentError::Database(_));
+            let resp = err.into_response();
+            assert_eq!(resp.status(), expected_http);
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["error"], expected_code);
+            if is_db {
+                assert_eq!(body["message"], "internal database error");
+            }
+        }
+    }
+}

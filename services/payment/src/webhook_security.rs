@@ -4,9 +4,27 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use uuid::Uuid;
 
+use crate::config::is_placeholder_secret;
 use crate::error::{PaymentError, Result};
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// Rejects empty secrets everywhere, and rejects any placeholder or repo-committed
+/// dev/mock secret when running in production.
+pub fn ensure_webhook_secret_usable(secret: &str, is_production: bool) -> Result<()> {
+    if is_production && is_placeholder_secret(secret) {
+        return Err(PaymentError::ServiceUnavailable(
+            "webhook verification disabled: production secret is missing or placeholder"
+                .to_string(),
+        ));
+    }
+    if secret.trim().is_empty() {
+        return Err(PaymentError::Unauthorized(
+            "webhook verification secret is not configured".to_string(),
+        ));
+    }
+    Ok(())
+}
 
 /// Computes lowercase hex HMAC-SHA256 digest of `payload` using `secret`.
 pub fn compute_hmac_hex(secret: &str, payload: &[u8]) -> String {
@@ -29,6 +47,12 @@ pub fn verify_webhook_request(
     replay_window_secs: i64,
     now: DateTime<Utc>,
 ) -> Result<()> {
+    if secret.trim().is_empty() {
+        return Err(PaymentError::Unauthorized(
+            "webhook verification secret is not configured".to_string(),
+        ));
+    }
+
     let raw_sig = signature_header
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -82,6 +106,11 @@ pub fn verify_webhook_request(
 
 fn parse_timestamp(raw: &str) -> Result<DateTime<Utc>> {
     if let Ok(secs) = raw.parse::<i64>() {
+        if secs <= 0 {
+            return Err(PaymentError::Unauthorized(
+                "invalid non-positive X-Timestamp value".to_string(),
+            ));
+        }
         // Handle both Unix seconds and Unix milliseconds
         let dt = if secs > 10_000_000_000 {
             DateTime::from_timestamp_millis(secs)
@@ -422,5 +451,49 @@ mod tests {
             payload.extracted_order_code().as_deref(),
             Some("NM1A2B3C4D5E")
         );
+    }
+
+    #[test]
+    fn test_empty_secret_and_production_placeholder_guard() {
+        let body = br#"{"provider_tx_id":"TX-EMPTY","amount_vnd":50000}"#;
+        let now = Utc::now();
+        let ts = now.timestamp().to_string();
+        let empty_sig = compute_hmac_hex("", body);
+
+        assert!(matches!(
+            verify_webhook_request("", body, Some(&empty_sig), Some(&ts), 300, now),
+            Err(PaymentError::Unauthorized(_))
+        ));
+        assert!(matches!(
+            verify_webhook_request("   ", body, Some(&empty_sig), Some(&ts), 300, now),
+            Err(PaymentError::Unauthorized(_))
+        ));
+
+        for repo_secret in [
+            "",
+            "dev-webhook-secret-change-me",
+            "dev-only-payment-webhook-hmac-secret",
+            "zalopay-mock-key2-dev",
+            "sandbox-zalopay-key2-placeholder",
+        ] {
+            assert!(
+                matches!(
+                    ensure_webhook_secret_usable(repo_secret, true),
+                    Err(PaymentError::ServiceUnavailable(_))
+                ),
+                "production must reject {repo_secret:?}"
+            );
+        }
+
+        // Dev still permits non-empty dev secrets, while empty secret is always rejected.
+        assert!(matches!(
+            ensure_webhook_secret_usable("", false),
+            Err(PaymentError::Unauthorized(_))
+        ));
+        assert!(
+            ensure_webhook_secret_usable("dev-only-payment-webhook-hmac-secret", false).is_ok()
+        );
+        assert!(ensure_webhook_secret_usable("zalopay-mock-key2-dev", false).is_ok());
+        assert!(ensure_webhook_secret_usable("real-prod-hmac-secret-9f8e7d6c", true).is_ok());
     }
 }

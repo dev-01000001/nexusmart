@@ -266,3 +266,150 @@ func TestReserveAtomic_IdempotentAndVoucherLimits(t *testing.T) {
 		t.Fatalf("expected user-1 fresh order to succeed after release, got out=%+v err=%v", resFresh, err)
 	}
 }
+
+func TestEngine_HelpersAndRemainingErrorPaths(t *testing.T) {
+	ctx := context.Background()
+	mr, engine := newTestEngine(t)
+
+	// SyncVoucherKeysIfMissing initializes missing keys and does NOT overwrite live keys
+	if err := engine.SyncVoucherKeysIfMissing(ctx, "v-sync", 10, 50000, 40000); err != nil {
+		t.Fatalf("SyncVoucherKeysIfMissing 1st: %v", err)
+	}
+	if err := engine.SyncVoucherKeysIfMissing(ctx, "v-sync", 99, 50000, 99999); err != nil {
+		t.Fatalf("SyncVoucherKeysIfMissing 2nd: %v", err)
+	}
+	vals, err := engine.MGetInt64(ctx, []string{
+		lua.VoucherRemainingKey("v-sync"),
+		lua.VoucherBudgetRemainingKey("v-sync"),
+		"promo:missing:key",
+	})
+	if err != nil {
+		t.Fatalf("MGetInt64: %v", err)
+	}
+	if vals[lua.VoucherRemainingKey("v-sync")] != 10 || vals[lua.VoucherBudgetRemainingKey("v-sync")] != 40000 {
+		t.Fatalf("SyncVoucherKeysIfMissing overwrote live keys: %+v", vals)
+	}
+	if _, exists := vals["promo:missing:key"]; exists {
+		t.Fatal("missing key should not appear in MGetInt64 result")
+	}
+	emptyVals, err := engine.MGetInt64(ctx, nil)
+	if err != nil || len(emptyVals) != 0 {
+		t.Fatalf("MGetInt64 empty: vals=%+v err=%v", emptyVals, err)
+	}
+
+	// InitFlashItemSlots overwrite=false (SetNX) & DeleteFlashItemSlots
+	if err := engine.InitFlashItemSlots(ctx, "fi-nx", 5, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.InitFlashItemSlots(ctx, "fi-nx", 20, false); err != nil {
+		t.Fatal(err)
+	}
+	if rem, ok, _ := engine.GetInt64(ctx, lua.FlashRemainingKey("fi-nx")); !ok || rem != 5 {
+		t.Fatalf("SetNX flash slots expected 5, got %d (%v)", rem, ok)
+	}
+	if err := engine.DeleteFlashItemSlots(ctx, "fi-nx"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := engine.GetInt64(ctx, lua.FlashRemainingKey("fi-nx")); ok {
+		t.Fatal("expected flash slots key deleted")
+	}
+
+	// Lua error paths: FLASH_NOT_INITIALIZED, INVALID_FLASH_QTY, FLASH_USER_LIMIT_EXCEEDED, VOUCHER_NOT_INITIALIZED, VOUCHER_BUDGET_NOT_INITIALIZED
+	var resErr *lua.ReservationError
+
+	_, err = engine.Reserve(ctx, lua.ReserveInput{
+		OrderID:    "err-flash-uninit",
+		UserID:     "u1",
+		FlashItems: []lua.FlashReserveSpec{{ItemID: "fi-nx", Quantity: 1, PerUserLimit: 1}},
+	})
+	if !errors.As(err, &resErr) || resErr.Code != lua.ErrCodeFlashNotInitialized || resErr.Error() == "" {
+		t.Fatalf("expected FLASH_NOT_INITIALIZED, got %v", err)
+	}
+
+	if err := engine.InitFlashItemSlots(ctx, "fi-lim", 10, true); err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Reserve(ctx, lua.ReserveInput{
+		OrderID:    "err-flash-qty",
+		UserID:     "u1",
+		FlashItems: []lua.FlashReserveSpec{{ItemID: "fi-lim", Quantity: 0, PerUserLimit: 2}},
+	})
+	if !errors.As(err, &resErr) || resErr.Code != lua.ErrCodeInvalidFlashQty {
+		t.Fatalf("expected INVALID_FLASH_QTY, got %v", err)
+	}
+
+	// Reserve 2 (limit=2), then try 1 more for same user -> FLASH_USER_LIMIT_EXCEEDED
+	if _, err := engine.Reserve(ctx, lua.ReserveInput{
+		OrderID:    "ok-flash-lim-1",
+		UserID:     "u1",
+		TTLSeconds: 60,
+		FlashItems: []lua.FlashReserveSpec{{ItemID: "fi-lim", Quantity: 2, PerUserLimit: 2}},
+	}); err != nil {
+		t.Fatalf("ok-flash-lim-1: %v", err)
+	}
+	if engine.IsReservationReleased(ctx, "ok-flash-lim-1") {
+		t.Fatal("expected active reservation IsReservationReleased=false")
+	}
+	_, err = engine.Reserve(ctx, lua.ReserveInput{
+		OrderID:    "err-flash-user-lim",
+		UserID:     "u1",
+		FlashItems: []lua.FlashReserveSpec{{ItemID: "fi-lim", Quantity: 1, PerUserLimit: 2}},
+	})
+	if !errors.As(err, &resErr) || resErr.Code != lua.ErrCodeFlashUserLimitExceeded {
+		t.Fatalf("expected FLASH_USER_LIMIT_EXCEEDED, got %v", err)
+	}
+
+	// Release ok-flash-lim-1 -> IsReservationReleased=true; release unknown order -> AlreadyReleased=true
+	if _, err := engine.Release(ctx, "ok-flash-lim-1"); err != nil {
+		t.Fatal(err)
+	}
+	if !engine.IsReservationReleased(ctx, "ok-flash-lim-1") {
+		t.Fatal("expected released reservation IsReservationReleased=true")
+	}
+	if !engine.IsReservationReleased(ctx, "never-existed") {
+		t.Fatal("expected missing reservation IsReservationReleased=true")
+	}
+	relMiss, err := engine.Release(ctx, "never-existed")
+	if err != nil || !relMiss.AlreadyReleased {
+		t.Fatalf("release missing order unexpected: %+v err=%v", relMiss, err)
+	}
+
+	// VOUCHER_NOT_INITIALIZED & VOUCHER_BUDGET_NOT_INITIALIZED
+	_, err = engine.Reserve(ctx, lua.ReserveInput{
+		OrderID:  "err-v-uninit",
+		UserID:   "u1",
+		Vouchers: []lua.VoucherReserveSpec{{VoucherID: "v-uninit", PerUserLimit: 1}},
+	})
+	if !errors.As(err, &resErr) || resErr.Code != lua.ErrCodeVoucherNotInitialized {
+		t.Fatalf("expected VOUCHER_NOT_INITIALIZED, got %v", err)
+	}
+	if err := engine.InitVoucherKeys(ctx, "v-nobudget", 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Reserve(ctx, lua.ReserveInput{
+		OrderID:  "err-v-budget-uninit",
+		UserID:   "u1",
+		Vouchers: []lua.VoucherReserveSpec{{VoucherID: "v-nobudget", PerUserLimit: 1, DiscountVND: 1000, HasBudget: true}},
+	})
+	if !errors.As(err, &resErr) || resErr.Code != lua.ErrCodeVoucherBudgetNotInit {
+		t.Fatalf("expected VOUCHER_BUDGET_NOT_INITIALIZED, got %v", err)
+	}
+
+	// Closed Redis connection error paths
+	mr.Close()
+	if _, _, err := engine.GetInt64(ctx, "k"); err == nil {
+		t.Fatal("expected GetInt64 error after miniredis close")
+	}
+	if _, err := engine.MGetInt64(ctx, []string{"k"}); err == nil {
+		t.Fatal("expected MGetInt64 error after miniredis close")
+	}
+	if engine.IsReservationReleased(ctx, "ord-closed") {
+		t.Fatal("expected IsReservationReleased=false on redis error")
+	}
+	if _, err := engine.Reserve(ctx, lua.ReserveInput{OrderID: "x", UserID: "u"}); err == nil {
+		t.Fatal("expected Reserve error after miniredis close")
+	}
+	if _, err := engine.Release(ctx, "x"); err == nil {
+		t.Fatal("expected Release error after miniredis close")
+	}
+}

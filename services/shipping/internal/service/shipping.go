@@ -92,21 +92,30 @@ func (s *ShippingService) CalculateFee(ctx context.Context, req carrier.FeeReque
 		}
 	}
 
-	// Enrich GHN district/ward codes from local ward table when available.
-	if w, err := s.repo.GetWard(ctx, req.FromWardCode); err == nil && w != nil {
-		req.FromDistrictID = w.GHNDistrictID
-		req.FromGHNWardCode = w.GHNWardCode
-		if req.FromProvinceCode == "" {
-			req.FromProvinceCode = w.ProvinceCode
-		}
-	}
-	if w, err := s.repo.GetWard(ctx, req.ToWardCode); err == nil && w != nil {
-		req.ToDistrictID = w.GHNDistrictID
-		req.ToGHNWardCode = w.GHNWardCode
-		if req.ToProvinceCode == "" {
-			req.ToProvinceCode = w.ProvinceCode
-		}
-	}
+	// Enrich GHN district/ward codes and Vietnamese/legacy names from local catalog when available.
+	fromEnriched := s.enrichAddress(ctx, carrier.Address{
+		ProvinceCode: req.FromProvinceCode,
+		WardCode:     req.FromWardCode,
+	})
+	req.FromProvinceCode = fromEnriched.ProvinceCode
+	req.FromProvinceName = fromEnriched.ProvinceName
+	req.FromWardName = fromEnriched.WardName
+	req.FromLegacyProvince = fromEnriched.LegacyProvince
+	req.FromLegacyDistrict = fromEnriched.LegacyDistrict
+	req.FromDistrictID = fromEnriched.GHNDistrictID
+	req.FromGHNWardCode = fromEnriched.GHNWardCode
+
+	toEnriched := s.enrichAddress(ctx, carrier.Address{
+		ProvinceCode: req.ToProvinceCode,
+		WardCode:     req.ToWardCode,
+	})
+	req.ToProvinceCode = toEnriched.ProvinceCode
+	req.ToProvinceName = toEnriched.ProvinceName
+	req.ToWardName = toEnriched.WardName
+	req.ToLegacyProvince = toEnriched.LegacyProvince
+	req.ToLegacyDistrict = toEnriched.LegacyDistrict
+	req.ToDistrictID = toEnriched.GHNDistrictID
+	req.ToGHNWardCode = toEnriched.GHNWardCode
 
 	quotes, isFallback := s.aggregator.CalculateFeeAll(ctx, req)
 	if !isFallback && s.quoteCache != nil {
@@ -115,7 +124,7 @@ func (s *ShippingService) CalculateFee(ctx context.Context, req carrier.FeeReque
 	return quotes, nil
 }
 
-// CreateShipmentInput represents a shipment creation request.
+// CreateShipmentInput represents a forward shipment creation request.
 type CreateShipmentInput struct {
 	OrderID      string
 	ShopID       string
@@ -128,7 +137,20 @@ type CreateShipmentInput struct {
 	ItemsSummary string
 }
 
-// CreateShipment creates a carrier shipment idempotently keyed by order_id (UC-SHIP03).
+// CreateReturnShipmentInput represents a reverse/return shipment creation request (buyer -> shop).
+type CreateReturnShipmentInput struct {
+	OrderID         string
+	ReturnRequestID string
+	ShopID          string
+	CarrierCode     string
+	ServiceCode     string
+	WeightGrams     int32
+	FromAddress     carrier.Address
+	ToAddress       carrier.Address
+	ItemsSummary    string
+}
+
+// CreateShipment creates a forward carrier shipment idempotently keyed by (order_id, "forward") (UC-SHIP03).
 func (s *ShippingService) CreateShipment(ctx context.Context, in CreateShipmentInput) (*store.Shipment, bool, error) {
 	if strings.TrimSpace(in.OrderID) == "" {
 		return nil, false, fmt.Errorf("%w: order_id is required", ErrInvalidArgument)
@@ -141,7 +163,7 @@ func (s *ShippingService) CreateShipment(ctx context.Context, in CreateShipmentI
 	}
 
 	// Fast-path idempotency check before calling external carrier APIs.
-	if existing, err := s.repo.GetShipmentByOrderID(ctx, in.OrderID); err == nil && existing != nil {
+	if existing, err := s.repo.GetShipmentByOrderIDAndDirection(ctx, in.OrderID, store.DirectionForward); err == nil && existing != nil {
 		return existing, true, nil
 	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, false, fmt.Errorf("check existing shipment: %w", err)
@@ -153,19 +175,13 @@ func (s *ShippingService) CreateShipment(ctx context.Context, in CreateShipmentI
 		return nil, false, err
 	}
 
-	// Enrich GHN ward/district metadata from our address catalog when present.
-	if w, wErr := s.repo.GetWard(ctx, in.FromAddress.WardCode); wErr == nil && w != nil {
-		in.FromAddress.GHNDistrictID = w.GHNDistrictID
-		in.FromAddress.GHNWardCode = w.GHNWardCode
-	}
-	if w, wErr := s.repo.GetWard(ctx, in.ToAddress.WardCode); wErr == nil && w != nil {
-		in.ToAddress.GHNDistrictID = w.GHNDistrictID
-		in.ToAddress.GHNWardCode = w.GHNWardCode
-	}
+	in.FromAddress = s.enrichAddress(ctx, in.FromAddress)
+	in.ToAddress = s.enrichAddress(ctx, in.ToAddress)
 
 	res, err := provider.CreateShipment(ctx, carrier.ShipmentRequest{
 		OrderID:      in.OrderID,
 		ShopID:       in.ShopID,
+		Direction:    store.DirectionForward,
 		ServiceCode:  in.ServiceCode,
 		CODAmountVND: in.CODAmountVND,
 		WeightGrams:  in.WeightGrams,
@@ -194,6 +210,7 @@ func (s *ShippingService) CreateShipment(ctx context.Context, in CreateShipmentI
 		FromWardCode:     in.FromAddress.WardCode,
 		ToProvinceCode:   in.ToAddress.ProvinceCode,
 		ToWardCode:       in.ToAddress.WardCode,
+		Direction:        store.DirectionForward,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -209,6 +226,91 @@ func (s *ShippingService) CreateShipment(ctx context.Context, in CreateShipmentI
 	saved, alreadyExisted, err := s.repo.CreateShipment(ctx, sh, initEv)
 	if err != nil {
 		return nil, false, fmt.Errorf("persist shipment: %w", err)
+	}
+	return saved, alreadyExisted, nil
+}
+
+// CreateReturnShipment creates a reverse/return carrier shipment idempotently keyed by (order_id, "return").
+// Return shipments always have CODAmountVND=0 and pick up from buyer (FromAddress) to shop (ToAddress).
+func (s *ShippingService) CreateReturnShipment(ctx context.Context, in CreateReturnShipmentInput) (*store.Shipment, bool, error) {
+	if strings.TrimSpace(in.OrderID) == "" {
+		return nil, false, fmt.Errorf("%w: order_id is required", ErrInvalidArgument)
+	}
+	if strings.TrimSpace(in.ShopID) == "" {
+		return nil, false, fmt.Errorf("%w: shop_id is required", ErrInvalidArgument)
+	}
+	if strings.TrimSpace(in.ReturnRequestID) == "" {
+		return nil, false, fmt.Errorf("%w: return_request_id is required", ErrInvalidArgument)
+	}
+	if in.WeightGrams <= 0 {
+		in.WeightGrams = 500
+	}
+
+	// Fast-path idempotency check by (order_id, "return").
+	if existing, err := s.repo.GetShipmentByOrderIDAndDirection(ctx, in.OrderID, store.DirectionReturn); err == nil && existing != nil {
+		return existing, true, nil
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, false, fmt.Errorf("check existing return shipment: %w", err)
+	}
+
+	provider, err := s.resolveCarrier(in.CarrierCode)
+	if err != nil {
+		return nil, false, err
+	}
+
+	in.FromAddress = s.enrichAddress(ctx, in.FromAddress)
+	in.ToAddress = s.enrichAddress(ctx, in.ToAddress)
+
+	res, err := provider.CreateShipment(ctx, carrier.ShipmentRequest{
+		OrderID:         in.OrderID,
+		ShopID:          in.ShopID,
+		Direction:       store.DirectionReturn,
+		ReturnRequestID: in.ReturnRequestID,
+		ServiceCode:     in.ServiceCode,
+		CODAmountVND:    0,
+		WeightGrams:     in.WeightGrams,
+		FromAddress:     in.FromAddress,
+		ToAddress:       in.ToAddress,
+		ItemsSummary:    in.ItemsSummary,
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("carrier create return shipment: %w", err)
+	}
+
+	now := time.Now().UTC()
+	sh := &store.Shipment{
+		ID:               uuid.NewString(),
+		OrderID:          in.OrderID,
+		ShopID:           in.ShopID,
+		CarrierCode:      res.CarrierCode,
+		ServiceCode:      res.ServiceCode,
+		TrackingCode:     res.TrackingCode,
+		LabelURL:         res.LabelURL,
+		Status:           carrier.StatusCreated,
+		FeeVND:           res.FeeVND,
+		CODAmountVND:     0,
+		WeightGrams:      in.WeightGrams,
+		FromProvinceCode: in.FromAddress.ProvinceCode,
+		FromWardCode:     in.FromAddress.WardCode,
+		ToProvinceCode:   in.ToAddress.ProvinceCode,
+		ToWardCode:       in.ToAddress.WardCode,
+		Direction:        store.DirectionReturn,
+		ReturnRequestID:  in.ReturnRequestID,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	initEv := &store.ShipmentEvent{
+		ID:          uuid.NewString(),
+		ShipmentID:  sh.ID,
+		Status:      carrier.StatusCreated,
+		RawStatus:   carrier.StatusCreated,
+		Description: "Vận đơn hoàn hàng đã được tạo",
+		OccurredAt:  now,
+	}
+
+	saved, alreadyExisted, err := s.repo.CreateShipment(ctx, sh, initEv)
+	if err != nil {
+		return nil, false, fmt.Errorf("persist return shipment: %w", err)
 	}
 	return saved, alreadyExisted, nil
 }
@@ -238,12 +340,20 @@ func (s *ShippingService) CancelShipment(ctx context.Context, orderID, reason st
 	return s.repo.CancelShipment(ctx, orderID, reason)
 }
 
-// GetShipment retrieves a shipment and its timeline events by order_id or tracking_code.
-func (s *ShippingService) GetShipment(ctx context.Context, orderID, trackingCode string) (*store.Shipment, []store.ShipmentEvent, error) {
+// GetShipment retrieves a shipment and its timeline events by order_id (defaulting to forward unless direction is provided) or tracking_code.
+func (s *ShippingService) GetShipment(ctx context.Context, orderID, trackingCode string, direction ...string) (*store.Shipment, []store.ShipmentEvent, error) {
 	orderID = strings.TrimSpace(orderID)
 	trackingCode = strings.TrimSpace(trackingCode)
 	if orderID == "" && trackingCode == "" {
 		return nil, nil, fmt.Errorf("%w: order_id or tracking_code is required", ErrInvalidArgument)
+	}
+
+	var dirFilter string
+	if len(direction) > 0 {
+		dirFilter = strings.ToLower(strings.TrimSpace(direction[0]))
+		if dirFilter != "" && dirFilter != store.DirectionForward && dirFilter != store.DirectionReturn {
+			return nil, nil, fmt.Errorf("%w: invalid direction %q", ErrInvalidArgument, dirFilter)
+		}
 	}
 
 	var (
@@ -251,9 +361,12 @@ func (s *ShippingService) GetShipment(ctx context.Context, orderID, trackingCode
 		err error
 	)
 	if orderID != "" {
-		sh, err = s.repo.GetShipmentByOrderID(ctx, orderID)
+		sh, err = s.repo.GetShipmentByOrderIDAndDirection(ctx, orderID, store.NormalizeDirection(dirFilter))
 	} else {
 		sh, err = s.repo.GetShipmentByTrackingCode(ctx, trackingCode)
+		if err == nil && sh != nil && dirFilter != "" && store.NormalizeDirection(sh.Direction) != dirFilter {
+			return nil, nil, store.ErrNotFound
+		}
 	}
 	if err != nil {
 		return nil, nil, err
@@ -317,15 +430,17 @@ func (s *ShippingService) HandleWebhook(ctx context.Context, in WebhookInput) (*
 		TraceID:        traceID,
 		BuildOutboxPayload: func(sh *store.Shipment) ([]byte, error) {
 			return json.Marshal(events.ShipmentUpdatedPayload{
-				ShipmentID:   sh.ID,
-				OrderID:      sh.OrderID,
-				ShopID:       sh.ShopID,
-				CarrierCode:  sh.CarrierCode,
-				TrackingCode: sh.TrackingCode,
-				Status:       internalStatus,
-				RawStatus:    strings.TrimSpace(in.RawStatus),
-				Description:  strings.TrimSpace(in.Description),
-				OccurredAt:   occurredAt.Format(time.RFC3339),
+				ShipmentID:      sh.ID,
+				OrderID:         sh.OrderID,
+				ShopID:          sh.ShopID,
+				CarrierCode:     sh.CarrierCode,
+				TrackingCode:    sh.TrackingCode,
+				Status:          internalStatus,
+				RawStatus:       strings.TrimSpace(in.RawStatus),
+				Description:     strings.TrimSpace(in.Description),
+				OccurredAt:      occurredAt.Format(time.RFC3339),
+				Direction:       store.NormalizeDirection(sh.Direction),
+				ReturnRequestID: sh.ReturnRequestID,
 			})
 		},
 	}
@@ -373,7 +488,7 @@ func (s *ShippingService) HandleOrderCancelled(ctx context.Context, eventID, ord
 	return err
 }
 
-// PollActiveShipments checks active non-terminal shipments for live (non-mock) carriers (UC-SHIP04).
+// PollActiveShipments checks active non-terminal shipments for live/sandbox or pollable carriers (UC-SHIP04).
 func (s *ShippingService) PollActiveShipments(ctx context.Context) error {
 	active, err := s.repo.ListActiveShipments(ctx, 100)
 	if err != nil {
@@ -381,7 +496,14 @@ func (s *ShippingService) PollActiveShipments(ctx context.Context) error {
 	}
 	for _, sh := range active {
 		provider, ok := s.aggregator.Get(sh.CarrierCode)
-		if !ok || provider.IsMock() {
+		if !ok {
+			continue
+		}
+		shouldPoll := !provider.IsMock()
+		if p, ok := provider.(interface{ CanPoll() bool }); ok {
+			shouldPoll = p.CanPoll()
+		}
+		if !shouldPoll {
 			continue
 		}
 		st, pollErr := provider.GetStatus(ctx, sh.TrackingCode)
@@ -396,15 +518,23 @@ func (s *ShippingService) PollActiveShipments(ctx context.Context) error {
 		if st == nil || !st.Changed || st.Status == "" || st.Status == sh.Status {
 			continue
 		}
-		eventID := fmt.Sprintf("poll:%s:%s:%d", sh.TrackingCode, st.Status, st.OccurredAt.UTC().Unix())
+		occurredAt := st.OccurredAt.UTC()
+		if occurredAt.IsZero() {
+			occurredAt = time.Now().UTC()
+		}
+		rawStatus := strings.TrimSpace(st.RawStatus)
+		if rawStatus == "" {
+			rawStatus = st.Status
+		}
+		eventID := fmt.Sprintf("poll:%s:%s:%d", sh.TrackingCode, st.Status, occurredAt.Unix())
 		if _, _, err := s.HandleWebhook(ctx, WebhookInput{
 			EventID:      eventID,
 			CarrierCode:  sh.CarrierCode,
 			TrackingCode: sh.TrackingCode,
 			OrderID:      sh.OrderID,
-			RawStatus:    st.RawStatus,
+			RawStatus:    rawStatus,
 			Description:  st.Description,
-			OccurredAt:   st.OccurredAt,
+			OccurredAt:   occurredAt,
 		}); err != nil {
 			s.logger.WarnContext(ctx, "apply polled shipment status failed",
 				slog.String("tracking_code", sh.TrackingCode),
@@ -413,6 +543,46 @@ func (s *ShippingService) PollActiveShipments(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *ShippingService) enrichAddress(ctx context.Context, addr carrier.Address) carrier.Address {
+	if w, err := s.repo.GetWard(ctx, addr.WardCode); err == nil && w != nil {
+		if addr.GHNDistrictID == 0 {
+			addr.GHNDistrictID = w.GHNDistrictID
+		}
+		if addr.GHNWardCode == "" {
+			addr.GHNWardCode = w.GHNWardCode
+		}
+		if addr.WardName == "" {
+			addr.WardName = w.Name
+		}
+		if addr.ProvinceCode == "" {
+			addr.ProvinceCode = w.ProvinceCode
+		}
+	}
+	if addr.WardCode != "" {
+		if fb := address.LookupLegacyFallback(addr.WardCode); fb.Found {
+			if addr.ProvinceCode == "" {
+				addr.ProvinceCode = fb.ProvinceCode
+			}
+			if addr.ProvinceName == "" {
+				addr.ProvinceName = fb.ProvinceName
+			}
+			if addr.WardName == "" {
+				addr.WardName = fb.WardName
+			}
+			if addr.LegacyProvince == "" {
+				addr.LegacyProvince = fb.LegacyProvince
+			}
+			if addr.LegacyDistrict == "" {
+				addr.LegacyDistrict = fb.LegacyDistrict
+			}
+		}
+	}
+	if addr.ProvinceName == "" && addr.ProvinceCode != "" {
+		addr.ProvinceName = address.ProvinceName(addr.ProvinceCode)
+	}
+	return addr
 }
 
 func (s *ShippingService) resolveCarrier(code string) (carrier.Carrier, error) {

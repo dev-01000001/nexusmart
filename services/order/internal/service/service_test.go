@@ -478,12 +478,14 @@ func (m *mockPaymentClient) ReleaseEscrow(_ context.Context, req *paymentv1.Rele
 }
 
 type mockShippingClient struct {
-	mu               sync.Mutex
-	quotes           []*shippingv1.CarrierQuote
-	createShipCalls  []*shippingv1.CreateShipmentRequest
-	cancelShipCalls  []*shippingv1.CancelShipmentRequest
-	calculateFeeReqs []*shippingv1.CalculateFeeRequest
-	calculateFeeCall int
+	mu                    sync.Mutex
+	quotes                []*shippingv1.CarrierQuote
+	createShipCalls       []*shippingv1.CreateShipmentRequest
+	createReturnShipCalls []*shippingv1.CreateReturnShipmentRequest
+	createReturnShipErr   error
+	cancelShipCalls       []*shippingv1.CancelShipmentRequest
+	calculateFeeReqs      []*shippingv1.CalculateFeeRequest
+	calculateFeeCall      int
 }
 
 func newMockShippingClient() *mockShippingClient {
@@ -518,6 +520,33 @@ func (m *mockShippingClient) CreateShipment(_ context.Context, req *shippingv1.C
 			LabelUrl:     "https://labels.sandbox/" + req.GetOrderId(),
 			Status:       shippingv1.ShipmentStatus_SHIPMENT_STATUS_CREATED,
 			CodAmountVnd: req.GetCodAmountVnd(),
+		},
+	}, nil
+}
+
+func (m *mockShippingClient) CreateReturnShipment(_ context.Context, req *shippingv1.CreateReturnShipmentRequest, _ ...grpc.CallOption) (*shippingv1.CreateReturnShipmentResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.createReturnShipCalls = append(m.createReturnShipCalls, req)
+	if m.createReturnShipErr != nil {
+		return nil, m.createReturnShipErr
+	}
+	suffix := req.GetReturnRequestId()
+	if len(suffix) > 8 {
+		suffix = suffix[:8]
+	}
+	return &shippingv1.CreateReturnShipmentResponse{
+		Shipment: &shippingv1.Shipment{
+			ShipmentId:      "rshp-" + req.GetReturnRequestId(),
+			OrderId:         req.GetOrderId(),
+			ShopId:          req.GetShopId(),
+			CarrierCode:     req.GetCarrierCode(),
+			ServiceCode:     req.GetServiceCode(),
+			TrackingCode:    "RET-" + suffix,
+			LabelUrl:        "https://labels.sandbox/return/" + req.GetReturnRequestId(),
+			Status:          shippingv1.ShipmentStatus_SHIPMENT_STATUS_CREATED,
+			Direction:       "return",
+			ReturnRequestId: req.GetReturnRequestId(),
 		},
 	}, nil
 }

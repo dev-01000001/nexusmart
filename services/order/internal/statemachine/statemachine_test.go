@@ -19,6 +19,10 @@ func TestStateMachine_ExhaustiveTransitions(t *testing.T) {
 		orderv1.OrderStatus_ORDER_STATUS_CANCELLED,
 		orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED,
 		orderv1.OrderStatus_ORDER_STATUS_RETURNED,
+		orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED,
+		orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED,
+		orderv1.OrderStatus_ORDER_STATUS_RETURNING,
+		orderv1.OrderStatus_ORDER_STATUS_REFUNDED,
 	}
 
 	type edge struct {
@@ -38,8 +42,24 @@ func TestStateMachine_ExhaustiveTransitions(t *testing.T) {
 		{orderv1.OrderStatus_ORDER_STATUS_SHIPPING, orderv1.OrderStatus_ORDER_STATUS_RETURNED}:          true,
 		{orderv1.OrderStatus_ORDER_STATUS_DELIVERED, orderv1.OrderStatus_ORDER_STATUS_COMPLETED}:        true,
 		{orderv1.OrderStatus_ORDER_STATUS_DELIVERED, orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED}: true,
-		{orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED, orderv1.OrderStatus_ORDER_STATUS_RETURNED}:  true,
-		{orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED, orderv1.OrderStatus_ORDER_STATUS_COMPLETED}: true,
+
+		// Extended return & refund state machine edges
+		{orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED, orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED}: true,
+		{orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED, orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED}: true,
+		{orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED, orderv1.OrderStatus_ORDER_STATUS_RETURNED}:        true,
+		{orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED, orderv1.OrderStatus_ORDER_STATUS_COMPLETED}:       true,
+
+		{orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED, orderv1.OrderStatus_ORDER_STATUS_RETURNING}: true,
+		{orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED, orderv1.OrderStatus_ORDER_STATUS_REFUNDED}:  true,
+		{orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED, orderv1.OrderStatus_ORDER_STATUS_RETURNED}:  true,
+
+		{orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED, orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED}: true,
+		{orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED, orderv1.OrderStatus_ORDER_STATUS_COMPLETED}:       true,
+
+		{orderv1.OrderStatus_ORDER_STATUS_RETURNING, orderv1.OrderStatus_ORDER_STATUS_RETURNED}: true,
+		{orderv1.OrderStatus_ORDER_STATUS_RETURNING, orderv1.OrderStatus_ORDER_STATUS_REFUNDED}: true,
+
+		{orderv1.OrderStatus_ORDER_STATUS_RETURNED, orderv1.OrderStatus_ORDER_STATUS_REFUNDED}: true,
 	}
 
 	for _, from := range allStatuses {
@@ -82,6 +102,10 @@ func TestCanCancel(t *testing.T) {
 		orderv1.OrderStatus_ORDER_STATUS_CANCELLED,
 		orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED,
 		orderv1.OrderStatus_ORDER_STATUS_RETURNED,
+		orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED,
+		orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED,
+		orderv1.OrderStatus_ORDER_STATUS_RETURNING,
+		orderv1.OrderStatus_ORDER_STATUS_REFUNDED,
 	}
 
 	for _, s := range all {
@@ -102,6 +126,10 @@ func TestStatusAndPaymentMethodRoundTrip(t *testing.T) {
 		orderv1.OrderStatus_ORDER_STATUS_CANCELLED,
 		orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED,
 		orderv1.OrderStatus_ORDER_STATUS_RETURNED,
+		orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED,
+		orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED,
+		orderv1.OrderStatus_ORDER_STATUS_RETURNING,
+		orderv1.OrderStatus_ORDER_STATUS_REFUNDED,
 	}
 	for _, s := range statuses {
 		str := StatusToString(s)
@@ -112,11 +140,98 @@ func TestStatusAndPaymentMethodRoundTrip(t *testing.T) {
 			t.Errorf("prefixed status %q -> %v, want %v", str, back, s)
 		}
 	}
-
-	if got := PaymentMethodToString(orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD); got != "COD" {
-		t.Fatalf("got %q, want COD", got)
+	if StatusToString(orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED) != "UNSPECIFIED" {
+		t.Fatalf("expected UNSPECIFIED")
 	}
-	if got := StringToPaymentMethod("vietqr"); got != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR {
-		t.Fatalf("got %v, want VIETQR", got)
+	if StringToStatus("UNKNOWN") != orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED {
+		t.Fatalf("expected ORDER_STATUS_UNSPECIFIED")
+	}
+
+	methods := []struct {
+		m      orderv1.OrderPaymentMethod
+		str    string
+		online bool
+	}{
+		{orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD, "COD", false},
+		{orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR, "VIETQR", true},
+		{orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_ZALOPAY, "ZALOPAY", true},
+	}
+	for _, tc := range methods {
+		if got := PaymentMethodToString(tc.m); got != tc.str {
+			t.Fatalf("PaymentMethodToString(%v) = %q, want %q", tc.m, got, tc.str)
+		}
+		if got := StringToPaymentMethod(tc.str); got != tc.m {
+			t.Fatalf("StringToPaymentMethod(%q) = %v, want %v", tc.str, got, tc.m)
+		}
+		if got := StringToPaymentMethod("order_payment_method_" + tc.str); got != tc.m {
+			t.Fatalf("prefixed StringToPaymentMethod(%q) = %v, want %v", tc.str, got, tc.m)
+		}
+		if got := IsOnlinePaymentMethod(tc.m); got != tc.online {
+			t.Fatalf("IsOnlinePaymentMethod(%v) = %v, want %v", tc.m, got, tc.online)
+		}
+		if got := IsOnlinePaymentMethodString(tc.str); got != tc.online {
+			t.Fatalf("IsOnlinePaymentMethodString(%q) = %v, want %v", tc.str, got, tc.online)
+		}
+	}
+	if PaymentMethodToString(orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED) != "UNSPECIFIED" {
+		t.Fatalf("expected UNSPECIFIED for unknown payment method")
+	}
+	if StringToPaymentMethod("UNKNOWN") != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED {
+		t.Fatalf("expected UNSPECIFIED for unknown payment string")
+	}
+
+	rrStatuses := []orderv1.ReturnRequestStatus{
+		orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_PENDING,
+		orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_APPROVED,
+		orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_REJECTED,
+		orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_RETURNING,
+		orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_RETURNED,
+		orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_REFUNDED,
+		orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_ESCALATED,
+	}
+	for _, s := range rrStatuses {
+		str := ReturnRequestStatusToString(s)
+		if back := StringToReturnRequestStatus(str); back != s {
+			t.Errorf("round-trip return status %v -> %q -> %v", s, str, back)
+		}
+		if back := StringToReturnRequestStatus("RETURN_REQUEST_STATUS_" + str); back != s {
+			t.Errorf("prefixed return status %q -> %v, want %v", str, back, s)
+		}
+	}
+	if ReturnRequestStatusToString(orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_UNSPECIFIED) != "UNSPECIFIED" ||
+		StringToReturnRequestStatus("BAD") != orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_UNSPECIFIED {
+		t.Fatalf("unexpected unspecified return status mapping")
+	}
+
+	cpStatuses := []orderv1.ComplaintStatus{
+		orderv1.ComplaintStatus_COMPLAINT_STATUS_OPEN,
+		orderv1.ComplaintStatus_COMPLAINT_STATUS_RESOLVED,
+		orderv1.ComplaintStatus_COMPLAINT_STATUS_DISMISSED,
+	}
+	for _, s := range cpStatuses {
+		str := ComplaintStatusToString(s)
+		if back := StringToComplaintStatus(str); back != s {
+			t.Errorf("round-trip complaint status %v -> %q -> %v", s, str, back)
+		}
+	}
+	if ComplaintStatusToString(orderv1.ComplaintStatus_COMPLAINT_STATUS_UNSPECIFIED) != "UNSPECIFIED" ||
+		StringToComplaintStatus("BAD") != orderv1.ComplaintStatus_COMPLAINT_STATUS_UNSPECIFIED {
+		t.Fatalf("unexpected unspecified complaint status mapping")
+	}
+
+	cpResolutions := []orderv1.ComplaintResolution{
+		orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_REFUND,
+		orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_REPLACE,
+		orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_DISMISS,
+	}
+	for _, r := range cpResolutions {
+		str := ComplaintResolutionToString(r)
+		if back := StringToComplaintResolution(str); back != r {
+			t.Errorf("round-trip complaint resolution %v -> %q -> %v", r, str, back)
+		}
+	}
+	if ComplaintResolutionToString(orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_UNSPECIFIED) != "" ||
+		StringToComplaintResolution("BAD") != orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_UNSPECIFIED {
+		t.Fatalf("unexpected unspecified complaint resolution mapping")
 	}
 }

@@ -11,3 +11,4 @@ pub mod telemetry;
 pub mod vietqr;
 pub mod webhook_security;
 pub mod workers;
+pub mod zalopay;

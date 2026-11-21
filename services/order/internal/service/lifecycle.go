@@ -199,7 +199,7 @@ func (s *OrderService) CancelOrder(ctx context.Context, req *orderv1.CancelOrder
 		reason = "Cancelled by " + fallbackStr(caller.Role, "user")
 	}
 
-	wasPaid := statemachine.StringToPaymentMethod(agg.Order.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+	wasPaid := statemachine.IsOnlinePaymentMethodString(agg.Order.PaymentMethod) &&
 		strings.EqualFold(agg.Order.PaymentStatus, "SUCCEEDED")
 
 	traceID, traceparent := traceMetaFromContext(ctx)
@@ -212,7 +212,7 @@ func (s *OrderService) CancelOrder(ctx context.Context, req *orderv1.CancelOrder
 		Note:            reason,
 		CancelGroupPend: true,
 		BuildOutboxFn: func(ord db.Order) []db.InsertOutboxEventParams {
-			ordPaid := statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+			ordPaid := statemachine.IsOnlinePaymentMethodString(ord.PaymentMethod) &&
 				strings.EqualFold(ord.PaymentStatus, "SUCCEEDED")
 			payload, _ := json.Marshal(events.OrderCancelledPayload{
 				OrderID:          ord.ID,
@@ -678,64 +678,6 @@ func (s *OrderService) BuyerConfirmReceived(ctx context.Context, req *orderv1.Bu
 	s.notifyOutbox()
 	return &orderv1.BuyerConfirmReceivedResponse{
 		Order: aggregateToProto(*updatedAgg),
-	}, nil
-}
-
-// RequestReturn transitions DELIVERED -> RETURN_REQUESTED and persists a return_requests record.
-func (s *OrderService) RequestReturn(ctx context.Context, req *orderv1.RequestReturnRequest) (*orderv1.RequestReturnResponse, error) {
-	caller, err := requireAuthenticatedCaller(ctx)
-	if err != nil {
-		return nil, err
-	}
-	orderID := strings.TrimSpace(req.GetOrderId())
-	if orderID == "" {
-		return nil, status.Error(codes.InvalidArgument, "order_id is required")
-	}
-	reason := strings.TrimSpace(req.GetReason())
-	if reason == "" {
-		return nil, status.Error(codes.InvalidArgument, "return reason is required")
-	}
-
-	agg, err := s.store.GetOrderWithDetails(ctx, orderID)
-	if err != nil {
-		return nil, mapStoreError(err)
-	}
-
-	if !canActAsBuyer(caller, agg.Order, req.GetBuyerId()) {
-		return nil, status.Error(codes.PermissionDenied, "only the buyer who owns this order can request a return")
-	}
-
-	if agg.Order.DeliveredAt != nil && s.nowFn().Sub(*agg.Order.DeliveredAt) > returnWindowDuration {
-		return nil, status.Error(codes.FailedPrecondition, "return request window (7 days) has expired")
-	}
-
-	evidence := req.GetEvidenceUrls()
-	if evidence == nil {
-		evidence = []string{}
-	}
-	evidenceJSON, err := json.Marshal(evidence)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "marshal evidence_urls: %v", err)
-	}
-
-	returnID := uuid.NewString()
-	updatedAgg, _, err := s.store.TransitionOrderReturnRequested(ctx, store.ReturnRequestParams{
-		OrderID:          agg.Order.ID,
-		BuyerID:          agg.Order.BuyerID,
-		ReturnRequestID:  returnID,
-		Reason:           reason,
-		EvidenceURLsJSON: evidenceJSON,
-		ActorID:          fallbackStr(caller.UserID, agg.Order.BuyerID),
-		ActorRole:        fallbackStr(caller.Role, "buyer"),
-		Note:             "Return requested: " + reason,
-	})
-	if err != nil {
-		return nil, mapStoreError(err)
-	}
-
-	return &orderv1.RequestReturnResponse{
-		Order:           aggregateToProto(*updatedAgg),
-		ReturnRequestId: returnID,
 	}, nil
 }
 

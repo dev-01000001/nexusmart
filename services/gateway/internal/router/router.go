@@ -115,6 +115,7 @@ func New(deps Dependencies) http.Handler {
 			main.Post("/webhooks/payment", deps.PaymentWebhookProxy.ServeHTTP)
 			main.Post("/webhooks/vietqr", deps.PaymentWebhookProxy.ServeHTTP)
 		}
+		h.mountOrderDepthWebhooks(main, deps)
 		if deps.ShippingWebhookProxy != nil {
 			main.Post("/webhooks/shipping/{carrier}", deps.ShippingWebhookProxy.ServeHTTP)
 		}
@@ -198,6 +199,7 @@ func New(deps Dependencies) http.Handler {
 				authed.Post("/orders/{id}/cancel", h.handleCancelOrder)
 				authed.Post("/orders/{id}/confirm-received", h.handleConfirmReceived)
 				authed.Post("/orders/{id}/return", h.handleRequestReturn)
+				h.mountOrderDepthAuthedRoutes(authed)
 
 				// Section 4.6 Payments (Buyer / Admin)
 				authed.Get("/payments/{id}", h.handleGetPayment)
@@ -253,6 +255,7 @@ func New(deps Dependencies) http.Handler {
 
 					// Section 4.6 Seller Balance
 					seller.Get("/balance", h.handleSellerBalance)
+					h.mountOrderDepthSellerRoutes(seller)
 				})
 
 				// --- Admin routes (`admin`, `super_admin`) ---
@@ -293,6 +296,7 @@ func New(deps Dependencies) http.Handler {
 					admin.Get("/ledger/summary", h.handleAdminLedgerSummary)
 					admin.Post("/payments/{id}/refund", h.handleAdminRefundPayment)
 					admin.Post("/payments/reconcile", h.handleAdminReconcilePayments)
+					h.mountOrderDepthAdminRoutes(admin)
 				})
 			})
 		})

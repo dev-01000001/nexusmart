@@ -6,14 +6,22 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nexusmart/core/pkg/common/logger"
 	"github.com/nexusmart/core/pkg/common/telemetry"
 	"github.com/nexusmart/core/services/notification/internal/service"
 	"github.com/nexusmart/core/services/notification/internal/store"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+var rawOTPFieldPattern = regexp.MustCompile(`(?i)("otp"\s*:\s*)(?:"[^"]*"|\d+)`)
 
 // EventProcessor processes a decoded canonical event.
 type EventProcessor interface {
@@ -27,7 +35,7 @@ type DeadLetterStore interface {
 
 // DLQPublisher publishes poison messages to NEXUSMART_DLQ (subject dlq.<original_subject>).
 type DLQPublisher interface {
-	PublishDLQ(subject string, data []byte) error
+	PublishDLQ(ctx context.Context, subject string, data []byte) error
 }
 
 // Message abstracts *nats.Msg for clean unit testing of retry + DLQ routing.
@@ -103,10 +111,22 @@ type jsDLQPublisher struct {
 	js nats.JetStreamContext
 }
 
-func (p jsDLQPublisher) PublishDLQ(subject string, data []byte) error {
+func newDLQMessage(ctx context.Context, subject string, data []byte) *nats.Msg {
 	msg := nats.NewMsg(subject)
 	msg.Data = data
-	_, err := p.js.PublishMsg(msg)
+	if msg.Header == nil {
+		msg.Header = nats.Header{}
+	}
+	carrier := map[string]string{}
+	telemetry.InjectTraceHeaders(ctx, carrier)
+	for k, v := range carrier {
+		msg.Header.Set(k, v)
+	}
+	return msg
+}
+
+func (p jsDLQPublisher) PublishDLQ(ctx context.Context, subject string, data []byte) error {
+	_, err := p.js.PublishMsg(newDLQMessage(ctx, subject, data))
 	return err
 }
 
@@ -207,6 +227,15 @@ func (c *Consumer) HandleMessage(baseCtx context.Context, msg Message) {
 		ctx = telemetry.ExtractTraceHeaders(ctx, carrier)
 	}
 
+	ctx, span := otel.Tracer("notification").Start(ctx, "nats.consume "+msg.Subject(),
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "nats"),
+			attribute.String("messaging.destination.name", msg.Subject()),
+		),
+	)
+	defer span.End()
+
 	delivered := msg.NumDelivered()
 	if delivered == 0 {
 		delivered = 1
@@ -217,7 +246,9 @@ func (c *Consumer) HandleMessage(baseCtx context.Context, msg Message) {
 		errMsg := "malformed event envelope"
 		if err != nil {
 			errMsg = fmt.Sprintf("malformed event envelope: %v", err)
+			span.RecordError(err)
 		}
+		span.SetStatus(otelcodes.Error, errMsg)
 		c.routeToDLQ(ctx, env.EventID, msg.Subject(), msg.Data(), errMsg, int(delivered))
 		_ = msg.Ack()
 		return
@@ -225,6 +256,8 @@ func (c *Consumer) HandleMessage(baseCtx context.Context, msg Message) {
 
 	duplicate, err := c.processor.ProcessEvent(ctx, msg.Subject(), env)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, err.Error())
 		c.logger.ErrorContext(ctx, "notification event processing failed",
 			slog.String("subject", msg.Subject()),
 			slog.String("event_id", env.EventID),
@@ -250,15 +283,18 @@ func (c *Consumer) HandleMessage(baseCtx context.Context, msg Message) {
 }
 
 func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw []byte, errMsg string, attempts int) {
+	safeRaw := sanitizeDLQPayload(raw)
+	safeErrMsg := logger.ScrubSecrets(errMsg)
+
 	c.logger.WarnContext(ctx, "routing poison message to DLQ",
 		slog.String("event_id", eventID),
 		slog.String("subject", subject),
 		slog.Int("attempts", attempts),
-		slog.String("error", errMsg),
+		slog.String("error", safeErrMsg),
 	)
 
 	if c.dlqStore != nil {
-		if err := c.dlqStore.InsertDeadLetter(ctx, eventID, subject, raw, errMsg, attempts); err != nil {
+		if err := c.dlqStore.InsertDeadLetter(ctx, eventID, subject, safeRaw, safeErrMsg, attempts); err != nil {
 			c.logger.ErrorContext(ctx, "failed to save dead_letter_events record",
 				slog.String("event_id", eventID),
 				slog.String("error", err.Error()),
@@ -270,18 +306,70 @@ func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw 
 		dlqPayload, _ := json.Marshal(map[string]any{
 			"event_id":         eventID,
 			"original_subject": subject,
-			"error":            errMsg,
+			"error":            safeErrMsg,
 			"attempts":         attempts,
 			"failed_at":        time.Now().UTC().Format(time.RFC3339),
-			"original_payload": string(raw),
+			"original_payload": string(safeRaw),
 		})
 		dlqSubject := "dlq." + subject
-		if err := c.dlqPub.PublishDLQ(dlqSubject, dlqPayload); err != nil {
+		if err := c.dlqPub.PublishDLQ(ctx, dlqSubject, dlqPayload); err != nil {
 			c.logger.ErrorContext(ctx, "failed to publish to NEXUSMART_DLQ",
 				slog.String("dlq_subject", dlqSubject),
 				slog.String("error", err.Error()),
 			)
 		}
+	}
+}
+
+func sanitizeDLQPayload(raw []byte) []byte {
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err == nil {
+		sanitized := sanitizeJSONValue(decoded)
+		if out, marshalErr := json.Marshal(sanitized); marshalErr == nil {
+			return out
+		}
+	}
+	scrubbed := rawOTPFieldPattern.ReplaceAllString(string(raw), `${1}"[REDACTED]"`)
+	return []byte(logger.ScrubSecrets(scrubbed))
+}
+
+func sanitizeJSONValue(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(val))
+		for k, item := range val {
+			switch child := item.(type) {
+			case map[string]any, []any:
+				out[k] = sanitizeJSONValue(child)
+			case string:
+				out[k] = logger.RedactValue(k, child)
+			case nil:
+				out[k] = nil
+			default:
+				lower := strings.ToLower(k)
+				switch {
+				case strings.Contains(lower, "phone"):
+					out[k] = logger.MaskPhone(fmt.Sprint(child))
+				case strings.Contains(lower, "email"):
+					out[k] = logger.MaskEmail(fmt.Sprint(child))
+				case logger.RedactValue(k, "probe") == "[REDACTED]":
+					out[k] = "[REDACTED]"
+				default:
+					out[k] = child
+				}
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(val))
+		for i, item := range val {
+			out[i] = sanitizeJSONValue(item)
+		}
+		return out
+	case string:
+		return logger.ScrubSecrets(val)
+	default:
+		return v
 	}
 }
 

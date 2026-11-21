@@ -161,6 +161,58 @@ func (s *Server) CreateShipment(ctx context.Context, req *shippingv1.CreateShipm
 	}, nil
 }
 
+func (s *Server) CreateReturnShipment(ctx context.Context, req *shippingv1.CreateReturnShipmentRequest) (*shippingv1.CreateReturnShipmentResponse, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok || strings.TrimSpace(claims.UserID()) == "" {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if !auth.HasRole(claims, "seller", "admin", "super_admin") {
+		return nil, status.Error(codes.PermissionDenied, "only seller or admin may create return shipments")
+	}
+	if auth.HasRole(claims, "seller") {
+		if claims.ShopID == "" || req.GetShopId() == "" || claims.ShopID != req.GetShopId() {
+			return nil, status.Error(codes.PermissionDenied, "seller cannot create return shipment for another shop")
+		}
+	}
+
+	in := service.CreateReturnShipmentInput{
+		OrderID:         req.GetOrderId(),
+		ReturnRequestID: req.GetReturnRequestId(),
+		ShopID:          req.GetShopId(),
+		CarrierCode:     req.GetCarrierCode(),
+		ServiceCode:     req.GetServiceCode(),
+		WeightGrams:     req.GetWeightGrams(),
+		ItemsSummary:    req.GetItemsSummary(),
+	}
+	if from := req.GetFromAddress(); from != nil {
+		in.FromAddress = carrier.Address{
+			Name:          from.GetName(),
+			Phone:         from.GetPhone(),
+			ProvinceCode:  from.GetProvinceCode(),
+			WardCode:      from.GetWardCode(),
+			StreetAddress: from.GetStreetAddress(),
+		}
+	}
+	if to := req.GetToAddress(); to != nil {
+		in.ToAddress = carrier.Address{
+			Name:          to.GetName(),
+			Phone:         to.GetPhone(),
+			ProvinceCode:  to.GetProvinceCode(),
+			WardCode:      to.GetWardCode(),
+			StreetAddress: to.GetStreetAddress(),
+		}
+	}
+
+	sh, existed, err := s.svc.CreateReturnShipment(ctx, in)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &shippingv1.CreateReturnShipmentResponse{
+		Shipment:       toProtoShipment(sh),
+		AlreadyExisted: existed,
+	}, nil
+}
+
 func (s *Server) CancelShipment(ctx context.Context, req *shippingv1.CancelShipmentRequest) (*shippingv1.CancelShipmentResponse, error) {
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok || strings.TrimSpace(claims.UserID()) == "" {
@@ -195,7 +247,7 @@ func (s *Server) GetShipment(ctx context.Context, req *shippingv1.GetShipmentReq
 	if !ok || strings.TrimSpace(claims.UserID()) == "" {
 		return nil, status.Error(codes.Unauthenticated, "authentication required")
 	}
-	sh, evList, err := s.svc.GetShipment(ctx, req.GetOrderId(), req.GetTrackingCode())
+	sh, evList, err := s.svc.GetShipment(ctx, req.GetOrderId(), req.GetTrackingCode(), req.GetDirection())
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -224,18 +276,20 @@ func (s *Server) GetShipment(ctx context.Context, req *shippingv1.GetShipmentReq
 
 func toProtoShipment(sh *store.Shipment) *shippingv1.Shipment {
 	return &shippingv1.Shipment{
-		ShipmentId:   sh.ID,
-		OrderId:      sh.OrderID,
-		ShopId:       sh.ShopID,
-		CarrierCode:  sh.CarrierCode,
-		ServiceCode:  sh.ServiceCode,
-		TrackingCode: sh.TrackingCode,
-		LabelUrl:     sh.LabelURL,
-		Status:       toProtoStatus(sh.Status),
-		FeeVnd:       sh.FeeVND,
-		CodAmountVnd: sh.CODAmountVND,
-		CreatedAt:    timestamppb.New(sh.CreatedAt),
-		UpdatedAt:    timestamppb.New(sh.UpdatedAt),
+		ShipmentId:      sh.ID,
+		OrderId:         sh.OrderID,
+		ShopId:          sh.ShopID,
+		CarrierCode:     sh.CarrierCode,
+		ServiceCode:     sh.ServiceCode,
+		TrackingCode:    sh.TrackingCode,
+		LabelUrl:        sh.LabelURL,
+		Status:          toProtoStatus(sh.Status),
+		FeeVnd:          sh.FeeVND,
+		CodAmountVnd:    sh.CODAmountVND,
+		CreatedAt:       timestamppb.New(sh.CreatedAt),
+		UpdatedAt:       timestamppb.New(sh.UpdatedAt),
+		Direction:       store.NormalizeDirection(sh.Direction),
+		ReturnRequestId: sh.ReturnRequestID,
 	}
 }
 

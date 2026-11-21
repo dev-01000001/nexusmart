@@ -494,6 +494,8 @@ impl VietQrAdapter {
                             Ok(val) => {
                                 self.breaker.record_success();
                                 info!(
+                                    service = "payment",
+                                    trace_id = %crate::telemetry::current_trace_id(),
                                     op = op_name,
                                     attempt = attempt + 1,
                                     "external provider call succeeded"
@@ -522,6 +524,8 @@ impl VietQrAdapter {
 
             self.breaker.record_failure();
             warn!(
+                service = "payment",
+                trace_id = %crate::telemetry::current_trace_id(),
                 op = op_name,
                 attempt = attempt + 1,
                 max_attempts = total_attempts,
@@ -614,5 +618,141 @@ mod tests {
             now
         )
         .is_ok());
+
+        // Mock transaction recording & status query
+        assert!(adapter
+            .check_payment_status(&qr1.provider_order_code)
+            .await
+            .unwrap()
+            .is_none());
+        let ptx = ProviderTransaction {
+            provider_tx_id: "MOCK-TX-001".to_string(),
+            provider_order_code: qr1.provider_order_code.clone(),
+            amount_vnd: 250_000,
+            status: "succeeded".to_string(),
+            occurred_at: now,
+        };
+        adapter.record_mock_transaction(ptx.clone());
+        adapter.record_mock_transaction(ptx);
+        assert_eq!(adapter.list_provider_transactions().await.unwrap().len(), 1);
+        assert!(adapter
+            .check_payment_status(&qr1.provider_order_code)
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_payos_and_sepay_http_adapters_with_mock_server() {
+        use axum::routing::{get, post};
+        use axum::{Json, Router};
+        use tokio::net::TcpListener;
+
+        let app = Router::new()
+            .route(
+                "/v2/payment-requests",
+                post(|| async {
+                    Json(serde_json::json!({
+                        "code": "00",
+                        "data": {
+                            "qrCode": "000201010212PAYOSQR",
+                            "checkoutUrl": "https://pay.payos.vn/web/abc123"
+                        }
+                    }))
+                }),
+            )
+            .route(
+                "/v2/payment-requests/{id}",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "code": "00",
+                        "data": {
+                            "id": "payos-tx-888",
+                            "status": "PAID",
+                            "amountPaid": 180_000
+                        }
+                    }))
+                }),
+            )
+            .route(
+                "/userapi/transactions/list",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "transactions": [
+                            {
+                                "id": "sepay-tx-1",
+                                "amount_in": 180_000,
+                                "transaction_content": "CK THANH TOAN NM1A2B3C4D5E NEXUSMART"
+                            },
+                            {
+                                "id": "sepay-tx-zero",
+                                "amount_in": 0,
+                                "transaction_content": "OUTGOING"
+                            }
+                        ]
+                    }))
+                }),
+            );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut payos_cfg = Config::from_env();
+        payos_cfg.vietqr_mode = VietQrMode::PayOs;
+        payos_cfg.payos_base_url = format!("http://{addr}");
+        payos_cfg.payos_client_id = "cid".into();
+        payos_cfg.payos_api_key = "akey".into();
+        payos_cfg.payos_checksum_key = "ckey".into();
+        payos_cfg.external_max_retries = 1;
+        let payos = VietQrAdapter::from_config(&payos_cfg);
+
+        let pid = Uuid::new_v4();
+        let exp = Utc::now() + chrono::Duration::minutes(15);
+        let qr = payos
+            .create_qr_intent(pid, "ord-payos", 180_000, exp)
+            .await
+            .unwrap();
+        assert_eq!(qr.provider, "payos");
+        assert_eq!(qr.qr_code, "000201010212PAYOSQR");
+        assert_eq!(qr.qr_url, "https://pay.payos.vn/web/abc123");
+
+        let paid = payos
+            .check_payment_status(&qr.provider_order_code)
+            .await
+            .unwrap()
+            .expect("payos PAID");
+        assert_eq!(paid.provider_tx_id, "payos-tx-888");
+        assert_eq!(paid.amount_vnd, 180_000);
+        assert!(payos.list_provider_transactions().await.unwrap().is_empty());
+
+        let mut sepay_cfg = Config::from_env();
+        sepay_cfg.vietqr_mode = VietQrMode::Sepay;
+        sepay_cfg.sepay_base_url = format!("http://{addr}");
+        sepay_cfg.sepay_api_token = "tok".into();
+        let sepay = VietQrAdapter::from_config(&sepay_cfg);
+
+        let sqr = sepay
+            .create_qr_intent(pid, "ord-sepay", 180_000, exp)
+            .await
+            .unwrap();
+        assert_eq!(sqr.provider, "sepay");
+        assert!(sqr.qr_url.contains("qr.sepay.vn/img"));
+
+        let txs = sepay.list_provider_transactions().await.unwrap();
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0].provider_tx_id, "sepay-tx-1");
+        assert_eq!(txs[0].provider_order_code, "NM1A2B3C4D5E");
+
+        let found = sepay
+            .check_payment_status("NM1A2B3C4D5E")
+            .await
+            .unwrap()
+            .expect("sepay found");
+        assert_eq!(found.amount_vnd, 180_000);
+
+        handle.abort();
     }
 }

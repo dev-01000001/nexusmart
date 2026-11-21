@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,6 +29,16 @@ var (
 	ErrInsufficientCoins          = errors.New("insufficient coin balance")
 	ErrReservationAlreadyReleased = errors.New("promotion reservation already released")
 )
+
+// OrderRefundedInput holds the fields needed to atomically process an `order.refunded` event.
+type OrderRefundedInput struct {
+	EventID              string
+	Subject              string
+	OrderID              string
+	BuyerID              string
+	CoinsDiscountVND     int64
+	AllGroupOrdersClosed bool
+}
 
 // Store defines the persistence contract for the promotion service.
 type Store interface {
@@ -57,7 +68,9 @@ type Store interface {
 	// Coins & events
 	GetCoinBalance(ctx context.Context, userID string, recentLimit int) (int64, []domain.CoinTransaction, error)
 	CreditCoins(ctx context.Context, userID string, amount int64, reason, referenceID string) (balance int64, alreadyCredited bool, err error)
+	IsEventProcessed(ctx context.Context, eventID string) (bool, error)
 	ProcessOrderCompletedEvent(ctx context.Context, eventID, subject, orderID, buyerID string, coinsReward int64) (alreadyProcessed bool, err error)
+	ProcessOrderRefundedEvent(ctx context.Context, in OrderRefundedInput) (alreadyProcessed bool, err error)
 
 	// Reservations
 	GetReservation(ctx context.Context, orderID string) (*domain.PromotionReservation, error)
@@ -774,6 +787,14 @@ func (s *PostgresStore) CreditCoins(ctx context.Context, userID string, amount i
 	return bal, already, nil
 }
 
+func (s *PostgresStore) IsEventProcessed(ctx context.Context, eventID string) (bool, error) {
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM processed_events WHERE event_id = $1)`, eventID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check processed event: %w", err)
+	}
+	return exists, nil
+}
+
 func (s *PostgresStore) ProcessOrderCompletedEvent(ctx context.Context, eventID, subject, orderID, buyerID string, coinsReward int64) (bool, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -804,6 +825,97 @@ func (s *PostgresStore) ProcessOrderCompletedEvent(ctx context.Context, eventID,
 
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("commit order completed tx: %w", err)
+	}
+	return false, nil
+}
+
+func (s *PostgresStore) ProcessOrderRefundedEvent(ctx context.Context, in OrderRefundedInput) (bool, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, fmt.Errorf("begin order refunded tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	subject := strings.TrimSpace(in.Subject)
+	if subject == "" {
+		subject = "order.refunded"
+	}
+
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO processed_events (event_id, subject) VALUES ($1, $2) ON CONFLICT (event_id) DO NOTHING`,
+		in.EventID, subject,
+	)
+	if err != nil {
+		return false, fmt.Errorf("insert processed event: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return true, nil
+	}
+
+	orderID := strings.TrimSpace(in.OrderID)
+	buyerID := strings.TrimSpace(in.BuyerID)
+
+	// Restore proportional coins for partial checkout-group refunds (when full group release is not triggered).
+	if !in.AllGroupOrdersClosed && in.CoinsDiscountVND > 0 && buyerID != "" {
+		restoreRef := "order_refund_coins:" + orderID
+		if orderID == "" {
+			restoreRef = "order_refund_coins:" + in.EventID
+		}
+		if _, _, err := creditCoinsInTx(ctx, tx, buyerID, in.CoinsDiscountVND, "order_refund_coins_restore", restoreRef); err != nil {
+			return false, fmt.Errorf("restore proportional refund coins: %w", err)
+		}
+	}
+
+	// Claw back any `order_completed_reward` coins previously credited for this order_id,
+	// capped at the user's current balance so balance never goes negative and balance == SUM(delta).
+	if orderID != "" {
+		var rewardUserID string
+		var rewardDelta int64
+		err = tx.QueryRow(ctx, `
+			SELECT user_id, delta
+			FROM coin_transactions
+			WHERE reference_id = $1
+			  AND reason = 'order_completed_reward'
+			  AND delta > 0
+			LIMIT 1
+		`, orderID).Scan(&rewardUserID, &rewardDelta)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return false, fmt.Errorf("lookup order reward coins: %w", err)
+		}
+		if err == nil && rewardDelta > 0 && rewardUserID != "" {
+			var curBalance int64
+			if err := tx.QueryRow(ctx, `SELECT balance FROM coin_accounts WHERE user_id = $1 FOR UPDATE`, rewardUserID).Scan(&curBalance); err != nil {
+				return false, fmt.Errorf("lock coin account for clawback: %w", err)
+			}
+			clawback := rewardDelta
+			if clawback > curBalance {
+				clawback = curBalance
+			}
+			if clawback > 0 {
+				clawbackRef := "order_refund_reward_clawback:" + orderID
+				cbTag, err := tx.Exec(ctx, `
+					INSERT INTO coin_transactions (id, user_id, delta, reason, reference_id)
+					VALUES ($1, $2, $3, 'order_refund_reward_clawback', $4)
+					ON CONFLICT (reference_id) DO NOTHING
+				`, uuid.NewString(), rewardUserID, -clawback, clawbackRef)
+				if err != nil {
+					return false, fmt.Errorf("insert reward clawback tx: %w", err)
+				}
+				if cbTag.RowsAffected() > 0 {
+					if _, err := tx.Exec(ctx, `
+						UPDATE coin_accounts
+						SET balance = balance - $2, updated_at = NOW()
+						WHERE user_id = $1
+					`, rewardUserID, clawback); err != nil {
+						return false, fmt.Errorf("debit coin account for clawback: %w", err)
+					}
+				}
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit order refunded tx: %w", err)
 	}
 	return false, nil
 }

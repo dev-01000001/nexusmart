@@ -24,7 +24,7 @@ RUN apk add --no-cache ca-certificates wget \
 
 COPY --from=builder /out/cart /usr/local/bin/cart
 
-USER appuser
+USER 10001:10001
 
 EXPOSE 50053 8083
 

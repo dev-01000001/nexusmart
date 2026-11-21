@@ -26,15 +26,17 @@ type Envelope struct {
 
 // ShipmentUpdatedPayload matches docs/contracts.md §5 for shipment.updated.
 type ShipmentUpdatedPayload struct {
-	ShipmentID   string `json:"shipment_id"`
-	OrderID      string `json:"order_id"`
-	ShopID       string `json:"shop_id"`
-	CarrierCode  string `json:"carrier_code"`
-	TrackingCode string `json:"tracking_code"`
-	Status       string `json:"status"`
-	RawStatus    string `json:"raw_status"`
-	Description  string `json:"description"`
-	OccurredAt   string `json:"occurred_at"`
+	ShipmentID      string `json:"shipment_id"`
+	OrderID         string `json:"order_id"`
+	ShopID          string `json:"shop_id"`
+	CarrierCode     string `json:"carrier_code"`
+	TrackingCode    string `json:"tracking_code"`
+	Status          string `json:"status"`
+	RawStatus       string `json:"raw_status"`
+	Description     string `json:"description"`
+	OccurredAt      string `json:"occurred_at"`
+	Direction       string `json:"direction,omitempty"`
+	ReturnRequestID string `json:"return_request_id,omitempty"`
 }
 
 // OrderCancelledPayload matches docs/contracts.md §5 for order.cancelled.

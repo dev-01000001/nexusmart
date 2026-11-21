@@ -50,6 +50,34 @@ func (s *Server) RequestReturn(ctx context.Context, req *orderv1.RequestReturnRe
 	return s.svc.RequestReturn(ctx, req)
 }
 
+func (s *Server) ListOrderReturns(ctx context.Context, req *orderv1.ListOrderReturnsRequest) (*orderv1.ListOrderReturnsResponse, error) {
+	return s.svc.ListOrderReturns(ctx, req)
+}
+
+func (s *Server) ApproveReturn(ctx context.Context, req *orderv1.ApproveReturnRequest) (*orderv1.ApproveReturnResponse, error) {
+	return s.svc.ApproveReturn(ctx, req)
+}
+
+func (s *Server) RejectReturn(ctx context.Context, req *orderv1.RejectReturnRequest) (*orderv1.RejectReturnResponse, error) {
+	return s.svc.RejectReturn(ctx, req)
+}
+
+func (s *Server) ConfirmReturnReceived(ctx context.Context, req *orderv1.ConfirmReturnReceivedRequest) (*orderv1.ConfirmReturnReceivedResponse, error) {
+	return s.svc.ConfirmReturnReceived(ctx, req)
+}
+
+func (s *Server) CreateComplaint(ctx context.Context, req *orderv1.CreateComplaintRequest) (*orderv1.CreateComplaintResponse, error) {
+	return s.svc.CreateComplaint(ctx, req)
+}
+
+func (s *Server) ListComplaints(ctx context.Context, req *orderv1.ListComplaintsRequest) (*orderv1.ListComplaintsResponse, error) {
+	return s.svc.ListComplaints(ctx, req)
+}
+
+func (s *Server) ResolveComplaint(ctx context.Context, req *orderv1.ResolveComplaintRequest) (*orderv1.ResolveComplaintResponse, error) {
+	return s.svc.ResolveComplaint(ctx, req)
+}
+
 func (s *Server) GetOrderTimeline(ctx context.Context, req *orderv1.GetOrderTimelineRequest) (*orderv1.GetOrderTimelineResponse, error) {
 	return s.svc.GetOrderTimeline(ctx, req)
 }

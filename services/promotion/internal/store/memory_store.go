@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -482,6 +483,12 @@ func (m *MemoryStore) creditCoinsLocked(userID string, amount int64, reason, ref
 	return m.coinBalances[userID], false
 }
 
+func (m *MemoryStore) IsEventProcessed(_ context.Context, eventID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.processedEvents[eventID], nil
+}
+
 func (m *MemoryStore) ProcessOrderCompletedEvent(_ context.Context, eventID, _, orderID, buyerID string, coinsReward int64) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -498,6 +505,66 @@ func (m *MemoryStore) ProcessOrderCompletedEvent(_ context.Context, eventID, _, 
 		}
 		m.creditCoinsLocked(buyerID, coinsReward, "order_completed_reward", refID)
 	}
+	return false, nil
+}
+
+func (m *MemoryStore) ProcessOrderRefundedEvent(_ context.Context, in OrderRefundedInput) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.processedEvents[in.EventID] {
+		return true, nil
+	}
+	m.processedEvents[in.EventID] = true
+
+	orderID := strings.TrimSpace(in.OrderID)
+	buyerID := strings.TrimSpace(in.BuyerID)
+
+	// Restore proportional coins for partial checkout-group refunds (when full group release is not triggered).
+	if !in.AllGroupOrdersClosed && in.CoinsDiscountVND > 0 && buyerID != "" {
+		restoreRef := "order_refund_coins:" + orderID
+		if orderID == "" {
+			restoreRef = "order_refund_coins:" + in.EventID
+		}
+		m.creditCoinsLocked(buyerID, in.CoinsDiscountVND, "order_refund_coins_restore", restoreRef)
+	}
+
+	// Claw back any `order_completed_reward` coins previously credited for this order_id,
+	// capped at current balance so balance never goes negative and balance == SUM(delta).
+	if orderID != "" {
+		var rewardUserID string
+		var rewardDelta int64
+		for _, t := range m.coinTxns {
+			if t.ReferenceID == orderID && t.Reason == "order_completed_reward" && t.Delta > 0 {
+				rewardUserID = t.UserID
+				rewardDelta = t.Delta
+				break
+			}
+		}
+		if rewardDelta > 0 && rewardUserID != "" {
+			clawbackRef := "order_refund_reward_clawback:" + orderID
+			if !m.coinRefIndex[clawbackRef] {
+				curBal := m.coinBalances[rewardUserID]
+				clawback := rewardDelta
+				if clawback > curBal {
+					clawback = curBal
+				}
+				if clawback > 0 {
+					m.coinRefIndex[clawbackRef] = true
+					m.coinBalances[rewardUserID] = curBal - clawback
+					m.coinTxns = append(m.coinTxns, domain.CoinTransaction{
+						ID:          uuid.NewString(),
+						UserID:      rewardUserID,
+						Delta:       -clawback,
+						Reason:      "order_refund_reward_clawback",
+						ReferenceID: clawbackRef,
+						CreatedAt:   time.Now().UTC(),
+					})
+				}
+			}
+		}
+	}
+
 	return false, nil
 }
 

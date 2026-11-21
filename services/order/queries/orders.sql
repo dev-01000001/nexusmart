@@ -206,11 +206,118 @@ WHERE id = $1;
 
 -- name: InsertReturnRequest :one
 INSERT INTO return_requests (
-    id, order_id, buyer_id, reason, evidence_urls_json, status
+    id, order_id, buyer_id, shop_id, items_json, reason, evidence_urls_json, status,
+    seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6
+    $1, $2, $3, $4, $5, $6, $7, $8,
+    $9, $10, $11, $12, $13
 )
 RETURNING *;
+
+-- name: GetReturnRequestByID :one
+SELECT *
+FROM return_requests
+WHERE id = $1;
+
+-- name: GetReturnRequestByIDForUpdate :one
+SELECT *
+FROM return_requests
+WHERE id = $1
+FOR UPDATE;
+
+-- name: GetLatestReturnRequestByOrderID :one
+SELECT *
+FROM return_requests
+WHERE order_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: ListReturnRequestsFiltered :many
+SELECT *
+FROM return_requests
+WHERE (sqlc.arg(order_id)::text = '' OR order_id = sqlc.arg(order_id)::text)
+  AND (sqlc.arg(buyer_id)::text = '' OR buyer_id = sqlc.arg(buyer_id)::text)
+  AND (sqlc.arg(shop_id)::text = '' OR shop_id = sqlc.arg(shop_id)::text)
+  AND (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text)
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
+
+-- name: CountReturnRequestsFiltered :one
+SELECT COUNT(*)
+FROM return_requests
+WHERE (sqlc.arg(order_id)::text = '' OR order_id = sqlc.arg(order_id)::text)
+  AND (sqlc.arg(buyer_id)::text = '' OR buyer_id = sqlc.arg(buyer_id)::text)
+  AND (sqlc.arg(shop_id)::text = '' OR shop_id = sqlc.arg(shop_id)::text)
+  AND (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text);
+
+-- name: UpdateReturnRequest :one
+UPDATE return_requests
+SET status = CASE WHEN sqlc.arg(status)::text <> '' THEN sqlc.arg(status)::text ELSE status END,
+    seller_note = CASE WHEN sqlc.arg(seller_note)::text <> '' THEN sqlc.arg(seller_note)::text ELSE seller_note END,
+    reverse_tracking_code = CASE WHEN sqlc.arg(reverse_tracking_code)::text <> '' THEN sqlc.arg(reverse_tracking_code)::text ELSE reverse_tracking_code END,
+    reverse_label_url = CASE WHEN sqlc.arg(reverse_label_url)::text <> '' THEN sqlc.arg(reverse_label_url)::text ELSE reverse_label_url END,
+    refund_amount_vnd = CASE WHEN sqlc.arg(refund_amount_vnd)::bigint > 0 THEN sqlc.arg(refund_amount_vnd)::bigint ELSE refund_amount_vnd END,
+    refund_id = CASE WHEN sqlc.arg(refund_id)::text <> '' THEN sqlc.arg(refund_id)::text ELSE refund_id END,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: InsertComplaint :one
+INSERT INTO complaints (
+    id, return_request_id, order_id, buyer_id, shop_id, reason, evidence_urls_json, status
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8
+)
+RETURNING *;
+
+-- name: GetComplaintByID :one
+SELECT *
+FROM complaints
+WHERE id = $1;
+
+-- name: GetComplaintByIDForUpdate :one
+SELECT *
+FROM complaints
+WHERE id = $1
+FOR UPDATE;
+
+-- name: GetComplaintByReturnRequestID :one
+SELECT *
+FROM complaints
+WHERE return_request_id = $1;
+
+-- name: UpdateComplaintDetails :one
+UPDATE complaints
+SET reason = CASE WHEN sqlc.arg(reason)::text <> '' THEN sqlc.arg(reason)::text ELSE reason END,
+    evidence_urls_json = CASE WHEN sqlc.arg(update_evidence)::boolean THEN sqlc.arg(evidence_urls_json)::jsonb ELSE evidence_urls_json END
+WHERE id = $1
+RETURNING *;
+
+-- name: ResolveComplaintRow :one
+UPDATE complaints
+SET status = $2,
+    resolution = $3,
+    admin_note = $4,
+    resolved_by = $5,
+    resolved_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: ListComplaintsFiltered :many
+SELECT *
+FROM complaints
+WHERE (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text)
+  AND (sqlc.arg(order_id)::text = '' OR order_id = sqlc.arg(order_id)::text)
+  AND (sqlc.arg(shop_id)::text = '' OR shop_id = sqlc.arg(shop_id)::text)
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
+
+-- name: CountComplaintsFiltered :one
+SELECT COUNT(*)
+FROM complaints
+WHERE (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text)
+  AND (sqlc.arg(order_id)::text = '' OR order_id = sqlc.arg(order_id)::text)
+  AND (sqlc.arg(shop_id)::text = '' OR shop_id = sqlc.arg(shop_id)::text);
 
 -- name: InsertOutboxEvent :exec
 INSERT INTO outbox_events (
@@ -261,7 +368,7 @@ INSERT INTO dead_letter_events (
 SELECT id, checkout_group_id, payment_id
 FROM orders
 WHERE status = 'PENDING'
-  AND payment_method = 'VIETQR'
+  AND payment_method IN ('VIETQR', 'ZALOPAY')
   AND payment_expires_at IS NOT NULL
   AND payment_expires_at <= NOW()
 ORDER BY payment_expires_at ASC

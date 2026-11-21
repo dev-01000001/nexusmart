@@ -60,6 +60,10 @@ message Shipment {
   int64 cod_amount_vnd = 10;
   google.protobuf.Timestamp created_at = 11;
   google.protobuf.Timestamp updated_at = 12;
+  // Direction: "forward" (default) or "return".
+  string direction = 13;
+  // Return request ID when direction == "return".
+  string return_request_id = 14;
 }
 
 message ShipmentEvent {
@@ -136,6 +140,23 @@ message CreateShipmentResponse {
   bool already_existed = 2;
 }
 
+message CreateReturnShipmentRequest {
+  string order_id = 1;
+  string return_request_id = 2;
+  string shop_id = 3;
+  string carrier_code = 4;
+  string service_code = 5;
+  int32 weight_grams = 6;
+  ShipmentAddress from_address = 7;
+  ShipmentAddress to_address = 8;
+  string items_summary = 9;
+}
+
+message CreateReturnShipmentResponse {
+  Shipment shipment = 1;
+  bool already_existed = 2;
+}
+
 message CancelShipmentRequest {
   string order_id = 1;
   string reason = 2;
@@ -148,6 +169,8 @@ message CancelShipmentResponse {
 message GetShipmentRequest {
   string order_id = 1;
   string tracking_code = 2;
+  // Optional direction filter: "" or "forward" (default), or "return".
+  string direction = 3;
 }
 
 message GetShipmentResponse {
@@ -161,6 +184,7 @@ service ShippingService {
   rpc MapLegacyAddress(MapLegacyAddressRequest) returns (MapLegacyAddressResponse);
   rpc CalculateFee(CalculateFeeRequest) returns (CalculateFeeResponse);
   rpc CreateShipment(CreateShipmentRequest) returns (CreateShipmentResponse);
+  rpc CreateReturnShipment(CreateReturnShipmentRequest) returns (CreateReturnShipmentResponse);
   rpc CancelShipment(CancelShipmentRequest) returns (CancelShipmentResponse);
   rpc GetShipment(GetShipmentRequest) returns (GetShipmentResponse);
 }

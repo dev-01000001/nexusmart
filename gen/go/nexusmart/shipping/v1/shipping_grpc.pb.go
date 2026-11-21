@@ -19,13 +19,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ShippingService_ListProvinces_FullMethodName    = "/nexusmart.shipping.v1.ShippingService/ListProvinces"
-	ShippingService_ListWards_FullMethodName        = "/nexusmart.shipping.v1.ShippingService/ListWards"
-	ShippingService_MapLegacyAddress_FullMethodName = "/nexusmart.shipping.v1.ShippingService/MapLegacyAddress"
-	ShippingService_CalculateFee_FullMethodName     = "/nexusmart.shipping.v1.ShippingService/CalculateFee"
-	ShippingService_CreateShipment_FullMethodName   = "/nexusmart.shipping.v1.ShippingService/CreateShipment"
-	ShippingService_CancelShipment_FullMethodName   = "/nexusmart.shipping.v1.ShippingService/CancelShipment"
-	ShippingService_GetShipment_FullMethodName      = "/nexusmart.shipping.v1.ShippingService/GetShipment"
+	ShippingService_ListProvinces_FullMethodName        = "/nexusmart.shipping.v1.ShippingService/ListProvinces"
+	ShippingService_ListWards_FullMethodName            = "/nexusmart.shipping.v1.ShippingService/ListWards"
+	ShippingService_MapLegacyAddress_FullMethodName     = "/nexusmart.shipping.v1.ShippingService/MapLegacyAddress"
+	ShippingService_CalculateFee_FullMethodName         = "/nexusmart.shipping.v1.ShippingService/CalculateFee"
+	ShippingService_CreateShipment_FullMethodName       = "/nexusmart.shipping.v1.ShippingService/CreateShipment"
+	ShippingService_CreateReturnShipment_FullMethodName = "/nexusmart.shipping.v1.ShippingService/CreateReturnShipment"
+	ShippingService_CancelShipment_FullMethodName       = "/nexusmart.shipping.v1.ShippingService/CancelShipment"
+	ShippingService_GetShipment_FullMethodName          = "/nexusmart.shipping.v1.ShippingService/GetShipment"
 )
 
 // ShippingServiceClient is the client API for ShippingService service.
@@ -37,6 +38,7 @@ type ShippingServiceClient interface {
 	MapLegacyAddress(ctx context.Context, in *MapLegacyAddressRequest, opts ...grpc.CallOption) (*MapLegacyAddressResponse, error)
 	CalculateFee(ctx context.Context, in *CalculateFeeRequest, opts ...grpc.CallOption) (*CalculateFeeResponse, error)
 	CreateShipment(ctx context.Context, in *CreateShipmentRequest, opts ...grpc.CallOption) (*CreateShipmentResponse, error)
+	CreateReturnShipment(ctx context.Context, in *CreateReturnShipmentRequest, opts ...grpc.CallOption) (*CreateReturnShipmentResponse, error)
 	CancelShipment(ctx context.Context, in *CancelShipmentRequest, opts ...grpc.CallOption) (*CancelShipmentResponse, error)
 	GetShipment(ctx context.Context, in *GetShipmentRequest, opts ...grpc.CallOption) (*GetShipmentResponse, error)
 }
@@ -99,6 +101,16 @@ func (c *shippingServiceClient) CreateShipment(ctx context.Context, in *CreateSh
 	return out, nil
 }
 
+func (c *shippingServiceClient) CreateReturnShipment(ctx context.Context, in *CreateReturnShipmentRequest, opts ...grpc.CallOption) (*CreateReturnShipmentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateReturnShipmentResponse)
+	err := c.cc.Invoke(ctx, ShippingService_CreateReturnShipment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *shippingServiceClient) CancelShipment(ctx context.Context, in *CancelShipmentRequest, opts ...grpc.CallOption) (*CancelShipmentResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CancelShipmentResponse)
@@ -128,6 +140,7 @@ type ShippingServiceServer interface {
 	MapLegacyAddress(context.Context, *MapLegacyAddressRequest) (*MapLegacyAddressResponse, error)
 	CalculateFee(context.Context, *CalculateFeeRequest) (*CalculateFeeResponse, error)
 	CreateShipment(context.Context, *CreateShipmentRequest) (*CreateShipmentResponse, error)
+	CreateReturnShipment(context.Context, *CreateReturnShipmentRequest) (*CreateReturnShipmentResponse, error)
 	CancelShipment(context.Context, *CancelShipmentRequest) (*CancelShipmentResponse, error)
 	GetShipment(context.Context, *GetShipmentRequest) (*GetShipmentResponse, error)
 	mustEmbedUnimplementedShippingServiceServer()
@@ -154,6 +167,9 @@ func (UnimplementedShippingServiceServer) CalculateFee(context.Context, *Calcula
 }
 func (UnimplementedShippingServiceServer) CreateShipment(context.Context, *CreateShipmentRequest) (*CreateShipmentResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateShipment not implemented")
+}
+func (UnimplementedShippingServiceServer) CreateReturnShipment(context.Context, *CreateReturnShipmentRequest) (*CreateReturnShipmentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateReturnShipment not implemented")
 }
 func (UnimplementedShippingServiceServer) CancelShipment(context.Context, *CancelShipmentRequest) (*CancelShipmentResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CancelShipment not implemented")
@@ -272,6 +288,24 @@ func _ShippingService_CreateShipment_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ShippingService_CreateReturnShipment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateReturnShipmentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ShippingServiceServer).CreateReturnShipment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ShippingService_CreateReturnShipment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ShippingServiceServer).CreateReturnShipment(ctx, req.(*CreateReturnShipmentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ShippingService_CancelShipment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CancelShipmentRequest)
 	if err := dec(in); err != nil {
@@ -334,6 +368,10 @@ var ShippingService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreateShipment",
 			Handler:    _ShippingService_CreateShipment_Handler,
+		},
+		{
+			MethodName: "CreateReturnShipment",
+			Handler:    _ShippingService_CreateReturnShipment_Handler,
 		},
 		{
 			MethodName: "CancelShipment",
