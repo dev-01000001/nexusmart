@@ -227,7 +227,8 @@ impl Config {
         }
         cfg.postgres_tcp_addr = env_non_empty("POSTGRES_TCP_ADDR");
         cfg.redis_tcp_addr = env_non_empty("REDIS_TCP_ADDR");
-        if let Ok(v) = env::var("TELEGRAM_WEBHOOK_URL") {
+        if let Ok(v) = env::var("TELEGRAM_WEBHOOK_URL").or_else(|_| env::var("TELEGRAM_RELAY_URL"))
+        {
             let trimmed = v.trim();
             cfg.telegram_webhook_url = if trimmed.is_empty() {
                 None
