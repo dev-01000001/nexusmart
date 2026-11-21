@@ -250,6 +250,22 @@
   color: var(--muted);
 }
 
+.checkboxOption {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.checkboxInput {
+  margin-top: 3px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
 .formField {
   display: flex;
   flex-direction: column;
