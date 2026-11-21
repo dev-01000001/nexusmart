@@ -48,11 +48,7 @@ func NewWebhookProxy(targetBaseURL string, log *slog.Logger) (http.Handler, erro
 			if ts := pr.In.Header.Get("X-Timestamp"); ts != "" {
 				pr.Out.Header.Set("X-Timestamp", ts)
 			}
-			if tp := pr.In.Header.Get("traceparent"); tp != "" {
-				pr.Out.Header.Set("traceparent", tp)
-			} else {
-				otel.GetTextMapPropagator().Inject(pr.In.Context(), propagation.HeaderCarrier(pr.Out.Header))
-			}
+			otel.GetTextMapPropagator().Inject(pr.In.Context(), propagation.HeaderCarrier(pr.Out.Header))
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, proxyErr error) {
 			if log != nil {

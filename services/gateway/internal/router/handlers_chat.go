@@ -33,7 +33,20 @@ const (
 	defaultChatGRPCAddr = "chat:50060"
 	defaultChatHTTPURL  = "http://chat:8090"
 	defaultChatTimeout  = 10 * time.Second
+
+	chatWSAuthMethodHeader = "X-Chat-Auth-Method"
 )
+
+type chatWSAuthCookieKey struct{}
+
+func withChatWSCookieAuth(ctx context.Context) context.Context {
+	return context.WithValue(ctx, chatWSAuthCookieKey{}, true)
+}
+
+func isChatWSCookieAuth(ctx context.Context) bool {
+	v, _ := ctx.Value(chatWSAuthCookieKey{}).(bool)
+	return v
+}
 
 type chatUpstreamOverride struct {
 	client chatv1.ChatServiceClient
@@ -265,6 +278,13 @@ func (h *chatHandler) wsReverseProxy() (http.Handler, error) {
 				// Strip Cookie after injecting the gateway-verified Bearer token so upstream
 				// always authenticates strictly from Authorization and never a stale cookie.
 				pr.Out.Header.Del("Cookie")
+				// Signal cookie-authenticated upgrades to upstream chat WS handler so it enforces
+				// strict Origin validation on cookie auth while allowing custom domains on ticket auth.
+				if isChatWSCookieAuth(pr.In.Context()) {
+					pr.Out.Header.Set(chatWSAuthMethodHeader, "cookie")
+				} else {
+					pr.Out.Header.Del(chatWSAuthMethodHeader)
+				}
 				if tp := pr.In.Header.Get("traceparent"); tp != "" {
 					pr.Out.Header.Set("traceparent", tp)
 				}
@@ -337,19 +357,9 @@ func (h *chatHandler) chatWSAuthMiddleware(deps Dependencies) func(http.Handler)
 				return
 			}
 
-			// 2. BFF cookie (__Host-nm_at or nm_at).
-			if cookieTok := extractChatCookieToken(r); cookieTok != "" {
-				claims, ok := h.verifyTokenAndRevocation(w, r, deps, cookieTok)
-				if !ok {
-					return
-				}
-				ctx := auth.WithClaims(r.Context(), claims)
-				ctx = auth.WithRawToken(ctx, ensureBearerPrefix(cookieTok))
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
-
-			// 3. One-time query ticket (?ticket=<t>) exchanged via ChatService.ExchangeWSTicket.
+			// 2. One-time query ticket (?ticket=<t>) exchanged via ChatService.ExchangeWSTicket.
+			// Checked before Cookie so explicit tickets from custom shop domains are never
+			// overshadowed by an ambient host cookie.
 			if ticket := strings.TrimSpace(r.URL.Query().Get("ticket")); ticket != "" {
 				cli, err := h.client()
 				if err != nil {
@@ -386,6 +396,19 @@ func (h *chatHandler) chatWSAuthMiddleware(deps Dependencies) func(http.Handler)
 
 				ctx := auth.WithClaims(r.Context(), claims)
 				ctx = auth.WithRawToken(ctx, ensureBearerPrefix(wsToken))
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+
+			// 3. BFF cookie (__Host-nm_at or nm_at); marked for strict upstream Origin validation.
+			if cookieTok := extractChatCookieToken(r); cookieTok != "" {
+				claims, ok := h.verifyTokenAndRevocation(w, r, deps, cookieTok)
+				if !ok {
+					return
+				}
+				ctx := auth.WithClaims(r.Context(), claims)
+				ctx = auth.WithRawToken(ctx, ensureBearerPrefix(cookieTok))
+				ctx = withChatWSCookieAuth(ctx)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}

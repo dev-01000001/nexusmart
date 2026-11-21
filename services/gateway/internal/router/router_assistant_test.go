@@ -17,6 +17,7 @@ import (
 	"github.com/nexusmart/core/pkg/common/metrics"
 	"github.com/nexusmart/core/pkg/common/telemetry"
 	"github.com/nexusmart/core/services/gateway/internal/clients"
+	"github.com/nexusmart/core/services/gateway/internal/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -299,5 +300,85 @@ func TestGatewayAssistantRoutesSSEAuthRBACAndNoShadowing(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ok":true`) {
 		t.Fatalf("expected 200 on feedback, got code=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGatewayAssistantSSETrustedProxyClientIP(t *testing.T) {
+	var seenXFF, seenXRI string
+	sseUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenXFF = r.Header.Get("X-Forwarded-For")
+		seenXRI = r.Header.Get("X-Real-IP")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: done\ndata: {}\n\n"))
+	}))
+	defer sseUpstream.Close()
+
+	restore := setAssistantTestUpstream(&fakeAssistantClient{}, sseUpstream.URL)
+	defer restore()
+
+	trusted, err := middleware.ParseTrustedProxies("172.31.250.0/28")
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies: %v", err)
+	}
+	authMgr, err := auth.NewManager("assistant-ip-test-secret", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("auth.NewManager: %v", err)
+	}
+
+	h := New(Dependencies{
+		ServiceName:    "gateway-assistant-ip-test",
+		AuthManager:    authMgr,
+		TrustedProxies: trusted,
+		Logger:         logger.New("gateway-assistant-ip-test", logger.WithWriter(io.Discard)),
+	})
+
+	call := func(remoteAddr, xff, xri string) (subject string, gotXFF string, gotXRI string) {
+		seenXFF, seenXRI = "", ""
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/assistant/chat", strings.NewReader(`{"messages":[{"role":"user","content":"Chào"}]}`))
+		req.RemoteAddr = remoteAddr
+		if xff != "" {
+			req.Header.Set("X-Forwarded-For", xff)
+		}
+		if xri != "" {
+			req.Header.Set("X-Real-IP", xri)
+		}
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+		}
+		return "ip:" + seenXFF, seenXFF, seenXRI
+	}
+
+	// 1. Two distinct browser clients behind the same trusted BFF container -> two distinct quota subjects.
+	subjA, xffA, xriA := call("172.31.250.5:41001", "203.0.113.10", "203.0.113.10")
+	subjB, xffB, xriB := call("172.31.250.5:41002", "203.0.113.20", "")
+	if xffA != "203.0.113.10" || xffB != "203.0.113.20" {
+		t.Fatalf("expected resolved client IPs via trusted BFF, got A=%q B=%q", xffA, xffB)
+	}
+	if subjA == subjB {
+		t.Fatalf("expected distinct subjects for two clients behind trusted BFF, both got %q", subjA)
+	}
+	if xriA != "" || xriB != "" {
+		t.Fatalf("expected X-Real-IP stripped upstream, got A=%q B=%q", xriA, xriB)
+	}
+
+	// 2. Spoofed left-most XFF behind trusted BFF picks right-most untrusted hop.
+	_, xffMulti, _ := call("172.31.250.5:41003", "1.2.3.4, 203.0.113.15", "")
+	if xffMulti != "203.0.113.15" {
+		t.Fatalf("expected right-most untrusted IP 203.0.113.15, got %q", xffMulti)
+	}
+
+	// 3. Trusted BFF sending only X-Real-IP resolves and forwards it as X-Forwarded-For.
+	_, xffFromXRI, xriCleared := call("172.31.250.5:41004", "", "203.0.113.30")
+	if xffFromXRI != "203.0.113.30" || xriCleared != "" {
+		t.Fatalf("expected X-Real-IP fallback 203.0.113.30 and cleared X-Real-IP, got xff=%q xri=%q", xffFromXRI, xriCleared)
+	}
+
+	// 4. Untrusted direct peer spoofing X-Forwarded-For and X-Real-IP -> spoofed headers discarded.
+	_, xffUntrusted, xriUntrusted := call("198.51.100.77:55555", "203.0.113.99", "203.0.113.88")
+	if xffUntrusted != "198.51.100.77" || xriUntrusted != "" {
+		t.Fatalf("expected untrusted peer IP 198.51.100.77 with spoofed headers ignored, got xff=%q xri=%q", xffUntrusted, xriUntrusted)
 	}
 }

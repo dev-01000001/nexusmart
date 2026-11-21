@@ -58,9 +58,10 @@ func setAssistantTestUpstream(client assistantv1.AssistantServiceClient, sseURL 
 }
 
 type assistantHandler struct {
-	serviceName string
-	timeout     time.Duration
-	log         *slog.Logger
+	serviceName    string
+	timeout        time.Duration
+	trustedProxies *middleware.TrustedProxies
+	log            *slog.Logger
 
 	overrideClient assistantv1.AssistantServiceClient
 	overrideSSEURL string
@@ -96,9 +97,10 @@ func mountAssistantRoutes(r chi.Router, deps Dependencies) {
 	}
 
 	ah := &assistantHandler{
-		serviceName: serviceName,
-		timeout:     timeout,
-		log:         deps.Logger,
+		serviceName:    serviceName,
+		timeout:        timeout,
+		trustedProxies: deps.TrustedProxies,
+		log:            deps.Logger,
 	}
 
 	assistantTestMu.RLock()
@@ -214,6 +216,12 @@ func (h *assistantHandler) sseReverseProxy() (http.Handler, error) {
 				pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 				pr.Out.Host = target.Host
 				pr.SetXForwarded()
+				if clientIP := h.trustedProxies.ClientIP(pr.In); clientIP != "" && clientIP != "unknown" {
+					pr.Out.Header.Set("X-Forwarded-For", clientIP)
+				} else {
+					pr.Out.Header.Del("X-Forwarded-For")
+				}
+				pr.Out.Header.Del("X-Real-IP")
 
 				// Identity travels ONLY inside the verified end-user Bearer JWT.
 				pr.Out.Header.Del("X-User-Id")

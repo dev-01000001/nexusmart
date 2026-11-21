@@ -749,6 +749,8 @@ type capturedWSUpgrade struct {
 	Path        string
 	RawQuery    string
 	AuthHeader  string
+	AuthMethod  string
+	Origin      string
 	Cookie      string
 	Upgrade     string
 	Connection  string
@@ -807,6 +809,8 @@ func TestChatWebSocketAuthAnd101Tunnel(t *testing.T) {
 			Path:        r.URL.Path,
 			RawQuery:    r.URL.RawQuery,
 			AuthHeader:  r.Header.Get("Authorization"),
+			AuthMethod:  r.Header.Get(chatWSAuthMethodHeader),
+			Origin:      r.Header.Get("Origin"),
 			Cookie:      r.Header.Get("Cookie"),
 			Upgrade:     r.Header.Get("Upgrade"),
 			Connection:  r.Header.Get("Connection"),
@@ -956,13 +960,14 @@ func TestChatWebSocketAuthAnd101Tunnel(t *testing.T) {
 	capMu.Lock()
 	c1 := captured[len(captured)-1]
 	capMu.Unlock()
-	if c1.AuthHeader != "Bearer "+buyerTok || c1.Cookie != "" {
-		t.Fatalf("expected nm_at forwarded as Bearer Authorization and Cookie stripped, got %+v", c1)
+	if c1.AuthHeader != "Bearer "+buyerTok || c1.Cookie != "" || c1.AuthMethod != "cookie" {
+		t.Fatalf("expected nm_at forwarded as Bearer Authorization, Cookie stripped, and auth-method=cookie, got %+v", c1)
 	}
 
-	// 3. BFF cookie `__Host-nm_at` -> 101 + Authorization forwarded + Cookie stripped + bidirectional echo.
+	// 3. BFF cookie `__Host-nm_at` -> 101 + Authorization forwarded + Cookie stripped + auth-method=cookie (spoofed header overwritten).
 	resp, conn, br = dialUpgrade(t, "/api/v1/chat/ws", map[string]string{
-		"Cookie": "__Host-nm_at=" + sellerTok,
+		"Cookie":             "__Host-nm_at=" + sellerTok,
+		"X-Chat-Auth-Method": "ticket",
 	})
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		body, _ := io.ReadAll(resp.Body)
@@ -976,12 +981,17 @@ func TestChatWebSocketAuthAnd101Tunnel(t *testing.T) {
 	capMu.Lock()
 	c2 := captured[len(captured)-1]
 	capMu.Unlock()
-	if c2.AuthHeader != "Bearer "+sellerTok || c2.Cookie != "" {
-		t.Fatalf("expected __Host-nm_at forwarded as Bearer Authorization and Cookie stripped, got %+v", c2)
+	if c2.AuthHeader != "Bearer "+sellerTok || c2.Cookie != "" || c2.AuthMethod != "cookie" {
+		t.Fatalf("expected __Host-nm_at forwarded as Bearer Authorization, Cookie stripped, and auth-method=cookie, got %+v", c2)
 	}
 
-	// 4. `?ticket=valid-ticket&after=99` -> calls ExchangeWSTicket, strips `ticket` from upstream query, forwards ws_token!
-	resp, conn, br = dialUpgrade(t, "/api/v1/chat/ws?ticket=valid-ticket&after=99", nil)
+	// 4. `?ticket=valid-ticket&after=99` from a custom shop domain (even when an ambient host cookie is present)
+	// -> calls ExchangeWSTicket, strips `ticket` & `Cookie`, forwards Origin, and leaves auth-method empty (not cookie)!
+	resp, conn, br = dialUpgrade(t, "/api/v1/chat/ws?ticket=valid-ticket&after=99", map[string]string{
+		"Origin":             "https://shop-custom.example",
+		"Cookie":             "nm_at=" + buyerTok,
+		"X-Chat-Auth-Method": "cookie",
+	})
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		body, _ := io.ReadAll(resp.Body)
 		_ = conn.Close()
@@ -994,8 +1004,8 @@ func TestChatWebSocketAuthAnd101Tunnel(t *testing.T) {
 	capMu.Lock()
 	c3 := captured[len(captured)-1]
 	capMu.Unlock()
-	if c3.Path != "/ws" || c3.AuthHeader != "Bearer "+wsTicketTok {
-		t.Fatalf("expected ws_token forwarded to /ws, got %+v", c3)
+	if c3.Path != "/ws" || c3.AuthHeader != "Bearer "+wsTicketTok || c3.AuthMethod != "" || c3.Origin != "https://shop-custom.example" || c3.Cookie != "" {
+		t.Fatalf("expected ws_token forwarded to /ws without cookie auth-method on ticket path, got %+v", c3)
 	}
 	if strings.Contains(c3.RawQuery, "ticket") {
 		t.Fatalf("ticket query param MUST be stripped before proxying upstream, got rawQuery=%q", c3.RawQuery)
