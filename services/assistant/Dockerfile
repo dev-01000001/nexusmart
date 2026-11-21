@@ -21,7 +21,7 @@ RUN apk add --no-cache ca-certificates tzdata wget \
 
 COPY --from=builder /out/assistant /usr/local/bin/assistant
 
-USER appuser
+USER 10001:10001
 
 EXPOSE 50061 8091
 
