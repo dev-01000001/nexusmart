@@ -458,6 +458,56 @@ services:
       timeout: 3s
       retries: 20
 
+  assistant:
+    build:
+      context: .
+      dockerfile: services/assistant/Dockerfile
+    environment:
+      SERVICE_NAME: assistant
+      GRPC_PORT: "50061"
+      HTTP_PORT: "8091"
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/assistant_db?sslmode=disable
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      GATEWAY_URL: http://gateway:8080
+      SEARCH_GRPC_ADDR: search:50059
+      PRODUCT_GRPC_ADDR: product:50052
+      CHAT_GRPC_ADDR: chat:50060
+      LLM_MODE: ${LLM_MODE:-mock}
+      LLM_MODEL: ${LLM_MODEL:-claude-opus-5-5}
+      LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+      EMBED_MODE: ${EMBED_MODE:-mock}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      ASSISTANT_DAILY_USER_TOKEN_LIMIT: ${ASSISTANT_DAILY_USER_TOKEN_LIMIT:-50000}
+      ASSISTANT_DAILY_COST_LIMIT_VND: ${ASSISTANT_DAILY_COST_LIMIT_VND:-500000}
+      ASSISTANT_CACHE_TTL: ${ASSISTANT_CACHE_TTL:-10m}
+      ASSISTANT_REVIEW_SUMMARY_TTL: ${ASSISTANT_REVIEW_SUMMARY_TTL:-1h}
+      ASSISTANT_MIN_REVIEWS_SUMMARY: ${ASSISTANT_MIN_REVIEWS_SUMMARY:-10}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:${ASSISTANT_HTTP_PORT:-8091}:8091"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8091/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   chat:
     build:
       context: .
@@ -524,6 +574,8 @@ services:
       SHIPPING_GRPC_ADDR: shipping:50057
       SHIPPING_HTTP_URL: http://shipping:8087
       NOTIFICATION_GRPC_ADDR: notification:50058
+      ASSISTANT_GRPC_ADDR: assistant:50061
+      ASSISTANT_HTTP_URL: http://assistant:8091
       SEARCH_GRPC_ADDR: search:50059
       CHAT_GRPC_ADDR: chat:50060
       CHAT_HTTP_URL: http://chat:8090
@@ -559,6 +611,8 @@ services:
       search:
         condition: service_healthy
       chat:
+        condition: service_healthy
+      assistant:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -630,6 +684,8 @@ services:
       PAYMENT_GRPC_ADDR: payment:50056
       SHIPPING_GRPC_ADDR: shipping:50057
       NOTIFICATION_GRPC_ADDR: notification:50058
+      ASSISTANT_GRPC_ADDR: assistant:50061
+      ASSISTANT_HTTP_URL: http://assistant:8091
       SEARCH_GRPC_ADDR: search:50059
       CHAT_GRPC_ADDR: chat:50060
       CHAT_HTTP_URL: http://chat:8090

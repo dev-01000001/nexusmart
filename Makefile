@@ -5,7 +5,7 @@ export PROTOC := $(HOME)/.local/bin/protoc
 GO_MODULES := pkg/common gen/go \
 	$(wildcard services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification services/search services/chat services/assistant tools/catalog-gen evals/assistant)
 
-.PHONY: proto lint test up down e2e seed e2e-web
+.PHONY: proto lint test up down e2e seed e2e-web eval-assistant
 
 proto:
 	buf lint
@@ -62,3 +62,9 @@ seed:
 e2e-web:
 	docker compose up -d --build --no-deps --wait web
 	docker compose --profile e2e-web run --rm e2e-web
+
+# Quantitative AI assistant evaluation (100 Vietnamese cases + 36 prompt-injection tests + SSE TTFT).
+eval-assistant:
+	cd evals/assistant && go run ./cmd/evalrunner --mode=$${LLM_MODE:-mock}
+
+
