@@ -33,7 +33,6 @@ test.describe("Storefront Buyer E2E Journey", () => {
   }) => {
     const buyer = createUniqueBuyer();
     let selectedProductName = "";
-    let selectedProductPath = "";
     let createdOrderId = "";
     let createdOrderCode = "";
 
@@ -91,10 +90,11 @@ test.describe("Storefront Buyer E2E Journey", () => {
     await test.step("2. Search seeded storefront products on /tim-kiem and open a PDP", async () => {
       await page.goto("/tim-kiem");
 
-      const searchInput = page.locator("#site-search-input");
+      const searchForm = page.getByRole("main").getByRole("search");
+      const searchInput = searchForm.getByRole("combobox");
       await expect(searchInput).toBeVisible();
       await searchInput.fill("cotton");
-      await page.getByRole("button", { name: "Tìm kiếm", exact: true }).click();
+      await searchForm.getByRole("button", { name: "Tìm kiếm", exact: true }).click();
 
       // SiteSearchView filters in-place (updating heading & results) and/or syncs ?q=cotton.
       await expect(page.locator("h1")).toContainText(/cotton/i);
@@ -123,7 +123,6 @@ test.describe("Storefront Buyer E2E Journey", () => {
 
       await productTitleLink.click();
       await expect(page).toHaveURL(/\/san-pham\/.+/);
-      selectedProductPath = new URL(page.url()).pathname;
       await expect(page.locator("h1")).toContainText(selectedProductName);
     });
 
@@ -150,7 +149,8 @@ test.describe("Storefront Buyer E2E Journey", () => {
       await expect(page).toHaveURL(/\/gio-hang\/?$/);
       await expect(page.locator("h1")).toContainText(/Giỏ hàng/i);
       const cartItemLink = page
-        .locator(`article ul li a[href="${selectedProductPath}"]`)
+        .locator('article ul li a[href^="/san-pham/"]')
+        .filter({ hasText: selectedProductName })
         .last();
       await expect(cartItemLink).toBeVisible();
       await expect(cartItemLink).toContainText(selectedProductName);
