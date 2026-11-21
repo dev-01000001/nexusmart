@@ -47,12 +47,14 @@ type Querier interface {
 	GetSiteDetailByID(ctx context.Context, id string) (GetSiteDetailByIDRow, error)
 	GetSiteDetailByShopID(ctx context.Context, shopID string) (GetSiteDetailByShopIDRow, error)
 	GetSiteSubdomainDomain(ctx context.Context, siteID string) (Domain, error)
+	GetSiteTemplateByID(ctx context.Context, idOrSlug string) (SiteTemplate, error)
 	GetSiteVersionByID(ctx context.Context, id string) (SiteVersion, error)
 	GetUserByEmail(ctx context.Context, lower string) (User, error)
 	GetUserByID(ctx context.Context, id string) (User, error)
 	GetUserByPhone(ctx context.Context, phone string) (User, error)
 	GrantUserSellerShop(ctx context.Context, arg GrantUserSellerShopParams) (User, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) (AuditLog, error)
+	ListActiveSiteTemplates(ctx context.Context) ([]SiteTemplate, error)
 	ListAddressesByUserID(ctx context.Context, userID string) ([]Address, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
 	ListCustomDomainsByStatus(ctx context.Context, status string) ([]Domain, error)
@@ -79,10 +81,12 @@ type Querier interface {
 	UpdateSitePublished(ctx context.Context, arg UpdateSitePublishedParams) (Site, error)
 	UpdateSiteRollback(ctx context.Context, arg UpdateSiteRollbackParams) (Site, error)
 	UpdateSiteStatus(ctx context.Context, arg UpdateSiteStatusParams) (Site, error)
+	UpdateSiteTemplateID(ctx context.Context, arg UpdateSiteTemplateIDParams) error
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (User, error)
 	UpdateUserRole(ctx context.Context, arg UpdateUserRoleParams) (User, error)
 	UpdateUserStatus(ctx context.Context, arg UpdateUserStatusParams) (User, error)
 	UpsertSiteSubdomainDomain(ctx context.Context, arg UpsertSiteSubdomainDomainParams) (Domain, error)
+	UpsertSiteTemplate(ctx context.Context, arg UpsertSiteTemplateParams) (SiteTemplate, error)
 }
 
 var _ Querier = (*Queries)(nil)

@@ -131,7 +131,7 @@ INSERT INTO sites (
 ) VALUES (
     $1, $2, LOWER($3), 'DRAFT', $4
 )
-RETURNING id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at
+RETURNING id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at, template_id
 `
 
 type CreateSiteParams struct {
@@ -160,6 +160,7 @@ func (q *Queries) CreateSite(ctx context.Context, arg CreateSiteParams) (Site, e
 		&i.SuspendedReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TemplateID,
 	)
 	return i, err
 }
@@ -450,7 +451,7 @@ func (q *Queries) GetPublishedSiteByShopID(ctx context.Context, shopID string) (
 }
 
 const getSiteByID = `-- name: GetSiteByID :one
-SELECT id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at FROM sites
+SELECT id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at, template_id FROM sites
 WHERE id = $1
 LIMIT 1
 `
@@ -469,12 +470,13 @@ func (q *Queries) GetSiteByID(ctx context.Context, id string) (Site, error) {
 		&i.SuspendedReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TemplateID,
 	)
 	return i, err
 }
 
 const getSiteByIDForUpdate = `-- name: GetSiteByIDForUpdate :one
-SELECT id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at FROM sites
+SELECT id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at, template_id FROM sites
 WHERE id = $1
 LIMIT 1
 FOR UPDATE
@@ -494,12 +496,13 @@ func (q *Queries) GetSiteByIDForUpdate(ctx context.Context, id string) (Site, er
 		&i.SuspendedReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TemplateID,
 	)
 	return i, err
 }
 
 const getSiteByShopID = `-- name: GetSiteByShopID :one
-SELECT id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at FROM sites
+SELECT id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at, template_id FROM sites
 WHERE shop_id = $1
 LIMIT 1
 `
@@ -518,12 +521,13 @@ func (q *Queries) GetSiteByShopID(ctx context.Context, shopID string) (Site, err
 		&i.SuspendedReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TemplateID,
 	)
 	return i, err
 }
 
 const getSiteByShopIDForUpdate = `-- name: GetSiteByShopIDForUpdate :one
-SELECT id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at FROM sites
+SELECT id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at, template_id FROM sites
 WHERE shop_id = $1
 LIMIT 1
 FOR UPDATE
@@ -543,12 +547,13 @@ func (q *Queries) GetSiteByShopIDForUpdate(ctx context.Context, shopID string) (
 		&i.SuspendedReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TemplateID,
 	)
 	return i, err
 }
 
 const getSiteBySubdomain = `-- name: GetSiteBySubdomain :one
-SELECT id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at FROM sites
+SELECT id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at, template_id FROM sites
 WHERE LOWER(subdomain) = LOWER($1)
 LIMIT 1
 `
@@ -567,6 +572,7 @@ func (q *Queries) GetSiteBySubdomain(ctx context.Context, lower string) (Site, e
 		&i.SuspendedReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TemplateID,
 	)
 	return i, err
 }
@@ -1253,7 +1259,7 @@ SET subdomain = LOWER($2),
     draft_config = $3,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at
+RETURNING id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at, template_id
 `
 
 type UpdateSiteDraftParams struct {
@@ -1276,6 +1282,7 @@ func (q *Queries) UpdateSiteDraft(ctx context.Context, arg UpdateSiteDraftParams
 		&i.SuspendedReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TemplateID,
 	)
 	return i, err
 }
@@ -1287,7 +1294,7 @@ SET published_version_id = $2,
     published_at = NOW(),
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at
+RETURNING id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at, template_id
 `
 
 type UpdateSitePublishedParams struct {
@@ -1309,6 +1316,7 @@ func (q *Queries) UpdateSitePublished(ctx context.Context, arg UpdateSitePublish
 		&i.SuspendedReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TemplateID,
 	)
 	return i, err
 }
@@ -1321,7 +1329,7 @@ SET published_version_id = $2,
     published_at = NOW(),
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at
+RETURNING id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at, template_id
 `
 
 type UpdateSiteRollbackParams struct {
@@ -1344,6 +1352,7 @@ func (q *Queries) UpdateSiteRollback(ctx context.Context, arg UpdateSiteRollback
 		&i.SuspendedReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TemplateID,
 	)
 	return i, err
 }
@@ -1354,7 +1363,7 @@ SET status = $2,
     suspended_reason = $3,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at
+RETURNING id, shop_id, subdomain, status, draft_config, published_version_id, published_at, suspended_reason, created_at, updated_at, template_id
 `
 
 type UpdateSiteStatusParams struct {
@@ -1377,6 +1386,7 @@ func (q *Queries) UpdateSiteStatus(ctx context.Context, arg UpdateSiteStatusPara
 		&i.SuspendedReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TemplateID,
 	)
 	return i, err
 }

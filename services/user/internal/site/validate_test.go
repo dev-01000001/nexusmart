@@ -473,7 +473,24 @@ func TestValidateConfigHappyPathAndDarkPalette(t *testing.T) {
 		t.Fatalf("expected dark theme config to pass, got %v", err)
 	}
 
-	// Plain text containing <script> is accepted as plain text (never executed, not rejected as unknown field).
+	// Harmless angle brackets are accepted as plain text, while <script> markup is rejected per ADR-0001.
+	withPlainAngles := validBaseConfig()
+	withPlainAngles["sections"] = []any{
+		map[string]any{
+			"id":      "txt-1",
+			"type":    "text",
+			"visible": true,
+			"props": map[string]any{
+				"title": "Cotton > 95% & độ co < 2%",
+				"body":  "Kiểm định 3 bước: độ co < 2% và mật độ > 220gsm.",
+				"align": "center",
+			},
+		},
+	}
+	if _, _, err := ValidateAndCanonicalizeConfig(mustMarshal(t, withPlainAngles)); err != nil {
+		t.Fatalf("harmless angle brackets should be accepted as plain text, got %v", err)
+	}
+
 	withScriptText := validBaseConfig()
 	withScriptText["sections"] = []any{
 		map[string]any{
@@ -487,8 +504,8 @@ func TestValidateConfigHappyPathAndDarkPalette(t *testing.T) {
 			},
 		},
 	}
-	if _, _, err := ValidateAndCanonicalizeConfig(mustMarshal(t, withScriptText)); err != nil {
-		t.Fatalf("plain text with angle brackets should be stored safely as plain text, got %v", err)
+	if _, _, err := ValidateAndCanonicalizeConfig(mustMarshal(t, withScriptText)); err == nil {
+		t.Fatalf("expected <script> markup in text props to be rejected")
 	}
 }
 

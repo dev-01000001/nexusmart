@@ -94,6 +94,23 @@ type Site struct {
 	SuspendedReason    string     `json:"suspended_reason"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
+	TemplateID         *string    `json:"template_id"`
+}
+
+type SiteTemplate struct {
+	ID              string    `json:"id"`
+	Slug            string    `json:"slug"`
+	Name            string    `json:"name"`
+	Category        string    `json:"category"`
+	Archetype       string    `json:"archetype"`
+	Description     string    `json:"description"`
+	PreviewImageUrl string    `json:"preview_image_url"`
+	Tags            []string  `json:"tags"`
+	Config          []byte    `json:"config"`
+	IsActive        bool      `json:"is_active"`
+	SortOrder       int32     `json:"sort_order"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type SiteVersion struct {
