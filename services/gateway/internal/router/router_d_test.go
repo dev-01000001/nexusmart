@@ -401,6 +401,33 @@ func TestGatewayOrderDepthRoutesAndRBAC(t *testing.T) {
 		t.Fatalf("expected 200 admin resolve complaint, got %d (%s)", rec.Code, rec.Body.String())
 	}
 
+	// QA-02: Accept Web BFF `decision` aliases (`REFUND_BUYER`, `APPROVE_RETURN`, `PARTIAL_REFUND`, `REJECT_COMPLAINT`).
+	decisionCases := []struct {
+		body        string
+		wantRes     orderv1.ComplaintResolution
+		wantShipReq bool
+	}{
+		{`{"decision":"REJECT_COMPLAINT","note":"Evidence insufficient"}`, orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_DISMISS, false},
+		{`{"decision":"REFUND_BUYER","note":"Full refund to buyer"}`, orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_REFUND, false},
+		{`{"decision":"PARTIAL_REFUND","note":"Partial refund agreed","refund_amount_vnd":50000}`, orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_REFUND, false},
+		{`{"decision":"APPROVE_RETURN","note":"Buyer returns item first"}`, orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_REFUND, true},
+	}
+	for _, tc := range decisionCases {
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/complaints/cmp-1/resolve", strings.NewReader(tc.body))
+		req.Header.Set("Authorization", "Bearer "+adminTok)
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("decision %s: expected 200, got %d (%s)", tc.body, rec.Code, rec.Body.String())
+		}
+		if orderMock.lastResolveReq.GetResolution() != tc.wantRes {
+			t.Fatalf("decision %s: want resolution %v, got %v", tc.body, tc.wantRes, orderMock.lastResolveReq.GetResolution())
+		}
+		if orderMock.lastResolveReq.GetRequireReturnShipping() != tc.wantShipReq {
+			t.Fatalf("decision %s: want require_return_shipping=%v, got %v", tc.body, tc.wantShipReq, orderMock.lastResolveReq.GetRequireReturnShipping())
+		}
+	}
+
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/payments/reconciliation-reports?limit=10", nil)
 	req.Header.Set("Authorization", "Bearer "+adminTok)
