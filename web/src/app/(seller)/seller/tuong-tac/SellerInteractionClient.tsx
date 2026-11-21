@@ -190,7 +190,11 @@ function SellerInteractionContent({
     }
   };
 
-  const handleApproveReturn = async (orderId: string, orderCode: string, ret: SellerReturnRequest) => {
+  const handleApproveReturn = async (
+    orderId: string,
+    orderCode: string,
+    ret: SellerReturnRequest
+  ) => {
     if (returnBusyId) return;
     setReturnBusyId(ret.id);
     try {
@@ -211,9 +215,7 @@ function SellerInteractionContent({
           },
         };
       });
-      setOrders((prev) =>
-        prev.map((o) => (o.id === orderId ? { ...o, status: "RETURNED" } : o))
-      );
+      setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status: "RETURNED" } : o)));
       if (rejectOpenId === ret.id) setRejectOpenId(null);
       showToast(`Đã duyệt yêu cầu đổi trả cho đơn ${orderCode}.`);
       router.refresh();
@@ -224,7 +226,11 @@ function SellerInteractionContent({
     }
   };
 
-  const handleRejectReturn = async (orderId: string, orderCode: string, ret: SellerReturnRequest) => {
+  const handleRejectReturn = async (
+    orderId: string,
+    orderCode: string,
+    ret: SellerReturnRequest
+  ) => {
     if (returnBusyId) return;
     const check = validateRejectReason(rejectDrafts[ret.id] ?? "");
     if (!check.ok) {
@@ -332,9 +338,7 @@ function SellerInteractionContent({
         markAll ? "Đã đánh dấu tất cả thông báo là đã đọc." : "Đã đánh dấu thông báo là đã đọc."
       );
     } catch (err) {
-      showToast(
-        err instanceof ApiError ? err.message : "Không thể cập nhật trạng thái thông báo."
-      );
+      showToast(err instanceof ApiError ? err.message : "Không thể cập nhật trạng thái thông báo.");
     } finally {
       setNotifBusy(false);
     }
@@ -496,7 +500,11 @@ function SellerInteractionContent({
                       Mở từng đơn để xem minh chứng khách gửi và duyệt hoặc từ chối trực tiếp
                     </span>
                   </div>
-                  <div className={common.segmented} role="tablist" aria-label="Lọc trạng thái đổi trả">
+                  <div
+                    className={common.segmented}
+                    role="tablist"
+                    aria-label="Lọc trạng thái đổi trả"
+                  >
                     {(
                       [
                         ["all", `Tất cả (${formatInt(returnOrders.length)})`],
@@ -635,7 +643,9 @@ function SellerInteractionContent({
 
                                         <div className={styles.returnGrid}>
                                           <div>
-                                            <span className={styles.returnLabel}>Lý do khách gửi</span>
+                                            <span className={styles.returnLabel}>
+                                              Lý do khách gửi
+                                            </span>
                                             <p className={styles.returnValue}>
                                               {ret.reason || "Không có ghi chú"}
                                             </p>

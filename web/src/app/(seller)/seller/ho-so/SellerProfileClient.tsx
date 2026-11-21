@@ -114,7 +114,10 @@ function SellerProfileContent({
       setAutoReplyLoaded(true);
     } catch (err) {
       if (signal?.aborted) return;
-      if (err instanceof ApiError && (err.status === 404 || err.status === 503 || err.status === 0)) {
+      if (
+        err instanceof ApiError &&
+        (err.status === 404 || err.status === 503 || err.status === 0)
+      ) {
         setAutoReplyUnavailable(true);
       } else {
         setAutoReplyError(
@@ -140,7 +143,9 @@ function SellerProfileContent({
   const shopStatusMeta = shop ? getShopStatusLabel(shop.status) : null;
   const siteMeta = siteStateLabel(site.state);
   const safeLicenseUrl = sanitizeSafeUrl(shop?.business_license_doc);
-  const pickupAddress = addresses.find((a) => shop?.pickup_address_id && a.id === shop.pickup_address_id);
+  const pickupAddress = addresses.find(
+    (a) => shop?.pickup_address_id && a.id === shop.pickup_address_id
+  );
 
   const handleSaveOwnerContact = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -351,7 +356,9 @@ function SellerProfileContent({
                       </div>
                       <div className={styles.kvRow}>
                         <span className={styles.kvKey}>Số điện thoại liên hệ</span>
-                        <span className={styles.kvVal}>{shop.contact_phone || "Chưa cập nhật"}</span>
+                        <span className={styles.kvVal}>
+                          {shop.contact_phone || "Chưa cập nhật"}
+                        </span>
                       </div>
                       <div className={styles.kvRow}>
                         <span className={styles.kvKey}>Mô tả gian hàng</span>
@@ -583,8 +590,8 @@ function SellerProfileContent({
                 <div className={styles.previewWell}>
                   <span className={styles.previewHeading}>Quản trị giao diện và chính sách</span>
                   <p className={styles.previewLine}>
-                    Chính sách đổi trả, giới thiệu xưởng, bộ sưu tập và tên miền tùy chỉnh được
-                    quản lý tập trung tại mục Site bán hàng để đồng bộ tức thì tới người mua.
+                    Chính sách đổi trả, giới thiệu xưởng, bộ sưu tập và tên miền tùy chỉnh được quản
+                    lý tập trung tại mục Site bán hàng để đồng bộ tức thì tới người mua.
                   </p>
                   <div className={styles.inlineActions}>
                     <Button variant="ink" size="sm" shape="app" href="/seller/site">
@@ -637,8 +644,8 @@ function SellerProfileContent({
 
                 {autoReplyUnavailable && (
                   <div className={styles.noticeWell} role="status">
-                    Dịch vụ chat hiện chưa phản hồi. Bạn vẫn có thể soạn sẵn lời chào và thử lưu
-                    lại khi hộp chat hoạt động.
+                    Dịch vụ chat hiện chưa phản hồi. Bạn vẫn có thể soạn sẵn lời chào và thử lưu lại
+                    khi hộp chat hoạt động.
                   </div>
                 )}
 

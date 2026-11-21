@@ -1,4 +1,36 @@
-/* Seller Chat Inbox (/seller/chat) — Two-column desktop split + distinct single-pane phone switcher */
+/* Seller Chat Inbox (/seller/chat): Two-column desktop split + distinct single-pane phone switcher */
+
+.connBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.connDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.connDotOnline {
+  background: var(--positive);
+}
+
+.connDotSync {
+  background: var(--amber);
+}
+
+.connDotIdle {
+  background: var(--muted);
+}
 
 .inboxShell {
   display: grid;
@@ -6,7 +38,7 @@
   background: var(--card);
   border: 1px solid var(--border); /* taste-skill-ignore: inbox split container border */
   border-radius: var(--radius-card);
-  height: clamp(540px, calc(100svh - 178px), 680px);
+  height: clamp(560px, calc(100svh - 178px), 720px);
   overflow: hidden;
 }
 
@@ -19,8 +51,38 @@
 }
 
 .threadPaneHead {
-  padding: 14px 14px 12px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--rule); /* taste-skill-ignore: inbox search bottom divider */
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.filterRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filterTab {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 0;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.filterTabActive {
+  background: var(--primary-ink-bg);
+  color: var(--primary-ink-fg);
 }
 
 .threadList {
@@ -28,6 +90,10 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+}
+
+.emptyPaneHint {
+  padding: 20px;
 }
 
 .threadItem {
@@ -46,7 +112,7 @@
   border-top: 1px solid var(--rule); /* taste-skill-ignore: inbox thread separator */
 }
 
-/* Selected row takes nav pill's --active fill (app-screens.md §7.8) */
+/* Selected row takes nav pill's --active fill */
 .threadItemSelected {
   background: var(--active);
 }
@@ -175,61 +241,6 @@
   color: var(--muted);
 }
 
-/* Order & product context bar inside conversation */
-.contextStrip {
-  padding: 10px 18px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--rule); /* taste-skill-ignore: customer order context rule */
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-
-.contextProduct {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.contextThumb {
-  width: 30px;
-  height: 40px;
-  border-radius: 4px;
-  object-fit: cover;
-  background: var(--surface);
-  flex: none;
-}
-
-.contextProdName {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--ink);
-}
-
-.contextProdPrice {
-  font-size: 12px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.contextOrder {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--ink);
-}
-
-.contextOrderLink {
-  font-weight: 500;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  white-space: nowrap;
-}
-
 /* Message stream */
 .messages {
   flex: 1;
@@ -261,6 +272,7 @@
   border-radius: var(--radius-card);
   font-size: 14px;
   line-height: 20px;
+  word-break: break-word;
 }
 
 .bubbleBuyer {
@@ -273,10 +285,197 @@
   color: var(--primary-ink-fg);
 }
 
+.msgText {
+  white-space: pre-wrap;
+}
+
+.msgFallback {
+  font-size: 13px;
+  opacity: 0.8;
+}
+
+.msgImageLink {
+  display: block;
+}
+
+.msgImage {
+  display: block;
+  max-width: 240px;
+  max-height: 240px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.refCard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: inherit;
+  text-decoration: none;
+  min-width: 200px;
+}
+
+.refThumb {
+  width: 38px;
+  height: 46px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--bg);
+  flex: none;
+}
+
+.refIconBox {
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.14);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.refCardText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.refCardKind {
+  font-size: 11px;
+  opacity: 0.78;
+}
+
+.refCardTitle {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.refCardSub {
+  font-size: 12px;
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+
 .msgMeta {
   font-size: 12px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* AI suggested replies panel (UC-AI10) */
+.aiSuggestBox {
+  padding: 10px 18px;
+  background: var(--accent-tint);
+  border-top: 1px solid var(--accent-tint-strong); /* taste-skill-ignore: AI suggestion drawer top divider */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aiSuggestHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.aiSuggestLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-tint-ink);
+}
+
+.aiDismissBtn {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.aiDismissBtn:hover {
+  color: var(--ink);
+}
+
+.aiChipList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.aiChipBtn {
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--accent-tint-strong); /* taste-skill-ignore: AI draft chip button */
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+  transition: background-color var(--t-hover) ease;
+}
+
+.aiChipBtn:hover {
+  background: var(--surface-subtle);
+}
+
+.inlineNotice {
+  padding: 8px 18px;
+  background: var(--surface-subtle);
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: inline AI notice rule */
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.safetyNotice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  background: var(--pill-warning-bg);
+  color: var(--pill-warning-ink);
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: off-platform safety warning rule */
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.sendErrorBar {
+  padding: 7px 18px;
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: send error rule */
+  font-size: 12px;
+}
+
+/* Attachment mini-bar */
+.attachBar {
+  padding: 10px 18px;
+  background: var(--bg);
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: attachment bar top divider */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+input.attachInput {
+  flex: 1;
+  min-width: 160px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--control);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
 }
 
 /* Quick reply templates & composer */
@@ -285,7 +484,59 @@
   border-top: 1px solid var(--border); /* taste-skill-ignore: chat composer top border */
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
+}
+
+.composerTools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.aiTriggerBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--accent-tint-strong); /* taste-skill-ignore: AI reply trigger control */
+  background: var(--accent-tint);
+  color: var(--accent-tint-ink);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.aiTriggerBtn:hover:not(:disabled) {
+  background: var(--accent-tint-strong);
+}
+
+.aiTriggerBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.toolChipBtn {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border); /* taste-skill-ignore: composer attachment trigger */
+  background: var(--card);
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.toolChipBtn:hover {
+  background: var(--surface);
+}
+
+.toolChipActive {
+  background: var(--primary-ink-bg);
+  color: var(--primary-ink-fg);
+  border-color: var(--primary-ink-bg);
 }
 
 .quickReplies {
@@ -334,7 +585,7 @@ input.composerInput {
 @media (max-width: 768px) {
   .inboxShell {
     grid-template-columns: minmax(0, 1fr);
-    height: clamp(500px, calc(100svh - 170px), 660px);
+    height: clamp(520px, calc(100svh - 170px), 680px);
   }
 
   .threadPane {
@@ -359,8 +610,9 @@ input.composerInput {
   }
 
   .chatHeader,
-  .contextStrip,
   .messages,
+  .aiSuggestBox,
+  .attachBar,
   .composerArea {
     padding-left: 14px;
     padding-right: 14px;
