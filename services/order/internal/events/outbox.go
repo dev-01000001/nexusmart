@@ -10,7 +10,11 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nexusmart/core/pkg/common/telemetry"
 	"github.com/nexusmart/core/services/order/internal/db"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // OutboxStore is the minimal store interface needed by OutboxRelay.
@@ -135,7 +139,20 @@ func (r *OutboxRelay) FlushOnce(ctx context.Context) int {
 	}
 }
 
-func (r *OutboxRelay) publishOutboxEvent(_ context.Context, ev db.OutboxEvent) error {
+func (r *OutboxRelay) publishOutboxEvent(ctx context.Context, ev db.OutboxEvent) error {
+	pubCtx := ctx
+	if ev.Traceparent != "" {
+		pubCtx = telemetry.ExtractTraceHeaders(pubCtx, map[string]string{"traceparent": ev.Traceparent})
+	}
+	pubCtx, span := otel.Tracer("order").Start(pubCtx, "nats.publish "+ev.EventType,
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			attribute.String("messaging.destination", ev.EventType),
+			attribute.String("messaging.message_id", ev.ID),
+		),
+	)
+	defer span.End()
+
 	env := Envelope{
 		EventID:    ev.ID,
 		EventType:  ev.EventType,
@@ -154,11 +171,21 @@ func (r *OutboxRelay) publishOutboxEvent(_ context.Context, ev db.OutboxEvent) e
 		Header:  nats.Header{},
 	}
 	msg.Header.Set(nats.MsgIdHdr, ev.ID)
-	if ev.Traceparent != "" {
+	traceHdrs := map[string]string{}
+	telemetry.InjectTraceHeaders(pubCtx, traceHdrs)
+	for k, v := range traceHdrs {
+		msg.Header.Set(k, v)
+	}
+	if msg.Header.Get("traceparent") == "" && ev.Traceparent != "" {
 		msg.Header.Set("traceparent", ev.Traceparent)
 	}
 
 	if _, err := r.publisher.PublishMsg(msg); err != nil {
+		r.logger.WarnContext(pubCtx, "publish outbox event failed",
+			"event_type", ev.EventType,
+			"event_id", ev.ID,
+			"error", err,
+		)
 		return fmt.Errorf("publish %s (%s): %w", ev.EventType, ev.ID, err)
 	}
 	return nil
