@@ -16,7 +16,10 @@ test("buildPublicSiteUrl keeps the site host and borrows only the request port",
     buildPublicSiteUrl("Sai-Gon.NexusMart.localhost:4000", "localhost:3300", "https:"),
     "https://sai-gon.nexusmart.localhost:4000"
   );
-  assert.equal(buildPublicSiteUrl("a.nexusmart.localhost", null, "ftp"), "http://a.nexusmart.localhost");
+  assert.equal(
+    buildPublicSiteUrl("a.nexusmart.localhost", null, "ftp"),
+    "http://a.nexusmart.localhost"
+  );
 });
 
 test("buildPublicSiteUrl rejects empty or unsafe hosts", () => {
