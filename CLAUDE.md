@@ -26,7 +26,7 @@ Ngoại lệ Claude Code được tự sửa: tài liệu điều phối (`CLAUD
 ## Chạy nhiều swarm song song
 
 Chủ dự án yêu cầu (2026-11-21): tối ưu swarm, chạy nhiều swarm cùng lúc để tiết kiệm thời gian.
-- Mỗi giai đoạn chia thành 2–4 swarm agy chạy cùng lúc, mỗi swarm một tiến trình nền riêng và một brief riêng trong `.agents/briefs/`.
+- Mỗi giai đoạn chia thành nhiều swarm agy chạy cùng lúc (2–4 cho một giai đoạn nhỏ; chủ dự án cho phép nhiều hơn, ví dụ 9 swarm cho các mốc tháng 4–6, khi ownership tách được), mỗi swarm một tiến trình nền riêng và một brief riêng trong `.agents/briefs/`.
 - Mỗi swarm sở hữu một tập thư mục không giao nhau (ví dụ: `services/` + `proto/`; `web/src/app/(site)` + BFF; seller + admin; `tests/` + `tools/seed`). Brief ghi rõ thư mục được sửa và thư mục cấm.
 - Hợp đồng dùng chung (proto, REST, kiểu dữ liệu) do Claude Code chốt trong brief trước khi khởi chạy, để các swarm không chờ nhau.
 - Chỉ một swarm (QA) được chạy `make e2e`, `make seed`, `make e2e-web` và rebuild container: stack compose và giới hạn tần suất là tài nguyên dùng chung. Các swarm khác chỉ chạy lint, unit test và build với `NEXT_DIST_DIR` riêng.

@@ -1,0 +1,6 @@
+# Swarm E – Observability và AIOps
+Hợp đồng: `m-all-contract.md`. Spec hàng "Giám sát và log", "AIOps".
+- `deploy/observability`: Prometheus, Loki, Tempo, Grafana (dashboard JSON theo service và theo luồng nghiệp vụ: checkout, thanh toán, flash sale), quy tắc SLO và cảnh báo theo error budget dưới dạng code, cảnh báo Telegram (bot token qua env; mock receiver khi không có). Thêm vào compose qua profile `obs` để không làm nặng stack mặc định.
+- Kiểm tra log JSON có trace ID và che PII, trace xuyên gRPC và NATS; ghi lỗ hổng vào `docs/reports/issues.md` cho swarm sở hữu.
+- `services/aiops` (Rust, Tokio, reqwest): đọc Prometheus API, z-score và EWMA trên error rate, p95, CPU, bộ nhớ; gom log lỗi (Loki), trace chậm (Tempo), lịch sử deploy làm ngữ cảnh; phân tích nguyên nhân bằng LLM (provider như hợp đồng, mock mặc định); hành động trong danh sách cho phép (restart, scale) với giới hạn số lần mỗi giờ, chế độ dry-run mặc định; adapter docker compose và adapter Kubernetes.
+- `tools/chaos`: 5 kịch bản tiêm lỗi (làm chậm payment, tắt order, lỗi DB promotion, mất NATS, CPU cao ở search). Đo: phát hiện < 2 phút, đúng nguyên nhân ≥ 4/5 (chạy thật trên compose, ghi số). Chỉ chạy kịch bản khi swarm H không chạy e2e: phối hợp qua file khoá `.runs/stack.lock` (tạo khi dùng stack, xóa khi xong; chờ nếu file tồn tại).
