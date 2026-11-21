@@ -45,8 +45,9 @@ var internalRPCs = map[string]bool{
 	"/nexusmart.user.v1.UserService/PublishSite":      false,
 	"/nexusmart.user.v1.UserService/RollbackSite":     false,
 	"/nexusmart.user.v1.UserService/ListSiteVersions": false,
-	"/nexusmart.user.v1.UserService/ListSites":        false,
-	"/nexusmart.user.v1.UserService/SuspendSite":      false,
+	"/nexusmart.user.v1.UserService/ListSites":         false,
+	"/nexusmart.user.v1.UserService/SuspendSite":       false,
+	"/nexusmart.user.v1.UserService/ApplySiteTemplate": false,
 	// ProductService
 	"/nexusmart.product.v1.ProductService/UpdateStock":           true,
 	"/nexusmart.product.v1.ProductService/ReleaseStock":          true,

@@ -3,9 +3,9 @@ export PATH := $(HOME)/.local/bin:$(HOME)/go/bin:$(HOME)/.cargo/bin:$(PATH)
 export PROTOC := $(HOME)/.local/bin/protoc
 
 GO_MODULES := pkg/common gen/go \
-	$(wildcard services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification)
+	$(wildcard services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification services/search services/assistant tools/catalog-gen evals/assistant)
 
-.PHONY: proto lint test up down e2e seed e2e-web
+.PHONY: proto lint test up down e2e seed e2e-web eval-assistant
 
 proto:
 	buf lint
@@ -28,6 +28,11 @@ lint:
 		echo "==> rustfmt & clippy services/payment"; \
 		(cd services/payment && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings); \
 	fi
+	@set -euo pipefail; \
+	if [ -f services/aiops/Cargo.toml ]; then \
+		echo "==> rustfmt & clippy services/aiops"; \
+		(cd services/aiops && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings); \
+	fi
 
 test:
 	@set -euo pipefail; \
@@ -41,6 +46,11 @@ test:
 	if [ -f services/payment/Cargo.toml ]; then \
 		echo "==> cargo test services/payment"; \
 		(cd services/payment && cargo test); \
+	fi
+	@set -euo pipefail; \
+	if [ -f services/aiops/Cargo.toml ]; then \
+		echo "==> cargo test services/aiops"; \
+		(cd services/aiops && cargo test); \
 	fi
 
 up:
@@ -62,3 +72,19 @@ seed:
 e2e-web:
 	docker compose up -d --build --no-deps --wait web
 	docker compose --profile e2e-web run --rm e2e-web
+
+# Quantitative AI assistant evaluation (100 Vietnamese cases + 36 prompt-injection tests + SSE TTFT).
+eval-assistant:
+	cd evals/assistant && go run ./cmd/evalrunner --mode=$${LLM_MODE:-mock}
+
+
+.PHONY: obs-up obs-down chaos
+obs-up:
+	docker compose --profile obs up -d --build --no-deps prometheus alertmanager telegram-relay loki promtail tempo cadvisor grafana aiops
+
+obs-down:
+	docker compose --profile obs stop aiops grafana cadvisor tempo promtail loki alertmanager telegram-relay prometheus
+	docker compose --profile obs rm -f aiops grafana cadvisor tempo promtail loki alertmanager telegram-relay prometheus
+
+chaos:
+	./tools/chaos/run.sh
