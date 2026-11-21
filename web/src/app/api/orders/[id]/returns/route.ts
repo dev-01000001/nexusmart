@@ -40,7 +40,7 @@ function resolveReturnItems(
 
   const byOrderItemId = new Map(existing.map((it) => [it.id, it]));
   const bySkuId = new Map(existing.map((it) => [it.sku_id, it]));
-  const resolved: ReturnRequestItem[] = [];
+  const aggregated = new Map<string, { matched: GwOrderItem; quantity: number }>();
 
   for (const reqItem of requested) {
     const matched =
@@ -50,17 +50,19 @@ function resolveReturnItems(
     if (!matched) {
       throw new GatewayError("invalid", "INVALID_RETURN_ITEMS");
     }
-    if (reqItem.quantity > matched.quantity) {
+    const prev = aggregated.get(matched.id);
+    const nextQty = (prev?.quantity ?? 0) + reqItem.quantity;
+    if (nextQty > matched.quantity) {
       throw new GatewayError("invalid", "INVALID_RETURN_QTY");
     }
-    resolved.push({
-      order_item_id: matched.id,
-      sku_id: matched.sku_id,
-      quantity: reqItem.quantity,
-    });
+    aggregated.set(matched.id, { matched, quantity: nextQty });
   }
 
-  return resolved;
+  return Array.from(aggregated.values()).map(({ matched, quantity }) => ({
+    order_item_id: matched.id,
+    sku_id: matched.sku_id,
+    quantity,
+  }));
 }
 
 export const GET = apiRoute<Params>(
@@ -80,10 +82,7 @@ export const GET = apiRoute<Params>(
     const raw = await gw<unknown>(`/api/v1/orders/${encodeURIComponent(cleanId)}/returns`);
     const returns = normalizeReturnRequests(raw);
 
-    return Response.json(
-      { returns },
-      { headers: { "Cache-Control": "no-store" } }
-    );
+    return Response.json({ returns }, { headers: { "Cache-Control": "no-store" } });
   },
   { messages: RETURN_ERROR_MESSAGES }
 );

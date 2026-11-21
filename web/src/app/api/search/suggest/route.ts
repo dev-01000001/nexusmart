@@ -1,10 +1,7 @@
 import { gw } from "@/lib/server/gateway";
 import { apiRoute } from "@/lib/server/http";
 import { requireRequestSite } from "@/lib/server/sites";
-import {
-  normalizeSuggestResponse,
-  parseSuggestQuery,
-} from "@/features/search/searchTypes";
+import { normalizeSuggestResponse, parseSuggestQuery } from "@/features/search/searchTypes";
 
 export const GET = apiRoute(
   async (req) => {
@@ -12,10 +9,7 @@ export const GET = apiRoute(
     const q = parseSuggestQuery(req.nextUrl.searchParams.get("q"));
 
     if (!q) {
-      return Response.json(
-        { suggestions: [] },
-        { headers: { "Cache-Control": "no-store" } }
-      );
+      return Response.json({ suggestions: [] }, { headers: { "Cache-Control": "no-store" } });
     }
 
     // Host isolation: always lock shop_id to the site resolved from Host, ignoring client shop_id.

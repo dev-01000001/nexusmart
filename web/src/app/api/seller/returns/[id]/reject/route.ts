@@ -40,7 +40,8 @@ export const POST = apiRoute<RouteCtx>(
   {
     messages: {
       INVALID_REASON: "Lý do từ chối cần tối thiểu 5 ký tự và không vượt quá 500 ký tự.",
-      FAILED_PRECONDITION: "Yêu cầu đổi trả này đã được xử lý hoặc không còn ở trạng thái chờ duyệt.",
+      FAILED_PRECONDITION:
+        "Yêu cầu đổi trả này đã được xử lý hoặc không còn ở trạng thái chờ duyệt.",
     },
   }
 );

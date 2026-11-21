@@ -17,8 +17,7 @@ export const GET = apiRoute(async (req) => {
   const parsedPage = Number.parseInt(params.get("page") ?? "1", 10);
   const page = Number.isFinite(parsedPage) && parsedPage >= 1 ? parsedPage : 1;
   const parsedSize = Number.parseInt(params.get("page_size") ?? "50", 10);
-  const pageSize =
-    Number.isFinite(parsedSize) && parsedSize >= 1 ? Math.min(100, parsedSize) : 50;
+  const pageSize = Number.isFinite(parsedSize) && parsedSize >= 1 ? Math.min(100, parsedSize) : 50;
 
   const raw = await gw<unknown>("/api/v1/notifications", {
     query: {

@@ -1,10 +1,7 @@
 import { gw } from "@/lib/server/gateway";
 import { apiRoute } from "@/lib/server/http";
 import { requireRequestSite } from "@/lib/server/sites";
-import {
-  normalizeSearchResponse,
-  parseSearchQueryParams,
-} from "@/features/search/searchTypes";
+import { normalizeSearchResponse, parseSearchQueryParams } from "@/features/search/searchTypes";
 
 export const GET = apiRoute(
   async (req) => {
