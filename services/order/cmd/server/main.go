@@ -27,13 +27,14 @@ import (
 	"github.com/nexusmart/core/services/order/internal/service"
 	"github.com/nexusmart/core/services/order/internal/store"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "order service exited with error: %v\n", err)
+		logger.New("order").Error("order service exited with error", "error", err)
 		os.Exit(1)
 	}
 }
@@ -120,8 +121,12 @@ func run() error {
 		orderSvc.RunExpiryWatchdog(ctx)
 	}()
 
-	// Prometheus RED metrics and HTTP ops server (/healthz, /readyz, /metrics).
+	// Prometheus RED + Go/process metrics and HTTP ops server (/healthz, /readyz, /metrics).
 	reg := prometheus.NewRegistry()
+	reg.MustRegister(
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		collectors.NewGoCollector(),
+	)
 	red := metrics.NewRED(cfg.ServiceName, reg)
 
 	readyCheck := func(rCtx context.Context) error {
