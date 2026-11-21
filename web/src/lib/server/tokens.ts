@@ -9,6 +9,7 @@ import {
   baseCookie,
 } from "./config.ts";
 import { GatewayError, errorFromResponse } from "./errors.ts";
+import { extractTraceId, generateTraceparent, type TraceContext } from "./trace.ts";
 
 export interface TokenPair {
   accessToken: string;
@@ -97,30 +98,43 @@ const rotations: Map<string, Entry> = (g.__nmRotations ??= new Map());
  * expired / reused / account inactive). Throws GatewayError("unavailable") on outages so the
  * caller keeps the current cookies.
  */
-export async function rotateRefreshToken(refreshToken: string): Promise<TokenPair | null> {
+export async function rotateRefreshToken(
+  refreshToken: string,
+  trace?: Pick<TraceContext, "traceparent" | "tracestate">
+): Promise<TokenPair | null> {
   const key = await sha256Hex(refreshToken);
   const now = Date.now();
   for (const [k, v] of rotations) if (now - v.at > GRACE_MS) rotations.delete(k);
   const hit = rotations.get(key);
   if (hit) return hit.p;
-  const p = callRefresh(refreshToken);
+  const p = callRefresh(refreshToken, trace);
   rotations.set(key, { at: now, p });
   p.catch(() => rotations.delete(key)); // outage: allow a retry on the next request
   return p;
 }
 
-async function callRefresh(refreshToken: string): Promise<TokenPair | null> {
+async function callRefresh(
+  refreshToken: string,
+  trace?: Pick<TraceContext, "traceparent" | "tracestate">
+): Promise<TokenPair | null> {
+  const traceparent = trace?.traceparent || generateTraceparent();
+  const traceId = extractTraceId(traceparent);
   let res: Response;
   try {
     res = await fetch(`${GATEWAY_URL}/api/v1/auth/refresh`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        traceparent,
+        ...(trace?.tracestate ? { tracestate: trace.tracestate } : {}),
+      },
       body: JSON.stringify({ refresh_token: refreshToken }),
       cache: "no-store",
       signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
     });
   } catch {
-    throw new GatewayError("unavailable");
+    throw new GatewayError("unavailable", undefined, "", traceId);
   }
   if (res.ok) {
     const b = (await res.json()) as {
@@ -128,14 +142,16 @@ async function callRefresh(refreshToken: string): Promise<TokenPair | null> {
       refresh_token?: string;
       expires_in_seconds?: number;
     };
-    if (!b.access_token || !b.refresh_token) throw new GatewayError("unavailable");
+    if (!b.access_token || !b.refresh_token) {
+      throw new GatewayError("unavailable", undefined, "", traceId);
+    }
     return {
       accessToken: b.access_token,
       refreshToken: b.refresh_token,
       expiresIn: Number(b.expires_in_seconds) || 900,
     };
   }
-  const err = await errorFromResponse(res);
+  const err = await errorFromResponse(res, traceId);
   if (err.kind === "unavailable" || err.kind === "rate_limited") throw err;
   return null; // 400/401/403/404: session is gone
 }

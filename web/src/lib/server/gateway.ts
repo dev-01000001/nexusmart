@@ -11,6 +11,7 @@ import {
 import { GatewayError, errorFromResponse } from "./errors";
 import { resolveForwardedClientIp } from "./http";
 import { clearAuthCookies, rotateRefreshToken, setAuthCookies } from "./tokens";
+import { resolveTraceContext, type TraceContext } from "./trace";
 
 type QueryValue = string | number | boolean | null | undefined;
 
@@ -51,43 +52,122 @@ export async function gw<T>(path: string, opts: GwOptions = {}): Promise<T> {
 
   let store: Awaited<ReturnType<typeof cookies>> | undefined;
   let access: string | undefined;
+  let trace: TraceContext;
   if (!cacheable) {
     // Forward the browser IP only when proxy headers are explicitly trusted so untrusted
     // callers cannot smuggle spoofed X-Forwarded-For/X-Real-IP headers through the BFF.
     const h = await headers();
     const ip = resolveForwardedClientIp(h);
     if (ip) reqHeaders["X-Forwarded-For"] = ip;
+    trace = resolveTraceContext(h);
+    reqHeaders["traceparent"] = trace.traceparent;
+    if (trace.tracestate) reqHeaders["tracestate"] = trace.tracestate;
     if (opts.auth !== "none") {
       store = await cookies();
       access = store.get(ACCESS_COOKIE)?.value || undefined;
     }
+  } else {
+    trace = resolveTraceContext(null);
+    reqHeaders["traceparent"] = trace.traceparent;
   }
 
   const url = buildUrl(path, opts.query);
   const send = (token?: string) =>
-    doFetch(url, {
-      method,
-      headers: token ? { ...reqHeaders, Authorization: `Bearer ${token}` } : reqHeaders,
-      body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
-      timeoutMs: opts.timeoutMs ?? GATEWAY_TIMEOUT_MS,
-      retry: method === "GET",
-      cacheable,
-      revalidate: opts.revalidate,
-      tags: opts.tags,
-    });
+    doFetch(
+      url,
+      {
+        method,
+        headers: token ? { ...reqHeaders, Authorization: `Bearer ${token}` } : reqHeaders,
+        body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+        timeoutMs: opts.timeoutMs ?? GATEWAY_TIMEOUT_MS,
+        retry: method === "GET",
+        cacheable,
+        revalidate: opts.revalidate,
+        tags: opts.tags,
+        traceId: trace.traceId,
+      },
+      0
+    );
 
   let res = await send(access);
   if (res.status === 401 && store) {
-    const fresh = await refreshInPlace(store);
+    const fresh = await refreshInPlace(store, trace);
     if (fresh) res = await send(fresh);
   }
-  if (!res.ok) throw await errorFromResponse(res);
+  if (!res.ok) throw await errorFromResponse(res, trace.traceId);
   if (res.status === 204) return undefined as T;
   try {
     return (await res.json()) as T;
   } catch {
-    throw new GatewayError("unavailable");
+    throw new GatewayError("unavailable", undefined, "", trace.traceId);
   }
+}
+
+export interface GwRawOptions {
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  query?: Record<string, QueryValue | QueryValue[]>;
+  body?: unknown;
+  auth?: "user" | "none";
+  accept?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Call the gateway and return the raw 2xx `Response` (used by SSE streaming proxies).
+ * Attaches the user's session cookie JWT when present, rotates once on 401, and throws
+ * `GatewayError` on non-2xx or transport errors so callers never leak upstream internals.
+ */
+export async function gwRaw(path: string, opts: GwRawOptions = {}): Promise<Response> {
+  const method = opts.method ?? "GET";
+  const reqHeaders: Record<string, string> = {
+    Accept: opts.accept ?? "text/event-stream",
+  };
+  if (opts.body !== undefined) reqHeaders["Content-Type"] = "application/json";
+
+  const h = await headers();
+  const ip = resolveForwardedClientIp(h);
+  if (ip) reqHeaders["X-Forwarded-For"] = ip;
+  const trace = resolveTraceContext(h);
+  reqHeaders["traceparent"] = trace.traceparent;
+  if (trace.tracestate) reqHeaders["tracestate"] = trace.tracestate;
+
+  let store: Awaited<ReturnType<typeof cookies>> | undefined;
+  let access: string | undefined;
+  if (opts.auth !== "none") {
+    store = await cookies();
+    access = store.get(ACCESS_COOKIE)?.value || undefined;
+  }
+
+  const url = buildUrl(path, opts.query);
+  const timeoutMs = opts.timeoutMs ?? 60_000;
+  const send = async (token?: string): Promise<Response> => {
+    const signals: AbortSignal[] = [AbortSignal.timeout(timeoutMs)];
+    if (opts.signal) signals.push(opts.signal);
+    const combinedSignal =
+      signals.length > 1 && typeof AbortSignal.any === "function"
+        ? AbortSignal.any(signals)
+        : (opts.signal ?? signals[0]);
+    try {
+      return await fetch(url, {
+        method,
+        headers: token ? { ...reqHeaders, Authorization: `Bearer ${token}` } : reqHeaders,
+        body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+        cache: "no-store",
+        signal: combinedSignal,
+      });
+    } catch {
+      throw new GatewayError("unavailable", undefined, "", trace.traceId);
+    }
+  };
+
+  let res = await send(access);
+  if (res.status === 401 && store) {
+    const fresh = await refreshInPlace(store, trace);
+    if (fresh) res = await send(fresh);
+  }
+  if (!res.ok) throw await errorFromResponse(res, trace.traceId);
+  return res;
 }
 
 function buildUrl(path: string, query?: GwOptions["query"]): string {
@@ -110,6 +190,7 @@ interface FetchInit {
   cacheable: boolean;
   revalidate?: number | false;
   tags?: string[];
+  traceId: string;
 }
 
 async function doFetch(url: string, init: FetchInit, attempt = 0): Promise<Response> {
@@ -134,7 +215,7 @@ async function doFetch(url: string, init: FetchInit, attempt = 0): Promise<Respo
       await sleep(200);
       return doFetch(url, init, 1);
     }
-    throw new GatewayError("unavailable");
+    throw new GatewayError("unavailable", undefined, "", init.traceId);
   }
 }
 
@@ -145,7 +226,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * or cookies are read-only here (server component render) – rotating without persisting the new
  * refresh token would get the whole token family revoked on the next request.
  */
-async function refreshInPlace(store: Awaited<ReturnType<typeof cookies>>): Promise<string | null> {
+async function refreshInPlace(
+  store: Awaited<ReturnType<typeof cookies>>,
+  trace?: Pick<TraceContext, "traceparent" | "tracestate">
+): Promise<string | null> {
   const rt = store.get(REFRESH_COOKIE)?.value;
   if (!rt) return null;
   try {
@@ -153,7 +237,7 @@ async function refreshInPlace(store: Awaited<ReturnType<typeof cookies>>): Promi
   } catch {
     return null;
   }
-  const pair = await rotateRefreshToken(rt);
+  const pair = await rotateRefreshToken(rt, trace);
   if (!pair) {
     clearAuthCookies(store);
     return null;

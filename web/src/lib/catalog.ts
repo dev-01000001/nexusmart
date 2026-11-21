@@ -146,6 +146,7 @@ export const loadCatalogLookups = cache(async (): Promise<CatalogLookupsData> =>
   } catch (err) {
     logServer("warn", "catalog_lookups_load_failed", {
       kind: err instanceof GatewayError ? err.kind : "unknown",
+      trace_id: err instanceof GatewayError ? err.traceId : "",
     });
     return {
       lookups: buildCatalogLookups([], []),

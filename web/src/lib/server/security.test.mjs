@@ -1,7 +1,13 @@
 // Run: node --test web/src/lib/server/security.test.mjs (Node 22 type stripping)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GatewayError, SAFE_MESSAGES, errorFromResponse, errorResponse } from "./errors.ts";
+import {
+  GatewayError,
+  SAFE_MESSAGES,
+  errorFromResponse,
+  errorResponse,
+  logServer,
+} from "./errors.ts";
 import {
   assertSameOrigin,
   buildLoginRedirectUrl,
@@ -15,15 +21,25 @@ import {
   REFRESH_COOKIE,
   TRUST_PROXY_HEADERS,
   baseCookie,
+  buildChatWsUrl,
 } from "./config.ts";
+import {
+  extractTraceId,
+  generateTraceparent,
+  isValidTraceparent,
+  redactLogFields,
+  resolveTraceContext,
+  scrubLogString,
+} from "./trace.ts";
 import {
   accessExpiresSoon,
   applyAuthCookiesToHeader,
   clearAuthCookies,
+  rotateRefreshToken,
   setAuthCookies,
 } from "./tokens.ts";
 import { toAddressItem, toGatewayAddressBody } from "./address.ts";
-import { parsePublishedSiteHost } from "./siteLookup.ts";
+import { lookupPublishedSiteHost, parsePublishedSiteHost } from "./siteLookup.ts";
 import {
   assertInStorefront,
   assertPaymentInStorefront,
@@ -597,4 +613,140 @@ test("storefront tenant scoping isolates cart, orders, payments, and vouchers to
     (err) =>
       err instanceof GatewayError && err.status === 400 && err.code === "FOREIGN_SHOP_VOUCHER"
   );
+});
+
+test("buildChatWsUrl converts gateway origin to ws(s) and attaches short-lived ticket", () => {
+  const url = buildChatWsUrl("tk_abc123");
+  assert.match(url, /^wss?:\/\/.+\/api\/v1\/chat\/ws\?ticket=tk_abc123$/);
+});
+
+test("W3C traceparent resolution and log PII/secret redaction protect telemetry and secrets", () => {
+  const generated = generateTraceparent();
+  assert.equal(isValidTraceparent(generated), true);
+  assert.equal(extractTraceId(generated).length, 32);
+  assert.equal(
+    isValidTraceparent("00-00000000000000000000000000000000-1111111111111111-01"),
+    false
+  );
+
+  const incoming = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+  const ctx = resolveTraceContext(new Headers({ traceparent: incoming, tracestate: "vendor=1" }));
+  assert.equal(ctx.traceparent, incoming);
+  assert.equal(ctx.traceId, "4bf92f3577b34da6a3ce929d0e0e4736");
+  assert.equal(ctx.tracestate, "vendor=1");
+
+  const scrubbed = scrubLogString(
+    "Failed Bearer secret.token user=buyer@example.com phone=0909123456 alt=+84 912 345 678 dot=0987.654.321 postgres://app:SuperPass@db:5432/nm"
+  );
+  assert.equal(scrubbed.includes("secret.token"), false);
+  assert.equal(scrubbed.includes("buyer@example.com"), false);
+  assert.equal(scrubbed.includes("0909123456"), false);
+  assert.equal(scrubbed.includes("912 345 678"), false);
+  assert.equal(scrubbed.includes("0987.654.321"), false);
+  assert.equal(scrubbed.includes("SuperPass"), false);
+
+  const redacted = redactLogFields({
+    trace_id: "4bf92f3577b34da6a3ce929d0e0e4736",
+    email: "buyer@example.com",
+    access_token: "abc",
+    nested: { recipient_name: "Nguyen An", note: "ok" },
+  });
+  assert.equal(redacted.trace_id, "4bf92f3577b34da6a3ce929d0e0e4736");
+  assert.equal(redacted.email, "[REDACTED]");
+  assert.equal(redacted.access_token, "[REDACTED]");
+  assert.deepEqual(redacted.nested, { recipient_name: "[REDACTED]", note: "ok" });
+});
+
+test("logServer emits JSON with RFC3339 time, trace_id, and redacted PII/secrets in msg and fields", () => {
+  const captured = [];
+  const origLog = console.log;
+  const origErr = console.error;
+  console.log = (line) => captured.push(line);
+  console.error = (line) => captured.push(line);
+  try {
+    logServer("warn", "Failed for buyer@example.com phone +84 909 123 456 Bearer top.secret.tok", {
+      trace_id: "4bf92f3577b34da6a3ce929d0e0e4736",
+      authorization: "Bearer raw-auth",
+      phone: "0909123456",
+      detail: "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1MSJ9.sig1234567890",
+    });
+    assert.equal(captured.length, 1);
+    const parsed = JSON.parse(captured[0]);
+    assert.equal(parsed.level, "warn");
+    assert.equal(parsed.service, "web-bff");
+    assert.equal(parsed.trace_id, "4bf92f3577b34da6a3ce929d0e0e4736");
+    assert.match(parsed.time, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    assert.equal(parsed.msg.includes("buyer@example.com"), false);
+    assert.equal(parsed.msg.includes("909 123 456"), false);
+    assert.equal(parsed.msg.includes("top.secret.tok"), false);
+    assert.equal(parsed.authorization, "[REDACTED]");
+    assert.equal(parsed.phone, "[REDACTED]");
+    assert.equal(parsed.detail.includes("eyJhbGci"), false);
+
+    // errorResponse logs fallback trace_id without leaking it to the browser response.
+    captured.length = 0;
+    const res = errorResponse(new Error("boom"), {}, "4bf92f3577b34da6a3ce929d0e0e4736");
+    assert.equal(res.status, 503);
+    assert.equal(captured.length, 1);
+    const errLog = JSON.parse(captured[0]);
+    assert.equal(errLog.trace_id, "4bf92f3577b34da6a3ce929d0e0e4736");
+    assert.equal(errLog.msg, "bff_unhandled_error");
+  } finally {
+    console.log = origLog;
+    console.error = origErr;
+  }
+});
+
+test("callRefresh and lookupPublishedSiteHost propagate or generate W3C traceparent headers", async () => {
+  const seen = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), headers: init?.headers ?? {} });
+    if (String(url).includes("/api/v1/auth/refresh")) {
+      return new Response(
+        JSON.stringify({
+          access_token: "new-at",
+          refresh_token: "new-rt",
+          expires_in_seconds: 900,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        site: {
+          id: "site-1",
+          shop_id: "shop-a",
+          status: "PUBLISHED",
+          primary_host: "shop.nexusmart.localhost",
+        },
+        shop: { status: "ACTIVE" },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+  };
+  try {
+    const incoming = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    const pair = await rotateRefreshToken("rt-unique-trace-test-1", {
+      traceparent: incoming,
+      tracestate: "congo=t61rcWkgMzE",
+    });
+    assert.equal(pair?.accessToken, "new-at");
+    assert.equal(seen[0].headers.traceparent, incoming);
+    assert.equal(seen[0].headers.tracestate, "congo=t61rcWkgMzE");
+
+    const siteWithTrace = await lookupPublishedSiteHost("shop.nexusmart.localhost", {
+      traceparent: incoming,
+      tracestate: "vendor=1",
+    });
+    assert.equal(siteWithTrace.status, "found");
+    assert.equal(seen[1].headers.traceparent, incoming);
+    assert.equal(seen[1].headers.tracestate, "vendor=1");
+
+    const siteAutoTrace = await lookupPublishedSiteHost("shop.nexusmart.localhost");
+    assert.equal(siteAutoTrace.status, "found");
+    assert.equal(isValidTraceparent(seen[2].headers.traceparent), true);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 });

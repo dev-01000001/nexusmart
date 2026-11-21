@@ -1,5 +1,6 @@
 // Error model shared by every BFF route. Gateway internals (messages, trace ids) stay on the
 // server; the browser only ever sees { error: { code, message } } with a Vietnamese message.
+import { redactLogFields, scrubLogString } from "./trace.ts";
 
 export type GatewayErrorKind =
   | "unauthenticated" // 401 – no session / session expired
@@ -62,7 +63,10 @@ export function kindFromStatus(status: number): GatewayErrorKind {
 }
 
 /** Build a GatewayError from a non-2xx gateway response (reads the standard error envelope). */
-export async function errorFromResponse(res: Response): Promise<GatewayError> {
+export async function errorFromResponse(
+  res: Response,
+  fallbackTraceId = ""
+): Promise<GatewayError> {
   const kind = kindFromStatus(res.status);
   let code = "";
   let detail = "";
@@ -77,14 +81,25 @@ export async function errorFromResponse(res: Response): Promise<GatewayError> {
   } catch {
     // non-JSON body (proxy error page etc.)
   }
+  if (!traceId) {
+    traceId = res.headers.get("x-trace-id")?.trim() || fallbackTraceId;
+  }
   // Internal failures never expose the backend code.
   if (kind === "unavailable") code = "UNAVAILABLE";
   return new GatewayError(kind, code || undefined, detail, traceId);
 }
 
-/** Structured JSON log line without PII/secrets. */
+/** Structured JSON log line with RFC3339 timestamp, trace_id, and PII/secret redaction. */
 export function logServer(level: "info" | "warn" | "error", msg: string, fields: object = {}) {
-  const line = JSON.stringify({ level, msg, service: "web-bff", ...fields });
+  const safeFields = redactLogFields(fields as Record<string, unknown>);
+  const line = JSON.stringify({
+    time: new Date().toISOString(),
+    level,
+    msg: scrubLogString(msg),
+    service: "web-bff",
+    trace_id: typeof safeFields.trace_id === "string" ? safeFields.trace_id : "",
+    ...safeFields,
+  });
   if (level === "error") console.error(line);
   else console.log(line);
 }
@@ -94,15 +109,23 @@ export function logServer(level: "info" | "warn" | "error", msg: string, fields:
  * `messages` overrides the Vietnamese text per `code` (or per kind), e.g.
  * `{ FAILED_PRECONDITION: "Sản phẩm vừa hết hàng." }`.
  */
-export function errorResponse(err: unknown, messages: Record<string, string> = {}): Response {
+export function errorResponse(
+  err: unknown,
+  messages: Record<string, string> = {},
+  fallbackTraceId = ""
+): Response {
   const e =
-    err instanceof GatewayError ? err : new GatewayError("unavailable", "UNAVAILABLE", String(err));
+    err instanceof GatewayError
+      ? err
+      : new GatewayError("unavailable", "UNAVAILABLE", String(err), fallbackTraceId);
+  const traceId = e.traceId || fallbackTraceId;
   if (!(err instanceof GatewayError)) {
     logServer("error", "bff_unhandled_error", {
+      trace_id: traceId,
       error: err instanceof Error ? err.name : typeof err,
     });
   } else if (e.kind === "unavailable") {
-    logServer("warn", "bff_gateway_unavailable", { trace_id: e.traceId });
+    logServer("warn", "bff_gateway_unavailable", { trace_id: traceId });
   }
   const message = messages[e.code] ?? messages[e.kind] ?? SAFE_MESSAGES[e.kind];
   return Response.json(

@@ -1,6 +1,7 @@
 // Server-only multi-tenant site data loaders & storefront verification helpers.
 // Import only from Server Components and Route Handlers (never from client components or Edge middleware).
 import { cache } from "react";
+import { headers as nextHeaders } from "next/headers";
 import type { FlashSaleItem, FlashSaleSlot } from "@/data/flash-sale";
 import { CATEGORIES, PRODUCTS, type CategoryInfo, type Product } from "@/data/products";
 import { SHOPS, type Shop } from "@/data/shops";
@@ -32,6 +33,7 @@ import { GatewayError, logServer } from "./errors";
 import { gw } from "./gateway";
 import { resolveRequestHost } from "./http";
 import { lookupPublishedSiteHost, publishedSiteHostCache } from "./siteLookup";
+import { resolveTraceContext } from "./trace";
 
 const SITE_REVALIDATE_SECONDS = 30;
 
@@ -56,10 +58,12 @@ export async function resolveSiteFromRequest(
   const headers = "headers" in source ? source.headers : source;
   const cls = classifyHost(resolveRequestHost(headers), getSiteRootDomain());
   if (!isTenantSiteHost(cls)) return null;
+  const trace = resolveTraceContext(headers);
   const lookup = opts.fresh
-    ? await lookupPublishedSiteHost(cls.hostname)
-    : await publishedSiteHostCache.resolve(cls.hostname, lookupPublishedSiteHost);
-  if (lookup.status === "error") throw new GatewayError("unavailable");
+    ? await lookupPublishedSiteHost(cls.hostname, trace)
+    : await publishedSiteHostCache.resolve(cls.hostname, (h) => lookupPublishedSiteHost(h, trace));
+  if (lookup.status === "error")
+    throw new GatewayError("unavailable", undefined, "", trace.traceId);
   if (lookup.status !== "found") return null;
   return { siteId: lookup.siteId, shopId: lookup.shopId, host: cls.hostname };
 }
@@ -186,6 +190,7 @@ export const fetchPublishedSiteByHost = cache(
       logServer("warn", "site_by_host_fetch_failed", {
         host: hostname,
         kind: err instanceof GatewayError ? err.kind : "unknown",
+        trace_id: err instanceof GatewayError ? err.traceId : "",
       });
       return null;
     }
@@ -207,11 +212,21 @@ export async function fetchPublishedSiteByShop(
   try {
     let raw: RawPublicSiteResponse;
     if (opts.uncached) {
+      let trace = resolveTraceContext(null);
+      try {
+        trace = resolveTraceContext(await nextHeaders());
+      } catch {
+        // Fallback to generated trace context when called outside a request scope.
+      }
       const res = await fetch(
         `${GATEWAY_URL}/api/v1/sites/by-shop/${encodeURIComponent(cleanShopId)}`,
         {
           method: "GET",
-          headers: { Accept: "application/json" },
+          headers: {
+            Accept: "application/json",
+            traceparent: trace.traceparent,
+            ...(trace.tracestate ? { tracestate: trace.tracestate } : {}),
+          },
           cache: "no-store",
           signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
         }
@@ -250,6 +265,7 @@ export async function fetchPublishedSiteByShop(
     logServer("warn", "site_by_shop_fetch_failed", {
       shopId: cleanShopId,
       kind: err instanceof GatewayError ? err.kind : "unknown",
+      trace_id: err instanceof GatewayError ? err.traceId : "",
     });
     return null;
   }
