@@ -10,6 +10,9 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nexusmart/core/pkg/common/telemetry"
 	"github.com/nexusmart/core/services/shipping/internal/store"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // OrderCancelHandler handles order.cancelled events for the shipping service.
@@ -89,6 +92,11 @@ func (c *Consumer) handleMsg(baseCtx context.Context, msg *nats.Msg) {
 			ctx = telemetry.ExtractTraceHeaders(ctx, carrierMap)
 		}
 	}
+	ctx, span := otel.Tracer("shipping").Start(ctx, "nats.consume "+msg.Subject,
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(attribute.String("messaging.destination", msg.Subject)),
+	)
+	defer span.End()
 
 	var delivered uint64 = 1
 	if meta, err := msg.Metadata(); err == nil && meta != nil {
@@ -153,6 +161,11 @@ func (c *Consumer) sendToDLQ(ctx context.Context, eventID, subject string, raw [
 	})
 	dlqMsg := nats.NewMsg("dlq." + subject)
 	dlqMsg.Data = dlqPayload
+	traceHdrs := map[string]string{}
+	telemetry.InjectTraceHeaders(ctx, traceHdrs)
+	for k, v := range traceHdrs {
+		dlqMsg.Header.Set(k, v)
+	}
 	if _, err := c.js.PublishMsg(dlqMsg); err != nil {
 		c.logger.ErrorContext(ctx, "publish to NEXUSMART_DLQ failed",
 			slog.String("subject", "dlq."+subject),
