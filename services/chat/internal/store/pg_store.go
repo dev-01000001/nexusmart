@@ -743,13 +743,13 @@ type rowScanner interface {
 
 func scanConversation(r rowScanner) (Conversation, error) {
 	var (
-		c              Conversation
-		id             pgtype.UUID
-		lastMsgID      pgtype.UUID
-		lastMsgAt      pgtype.Timestamptz
-		buyerReadAt    pgtype.Timestamptz
-		sellerReadAt   pgtype.Timestamptz
-		lastAutoReply  pgtype.Timestamptz
+		c             Conversation
+		id            pgtype.UUID
+		lastMsgID     pgtype.UUID
+		lastMsgAt     pgtype.Timestamptz
+		buyerReadAt   pgtype.Timestamptz
+		sellerReadAt  pgtype.Timestamptz
+		lastAutoReply pgtype.Timestamptz
 	)
 	err := r.Scan(
 		&id,
@@ -783,13 +783,13 @@ func scanConversation(r rowScanner) (Conversation, error) {
 
 func scanConversationWithUnread(r rowScanner) (Conversation, error) {
 	var (
-		c              Conversation
-		id             pgtype.UUID
-		lastMsgID      pgtype.UUID
-		lastMsgAt      pgtype.Timestamptz
-		buyerReadAt    pgtype.Timestamptz
-		sellerReadAt   pgtype.Timestamptz
-		lastAutoReply  pgtype.Timestamptz
+		c             Conversation
+		id            pgtype.UUID
+		lastMsgID     pgtype.UUID
+		lastMsgAt     pgtype.Timestamptz
+		buyerReadAt   pgtype.Timestamptz
+		sellerReadAt  pgtype.Timestamptz
+		lastAutoReply pgtype.Timestamptz
 	)
 	err := r.Scan(
 		&id,

@@ -14,25 +14,25 @@ const defaultMaxImageBytes = 5 * 1024 * 1024 // 5 MiB
 
 // Config holds runtime configuration for the chat service.
 type Config struct {
-	ServiceName        string
-	InstanceID         string
-	GRPCPort           string
-	HTTPPort           string
-	DatabaseURL        string
-	RedisAddr          string
-	RedisPassword      string
-	JWTSecret          string
-	ServiceJWTSecret   string
-	UserGRPCAddr       string
-	SiteRootDomain     string
-	WSTicketTTL        time.Duration
-	WSAllowedOrigins   []string
-	ImageMaxBytes      int64
-	ImageValidateMode  string
-	ImageAllowedHosts  []string
-	OTLPEndpoint       string
-	OTLPInsecure       bool
-	LogLevel           slog.Level
+	ServiceName       string
+	InstanceID        string
+	GRPCPort          string
+	HTTPPort          string
+	DatabaseURL       string
+	RedisAddr         string
+	RedisPassword     string
+	JWTSecret         string
+	ServiceJWTSecret  string
+	UserGRPCAddr      string
+	SiteRootDomain    string
+	WSTicketTTL       time.Duration
+	WSAllowedOrigins  []string
+	ImageMaxBytes     int64
+	ImageValidateMode string
+	ImageAllowedHosts []string
+	OTLPEndpoint      string
+	OTLPInsecure      bool
+	LogLevel          slog.Level
 }
 
 // Load parses environment variables with dev/sandbox defaults.
