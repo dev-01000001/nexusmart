@@ -239,6 +239,9 @@ func (c *OrderCompletedConsumer) handleNATSMsg(parentCtx context.Context, subjec
 
 	msgCtx, cancel := context.WithTimeout(parentCtx, 15*time.Second)
 	defer cancel()
+	if len(headers) > 0 {
+		msgCtx = telemetry.ExtractTraceHeaders(msgCtx, headers)
+	}
 
 	var (
 		shouldAck bool
@@ -251,7 +254,7 @@ func (c *OrderCompletedConsumer) handleNATSMsg(parentCtx context.Context, subjec
 	}
 	if shouldAck {
 		if ackErr := msg.Ack(); ackErr != nil {
-			c.logger.Warn("failed to ack nats message",
+			c.logger.WarnContext(msgCtx, "failed to ack nats message",
 				slog.String("subject", subject),
 				slog.String("error", ackErr.Error()),
 			)
@@ -262,7 +265,7 @@ func (c *OrderCompletedConsumer) handleNATSMsg(parentCtx context.Context, subjec
 	if delay > 10*time.Second {
 		delay = 10 * time.Second
 	}
-	c.logger.Warn("nacking nats message for retry",
+	c.logger.WarnContext(msgCtx, "nacking nats message for retry",
 		slog.String("subject", subject),
 		slog.Uint64("attempt", delivered),
 		slog.String("error", fmt.Sprint(retryErr)),

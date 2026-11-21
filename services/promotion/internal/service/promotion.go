@@ -680,9 +680,9 @@ func (s *PromotionService) StartFlashSaleSweeper(ctx context.Context, interval t
 				n, err := s.SweepExpiredFlashSales(sweepCtx)
 				cancel()
 				if err != nil && ctx.Err() == nil {
-					s.logger.Warn("flash sale expiry sweep error", slog.String("error", err.Error()))
+					s.logger.WarnContext(sweepCtx, "flash sale expiry sweep error", slog.String("error", err.Error()))
 				} else if n > 0 {
-					s.logger.Info("swept expired flash sale items", slog.Int("released_items", n))
+					s.logger.InfoContext(sweepCtx, "swept expired flash sale items", slog.Int("released_items", n))
 				}
 			}
 		}
@@ -1032,7 +1032,7 @@ func (s *PromotionService) ReservePromotion(ctx context.Context, req *promotionv
 
 	breakdownBytes, err := protojson.Marshal(breakdown)
 	if err != nil {
-		s.compensateRedisRelease(orderID)
+		s.compensateRedisRelease(ctx, orderID)
 		return nil, status.Errorf(codes.Internal, "marshal discount breakdown: %v", err)
 	}
 
@@ -1048,7 +1048,7 @@ func (s *PromotionService) ReservePromotion(ctx context.Context, req *promotionv
 		BreakdownJSON:  breakdownBytes,
 	})
 	if err != nil {
-		s.compensateRedisRelease(orderID)
+		s.compensateRedisRelease(ctx, orderID)
 		switch {
 		case errors.Is(err, store.ErrInsufficientCoins):
 			return nil, status.Error(codes.FailedPrecondition, "insufficient coin balance")
@@ -1136,11 +1136,11 @@ func (s *PromotionService) ReleaseReservationByOrderID(ctx context.Context, orde
 	return redisOutcome.AlreadyReleased && pgAlreadyReleased, nil
 }
 
-func (s *PromotionService) compensateRedisRelease(orderID string) {
-	compCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (s *PromotionService) compensateRedisRelease(ctx context.Context, orderID string) {
+	compCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if _, err := s.engine.Release(compCtx, orderID); err != nil {
-		s.logger.Error("failed to compensate redis promotion reservation after postgres failure",
+		s.logger.ErrorContext(compCtx, "failed to compensate redis promotion reservation after postgres failure",
 			slog.String("order_id", orderID),
 			slog.String("error", err.Error()),
 		)
