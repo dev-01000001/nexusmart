@@ -216,12 +216,12 @@ export function classifyOutcome(res, metrics, isBusinessRejection = null) {
   return 'client_error';
 }
 
-export function login(cfg, email, password) {
+export function login(cfg, email, password, xffIp = '') {
   const { data } = mustJson(
     'POST',
     `${cfg.gatewayUrl}/api/v1/auth/login`,
     { email: email, password: password },
-    { timeout: cfg.httpTimeout, tags: { phase: 'setup', endpoint: 'auth_login' } },
+    { xffIp: xffIp, timeout: cfg.httpTimeout, tags: { phase: 'setup', endpoint: 'auth_login' } },
     [200]
   );
   if (!data || !data.access_token) {
@@ -248,30 +248,31 @@ export function extractOtp(parts) {
 }
 
 export function waitForOtp(cfg, email, timeoutSec = 20) {
-  const target = email.toLowerCase().trim();
   const deadline = Date.now() + timeoutSec * 1000;
+  const searchQuery = encodeURIComponent(`to:"${email}"`);
+  const searchUrl = `${cfg.mailpitUrl}/api/v1/search?query=${searchQuery}&limit=5`;
+  const mailpitTimeout = envStr('MAILPIT_TIMEOUT', '10s');
+  let lastStatus = 0;
+
   while (Date.now() < deadline) {
-    const listRes = jsonRequest('GET', `${cfg.mailpitUrl}/api/v1/messages?limit=100`, null, {
-      timeout: cfg.httpTimeout,
-      tags: { phase: 'setup', endpoint: 'mailpit_list' },
+    const listRes = jsonRequest('GET', searchUrl, null, {
+      timeout: mailpitTimeout,
+      tags: { phase: 'setup', endpoint: 'mailpit_search' },
     });
-    if (listRes.status === 200) {
+    lastStatus = listRes ? listRes.status : 0;
+    if (lastStatus === 200) {
       const list = parseJson(listRes);
       const messages = (list && list.messages) || [];
       for (let i = 0; i < messages.length; i++) {
         const msg = messages[i];
-        const recipients = msg.To || [];
-        const matched = recipients.some(
-          (r) => r && r.Address && String(r.Address).toLowerCase().trim() === target
-        );
-        if (!matched) {
+        if (!msg || !msg.ID) {
           continue;
         }
         const fullRes = jsonRequest('GET', `${cfg.mailpitUrl}/api/v1/message/${msg.ID}`, null, {
-          timeout: cfg.httpTimeout,
+          timeout: mailpitTimeout,
           tags: { phase: 'setup', endpoint: 'mailpit_get' },
         });
-        if (fullRes.status === 200) {
+        if (fullRes && fullRes.status === 200) {
           const full = parseJson(fullRes) || {};
           const otp = extractOtp([full.Subject, full.Text, full.HTML, msg.Snippet]);
           if (otp) {
@@ -282,10 +283,12 @@ export function waitForOtp(cfg, email, timeoutSec = 20) {
     }
     sleep(0.3);
   }
-  throw new Error(`timed out after ${timeoutSec}s waiting for OTP email to ${email} via ${cfg.mailpitUrl}`);
+  throw new Error(
+    `timed out after ${timeoutSec}s waiting for OTP email to ${email} via ${searchUrl} (last_status=${lastStatus})`
+  );
 }
 
-export function registerVerifyAndLogin(cfg, label, seq = 1, runId = '') {
+export function registerVerifyAndLogin(cfg, label, seq = 1, runId = '', xffIp = '') {
   const tag = runId || shortRunId();
   const email = `${label}-${tag}-${seq}@nexusmart.test`;
   const phone = uniquePhone(seq);
@@ -300,7 +303,7 @@ export function registerVerifyAndLogin(cfg, label, seq = 1, runId = '') {
       phone: phone,
       password: password,
     },
-    { timeout: cfg.httpTimeout, tags: { phase: 'setup', endpoint: 'auth_register' } },
+    { xffIp: xffIp, timeout: cfg.httpTimeout, tags: { phase: 'setup', endpoint: 'auth_register' } },
     [200, 201]
   );
 
@@ -310,14 +313,14 @@ export function registerVerifyAndLogin(cfg, label, seq = 1, runId = '') {
     'POST',
     `${cfg.gatewayUrl}/api/v1/auth/verify-otp`,
     { email: email, otp: otp },
-    { timeout: cfg.httpTimeout, tags: { phase: 'setup', endpoint: 'auth_verify_otp' } },
+    { xffIp: xffIp, timeout: cfg.httpTimeout, tags: { phase: 'setup', endpoint: 'auth_verify_otp' } },
     [200]
   );
   if (!verify.data || !verify.data.verified) {
     throw new Error(`verify-otp failed for ${email}`);
   }
 
-  const auth = login(cfg, email, password);
+  const auth = login(cfg, email, password, xffIp);
   return {
     userId: (auth.user && auth.user.id) || (reg.data && reg.data.user_id) || '',
     email: email,
@@ -357,7 +360,7 @@ export function fetchProvinceAndWard(cfg) {
   return { province: chosenProv, ward: wards[0] };
 }
 
-export function createAddress(cfg, token, phone, province, ward, streetLabel = '123 Le Loi Load Test') {
+export function createAddress(cfg, token, phone, province, ward, streetLabel = '123 Le Loi Load Test', xffIp = '') {
   const { data } = mustJson(
     'POST',
     `${cfg.gatewayUrl}/api/v1/users/me/addresses`,
@@ -371,7 +374,7 @@ export function createAddress(cfg, token, phone, province, ward, streetLabel = '
       street_address: streetLabel,
       is_default: true,
     },
-    { token: token, timeout: cfg.httpTimeout, tags: { phase: 'setup', endpoint: 'create_address' } },
+    { token: token, xffIp: xffIp, timeout: cfg.httpTimeout, tags: { phase: 'setup', endpoint: 'create_address' } },
     [200, 201]
   );
   if (!data || !data.address || !data.address.id) {
@@ -487,9 +490,24 @@ export function createApprovedProduct(cfg, sellerToken, adminToken, categoryId, 
   const tag = opts.runId || shortRunId();
   const name = opts.name || `Load Test Product ${tag}`;
   const priceVnd = opts.priceVnd || 199000;
-  const stock = opts.stock || 50000;
+  const totalStock = opts.stock || 50000;
   const weightGrams = opts.weightGrams || 300;
-  const skuCode = `K6-${tag.toUpperCase()}-${Math.floor(Math.random() * 10000)}`;
+  const skuCount = Math.max(1, opts.skuCount || 1);
+  const perSkuStock = Math.max(1, Math.ceil(totalStock / skuCount));
+  const randSuffix = Math.floor(Math.random() * 10000);
+
+  const skuInputs = [];
+  for (let i = 1; i <= skuCount; i++) {
+    skuInputs.push({
+      sku_code: `K6-${tag.toUpperCase()}-${randSuffix}-${String(i).padStart(2, '0')}`,
+      name: skuCount === 1 ? 'Load Variant Standard' : `Load Variant #${i}`,
+      attributes: { edition: 'load-test', slot: String(i) },
+      price_vnd: priceVnd,
+      stock: perSkuStock,
+      weight_grams: weightGrams,
+      image_url: 'https://sandbox.nexusmart.local/img/k6-sku.png',
+    });
+  }
 
   const created = mustJson(
     'POST',
@@ -499,17 +517,7 @@ export function createApprovedProduct(cfg, sellerToken, adminToken, categoryId, 
       name: name,
       description: `Ephemeral k6 load-test product (${tag})`,
       images: ['https://sandbox.nexusmart.local/img/k6-load.png'],
-      skus: [
-        {
-          sku_code: skuCode,
-          name: 'Load Variant Standard',
-          attributes: { edition: 'load-test' },
-          price_vnd: priceVnd,
-          stock: stock,
-          weight_grams: weightGrams,
-          image_url: 'https://sandbox.nexusmart.local/img/k6-sku.png',
-        },
-      ],
+      skus: skuInputs,
     },
     { token: sellerToken, timeout: cfg.httpTimeout, tags: { phase: 'setup', endpoint: 'create_product' } },
     [200, 201]
@@ -529,8 +537,9 @@ export function createApprovedProduct(cfg, sellerToken, adminToken, categoryId, 
   );
 
   const approvedProduct = (reviewed.data && reviewed.data.product) || product;
-  const sku = (approvedProduct.skus && approvedProduct.skus[0]) || product.skus[0];
-  return { product: approvedProduct, sku: sku };
+  const skus =
+    approvedProduct.skus && approvedProduct.skus.length > 0 ? approvedProduct.skus : product.skus;
+  return { product: approvedProduct, sku: skus[0], skus: skus };
 }
 
 export function discoverProducts(cfg, pageSize = 20) {
@@ -603,9 +612,18 @@ export function setupBuyerPool(cfg, desiredCount, province, ward, runId, label =
   }
 
   for (let i = 1; i <= desiredCount; i++) {
+    const setupXffIp = cfg.spoofXff ? vuSyntheticIp(1000 + i) : '';
     try {
-      const b = registerVerifyAndLogin(cfg, label, i, runId);
-      const addr = createAddress(cfg, b.accessToken, b.phone, province, ward, `Load Addr ${runId} #${i}`);
+      const b = registerVerifyAndLogin(cfg, label, i, runId, setupXffIp);
+      const addr = createAddress(
+        cfg,
+        b.accessToken,
+        b.phone,
+        province,
+        ward,
+        `Load Addr ${runId} #${i}`,
+        setupXffIp
+      );
       buyers.push({
         userId: b.userId,
         email: b.email,

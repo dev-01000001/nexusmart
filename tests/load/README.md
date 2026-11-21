@@ -58,7 +58,7 @@ export PATH="$HOME/.local/bin:$PATH"
 k6 run -e VUS=10 -e DURATION=15s -e BUYER_POOL_SIZE=5 tests/load/checkout.js
 
 # 1b. Checkout & Read API (full 200-VU spec run — raise/disable gateway rate limits first)
-k6 run -e VUS=200 -e DURATION=30s -e BUYER_POOL_SIZE=50 tests/load/checkout.js
+k6 run -e VUS=200 -e DURATION=30s -e BUYER_POOL_SIZE=20 -e SKU_POOL_SIZE=20 tests/load/checkout.js
 
 # 2. Flash Sale via Gateway HTTP (1,000 requests / 100 slots)
 k6 run -e MODE=http -e VUS=100 -e TOTAL_REQUESTS=1000 -e TOTAL_SLOTS=100 tests/load/flash-sale.js

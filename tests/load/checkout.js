@@ -32,7 +32,8 @@ const DURATION = envStr('DURATION', '30s');
 const RAMP_UP = envStr('RAMP_UP', TARGET_VUS >= 50 ? '10s' : '2s');
 const RAMP_DOWN = envStr('RAMP_DOWN', TARGET_VUS >= 50 ? '5s' : '1s');
 const CHECKOUT_RATIO = envFloat('CHECKOUT_RATIO', 0.2);
-const BUYER_POOL_SIZE = envInt('BUYER_POOL_SIZE', 10);
+const BUYER_POOL_SIZE = envInt('BUYER_POOL_SIZE', 20);
+const SKU_POOL_SIZE = envInt('SKU_POOL_SIZE', 20);
 const PRODUCT_STOCK = envInt('PRODUCT_STOCK', 50000);
 const SLEEP_MS = envInt('SLEEP_MS', 200);
 
@@ -59,6 +60,7 @@ export const options = {
   thresholds: {
     read_duration: ['p(95)<300'],
     checkout_duration: ['p(95)<1000'],
+    checkout_created: ['count>0'],
     server_errors_5xx: ['count==0'],
   },
 };
@@ -70,18 +72,30 @@ export function setup() {
   const seller = ensureSeller(CFG, admin.accessToken, province, ward, runId);
   const category = ensureCategory(CFG, admin.accessToken, runId);
 
-  // Create an ephemeral high-stock product so load testing never drains seeded catalog SKUs.
-  const { product, sku } = createApprovedProduct(CFG, seller.accessToken, admin.accessToken, category.id, {
+  // Create an ephemeral multi-SKU high-stock product so load testing neither drains seeded SKUs
+  // nor creates artificial single-row optimistic-locking contention across 200 VUs.
+  const { product, skus } = createApprovedProduct(CFG, seller.accessToken, admin.accessToken, category.id, {
     runId: runId,
     name: `Load Checkout Product ${runId}`,
     priceVnd: 199000,
     stock: PRODUCT_STOCK,
+    skuCount: SKU_POOL_SIZE,
     weightGrams: 300,
   });
+  const skuIds = skus.map((s) => s.id).filter(Boolean);
+  if (skuIds.length === 0) {
+    throw new Error('checkout setup failed: no SKUs created for ephemeral product');
+  }
 
   const buyers = setupBuyerPool(CFG, BUYER_POOL_SIZE, province, ward, runId, 'k6-co-buyer');
   if (buyers.length === 0) {
     throw new Error('checkout setup failed: buyer pool is empty');
+  }
+  if (buyers.length === 1 && BUYER_POOL_SIZE > 1) {
+    console.warn(
+      `[checkout setup] WARNING: buyer pool fell back to 1 buyer (requested ${BUYER_POOL_SIZE}); ` +
+        `per-user rate limiting (RATE_LIMIT_USER_PER_MIN) may throttle authenticated requests`
+    );
   }
 
   const quote = calculateShippingQuote(CFG, buyers[0].accessToken, seller.shopId, province, ward, 300, 199000);
@@ -93,14 +107,16 @@ export function setup() {
 
   console.log(
     `[checkout setup] run=${runId} vus=${TARGET_VUS} duration=${DURATION} buyers=${buyers.length} ` +
-      `sku=${sku.id} stock=${PRODUCT_STOCK} carrier=${quote.carrier_code}/${quote.service_code}`
+      `skus=${skuIds.length} stock_per_sku=${Math.ceil(PRODUCT_STOCK / skuIds.length)} ` +
+      `carrier=${quote.carrier_code}/${quote.service_code}`
   );
 
   return {
     runId: runId,
     shopId: seller.shopId,
     productId: product.id,
-    skuId: sku.id,
+    skuId: skuIds[0],
+    skuIds: skuIds,
     productIds: productIds,
     carrierCode: quote.carrier_code || 'ghn',
     serviceCode: quote.service_code || 'standard',
@@ -156,12 +172,13 @@ function runReadRequest(data, buyer, xffIp) {
 
 function runCheckoutRequest(data, buyer, xffIp) {
   const idemKey = `load-co-${data.runId}-${__VU}-${__ITER}-${uuidv4()}`;
+  const skuId = data.skuIds[(__VU - 1) % data.skuIds.length];
   const payload = {
     address_id: buyer.addressId,
     from_cart: false,
     items: [
       {
-        sku_id: data.skuId,
+        sku_id: skuId,
         quantity: 1,
       },
     ],
