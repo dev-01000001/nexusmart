@@ -175,11 +175,12 @@ func complaintResolutionString(r orderv1.ComplaintResolution) string {
 
 func parseComplaintResolution(s string) orderv1.ComplaintResolution {
 	switch strings.ToUpper(strings.TrimSpace(s)) {
-	case "REFUND", "COMPLAINT_RESOLUTION_REFUND", "APPROVE", "APPROVE_REFUND":
+	case "REFUND", "COMPLAINT_RESOLUTION_REFUND", "APPROVE", "APPROVE_REFUND",
+		"REFUND_BUYER", "PARTIAL_REFUND", "APPROVE_RETURN":
 		return orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_REFUND
 	case "REPLACE", "EXCHANGE", "COMPLAINT_RESOLUTION_REPLACE":
 		return orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_REPLACE
-	case "DISMISS", "REJECT", "DENY", "COMPLAINT_RESOLUTION_DISMISS":
+	case "DISMISS", "REJECT", "DENY", "REJECT_COMPLAINT", "COMPLAINT_RESOLUTION_DISMISS":
 		return orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_DISMISS
 	default:
 		return orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_UNSPECIFIED
@@ -531,15 +532,20 @@ func (h *handler) handleAdminListComplaints(w http.ResponseWriter, r *http.Reque
 func (h *handler) handleAdminResolveComplaint(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Resolution            string `json:"resolution"`
+		Decision              string `json:"decision"`
 		AdminNote             string `json:"admin_note"`
 		Note                  string `json:"note"`
-		RequireReturnShipping bool   `json:"require_return_shipping"`
+		RequireReturnShipping *bool  `json:"require_return_shipping"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 		return
 	}
-	resolution := parseComplaintResolution(body.Resolution)
+	rawResolution := strings.TrimSpace(body.Resolution)
+	if rawResolution == "" {
+		rawResolution = strings.TrimSpace(body.Decision)
+	}
+	resolution := parseComplaintResolution(rawResolution)
 	if resolution == orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_UNSPECIFIED {
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "resolution must be refund, replace, or dismiss")
 		return
@@ -547,6 +553,12 @@ func (h *handler) handleAdminResolveComplaint(w http.ResponseWriter, r *http.Req
 	adminNote := strings.TrimSpace(body.AdminNote)
 	if adminNote == "" {
 		adminNote = strings.TrimSpace(body.Note)
+	}
+	requireReturnShipping := false
+	if body.RequireReturnShipping != nil {
+		requireReturnShipping = *body.RequireReturnShipping
+	} else if strings.EqualFold(strings.TrimSpace(body.Decision), "APPROVE_RETURN") {
+		requireReturnShipping = true
 	}
 
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -556,7 +568,7 @@ func (h *handler) handleAdminResolveComplaint(w http.ResponseWriter, r *http.Req
 		ComplaintId:           chi.URLParam(r, "id"),
 		Resolution:            resolution,
 		AdminNote:             adminNote,
-		RequireReturnShipping: body.RequireReturnShipping,
+		RequireReturnShipping: requireReturnShipping,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
