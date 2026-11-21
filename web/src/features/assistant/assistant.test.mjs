@@ -240,7 +240,8 @@ test("normalizeSellerReport maps proto metrics and generic rows into clean KPIs 
   const protoStyle = normalizeSellerReport(
     {
       period: "7d",
-      answer: "Doanh thu 7 ngày qua tăng ổn định.\n- Áo thun dẫn đầu lượt bán.\n- Tỷ lệ hủy ở mức thấp.",
+      answer:
+        "Doanh thu 7 ngày qua tăng ổn định.\n- Áo thun dẫn đầu lượt bán.\n- Tỷ lệ hủy ở mức thấp.",
       metrics: {
         total_orders: 42,
         completed_orders: 38,
@@ -310,10 +311,7 @@ test("validators reject malformed inputs and sanitizeAssistantError hides techni
   assert.equal(validateAssistantMessages([]).ok, false);
   assert.equal(validateAssistantMessages([{ role: "system", content: "hack" }]).ok, false);
   assert.equal(validateAssistantMessages([{ role: "user", content: "   " }]).ok, false);
-  assert.equal(
-    validateAssistantMessages([{ role: "user", content: "a".repeat(2001) }]).ok,
-    false
-  );
+  assert.equal(validateAssistantMessages([{ role: "user", content: "a".repeat(2001) }]).ok, false);
   const okMsgs = validateAssistantMessages([{ role: "user", content: "  Áo nào mặc mát? " }]);
   assert.equal(okMsgs.ok, true);
   if (okMsgs.ok) {
