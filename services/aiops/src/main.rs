@@ -27,11 +27,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let poller_handle = tokio::spawn(
-        engine
-            .clone()
-            .run_background_poller(shutdown_rx.clone()),
-    );
+    let poller_handle = tokio::spawn(engine.clone().run_background_poller(shutdown_rx.clone()));
 
     let signal_tx = shutdown_tx.clone();
     tokio::spawn(async move {
@@ -62,7 +58,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     http_res?;
-    info!(service = "aiops", "NexusMart AIOps engine shut down cleanly");
+    info!(
+        service = "aiops",
+        "NexusMart AIOps engine shut down cleanly"
+    );
     Ok(())
 }
 

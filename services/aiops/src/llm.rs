@@ -109,7 +109,10 @@ fn classify_from_evidence(req: &RcaRequest) -> RcaResult {
             .any(|a| a.service == "nats" && a.metric == METRIC_DEPENDENCY_UP && a.value < 0.5);
     if nats_probe_down || nats_log_services.len() >= 2 || nats_log_count >= 3 {
         if nats_probe_down {
-            evidence.push("NATS health probe (nexusmart_dependency_up{dependency=\"nats\"}) is 0 (DOWN)".to_string());
+            evidence.push(
+                "NATS health probe (nexusmart_dependency_up{dependency=\"nats\"}) is 0 (DOWN)"
+                    .to_string(),
+            );
         }
         if nats_log_count > 0 {
             evidence.push(format!(
@@ -144,18 +147,29 @@ fn classify_from_evidence(req: &RcaRequest) -> RcaResult {
                 .iter()
                 .find(|a| a.metric == METRIC_SERVICE_UP && a.value < 0.5)
         });
-    let down_from_map = req
-        .context
-        .service_up
-        .iter()
-        .find(|(svc, up)| !**up && svc.as_str() != "gateway" && mentions_service_in_evidence(req, svc))
-        .map(|(svc, _)| svc.clone());
+    let has_availability_symptom =
+        req.anomalies
+            .iter()
+            .any(|a| matches!(a.metric.as_str(), METRIC_ERROR_RATE | METRIC_HTTP_503_RATE))
+            || req.context.logs.iter().any(|l| {
+                contains_any_ci(&l.line, &["unavailable", "connection refused", "dial tcp"])
+            });
+    let down_from_map = if has_availability_symptom {
+        req.context
+            .service_up
+            .iter()
+            .find(|(svc, up)| {
+                !**up && svc.as_str() != "gateway" && mentions_service_in_evidence(req, svc)
+            })
+            .map(|(svc, _)| svc.clone())
+    } else {
+        None
+    };
 
-    if let Some(target_svc) = down_anomaly
-        .map(|a| a.service.clone())
-        .or(down_from_map)
-    {
-        evidence.push(format!("Prometheus scrape target up{{service=\"{target_svc}\"}} == 0"));
+    if let Some(target_svc) = down_anomaly.map(|a| a.service.clone()).or(down_from_map) {
+        evidence.push(format!(
+            "Prometheus scrape target up{{service=\"{target_svc}\"}} == 0"
+        ));
         if req
             .anomalies
             .iter()
@@ -172,12 +186,22 @@ fn classify_from_evidence(req: &RcaRequest) -> RcaResult {
             .filter(|l| {
                 contains_any_ci(
                     &l.line,
-                    &["unavailable", "connection refused", "dial tcp", "eof", &target_svc],
+                    &[
+                        "unavailable",
+                        "connection refused",
+                        "dial tcp",
+                        "eof",
+                        &target_svc,
+                    ],
                 )
             })
             .take(3)
         {
-            evidence.push(format!("Loki [{}]: {}", log.service, truncate(&log.line, 160)));
+            evidence.push(format!(
+                "Loki [{}]: {}",
+                log.service,
+                truncate(&log.line, 160)
+            ));
         }
         return RcaResult {
             root_cause_service: target_svc.clone(),
@@ -247,9 +271,19 @@ fn classify_from_evidence(req: &RcaRequest) -> RcaResult {
         .copied()
         .unwrap_or(true);
 
-    if has_error_anomaly && (!db_logs.is_empty() || (has_503_signal && service_is_up && primary_service != "gateway")) {
-        for a in req.anomalies.iter().filter(|a| a.service == primary_service) {
-            evidence.push(format!("Metric anomaly on '{primary_service}': {}", a.reason));
+    if has_error_anomaly
+        && (!db_logs.is_empty()
+            || (has_503_signal && service_is_up && primary_service != "gateway"))
+    {
+        for a in req
+            .anomalies
+            .iter()
+            .filter(|a| a.service == primary_service)
+        {
+            evidence.push(format!(
+                "Metric anomaly on '{primary_service}': {}",
+                a.reason
+            ));
         }
         if has_503_signal {
             evidence.push(format!(
@@ -257,7 +291,11 @@ fn classify_from_evidence(req: &RcaRequest) -> RcaResult {
             ));
         }
         for log in db_logs.iter().take(3) {
-            evidence.push(format!("Loki [{}]: {}", log.service, truncate(&log.line, 160)));
+            evidence.push(format!(
+                "Loki [{}]: {}",
+                log.service,
+                truncate(&log.line, 160)
+            ));
         }
         let confidence = if !db_logs.is_empty() { 0.93 } else { 0.80 };
         return RcaResult {
@@ -295,8 +333,15 @@ fn classify_from_evidence(req: &RcaRequest) -> RcaResult {
                 .iter()
                 .any(|a| a.service == primary_service && a.metric == METRIC_LATENCY_P95)
         {
-            for a in req.anomalies.iter().filter(|a| a.service == primary_service) {
-                evidence.push(format!("Metric anomaly on '{primary_service}': {}", a.reason));
+            for a in req
+                .anomalies
+                .iter()
+                .filter(|a| a.service == primary_service)
+            {
+                evidence.push(format!(
+                    "Metric anomaly on '{primary_service}': {}",
+                    a.reason
+                ));
             }
             evidence.push(format!(
                 "Recent deployment version '{}' (image '{}', has_db_migration={}) occurred at {}",
@@ -344,10 +389,17 @@ fn classify_from_evidence(req: &RcaRequest) -> RcaResult {
         .anomalies
         .iter()
         .find(|a| a.metric == METRIC_LATENCY_P95 && a.service != "gateway")
-        .or_else(|| req.anomalies.iter().find(|a| a.metric == METRIC_LATENCY_P95))
+        .or_else(|| {
+            req.anomalies
+                .iter()
+                .find(|a| a.metric == METRIC_LATENCY_P95)
+        })
     {
         let svc = lat_anomaly.service.clone();
-        evidence.push(format!("Latency p95 anomaly on '{svc}': {}", lat_anomaly.reason));
+        evidence.push(format!(
+            "Latency p95 anomaly on '{svc}': {}",
+            lat_anomaly.reason
+        ));
         let matching_traces: Vec<_> = req
             .context
             .slow_traces
@@ -430,7 +482,8 @@ fn classify_from_evidence(req: &RcaRequest) -> RcaResult {
                 service: svc,
                 replicas: None,
                 auto_executable: true,
-                reason: "Restart service to reclaim leaked memory before OOM termination.".to_string(),
+                reason: "Restart service to reclaim leaked memory before OOM termination."
+                    .to_string(),
             }),
             insufficient_data: false,
         };
@@ -441,7 +494,10 @@ fn classify_from_evidence(req: &RcaRequest) -> RcaResult {
         evidence.push(format!("Observed signal on '{}': {}", a.service, a.reason));
     }
     if evidence.is_empty() {
-        evidence.push("No metric anomalies, error logs, or slow traces matched known failure signatures.".to_string());
+        evidence.push(
+            "No metric anomalies, error logs, or slow traces matched known failure signatures."
+                .to_string(),
+        );
     }
     RcaResult {
         root_cause_service: primary_service,
@@ -467,16 +523,19 @@ fn select_primary_service(req: &RcaRequest) -> String {
 fn mentions_service_in_evidence(req: &RcaRequest, svc: &str) -> bool {
     req.service == svc
         || req.anomalies.iter().any(|a| a.service == svc)
-        || req
-            .context
-            .logs
-            .iter()
-            .any(|l| l.service == svc || l.line.to_ascii_lowercase().contains(&svc.to_ascii_lowercase()))
+        || req.context.logs.iter().any(|l| {
+            l.service == svc
+                || l.line
+                    .to_ascii_lowercase()
+                    .contains(&svc.to_ascii_lowercase())
+        })
 }
 
 fn contains_any_ci(haystack: &str, needles: &[&str]) -> bool {
     let lower = haystack.to_ascii_lowercase();
-    needles.iter().any(|n| lower.contains(&n.to_ascii_lowercase()))
+    needles
+        .iter()
+        .any(|n| lower.contains(&n.to_ascii_lowercase()))
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {
@@ -551,7 +610,12 @@ impl AnthropicProvider {
         let has_db_err = req.context.logs.iter().any(|l| {
             contains_any_ci(
                 &l.line,
-                &["postgres", "sqlstate", "pgx", "not currently accepting connections"],
+                &[
+                    "postgres",
+                    "sqlstate",
+                    "pgx",
+                    "not currently accepting connections",
+                ],
             )
         });
         let has_deploy = !req.context.recent_deploys.is_empty();
@@ -659,7 +723,8 @@ impl LlmProvider for AnthropicProvider {
 
         let system_prompt = "You are NexusMart AIOps Root Cause Analyzer. Analyze the provided redacted metrics, Loki logs, Tempo traces, deploy records, and dependency health. Respond ONLY with a single JSON object matching: {\"root_cause_service\": string, \"category\": \"message_broker_outage|service_unavailable|database_error|latency_degradation|cpu_saturation|memory_pressure|post_deploy_regression|unknown\", \"summary\": string, \"confidence\": number, \"evidence\": [string], \"recommended_action\": null | {\"action\": string, \"service\": string, \"replicas\": null|number, \"auto_executable\": boolean, \"reason\": string}, \"insufficient_data\": boolean}. Never recommend automatic rollback if has_db_migration is true. Set insufficient_data=true when evidence is ambiguous.";
 
-        let user_content = serde_json::to_string(req).map_err(|e| LlmError::Parse(e.to_string()))?;
+        let user_content =
+            serde_json::to_string(req).map_err(|e| LlmError::Parse(e.to_string()))?;
         let payload = serde_json::json!({
             "model": self.config.llm_model,
             "max_tokens": 1024,

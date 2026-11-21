@@ -232,15 +232,15 @@ impl AiopsEngine {
                 context: context.clone(),
             };
 
-            let (rca_opt, rca_err, root_cause_service, category) = match self.run_rca(&rca_req).await
-            {
-                Ok(rca) => {
-                    let rc_svc = rca.root_cause_service.clone();
-                    let cat = rca.category.clone();
-                    (Some(rca), None, rc_svc, cat)
-                }
-                Err(err) => (None, Some(err), bucket_svc.clone(), "rca_error".to_string()),
-            };
+            let (rca_opt, rca_err, root_cause_service, category) =
+                match self.run_rca(&rca_req).await {
+                    Ok(rca) => {
+                        let rc_svc = rca.root_cause_service.clone();
+                        let cat = rca.category.clone();
+                        (Some(rca), None, rc_svc, cat)
+                    }
+                    Err(err) => (None, Some(err), bucket_svc.clone(), "rca_error".to_string()),
+                };
 
             active_services.insert(root_cause_service.clone());
 
@@ -360,8 +360,7 @@ impl AiopsEngine {
                 Ok(outcome.result)
             }
             Err(LlmError::BudgetExceeded(msg)) => {
-                self.metrics
-                    .record_llm_call(mode, false, "budget_exceeded");
+                self.metrics.record_llm_call(mode, false, "budget_exceeded");
                 warn!(service = "aiops", mode, error = %msg, "LLM daily budget exceeded; preserving raw incident data");
                 Err(format!("LLM budget exceeded: {msg}"))
             }
@@ -460,7 +459,7 @@ impl AiopsEngine {
             })
             .cloned()
             .collect();
-        items.sort_by(|a, b| b.opened_at.cmp(&a.opened_at));
+        items.sort_by_key(|a| std::cmp::Reverse(a.opened_at));
         items
     }
 
@@ -469,12 +468,7 @@ impl AiopsEngine {
         guard.iter().find(|i| i.id == id).cloned()
     }
 
-    pub fn submit_feedback(
-        &self,
-        id: Uuid,
-        correct: bool,
-        note: String,
-    ) -> Option<Incident> {
+    pub fn submit_feedback(&self, id: Uuid, correct: bool, note: String) -> Option<Incident> {
         let mut guard = self.incidents.write().expect("incidents write lock");
         let inc = guard.iter_mut().find(|i| i.id == id)?;
         let now = Utc::now();
@@ -492,7 +486,11 @@ impl AiopsEngine {
             &cloned.root_cause_service,
             None,
             None,
-            if correct { "confirmed_correct" } else { "marked_incorrect" },
+            if correct {
+                "confirmed_correct"
+            } else {
+                "marked_incorrect"
+            },
             note,
             Some(id),
         );
@@ -558,7 +556,7 @@ impl AiopsEngine {
             .filter(|d| service.is_none_or(|s| d.service.eq_ignore_ascii_case(s)))
             .cloned()
             .collect();
-        out.sort_by(|a, b| b.deployed_at.cmp(&a.deployed_at));
+        out.sort_by_key(|a| std::cmp::Reverse(a.deployed_at));
         out
     }
 
@@ -576,9 +574,8 @@ impl AiopsEngine {
     ) -> MaintenanceWindow {
         let now = Utc::now();
         let effective_until = if active {
-            until.or_else(|| {
-                duration_minutes.map(|mins| now + ChronoDuration::minutes(mins.max(1)))
-            })
+            until
+                .or_else(|| duration_minutes.map(|mins| now + ChronoDuration::minutes(mins.max(1))))
         } else {
             None
         };
@@ -720,15 +717,20 @@ impl AiopsEngine {
                 metrics_snapshot: HashMap::new(),
                 context: context.clone(),
             };
-            let (rca_opt, rca_err, root_cause_service, category) = match self.run_rca(&rca_req).await
-            {
-                Ok(rca) => {
-                    let rc = rca.root_cause_service.clone();
-                    let cat = rca.category.clone();
-                    (Some(rca), None, rc, cat)
-                }
-                Err(e) => (None, Some(e), service.clone(), "alertmanager_alert".to_string()),
-            };
+            let (rca_opt, rca_err, root_cause_service, category) =
+                match self.run_rca(&rca_req).await {
+                    Ok(rca) => {
+                        let rc = rca.root_cause_service.clone();
+                        let cat = rca.category.clone();
+                        (Some(rca), None, rc, cat)
+                    }
+                    Err(e) => (
+                        None,
+                        Some(e),
+                        service.clone(),
+                        "alertmanager_alert".to_string(),
+                    ),
+                };
 
             let incident_id = Uuid::new_v4();
             let incident = Incident {
@@ -814,7 +816,10 @@ fn correlate_anomalies(anomalies: &[AnomalySignal]) -> Vec<(String, Vec<AnomalyS
         // Prefer attaching gateway cascade errors/latency to a down backend service first.
         let down_backend = backend_buckets
             .iter()
-            .find(|(_, list)| list.iter().any(|a| a.metric == METRIC_SERVICE_UP && a.value < 0.5))
+            .find(|(_, list)| {
+                list.iter()
+                    .any(|a| a.metric == METRIC_SERVICE_UP && a.value < 0.5)
+            })
             .map(|(svc, _)| svc.clone());
 
         let target = down_backend.or_else(|| {

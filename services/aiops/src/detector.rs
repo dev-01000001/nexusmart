@@ -350,20 +350,17 @@ impl Detector {
         }
 
         // 4. Evaluate each monitored service
-        let monitored: HashSet<String> = self.config.monitored_services.iter().cloned().collect();
-        for svc in &self.config.monitored_services {
-            if !monitored.contains(svc) {
-                continue;
-            }
+        let services = self.config.monitored_services.clone();
+        for svc in &services {
             let entry = snapshot.service_metrics.entry(svc.clone()).or_default();
 
             // 4a. Service availability (up)
             if let Some(&up_val) = up_map.get(svc) {
                 let is_up = up_val >= 0.5;
-                snapshot.service_up.insert(svc.clone(), is_up);
                 entry.insert(METRIC_SERVICE_UP.to_string(), up_val);
 
                 if is_up {
+                    snapshot.service_up.insert(svc.clone(), true);
                     self.seen_up.insert(svc.clone());
                     self.initially_down.remove(svc);
                 } else {
@@ -379,6 +376,7 @@ impl Detector {
                             );
                         }
                     } else {
+                        snapshot.service_up.insert(svc.clone(), false);
                         self.metrics.record_anomaly(svc, METRIC_SERVICE_UP);
                         snapshot.anomalies.push(AnomalySignal {
                             service: svc.clone(),
@@ -391,9 +389,7 @@ impl Detector {
                             ewma_deviation: -1.0,
                             threshold_breached: true,
                             statistical_breached: false,
-                            reason: format!(
-                                "service '{svc}' scrape target is DOWN (up=0)"
-                            ),
+                            reason: format!("service '{svc}' scrape target is DOWN (up=0)"),
                             observed_at: now,
                         });
                     }
@@ -401,8 +397,16 @@ impl Detector {
             }
 
             // 4b. Error rate (max of HTTP 5xx ratio and gRPC server error ratio)
-            let http_err = http_err_map.get(svc).copied().unwrap_or(0.0).clamp(0.0, 1.0);
-            let grpc_err = grpc_err_map.get(svc).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let http_err = http_err_map
+                .get(svc)
+                .copied()
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0);
+            let grpc_err = grpc_err_map
+                .get(svc)
+                .copied()
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0);
             let err_rate = http_err.max(grpc_err);
             let http_503 = http_503_map.get(svc).copied().unwrap_or(0.0).max(0.0);
 
@@ -460,16 +464,9 @@ impl Detector {
             };
             if let Some(p95) = combined_p95 {
                 entry.insert(METRIC_LATENCY_P95.to_string(), p95);
-                if let Some(sig) = self.evaluate_metric(
-                    svc,
-                    METRIC_LATENCY_P95,
-                    p95,
-                    0.02,
-                    0.05,
-                    0.15,
-                    0.50,
-                    now,
-                ) {
+                if let Some(sig) =
+                    self.evaluate_metric(svc, METRIC_LATENCY_P95, p95, 0.02, 0.05, 0.15, 0.50, now)
+                {
                     snapshot.anomalies.push(sig);
                 }
             }
@@ -477,16 +474,9 @@ impl Detector {
             // 4d. CPU cores
             if let Some(&cpu) = cpu_map.get(svc) {
                 entry.insert(METRIC_CPU_CORES.to_string(), cpu);
-                if let Some(sig) = self.evaluate_metric(
-                    svc,
-                    METRIC_CPU_CORES,
-                    cpu,
-                    0.05,
-                    0.05,
-                    0.30,
-                    0.70,
-                    now,
-                ) {
+                if let Some(sig) =
+                    self.evaluate_metric(svc, METRIC_CPU_CORES, cpu, 0.05, 0.05, 0.30, 0.70, now)
+                {
                     snapshot.anomalies.push(sig);
                 }
             }
@@ -682,7 +672,16 @@ mod tests {
         // Warmup with healthy latency 20ms
         for _ in 0..4 {
             assert!(det
-                .evaluate_metric("payment", METRIC_LATENCY_P95, 0.02, 0.02, 0.05, 0.15, 0.50, now)
+                .evaluate_metric(
+                    "payment",
+                    METRIC_LATENCY_P95,
+                    0.02,
+                    0.02,
+                    0.05,
+                    0.15,
+                    0.50,
+                    now
+                )
                 .is_none());
         }
         // Moderate spike 0.25s (< hard threshold 0.50s) triggers statistically

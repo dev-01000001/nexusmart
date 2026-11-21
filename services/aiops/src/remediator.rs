@@ -97,6 +97,7 @@ impl Remediator {
         self.adapter.name()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn record_audit_event(
         &self,
         event_type: &str,
@@ -181,9 +182,7 @@ impl Remediator {
 
         // 2. Strict service allowlist
         if !self.config.allowed_services.contains(&normalized_service) {
-            let msg = format!(
-                "service '{normalized_service}' is not in remediation allowlist"
-            );
+            let msg = format!("service '{normalized_service}' is not in remediation allowlist");
             warn!(service = "aiops", target = %normalized_service, action = %normalized_action, "remediation blocked by service allowlist");
             self.metrics.record_remediation(
                 &normalized_service,
@@ -349,8 +348,12 @@ impl Remediator {
                     detail = %detail,
                     "remediation executed"
                 );
-                self.metrics
-                    .record_remediation(&normalized_service, &normalized_action, mode, "ok");
+                self.metrics.record_remediation(
+                    &normalized_service,
+                    &normalized_action,
+                    mode,
+                    "ok",
+                );
                 self.record_audit_event(
                     "remediation",
                     &normalized_service,
@@ -382,8 +385,12 @@ impl Remediator {
                     error = %detail,
                     "remediation execution failed"
                 );
-                self.metrics
-                    .record_remediation(&normalized_service, &normalized_action, mode, "error");
+                self.metrics.record_remediation(
+                    &normalized_service,
+                    &normalized_action,
+                    mode,
+                    "error",
+                );
                 self.record_audit_event(
                     "remediation",
                     &normalized_service,
@@ -483,14 +490,20 @@ mod tests {
         // Blocked actions
         for bad_action in ["drop_db", "exec", "rollback_migration"] {
             let (rec, res) = rem.remediate(None, "order", bad_action, None).await;
-            assert!(matches!(res, Err(RemediationPolicyError::BlockedAllowlist(_))));
+            assert!(matches!(
+                res,
+                Err(RemediationPolicyError::BlockedAllowlist(_))
+            ));
             assert_eq!(rec.outcome, "blocked_allowlist");
         }
 
         // Blocked services
         for bad_svc in ["postgres", "nats", "redis"] {
             let (rec, res) = rem.remediate(None, bad_svc, "restart", None).await;
-            assert!(matches!(res, Err(RemediationPolicyError::BlockedAllowlist(_))));
+            assert!(matches!(
+                res,
+                Err(RemediationPolicyError::BlockedAllowlist(_))
+            ));
             assert_eq!(rec.outcome, "blocked_allowlist");
         }
 
@@ -505,7 +518,10 @@ mod tests {
 
         // 4th attempt within the hour is rate-limited
         let (rec, res) = rem.remediate(None, "order", "restart", None).await;
-        assert!(matches!(res, Err(RemediationPolicyError::BlockedRateLimit(_))));
+        assert!(matches!(
+            res,
+            Err(RemediationPolicyError::BlockedRateLimit(_))
+        ));
         assert_eq!(rec.outcome, "blocked_rate_limit");
 
         // All attempts recorded in audit log

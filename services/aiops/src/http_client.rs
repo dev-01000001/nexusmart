@@ -23,19 +23,10 @@ pub enum HttpError {
     Decode { dependency: String, message: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct CircuitState {
     consecutive_failures: u32,
     opened_at: Option<Instant>,
-}
-
-impl Default for CircuitState {
-    fn default() -> Self {
-        Self {
-            consecutive_failures: 0,
-            opened_at: None,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -263,12 +254,13 @@ pub async fn unix_http_request(
     use tokio::net::UnixStream;
 
     let fut = async {
-        let mut stream = UnixStream::connect(socket_path)
-            .await
-            .map_err(|e| HttpError::Request {
-                dependency: "docker-socket".to_string(),
-                message: format!("connect {socket_path}: {e}"),
-            })?;
+        let mut stream =
+            UnixStream::connect(socket_path)
+                .await
+                .map_err(|e| HttpError::Request {
+                    dependency: "docker-socket".to_string(),
+                    message: format!("connect {socket_path}: {e}"),
+                })?;
 
         let body_bytes = body.unwrap_or(&[]);
         let mut req = format!(
@@ -373,10 +365,7 @@ fn parse_http1_response(raw: &[u8]) -> Result<(u16, Vec<u8>), HttpError> {
 
 fn decode_chunked(mut data: &[u8]) -> Result<Vec<u8>, HttpError> {
     let mut out = Vec::new();
-    loop {
-        let Some(crlf) = data.windows(2).position(|w| w == b"\r\n") else {
-            break;
-        };
+    while let Some(crlf) = data.windows(2).position(|w| w == b"\r\n") {
         let size_line = String::from_utf8_lossy(&data[..crlf]);
         let size_hex = size_line.split(';').next().unwrap_or("").trim();
         let size = usize::from_str_radix(size_hex, 16).map_err(|e| HttpError::Decode {

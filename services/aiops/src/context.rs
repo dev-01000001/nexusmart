@@ -32,8 +32,10 @@ pub fn redact_pii_and_secrets(input: &str) -> String {
         Regex::new(r"(?i)(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}").expect("bearer regex")
     });
     let dsn = DSN_RE.get_or_init(|| {
-        Regex::new(r"(?i)(postgres(?:ql)?|mysql|redis|amqp|nats|mongodb|https?)://[^:\s/@]+:[^@\s/]+@")
-            .expect("dsn regex")
+        Regex::new(
+            r"(?i)(postgres(?:ql)?|mysql|redis|amqp|nats|mongodb|https?)://[^:\s/@]+:[^@\s/]+@",
+        )
+        .expect("dsn regex")
     });
     let api_key = API_KEY_RE.get_or_init(|| {
         Regex::new(r"(?:sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})")
@@ -44,8 +46,10 @@ pub fn redact_pii_and_secrets(input: &str) -> String {
             .expect("secret kv regex")
     });
     let phone_kv = PHONE_KV_RE.get_or_init(|| {
-        Regex::new(r#"(?i)("?(?:phone|recipient_phone|mobile|tel)"?\s*[:=]\s*"?)([+\d][\d\s().-]{6,18})"#)
-            .expect("phone kv regex")
+        Regex::new(
+            r#"(?i)("?(?:phone|recipient_phone|mobile|tel)"?\s*[:=]\s*"?)([+\d][\d\s().-]{6,18})"#,
+        )
+        .expect("phone kv regex")
     });
     let pii_kv = PII_KV_RE.get_or_init(|| {
         Regex::new(r#"(?i)("?(?:bank_account|card_number|id_card|cccd|cmnd|tax_code)"?\s*[:=]\s*"?)([A-Za-z0-9-]{6,24})"#)

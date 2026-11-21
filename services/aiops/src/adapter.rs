@@ -35,7 +35,10 @@ pub trait RuntimeAdapter: Send + Sync {
     async fn scale(&self, service: &str, replicas: u32) -> Result<String, AdapterError>;
 }
 
-pub fn build_runtime_adapter(config: &Config, http: ResilientHttpClient) -> Arc<dyn RuntimeAdapter> {
+pub fn build_runtime_adapter(
+    config: &Config,
+    http: ResilientHttpClient,
+) -> Arc<dyn RuntimeAdapter> {
     match config.adapter_kind {
         AdapterKind::Docker => Arc::new(DockerComposeAdapter::new(config.clone(), http)),
         AdapterKind::Kubernetes => Arc::new(KubernetesAdapter::new(config.clone(), http)),

@@ -141,10 +141,7 @@ async fn list_incidents(
     }))
 }
 
-async fn get_incident(
-    State(engine): State<AiopsEngine>,
-    Path(id): Path<Uuid>,
-) -> Response {
+async fn get_incident(State(engine): State<AiopsEngine>, Path(id): Path<Uuid>) -> Response {
     match engine.get_incident(id) {
         Some(inc) => (StatusCode::OK, Json(inc)).into_response(),
         None => json_error(
