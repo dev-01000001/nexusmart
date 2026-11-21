@@ -89,8 +89,19 @@ test.describe("Storefront Buyer E2E Journey", () => {
       const productCards = page.locator('article:has(a[href^="/san-pham/"])');
       await expect(productCards.first()).toBeVisible();
 
+      // Prefer a regular non-flash-sale in-stock product (e.g. "Xám đá") for standard COD checkout.
       const inStockCards = productCards.filter({ hasNotText: "Tạm hết hàng" });
-      const chosenCard = (await inStockCards.count()) > 0 ? inStockCards.first() : productCards.first();
+      const nonFlashCards = inStockCards.filter({ hasNotText: /Flash sale/i });
+      const preferredNonFlashCards = nonFlashCards.filter({ hasText: /Xám đá/i });
+
+      let chosenCard = productCards.first();
+      if ((await preferredNonFlashCards.count()) > 0) {
+        chosenCard = preferredNonFlashCards.first();
+      } else if ((await nonFlashCards.count()) > 0) {
+        chosenCard = nonFlashCards.first();
+      } else if ((await inStockCards.count()) > 0) {
+        chosenCard = inStockCards.first();
+      }
 
       // Second link inside SiteProductCard is the product title link.
       const productTitleLink = chosenCard.locator('a[href^="/san-pham/"]').last();
@@ -211,8 +222,28 @@ test.describe("Storefront Buyer E2E Journey", () => {
       await expect(placeOrderBtn).toBeEnabled();
       await placeOrderBtn.click();
 
-      // COD checkout redirects to /don-hang/<id> (or /don-hang).
-      await page.waitForURL(/\/don-hang(?:\/[^/?#]+)?$/, { timeout: 30_000 });
+      // Fail fast if CheckoutClient renders a [role="alert"] error; otherwise wait for /don-hang redirect.
+      const checkoutAlert = reviewAside.locator('[role="alert"]').first();
+      const navOutcome = await Promise.race([
+        page
+          .waitForURL(/\/don-hang(?:\/[^/?#]+)?$/, { timeout: 30_000 })
+          .then(() => ({ kind: "navigated" as const }))
+          .catch((error: unknown) => ({ kind: "nav_error" as const, error })),
+        checkoutAlert
+          .waitFor({ state: "visible", timeout: 30_000 })
+          .then(async () => ({
+            kind: "alert" as const,
+            message: (await checkoutAlert.innerText()).trim(),
+          }))
+          .catch(() => new Promise<never>(() => {})),
+      ]);
+
+      if (navOutcome.kind === "alert") {
+        throw new Error(`Checkout failed with UI alert: ${navOutcome.message}`);
+      }
+      if (navOutcome.kind === "nav_error") {
+        throw navOutcome.error;
+      }
     });
 
     await test.step("5. Verify newly created COD order on /don-hang/<id> and /don-hang", async () => {
