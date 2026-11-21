@@ -125,11 +125,7 @@ function toAssistantEvent(rawEventName: string, rawData: string): AssistantSseEv
       nested.requires_confirmation ?? nested.requiresConfirmation
     );
     const dataCandidate = nested.data ?? nested.result ?? nested.payload;
-    const data = isRecord(dataCandidate)
-      ? dataCandidate
-      : isRecord(nested)
-        ? nested
-        : undefined;
+    const data = isRecord(dataCandidate) ? dataCandidate : isRecord(nested) ? nested : undefined;
     return {
       type: "tool_result",
       id,

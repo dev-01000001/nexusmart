@@ -404,7 +404,9 @@ export function extractToolCardData(event: ToolResultEventLike): ExtractedToolCa
   // 1. Add-to-cart confirmation payload (UC-AI04: never auto-checkout; always confirm!)
   const isCartTool = toolName.includes("cart");
   const cartCandidate =
-    data.pending_cart_action ?? data.cart_action ?? (isCartTool || requiresConfirmation ? data : null);
+    data.pending_cart_action ??
+    data.cart_action ??
+    (isCartTool || requiresConfirmation ? data : null);
   if (cartCandidate) {
     const action = parsePendingCartAction(
       cartCandidate,
@@ -494,7 +496,11 @@ export function normalizeReviewSummary(
   fallbackProductId = ""
 ): ReviewSummaryDTO | null {
   if (!isRecord(raw)) return null;
-  const src = isRecord(raw.summary) ? raw.summary : isRecord(raw.review_summary) ? raw.review_summary : raw;
+  const src = isRecord(raw.summary)
+    ? raw.summary
+    : isRecord(raw.review_summary)
+      ? raw.review_summary
+      : raw;
 
   const productId = asString(src.product_id ?? src.productId) || fallbackProductId;
   const reviewCount = Math.max(
@@ -515,11 +521,15 @@ export function normalizeReviewSummary(
   const pros = asStringList(src.pros ?? src.strengths ?? src.highlights, 8);
   const cons = asStringList(src.cons ?? src.weaknesses ?? src.drawbacks, 8);
   const availableFlag = typeof src.available === "boolean" ? src.available : true;
-  const aiGenerated = typeof src.ai_generated === "boolean" ? src.ai_generated : src.aiGenerated !== false;
+  const aiGenerated =
+    typeof src.ai_generated === "boolean" ? src.ai_generated : src.aiGenerated !== false;
   const updatedAt = asString(src.updated_at ?? src.updatedAt) || undefined;
 
   const hasContent = summaryText.length > 0 || pros.length > 0 || cons.length > 0;
-  const available = availableFlag && reviewCount >= Math.max(MIN_REVIEWS_FOR_SUMMARY, minReviewsRequired) && hasContent;
+  const available =
+    availableFlag &&
+    reviewCount >= Math.max(MIN_REVIEWS_FOR_SUMMARY, minReviewsRequired) &&
+    hasContent;
 
   return {
     productId,
@@ -556,9 +566,7 @@ export function normalizeSellerReport(
 ): SellerReportResult {
   const src = isRecord(raw) && isRecord(raw.report) ? raw.report : isRecord(raw) ? raw : {};
   const period = normalizeSellerPeriod(src.period ?? fallback.period);
-  const answer = asString(
-    src.answer ?? src.narrative ?? src.analysis ?? src.summary ?? src.text
-  );
+  const answer = asString(src.answer ?? src.narrative ?? src.analysis ?? src.summary ?? src.text);
   const generatedAt = asString(src.generated_at ?? src.generatedAt) || undefined;
 
   const kpis: SellerReportKpi[] = [];
