@@ -56,10 +56,8 @@ const WS_OPEN = 1;
 
 export function createChatSocketManager(options: ChatSocketManagerOptions): ChatSocketManager {
   const fetchFn = options.fetchImpl ?? ((...args) => globalThis.fetch(...args));
-  const setTimer =
-    options.setTimeoutImpl ?? ((cb, ms) => globalThis.setTimeout(cb, ms));
-  const clearTimer =
-    options.clearTimeoutImpl ?? ((id) => globalThis.clearTimeout(id));
+  const setTimer = options.setTimeoutImpl ?? ((cb, ms) => globalThis.setTimeout(cb, ms));
+  const clearTimer = options.clearTimeoutImpl ?? ((id) => globalThis.clearTimeout(id));
   const maxFailures = Math.max(1, options.maxConsecutiveFailures ?? 8);
 
   let status: ChatConnectionStatus = "idle";

@@ -4,12 +4,7 @@ import { sanitizeSafeUrl } from "../../lib/site/theme.ts";
 
 export type ChatMessageKind = "text" | "image" | "product" | "order";
 export type ChatSenderRole = "buyer" | "seller" | "system";
-export type ChatConnectionStatus =
-  | "idle"
-  | "connecting"
-  | "connected"
-  | "reconnecting"
-  | "offline";
+export type ChatConnectionStatus = "idle" | "connecting" | "connected" | "reconnecting" | "offline";
 
 export const ALLOWED_CHAT_MESSAGE_KINDS: readonly ChatMessageKind[] = [
   "text",
@@ -143,8 +138,7 @@ export interface ValidatedOutgoingMessage {
 }
 
 export type ValidationResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; code: string; message: string };
+  { ok: true; value: T } | { ok: false; code: string; message: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -227,8 +221,7 @@ export function normalizeMessage(raw: unknown): ChatMessageDTO | null {
   const isAutoReply = Boolean(raw.is_auto_reply ?? raw.isAutoReply);
   const clientMsgId = readStr(raw.client_msg_id ?? raw.clientMsgId).trim() || undefined;
   const metadata = parseMetadata(raw.metadata ?? raw.metadata_json ?? raw.metadataJson);
-  const createdAt =
-    readIsoTimestamp(raw.created_at ?? raw.createdAt) || new Date(0).toISOString();
+  const createdAt = readIsoTimestamp(raw.created_at ?? raw.createdAt) || new Date(0).toISOString();
 
   return {
     id: id || clientMsgId || `msg-${createdAt}`,
@@ -260,9 +253,7 @@ export function normalizeConversation(raw: unknown): ChatConversationDTO | null 
   const shopName = readStr(raw.shop_name ?? raw.shopName).trim();
   const siteHost = readStr(raw.site_host ?? raw.siteHost).trim();
   const lastMsgObj = isRecord(raw.last_message) ? raw.last_message : null;
-  const lastMessageId = readStr(
-    raw.last_message_id ?? raw.lastMessageId ?? lastMsgObj?.id
-  ).trim();
+  const lastMessageId = readStr(raw.last_message_id ?? raw.lastMessageId ?? lastMsgObj?.id).trim();
   const lastMessageSeq = readNum(raw.last_message_seq ?? raw.lastMessageSeq, 0);
   const lastMessagePreview = readStr(
     raw.last_message_preview ?? raw.lastMessagePreview ?? lastMsgObj?.body
@@ -429,8 +420,7 @@ export function validateOutgoingMessage(
     };
   }
 
-  const fallbackBody =
-    kind === "product" ? `Sản phẩm ${rawRefId}` : `Đơn hàng ${rawRefId}`;
+  const fallbackBody = kind === "product" ? `Sản phẩm ${rawRefId}` : `Đơn hàng ${rawRefId}`;
   return {
     ok: true,
     value: {
@@ -480,8 +470,7 @@ export function normalizeAutoReplyConfig(raw: unknown): ChatAutoReplyConfigDTO {
   const message = readStr(
     src.message ?? src.greeting_message ?? src.greetingMessage ?? src.offline_message
   ).trim();
-  const offlineEnabled =
-    typeof src.offline_enabled === "boolean" ? src.offline_enabled : undefined;
+  const offlineEnabled = typeof src.offline_enabled === "boolean" ? src.offline_enabled : undefined;
   const offlineMessage = readStr(src.offline_message ?? src.offlineMessage).trim() || undefined;
   const updatedAt = readIsoTimestamp(src.updated_at ?? src.updatedAt) || undefined;
   return {
@@ -580,7 +569,9 @@ export function parseWsIncomingEvent(raw: unknown): WsIncomingEvent | null {
   }
   if (!isRecord(obj)) return null;
 
-  const type = readStr(obj.type ?? obj.event).trim().toLowerCase();
+  const type = readStr(obj.type ?? obj.event)
+    .trim()
+    .toLowerCase();
   if (type === "message" || type === "new_message" || type === "chat.message") {
     const msg = normalizeMessage(obj.message ?? obj.payload ?? obj);
     if (!msg) return null;
@@ -620,10 +611,9 @@ export function parseWsIncomingEvent(raw: unknown): WsIncomingEvent | null {
   if (type === "ack") {
     const embedded = obj.message ? normalizeMessage(obj.message) : null;
     const convId =
-      readStr(obj.conversation_id ?? obj.conversationId).trim() ||
-      embedded?.conversation_id ||
-      "";
-    const messageId = readStr(obj.message_id ?? obj.messageId ?? obj.id).trim() || embedded?.id || "";
+      readStr(obj.conversation_id ?? obj.conversationId).trim() || embedded?.conversation_id || "";
+    const messageId =
+      readStr(obj.message_id ?? obj.messageId ?? obj.id).trim() || embedded?.id || "";
     if (!messageId) return null;
     const clientMsgId =
       readStr(obj.client_msg_id ?? obj.clientMsgId).trim() || embedded?.client_msg_id || undefined;
