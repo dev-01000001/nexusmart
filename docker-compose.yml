@@ -458,6 +458,46 @@ services:
       timeout: 3s
       retries: 20
 
+  chat:
+    build:
+      context: .
+      dockerfile: services/chat/Dockerfile
+    environment:
+      SERVICE_NAME: chat
+      GRPC_PORT: "50060"
+      HTTP_PORT: "8090"
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/chat_db?sslmode=disable
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      USER_GRPC_ADDR: user:50051
+      SITE_ROOT_DOMAIN: ${SITE_ROOT_DOMAIN:-nexusmart.localhost}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
+      CHAT_WS_TICKET_TTL: ${CHAT_WS_TICKET_TTL:-60s}
+      CHAT_WS_ALLOWED_ORIGINS: ${CHAT_WS_ALLOWED_ORIGINS:-}
+      CHAT_IMAGE_MAX_BYTES: ${CHAT_IMAGE_MAX_BYTES:-5242880}
+      CHAT_IMAGE_VALIDATE_MODE: ${CHAT_IMAGE_VALIDATE_MODE:-hybrid}
+      CHAT_IMAGE_ALLOWED_HOSTS: ${CHAT_IMAGE_ALLOWED_HOSTS:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:${CHAT_HTTP_PORT:-8090}:8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      user:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8090/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   gateway:
     build:
       context: .
@@ -485,6 +525,8 @@ services:
       SHIPPING_HTTP_URL: http://shipping:8087
       NOTIFICATION_GRPC_ADDR: notification:50058
       SEARCH_GRPC_ADDR: search:50059
+      CHAT_GRPC_ADDR: chat:50060
+      CHAT_HTTP_URL: http://chat:8090
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
       OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -515,6 +557,8 @@ services:
       notification:
         condition: service_healthy
       search:
+        condition: service_healthy
+      chat:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -587,6 +631,8 @@ services:
       SHIPPING_GRPC_ADDR: shipping:50057
       NOTIFICATION_GRPC_ADDR: notification:50058
       SEARCH_GRPC_ADDR: search:50059
+      CHAT_GRPC_ADDR: chat:50060
+      CHAT_HTTP_URL: http://chat:8090
       MAILPIT_URL: http://mailpit:8025
       ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-admin@nexusmart.local}
       ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-AdminDevPassword123!}

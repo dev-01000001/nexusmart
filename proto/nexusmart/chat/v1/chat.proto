@@ -1,0 +1,193 @@
+syntax = "proto3";
+
+package nexusmart.chat.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/nexusmart/core/gen/go/nexusmart/chat/v1;chatv1";
+
+enum MessageKind {
+  MESSAGE_KIND_UNSPECIFIED = 0;
+  MESSAGE_KIND_TEXT = 1;
+  MESSAGE_KIND_IMAGE = 2;
+  MESSAGE_KIND_PRODUCT = 3;
+  MESSAGE_KIND_ORDER = 4;
+}
+
+message Conversation {
+  string id = 1;
+  string buyer_id = 2;
+  string shop_id = 3;
+  string site_host = 4;
+  string last_message_id = 5;
+  int64 last_message_seq = 6;
+  string last_message_preview = 7;
+  string last_message_sender_role = 8;
+  google.protobuf.Timestamp last_message_at = 9;
+  int64 buyer_last_read_seq = 10;
+  int64 seller_last_read_seq = 11;
+  int64 unread_count = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp updated_at = 14;
+}
+
+message ChatMessage {
+  string id = 1;
+  int64 seq = 2;
+  string conversation_id = 3;
+  string sender_id = 4;
+  string sender_role = 5;
+  MessageKind kind = 6;
+  string body = 7;
+  string ref_id = 8;
+  string metadata_json = 9;
+  bool is_auto_reply = 10;
+  string client_msg_id = 11;
+  google.protobuf.Timestamp created_at = 12;
+}
+
+message KeywordRule {
+  repeated string keywords = 1;
+  string reply = 2;
+}
+
+message AutoReplyConfig {
+  string shop_id = 1;
+  bool enabled = 2;
+  string greeting_message = 3;
+  bool offline_enabled = 4;
+  string offline_message = 5;
+  int32 work_start_hour = 6;
+  int32 work_end_hour = 7;
+  string timezone = 8;
+  int32 cooldown_minutes = 9;
+  repeated KeywordRule keyword_rules = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+message CreateOrGetConversationRequest {
+  string shop_id = 1;
+  string site_host = 2;
+  // Optional initial message body (e.g., AI assistant handoff summary).
+  string initial_message = 3;
+}
+
+message CreateOrGetConversationResponse {
+  Conversation conversation = 1;
+  bool created = 2;
+  ChatMessage initial_message = 3;
+}
+
+message GetConversationRequest {
+  string conversation_id = 1;
+}
+
+message GetConversationResponse {
+  Conversation conversation = 1;
+}
+
+message ListConversationsRequest {
+  // Optional perspective filter: "buyer", "seller", or "" (all accessible).
+  string scope = 1;
+  string shop_id = 2;
+  bool unreplied_only = 3;
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+message ListConversationsResponse {
+  repeated Conversation conversations = 1;
+  int64 total = 2;
+  int64 total_unread = 3;
+}
+
+message ListMessagesRequest {
+  string conversation_id = 1;
+  // Cursor for fetching older messages (sequence number or message UUID).
+  string before = 2;
+  // Cursor for syncing newer missed messages after disconnect (sequence number or message UUID).
+  string after = 3;
+  int32 limit = 4;
+}
+
+message ListMessagesResponse {
+  Conversation conversation = 1;
+  repeated ChatMessage messages = 2;
+  string next_before = 3;
+  string latest_cursor = 4;
+  bool has_more = 5;
+}
+
+message SendMessageRequest {
+  string conversation_id = 1;
+  MessageKind kind = 2;
+  string body = 3;
+  string ref_id = 4;
+  string metadata_json = 5;
+  string client_msg_id = 6;
+}
+
+message SendMessageResponse {
+  ChatMessage message = 1;
+  ChatMessage auto_reply = 2;
+}
+
+message MarkReadRequest {
+  string conversation_id = 1;
+  int64 last_read_seq = 2;
+  string message_id = 3;
+}
+
+message MarkReadResponse {
+  string conversation_id = 1;
+  int64 last_read_seq = 2;
+  int64 unread_count = 3;
+}
+
+message CreateWSTicketRequest {}
+
+message CreateWSTicketResponse {
+  string ticket = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message ExchangeWSTicketRequest {
+  string ticket = 1;
+}
+
+message ExchangeWSTicketResponse {
+  string user_id = 1;
+  string role = 2;
+  string shop_id = 3;
+  string jti = 4;
+  string ws_token = 5;
+}
+
+message GetAutoReplyConfigRequest {
+  string shop_id = 1;
+}
+
+message GetAutoReplyConfigResponse {
+  AutoReplyConfig config = 1;
+}
+
+message UpsertAutoReplyConfigRequest {
+  AutoReplyConfig config = 1;
+}
+
+message UpsertAutoReplyConfigResponse {
+  AutoReplyConfig config = 1;
+}
+
+service ChatService {
+  rpc CreateOrGetConversation(CreateOrGetConversationRequest) returns (CreateOrGetConversationResponse);
+  rpc GetConversation(GetConversationRequest) returns (GetConversationResponse);
+  rpc ListConversations(ListConversationsRequest) returns (ListConversationsResponse);
+  rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+  rpc MarkRead(MarkReadRequest) returns (MarkReadResponse);
+  rpc CreateWSTicket(CreateWSTicketRequest) returns (CreateWSTicketResponse);
+  rpc ExchangeWSTicket(ExchangeWSTicketRequest) returns (ExchangeWSTicketResponse);
+  rpc GetAutoReplyConfig(GetAutoReplyConfigRequest) returns (GetAutoReplyConfigResponse);
+  rpc UpsertAutoReplyConfig(UpsertAutoReplyConfigRequest) returns (UpsertAutoReplyConfigResponse);
+}
