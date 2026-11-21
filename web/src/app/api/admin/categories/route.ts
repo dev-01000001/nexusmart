@@ -2,10 +2,7 @@ import { GatewayError } from "@/lib/server/errors";
 import { apiRoute, readJson } from "@/lib/server/http";
 import { gw } from "@/lib/server/gateway";
 import { assertAdminSession } from "@/features/admin/adminServer";
-import {
-  validateCategoryInput,
-  type AdminCategory,
-} from "@/features/admin/adminComplaintsTypes";
+import { validateCategoryInput, type AdminCategory } from "@/features/admin/adminComplaintsTypes";
 
 export const GET = apiRoute(async (req) => {
   await assertAdminSession();
