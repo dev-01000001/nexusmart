@@ -223,15 +223,12 @@ export function normalizeSellerReturn(raw: unknown): SellerReturnRequest | null 
 /** Normalize a list or wrapper payload from GET /api/v1/orders/{id}/returns. */
 export function normalizeSellerReturns(payload: unknown): SellerReturnRequest[] {
   if (Array.isArray(payload)) {
-    return payload
-      .map(normalizeSellerReturn)
-      .filter((r): r is SellerReturnRequest => r !== null);
+    return payload.map(normalizeSellerReturn).filter((r): r is SellerReturnRequest => r !== null);
   }
   const obj = asRecord(payload);
   if (!obj) return [];
 
-  const listCandidate =
-    obj.returns ?? obj.items ?? obj.return_requests ?? obj.data ?? null;
+  const listCandidate = obj.returns ?? obj.items ?? obj.return_requests ?? obj.data ?? null;
   if (Array.isArray(listCandidate)) {
     return listCandidate
       .map(normalizeSellerReturn)
@@ -282,8 +279,7 @@ export function getReturnStatusMeta(status: string): ReturnStatusMeta {
 }
 
 export type RejectReasonValidation =
-  | { ok: true; value: string }
-  | { ok: false; code: "INVALID_REASON"; error: string };
+  { ok: true; value: string } | { ok: false; code: "INVALID_REASON"; error: string };
 
 /** Validate mandatory rejection reason (trimmed length 5..500). */
 export function validateRejectReason(reason: unknown): RejectReasonValidation {

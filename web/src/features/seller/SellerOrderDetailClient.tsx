@@ -70,7 +70,10 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
       setReturns(normalizeSellerReturns(res));
     } catch (err) {
       if (signal?.aborted) return;
-      if (err instanceof ApiError && (err.status === 404 || err.status === 503 || err.status === 0)) {
+      if (
+        err instanceof ApiError &&
+        (err.status === 404 || err.status === 503 || err.status === 0)
+      ) {
         setReturnsUnavailable(true);
       }
       setReturns([]);
@@ -193,9 +196,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
       );
       setReturns((prev) =>
         prev.map((item) =>
-          item.id === ret.id
-            ? (res.return_request ?? { ...item, status: "APPROVED" })
-            : item
+          item.id === ret.id ? (res.return_request ?? { ...item, status: "APPROVED" }) : item
         )
       );
       if (rejectOpenId === ret.id) {
@@ -204,9 +205,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
       showToast(`Đã duyệt yêu cầu đổi trả cho đơn ${order.order_code}.`);
       router.refresh();
     } catch (err) {
-      showToast(
-        err instanceof ApiError ? err.message : "Không thể duyệt yêu cầu đổi trả lúc này."
-      );
+      showToast(err instanceof ApiError ? err.message : "Không thể duyệt yêu cầu đổi trả lúc này.");
     } finally {
       setReturnBusyId(null);
     }
@@ -401,9 +400,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                       const retMeta = getReturnStatusMeta(ret.status);
                       const isRejectOpen = rejectOpenId === ret.id;
                       const isProcessing = returnBusyId === ret.id;
-                      const safePhotos = ret.photos
-                        .map((p) => sanitizeSafeUrl(p))
-                        .filter(Boolean);
+                      const safePhotos = ret.photos.map((p) => sanitizeSafeUrl(p)).filter(Boolean);
 
                       return (
                         <div key={ret.id} className={styles.giftBox}>

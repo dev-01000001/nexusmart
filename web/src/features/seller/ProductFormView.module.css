@@ -620,3 +620,111 @@ select.colorMediaSelect {
     width: 100%;
   }
 }
+
+/* AI Product Description Helper Bar & Preview */
+[data-ui="ai-desc-bar"] .aiDescBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+[data-ui="ai-desc-bar"] .aiDescLead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+[data-ui="ai-desc-bar"] .aiDescControls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+[data-ui="ai-desc-bar"] .aiToneSelect {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--control);
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+[data-ui="ai-desc-bar"] .aiError {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--negative);
+}
+
+[data-ui="ai-desc-bar"] .aiPreviewCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--accent);
+  background: var(--accent-tint);
+}
+
+[data-ui="ai-desc-bar"] .aiPreviewHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+[data-ui="ai-desc-bar"] .aiPreviewTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-tint-ink);
+}
+
+[data-ui="ai-desc-bar"] .aiPreviewNote {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+[data-ui="ai-desc-bar"] .aiPreviewSuggestionTitle {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+[data-ui="ai-desc-bar"] .aiPreviewText {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 20px;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+[data-ui="ai-desc-bar"] .aiHighlightList {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ink);
+}
+
+[data-ui="ai-desc-bar"] .aiPreviewActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}

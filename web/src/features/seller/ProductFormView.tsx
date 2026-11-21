@@ -3,9 +3,13 @@
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Button, IconCheck, IconPlus, StateView } from "@/components";
+import { Button, IconCheck, IconPlus, IconSpark, StateView } from "@/components";
 import { api, ApiError } from "@/lib/api";
 import { formatInt, formatVnd } from "@/lib/format";
+import {
+  normalizeDescribeProduct,
+  type DescribeProductResult,
+} from "@/features/assistant/assistantTypes";
 import { useSellerContext } from "./SellerShell";
 import {
   getSellerProductStatusMeta,
@@ -31,6 +35,24 @@ const GALLERY_CHOICES = [
   { label: "Tất cổ trung", path: "/products/tat-cotton-co-trung-5.png" },
   { label: "Áo khoác Gió", path: "/products/ao-khoac-gio-xam-tro.png" },
 ];
+
+const AI_TONE_OPTIONS = [
+  { value: "practical", label: "Gọn gàng, thực tế" },
+  { value: "material", label: "Chi tiết chất liệu" },
+  { value: "active", label: "Năng động, thể thao" },
+] as const;
+
+function buildDraftCopy(draft: DescribeProductResult): string {
+  const parts: string[] = [];
+  if (draft.description.trim()) {
+    parts.push(draft.description.trim());
+  }
+  if (draft.highlights.length > 0) {
+    const bulletBlock = draft.highlights.map((item) => `- ${item}`).join("\n");
+    parts.push(`Điểm nổi bật:\n${bulletBlock}`);
+  }
+  return parts.join("\n\n");
+}
 
 interface EditableSkuRow {
   localKey: string;
@@ -124,6 +146,10 @@ export function ProductFormView({
   const [busyStockId, setBusyStockId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [aiTone, setAiTone] = useState<string>("practical");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiDraft, setAiDraft] = useState<DescribeProductResult | null>(null);
 
   const totalStock = useMemo(
     () => skuRows.reduce((s, r) => s + Math.max(0, Math.trunc(r.stock)), 0),
@@ -256,6 +282,75 @@ export function ProductFormView({
     } finally {
       setBusyStockId(null);
     }
+  };
+
+  const handleGenerateDescription = async () => {
+    const cleanName = name.trim();
+    if (cleanName.length < 3) {
+      setAiError("Tên sản phẩm cần tối thiểu 3 ký tự trước khi tạo mô tả bằng AI.");
+      return;
+    }
+    setAiError(null);
+    setAiLoading(true);
+    try {
+      const categoryName = categories.find((c) => c.id === categoryId)?.name ?? "";
+      const colors = Array.from(new Set(skuRows.map((r) => r.colorName.trim()).filter(Boolean)));
+      const sizes = Array.from(new Set(skuRows.map((r) => r.size.trim()).filter(Boolean)));
+      const prices = skuRows.map((r) => Math.trunc(r.priceVnd)).filter((p) => p > 0);
+      const minPrice = prices.length > 0 ? Math.min(...prices) : 0;
+
+      const raw = await api<unknown>("/api/seller/assistant/describe-product", {
+        method: "POST",
+        body: {
+          name: cleanName,
+          category_name: categoryName,
+          attributes: {
+            sku_count: String(skuRows.length),
+          },
+          colors,
+          sizes,
+          price_vnd: minPrice,
+          tone: aiTone,
+        },
+      });
+      const draft = normalizeDescribeProduct(raw);
+      if (!draft.description && draft.highlights.length === 0) {
+        setAiError(
+          "AI chưa trả về nội dung mô tả phù hợp. Bạn thử bổ sung tên sản phẩm chi tiết hơn."
+        );
+        return;
+      }
+      setAiDraft(draft);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 429) {
+        setAiError(
+          err.message ||
+            "Bạn đã dùng hết lượt tạo mô tả AI trong ngày. Vui lòng thử lại vào ngày mai."
+        );
+      } else {
+        const msg =
+          err instanceof ApiError
+            ? err.message
+            : "Trợ lý viết mô tả sản phẩm đang tạm gián đoạn. Bạn vui lòng thử lại sau.";
+        setAiError(msg);
+      }
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleApplyAiDraft = (applyMode: "replace" | "append") => {
+    if (!aiDraft) return;
+    const text = buildDraftCopy(aiDraft);
+    if (!text) return;
+    if (applyMode === "replace") {
+      setDescription(text);
+      showToast("Đã áp dụng bản nháp AI vào mô tả. Bạn hãy kiểm tra và chỉnh sửa trước khi lưu.");
+    } else {
+      setDescription((prev) => (prev.trim() ? `${prev.trim()}\n\n${text}` : text));
+      showToast("Đã chèn thêm bản nháp AI vào cuối mô tả sản phẩm.");
+    }
+    setAiDraft(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -467,6 +562,103 @@ export function ProductFormView({
               <label htmlFor="prod-desc" className={common.fieldLabel}>
                 Mô tả chất liệu & hoàn thiện
               </label>
+
+              <div data-ui="ai-desc-bar" className={styles.fieldStack}>
+                <div className={styles.aiDescBar}>
+                  <span className={styles.aiDescLead}>
+                    <IconSpark size={14} />
+                    <span>Trợ lý gợi ý mô tả</span>
+                  </span>
+                  <div className={styles.aiDescControls}>
+                    <select
+                      className={styles.aiToneSelect}
+                      value={aiTone}
+                      onChange={(e) => setAiTone(e.target.value)}
+                      disabled={aiLoading}
+                      aria-label="Chọn văn phong mô tả AI"
+                    >
+                      {AI_TONE_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      shape="app"
+                      disabled={aiLoading}
+                      onClick={() => void handleGenerateDescription()}
+                    >
+                      <IconSpark size={14} />
+                      <span>{aiLoading ? "Đang tạo mô tả..." : "Tạo mô tả bằng AI"}</span>
+                    </Button>
+                  </div>
+                </div>
+
+                {aiError && (
+                  <p className={styles.aiError} role="alert">
+                    {aiError}
+                  </p>
+                )}
+
+                {aiDraft && (
+                  <div
+                    className={styles.aiPreviewCard}
+                    role="region"
+                    aria-label="Bản nháp mô tả từ AI"
+                  >
+                    <div className={styles.aiPreviewHead}>
+                      <span className={styles.aiPreviewTitle}>Bản nháp mô tả từ AI</span>
+                      <span className={styles.aiPreviewNote}>
+                        Kiểm tra và chỉnh sửa lại nội dung trước khi lưu sản phẩm
+                      </span>
+                    </div>
+                    {aiDraft.titleSuggestion && (
+                      <p className={styles.aiPreviewSuggestionTitle}>
+                        Gợi ý tiêu đề: {aiDraft.titleSuggestion}
+                      </p>
+                    )}
+                    {aiDraft.description && (
+                      <p className={styles.aiPreviewText}>{aiDraft.description}</p>
+                    )}
+                    {aiDraft.highlights.length > 0 && (
+                      <ul className={styles.aiHighlightList}>
+                        {aiDraft.highlights.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    )}
+                    <div className={styles.aiPreviewActions}>
+                      <Button
+                        variant="ink"
+                        size="sm"
+                        shape="app"
+                        onClick={() => handleApplyAiDraft("replace")}
+                      >
+                        Áp dụng vào mô tả
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        shape="app"
+                        onClick={() => handleApplyAiDraft("append")}
+                      >
+                        Chèn thêm
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        shape="app"
+                        onClick={() => setAiDraft(null)}
+                      >
+                        Đóng
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <textarea
                 id="prod-desc"
                 className={common.textArea}
