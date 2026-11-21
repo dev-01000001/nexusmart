@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -28,9 +30,10 @@ type Config struct {
 	ShippingGRPCAddr     string
 	NotificationGRPCAddr string
 
-	RedisAddr      string
-	MailpitURL     string
-	SiteRootDomain string
+	RedisAddr       string
+	UserDatabaseURL string
+	MailpitURL      string
+	SiteRootDomain  string
 
 	AdminEmail            string
 	AdminPassword         string
@@ -71,9 +74,10 @@ func LoadConfig() Config {
 		ShippingGRPCAddr:     envOr("SHIPPING_GRPC_ADDR", "localhost:50057"),
 		NotificationGRPCAddr: envOr("NOTIFICATION_GRPC_ADDR", "localhost:50058"),
 
-		RedisAddr:      defaultRedisAddr(envOr("GATEWAY_URL", "http://localhost:8080")),
-		MailpitURL:     envOr("MAILPIT_URL", "http://localhost:8025"),
-		SiteRootDomain: strings.ToLower(envOr("SITE_ROOT_DOMAIN", "nexusmart.localhost")),
+		RedisAddr:       defaultRedisAddr(envOr("GATEWAY_URL", "http://localhost:8080")),
+		UserDatabaseURL: defaultUserDatabaseURL(envOr("GATEWAY_URL", "http://localhost:8080")),
+		MailpitURL:      envOr("MAILPIT_URL", "http://localhost:8025"),
+		SiteRootDomain:  strings.ToLower(envOr("SITE_ROOT_DOMAIN", "nexusmart.localhost")),
 
 		AdminEmail:            envOrMulti([]string{"ADMIN_EMAIL", "ADMIN_BOOTSTRAP_EMAIL"}, "admin@nexusmart.local"),
 		AdminPassword:         envOrMulti([]string{"ADMIN_PASSWORD", "ADMIN_BOOTSTRAP_PASSWORD"}, "AdminDevPassword123!"),
@@ -125,4 +129,17 @@ func defaultRedisAddr(gatewayURL string) string {
 		return "redis:6379"
 	}
 	return ""
+}
+
+func defaultUserDatabaseURL(gatewayURL string) string {
+	if v := strings.TrimSpace(os.Getenv("USER_DATABASE_URL")); v != "" {
+		return v
+	}
+	host := "localhost:5432"
+	if strings.Contains(gatewayURL, "://gateway:") {
+		host = "postgres:5432"
+	}
+	user := envOr("POSTGRES_USER", "nexusmart")
+	pass := envOr("POSTGRES_PASSWORD", "nexusmart_dev_password")
+	return fmt.Sprintf("postgres://%s:%s@%s/user_db?sslmode=disable", url.QueryEscape(user), url.QueryEscape(pass), host)
 }

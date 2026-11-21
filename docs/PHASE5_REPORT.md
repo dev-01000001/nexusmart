@@ -964,3 +964,32 @@ Không có lỗi chặn gate (blocker) ở 5A hoặc 5B — toàn bộ gate cu�
 ## Đề xuất đổi hợp đồng
 
 - Nếu tiếp tục giữ `localhost` và `127.0.0.1` là host `root` để phục vụ dev và healthcheck Docker (`docker-compose.yml:474`), đề xuất cập nhật mục Web trong `.agents/briefs/sites-5-contract.md` phân tách rõ: `localhost`/loopback phục vụ host `root` (không tra `/sites/by-host`), còn IP ngoài loopback và host chứa ký tự lạ trả `404` không gọi backend.
+
+---
+
+## Sửa squatting
+
+- **Ngày hoàn tất:** `2026-11-21`
+- **Brief tham chiếu:** `.agents/briefs/sites-5-fix-squat.md` và `.agents/briefs/sites-5-contract.md` (đã cập nhật mục **Dữ liệu** cho khớp 4 luật mới).
+
+### Thay đổi đã thực hiện
+1. **Khóa mức host & truy vấn SQL (`services/user/queries/site.sql`, sinh lại `services/user/internal/db/` bằng `sqlc generate`):**
+   - Thêm `LockDomainHost` (`pg_advisory_xact_lock(hashtextextended('domain_host:' || LOWER($1), 0))`) và `GetDomainByHostForUpdate` (`SELECT ... FROM domains WHERE LOWER(host) = LOWER($1) LIMIT 1 FOR UPDATE`).
+   - Giữ nguyên index unique `idx_domains_host_lower` trên `LOWER(host)` và `idx_domains_site_custom`.
+2. **Luật chống chiếm giữ tên miền trong `AddCustomDomain` (`services/user/internal/service/domains.go`):**
+   - **Luật 1:** Chỉ dòng `ACTIVE` hoặc `REMOVING` (và dòng không phải `CUSTOM`) chặn site khác (`domain_taken`); dòng `FAILED` của site khác không chặn.
+   - **Luật 2:** Dòng `PENDING` của site khác chỉ chặn tối đa **48 giờ** kể từ `created_at` (`customDomainClaimHoldDuration = 48h`); quá 48 giờ coi như `FAILED` để site khác lấy lại ngay mà không chờ job nền 7 ngày.
+   - **Luật 3:** Khi lấy lại/thay dòng cũ không còn hiệu lực, trong cùng transaction có khóa (`GetSiteByShopIDForUpdate` → `LockDomainHost` → `GetDomainByHostForUpdate`), gọi Cloudflare `DeleteCustomHostname` cho `cf_custom_hostname_id` của dòng cũ (cả `mock` lẫn `live`), xóa dòng cũ (`DeleteDomain`), gọi `CreateCustomHostname`, rồi tạo dòng mới cho site yêu cầu và ghi audit log (`before_json` lưu snapshot dòng bị thay thế). Nếu Cloudflare trả lỗi → trả `Unavailable`, rollback transaction và giữ nguyên dòng cũ.
+   - **Luật 4:** Cùng site thêm lại chính host của mình đang `FAILED` (không phân biệt hoa thường) được phép thay dòng cũ và không tính vượt `domain_limit`; thêm host khác khi đang có custom domain vẫn trả `domain_limit`.
+   - Bổ sung xử lý `isNotFoundErr` thành `errDomainGone` / `NotFound` trong `applyCustomDomainResult` và `RemoveCustomDomain` để an toàn khi có tranh chấp đồng thời với quá trình thu hồi dòng cũ.
+3. **Kiểm thử đơn vị (`services/user/internal/service/domains_test.go`, `services/user/internal/service/server_test.go`, `services/user/internal/cloudflare/cloudflare_test.go`):**
+   - Thêm `TestDomains_AntiSquattingRules` với 4 nhóm test cho cả 4 luật (gồm ranh giới 47h59m / đúng 48h00m / 48h00m01s, thứ tự gọi `DeleteCustomHostname` trước khi xóa dòng và trước `CreateCustomHostname`, giữ nguyên dòng cũ khi Cloudflare Delete/Create lỗi, thử lại host `FAILED` của chính site mà không dính `domain_limit`, và chặn site B khi chính B đã chạm `domain_limit`).
+   - Bổ sung kiểm tra `MockClient` tạo lại hostname sau khi `DeleteCustomHostname`.
+4. **Kiểm thử E2E (`tests/e2e/15_custom_domains_test.go`, `tests/e2e/db_helper.go`, `tests/e2e/config.go`):**
+   - Thêm subtest `AntiSquatting_PendingHold48h_FailedReclaim_And_SameSiteRetry`: shop A thêm `squat-<run>.pending.test` → shop B bị `409 domain_taken`; lùi `created_at` của dòng A về `-49h` trực tiếp trên `user_db` (dòng A vẫn `PENDING`, chưa tới hạn 7 ngày) → shop B thêm thành công `201` và shop A không còn dòng; shop A thêm `x-<run>.fail.test` → `check` thành `FAILED` → shop B thêm được ngay `201`; shop B kiểm tra thành `FAILED` rồi tự thêm lại host của chính mình (chữ hoa) thành công `201` không dính `domain_limit`.
+
+### Kết quả gate sau khi sửa
+- `make lint` (`buf lint`, `gofmt` + `golangci-lint` toàn bộ Go modules, `rustfmt` + `clippy` cho `services/payment`, và `golangci-lint` cho `tests/e2e`): **PASS (EXIT 0)**.
+- `make test` (toàn bộ 10 Go modules có `-race` + `cargo test services/payment`): **PASS (EXIT 0)**.
+- `docker compose up -d --build --no-deps --wait user`: rebuild và khởi động `nexus_ecom-user-1` **healthy (EXIT 0)**.
+- `make e2e && make seed && make e2e-web`: **PASS (EXIT 0)** (gồm `TestE2E_CustomDomains_LifecycleValidationRBACAndPrimary/AntiSquatting_PendingHold48h_FailedReclaim_And_SameSiteRetry` và 33/33 ca `e2e-web`). Không sửa `web/`, không commit, không xóa image/cache Docker.

@@ -980,6 +980,14 @@ func (m *memStore) GetDomainByHost(_ context.Context, lower string) (db.Domain, 
 	return db.Domain{}, pgx.ErrNoRows
 }
 
+func (m *memStore) LockDomainHost(_ context.Context, _ string) error {
+	return nil
+}
+
+func (m *memStore) GetDomainByHostForUpdate(ctx context.Context, lower string) (db.Domain, error) {
+	return m.GetDomainByHost(ctx, lower)
+}
+
 func (m *memStore) GetDomainByID(_ context.Context, id string) (db.Domain, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

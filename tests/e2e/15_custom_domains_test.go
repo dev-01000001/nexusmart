@@ -150,6 +150,8 @@ func TestE2E_CustomDomains_LifecycleValidationRBACAndPrimary(t *testing.T) {
 	secondCustomHost := fmt.Sprintf("e2e-extra-%s.pending.test", runTag)
 	activeHost := fmt.Sprintf("e2e-act-%s.verified.test", runTag)
 	failHost := fmt.Sprintf("e2e-fail-%s.fail.test", runTag)
+	squatPendingHost := fmt.Sprintf("squat-%s.pending.test", runTag)
+	squatFailHost := fmt.Sprintf("x-%s.fail.test", runTag)
 
 	var (
 		siteA     SiteDTO
@@ -550,5 +552,122 @@ func TestE2E_CustomDomains_LifecycleValidationRBACAndPrimary(t *testing.T) {
 		if subDom == nil || subDom.Kind != "SUBDOMAIN" || subDom.Status != "ACTIVE" || !subDom.IsPrimary {
 			t.Fatalf("expected SUBDOMAIN %q to revert to ACTIVE+primary, got %+v", subHostA, domains)
 		}
+	})
+
+	// (j) Anti-squatting: PENDING blocks for 48h, >48h PENDING is reclaimed by B (and removed from A),
+	// FAILED is reclaimed immediately by B, and same site can re-add its own FAILED host without domain_limit.
+	t.Run("AntiSquatting_PendingHold48h_FailedReclaim_And_SameSiteRetry", func(t *testing.T) {
+		// 1. Shop A adds squatPendingHost -> PENDING; Shop B claiming same host immediately -> 409 domain_taken.
+		addAResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerA.AccessToken, nil, map[string]any{
+			"hostname": squatPendingHost,
+		}, http.StatusCreated)
+		var addAOut SiteDomainResponse
+		if err := DecodeJSON(addAResp, &addAOut); err != nil {
+			t.Fatalf("decode shopA add %s: %v", squatPendingHost, err)
+		}
+		domAID := addAOut.Domain.ID
+		if domAID == "" || addAOut.Domain.Host != squatPendingHost || addAOut.Domain.Status != "PENDING" {
+			t.Fatalf("unexpected shopA pending domain: %+v", addAOut.Domain)
+		}
+
+		conflictResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerB.AccessToken, nil, map[string]any{
+			"hostname": squatPendingHost,
+		}, http.StatusConflict)
+		assertAPIErrorCode(t, conflictResp, "domain_taken")
+
+		// 2. Backdate Shop A's PENDING domain created_at by 49 hours (>48h hold, <7d poller expiry) -> Shop B claims it and Shop A loses the row.
+		dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer dbCancel()
+		if err := SetDomainCreatedAtOffset(dbCtx, env.cfg.UserDatabaseURL, domAID, -49*time.Hour); err != nil {
+			t.Fatalf("backdate domain %s by 49h: %v", domAID, err)
+		}
+
+		// Confirm row A is still PENDING (proves reclaim does not wait for the 7-day job).
+		domainsABefore := listSellerSiteDomains(t, env, sellerA.AccessToken)
+		domABefore := findSiteDomainByID(domainsABefore, domAID)
+		if domABefore == nil || domABefore.Status != "PENDING" {
+			t.Fatalf("expected shopA domain %s to still be PENDING at 49h, got %+v", domAID, domainsABefore)
+		}
+
+		reclaimBResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerB.AccessToken, nil, map[string]any{
+			"hostname": squatPendingHost,
+		}, http.StatusCreated)
+		var reclaimBOut SiteDomainResponse
+		if err := DecodeJSON(reclaimBResp, &reclaimBOut); err != nil {
+			t.Fatalf("decode shopB reclaim %s: %v", squatPendingHost, err)
+		}
+		if reclaimBOut.Domain.ID == "" || reclaimBOut.Domain.ID == domAID ||
+			reclaimBOut.Domain.Host != squatPendingHost || reclaimBOut.Domain.Status != "PENDING" {
+			t.Fatalf("unexpected shopB reclaimed pending domain: %+v (old id=%s)", reclaimBOut.Domain, domAID)
+		}
+
+		domainsAAfter := listSellerSiteDomains(t, env, sellerA.AccessToken)
+		if findSiteDomainByID(domainsAAfter, domAID) != nil || findSiteDomainByHost(domainsAAfter, squatPendingHost) != nil {
+			t.Fatalf("shopA must no longer have %s after shopB reclaimed it: %+v", squatPendingHost, domainsAAfter)
+		}
+		domainsBAfter := listSellerSiteDomains(t, env, sellerB.AccessToken)
+		if findSiteDomainByID(domainsBAfter, reclaimBOut.Domain.ID) == nil {
+			t.Fatalf("shopB missing reclaimed domain %s in list: %+v", reclaimBOut.Domain.ID, domainsBAfter)
+		}
+
+		// Remove Shop B's reclaimed pending domain so Shop B can test reclaiming a FAILED host.
+		env.mustDoJSON(t, http.MethodDelete, "/api/v1/seller/site/domains/"+url.PathEscape(reclaimBOut.Domain.ID), sellerB.AccessToken, nil, nil, http.StatusNoContent)
+
+		// 3. Shop A adds squatFailHost -> check -> FAILED -> Shop B adds same host immediately (201), Shop A loses the row.
+		addFailAResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerA.AccessToken, nil, map[string]any{
+			"hostname": squatFailHost,
+		}, http.StatusCreated)
+		var addFailAOut SiteDomainResponse
+		if err := DecodeJSON(addFailAResp, &addFailAOut); err != nil {
+			t.Fatalf("decode shopA add %s: %v", squatFailHost, err)
+		}
+		failAID := addFailAOut.Domain.ID
+		chkFailAResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains/"+url.PathEscape(failAID)+"/check", sellerA.AccessToken, nil, nil, http.StatusOK)
+		var chkFailAOut SiteDomainResponse
+		if err := DecodeJSON(chkFailAResp, &chkFailAOut); err != nil {
+			t.Fatalf("decode shopA check %s: %v", squatFailHost, err)
+		}
+		if chkFailAOut.Domain.Status != "FAILED" {
+			t.Fatalf("expected shopA %s to transition to FAILED, got %+v", squatFailHost, chkFailAOut.Domain)
+		}
+
+		reclaimFailBResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerB.AccessToken, nil, map[string]any{
+			"hostname": squatFailHost,
+		}, http.StatusCreated)
+		var reclaimFailBOut SiteDomainResponse
+		if err := DecodeJSON(reclaimFailBResp, &reclaimFailBOut); err != nil {
+			t.Fatalf("decode shopB reclaim %s: %v", squatFailHost, err)
+		}
+		failBID := reclaimFailBOut.Domain.ID
+		if failBID == "" || failBID == failAID || reclaimFailBOut.Domain.Host != squatFailHost || reclaimFailBOut.Domain.Status != "PENDING" {
+			t.Fatalf("unexpected shopB domain after reclaiming FAILED host: %+v (old id=%s)", reclaimFailBOut.Domain, failAID)
+		}
+		if findSiteDomainByHost(listSellerSiteDomains(t, env, sellerA.AccessToken), squatFailHost) != nil {
+			t.Fatalf("shopA must no longer have FAILED domain %s after shopB reclaimed it", squatFailHost)
+		}
+
+		// 4. Same-site retry of own FAILED host succeeds without hitting domain_limit.
+		chkFailBResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains/"+url.PathEscape(failBID)+"/check", sellerB.AccessToken, nil, nil, http.StatusOK)
+		var chkFailBOut SiteDomainResponse
+		if err := DecodeJSON(chkFailBResp, &chkFailBOut); err != nil {
+			t.Fatalf("decode shopB check %s: %v", squatFailHost, err)
+		}
+		if chkFailBOut.Domain.Status != "FAILED" {
+			t.Fatalf("expected shopB %s to transition to FAILED, got %+v", squatFailHost, chkFailBOut.Domain)
+		}
+
+		retryBResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerB.AccessToken, nil, map[string]any{
+			"hostname": strings.ToUpper(squatFailHost),
+		}, http.StatusCreated)
+		var retryBOut SiteDomainResponse
+		if err := DecodeJSON(retryBResp, &retryBOut); err != nil {
+			t.Fatalf("decode shopB same-site retry %s: %v", squatFailHost, err)
+		}
+		if retryBOut.Domain.ID == "" || retryBOut.Domain.ID == failBID ||
+			retryBOut.Domain.Host != squatFailHost || retryBOut.Domain.Status != "PENDING" {
+			t.Fatalf("unexpected shopB domain after same-site FAILED retry: %+v (old id=%s)", retryBOut.Domain, failBID)
+		}
+
+		env.mustDoJSON(t, http.MethodDelete, "/api/v1/seller/site/domains/"+url.PathEscape(retryBOut.Domain.ID), sellerB.AccessToken, nil, nil, http.StatusNoContent)
 	})
 }

@@ -243,6 +243,36 @@ func (q *Queries) GetDomainByHost(ctx context.Context, lower string) (Domain, er
 	return i, err
 }
 
+const getDomainByHostForUpdate = `-- name: GetDomainByHostForUpdate :one
+SELECT id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at, status, cf_record_id, cf_custom_hostname_id, verification, last_checked_at, last_error FROM domains
+WHERE LOWER(host) = LOWER($1)
+LIMIT 1
+FOR UPDATE
+`
+
+func (q *Queries) GetDomainByHostForUpdate(ctx context.Context, lower string) (Domain, error) {
+	row := q.db.QueryRow(ctx, getDomainByHostForUpdate, lower)
+	var i Domain
+	err := row.Scan(
+		&i.ID,
+		&i.SiteID,
+		&i.Host,
+		&i.Kind,
+		&i.IsPrimary,
+		&i.VerifiedAt,
+		&i.TlsStatus,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Status,
+		&i.CfRecordID,
+		&i.CfCustomHostnameID,
+		&i.Verification,
+		&i.LastCheckedAt,
+		&i.LastError,
+	)
+	return i, err
+}
+
 const getDomainByID = `-- name: GetDomainByID :one
 SELECT id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at, status, cf_record_id, cf_custom_hostname_id, verification, last_checked_at, last_error FROM domains
 WHERE id = $1
@@ -1025,6 +1055,15 @@ func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]ListSit
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockDomainHost = `-- name: LockDomainHost :exec
+SELECT pg_advisory_xact_lock(hashtextextended('domain_host:' || LOWER($1::text), 0))
+`
+
+func (q *Queries) LockDomainHost(ctx context.Context, host string) error {
+	_, err := q.db.Exec(ctx, lockDomainHost, host)
+	return err
 }
 
 const markCustomDomainRemoving = `-- name: MarkCustomDomainRemoving :one

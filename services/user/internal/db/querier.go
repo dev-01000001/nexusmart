@@ -29,6 +29,7 @@ type Querier interface {
 	DeleteDomain(ctx context.Context, id string) error
 	GetAddressByID(ctx context.Context, id string) (Address, error)
 	GetDomainByHost(ctx context.Context, lower string) (Domain, error)
+	GetDomainByHostForUpdate(ctx context.Context, lower string) (Domain, error)
 	GetDomainByID(ctx context.Context, id string) (Domain, error)
 	GetMaxSiteVersionNumber(ctx context.Context, siteID string) (int32, error)
 	GetPublishedSiteByHost(ctx context.Context, lower string) (GetPublishedSiteByHostRow, error)
@@ -62,6 +63,7 @@ type Querier interface {
 	ListSiteVersions(ctx context.Context, arg ListSiteVersionsParams) ([]SiteVersion, error)
 	ListSites(ctx context.Context, arg ListSitesParams) ([]ListSitesRow, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
+	LockDomainHost(ctx context.Context, host string) error
 	MarkCustomDomainRemoving(ctx context.Context, id string) (Domain, error)
 	RevokeAllUserRefreshTokens(ctx context.Context, userID string) error
 	RevokeRefreshTokenByHash(ctx context.Context, tokenHash string) error
