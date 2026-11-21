@@ -10,6 +10,8 @@ dist/
 coverage/
 *.test
 *.out
+__pycache__/
+*.pyc
 
 # local env and secrets
 .env
