@@ -275,6 +275,7 @@ func connectNATS(
 	ctx context.Context,
 	natsURL, streamName string,
 	st store.Store,
+	releaseFn events.ReleaseReservationFn,
 	log *slog.Logger,
 ) (*nats.Conn, *events.OrderCompletedConsumer, error) {
 	var nc *nats.Conn
@@ -308,6 +309,7 @@ func connectNATS(
 	}
 
 	consumer := events.NewOrderCompletedConsumer(st, js, streamName, log)
+	consumer.SetReleaseReservationFn(releaseFn)
 	if err := consumer.Start(ctx); err != nil {
 		nc.Close()
 		return nil, nil, err
