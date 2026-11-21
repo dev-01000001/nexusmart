@@ -175,9 +175,9 @@ func mapStoreError(err error) error {
 		return nil
 	}
 	if errors.Is(err, store.ErrNotFound) {
-		return status.Error(codes.NotFound, "order not found")
+		return status.Error(codes.NotFound, "record not found")
 	}
-	if errors.Is(err, statemachine.ErrInvalidTransition) {
+	if errors.Is(err, statemachine.ErrInvalidTransition) || errors.Is(err, store.ErrComplaintNotOpen) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	if _, ok := status.FromError(err); ok {

@@ -81,8 +81,9 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	}
 
 	if req.GetPaymentMethod() != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD &&
-		req.GetPaymentMethod() != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR {
-		return nil, status.Error(codes.InvalidArgument, "payment_method must be COD or VIETQR")
+		req.GetPaymentMethod() != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+		req.GetPaymentMethod() != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_ZALOPAY {
+		return nil, status.Error(codes.InvalidArgument, "payment_method must be COD, VIETQR, or ZALOPAY")
 	}
 	if req.GetCoinsToUse() < 0 {
 		return nil, status.Error(codes.InvalidArgument, "coins_to_use cannot be negative")

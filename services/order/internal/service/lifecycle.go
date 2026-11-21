@@ -199,7 +199,7 @@ func (s *OrderService) CancelOrder(ctx context.Context, req *orderv1.CancelOrder
 		reason = "Cancelled by " + fallbackStr(caller.Role, "user")
 	}
 
-	wasPaid := statemachine.StringToPaymentMethod(agg.Order.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+	wasPaid := statemachine.IsOnlinePaymentMethodString(agg.Order.PaymentMethod) &&
 		strings.EqualFold(agg.Order.PaymentStatus, "SUCCEEDED")
 
 	traceID, traceparent := traceMetaFromContext(ctx)
@@ -212,7 +212,7 @@ func (s *OrderService) CancelOrder(ctx context.Context, req *orderv1.CancelOrder
 		Note:            reason,
 		CancelGroupPend: true,
 		BuildOutboxFn: func(ord db.Order) []db.InsertOutboxEventParams {
-			ordPaid := statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+			ordPaid := statemachine.IsOnlinePaymentMethodString(ord.PaymentMethod) &&
 				strings.EqualFold(ord.PaymentStatus, "SUCCEEDED")
 			payload, _ := json.Marshal(events.OrderCancelledPayload{
 				OrderID:          ord.ID,

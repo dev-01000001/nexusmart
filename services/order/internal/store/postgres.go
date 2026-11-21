@@ -1467,6 +1467,7 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 
 	curStatus := statemachine.StringToStatus(ord.Status)
 	shipStatus := strings.ToLower(strings.TrimSpace(params.ShipmentStatus))
+	isReturnDir := strings.EqualFold(strings.TrimSpace(params.Direction), "return")
 	note := strings.TrimSpace(params.Description)
 	if note == "" {
 		note = fmt.Sprintf("Shipment update: %s", shipStatus)
@@ -1474,8 +1475,8 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 
 	outcome := &ShipmentUpdateOutcome{}
 
-	switch shipStatus {
-	case "delivered":
+	switch {
+	case shipStatus == "delivered" && !isReturnDir:
 		if curStatus == orderv1.OrderStatus_ORDER_STATUS_SHIPPING {
 			if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_DELIVERED); err != nil {
 				return nil, err
@@ -1520,8 +1521,12 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 			}
 			outcome.TransitionedTo = orderv1.OrderStatus_ORDER_STATUS_DELIVERED
 		}
-	case "returned":
-		if curStatus == orderv1.OrderStatus_ORDER_STATUS_SHIPPING || curStatus == orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED {
+	case shipStatus == "returned":
+		canReturn := curStatus == orderv1.OrderStatus_ORDER_STATUS_SHIPPING ||
+			curStatus == orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED ||
+			curStatus == orderv1.OrderStatus_ORDER_STATUS_RETURNING ||
+			curStatus == orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED
+		if canReturn {
 			if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_RETURNED); err != nil {
 				return nil, err
 			}
@@ -1545,13 +1550,17 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 			outcome.TransitionedTo = orderv1.OrderStatus_ORDER_STATUS_RETURNED
 		}
 	default:
-		if params.TrackingCode != "" {
+		if params.TrackingCode != "" && !isReturnDir {
 			if err := q.UpdateOrderTrackingCode(ctx, db.UpdateOrderTrackingCodeParams{
 				ID:           ord.ID,
 				TrackingCode: params.TrackingCode,
 			}); err != nil {
 				return nil, err
 			}
+		}
+		tlNote := fmt.Sprintf("[%s] %s", shipStatus, note)
+		if isReturnDir {
+			tlNote = fmt.Sprintf("[return:%s] %s", shipStatus, note)
 		}
 		if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
 			ID:         uuid.NewString(),
@@ -1560,7 +1569,7 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 			ToStatus:   ord.Status,
 			ActorID:    "shipping-service",
 			ActorRole:  "system",
-			Note:       fmt.Sprintf("[%s] %s", shipStatus, note),
+			Note:       tlNote,
 		}); err != nil {
 			return nil, err
 		}
