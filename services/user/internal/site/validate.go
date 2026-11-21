@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -19,15 +20,40 @@ import (
 )
 
 const (
-	MaxConfigBytes   = 128 * 1024
-	MaxSections      = 20
-	MaxURLLength     = 500
-	MinContrastRatio = 4.5
+	MaxConfigBytes      = 128 * 1024
+	MaxJSONDepth        = 8
+	MaxSections         = 20
+	MaxPageSections     = 8
+	MaxTotalSections    = 32
+	MaxBlocksPerSection = 12
+	MaxURLLength        = 500
+	MinContrastRatio    = 4.5
 )
 
 var (
-	subdomainRe = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$`)
-	hexColorRe  = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
+	subdomainRe        = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$`)
+	hexColorRe         = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
+	inlineEventAttrRe  = regexp.MustCompile(`(?i)\bon[a-z]+\s*=`)
+	cssExpressionRe    = regexp.MustCompile(`(?i)\bexpression\s*\(`)
+	cssURLFuncRe       = regexp.MustCompile(`(?i)\burl\s*\(`)
+	forbiddenTextTerms = []string{
+		"<script",
+		"</script",
+		"<style",
+		"</style",
+		"<svg",
+		"</svg",
+		"<iframe",
+		"<object",
+		"<embed",
+		"<link",
+		"<meta",
+		"javascript:",
+		"vbscript:",
+		"data:",
+		"@import",
+		"-moz-binding",
+	}
 )
 
 // reservedSubdomains lists exact reserved and brand-impersonation subdomains (lowercase).
@@ -160,8 +186,9 @@ type PoliciesProps struct {
 }
 
 type rawConfig struct {
-	Theme    *ThemeConfig `json:"theme"`
-	Sections []rawSection `json:"sections"`
+	SchemaVersion *int         `json:"schema_version"`
+	Theme         *ThemeConfig `json:"theme"`
+	Sections      []rawSection `json:"sections"`
 }
 
 type rawSection struct {
@@ -370,6 +397,167 @@ func ValidateSafeURL(raw string) (string, error) {
 	return s, nil
 }
 
+// ValidateImageURL validates an optional image URL. It extends ValidateSafeURL by rejecting
+// SVG image URLs (.svg/.svgz, image/svg, svg+xml) and blocking SSRF targets on external https://
+// hosts (IP literals, numeric/hex/octal IP forms, loopback/private/link-local/metadata/internal
+// and single-label hostnames).
+func ValidateImageURL(raw string) (string, error) {
+	s, err := ValidateSafeURL(raw)
+	if err != nil {
+		return "", err
+	}
+	if s == "" {
+		return "", nil
+	}
+
+	if hasDisallowedSVGURL(s) {
+		return "", errors.New("UNSAFE_URL: SVG images are not allowed")
+	}
+
+	if strings.HasPrefix(s, "/") {
+		return s, nil
+	}
+
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", errors.New("UNSAFE_URL: invalid image url")
+	}
+	if isDisallowedImageHost(u.Hostname()) {
+		return "", errors.New("UNSAFE_URL: image host is not allowed (SSRF protection)")
+	}
+	return s, nil
+}
+
+func hasDisallowedSVGURL(s string) bool {
+	candidates := []string{s}
+	cur := s
+	for i := 0; i < 2; i++ {
+		next, err := url.QueryUnescape(cur)
+		if err != nil || next == cur {
+			break
+		}
+		candidates = append(candidates, next)
+		cur = next
+	}
+	for _, c := range candidates {
+		lc := strings.ToLower(c)
+		if strings.Contains(lc, "image/svg") || strings.Contains(lc, "svg+xml") {
+			return true
+		}
+	}
+
+	u, err := url.Parse(s)
+	if err != nil {
+		return true
+	}
+	paths := []string{u.Path, u.EscapedPath()}
+	curPath := u.EscapedPath()
+	for i := 0; i < 2; i++ {
+		next, err := url.PathUnescape(curPath)
+		if err != nil || next == curPath {
+			break
+		}
+		paths = append(paths, next)
+		curPath = next
+	}
+	for _, p := range paths {
+		if idx := strings.IndexAny(p, "?#;"); idx >= 0 {
+			p = p[:idx]
+		}
+		lp := strings.ToLower(strings.TrimSpace(p))
+		if strings.HasSuffix(lp, ".svg") || strings.HasSuffix(lp, ".svgz") {
+			return true
+		}
+	}
+	return false
+}
+
+func isDisallowedImageHost(rawHost string) bool {
+	host := strings.ToLower(strings.TrimSpace(rawHost))
+	host = strings.TrimSuffix(host, ".")
+	if host == "" || len(host) > 253 {
+		return true
+	}
+	if strings.ContainsAny(host, "%:[]/\\@ \t\r\n") {
+		return true
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return true
+	}
+
+	ascii, err := idna.Lookup.ToASCII(host)
+	if err != nil {
+		return true
+	}
+	host = strings.ToLower(strings.TrimSuffix(ascii, "."))
+	if host == "" || len(host) > 253 {
+		return true
+	}
+	if strings.Contains(host, ":") || net.ParseIP(host) != nil {
+		return true
+	}
+	if strings.HasPrefix(host, ".") || strings.Contains(host, "..") {
+		return true
+	}
+	if !strings.Contains(host, ".") {
+		return true
+	}
+
+	if host == "localhost" ||
+		host == "metadata.google.internal" ||
+		host == "metadata.goog" ||
+		strings.HasSuffix(host, ".localhost") ||
+		strings.HasSuffix(host, ".local") ||
+		strings.HasSuffix(host, ".internal") ||
+		strings.HasSuffix(host, ".localdomain") ||
+		strings.HasSuffix(host, ".home.arpa") ||
+		strings.HasSuffix(host, ".arpa") {
+		return true
+	}
+
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return true
+	}
+	for _, label := range labels {
+		if len(label) < 1 || len(label) > 63 {
+			return true
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return true
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+				return true
+			}
+		}
+	}
+
+	tld := labels[len(labels)-1]
+	return isNumericOrHexLabel(tld)
+}
+
+func isNumericOrHexLabel(label string) bool {
+	if label == "" {
+		return true
+	}
+	if _, err := strconv.ParseUint(label, 0, 64); err == nil {
+		return true
+	}
+	allDigits := true
+	for i := 0; i < len(label); i++ {
+		if label[i] < '0' || label[i] > '9' {
+			allDigits = false
+			break
+		}
+	}
+	return allDigits
+}
+
 // ContrastRatio calculates the WCAG 2.1 contrast ratio between two #RRGGBB hex colors.
 func ContrastRatio(hex1, hex2 string) (float64, error) {
 	l1, err := relativeLuminance(hex1)
@@ -414,23 +602,166 @@ func linearizeChannel(srgb float64) float64 {
 	return math.Pow((srgb+0.055)/1.055, 2.4)
 }
 
-// ValidateAndCanonicalizeConfig strictly decodes, validates, and re-marshals a SiteConfig JSON payload.
-// Unknown fields and trailing tokens are rejected at every level.
-func ValidateAndCanonicalizeConfig(raw []byte) (*Config, []byte, error) {
+type jsonFrame struct {
+	isObject  bool
+	keys      map[string]struct{}
+	expectKey bool
+}
+
+// validateJSONStructure performs a streaming pre-decode structural validation of a site config:
+// size <= MaxConfigBytes, root JSON object, nesting depth <= MaxJSONDepth (counting '{' and '['),
+// no duplicate object keys at any nesting level, and no trailing tokens.
+func validateJSONStructure(raw []byte) error {
+	if len(raw) > MaxConfigBytes {
+		return fmt.Errorf("INVALID_SITE_CONFIG: config_json exceeds %d bytes", MaxConfigBytes)
+	}
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
-		return nil, nil, errors.New("INVALID_SITE_CONFIG: config_json is required")
-	}
-	if len(trimmed) > MaxConfigBytes {
-		return nil, nil, fmt.Errorf("INVALID_SITE_CONFIG: config_json exceeds %d bytes", MaxConfigBytes)
+		return errors.New("INVALID_SITE_CONFIG: config_json is required")
 	}
 	if trimmed[0] != '{' {
-		return nil, nil, errors.New("INVALID_SITE_CONFIG: config_json must be a JSON object")
+		return errors.New("INVALID_SITE_CONFIG: config_json must be a JSON object")
 	}
 
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	firstTok, err := dec.Token()
+	if err != nil {
+		return fmt.Errorf("INVALID_SITE_CONFIG: invalid JSON: %w", err)
+	}
+	delim, ok := firstTok.(json.Delim)
+	if !ok || delim != '{' {
+		return errors.New("INVALID_SITE_CONFIG: config_json must be a JSON object")
+	}
+
+	stack := []jsonFrame{{
+		isObject:  true,
+		keys:      make(map[string]struct{}),
+		expectKey: true,
+	}}
+
+	for len(stack) > 0 {
+		tok, err := dec.Token()
+		if err != nil {
+			return fmt.Errorf("INVALID_SITE_CONFIG: invalid JSON: %w", err)
+		}
+
+		switch t := tok.(type) {
+		case json.Delim:
+			switch t {
+			case '{':
+				if len(stack)+1 > MaxJSONDepth {
+					return fmt.Errorf("INVALID_SITE_CONFIG: JSON nesting depth exceeds %d", MaxJSONDepth)
+				}
+				stack = append(stack, jsonFrame{
+					isObject:  true,
+					keys:      make(map[string]struct{}),
+					expectKey: true,
+				})
+			case '[':
+				if len(stack)+1 > MaxJSONDepth {
+					return fmt.Errorf("INVALID_SITE_CONFIG: JSON nesting depth exceeds %d", MaxJSONDepth)
+				}
+				stack = append(stack, jsonFrame{
+					isObject: false,
+				})
+			case '}', ']':
+				top := stack[len(stack)-1]
+				if (t == '}' && !top.isObject) || (t == ']' && top.isObject) {
+					return errors.New("INVALID_SITE_CONFIG: mismatched JSON delimiter")
+				}
+				stack = stack[:len(stack)-1]
+				if len(stack) > 0 && stack[len(stack)-1].isObject {
+					stack[len(stack)-1].expectKey = true
+				}
+			}
+		case string:
+			top := &stack[len(stack)-1]
+			if top.isObject {
+				if top.expectKey {
+					if _, dup := top.keys[t]; dup {
+						return fmt.Errorf("INVALID_SITE_CONFIG: duplicate JSON key %q", t)
+					}
+					top.keys[t] = struct{}{}
+					top.expectKey = false
+				} else {
+					top.expectKey = true
+				}
+			}
+		default:
+			top := &stack[len(stack)-1]
+			if top.isObject {
+				top.expectKey = true
+			}
+		}
+	}
+
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("INVALID_SITE_CONFIG: unexpected trailing JSON token")
+		}
+		return fmt.Errorf("INVALID_SITE_CONFIG: unexpected trailing JSON content: %w", err)
+	}
+	return nil
+}
+
+// ValidateAndCanonicalizeConfig strictly decodes, validates, and re-marshals a SiteConfig JSON payload.
+// Supports both legacy v1 (schema_version omitted or 1) and Declarative Theme JSON v2 (schema_version == 2).
+// Unknown fields, duplicate keys, excessive nesting depth, and trailing tokens are rejected at every level.
+func ValidateAndCanonicalizeConfig(raw []byte) (*Config, []byte, error) {
+	if err := validateJSONStructure(raw); err != nil {
+		return nil, nil, err
+	}
+	trimmed := bytes.TrimSpace(raw)
+
+	version, err := peekSchemaVersion(trimmed)
+	if err != nil {
+		return nil, nil, err
+	}
+	switch version {
+	case 0, 1:
+		return validateAndCanonicalizeConfigV1(trimmed)
+	case 2:
+		v2, canonical, err := ValidateAndCanonicalizeConfigV2(trimmed)
+		if err != nil {
+			return nil, nil, err
+		}
+		return v2.ToSummaryConfig(), canonical, nil
+	default:
+		return nil, nil, fmt.Errorf("INVALID_SITE_CONFIG: unsupported schema_version %d", version)
+	}
+}
+
+func peekSchemaVersion(trimmed []byte) (int, error) {
+	var probe struct {
+		SchemaVersion *json.RawMessage `json:"schema_version"`
+	}
+	if err := json.Unmarshal(trimmed, &probe); err != nil {
+		return 0, fmt.Errorf("INVALID_SITE_CONFIG: %w", err)
+	}
+	if probe.SchemaVersion == nil {
+		return 0, nil
+	}
+	rawVer := bytes.TrimSpace(*probe.SchemaVersion)
+	if len(rawVer) == 0 || bytes.Equal(rawVer, []byte("null")) {
+		return 0, errors.New("INVALID_SITE_CONFIG: schema_version must be an integer (1 or 2)")
+	}
+	var ver int
+	if err := json.Unmarshal(rawVer, &ver); err != nil {
+		return 0, errors.New("INVALID_SITE_CONFIG: schema_version must be an integer (1 or 2)")
+	}
+	if ver != 1 && ver != 2 {
+		return 0, fmt.Errorf("INVALID_SITE_CONFIG: unsupported schema_version %d", ver)
+	}
+	return ver, nil
+}
+
+func validateAndCanonicalizeConfigV1(trimmed []byte) (*Config, []byte, error) {
 	var rc rawConfig
 	if err := decodeStrictJSON(trimmed, &rc); err != nil {
 		return nil, nil, fmt.Errorf("INVALID_SITE_CONFIG: %w", err)
+	}
+	if rc.SchemaVersion != nil && *rc.SchemaVersion != 1 {
+		return nil, nil, fmt.Errorf("INVALID_SITE_CONFIG: unsupported schema_version %d", *rc.SchemaVersion)
 	}
 	if rc.Theme == nil {
 		return nil, nil, errors.New("INVALID_SITE_CONFIG: theme is required")
@@ -507,10 +838,10 @@ func validateTheme(t ThemeConfig) (ThemeConfig, error) {
 	}
 
 	var err error
-	if t.LogoURL, err = ValidateSafeURL(t.LogoURL); err != nil {
+	if t.LogoURL, err = ValidateImageURL(t.LogoURL); err != nil {
 		return ThemeConfig{}, fmt.Errorf("theme.logo_url: %w", err)
 	}
-	if t.BannerURL, err = ValidateSafeURL(t.BannerURL); err != nil {
+	if t.BannerURL, err = ValidateImageURL(t.BannerURL); err != nil {
 		return ThemeConfig{}, fmt.Errorf("theme.banner_url: %w", err)
 	}
 	if t.BrandName, err = validateText("theme.brand_name", t.BrandName, 1, 80, false); err != nil {
@@ -556,7 +887,7 @@ func validateSection(idx int, rs rawSection) (Section, error) {
 		if p.Subtitle, err = validateText(prefix+".props.subtitle", p.Subtitle, 0, 400, true); err != nil {
 			return Section{}, err
 		}
-		if p.ImageURL, err = ValidateSafeURL(p.ImageURL); err != nil {
+		if p.ImageURL, err = ValidateImageURL(p.ImageURL); err != nil {
 			return Section{}, fmt.Errorf("%s.props.image_url: %w", prefix, err)
 		}
 		if p.CTALabel, err = validateText(prefix+".props.cta_label", p.CTALabel, 0, 40, false); err != nil {
@@ -612,7 +943,7 @@ func validateSection(idx int, rs rawSection) (Section, error) {
 		if p.CategorySlug, err = validateText(prefix+".props.category_slug", p.CategorySlug, 0, 80, false); err != nil {
 			return Section{}, err
 		}
-		if p.ImageURL, err = ValidateSafeURL(p.ImageURL); err != nil {
+		if p.ImageURL, err = ValidateImageURL(p.ImageURL); err != nil {
 			return Section{}, fmt.Errorf("%s.props.image_url: %w", prefix, err)
 		}
 		if p.Limit < 0 || p.Limit > 12 {
@@ -648,7 +979,7 @@ func validateSection(idx int, rs rawSection) (Section, error) {
 		if p.Subtitle, err = validateText(prefix+".props.subtitle", p.Subtitle, 0, 300, true); err != nil {
 			return Section{}, err
 		}
-		if p.ImageURL, err = ValidateSafeURL(p.ImageURL); err != nil {
+		if p.ImageURL, err = ValidateImageURL(p.ImageURL); err != nil {
 			return Section{}, fmt.Errorf("%s.props.image_url: %w", prefix, err)
 		}
 		if p.CTALabel, err = validateText(prefix+".props.cta_label", p.CTALabel, 0, 40, false); err != nil {
@@ -729,7 +1060,32 @@ func validateText(field, raw string, minRunes, maxRunes int, allowNewlines bool)
 	if n > maxRunes {
 		return "", fmt.Errorf("INVALID_SITE_CONFIG: %s must be at most %d characters", field, maxRunes)
 	}
+	if err := checkTextSecurity(field, s); err != nil {
+		return "", err
+	}
 	return s, nil
+}
+
+func checkTextSecurity(field, s string) error {
+	if s == "" {
+		return nil
+	}
+	lower := strings.ToLower(s)
+	for _, term := range forbiddenTextTerms {
+		if strings.Contains(lower, term) {
+			return fmt.Errorf("INVALID_SITE_CONFIG: UNSAFE_TEXT: %s contains disallowed pattern %q", field, term)
+		}
+	}
+	if inlineEventAttrRe.MatchString(s) {
+		return fmt.Errorf("INVALID_SITE_CONFIG: UNSAFE_TEXT: %s contains disallowed inline event handler", field)
+	}
+	if cssExpressionRe.MatchString(s) {
+		return fmt.Errorf("INVALID_SITE_CONFIG: UNSAFE_TEXT: %s contains disallowed css expression()", field)
+	}
+	if cssURLFuncRe.MatchString(s) {
+		return fmt.Errorf("INVALID_SITE_CONFIG: UNSAFE_TEXT: %s contains disallowed css url()", field)
+	}
+	return nil
 }
 
 func decodeStrictJSON(data []byte, dst any) error {

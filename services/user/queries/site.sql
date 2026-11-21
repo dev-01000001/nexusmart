@@ -242,6 +242,15 @@ SELECT * FROM domains
 WHERE LOWER(host) = LOWER($1)
 LIMIT 1;
 
+-- name: LockDomainHost :exec
+SELECT pg_advisory_xact_lock(hashtextextended('domain_host:' || LOWER(sqlc.arg(host)::text), 0));
+
+-- name: GetDomainByHostForUpdate :one
+SELECT * FROM domains
+WHERE LOWER(host) = LOWER($1)
+LIMIT 1
+FOR UPDATE;
+
 -- name: GetDomainByID :one
 SELECT * FROM domains
 WHERE id = $1

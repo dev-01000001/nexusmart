@@ -840,3 +840,402 @@ func TestDomains_SubdomainDNSRecordLifecycle(t *testing.T) {
 		t.Fatalf("expected custom domain to remain primary after subdomain rename, got %+v err=%v", byNewSub, err)
 	}
 }
+
+func TestDomains_AntiSquattingRules(t *testing.T) {
+	setup := func(t *testing.T, baseNow time.Time) (*spyCFClient, userv1.UserServiceClient, *memStore, func(time.Time), string, string) {
+		t.Helper()
+		cf := newSpyCFClient("shops.nexusmart.localhost")
+		var clockMu sync.Mutex
+		curNow := baseNow
+		getNow := func() time.Time {
+			clockMu.Lock()
+			defer clockMu.Unlock()
+			return curNow
+		}
+		setNow := func(next time.Time) {
+			clockMu.Lock()
+			defer clockMu.Unlock()
+			curNow = next
+		}
+
+		_, client, store, users, _ := startDomainBufconn(t, Options{
+			Cloudflare: cf,
+			CFMode:     "mock",
+			Now:        getNow,
+		})
+
+		mkPublished := func(name, sub string) string {
+			owner := uuid.NewString()
+			shop := seedActiveShop(t, store, owner, name, ShopStatusActive)
+			tok, _, _, _ := users.SignAccessToken(owner, RoleSeller, shop.ID)
+			if _, err := client.SaveSiteDraft(ctxWithBearer(t, tok), &userv1.SaveSiteDraftRequest{
+				Subdomain:  sub,
+				ConfigJson: sampleSiteConfigJSON(t, name, "Hero "+name),
+			}); err != nil {
+				t.Fatalf("SaveSiteDraft %s: %v", sub, err)
+			}
+			if _, err := client.PublishSite(ctxWithBearer(t, tok), &userv1.PublishSiteRequest{}); err != nil {
+				t.Fatalf("PublishSite %s: %v", sub, err)
+			}
+			return tok
+		}
+
+		tokA := mkPublished("Shop Alpha", "squat-alpha")
+		tokB := mkPublished("Shop Beta", "squat-beta")
+		return cf, client, store, setNow, tokA, tokB
+	}
+
+	t.Run("Rule1_ActiveAndRemovingBlock_FailedDoesNotBlock", func(t *testing.T) {
+		base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+		cf, client, store, _, tokA, tokB := setup(t, base)
+
+		// 1a. ACTIVE blocks other site without calling Cloudflare.
+		addAct, err := client.AddCustomDomain(ctxWithBearer(t, tokA), &userv1.AddCustomDomainRequest{
+			Hostname: "brand-active.verified.test",
+		})
+		if err != nil {
+			t.Fatalf("shopA add active: %v", err)
+		}
+		if _, err := client.CheckCustomDomain(ctxWithBearer(t, tokA), &userv1.CheckCustomDomainRequest{
+			DomainId: addAct.GetDomain().GetId(),
+		}); err != nil {
+			t.Fatalf("shopA activate: %v", err)
+		}
+
+		createBefore := len(cf.createCustomCalls)
+		deleteBefore := len(cf.deleteCustomCalls)
+		if _, err := client.AddCustomDomain(ctxWithBearer(t, tokB), &userv1.AddCustomDomainRequest{
+			Hostname: "BRAND-ACTIVE.VERIFIED.TEST",
+		}); status.Code(err) != codes.AlreadyExists || !strings.Contains(err.Error(), "domain_taken:") {
+			t.Fatalf("shopB claiming ACTIVE host: want AlreadyExists(domain_taken:), got %v", err)
+		}
+		if len(cf.createCustomCalls) != createBefore || len(cf.deleteCustomCalls) != deleteBefore {
+			t.Fatalf("ACTIVE block must not call Cloudflare: create=%d->%d delete=%d->%d",
+				createBefore, len(cf.createCustomCalls), deleteBefore, len(cf.deleteCustomCalls))
+		}
+
+		// 1b. REMOVING blocks other site without calling Cloudflare.
+		cf.mu.Lock()
+		cf.deleteCustomErr = errors.New("cf 503 temporary")
+		cf.mu.Unlock()
+		if _, err := client.RemoveCustomDomain(ctxWithBearer(t, tokA), &userv1.RemoveCustomDomainRequest{
+			DomainId: addAct.GetDomain().GetId(),
+		}); status.Code(err) != codes.Unavailable {
+			t.Fatalf("shopA remove with CF error: want Unavailable, got %v", err)
+		}
+		cf.mu.Lock()
+		cf.deleteCustomErr = nil
+		cf.mu.Unlock()
+
+		createBefore = len(cf.createCustomCalls)
+		deleteBefore = len(cf.deleteCustomCalls)
+		if _, err := client.AddCustomDomain(ctxWithBearer(t, tokB), &userv1.AddCustomDomainRequest{
+			Hostname: "brand-active.verified.test",
+		}); status.Code(err) != codes.AlreadyExists || !strings.Contains(err.Error(), "domain_taken:") {
+			t.Fatalf("shopB claiming REMOVING host: want AlreadyExists(domain_taken:), got %v", err)
+		}
+		if len(cf.createCustomCalls) != createBefore || len(cf.deleteCustomCalls) != deleteBefore {
+			t.Fatalf("REMOVING block must not call Cloudflare")
+		}
+
+		// Clear Shop A's REMOVING row so Shop A can test a FAILED domain.
+		if _, err := client.RemoveCustomDomain(ctxWithBearer(t, tokA), &userv1.RemoveCustomDomainRequest{
+			DomainId: addAct.GetDomain().GetId(),
+		}); err != nil {
+			t.Fatalf("shopA finalize remove: %v", err)
+		}
+
+		// 1c. FAILED of other site does NOT block: B reclaims immediately.
+		addFail, err := client.AddCustomDomain(ctxWithBearer(t, tokA), &userv1.AddCustomDomainRequest{
+			Hostname: "victim.fail.test",
+		})
+		if err != nil {
+			t.Fatalf("shopA add fail: %v", err)
+		}
+		oldFailID := addFail.GetDomain().GetId()
+		chkFail, err := client.CheckCustomDomain(ctxWithBearer(t, tokA), &userv1.CheckCustomDomainRequest{
+			DomainId: oldFailID,
+		})
+		if err != nil || chkFail.GetDomain().GetStatus() != DomainStatusFailed {
+			t.Fatalf("expected FAILED after check, got %+v err=%v", chkFail, err)
+		}
+
+		reclaimResp, err := client.AddCustomDomain(ctxWithBearer(t, tokB), &userv1.AddCustomDomainRequest{
+			Hostname: "VICTIM.FAIL.TEST",
+		})
+		if err != nil {
+			t.Fatalf("shopB reclaiming FAILED host: %v", err)
+		}
+		gotB := reclaimResp.GetDomain()
+		if gotB.GetId() == oldFailID || gotB.GetHost() != "victim.fail.test" || gotB.GetStatus() != DomainStatusPending {
+			t.Fatalf("unexpected reclaimed domain for shopB: %+v", gotB)
+		}
+
+		listA, err := client.ListSiteDomains(ctxWithBearer(t, tokA), &userv1.ListSiteDomainsRequest{})
+		if err != nil || len(listA.GetDomains()) != 1 || listA.GetDomains()[0].GetKind() != DomainKindSubdomain {
+			t.Fatalf("shopA must no longer have reclaimed FAILED domain, got %+v err=%v", listA, err)
+		}
+		listB, err := client.ListSiteDomains(ctxWithBearer(t, tokB), &userv1.ListSiteDomainsRequest{})
+		if err != nil || len(listB.GetDomains()) != 2 {
+			t.Fatalf("shopB must have subdomain + reclaimed custom domain, got %+v err=%v", listB, err)
+		}
+
+		// Verify old row is deleted from store and only B's row exists for the host.
+		store.mu.Lock()
+		_, oldExists := store.domains[oldFailID]
+		_, newExists := store.domains[gotB.GetId()]
+		store.mu.Unlock()
+		if oldExists || !newExists {
+			t.Fatalf("expected old row deleted and new row present: oldExists=%v newExists=%v", oldExists, newExists)
+		}
+	})
+
+	t.Run("Rule2_PendingHold48h_BlocksWithin48h_ReclaimsAfter48hWithout7DayJob", func(t *testing.T) {
+		base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+		cf, client, store, setNow, tokA, tokB := setup(t, base)
+
+		addA, err := client.AddCustomDomain(ctxWithBearer(t, tokA), &userv1.AddCustomDomainRequest{
+			Hostname: "squat.pending.test",
+		})
+		if err != nil {
+			t.Fatalf("shopA add pending: %v", err)
+		}
+		oldID := addA.GetDomain().GetId()
+
+		// Anchor CreatedAt to base so 48h boundary assertions are exact.
+		store.mu.Lock()
+		d := store.domains[oldID]
+		d.CreatedAt = base
+		store.domains[oldID] = d
+		store.mu.Unlock()
+
+		// Within 48h (47h59m and exact 48h00m00s) -> blocked with domain_taken and 0 CF calls.
+		for _, offset := range []time.Duration{47*time.Hour + 59*time.Minute, 48 * time.Hour} {
+			setNow(base.Add(offset))
+			createBefore := len(cf.createCustomCalls)
+			deleteBefore := len(cf.deleteCustomCalls)
+			if _, err := client.AddCustomDomain(ctxWithBearer(t, tokB), &userv1.AddCustomDomainRequest{
+				Hostname: "squat.pending.test",
+			}); status.Code(err) != codes.AlreadyExists || !strings.Contains(err.Error(), "domain_taken:") {
+				t.Fatalf("shopB at +%s: want AlreadyExists(domain_taken:), got %v", offset, err)
+			}
+			if len(cf.createCustomCalls) != createBefore || len(cf.deleteCustomCalls) != deleteBefore {
+				t.Fatalf("at +%s: blocked claim must not call Cloudflare", offset)
+			}
+		}
+
+		// Past 48h (48h00m01s, still well below 7 days and status still PENDING) -> B reclaims!
+		setNow(base.Add(48*time.Hour + time.Second))
+		reclaimResp, err := client.AddCustomDomain(ctxWithBearer(t, tokB), &userv1.AddCustomDomainRequest{
+			Hostname: "squat.pending.test",
+		})
+		if err != nil {
+			t.Fatalf("shopB reclaim after 48h: %v", err)
+		}
+		if reclaimResp.GetDomain().GetId() == oldID || reclaimResp.GetDomain().GetStatus() != DomainStatusPending {
+			t.Fatalf("unexpected reclaimed domain after 48h: %+v", reclaimResp.GetDomain())
+		}
+		listA, err := client.ListSiteDomains(ctxWithBearer(t, tokA), &userv1.ListSiteDomainsRequest{})
+		if err != nil || len(listA.GetDomains()) != 1 || listA.GetDomains()[0].GetKind() != DomainKindSubdomain {
+			t.Fatalf("shopA must no longer own expired PENDING domain, got %+v err=%v", listA, err)
+		}
+	})
+
+	t.Run("Rule3_ReclaimCallsCFDeleteBeforeRowDeleteAndPreservesOldRowOnCFError", func(t *testing.T) {
+		base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+		cf, client, store, setNow, tokA, tokB := setup(t, base)
+
+		addA, err := client.AddCustomDomain(ctxWithBearer(t, tokA), &userv1.AddCustomDomainRequest{
+			Hostname: "order-check.pending.test",
+		})
+		if err != nil {
+			t.Fatalf("shopA add: %v", err)
+		}
+		oldID := addA.GetDomain().GetId()
+		store.mu.Lock()
+		d := store.domains[oldID]
+		d.CreatedAt = base
+		oldCFID := *d.CfCustomHostnameID
+		store.domains[oldID] = d
+		store.mu.Unlock()
+
+		setNow(base.Add(49 * time.Hour))
+
+		// 3a. Cloudflare DeleteCustomHostname error -> returns Unavailable, does NOT delete A's old row, does NOT call CreateCustomHostname.
+		cf.mu.Lock()
+		cf.deleteCustomErr = errors.New("cloudflare 502 bad gateway")
+		createBefore := len(cf.createCustomCalls)
+		cf.mu.Unlock()
+
+		if _, err := client.AddCustomDomain(ctxWithBearer(t, tokB), &userv1.AddCustomDomainRequest{
+			Hostname: "order-check.pending.test",
+		}); status.Code(err) != codes.Unavailable {
+			t.Fatalf("reclaim when CF delete fails: want Unavailable, got %v", err)
+		}
+		cf.mu.Lock()
+		createAfterErr := len(cf.createCustomCalls)
+		cf.deleteCustomErr = nil
+		cf.mu.Unlock()
+		if createAfterErr != createBefore {
+			t.Fatalf("CreateCustomHostname must NOT be called when DeleteCustomHostname fails")
+		}
+		store.mu.Lock()
+		stillThere, ok := store.domains[oldID]
+		store.mu.Unlock()
+		if !ok || stillThere.ID != oldID {
+			t.Fatalf("old domain row must NOT be deleted when CF DeleteCustomHostname fails")
+		}
+
+		// 3b. Cloudflare CreateCustomHostname error after Delete -> rolls back DB tx so old row is preserved.
+		cf.mu.Lock()
+		cf.createCustomErr = errors.New("cloudflare 503 create failure")
+		cf.mu.Unlock()
+		if _, err := client.AddCustomDomain(ctxWithBearer(t, tokB), &userv1.AddCustomDomainRequest{
+			Hostname: "order-check.pending.test",
+		}); status.Code(err) != codes.Unavailable {
+			t.Fatalf("reclaim when CF create fails: want Unavailable, got %v", err)
+		}
+		cf.mu.Lock()
+		cf.createCustomErr = nil
+		cf.mu.Unlock()
+		store.mu.Lock()
+		_, stillThereAfterCreateErr := store.domains[oldID]
+		store.mu.Unlock()
+		if !stillThereAfterCreateErr {
+			t.Fatalf("old domain row must be preserved via tx rollback when CF CreateCustomHostname fails")
+		}
+
+		// 3c. Happy reclaim: verify DeleteCustomHostname(oldCFID) runs while old row still exists and BEFORE CreateCustomHostname.
+		cf.mu.Lock()
+		createCountBeforeReclaim := len(cf.createCustomCalls)
+		cf.mu.Unlock()
+
+		var (
+			sawDeleteForOldCFID     bool
+			oldRowStillPresentOnDel bool
+			createNotYetCalledOnDel bool
+		)
+		cf.mu.Lock()
+		cf.onDeleteCustom = func(gotCFID string) {
+			if gotCFID == oldCFID {
+				sawDeleteForOldCFID = true
+			}
+			store.mu.Lock()
+			_, oldRowStillPresentOnDel = store.domains[oldID]
+			store.mu.Unlock()
+			cf.mu.Lock()
+			createNotYetCalledOnDel = len(cf.createCustomCalls) == createCountBeforeReclaim
+			cf.mu.Unlock()
+		}
+		cf.mu.Unlock()
+
+		reclaimResp, err := client.AddCustomDomain(ctxWithBearer(t, tokB), &userv1.AddCustomDomainRequest{
+			Hostname: "order-check.pending.test",
+		})
+		cf.mu.Lock()
+		cf.onDeleteCustom = nil
+		cf.mu.Unlock()
+		if err != nil {
+			t.Fatalf("happy reclaim: %v", err)
+		}
+		if !sawDeleteForOldCFID || !oldRowStillPresentOnDel || !createNotYetCalledOnDel {
+			t.Fatalf("unexpected reclaim call ordering: sawOldCFID=%v oldRowPresent=%v createNotYetCalled=%v",
+				sawDeleteForOldCFID, oldRowStillPresentOnDel, createNotYetCalledOnDel)
+		}
+		store.mu.Lock()
+		_, oldExistsAfter := store.domains[oldID]
+		_, newExistsAfter := store.domains[reclaimResp.GetDomain().GetId()]
+		store.mu.Unlock()
+		if oldExistsAfter || !newExistsAfter {
+			t.Fatalf("after happy reclaim: oldExists=%v newExists=%v", oldExistsAfter, newExistsAfter)
+		}
+	})
+
+	t.Run("Rule4_SameSiteReAddOwnFailedHost_ReplacesRowWithoutDomainLimit", func(t *testing.T) {
+		base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+		cf, client, store, _, tokA, tokB := setup(t, base)
+
+		// Shop A adds retry.fail.test and checks -> FAILED.
+		add1, err := client.AddCustomDomain(ctxWithBearer(t, tokA), &userv1.AddCustomDomainRequest{
+			Hostname: "retry.fail.test",
+		})
+		if err != nil {
+			t.Fatalf("shopA add #1: %v", err)
+		}
+		oldID := add1.GetDomain().GetId()
+		chk1, err := client.CheckCustomDomain(ctxWithBearer(t, tokA), &userv1.CheckCustomDomainRequest{
+			DomainId: oldID,
+		})
+		if err != nil || chk1.GetDomain().GetStatus() != DomainStatusFailed {
+			t.Fatalf("expected FAILED after check, got %+v err=%v", chk1, err)
+		}
+
+		// Adding a DIFFERENT host while own host is FAILED still hits domain_limit.
+		if _, err := client.AddCustomDomain(ctxWithBearer(t, tokA), &userv1.AddCustomDomainRequest{
+			Hostname: "different.verified.test",
+		}); status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "domain_limit:") {
+			t.Fatalf("adding different host while own is FAILED: want FailedPrecondition(domain_limit:), got %v", err)
+		}
+
+		// If Shop B already has its own custom domain, Shop B cannot reclaim Shop A's FAILED host (hits domain_limit without touching A's row).
+		if _, err := client.AddCustomDomain(ctxWithBearer(t, tokB), &userv1.AddCustomDomainRequest{
+			Hostname: "beta-own.pending.test",
+		}); err != nil {
+			t.Fatalf("shopB add own: %v", err)
+		}
+		if _, err := client.AddCustomDomain(ctxWithBearer(t, tokB), &userv1.AddCustomDomainRequest{
+			Hostname: "retry.fail.test",
+		}); status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "domain_limit:") {
+			t.Fatalf("shopB at domain_limit reclaiming A's FAILED host: want FailedPrecondition(domain_limit:), got %v", err)
+		}
+		store.mu.Lock()
+		_, aStillIntact := store.domains[oldID]
+		store.mu.Unlock()
+		if !aStillIntact {
+			t.Fatalf("shopB hitting domain_limit must NOT delete shopA's FAILED domain")
+		}
+
+		// Re-adding own FAILED host when CF delete fails -> returns Unavailable and preserves old row.
+		cf.mu.Lock()
+		cf.deleteCustomErr = errors.New("cf delete transient error")
+		cf.mu.Unlock()
+		if _, err := client.AddCustomDomain(ctxWithBearer(t, tokA), &userv1.AddCustomDomainRequest{
+			Hostname: "RETRY.FAIL.TEST",
+		}); status.Code(err) != codes.Unavailable {
+			t.Fatalf("same-site re-add when CF delete fails: want Unavailable, got %v", err)
+		}
+		cf.mu.Lock()
+		cf.deleteCustomErr = nil
+		deleteBefore := len(cf.deleteCustomCalls)
+		cf.mu.Unlock()
+
+		// Re-adding own FAILED host (case-insensitive) succeeds, replaces old row, no domain_limit!
+		add2, err := client.AddCustomDomain(ctxWithBearer(t, tokA), &userv1.AddCustomDomainRequest{
+			Hostname: "RETRY.FAIL.TEST",
+		})
+		if err != nil {
+			t.Fatalf("same-site re-add own FAILED host: %v", err)
+		}
+		dom2 := add2.GetDomain()
+		if dom2.GetId() == oldID || dom2.GetHost() != "retry.fail.test" || dom2.GetStatus() != DomainStatusPending || dom2.GetLastError() != "" {
+			t.Fatalf("unexpected replaced custom domain: %+v", dom2)
+		}
+		cf.mu.Lock()
+		deleteAfter := len(cf.deleteCustomCalls)
+		cf.mu.Unlock()
+		if deleteAfter != deleteBefore+1 {
+			t.Fatalf("expected CF DeleteCustomHostname for replaced FAILED row: before=%d after=%d", deleteBefore, deleteAfter)
+		}
+		listA, err := client.ListSiteDomains(ctxWithBearer(t, tokA), &userv1.ListSiteDomainsRequest{})
+		if err != nil || len(listA.GetDomains()) != 2 {
+			t.Fatalf("expected 1 subdomain + 1 replaced custom domain, got %+v err=%v", listA, err)
+		}
+
+		// Re-adding own host now that it is PENDING (not FAILED) must return domain_limit.
+		if _, err := client.AddCustomDomain(ctxWithBearer(t, tokA), &userv1.AddCustomDomainRequest{
+			Hostname: "retry.fail.test",
+		}); status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "domain_limit:") {
+			t.Fatalf("same-site re-add while PENDING: want FailedPrecondition(domain_limit:), got %v", err)
+		}
+	})
+}

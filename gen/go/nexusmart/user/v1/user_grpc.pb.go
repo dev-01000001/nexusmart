@@ -57,6 +57,9 @@ const (
 	UserService_CheckCustomDomain_FullMethodName     = "/nexusmart.user.v1.UserService/CheckCustomDomain"
 	UserService_RemoveCustomDomain_FullMethodName    = "/nexusmart.user.v1.UserService/RemoveCustomDomain"
 	UserService_ListSiteDomains_FullMethodName       = "/nexusmart.user.v1.UserService/ListSiteDomains"
+	UserService_ListSiteTemplates_FullMethodName     = "/nexusmart.user.v1.UserService/ListSiteTemplates"
+	UserService_GetSiteTemplate_FullMethodName       = "/nexusmart.user.v1.UserService/GetSiteTemplate"
+	UserService_ApplySiteTemplate_FullMethodName     = "/nexusmart.user.v1.UserService/ApplySiteTemplate"
 )
 
 // UserServiceClient is the client API for UserService service.
@@ -101,6 +104,9 @@ type UserServiceClient interface {
 	CheckCustomDomain(ctx context.Context, in *CheckCustomDomainRequest, opts ...grpc.CallOption) (*CheckCustomDomainResponse, error)
 	RemoveCustomDomain(ctx context.Context, in *RemoveCustomDomainRequest, opts ...grpc.CallOption) (*RemoveCustomDomainResponse, error)
 	ListSiteDomains(ctx context.Context, in *ListSiteDomainsRequest, opts ...grpc.CallOption) (*ListSiteDomainsResponse, error)
+	ListSiteTemplates(ctx context.Context, in *ListSiteTemplatesRequest, opts ...grpc.CallOption) (*ListSiteTemplatesResponse, error)
+	GetSiteTemplate(ctx context.Context, in *GetSiteTemplateRequest, opts ...grpc.CallOption) (*GetSiteTemplateResponse, error)
+	ApplySiteTemplate(ctx context.Context, in *ApplySiteTemplateRequest, opts ...grpc.CallOption) (*ApplySiteTemplateResponse, error)
 }
 
 type userServiceClient struct {
@@ -491,6 +497,36 @@ func (c *userServiceClient) ListSiteDomains(ctx context.Context, in *ListSiteDom
 	return out, nil
 }
 
+func (c *userServiceClient) ListSiteTemplates(ctx context.Context, in *ListSiteTemplatesRequest, opts ...grpc.CallOption) (*ListSiteTemplatesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSiteTemplatesResponse)
+	err := c.cc.Invoke(ctx, UserService_ListSiteTemplates_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) GetSiteTemplate(ctx context.Context, in *GetSiteTemplateRequest, opts ...grpc.CallOption) (*GetSiteTemplateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSiteTemplateResponse)
+	err := c.cc.Invoke(ctx, UserService_GetSiteTemplate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) ApplySiteTemplate(ctx context.Context, in *ApplySiteTemplateRequest, opts ...grpc.CallOption) (*ApplySiteTemplateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplySiteTemplateResponse)
+	err := c.cc.Invoke(ctx, UserService_ApplySiteTemplate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UserServiceServer is the server API for UserService service.
 // All implementations must embed UnimplementedUserServiceServer
 // for forward compatibility.
@@ -533,6 +569,9 @@ type UserServiceServer interface {
 	CheckCustomDomain(context.Context, *CheckCustomDomainRequest) (*CheckCustomDomainResponse, error)
 	RemoveCustomDomain(context.Context, *RemoveCustomDomainRequest) (*RemoveCustomDomainResponse, error)
 	ListSiteDomains(context.Context, *ListSiteDomainsRequest) (*ListSiteDomainsResponse, error)
+	ListSiteTemplates(context.Context, *ListSiteTemplatesRequest) (*ListSiteTemplatesResponse, error)
+	GetSiteTemplate(context.Context, *GetSiteTemplateRequest) (*GetSiteTemplateResponse, error)
+	ApplySiteTemplate(context.Context, *ApplySiteTemplateRequest) (*ApplySiteTemplateResponse, error)
 	mustEmbedUnimplementedUserServiceServer()
 }
 
@@ -656,6 +695,15 @@ func (UnimplementedUserServiceServer) RemoveCustomDomain(context.Context, *Remov
 }
 func (UnimplementedUserServiceServer) ListSiteDomains(context.Context, *ListSiteDomainsRequest) (*ListSiteDomainsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListSiteDomains not implemented")
+}
+func (UnimplementedUserServiceServer) ListSiteTemplates(context.Context, *ListSiteTemplatesRequest) (*ListSiteTemplatesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListSiteTemplates not implemented")
+}
+func (UnimplementedUserServiceServer) GetSiteTemplate(context.Context, *GetSiteTemplateRequest) (*GetSiteTemplateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSiteTemplate not implemented")
+}
+func (UnimplementedUserServiceServer) ApplySiteTemplate(context.Context, *ApplySiteTemplateRequest) (*ApplySiteTemplateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ApplySiteTemplate not implemented")
 }
 func (UnimplementedUserServiceServer) mustEmbedUnimplementedUserServiceServer() {}
 func (UnimplementedUserServiceServer) testEmbeddedByValue()                     {}
@@ -1362,6 +1410,60 @@ func _UserService_ListSiteDomains_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserService_ListSiteTemplates_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSiteTemplatesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).ListSiteTemplates(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_ListSiteTemplates_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).ListSiteTemplates(ctx, req.(*ListSiteTemplatesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_GetSiteTemplate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSiteTemplateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).GetSiteTemplate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_GetSiteTemplate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).GetSiteTemplate(ctx, req.(*GetSiteTemplateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_ApplySiteTemplate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplySiteTemplateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).ApplySiteTemplate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_ApplySiteTemplate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).ApplySiteTemplate(ctx, req.(*ApplySiteTemplateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UserService_ServiceDesc is the grpc.ServiceDesc for UserService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1520,6 +1622,18 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListSiteDomains",
 			Handler:    _UserService_ListSiteDomains_Handler,
+		},
+		{
+			MethodName: "ListSiteTemplates",
+			Handler:    _UserService_ListSiteTemplates_Handler,
+		},
+		{
+			MethodName: "GetSiteTemplate",
+			Handler:    _UserService_GetSiteTemplate_Handler,
+		},
+		{
+			MethodName: "ApplySiteTemplate",
+			Handler:    _UserService_ApplySiteTemplate_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

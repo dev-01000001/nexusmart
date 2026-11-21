@@ -95,6 +95,13 @@ func TestMockClientLifecycleAndSuffixTransitions(t *testing.T) {
 	if err := client.DeleteCustomHostname(ctx, created.ID); err != nil {
 		t.Fatalf("DeleteCustomHostname error: %v", err)
 	}
+	recreated, err := client.CreateCustomHostname(ctx, "hanoi-knit.verified.test")
+	if err != nil {
+		t.Fatalf("re-CreateCustomHostname after delete error: %v", err)
+	}
+	if recreated.ID != created.ID || recreated.Status != StatusPending {
+		t.Fatalf("unexpected recreated result after delete: %+v", recreated)
+	}
 }
 
 func TestNewLiveValidation(t *testing.T) {

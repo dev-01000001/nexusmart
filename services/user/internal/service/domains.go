@@ -18,10 +18,11 @@ import (
 )
 
 const (
-	customDomainExpiryDuration = 7 * 24 * time.Hour
-	cfCleanupTimeout           = 5 * time.Second
-	pollerActorID              = "system:domain-poller"
-	pollerActorRole            = "system"
+	customDomainExpiryDuration    = 7 * 24 * time.Hour
+	customDomainClaimHoldDuration = 48 * time.Hour
+	cfCleanupTimeout              = 5 * time.Second
+	pollerActorID                 = "system:domain-poller"
+	pollerActorRole               = "system"
 )
 
 var (
@@ -64,6 +65,33 @@ func strPtrOrNil(v string) *string {
 		return nil
 	}
 	return &trimmed
+}
+
+// domainBlocksOtherSite reports whether an existing domain row blocks another site from claiming
+// the same host at now. Only ACTIVE, REMOVING, non-custom rows, and PENDING rows within the
+// 48-hour claim hold block another site; FAILED and stale (>48h) PENDING rows can be reclaimed.
+func domainBlocksOtherSite(dom db.Domain, now time.Time) bool {
+	if dom.Kind != DomainKindCustom {
+		return true
+	}
+	switch dom.Status {
+	case DomainStatusActive, DomainStatusRemoving:
+		return true
+	case DomainStatusFailed:
+		return false
+	case DomainStatusPending:
+		return now.Sub(dom.CreatedAt) <= customDomainClaimHoldDuration
+	default:
+		return true
+	}
+}
+
+// canReplaceOwnCustomDomain reports whether the same site may re-add its own FAILED custom host
+// by replacing the old row in place without triggering domain_limit.
+func canReplaceOwnCustomDomain(dom db.Domain, hostname string) bool {
+	return dom.Kind == DomainKindCustom &&
+		strings.EqualFold(dom.Host, hostname) &&
+		dom.Status == DomainStatusFailed
 }
 
 // ListSiteDomains lists all domains (subdomain + optional custom domain) for a shop's site.
@@ -117,68 +145,50 @@ func (s *Server) AddCustomDomain(ctx context.Context, req *userv1.AddCustomDomai
 		return nil, status.Error(codes.FailedPrecondition, "SITE_SUSPENDED: suspended site cannot add a custom domain")
 	}
 
-	// Pre-checks before calling Cloudflare to avoid unnecessary provider calls.
-	if _, err := s.store.GetSiteCustomDomain(ctx, st.ID); err == nil {
-		return nil, status.Error(codes.FailedPrecondition, "domain_limit: site already has a custom domain")
+	// Pre-checks before opening a locked transaction or calling Cloudflare.
+	now := s.now()
+	if ownCustom, err := s.store.GetSiteCustomDomain(ctx, st.ID); err == nil {
+		if !canReplaceOwnCustomDomain(ownCustom, hostname) {
+			return nil, status.Error(codes.FailedPrecondition, "domain_limit: site already has a custom domain")
+		}
 	} else if !isNotFoundErr(err) {
 		return nil, status.Error(codes.Internal, "failed to check site custom domain")
 	}
-	if _, err := s.store.GetDomainByHost(ctx, hostname); err == nil {
-		return nil, status.Error(codes.AlreadyExists, "domain_taken: hostname is already registered")
+	if existing, err := s.store.GetDomainByHost(ctx, hostname); err == nil {
+		if existing.SiteID == st.ID {
+			if !canReplaceOwnCustomDomain(existing, hostname) {
+				if existing.Kind == DomainKindCustom {
+					return nil, status.Error(codes.FailedPrecondition, "domain_limit: site already has a custom domain")
+				}
+				return nil, status.Error(codes.AlreadyExists, "domain_taken: hostname is already registered")
+			}
+		} else if domainBlocksOtherSite(existing, now) {
+			return nil, status.Error(codes.AlreadyExists, "domain_taken: hostname is already registered")
+		}
 	} else if !isNotFoundErr(err) {
 		return nil, status.Error(codes.Internal, "failed to check domain uniqueness")
 	}
 
-	cfRes, err := s.cf.CreateCustomHostname(ctx, hostname)
-	if err != nil {
-		s.log.WarnContext(ctx, "cloudflare create custom hostname failed",
-			slog.String("shop_id", shopID),
-			slog.String("site_id", st.ID),
-			slog.String("hostname", hostname),
-			slog.String("error", cloudflare.SanitizeError(err)),
-		)
-		return nil, status.Error(codes.Unavailable, "failed to register custom domain with DNS provider")
-	}
-
-	cleanupCF := func() {
-		if strings.TrimSpace(cfRes.ID) == "" {
+	cleanupCF := func(cfHostnameID string) {
+		id := strings.TrimSpace(cfHostnameID)
+		if id == "" {
 			return
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), cfCleanupTimeout)
 		defer cancel()
-		if delErr := s.cf.DeleteCustomHostname(cleanupCtx, cfRes.ID); delErr != nil {
+		if delErr := s.cf.DeleteCustomHostname(cleanupCtx, id); delErr != nil {
 			s.log.WarnContext(ctx, "cloudflare cleanup custom hostname failed after db error",
 				slog.String("hostname", hostname),
-				slog.String("cf_custom_hostname_id", cfRes.ID),
+				slog.String("cf_custom_hostname_id", id),
 				slog.String("error", cloudflare.SanitizeError(delErr)),
 			)
 		}
 	}
 
-	verJSON, err := marshalVerificationRecords(cfRes.Verification)
-	if err != nil {
-		cleanupCF()
-		return nil, status.Error(codes.Internal, "failed to encode verification records")
-	}
-
-	domStatus := normalizeCFDomainStatus(cfRes.Status)
-	now := s.now()
 	var (
-		verifiedAt *time.Time
-		lastErr    *string
-		isPrimary  bool
-		tlsStatus  = tlsStatusForDomainStatus(domStatus)
+		created     db.Domain
+		createdCFID string
 	)
-	if domStatus == DomainStatusActive {
-		isPrimary = true
-		verifiedAt = &now
-		tlsStatus = "ACTIVE"
-	} else {
-		lastErr = strPtrOrNil(cfRes.LastError)
-	}
-	cfID := strPtrOrNil(cfRes.ID)
-
-	var created db.Domain
 	err = s.store.WithTx(ctx, func(q db.Querier) error {
 		lockedSite, txErr := q.GetSiteByShopIDForUpdate(ctx, shopID)
 		if txErr != nil {
@@ -191,16 +201,88 @@ func (s *Server) AddCustomDomain(ctx context.Context, req *userv1.AddCustomDomai
 			return status.Error(codes.FailedPrecondition, "SITE_SUSPENDED: suspended site cannot add a custom domain")
 		}
 
-		if _, txErr = q.GetSiteCustomDomain(ctx, lockedSite.ID); txErr == nil {
-			return status.Error(codes.FailedPrecondition, "domain_limit: site already has a custom domain")
+		if txErr = q.LockDomainHost(ctx, hostname); txErr != nil {
+			return txErr
+		}
+
+		txNow := s.now()
+		if ownCustom, txErr := q.GetSiteCustomDomain(ctx, lockedSite.ID); txErr == nil {
+			if !canReplaceOwnCustomDomain(ownCustom, hostname) {
+				return status.Error(codes.FailedPrecondition, "domain_limit: site already has a custom domain")
+			}
 		} else if !isNotFoundErr(txErr) {
 			return txErr
 		}
-		if _, txErr = q.GetDomainByHost(ctx, hostname); txErr == nil {
-			return status.Error(codes.AlreadyExists, "domain_taken: hostname is already registered")
+
+		var reclaimed *db.Domain
+		if existing, txErr := q.GetDomainByHostForUpdate(ctx, hostname); txErr == nil {
+			if existing.SiteID == lockedSite.ID {
+				if !canReplaceOwnCustomDomain(existing, hostname) {
+					if existing.Kind == DomainKindCustom {
+						return status.Error(codes.FailedPrecondition, "domain_limit: site already has a custom domain")
+					}
+					return status.Error(codes.AlreadyExists, "domain_taken: hostname is already registered")
+				}
+			} else if domainBlocksOtherSite(existing, txNow) {
+				return status.Error(codes.AlreadyExists, "domain_taken: hostname is already registered")
+			}
+
+			if existing.CfCustomHostnameID != nil {
+				if oldCFID := strings.TrimSpace(*existing.CfCustomHostnameID); oldCFID != "" {
+					if delErr := s.cf.DeleteCustomHostname(ctx, oldCFID); delErr != nil {
+						s.log.WarnContext(ctx, "cloudflare delete stale custom hostname failed before reclaim",
+							slog.String("shop_id", shopID),
+							slog.String("site_id", lockedSite.ID),
+							slog.String("stale_domain_id", existing.ID),
+							slog.String("stale_site_id", existing.SiteID),
+							slog.String("hostname", hostname),
+							slog.String("error", cloudflare.SanitizeError(delErr)),
+						)
+						return status.Error(codes.Unavailable, "failed to remove stale custom domain from DNS provider")
+					}
+				}
+			}
+			if txErr = q.DeleteDomain(ctx, existing.ID); txErr != nil {
+				return txErr
+			}
+			reclaimedCopy := existing
+			reclaimed = &reclaimedCopy
 		} else if !isNotFoundErr(txErr) {
 			return txErr
 		}
+
+		cfRes, cfErr := s.cf.CreateCustomHostname(ctx, hostname)
+		if cfErr != nil {
+			s.log.WarnContext(ctx, "cloudflare create custom hostname failed",
+				slog.String("shop_id", shopID),
+				slog.String("site_id", lockedSite.ID),
+				slog.String("hostname", hostname),
+				slog.String("error", cloudflare.SanitizeError(cfErr)),
+			)
+			return status.Error(codes.Unavailable, "failed to register custom domain with DNS provider")
+		}
+		createdCFID = strings.TrimSpace(cfRes.ID)
+
+		verJSON, txErr := marshalVerificationRecords(cfRes.Verification)
+		if txErr != nil {
+			return status.Error(codes.Internal, "failed to encode verification records")
+		}
+
+		domStatus := normalizeCFDomainStatus(cfRes.Status)
+		var (
+			verifiedAt *time.Time
+			lastErr    *string
+			isPrimary  bool
+			tlsStatus  = tlsStatusForDomainStatus(domStatus)
+		)
+		if domStatus == DomainStatusActive {
+			isPrimary = true
+			verifiedAt = &txNow
+			tlsStatus = "ACTIVE"
+		} else {
+			lastErr = strPtrOrNil(cfRes.LastError)
+		}
+		cfID := strPtrOrNil(cfRes.ID)
 
 		if domStatus == DomainStatusActive {
 			if txErr = q.SetSiteDomainPrimary(ctx, db.SetSiteDomainPrimaryParams{
@@ -222,13 +304,17 @@ func (s *Server) AddCustomDomain(ctx context.Context, req *userv1.AddCustomDomai
 			Status:             domStatus,
 			CfCustomHostnameID: cfID,
 			Verification:       verJSON,
-			LastCheckedAt:      &now,
+			LastCheckedAt:      &txNow,
 			LastError:          lastErr,
 		})
 		if txErr != nil {
 			return txErr
 		}
 
+		beforeJSON := "{}"
+		if reclaimed != nil {
+			beforeJSON = marshalAuditJSON(auditDomainSnapshot(*reclaimed))
+		}
 		_, txErr = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
 			ID:         uuid.NewString(),
 			ActorID:    claims.UserID(),
@@ -236,7 +322,7 @@ func (s *Server) AddCustomDomain(ctx context.Context, req *userv1.AddCustomDomai
 			Action:     "site.domain.add",
 			TargetType: "domain",
 			TargetID:   created.ID,
-			BeforeJSON: "{}",
+			BeforeJSON: beforeJSON,
 			AfterJSON:  marshalAuditJSON(auditDomainSnapshot(created)),
 			Reason:     "",
 			IPAddress:  peerIPFromContext(ctx),
@@ -244,7 +330,7 @@ func (s *Server) AddCustomDomain(ctx context.Context, req *userv1.AddCustomDomai
 		return txErr
 	})
 	if err != nil {
-		cleanupCF()
+		cleanupCF(createdCFID)
 		if _, ok := status.FromError(err); ok {
 			return nil, err
 		}
@@ -410,6 +496,9 @@ func (s *Server) applyCustomDomainResult(
 				LastError:     nil,
 			})
 			if txErr != nil {
+				if isNotFoundErr(txErr) {
+					return errDomainGone
+				}
 				return txErr
 			}
 
@@ -430,6 +519,9 @@ func (s *Server) applyCustomDomainResult(
 				LastError:     lastErr,
 			})
 			if txErr != nil {
+				if isNotFoundErr(txErr) {
+					return errDomainGone
+				}
 				return txErr
 			}
 			if current.IsPrimary {
@@ -454,6 +546,9 @@ func (s *Server) applyCustomDomainResult(
 				LastError:     strPtrOrNil(cfRes.LastError),
 			})
 			if txErr != nil {
+				if isNotFoundErr(txErr) {
+					return errDomainGone
+				}
 				return txErr
 			}
 			if current.IsPrimary {
@@ -548,6 +643,9 @@ func (s *Server) RemoveCustomDomain(ctx context.Context, req *userv1.RemoveCusto
 
 		removing, txErr := q.MarkCustomDomainRemoving(ctx, dom.ID)
 		if txErr != nil {
+			if isNotFoundErr(txErr) {
+				return status.Error(codes.NotFound, "domain not found")
+			}
 			return txErr
 		}
 		if txErr = q.SetSiteDomainPrimary(ctx, db.SetSiteDomainPrimaryParams{
