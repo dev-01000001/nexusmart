@@ -5,7 +5,7 @@ use axum::extract::{MatchedPath, Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
 use prometheus::{
-    Encoder, HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry, TextEncoder,
+    Encoder, Gauge, HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry, TextEncoder,
 };
 
 #[derive(Clone)]
@@ -19,6 +19,8 @@ pub struct Metrics {
     pub grpc_request_duration_seconds: HistogramVec,
     pub webhooks_total: IntCounterVec,
     pub ledger_transactions_total: IntCounterVec,
+    process_cpu_seconds_total: Gauge,
+    process_resident_memory_bytes: Gauge,
 }
 
 impl Metrics {
@@ -32,10 +34,7 @@ impl Metrics {
         .expect("http_requests_total metric");
 
         let http_errors_total = IntCounterVec::new(
-            Opts::new(
-                "http_errors_total",
-                "Total HTTP error responses (4xx and 5xx)",
-            ),
+            Opts::new("http_errors_total", "Total HTTP 5xx server error responses"),
             &["service", "method", "route", "status"],
         )
         .expect("http_errors_total metric");
@@ -46,7 +45,7 @@ impl Metrics {
                 "HTTP request duration in seconds",
             )
             .buckets(vec![
-                0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+                0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
             ]),
             &["service", "method", "route"],
         )
@@ -70,7 +69,7 @@ impl Metrics {
                 "gRPC request duration in seconds",
             )
             .buckets(vec![
-                0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+                0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
             ]),
             &["service", "method"],
         )
@@ -90,6 +89,18 @@ impl Metrics {
             &["reference_type"],
         )
         .expect("payment_ledger_transactions_total metric");
+
+        let process_cpu_seconds_total = Gauge::with_opts(Opts::new(
+            "process_cpu_seconds_total",
+            "Total user and system CPU time spent in seconds.",
+        ))
+        .expect("process_cpu_seconds_total metric");
+
+        let process_resident_memory_bytes = Gauge::with_opts(Opts::new(
+            "process_resident_memory_bytes",
+            "Resident memory size in bytes.",
+        ))
+        .expect("process_resident_memory_bytes metric");
 
         registry
             .register(Box::new(http_requests_total.clone()))
@@ -115,6 +126,12 @@ impl Metrics {
         registry
             .register(Box::new(ledger_transactions_total.clone()))
             .expect("register payment_ledger_transactions_total");
+        registry
+            .register(Box::new(process_cpu_seconds_total.clone()))
+            .expect("register process_cpu_seconds_total");
+        registry
+            .register(Box::new(process_resident_memory_bytes.clone()))
+            .expect("register process_resident_memory_bytes");
 
         Self {
             registry: Arc::new(registry),
@@ -126,6 +143,8 @@ impl Metrics {
             grpc_request_duration_seconds,
             webhooks_total,
             ledger_transactions_total,
+            process_cpu_seconds_total,
+            process_resident_memory_bytes,
         }
     }
 
@@ -154,6 +173,7 @@ impl Metrics {
     }
 
     pub fn render_prometheus(&self) -> String {
+        self.refresh_process_metrics();
         let encoder = TextEncoder::new();
         let metric_families = self.registry.gather();
         let mut buffer = Vec::new();
@@ -163,6 +183,36 @@ impl Metrics {
             String::new()
         }
     }
+
+    fn refresh_process_metrics(&self) {
+        if let Some(cpu_secs) = read_proc_cpu_seconds() {
+            self.process_cpu_seconds_total.set(cpu_secs);
+        }
+        if let Some(rss_bytes) = read_proc_rss_bytes() {
+            self.process_resident_memory_bytes.set(rss_bytes as f64);
+        }
+    }
+}
+
+fn read_proc_cpu_seconds() -> Option<f64> {
+    let raw = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let rparen = raw.rfind(')')?;
+    let fields: Vec<&str> = raw[rparen + 1..].split_whitespace().collect();
+    // After '(comm)', utime is field index 11 and stime is index 12 (POSIX Linux USER_HZ=100).
+    let utime: u64 = fields.get(11)?.parse().ok()?;
+    let stime: u64 = fields.get(12)?.parse().ok()?;
+    Some((utime.saturating_add(stime)) as f64 / 100.0)
+}
+
+fn read_proc_rss_bytes() -> Option<u64> {
+    let raw = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in raw.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
+            return Some(kb.saturating_mul(1024));
+        }
+    }
+    None
 }
 
 impl Default for Metrics {
@@ -195,7 +245,7 @@ pub async fn red_metrics_middleware(
         .with_label_values(&["payment", &method, &route, &status_str])
         .inc();
 
-    if status.is_client_error() || status.is_server_error() {
+    if status.is_server_error() {
         metrics
             .http_errors_total
             .with_label_values(&["payment", &method, &route, &status_str])
@@ -230,6 +280,7 @@ mod tests {
 
         let app = Router::new()
             .route("/ok", get(|| async { StatusCode::OK }))
+            .route("/unauth", get(|| async { StatusCode::UNAUTHORIZED }))
             .route("/fail", get(|| async { StatusCode::INTERNAL_SERVER_ERROR }))
             .layer(middleware::from_fn_with_state(
                 metrics.clone(),
@@ -243,6 +294,18 @@ mod tests {
             .unwrap();
         assert_eq!(ok_resp.status(), StatusCode::OK);
 
+        let unauth_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/unauth")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauth_resp.status(), StatusCode::UNAUTHORIZED);
+
         let err_resp = app
             .oneshot(Request::builder().uri("/fail").body(Body::empty()).unwrap())
             .await
@@ -252,7 +315,11 @@ mod tests {
         let prom = metrics.render_prometheus();
         assert!(prom.contains("http_requests_total"));
         assert!(prom.contains("http_errors_total"));
+        assert!(!prom.contains(r#"http_errors_total{method="GET",route="/unauth""#));
         assert!(prom.contains("http_request_duration_seconds"));
+        assert!(prom.contains(r#"le="10""#));
+        assert!(prom.contains("process_cpu_seconds_total"));
+        assert!(prom.contains("process_resident_memory_bytes"));
         assert!(prom.contains("grpc_requests_total"));
         assert!(prom.contains("grpc_errors_total"));
         assert!(prom.contains("payment_webhooks_total"));

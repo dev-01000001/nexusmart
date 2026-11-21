@@ -2,11 +2,11 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
-use axum::middleware;
+use axum::extract::{MatchedPath, Path, Query, Request as AxumRequest, State};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{NaiveDate, Utc};
@@ -14,7 +14,8 @@ use futures_util::stream::{self, Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 use tokio_stream::wrappers::BroadcastStream;
-use tracing::{info, warn};
+use tracing::{info, info_span, warn, Instrument};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::auth::{Caller, GrpcAuth};
@@ -22,7 +23,7 @@ use crate::domain::{PaymentWithAllocations, SalesChannel};
 use crate::error::PaymentError;
 use crate::metrics::red_metrics_middleware;
 use crate::service::PaymentService;
-use crate::telemetry::{extract_or_generate_trace_id, mask_secret};
+use crate::telemetry::{extract_http_context, extract_or_generate_trace_id, mask_secret};
 use crate::webhook_security::{verify_webhook_request, IncomingWebhookPayload};
 
 #[derive(Clone)]
@@ -78,11 +79,43 @@ pub fn build_router(service: PaymentService, auth: GrpcAuth) -> Router {
             "/internal/reconciliation/reports",
             get(internal_reconciliation_reports),
         )
+        .layer(middleware::from_fn(http_trace_middleware))
         .layer(middleware::from_fn_with_state(
             metrics,
             red_metrics_middleware,
         ))
         .with_state(state)
+}
+
+async fn http_trace_middleware(req: AxumRequest, next: Next) -> Response {
+    let parent_cx = extract_http_context(req.headers());
+    let trace_id = extract_or_generate_trace_id(
+        header_str(req.headers(), "traceparent"),
+        header_str(req.headers(), "x-trace-id"),
+    );
+    let method = req.method().as_str().to_string();
+    let route = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|mp| mp.as_str().to_string())
+        .unwrap_or_else(|| req.uri().path().to_string());
+
+    let span = info_span!(
+        "http.request",
+        service = "payment",
+        http.method = %method,
+        http.route = %route,
+        trace_id = %trace_id,
+        otel.kind = "server",
+    );
+    span.set_parent(parent_cx);
+
+    let mut resp = next.run(req).instrument(span).await;
+    if let Ok(val) = HeaderValue::from_str(&trace_id) {
+        resp.headers_mut()
+            .insert(HeaderName::from_static("x-trace-id"), val);
+    }
+    resp
 }
 
 async fn healthz() -> impl IntoResponse {
@@ -339,7 +372,16 @@ async fn payment_events_sse(
         }
     });
 
-    info!(payment_ref = %id, "client subscribed to payment status SSE");
+    let trace_id = extract_or_generate_trace_id(
+        header_str(&headers, "traceparent"),
+        header_str(&headers, "x-trace-id"),
+    );
+    info!(
+        service = "payment",
+        trace_id = %trace_id,
+        payment_ref = %id,
+        "client subscribed to payment status SSE"
+    );
 
     let combined =
         stream::once(async move { Ok::<Event, Infallible>(initial_event) }).chain(live_stream);

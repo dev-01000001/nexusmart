@@ -1,11 +1,16 @@
 use std::collections::HashMap;
 
-use opentelemetry::global;
-use opentelemetry::trace::TracerProvider as _;
+use async_nats::HeaderMap as NatsHeaders;
+use axum::http::HeaderMap as HttpHeaders;
+use opentelemetry::propagation::{Extractor, Injector};
+use opentelemetry::trace::{TraceContextExt, TracerProvider as _};
+use opentelemetry::{global, Context};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::TracerProvider;
 use opentelemetry_sdk::Resource;
+use tonic::metadata::MetadataMap;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
@@ -103,19 +108,126 @@ pub fn format_traceparent(trace_id: &str) -> String {
     format!("00-{normalized}-{span_id}-01")
 }
 
-/// Masks secrets/signatures/tokens before logging. Never logs full secrets.
-/// UTF-8 safe (uses Unicode scalar values rather than raw byte offsets).
+struct HttpHeaderExtractor<'a>(&'a HttpHeaders);
+
+impl Extractor for HttpHeaderExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|v| v.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|k| k.as_str()).collect()
+    }
+}
+
+struct GrpcMetadataExtractor<'a>(&'a MetadataMap);
+
+impl Extractor for GrpcMetadataExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|v| v.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0
+            .keys()
+            .filter_map(|k| match k {
+                tonic::metadata::KeyRef::Ascii(name) => Some(name.as_str()),
+                tonic::metadata::KeyRef::Binary(_) => None,
+            })
+            .collect()
+    }
+}
+
+struct NatsHeaderExtractor<'a>(&'a NatsHeaders);
+
+impl Extractor for NatsHeaderExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0
+            .get(key)
+            .or_else(|| {
+                let lower = key.to_ascii_lowercase();
+                self.0.get(lower.as_str())
+            })
+            .map(|v| v.as_str())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.iter().map(|(k, _)| k.as_ref()).collect()
+    }
+}
+
+struct NatsHeaderInjector<'a>(&'a mut NatsHeaders);
+
+impl Injector for NatsHeaderInjector<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        self.0.insert(key, value.as_str());
+    }
+}
+
+/// Extracts a W3C OpenTelemetry parent context from incoming Axum HTTP headers.
+pub fn extract_http_context(headers: &HttpHeaders) -> Context {
+    global::get_text_map_propagator(|p| p.extract(&HttpHeaderExtractor(headers)))
+}
+
+/// Extracts a W3C OpenTelemetry parent context from incoming Tonic gRPC metadata.
+pub fn extract_grpc_context(metadata: &MetadataMap) -> Context {
+    global::get_text_map_propagator(|p| p.extract(&GrpcMetadataExtractor(metadata)))
+}
+
+/// Extracts a W3C OpenTelemetry parent context from incoming NATS message headers.
+pub fn extract_nats_context(headers: Option<&NatsHeaders>) -> Context {
+    match headers {
+        Some(h) => global::get_text_map_propagator(|p| p.extract(&NatsHeaderExtractor(h))),
+        None => Context::new(),
+    }
+}
+
+/// Injects the current tracing/OTel span context into NATS headers; falls back to
+/// synthesizing a W3C `traceparent` from `fallback_trace_id` when no active OTel span exists.
+pub fn inject_nats_context(headers: &mut NatsHeaders, fallback_trace_id: &str) {
+    let cx = tracing::Span::current().context();
+    if cx.span().span_context().is_valid() {
+        global::get_text_map_propagator(|p| {
+            p.inject_context(&cx, &mut NatsHeaderInjector(headers))
+        });
+    }
+    if headers.get("traceparent").is_none() && !fallback_trace_id.trim().is_empty() {
+        let tp = format_traceparent(fallback_trace_id);
+        headers.insert("traceparent", tp.as_str());
+    }
+}
+
+/// Returns the active OpenTelemetry trace ID (32 lowercase hex) if a valid span is current,
+/// otherwise returns an empty string.
+pub fn current_trace_id() -> String {
+    let cx = tracing::Span::current().context();
+    let sc = cx.span().span_context().clone();
+    if sc.is_valid() {
+        sc.trace_id().to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Redacts embedded credentials (`scheme://user:pass@host`) from URLs such as `NATS_URL`.
+pub fn redact_url_credentials(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some(scheme_pos) = trimmed.find("://") {
+        let after_scheme = &trimmed[scheme_pos + 3..];
+        if let Some(at_pos) = after_scheme.find('@') {
+            let host_and_rest = &after_scheme[at_pos + 1..];
+            return format!("{}://[REDACTED]@{host_and_rest}", &trimmed[..scheme_pos]);
+        }
+    }
+    trimmed.to_string()
+}
+
+/// Masks secrets/signatures/tokens before logging. Never logs any characters of a non-empty secret.
 pub fn mask_secret(value: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
+    if value.trim().is_empty() {
         return "[EMPTY]".to_string();
     }
-    let char_count = trimmed.chars().count();
-    if char_count <= 8 {
-        return "[REDACTED]".to_string();
-    }
-    let prefix: String = trimmed.chars().take(4).collect();
-    format!("{prefix}***[REDACTED]")
+    "[REDACTED]".to_string()
 }
 
 /// Masks phone number (PII) keeping only last 3 digits.
@@ -189,9 +301,18 @@ mod tests {
 
     #[test]
     fn test_masking_pii_and_secrets() {
-        assert_eq!(mask_secret("supersecretvalue123"), "supe***[REDACTED]");
+        assert_eq!(mask_secret(""), "[EMPTY]");
+        assert_eq!(mask_secret("supersecretvalue123"), "[REDACTED]");
         assert_eq!(mask_secret("short"), "[REDACTED]");
-        assert_eq!(mask_secret("MậtKhẩuSiêuBíMật"), "MậtK***[REDACTED]");
+        assert_eq!(mask_secret("MậtKhẩuSiêuBíMật"), "[REDACTED]");
+        assert_eq!(
+            redact_url_credentials("nats://svc:SecretPass@nats:4222"),
+            "nats://[REDACTED]@nats:4222"
+        );
+        assert_eq!(
+            redact_url_credentials("nats://nats:4222"),
+            "nats://nats:4222"
+        );
         assert_eq!(mask_phone("0901234567"), "***567");
         assert_eq!(mask_email("buyer@nexusmart.vn"), "b***@nexusmart.vn");
         assert_eq!(mask_bank_account("19034567890123"), "****0123");
@@ -202,8 +323,46 @@ mod tests {
         hdrs.insert("X-Signature".into(), "abcdef1234567890".into());
         hdrs.insert("Content-Type".into(), "application/json".into());
         let safe = sanitize_headers(&hdrs);
-        assert!(safe["Authorization"].contains("[REDACTED]"));
-        assert!(safe["X-Signature"].contains("[REDACTED]"));
+        assert_eq!(safe["Authorization"], "[REDACTED]");
+        assert_eq!(safe["X-Signature"], "[REDACTED]");
         assert_eq!(safe["Content-Type"], "application/json");
+    }
+
+    #[test]
+    fn test_otel_extract_and_nats_inject_context() {
+        global::set_text_map_propagator(TraceContextPropagator::new());
+        let tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+        let mut http_hdrs = HttpHeaders::new();
+        http_hdrs.insert("traceparent", tp.parse().unwrap());
+        let http_cx = extract_http_context(&http_hdrs);
+        assert_eq!(
+            http_cx.span().span_context().trace_id().to_string(),
+            "4bf92f3577b34da6a3ce929d0e0e4736"
+        );
+
+        let mut grpc_md = MetadataMap::new();
+        grpc_md.insert("traceparent", tp.parse().unwrap());
+        let grpc_cx = extract_grpc_context(&grpc_md);
+        assert_eq!(
+            grpc_cx.span().span_context().trace_id().to_string(),
+            "4bf92f3577b34da6a3ce929d0e0e4736"
+        );
+
+        let mut nats_hdrs = NatsHeaders::new();
+        nats_hdrs.insert("traceparent", tp);
+        let nats_cx = extract_nats_context(Some(&nats_hdrs));
+        assert_eq!(
+            nats_cx.span().span_context().trace_id().to_string(),
+            "4bf92f3577b34da6a3ce929d0e0e4736"
+        );
+
+        let mut out_hdrs = NatsHeaders::new();
+        inject_nats_context(&mut out_hdrs, "4bf92f3577b34da6a3ce929d0e0e4736");
+        assert!(out_hdrs
+            .get("traceparent")
+            .unwrap()
+            .as_str()
+            .starts_with("00-4bf92f3577b34da6a3ce929d0e0e4736-"));
     }
 }

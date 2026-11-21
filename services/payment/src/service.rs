@@ -1467,6 +1467,8 @@ impl PaymentService {
         tx.commit().await?;
 
         info!(
+            service = "payment",
+            trace_id = %crate::telemetry::current_trace_id(),
             order_id = %order_id,
             total_released_vnd = total_released_vnd,
             "escrow released to seller available balance"
@@ -1673,6 +1675,8 @@ impl PaymentService {
                 }
                 Err(e) => {
                     warn!(
+                        service = "payment",
+                        trace_id = %payment.trace_id,
                         payment_id = %payment.id,
                         method = %payment.method,
                         error = %e,
@@ -1722,6 +1726,8 @@ impl PaymentService {
 
         if expired_count > 0 {
             info!(
+                service = "payment",
+                trace_id = %crate::telemetry::current_trace_id(),
                 expired_count = expired_count,
                 "expired pending online payments"
             );
@@ -2020,6 +2026,8 @@ impl PaymentService {
         }
 
         info!(
+            service = "payment",
+            trace_id = %crate::telemetry::current_trace_id(),
             run_id = %run.id,
             matched = run.matched_count,
             missing_local = run.missing_local_count,

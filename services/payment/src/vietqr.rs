@@ -494,6 +494,8 @@ impl VietQrAdapter {
                             Ok(val) => {
                                 self.breaker.record_success();
                                 info!(
+                                    service = "payment",
+                                    trace_id = %crate::telemetry::current_trace_id(),
                                     op = op_name,
                                     attempt = attempt + 1,
                                     "external provider call succeeded"
@@ -522,6 +524,8 @@ impl VietQrAdapter {
 
             self.breaker.record_failure();
             warn!(
+                service = "payment",
+                trace_id = %crate::telemetry::current_trace_id(),
                 op = op_name,
                 attempt = attempt + 1,
                 max_attempts = total_attempts,

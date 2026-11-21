@@ -3,6 +3,8 @@ use std::time::Instant;
 use chrono::{DateTime, NaiveDate, Utc};
 use prost_types::Timestamp;
 use tonic::{Request, Response, Status};
+use tracing::{info_span, Instrument};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::auth::GrpcAuth;
@@ -12,7 +14,7 @@ use crate::domain::{
     ShopAllocationInput,
 };
 use crate::service::PaymentService;
-use crate::telemetry::extract_or_generate_trace_id;
+use crate::telemetry::{extract_grpc_context, extract_or_generate_trace_id};
 
 #[allow(clippy::result_large_err)]
 pub mod pb {
@@ -141,19 +143,35 @@ impl PaymentGrpcServer {
 
     fn record_metrics<T>(&self, method: &str, start: Instant, res: &Result<Response<T>, Status>) {
         let elapsed = start.elapsed().as_secs_f64();
+        let full_method = format!("/nexusmart.payment.v1.PaymentService/{method}");
         match res {
             Ok(_) => self
                 .service
                 .metrics()
-                .record_grpc(method, "OK", false, elapsed),
+                .record_grpc(&full_method, "OK", false, elapsed),
             Err(status) => {
                 let code = format!("{:?}", status.code());
                 self.service
                     .metrics()
-                    .record_grpc(method, &code, true, elapsed);
+                    .record_grpc(&full_method, &code, true, elapsed);
             }
         }
     }
+}
+
+fn start_grpc_span<T>(method: &str, request: &Request<T>, trace_id: &str) -> tracing::Span {
+    let full_method = format!("/nexusmart.payment.v1.PaymentService/{method}");
+    let parent_cx = extract_grpc_context(request.metadata());
+    let span = info_span!(
+        "grpc.server",
+        service = "payment",
+        rpc.system = "grpc",
+        rpc.method = %full_method,
+        trace_id = %trace_id,
+        otel.kind = "server",
+    );
+    span.set_parent(parent_cx);
+    span
 }
 
 #[tonic::async_trait]
@@ -164,6 +182,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
     ) -> Result<Response<CreatePaymentResponse>, Status> {
         let start = Instant::now();
         let trace_id = extract_trace_from_metadata(&request);
+        let span = start_grpc_span("CreatePayment", &request, &trace_id);
         let caller = CallerAuth::from_request(&self.auth, &request, "CreatePayment");
         let req = request.into_inner();
 
@@ -231,6 +250,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 payment: Some(to_proto_payment(created)),
             }))
         }
+        .instrument(span)
         .await;
 
         self.record_metrics("CreatePayment", start, &result);
@@ -242,6 +262,8 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<GetPaymentRequest>,
     ) -> Result<Response<GetPaymentResponse>, Status> {
         let start = Instant::now();
+        let trace_id = extract_trace_from_metadata(&request);
+        let span = start_grpc_span("GetPayment", &request, &trace_id);
         let caller = CallerAuth::from_request(&self.auth, &request, "GetPayment");
         let req = request.into_inner();
 
@@ -264,6 +286,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 payment: Some(to_proto_payment(found)),
             }))
         }
+        .instrument(span)
         .await;
 
         self.record_metrics("GetPayment", start, &result);
@@ -276,6 +299,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
     ) -> Result<Response<CancelPaymentResponse>, Status> {
         let start = Instant::now();
         let trace_id = extract_trace_from_metadata(&request);
+        let span = start_grpc_span("CancelPayment", &request, &trace_id);
         let caller = CallerAuth::from_request(&self.auth, &request, "CancelPayment");
         let req = request.into_inner();
 
@@ -310,6 +334,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 payment: Some(to_proto_payment(cancelled)),
             }))
         }
+        .instrument(span)
         .await;
 
         self.record_metrics("CancelPayment", start, &result);
@@ -322,6 +347,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
     ) -> Result<Response<CreateRefundResponse>, Status> {
         let start = Instant::now();
         let trace_id = extract_trace_from_metadata(&request);
+        let span = start_grpc_span("CreateRefund", &request, &trace_id);
         let caller = CallerAuth::from_request(&self.auth, &request, "CreateRefund");
         let req = request.into_inner();
 
@@ -349,6 +375,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 already_existed: out.already_existed,
             }))
         }
+        .instrument(span)
         .await;
 
         self.record_metrics("CreateRefund", start, &result);
@@ -360,6 +387,8 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<GetLedgerSummaryRequest>,
     ) -> Result<Response<GetLedgerSummaryResponse>, Status> {
         let start = Instant::now();
+        let trace_id = extract_trace_from_metadata(&request);
+        let span = start_grpc_span("GetLedgerSummary", &request, &trace_id);
         let caller = CallerAuth::from_request(&self.auth, &request, "GetLedgerSummary");
         let req = request.into_inner();
 
@@ -396,6 +425,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 sales_channel: summary.sales_channel,
             }))
         }
+        .instrument(span)
         .await;
 
         self.record_metrics("GetLedgerSummary", start, &result);
@@ -407,6 +437,8 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<GetSellerBalanceRequest>,
     ) -> Result<Response<GetSellerBalanceResponse>, Status> {
         let start = Instant::now();
+        let trace_id = extract_trace_from_metadata(&request);
+        let span = start_grpc_span("GetSellerBalance", &request, &trace_id);
         let caller = CallerAuth::from_request(&self.auth, &request, "GetSellerBalance");
         let req = request.into_inner();
 
@@ -427,6 +459,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 total_earned_vnd: bal.total_earned_vnd,
             }))
         }
+        .instrument(span)
         .await;
 
         self.record_metrics("GetSellerBalance", start, &result);
@@ -438,6 +471,8 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<ReleaseEscrowRequest>,
     ) -> Result<Response<ReleaseEscrowResponse>, Status> {
         let start = Instant::now();
+        let trace_id = extract_trace_from_metadata(&request);
+        let span = start_grpc_span("ReleaseEscrow", &request, &trace_id);
         let caller = CallerAuth::from_request(&self.auth, &request, "ReleaseEscrow");
         let req = request.into_inner();
 
@@ -456,6 +491,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 already_released: res.already_released,
             }))
         }
+        .instrument(span)
         .await;
 
         self.record_metrics("ReleaseEscrow", start, &result);
@@ -467,6 +503,8 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<RunReconciliationRequest>,
     ) -> Result<Response<RunReconciliationResponse>, Status> {
         let start = Instant::now();
+        let trace_id = extract_trace_from_metadata(&request);
+        let span = start_grpc_span("RunReconciliation", &request, &trace_id);
         let caller = CallerAuth::from_request(&self.auth, &request, "RunReconciliation");
         let req = request.into_inner();
 
@@ -507,6 +545,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 auto_healed_count: report.run.auto_healed_count,
             }))
         }
+        .instrument(span)
         .await;
 
         self.record_metrics("RunReconciliation", start, &result);
@@ -518,6 +557,8 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<ListReconciliationReportsRequest>,
     ) -> Result<Response<ListReconciliationReportsResponse>, Status> {
         let start = Instant::now();
+        let trace_id = extract_trace_from_metadata(&request);
+        let span = start_grpc_span("ListReconciliationReports", &request, &trace_id);
         let caller = CallerAuth::from_request(&self.auth, &request, "ListReconciliationReports");
         let req = request.into_inner();
 
@@ -541,6 +582,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
 
             Ok(Response::new(ListReconciliationReportsResponse { reports }))
         }
+        .instrument(span)
         .await;
 
         self.record_metrics("ListReconciliationReports", start, &result);

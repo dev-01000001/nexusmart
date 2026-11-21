@@ -109,7 +109,10 @@ impl fmt::Debug for Config {
             .field("http_port", &self.http_port)
             .field("grpc_port", &self.grpc_port)
             .field("database_url", &"[REDACTED]")
-            .field("nats_url", &self.nats_url)
+            .field(
+                "nats_url",
+                &crate::telemetry::redact_url_credentials(&self.nats_url),
+            )
             .field("nats_stream", &self.nats_stream)
             .field("otel_endpoint", &self.otel_endpoint)
             .field("webhook_secret", &"[REDACTED]")
@@ -274,6 +277,7 @@ mod tests {
     fn test_config_debug_redacts_all_secrets_including_zalopay_keys() {
         let mut cfg = Config::from_env();
         cfg.database_url = "postgres://user:super_db_pass@db:5432/pay".to_string();
+        cfg.nats_url = "nats://svc:super_nats_pass@nats:4222".to_string();
         cfg.webhook_secret = "super-webhook-secret-xyz".to_string();
         cfg.jwt_secret = "super-jwt-secret-xyz".to_string();
         cfg.service_jwt_secret = "super-svc-jwt-secret-xyz".to_string();
@@ -292,6 +296,7 @@ mod tests {
         assert!(dbg.contains("zalopay_callback_url"));
         for secret in [
             "super_db_pass",
+            "super_nats_pass",
             "super-webhook-secret-xyz",
             "super-jwt-secret-xyz",
             "super-svc-jwt-secret-xyz",
