@@ -98,6 +98,8 @@ func New(deps Dependencies) http.Handler {
 		})
 	})
 
+	mountChatRoutes(r, deps)
+
 	// All standard REST & webhook routes share OTel trace + RED metrics + structured JSON logger.
 	r.Group(func(main chi.Router) {
 		main.Use(telemetry.HTTPMiddleware(serviceName))

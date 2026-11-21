@@ -340,6 +340,29 @@ func TestGatewaySearchFallbackToProductServiceWhenUnavailable(t *testing.T) {
 	if body.Facets == nil || body.Facets.Categories == nil || body.Facets.Shops == nil || body.Facets.PriceRanges == nil {
 		t.Fatalf("expected non-nil empty facets in fallback, got %+v", body.Facets)
 	}
+
+	// DeadlineExceeded also falls back to ProductService.ListProducts.
+	searchMock.searchErr = status.Error(codes.DeadlineExceeded, "search timed out")
+	prodMock.lastListReq = nil
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/search?q=deadline", nil))
+	if rec.Code != http.StatusOK || prodMock.lastListReq == nil || prodMock.lastListReq.GetKeyword() != "deadline" {
+		t.Fatalf("expected 200 fallback on DeadlineExceeded, got code=%d req=%+v", rec.Code, prodMock.lastListReq)
+	}
+
+	// Nil Search client falls back to ProductService.ListProducts and empty suggestions [].
+	hNil := newSearchTestRouter(t, nil, prodMock)
+	prodMock.lastListReq = nil
+	rec = httptest.NewRecorder()
+	hNil.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/search?q=nilclient", nil))
+	if rec.Code != http.StatusOK || prodMock.lastListReq == nil || prodMock.lastListReq.GetKeyword() != "nilclient" {
+		t.Fatalf("expected 200 fallback when Search client is nil, got code=%d req=%+v", rec.Code, prodMock.lastListReq)
+	}
+	rec = httptest.NewRecorder()
+	hNil.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/search/suggest?q=nilclient", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() == "" {
+		t.Fatalf("expected 200 empty suggestions when Search client is nil, got code=%d body=%s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestGatewaySearchErrorPropagation(t *testing.T) {
