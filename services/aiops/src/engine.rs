@@ -162,7 +162,7 @@ impl AiopsEngine {
             }
 
             // Check if an open incident already exists for this bucket service
-            let existing = self.find_open_incident_for(&bucket_svc);
+            let existing = self.find_open_incident_for(&bucket_svc, &signals);
             if let Some((existing_id, needs_reanalysis)) = existing {
                 if needs_reanalysis {
                     let context = self
@@ -245,7 +245,7 @@ impl AiopsEngine {
             active_services.insert(root_cause_service.clone());
 
             // Secondary deduplication if RCA resolved to a root_cause_service that already has an open incident
-            if let Some((dedup_id, _)) = self.find_open_incident_for(&root_cause_service) {
+            if let Some((dedup_id, _)) = self.find_open_incident_for(&root_cause_service, &signals) {
                 let mut guard = self.incidents.write().expect("incidents write lock");
                 if let Some(inc) = guard.iter_mut().find(|i| i.id == dedup_id) {
                     inc.updated_at = scanned_at;
@@ -413,7 +413,11 @@ impl AiopsEngine {
         }
     }
 
-    fn find_open_incident_for(&self, service: &str) -> Option<(Uuid, bool)> {
+    fn find_open_incident_for(
+        &self,
+        service: &str,
+        incoming_signals: &[AnomalySignal],
+    ) -> Option<(Uuid, bool)> {
         let guard = self.incidents.read().expect("incidents read lock");
         guard
             .iter()
@@ -423,7 +427,13 @@ impl AiopsEngine {
                     && (i.service == service || i.root_cause_service == service)
             })
             .map(|i| {
-                let needs_reanalysis = i.rca.is_none()
+                let has_new_metric = incoming_signals.iter().any(|s| {
+                    !i.anomalies
+                        .iter()
+                        .any(|e| e.service == s.service && e.metric == s.metric)
+                });
+                let needs_reanalysis = has_new_metric
+                    || i.rca.is_none()
                     || i.rca.as_ref().is_some_and(|r| r.insufficient_data)
                     || i.category == "unknown"
                     || i.category == "rca_error";
@@ -629,7 +639,6 @@ impl AiopsEngine {
         let now = Utc::now();
         let mut processed = 0usize;
         let mut incident_ids = Vec::new();
-        let all_deploys = self.list_deploys(None);
 
         for alert in payload.alerts {
             let alert_status = if alert.status.is_empty() {
@@ -695,8 +704,9 @@ impl AiopsEngine {
                 continue;
             }
 
-            // Firing alert: correlate with existing open incident or open a new one
-            if let Some((existing_id, _)) = self.find_open_incident_for(&service) {
+            // Firing alert: correlate with existing open incident; do not open empty
+            // `anomalies: []` phantom incidents without verified metric evidence.
+            if let Some((existing_id, _)) = self.find_open_incident_for(&service, &[]) {
                 let mut guard = self.incidents.write().expect("incidents write lock");
                 if let Some(inc) = guard.iter_mut().find(|i| i.id == existing_id) {
                     inc.correlated_alerts.push(correlated);
@@ -707,58 +717,20 @@ impl AiopsEngine {
                 continue;
             }
 
-            let context = self
-                .collector
-                .gather(&service, &all_deploys, HashMap::new(), HashMap::new())
-                .await;
-            let rca_req = RcaRequest {
-                service: service.clone(),
-                anomalies: Vec::new(),
-                metrics_snapshot: HashMap::new(),
-                context: context.clone(),
-            };
-            let (rca_opt, rca_err, root_cause_service, category) =
-                match self.run_rca(&rca_req).await {
-                    Ok(rca) => {
-                        let rc = rca.root_cause_service.clone();
-                        let cat = rca.category.clone();
-                        (Some(rca), None, rc, cat)
-                    }
-                    Err(e) => (
-                        None,
-                        Some(e),
-                        service.clone(),
-                        "alertmanager_alert".to_string(),
-                    ),
-                };
-
-            let incident_id = Uuid::new_v4();
-            let incident = Incident {
-                id: incident_id,
-                service: service.clone(),
-                root_cause_service,
-                category,
-                status: IncidentStatus::Open,
-                opened_at: now,
-                updated_at: now,
-                resolved_at: None,
-                anomalies: Vec::new(),
-                metrics_snapshot: HashMap::new(),
-                context,
-                rca: rca_opt,
-                rca_error: rca_err,
-                feedback: Vec::new(),
-                remediations: Vec::new(),
-                correlated_alerts: vec![correlated],
-                healthy_polls: 0,
-            };
-
-            {
-                let mut guard = self.incidents.write().expect("incidents write lock");
-                guard.push(incident);
-                trim_incidents(&mut guard);
-            }
-            incident_ids.push(incident_id);
+            self.remediator.record_audit_event(
+                "alertmanager_webhook",
+                &service,
+                None,
+                None,
+                "recorded_no_open_incident",
+                format!(
+                    "alert={} status={} summary={}",
+                    alertname,
+                    alert_status,
+                    summary.as_deref().unwrap_or("")
+                ),
+                None,
+            );
         }
 
         self.refresh_open_incidents_metric();

@@ -211,8 +211,8 @@ impl Detector {
         let q_http_err = r#"sum by (service) (rate(http_requests_total{status=~"5.."}[1m])) / clamp_min(sum by (service) (rate(http_requests_total[1m])), 0.001)"#;
         let q_grpc_err = r#"sum by (service) (rate(grpc_errors_total{code=~"Internal|Unavailable|DeadlineExceeded|Unknown|Aborted|ResourceExhausted"}[1m])) / clamp_min(sum by (service) (rate(grpc_requests_total[1m])), 0.001)"#;
         let q_http_503 = r#"sum by (service) (rate(http_requests_total{status="503"}[1m]))"#;
-        let q_http_p95 = r#"max by (service) (histogram_quantile(0.95, sum by (service, le) (rate(http_request_duration_seconds_bucket[1m]))))"#;
-        let q_grpc_p95 = r#"max by (service) (histogram_quantile(0.95, sum by (service, le) (rate(grpc_request_duration_seconds_bucket[1m]))))"#;
+        let q_http_p95 = r#"max by (service) (histogram_quantile(0.95, sum by (service, le) (rate(http_request_duration_seconds_bucket[1m])))) and (sum by (service) (rate(http_request_duration_seconds_count[1m])) > 0.35)"#;
+        let q_grpc_p95 = r#"max by (service) (histogram_quantile(0.95, sum by (service, le) (rate(grpc_request_duration_seconds_bucket[1m])))) and (sum by (service) (rate(grpc_request_duration_seconds_count[1m])) > 0.35)"#;
         let q_cpu_cadv = r#"sum by (service) (rate(container_cpu_usage_seconds_total[1m]))"#;
         let q_cpu_proc = r#"sum by (service) (rate(process_cpu_seconds_total[1m]))"#;
         let q_mem_cadv = r#"sum by (service) (container_memory_working_set_bytes)"#;
@@ -465,7 +465,7 @@ impl Detector {
             if let Some(p95) = combined_p95 {
                 entry.insert(METRIC_LATENCY_P95.to_string(), p95);
                 if let Some(sig) =
-                    self.evaluate_metric(svc, METRIC_LATENCY_P95, p95, 0.02, 0.05, 0.15, 0.50, now)
+                    self.evaluate_metric(svc, METRIC_LATENCY_P95, p95, 0.02, 0.05, 0.45, 0.85, now)
                 {
                     snapshot.anomalies.push(sig);
                 }
