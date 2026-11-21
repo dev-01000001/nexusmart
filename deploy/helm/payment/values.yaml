@@ -99,12 +99,14 @@ ingress:
 
 # Non-secret configuration rendered into ConfigMap (separated from image).
 config:
+  APP_ENV: "development"
   SERVICE_NAME: "payment"
   HTTP_PORT: "8086"
   GRPC_PORT: "50056"
   NATS_URL: "nats://nats:4222"
   NATS_STREAM: "NEXUSMART"
   VIETQR_MODE: "mock"
+  ZALOPAY_MODE: "mock"
   PAYMENT_EXPIRY_MINUTES: "15"
   OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
   OTEL_EXPORTER_OTLP_INSECURE: "true"

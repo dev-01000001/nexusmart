@@ -17,6 +17,11 @@ pdb:
   enabled: true
   minAvailable: 1
 
+# Production requires non-placeholder secrets in nexusmart-payment-secret:
+# PAYMENT_WEBHOOK_SECRET, ZALOPAY_KEY1, ZALOPAY_KEY2, JWT_SECRET, SERVICE_JWT_SECRET,
+# and credentials for VIETQR_MODE (PAYOS_* for payos, or SEPAY_API_TOKEN for sepay).
 config:
-  VIETQR_MODE: "sandbox"
+  APP_ENV: "production"
+  VIETQR_MODE: "payos"
+  ZALOPAY_MODE: "sandbox"
   RUST_LOG: "info"

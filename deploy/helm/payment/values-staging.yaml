@@ -17,5 +17,7 @@ pdb:
   enabled: false
 
 config:
+  APP_ENV: "staging"
   VIETQR_MODE: "mock"
+  ZALOPAY_MODE: "mock"
   RUST_LOG: "info"
