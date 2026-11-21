@@ -309,8 +309,7 @@ function ComplaintsWorkspace({
           <div className={styles.statementBox}>
             <span className={styles.statementTitle}>Phản hồi từ chối của gian hàng</span>
             <p className={styles.statementBody}>
-              {complaint.seller_rejection_reason ||
-                "Gian hàng chưa ghi nhận lý do từ chối cụ thể."}
+              {complaint.seller_rejection_reason || "Gian hàng chưa ghi nhận lý do từ chối cụ thể."}
             </p>
           </div>
         </div>
@@ -581,7 +580,9 @@ function ComplaintsWorkspace({
                             </div>
                             <div className={shared.cellSub}>
                               Đơn {item.order_code || EMPTY_DASH} ·{" "}
-                              {item.created_at ? formatShortTimeDateVi(item.created_at) : EMPTY_DASH}
+                              {item.created_at
+                                ? formatShortTimeDateVi(item.created_at)
+                                : EMPTY_DASH}
                             </div>
                           </td>
                           <td>
@@ -592,9 +593,7 @@ function ComplaintsWorkspace({
                               Shop: {item.shop_name || EMPTY_DASH}
                             </div>
                           </td>
-                          <td className={shared.colNum}>
-                            {formatVnd(item.dispute_amount_vnd)}
-                          </td>
+                          <td className={shared.colNum}>{formatVnd(item.dispute_amount_vnd)}</td>
                           <td>
                             <StatusPill label={meta.label} tone={meta.tone} />
                           </td>

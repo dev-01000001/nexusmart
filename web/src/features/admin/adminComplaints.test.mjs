@@ -58,10 +58,7 @@ test("normalizeComplaint sanitizes evidence photo URLs and maps proto + extended
   assert.equal(c.status, "OPEN");
   assert.equal(c.dispute_amount_vnd, 485000);
   assert.equal(c.buyer_reason, "Áo nhận được bị rách đường chỉ ở vai phải");
-  assert.equal(
-    c.seller_rejection_reason,
-    "Shop kiểm tra camera đóng gói thấy sản phẩm nguyên vẹn"
-  );
+  assert.equal(c.seller_rejection_reason, "Shop kiểm tra camera đóng gói thấy sản phẩm nguyên vẹn");
   assert.deepEqual(c.evidence_urls, [
     "https://cdn.nexusmart.vn/evidence/photo-1.jpg",
     "/uploads/return-proof.png",

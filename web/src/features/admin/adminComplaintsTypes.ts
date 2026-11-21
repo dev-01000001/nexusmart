@@ -7,10 +7,7 @@ import { sanitizeSafeUrl } from "../../lib/site/theme.ts";
 export type ComplaintStatus = "OPEN" | "IN_REVIEW" | "RESOLVED" | "DISMISSED";
 
 export type ComplaintDecision =
-  | "REFUND_BUYER"
-  | "APPROVE_RETURN"
-  | "REJECT_COMPLAINT"
-  | "PARTIAL_REFUND";
+  "REFUND_BUYER" | "APPROVE_RETURN" | "REJECT_COMPLAINT" | "PARTIAL_REFUND";
 
 export const COMPLAINT_DECISIONS: readonly ComplaintDecision[] = [
   "REFUND_BUYER",
@@ -151,8 +148,7 @@ export interface AdminUser {
 }
 
 export type ValidationResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; code: string; message: string };
+  { ok: true; value: T } | { ok: false; code: string; message: string };
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const VOUCHER_CODE_RE = /^[A-Z0-9_-]{3,32}$/;
@@ -335,7 +331,12 @@ export function getComplaintStatusMeta(status: string): { label: string; tone: P
 }
 
 export function getComplaintDecisionLabelVi(decision: string): string {
-  switch (decision.trim().toUpperCase().replace(/^COMPLAINT_RESOLUTION_/, "")) {
+  switch (
+    decision
+      .trim()
+      .toUpperCase()
+      .replace(/^COMPLAINT_RESOLUTION_/, "")
+  ) {
     case "REFUND_BUYER":
     case "REFUND":
       return "Hoàn toàn bộ tiền cho người mua";
@@ -534,7 +535,11 @@ export function validateAdminVoucherInput(
   let maxDiscountVnd = 0;
 
   if (discountType === "FIXED") {
-    if (typeof rec.value_vnd !== "number" || !Number.isInteger(rec.value_vnd) || rec.value_vnd <= 0) {
+    if (
+      typeof rec.value_vnd !== "number" ||
+      !Number.isInteger(rec.value_vnd) ||
+      rec.value_vnd <= 0
+    ) {
       return {
         ok: false,
         code: "INVALID_VALUE_VND",

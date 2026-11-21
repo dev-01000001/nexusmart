@@ -603,12 +603,14 @@ function ConfigWorkspace({
                         Hủy chỉnh sửa
                       </Button>
                     )}
-                    <Button type="submit" variant="primary" size="sm" shape="app" disabled={catBusy}>
-                      {catBusy
-                        ? "Đang lưu..."
-                        : editingCatId
-                          ? "Lưu thay đổi"
-                          : "Tạo danh mục"}
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      size="sm"
+                      shape="app"
+                      disabled={catBusy}
+                    >
+                      {catBusy ? "Đang lưu..." : editingCatId ? "Lưu thay đổi" : "Tạo danh mục"}
                     </Button>
                   </div>
                 </div>
@@ -1111,7 +1113,9 @@ function ConfigWorkspace({
                         {filteredVouchers.map((v) => {
                           const scopeMeta = getVoucherScopeMeta(v.scope);
                           const ratio =
-                            v.quota > 0 ? Math.min(100, Math.round((v.used_count / v.quota) * 100)) : 0;
+                            v.quota > 0
+                              ? Math.min(100, Math.round((v.used_count / v.quota) * 100))
+                              : 0;
                           const discountSummary =
                             v.discount_type.toUpperCase() === "PERCENT"
                               ? `Giảm ${formatInt(v.discount_percent)}% (tối đa ${formatVnd(v.max_discount_vnd)})`
@@ -1333,7 +1337,9 @@ function ConfigWorkspace({
                               <td>
                                 <div className={shared.cellPrimary}>
                                   {u.full_name || "Chưa cập nhật tên"}
-                                  {isSelf && <span className={styles.selfTag}>Tài khoản của bạn</span>}
+                                  {isSelf && (
+                                    <span className={styles.selfTag}>Tài khoản của bạn</span>
+                                  )}
                                 </div>
                                 <div className={shared.cellSub}>{u.email || u.id}</div>
                               </td>
@@ -1414,11 +1420,7 @@ function ConfigWorkspace({
                   <div className={shared.mobileList}>
                     {filteredUsers.map((u) => {
                       const isSelf = u.id === currentUser.id;
-                      const statusPermission = canModifyUserAccount(
-                        currentUser.id,
-                        u.id,
-                        "status"
-                      );
+                      const statusPermission = canModifyUserAccount(currentUser.id, u.id, "status");
                       const rolePermission = canModifyUserAccount(currentUser.id, u.id, "role");
                       const statusMeta = getUserStatusMeta(u.status);
                       const isLocked =
