@@ -87,7 +87,12 @@ describe("08. Site templates discovery, apply-template, draft customization, pub
   });
 
   it("b) Ephemeral seller applies template, customizes draft, publishes live site, validates XSS/SVG/SSRF rejection, RBAC & CSRF (always suspends in finally)", async () => {
-    assert.ok(discoveredTemplates.length >= 2, "must have >= 2 templates discovered in step a)");
+    if (discoveredTemplates.length < 2) {
+      const res = await new Browser("tpl-fallback-list").at(ROOT_HOST).get("/api/site-templates");
+      const data = expectStatus(res, 200, "GET /api/site-templates");
+      discoveredTemplates = data.templates ?? [];
+    }
+    assert.ok(discoveredTemplates.length >= 2, "must have >= 2 templates available");
 
     const primaryTpl =
       discoveredTemplates.find((t) => t.id === "editorial") ?? discoveredTemplates[0];

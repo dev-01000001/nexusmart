@@ -22,6 +22,7 @@ import {
 
 const SITE_A_HOST = siteHost(SEEDED.bachDang.sub);
 const SITE_B_HOST = siteHost(SEEDED.saiGon.sub);
+const FAKE_ID = "00000000-0000-4000-8000-000000000000";
 const SHIPPING_WEBHOOK_SECRET =
   (process.env.SHIPPING_WEBHOOK_SECRET ?? "").trim() || "dev-only-shipping-webhook-hmac-secret";
 const bare = (host) => host.replace(/:\d+$/, "");
@@ -432,13 +433,15 @@ describe("07. Buyer returns, Seller real pages + AI BFF & Admin complaints/confi
     assert.ok(Array.isArray(notifData.items), "seller notifications must return items array");
 
     // 4. Buyer receives 403 on all seller AI & returns BFFs; anon receives 401.
+    const targetOrderId = approvedOrderId || FAKE_ID;
+    const targetReturnId = approvedReturnId || FAKE_ID;
     const sellerProtectedCalls = [
       ["POST", "/api/seller/assistant/report", { question: "Doanh thu", period: "7d" }],
       ["POST", "/api/seller/assistant/describe-product", { name: "Áo thun test", category_name: "Áo thun" }],
       ["POST", "/api/seller/assistant/suggest-reply", { customer_message: "Còn size M không?" }],
-      ["GET", `/api/seller/orders/${encodeURIComponent(approvedOrderId)}/returns`],
-      ["POST", `/api/seller/returns/${encodeURIComponent(approvedReturnId)}/approve`, { note: "buyer hijack" }],
-      ["POST", `/api/seller/returns/${encodeURIComponent(approvedReturnId)}/reject`, { reason: "buyer hijack reason" }],
+      ["GET", `/api/seller/orders/${encodeURIComponent(targetOrderId)}/returns`],
+      ["POST", `/api/seller/returns/${encodeURIComponent(targetReturnId)}/approve`, { note: "buyer hijack" }],
+      ["POST", `/api/seller/returns/${encodeURIComponent(targetReturnId)}/reject`, { reason: "buyer hijack reason" }],
     ];
     for (const [method, path, json] of sellerProtectedCalls) {
       const buyerRes = await buyer1Root.request(method, path, { json });
@@ -473,7 +476,7 @@ describe("07. Buyer returns, Seller real pages + AI BFF & Admin complaints/confi
         "POST /api/seller/returns/[id]/approve",
         () =>
           sellerRoot.post(
-            `/api/seller/returns/${encodeURIComponent(approvedReturnId)}/approve`,
+            `/api/seller/returns/${encodeURIComponent(targetReturnId)}/approve`,
             { note: "csrf" },
             { origin: null }
           ),
