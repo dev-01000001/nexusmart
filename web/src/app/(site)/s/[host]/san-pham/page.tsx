@@ -1,10 +1,9 @@
 import React from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { loadPublicSitePageBundle } from "@/lib/server/sites";
 import { buildSiteMetadata } from "@/lib/site/seo";
 import { SiteCatalogView } from "@/features/site";
-import { loadSiteContext } from "@/features/site/siteContext.server";
+import { loadSiteContext, loadSiteTemplateBundle } from "@/features/site/siteContext.server";
 
 interface PageProps {
   params: Promise<{ host: string }>;
@@ -31,12 +30,11 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function SubdomainSiteProductsPage({ params, searchParams }: PageProps) {
   const [{ host }, sp] = await Promise.all([params, searchParams]);
-  const decodedHost = decodeURIComponent(host);
-  const bundle = await loadPublicSitePageBundle(decodedHost);
+  const bundle = await loadSiteTemplateBundle(host);
   if (!bundle) notFound();
 
-  const { payload, products, categories } = bundle;
-  const brandName = payload.config.theme.brand_name?.trim() || payload.shop.name;
+  const { payload, templateConfig, products, categories, vouchers } = bundle;
+  const brandName = templateConfig.theme.brand_name?.trim() || payload.shop.name;
   const parsedPage = Number.parseInt(sp.page || "1", 10);
 
   return (
@@ -48,6 +46,10 @@ export default async function SubdomainSiteProductsPage({ params, searchParams }
       initialQuery={sp.q || ""}
       initialSort={sp.sort || "newest"}
       initialPage={Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1}
+      pageConfig={templateConfig.pages.catalog}
+      templateConfig={templateConfig}
+      shop={payload.shop}
+      vouchers={vouchers}
     />
   );
 }

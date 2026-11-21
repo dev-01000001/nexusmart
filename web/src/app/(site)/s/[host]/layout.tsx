@@ -16,8 +16,9 @@ export default async function SiteHostLayout({ children, params }: SiteHostLayou
 
   return (
     <SiteShell
-      config={ctx.payload.config}
+      config={ctx.templateConfig}
       shopName={ctx.payload.shop.name}
+      shopId={ctx.payload.site.shop_id}
       platformOrigin={ctx.platformOrigin}
     >
       {children}

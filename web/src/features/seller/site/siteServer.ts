@@ -6,7 +6,9 @@ import { revalidateDomainCaches } from "@/lib/server/domains";
 import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { resolveRequestHost, resolveRequestProto } from "@/lib/server/http";
-import { parseSiteConfig } from "@/lib/site/types";
+import { PLATFORM_TEMPLATES } from "@/features/site/templateCatalog";
+import type { PlatformTemplateDTO } from "@/features/site/templateTypes";
+import { normalizeSiteTemplateConfig } from "@/features/site/templateValidator";
 import type { GwSellerShop } from "@/features/seller/sellerApiTypes";
 import type { GwSite, GwSiteVersion } from "./siteEditorTypes";
 import { summarizeSellerSite, type SellerSiteSummary } from "./siteSummary";
@@ -48,6 +50,19 @@ export interface RawGwSiteVersion {
   created_at?: string;
 }
 
+interface RawPlatformTemplate {
+  id?: string;
+  slug?: string;
+  name?: string;
+  category?: string;
+  archetype?: string;
+  description?: string;
+  preview_image_url?: string;
+  tags?: string[];
+  config?: unknown;
+  config_json?: string;
+}
+
 export function normalizeGwSite(raw: RawGwSite | null | undefined): GwSite | null {
   if (!raw || !raw.id) return null;
   const rootDomain = getSiteRootDomain();
@@ -60,7 +75,7 @@ export function normalizeGwSite(raw: RawGwSite | null | undefined): GwSite | nul
     .trim()
     .toLowerCase();
 
-  const draftConfig = parseSiteConfig(
+  const draftConfig = normalizeSiteTemplateConfig(
     raw.draft_config ?? raw.draft_config_json ?? raw.config ?? raw.config_json,
     raw.shop_name ?? ""
   );
@@ -74,7 +89,7 @@ export function normalizeGwSite(raw: RawGwSite | null | undefined): GwSite | nul
     status: raw.status || "DRAFT",
     config: draftConfig,
     draft_config: draftConfig,
-    published_config: parseSiteConfig(
+    published_config: normalizeSiteTemplateConfig(
       raw.published_config ?? raw.published_config_json,
       raw.shop_name ?? ""
     ),
@@ -92,7 +107,7 @@ export function normalizeGwSiteVersion(raw: RawGwSiteVersion): GwSiteVersion {
     id: raw.id ?? "",
     site_id: raw.site_id ?? "",
     version_number: Number(raw.version_number) || 0,
-    config: parseSiteConfig(raw.config ?? raw.config_json),
+    config: normalizeSiteTemplateConfig(raw.config ?? raw.config_json),
     published_by: raw.published_by ?? "",
     note: raw.note ?? "",
     created_at: raw.created_at,
@@ -101,7 +116,7 @@ export function normalizeGwSiteVersion(raw: RawGwSiteVersion): GwSiteVersion {
 
 /**
  * Revalidate all Next.js cache tags, layouts, and in-memory host cache entries for a site after
- * publish, rollback, or suspend/unsuspend (covering both primary_host and default subdomain).
+ * publish, rollback, apply-template, or suspend/unsuspend.
  */
 export function revalidateSiteCache(
   site:
@@ -151,6 +166,109 @@ export function resolveSiteErrorMessage(err: unknown): {
       message: "Tên miền phụ này đã có gian hàng khác sử dụng. Vui lòng chọn tên miền khác.",
     };
   }
+  if (
+    code === "TEMPLATE_NOT_FOUND" ||
+    (detail.includes("template") && (detail.includes("not found") || detail.includes("unknown")))
+  ) {
+    return {
+      status: 404,
+      code: "TEMPLATE_NOT_FOUND",
+      message: "Không tìm thấy mẫu giao diện yêu cầu. Vui lòng tải lại danh sách mẫu.",
+    };
+  }
+  if (
+    code === "DUPLICATE_KEY" ||
+    detail.includes("duplicate key") ||
+    detail.includes("trùng lặp")
+  ) {
+    return {
+      status: 400,
+      code: "DUPLICATE_KEY",
+      message: "Mã JSON chứa khóa bị trùng lặp trong cùng đối tượng. Vui lòng xóa khóa trùng.",
+    };
+  }
+  if (
+    code === "MAX_DEPTH_EXCEEDED" ||
+    detail.includes("depth") ||
+    detail.includes("nesting") ||
+    detail.includes("độ sâu")
+  ) {
+    return {
+      status: 400,
+      code: "MAX_DEPTH_EXCEEDED",
+      message: "Cấu hình JSON lồng nhau quá sâu (tối đa 8 cấp). Vui lòng rút gọn cấu trúc.",
+    };
+  }
+  if (
+    code === "CONFIG_TOO_LARGE" ||
+    detail.includes("too large") ||
+    detail.includes("131072") ||
+    detail.includes("128 kib")
+  ) {
+    return {
+      status: 400,
+      code: "CONFIG_TOO_LARGE",
+      message: "Cấu hình template vượt quá giới hạn tối đa 128 KiB. Vui lòng rút gọn nội dung.",
+    };
+  }
+  if (
+    code === "SVG_REJECTED" ||
+    detail.includes(".svg") ||
+    detail.includes("svg+xml") ||
+    detail.includes("image/svg") ||
+    detail.includes("svg")
+  ) {
+    return {
+      status: 400,
+      code: "SVG_REJECTED",
+      message:
+        "Không cho phép sử dụng tệp hoặc mã SVG trong cấu hình cửa hàng để bảo vệ người mua khỏi XSS.",
+    };
+  }
+  if (
+    code === "SSRF_REJECTED" ||
+    detail.includes("ssrf") ||
+    detail.includes("loopback") ||
+    detail.includes("private ip") ||
+    detail.includes("metadata") ||
+    detail.includes("internal host") ||
+    detail.includes("ip literal")
+  ) {
+    return {
+      status: 400,
+      code: "SSRF_REJECTED",
+      message:
+        "URL ảnh trỏ tới địa chỉ IP hoặc tên miền nội bộ bị chặn (chống SSRF). Vui lòng dùng đường dẫn /... hoặc https:// công khai.",
+    };
+  }
+  if (
+    code === "XSS_REJECTED" ||
+    detail.includes("xss") ||
+    detail.includes("<script") ||
+    detail.includes("style injection") ||
+    detail.includes("expression(") ||
+    detail.includes("@import") ||
+    detail.includes("vbscript:") ||
+    detail.includes("event handler")
+  ) {
+    return {
+      status: 400,
+      code: "XSS_REJECTED",
+      message:
+        "Nội dung chứa mã HTML/CSS hoặc thuộc tính sự kiện không an toàn (chống XSS). Chỉ chấp nhận văn bản thuần.",
+    };
+  }
+  if (
+    code === "TOO_MANY_BLOCKS" ||
+    (detail.includes("block") &&
+      (detail.includes("12") || detail.includes("max") || detail.includes("too many")))
+  ) {
+    return {
+      status: 400,
+      code: "TOO_MANY_BLOCKS",
+      message: "Mỗi khối nội dung hỗ trợ tối đa 12 block con. Vui lòng bớt block trước khi lưu.",
+    };
+  }
   if (detail.includes("contrast") || detail.includes("wcag")) {
     return {
       status: 400,
@@ -190,14 +308,18 @@ export function resolveSiteErrorMessage(err: unknown): {
       status: 400,
       code: "INVALID_URL",
       message:
-        "Đường dẫn ảnh hoặc liên kết không hợp lệ. Chỉ chấp nhận đường dẫn nội bộ (/) hoặc https://.",
+        "Đường dẫn ảnh hoặc liên kết không hợp lệ. Chỉ chấp nhận đường dẫn nội bộ (/) hoặc https:// công khai.",
     };
   }
-  if (detail.includes("section") && (detail.includes("20") || detail.includes("max"))) {
+  if (
+    detail.includes("section") &&
+    (detail.includes("20") || detail.includes("32") || detail.includes("max"))
+  ) {
     return {
       status: 400,
       code: "TOO_MANY_SECTIONS",
-      message: "Site riêng hỗ trợ tối đa 20 khối nội dung. Vui lòng bớt khối trước khi lưu.",
+      message:
+        "Số lượng khối nội dung vượt giới hạn (tối đa 20 khối trang chủ, 8 khối mỗi trang phụ, tổng 32 khối).",
     };
   }
   if (detail.includes("unknown field") || detail.includes("trailing")) {
@@ -257,6 +379,45 @@ export function resolveSiteErrorMessage(err: unknown): {
     code: err.code,
     message: SAFE_MESSAGES[err.kind],
   };
+}
+
+export async function loadPlatformTemplatesServer(): Promise<{
+  templates: PlatformTemplateDTO[];
+  source: "gateway" | "fallback";
+}> {
+  try {
+    const res = await gw<{
+      templates?: RawPlatformTemplate[];
+      items?: RawPlatformTemplate[];
+    }>("/api/v1/site-templates", { auth: "none" });
+    const rawList = res.templates ?? res.items ?? [];
+    const normalized: PlatformTemplateDTO[] = [];
+    for (const raw of rawList) {
+      const id = (raw.id || raw.slug || "").trim().toLowerCase();
+      if (!id) continue;
+      const cfg = normalizeSiteTemplateConfig(raw.config ?? raw.config_json, raw.name || "");
+      if (!cfg) continue;
+      normalized.push({
+        id,
+        slug: (raw.slug || id).trim().toLowerCase(),
+        name: (raw.name || id).trim(),
+        category: (raw.category || "Tổng hợp").trim(),
+        archetype: cfg.layout.archetype,
+        description: (raw.description || "").trim(),
+        preview_image_url: (raw.preview_image_url || cfg.theme.banner_url || "").trim(),
+        tags: Array.isArray(raw.tags)
+          ? raw.tags.filter((t): t is string => typeof t === "string" && Boolean(t.trim()))
+          : [],
+        config: cfg,
+      });
+    }
+    if (normalized.length > 0) {
+      return { templates: normalized, source: "gateway" };
+    }
+  } catch {
+    // Gracefully fall back to the built-in catalog when gateway is restarting or not yet migrated.
+  }
+  return { templates: [...PLATFORM_TEMPLATES], source: "fallback" };
 }
 
 export async function loadSellerSiteServer(): Promise<{

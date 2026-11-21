@@ -38,12 +38,15 @@ export default async function SubdomainSiteProductDetailPage({ params }: PagePro
   const { host, slug } = await params;
   const decodedHost = decodeURIComponent(host);
   const decodedSlug = decodeURIComponent(slug);
-  const data = await loadPublicSiteProduct(decodedHost, decodedSlug);
-  if (!data) notFound();
+  const [ctx, data] = await Promise.all([
+    loadSiteContext(host),
+    loadPublicSiteProduct(decodedHost, decodedSlug),
+  ]);
+  if (!ctx || !data) notFound();
 
   const { bundle, product, relatedProducts, liveFlashItem } = data;
   const { payload, vouchers } = bundle;
-  const brandName = payload.config.theme.brand_name?.trim() || payload.shop.name;
+  const brandName = ctx.templateConfig.theme.brand_name?.trim() || payload.shop.name;
 
   return (
     <SitePdpView
@@ -52,6 +55,9 @@ export default async function SubdomainSiteProductDetailPage({ params }: PagePro
       shopVouchers={vouchers}
       relatedProducts={relatedProducts}
       liveFlashItem={liveFlashItem}
+      pageConfig={ctx.templateConfig.pages.pdp}
+      templateConfig={ctx.templateConfig}
+      shop={payload.shop}
     />
   );
 }

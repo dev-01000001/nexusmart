@@ -8,10 +8,15 @@ import { resolveRequestHost, resolveRequestProto } from "@/lib/server/http";
 import { loadShopSiteRenderData } from "@/lib/server/sites";
 import { deriveMarketplaceOrigin } from "@/lib/site/host";
 import type { SitePublicShopDTO } from "@/lib/site/types";
-import { SiteRenderer, SiteShell } from "@/features/site";
+import type { TemplatePageKey } from "@/features/site/templateTypes";
 import { requireSellerPage } from "@/features/seller/sellerServer";
 import { loadSellerSiteServer } from "@/features/seller/site/siteServer";
-import { createDefaultSiteConfig, getSiteStatusMeta } from "@/features/seller/site/siteEditorUtils";
+import {
+  TEMPLATE_PAGE_TABS,
+  createDefaultTemplateConfig,
+  getSiteStatusMeta,
+} from "@/features/seller/site/siteEditorUtils";
+import { SitePreviewContent } from "@/features/seller/site/SitePreviewContent";
 import styles from "./page.module.css";
 
 export const dynamic = "force-dynamic";
@@ -24,11 +29,26 @@ export const metadata: Metadata = {
   },
 };
 
-export default async function SellerSiteDraftPreviewPage() {
+const VALID_VIEWS = new Set<TemplatePageKey>(["home", "catalog", "pdp", "cart", "info"]);
+
+interface SellerSiteDraftPreviewPageProps {
+  searchParams?: Promise<{ view?: string | string[] }>;
+}
+
+export default async function SellerSiteDraftPreviewPage({
+  searchParams,
+}: SellerSiteDraftPreviewPageProps) {
   // Strictly server-protected: only the authenticated shop owner can view their own shop's draft.
   // Never reads or accepts any `shop_id` query parameter.
   const session = await requireSellerPage();
-  const siteRes = await loadSellerSiteServer();
+  const [siteRes, sp] = await Promise.all([
+    loadSellerSiteServer(),
+    searchParams ?? Promise.resolve<{ view?: string | string[] }>({}),
+  ]);
+
+  const rawView = Array.isArray(sp.view) ? sp.view[0] : sp.view;
+  const activeView: TemplatePageKey =
+    rawView && VALID_VIEWS.has(rawView as TemplatePageKey) ? (rawView as TemplatePageKey) : "home";
 
   if (siteRes.error) {
     return (
@@ -79,7 +99,7 @@ export default async function SellerSiteDraftPreviewPage() {
           kind="empty"
           surface="app"
           title="Chưa có bản nháp site riêng"
-          message="Hãy chọn tên miền phụ, chỉnh bảng màu và bấm Lưu nháp trong mục Site riêng trước khi xem trước."
+          message="Hãy chọn mẫu giao diện, tên miền phụ, chỉnh bảng màu và bấm Lưu nháp trong mục Site riêng trước khi xem trước."
           actionLabel="Mở trình chỉnh sửa Site riêng"
           actionHref="/seller/site"
         />
@@ -95,7 +115,7 @@ export default async function SellerSiteDraftPreviewPage() {
     status: shop?.status || "ACTIVE",
   };
 
-  const draftConfig = site.draft_config ?? createDefaultSiteConfig(shopName, shop?.description);
+  const draftConfig = site.draft_config ?? createDefaultTemplateConfig(shopName, shop?.description);
   const renderData = await loadShopSiteRenderData(publicShop, { uncached: true });
 
   const hdrs = await headers();
@@ -119,8 +139,31 @@ export default async function SellerSiteDraftPreviewPage() {
           <span className={styles.bannerTitle}>
             Chế độ xem trước bản nháp — chưa hiển thị công khai
           </span>
-          <span className={styles.bannerHost}>({hostDisplay})</span>
+          <span className={styles.bannerHost}>
+            ({hostDisplay} · Mẫu: {draftConfig.template_id})
+          </span>
         </div>
+
+        <nav className={styles.viewSwitcher} aria-label="Chuyển trang xem trước bản nháp">
+          {TEMPLATE_PAGE_TABS.map((tab) => {
+            const href =
+              tab.key === "home"
+                ? "/seller/site/xem-truoc"
+                : `/seller/site/xem-truoc?view=${tab.key}`;
+            const isActive = activeView === tab.key;
+            return (
+              <Link
+                key={tab.key}
+                href={href}
+                className={`${styles.viewLink} ${isActive ? styles.viewLinkActive : ""}`}
+                aria-current={isActive ? "page" : undefined}
+              >
+                {tab.shortLabel}
+              </Link>
+            );
+          })}
+        </nav>
+
         <div className={styles.bannerActions}>
           <Link href="/seller/site" className={styles.backLink}>
             Quay lại trình chỉnh sửa
@@ -129,21 +172,15 @@ export default async function SellerSiteDraftPreviewPage() {
       </div>
 
       <div className={styles.previewFrame}>
-        <SiteShell
+        <SitePreviewContent
           config={draftConfig}
-          shopName={shopName}
+          page={activeView}
+          shop={publicShop}
+          products={renderData.products}
+          categories={renderData.categories}
+          vouchers={renderData.vouchers}
           platformOrigin={platformOrigin}
-          previewMode={true}
-        >
-          <SiteRenderer
-            config={draftConfig}
-            shop={publicShop}
-            products={renderData.products}
-            vouchers={renderData.vouchers}
-            categories={renderData.categories}
-            previewMode={true}
-          />
-        </SiteShell>
+        />
       </div>
     </div>
   );

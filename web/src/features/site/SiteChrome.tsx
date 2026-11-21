@@ -7,8 +7,10 @@ import { useSession } from "@/components/SessionProvider";
 import { IconClose, IconMenu } from "@/components/Icons";
 import { useStore } from "@/context/StoreContext";
 import { useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
+import { SiteSearchBar } from "@/features/search";
 import { SITE_NAV_ITEMS, type SiteNavKey } from "./siteNav";
 import styles from "./site.module.css";
+import tplStyles from "./siteTemplates.module.css";
 
 export { SITE_NAV_ITEMS, type SiteNavKey };
 
@@ -59,8 +61,22 @@ export function SiteNav({ previewMode = false }: { previewMode?: boolean }) {
   );
 }
 
+export interface SiteHeaderActionsProps {
+  brandName?: string;
+  shopId?: string;
+  /** When true (default), renders Swarm G `SiteSearchBar`; when false, falls back to plain search form. */
+  showSearchSlot?: boolean;
+  /** Hide inline desktop search input on ultra-minimal centered mastheads where space is tight. */
+  hideDesktopSearch?: boolean;
+}
+
 /** Search, account and cart actions in the site header (desktop row + compact mobile drawer). */
-export function SiteHeaderActions({ brandName = "Cửa hàng" }: { brandName?: string }) {
+export function SiteHeaderActions({
+  brandName = "Cửa hàng",
+  shopId,
+  showSearchSlot = true,
+  hideDesktopSearch = false,
+}: SiteHeaderActionsProps) {
   const pathname = useSitePathname();
   const { user, isAuthenticated } = useSession();
   const { cartCount } = useStore();
@@ -87,19 +103,26 @@ export function SiteHeaderActions({ brandName = "Cửa hàng" }: { brandName?: s
   return (
     <>
       <div className={styles.headerActionsDesktop}>
-        <form action="/tim-kiem" method="get" role="search" className={styles.headerSearch}>
-          <label htmlFor="site-search" className="sr-only">
-            Tìm trong cửa hàng
-          </label>
-          <input
-            id="site-search"
-            name="q"
-            type="search"
-            placeholder="Tìm sản phẩm"
-            className={styles.headerSearchInput}
-            enterKeyHint="search"
-          />
-        </form>
+        {!hideDesktopSearch &&
+          (showSearchSlot ? (
+            <div className={tplStyles.headerSearchSlot}>
+              <SiteSearchBar brandName={brandName} shopId={shopId} compact />
+            </div>
+          ) : (
+            <form action="/tim-kiem" method="get" role="search" className={styles.headerSearch}>
+              <label htmlFor="site-search" className="sr-only">
+                Tìm trong cửa hàng
+              </label>
+              <input
+                id="site-search"
+                name="q"
+                type="search"
+                placeholder="Tìm sản phẩm"
+                className={styles.headerSearchInput}
+                enterKeyHint="search"
+              />
+            </form>
+          ))}
         {isAuthenticated && user ? (
           <>
             <Link href="/don-hang" className={styles.headerTextAction}>
@@ -172,28 +195,37 @@ export function SiteHeaderActions({ brandName = "Cửa hàng" }: { brandName?: s
               </button>
             </div>
 
-            <form
-              action="/tim-kiem"
-              method="get"
-              role="search"
-              className={styles.siteDrawerSearch}
-              onSubmit={() => setDrawerOpen(false)}
-            >
-              <label htmlFor="site-drawer-search" className="sr-only">
-                Tìm sản phẩm trong {brandName}
-              </label>
-              <input
-                id="site-drawer-search"
-                name="q"
-                type="search"
-                placeholder="Tìm sản phẩm..."
-                className={styles.siteDrawerSearchInput}
-                enterKeyHint="search"
+            {showSearchSlot ? (
+              <SiteSearchBar
+                brandName={brandName}
+                shopId={shopId}
+                compact
+                onNavigate={() => setDrawerOpen(false)}
               />
-              <button type="submit" className={styles.siteDrawerSearchBtn}>
-                Tìm
-              </button>
-            </form>
+            ) : (
+              <form
+                action="/tim-kiem"
+                method="get"
+                role="search"
+                className={styles.siteDrawerSearch}
+                onSubmit={() => setDrawerOpen(false)}
+              >
+                <label htmlFor="site-drawer-search" className="sr-only">
+                  Tìm sản phẩm trong {brandName}
+                </label>
+                <input
+                  id="site-drawer-search"
+                  name="q"
+                  type="search"
+                  placeholder="Tìm sản phẩm..."
+                  className={styles.siteDrawerSearchInput}
+                  enterKeyHint="search"
+                />
+                <button type="submit" className={styles.siteDrawerSearchBtn}>
+                  Tìm
+                </button>
+              </form>
+            )}
 
             <nav className={styles.siteDrawerNav} aria-label="Điều hướng di động">
               {SITE_NAV_ITEMS.map((item) => (

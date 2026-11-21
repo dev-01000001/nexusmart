@@ -1,4 +1,4 @@
-// Editor & Admin Site DTO definitions aligned directly with shared @/lib/site/types.
+// Editor & Admin Site DTO definitions aligned with shared @/lib/site/types and v2 templateTypes.
 export type {
   BannerSection,
   BannerSectionProps,
@@ -23,7 +23,57 @@ export type {
   VoucherStripSectionProps,
 } from "@/lib/site/types";
 
-import type { SiteConfig, SiteStatus } from "@/lib/site/types";
+export type {
+  BadgeBlockProps,
+  BaseSectionV2,
+  CartPageConfig,
+  CatalogPageConfig,
+  CtaBlockProps,
+  FeatureBlockProps,
+  HeadingBlockProps,
+  ImageBlockProps,
+  InfoPageConfig,
+  LookbookSectionProps,
+  MetricsStripSectionProps,
+  ParagraphBlockProps,
+  PdpPageConfig,
+  PlatformTemplateDTO,
+  PolicyBlockProps,
+  QuoteBlockProps,
+  SectionPadding,
+  SectionSettings,
+  SectionSurface,
+  SiteArchetype,
+  SiteBlockType,
+  SiteCardStyle,
+  SiteCartLayout,
+  SiteCatalogLayout,
+  SiteContainerWidth,
+  SiteDensity,
+  SiteFooterStyle,
+  SiteHeaderStyle,
+  SiteInfoLayout,
+  SiteLayoutConfig,
+  SiteLayoutSlots,
+  SitePagesConfig,
+  SitePdpGalleryStyle,
+  SitePdpLayout,
+  SiteRadius,
+  SiteSectionBlock,
+  SiteSectionV2,
+  SiteSectionV2Type,
+  SiteTemplateConfig,
+  SiteThemeV2,
+  SkuMatrixSectionProps,
+  StatBlockProps,
+  TemplatePageKey,
+  TemplateValidationIssue,
+  TemplateValidationResult,
+  TestimonialsSectionProps,
+} from "@/features/site/templateTypes";
+
+import type { SiteStatus } from "@/lib/site/types";
+import type { SiteTemplateConfig } from "@/features/site/templateTypes";
 
 export interface GwSite {
   id: string;
@@ -32,9 +82,9 @@ export interface GwSite {
   subdomain: string;
   primary_host: string;
   status: SiteStatus | string;
-  config?: SiteConfig | null;
-  draft_config: SiteConfig | null;
-  published_config?: SiteConfig | null;
+  config?: SiteTemplateConfig | null;
+  draft_config: SiteTemplateConfig | null;
+  published_config?: SiteTemplateConfig | null;
   published_version_id: string;
   published_version_number?: number;
   published_at?: string;
@@ -47,7 +97,7 @@ export interface GwSiteVersion {
   id: string;
   site_id: string;
   version_number: number;
-  config: SiteConfig | null;
+  config: SiteTemplateConfig | null;
   published_by: string;
   note: string;
   created_at?: string;

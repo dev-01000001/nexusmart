@@ -2,17 +2,25 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  BLOCK_TYPE_ORDER,
   MAX_SECTIONS,
   SECTION_TYPE_ORDER,
+  SECTION_V2_TYPE_ORDER,
   THEME_PRESETS,
   buildCleanSiteConfigPayload,
+  buildCleanTemplateConfigPayload,
   checkThemeContrast,
   contrastRatio,
+  createBlockTemplate,
   createDefaultSiteConfig,
+  createDefaultTemplateConfig,
   createSectionTemplate,
+  createSectionV2Template,
   validateSafeUrlClient,
   validateSiteDraftClient,
+  validateSiteTemplateJson,
   validateSubdomainClient,
+  validateTemplateDraftClient,
 } from "./siteEditorUtils.ts";
 
 test("all curated THEME_PRESETS pass WCAG 2.1 >= 4.5 on every required pair", () => {
@@ -97,4 +105,167 @@ test("validateSiteDraftClient rejects more than 20 sections", () => {
   );
   const err = validateSiteDraftClient("bach-dang", cfg);
   assert.ok(err && err.includes(String(MAX_SECTIONS)));
+});
+
+// --- Schema v2 Template Studio tests ---
+
+test("creating all 11 v2 section types and all 9 block types passes validateTemplateDraftClient", () => {
+  assert.equal(SECTION_V2_TYPE_ORDER.length, 11);
+  assert.equal(BLOCK_TYPE_ORDER.length, 9);
+
+  const base = createDefaultTemplateConfig("Xưởng Dệt Bạch Đằng", "Áo thun cotton 220gsm");
+  const allBlocks = BLOCK_TYPE_ORDER.map((bType, idx) => createBlockTemplate(bType, idx));
+  const allSections = SECTION_V2_TYPE_ORDER.map((sType, idx) => {
+    const sec = createSectionV2Template(sType, idx);
+    if (idx === 0) {
+      return { ...sec, blocks: allBlocks };
+    }
+    return sec;
+  });
+
+  const fullV2 = buildCleanTemplateConfigPayload({
+    ...base,
+    sections: allSections,
+  });
+
+  assert.equal(validateTemplateDraftClient("bach-dang", fullV2), null);
+  assert.equal(fullV2.sections.length, 11);
+  assert.equal(fullV2.sections[0].blocks?.length, 9);
+});
+
+test("validateTemplateDraftClient rejects XSS, style injection, SVG, and SSRF payloads", () => {
+  const mk = () => createDefaultTemplateConfig("Xưởng Dệt Bạch Đằng");
+
+  // XSS in text fields
+  const xssScript = mk();
+  xssScript.theme.tagline = "<script>alert(1)</script>";
+  assert.notEqual(validateTemplateDraftClient("bach-dang", xssScript), null);
+
+  const xssOnError = mk();
+  xssOnError.theme.brand_name = "Shop onerror=alert(1)";
+  assert.notEqual(validateTemplateDraftClient("bach-dang", xssOnError), null);
+
+  const cssInject = mk();
+  cssInject.layout.announcement_text = "expression(alert(1))";
+  assert.notEqual(validateTemplateDraftClient("bach-dang", cssInject), null);
+
+  const styleTag = mk();
+  styleTag.theme.tagline = "<style>body{display:none}</style>";
+  assert.notEqual(validateTemplateDraftClient("bach-dang", styleTag), null);
+
+  // javascript: href in CTA block
+  const jsHref = mk();
+  jsHref.sections[0] = {
+    ...jsHref.sections[0],
+    blocks: [
+      {
+        id: "cta-bad",
+        type: "cta",
+        props: { label: "Click", href: "javascript:alert(1)", style: "primary" },
+      },
+    ],
+  };
+  assert.notEqual(validateTemplateDraftClient("bach-dang", jsHref), null);
+
+  // SVG image rejection (.svg, .svgz, image/svg)
+  for (const svgUrl of [
+    "/icons/logo.svg",
+    "https://cdn.example.com/banner.SVG?v=1",
+    "/assets/pic.svgz",
+    "https://cdn.example.com/proxy?type=image/svg+xml",
+  ]) {
+    const svgCfg = mk();
+    svgCfg.theme.logo_url = svgUrl;
+    assert.notEqual(
+      validateTemplateDraftClient("bach-dang", svgCfg),
+      null,
+      `Expected SVG URL to be rejected: ${svgUrl}`
+    );
+  }
+
+  // SSRF image URL rejection (private/loopback/metadata/IP literals)
+  for (const ssrfUrl of [
+    "https://127.0.0.1/a.png",
+    "https://localhost/a.png",
+    "https://169.254.169.254/latest/meta-data",
+    "https://10.0.0.1/secret.png",
+    "https://192.168.1.10/img.jpg",
+    "https://[::1]/img.jpg",
+    "https://metadata.google.internal/a.png",
+    "https://2130706433/a.png",
+  ]) {
+    const ssrfCfg = mk();
+    ssrfCfg.theme.banner_url = ssrfUrl;
+    assert.notEqual(
+      validateTemplateDraftClient("bach-dang", ssrfCfg),
+      null,
+      `Expected SSRF URL to be rejected: ${ssrfUrl}`
+    );
+  }
+});
+
+test("buildCleanTemplateConfigPayload preserves layout, slots, blocks, and 4 sub-pages losslessly", () => {
+  const base = createDefaultTemplateConfig("  Xưởng Dệt Bạch Đằng  ");
+  base.template_id = "  CRAFT-ATELIER ";
+  base.theme.radius = "sm";
+  base.theme.density = "compact";
+  base.layout = {
+    archetype: "craft-atelier",
+    header_style: "atelier-framed",
+    footer_style: "atelier-footer",
+    container_width: "wide",
+    card_style: "atelier",
+    show_announcement: true,
+    announcement_text: "  Giao nhanh toàn quốc  ",
+    slots: { search: true, chat: false, assistant: true },
+  };
+  base.sections[0] = {
+    ...base.sections[0],
+    variant: "atelier",
+    settings: {
+      surface: "surface",
+      padding: "generous",
+      columns: 3,
+      align: "center",
+      max_items: 6,
+    },
+    blocks: [createBlockTemplate("stat", 0), createBlockTemplate("feature", 1)],
+  };
+  base.pages.catalog = {
+    layout: "sku-table",
+    columns: 4,
+    show_filters: true,
+    show_search: true,
+    show_sku_matrix: true,
+    intro_title: "  Kho đa SKU  ",
+    intro_subtitle: "  Lọc theo màu & cỡ  ",
+    sections: [createSectionV2Template("sku_matrix", 0)],
+  };
+  base.pages.pdp.layout = "sku-order-matrix";
+  base.pages.pdp.show_sku_table = true;
+  base.pages.cart.layout = "atelier-bag";
+  base.pages.cart.trust_note = "  Kiểm hàng trước thanh toán  ";
+  base.pages.info.layout = "craft-timeline";
+  base.pages.info.show_toc = true;
+  base.pages.info.sections = [createSectionV2Template("testimonials", 0)];
+
+  const cleaned = buildCleanTemplateConfigPayload(base);
+  const res = validateSiteTemplateJson(cleaned);
+  assert.equal(res.ok, true, JSON.stringify(res.issues));
+  assert.equal(cleaned.schema_version, 2);
+  assert.equal(cleaned.template_id, "craft-atelier");
+  assert.equal(cleaned.theme.brand_name, "Xưởng Dệt Bạch Đằng");
+  assert.equal(cleaned.layout.header_style, "atelier-framed");
+  assert.equal(cleaned.layout.slots.chat, false);
+  assert.equal(cleaned.layout.announcement_text, "Giao nhanh toàn quốc");
+  assert.equal(cleaned.sections[0].variant, "atelier");
+  assert.equal(cleaned.sections[0].settings?.columns, 3);
+  assert.equal(cleaned.sections[0].blocks?.length, 2);
+  assert.equal(cleaned.pages.catalog.layout, "sku-table");
+  assert.equal(cleaned.pages.catalog.show_sku_matrix, true);
+  assert.equal(cleaned.pages.catalog.sections?.length, 1);
+  assert.equal(cleaned.pages.pdp.layout, "sku-order-matrix");
+  assert.equal(cleaned.pages.cart.trust_note, "Kiểm hàng trước thanh toán");
+  assert.equal(cleaned.pages.info.layout, "craft-timeline");
+  assert.equal(cleaned.pages.info.sections?.length, 1);
 });
