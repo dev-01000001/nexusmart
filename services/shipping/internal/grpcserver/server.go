@@ -247,7 +247,7 @@ func (s *Server) GetShipment(ctx context.Context, req *shippingv1.GetShipmentReq
 	if !ok || strings.TrimSpace(claims.UserID()) == "" {
 		return nil, status.Error(codes.Unauthenticated, "authentication required")
 	}
-	sh, evList, err := s.svc.GetShipment(ctx, req.GetOrderId(), req.GetTrackingCode())
+	sh, evList, err := s.svc.GetShipment(ctx, req.GetOrderId(), req.GetTrackingCode(), req.GetDirection())
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -276,18 +276,20 @@ func (s *Server) GetShipment(ctx context.Context, req *shippingv1.GetShipmentReq
 
 func toProtoShipment(sh *store.Shipment) *shippingv1.Shipment {
 	return &shippingv1.Shipment{
-		ShipmentId:   sh.ID,
-		OrderId:      sh.OrderID,
-		ShopId:       sh.ShopID,
-		CarrierCode:  sh.CarrierCode,
-		ServiceCode:  sh.ServiceCode,
-		TrackingCode: sh.TrackingCode,
-		LabelUrl:     sh.LabelURL,
-		Status:       toProtoStatus(sh.Status),
-		FeeVnd:       sh.FeeVND,
-		CodAmountVnd: sh.CODAmountVND,
-		CreatedAt:    timestamppb.New(sh.CreatedAt),
-		UpdatedAt:    timestamppb.New(sh.UpdatedAt),
+		ShipmentId:      sh.ID,
+		OrderId:         sh.OrderID,
+		ShopId:          sh.ShopID,
+		CarrierCode:     sh.CarrierCode,
+		ServiceCode:     sh.ServiceCode,
+		TrackingCode:    sh.TrackingCode,
+		LabelUrl:        sh.LabelURL,
+		Status:          toProtoStatus(sh.Status),
+		FeeVnd:          sh.FeeVND,
+		CodAmountVnd:    sh.CODAmountVND,
+		CreatedAt:       timestamppb.New(sh.CreatedAt),
+		UpdatedAt:       timestamppb.New(sh.UpdatedAt),
+		Direction:       store.NormalizeDirection(sh.Direction),
+		ReturnRequestId: sh.ReturnRequestID,
 	}
 }
 
