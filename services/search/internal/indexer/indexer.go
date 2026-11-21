@@ -96,7 +96,7 @@ func (idx *Indexer) ProcessEvent(ctx context.Context, subject string, env Envelo
 
 	var payload ProductEventPayload
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
-		return false, fmt.Errorf("%w: decode payload: %v", ErrMalformedPayload, err)
+		return false, fmt.Errorf("%w: decode payload: %w", ErrMalformedPayload, err)
 	}
 	payload.ProductID = strings.TrimSpace(payload.ProductID)
 	if payload.ProductID == "" {
