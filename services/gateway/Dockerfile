@@ -21,12 +21,12 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/gateway
 FROM alpine:3.20
 
 RUN apk add --no-cache ca-certificates wget \
-    && addgroup -S appgroup \
-    && adduser -S appuser -G appgroup
+    && addgroup -g 10001 -S appgroup \
+    && adduser -D -u 10001 -G appgroup appuser
 
 COPY --from=builder /out/gateway /usr/local/bin/gateway
 
-USER appuser
+USER 10001:10001
 
 EXPOSE 8080
 

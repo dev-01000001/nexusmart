@@ -34,11 +34,22 @@ var sensitiveKeySubstrings = []string{
 	"database_url",
 	"credential",
 	"street_address",
+	"bank_account",
+	"account_number",
+	"full_name",
+	"recipient_name",
+	"address",
+	"id_card",
+	"cccd",
+	"tax_code",
 }
 
 var (
-	bearerPattern = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._\-~+/]+=*`)
-	dsnPattern    = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:)([^@\s/]+)(@)`)
+	bearerPattern    = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._\-~+/]+=*`)
+	dsnPattern       = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:)([^@\s/]+)(@)`)
+	jwtPattern       = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`)
+	emailPattern     = regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`)
+	phoneCorePattern = regexp.MustCompile(`(?:\+84|84)[\s.-]?[35789](?:[\s.-]?\d){8}|0[35789](?:[\s.-]?\d){8}|02(?:[\s.-]?\d){9}|\+[1-9](?:[\s.-]?\d){7,13}`)
 )
 
 // Option customizes a logger instance.
@@ -112,11 +123,46 @@ func MaskPhone(phone string) string {
 	return string(runes[:3]) + "****" + string(runes[len(runes)-3:])
 }
 
-// ScrubSecrets replaces embedded Bearer tokens and URL/DSN passwords in arbitrary text.
+// ScrubSecrets replaces embedded Bearer tokens, URL/DSN passwords, raw JWTs,
+// email addresses, and phone numbers in arbitrary text.
 func ScrubSecrets(value string) string {
 	scrubbed := bearerPattern.ReplaceAllString(value, "Bearer "+redactedMask)
 	scrubbed = dsnPattern.ReplaceAllString(scrubbed, "${1}"+redactedMask+"${3}")
+	scrubbed = jwtPattern.ReplaceAllString(scrubbed, redactedMask)
+	scrubbed = emailPattern.ReplaceAllStringFunc(scrubbed, MaskEmail)
+	scrubbed = scrubPhones(scrubbed)
 	return scrubbed
+}
+
+func scrubPhones(s string) string {
+	locs := phoneCorePattern.FindAllStringIndex(s, -1)
+	if len(locs) == 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	last := 0
+	for _, loc := range locs {
+		start, end := loc[0], loc[1]
+		if start > 0 && (isASCIIAlphaNum(s[start-1]) || s[start-1] == '+') {
+			continue
+		}
+		if end < len(s) && isASCIIAlphaNum(s[end]) {
+			continue
+		}
+		b.WriteString(s[last:start])
+		b.WriteString(MaskPhone(s[start:end]))
+		last = end
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+func isASCIIAlphaNum(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
 // RedactValue redacts or masks a value based on its attribute key and string content.

@@ -1,0 +1,6 @@
+.git
+web/node_modules
+web/.next*
+services/payment/target
+services/aiops/target
+.runs

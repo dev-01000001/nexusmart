@@ -22,19 +22,20 @@ import (
 	"github.com/nexusmart/core/services/gateway/internal/proxy"
 	"github.com/nexusmart/core/services/gateway/internal/router"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/redis/go-redis/v9"
 )
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "gateway exited with error: %v\n", err)
+	cfg := config.Load()
+	log := logger.New(cfg.ServiceName, logger.WithLevel(parseLogLevel(cfg.LogLevel)))
+	if err := run(cfg, log); err != nil {
+		log.Error("gateway exited with error", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	cfg := config.Load()
-	log := logger.New(cfg.ServiceName, logger.WithLevel(parseLogLevel(cfg.LogLevel)))
+func run(cfg config.Config, log *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -86,7 +87,7 @@ func run() error {
 		return fmt.Errorf("init payment SSE proxy: %w", err)
 	}
 
-	reg := prometheus.NewRegistry()
+	reg := newMetricsRegistry()
 	red := metrics.NewRED(cfg.ServiceName, reg)
 	readyFn := func(rctx context.Context) error {
 		checkCtx, cancel := context.WithTimeout(rctx, 2*time.Second)
@@ -151,6 +152,15 @@ func run() error {
 	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutCtx)
+}
+
+func newMetricsRegistry() *prometheus.Registry {
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		collectors.NewGoCollector(),
+	)
+	return reg
 }
 
 func parseLogLevel(lvl string) slog.Level {
