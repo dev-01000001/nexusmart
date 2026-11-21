@@ -111,6 +111,7 @@ def _resolve_endpoints(args: argparse.Namespace, docker: DockerOps) -> ChaosEndp
     )
 
     netem_images = (args.netem_image,) if args.netem_image else (
+        "e-test-netem:local",
         "nicolaka/netshoot:latest",
         "nicolaka/netshoot",
     )

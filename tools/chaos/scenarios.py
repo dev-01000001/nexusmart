@@ -166,7 +166,7 @@ class SlowPaymentScenario(ChaosScenario):
         *,
         pause_secs: float = 1.2,
         unpause_secs: float = 0.25,
-        netem_delay_ms: int = 1200,
+        netem_delay_ms: int = 650,
         log_stream: Optional[TextIO] = None,
     ) -> None:
         super().__init__(docker, endpoints, log_stream=log_stream)
@@ -234,8 +234,21 @@ class SlowPaymentScenario(ChaosScenario):
     def _netem_load_loop(self) -> None:
         url = f"{self.endpoints.payment_url.rstrip('/')}/readyz"
         while not self._pulse_stop.is_set():
-            http_request_status(url, timeout=max(4.0, (self.netem_delay_ms / 1000.0) + 3.0))
-            if self._pulse_stop.wait(0.25):
+            # Fire 3 concurrent /readyz calls each tick so rate stays well above 0.35 req/s
+            # even when each call takes ~1.3s under netem delay.
+            threads: list[threading.Thread] = []
+            for _ in range(3):
+                th = threading.Thread(
+                    target=http_request_status,
+                    args=(url,),
+                    kwargs={"timeout": max(5.0, (self.netem_delay_ms / 1000.0) * 4.0 + 3.0)},
+                    daemon=True,
+                )
+                th.start()
+                threads.append(th)
+            for th in threads:
+                th.join(timeout=6.0)
+            if self._pulse_stop.wait(0.2):
                 break
 
     def inject(self) -> None:
