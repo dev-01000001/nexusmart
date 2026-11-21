@@ -89,3 +89,16 @@ obs-down:
 chaos:
 	./tools/chaos/run.sh
 
+# Swarm F: Helm/K8s lint, one-command rollback, and database backup/restore drill
+.PHONY: helm-lint rollback backup restore-drill
+helm-lint:
+	./deploy/k8s/scripts/lint.sh
+
+rollback:
+	SERVICE="$(SERVICE)" REV="$(REV)" NAMESPACE="$${NAMESPACE:-nexusmart-staging}" ./deploy/k8s/scripts/rollback.sh
+
+backup:
+	./tools/backup/backup.sh
+
+restore-drill:
+	./tools/backup/restore-drill.sh --fresh

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: chat
+description: NexusMart Real-Time Buyer-Seller Chat service (WebSocket, chat_db, Redis pub/sub)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

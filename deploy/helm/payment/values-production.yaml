@@ -1,0 +1,27 @@
+# Production overrides for payment (namespace: nexusmart-production)
+replicaCount: 2
+
+image:
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 150m
+    memory: 192Mi
+  limits:
+    cpu: 800m
+    memory: 512Mi
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# Production requires non-placeholder secrets in nexusmart-payment-secret:
+# PAYMENT_WEBHOOK_SECRET, ZALOPAY_KEY1, ZALOPAY_KEY2, JWT_SECRET, SERVICE_JWT_SECRET,
+# and credentials for VIETQR_MODE (PAYOS_* for payos, or SEPAY_API_TOKEN for sepay).
+config:
+  APP_ENV: "production"
+  VIETQR_MODE: "payos"
+  ZALOPAY_MODE: "sandbox"
+  RUST_LOG: "info"

@@ -1,0 +1,287 @@
+name: NexusMart Security & Infra Scan
+
+# Manual trigger only to preserve Actions quota:
+#   gh workflow run security.yml
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go-vulncheck:
+    name: Go Dependency Vulnerability Scan (govulncheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.2"
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+      - name: Run govulncheck across Go modules
+        run: |
+          set -uo pipefail
+          MODULES=(
+            pkg/common
+            gen/go
+            services/gateway
+            services/user
+            services/product
+            services/cart
+            services/promotion
+            services/order
+            services/shipping
+            services/notification
+            services/search
+            services/chat
+            services/assistant
+          )
+          FAILED=()
+          for mod in "${MODULES[@]}"; do
+            if [ ! -f "$mod/go.mod" ]; then
+              echo "::notice::Skipping $mod (go.mod not present yet)"
+              continue
+            fi
+            echo "==> govulncheck $mod"
+            if ! (cd "$mod" && govulncheck ./...); then
+              FAILED+=("$mod")
+            fi
+          done
+          if [ "${#FAILED[@]}" -gt 0 ]; then
+            echo "::error::govulncheck reported vulnerabilities in: ${FAILED[*]}"
+            exit 1
+          fi
+
+  rust-audit:
+    name: Rust Dependency Vulnerability Scan (cargo audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Run cargo audit across Rust services
+        run: |
+          set -uo pipefail
+          CRATES=(
+            services/payment
+            services/aiops
+          )
+          FAILED=()
+          for crate in "${CRATES[@]}"; do
+            if [ ! -f "$crate/Cargo.toml" ]; then
+              echo "::notice::Skipping $crate (Cargo.toml not present yet)"
+              continue
+            fi
+            if [ ! -f "$crate/Cargo.lock" ]; then
+              echo "::error::Missing Cargo.lock in $crate"
+              FAILED+=("$crate")
+              continue
+            fi
+            echo "==> cargo audit $crate"
+            if ! (cd "$crate" && cargo audit); then
+              FAILED+=("$crate")
+            fi
+          done
+          if [ "${#FAILED[@]}" -gt 0 ]; then
+            echo "::error::cargo audit reported vulnerabilities in: ${FAILED[*]}"
+            exit 1
+          fi
+
+  npm-audit:
+    name: JS/TS Dependency Vulnerability Scan (npm audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Audit web production dependencies
+        working-directory: web
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then
+            npm audit --omit=dev --audit-level=high
+          else
+            echo "::error::Missing web/package-lock.json"
+            exit 1
+          fi
+      - name: Audit Playwright test dependencies
+        run: |
+          set -euo pipefail
+          if [ -f tests/playwright/package-lock.json ]; then
+            (cd tests/playwright && npm audit --audit-level=high)
+          else
+            echo "::notice::Skipping tests/playwright (package-lock.json not present yet)"
+          fi
+
+  helm-and-k8s-lint:
+    name: Helm & Kubernetes Manifest Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Install kubeconform
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin" kubeconform
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Lint Helm charts and validate K8s manifests
+        run: |
+          set -euo pipefail
+          if [ -f deploy/k8s/scripts/lint.sh ]; then
+            bash deploy/k8s/scripts/lint.sh
+          elif [ -d deploy/helm ]; then
+            for chart in deploy/helm/*; do
+              [ -f "$chart/Chart.yaml" ] || continue
+              svc=$(basename "$chart")
+              for env in staging production; do
+                values_file="$chart/values-${env}.yaml"
+                if [ -f "$values_file" ]; then
+                  echo "==> helm lint $svc ($env)"
+                  helm lint "$chart" -f "$values_file"
+                  echo "==> helm template | kubeconform $svc ($env)"
+                  helm template "$svc" "$chart" -f "$values_file" \
+                    | kubeconform -strict -summary -kubernetes-version 1.31.0
+                fi
+              done
+            done
+            if [ -f deploy/k8s/namespaces.yaml ]; then
+              kubeconform -strict -summary -kubernetes-version 1.31.0 deploy/k8s/namespaces.yaml
+            fi
+          else
+            echo "::notice::deploy/helm not present yet; skipping Helm lint"
+          fi
+      - name: Assert no Kubernetes Secret manifests committed in deploy/
+        run: |
+          set -euo pipefail
+          if [ -d deploy ]; then
+            if grep -rnE '^[[:space:]]*kind:[[:space:]]*Secret([[:space:]]*#.*)?$' deploy/ --include='*.yaml' --include='*.yml'; then
+              echo "::error::Found committed kind: Secret manifest under deploy/!"
+              exit 1
+            fi
+          fi
+
+  trivy-iac-scan:
+    name: Trivy IaC & Dockerfile Config Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check deploy/helm exists
+        id: deploy
+        run: |
+          if [ -d deploy/helm ]; then
+            echo "helm_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "helm_exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::deploy/helm not present yet; skipping Trivy Helm config scan"
+          fi
+      - name: Trivy config scan on deploy/helm
+        if: steps.deploy.outputs.helm_exists == 'true'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: "config"
+          scan-ref: "deploy/helm"
+          format: "table"
+          exit-code: "1"
+          severity: "CRITICAL,HIGH"
+      - name: Trivy config and secret scan on Dockerfiles and repo
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          scanners: "misconfig,secret"
+          skip-dirs: ".git,deploy/helm,web/node_modules,tests/playwright/node_modules"
+          format: "table"
+          exit-code: "1"
+          severity: "CRITICAL,HIGH"
+
+  trivy-image-scan:
+    name: Trivy Container Image Scan (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: gateway
+            context: .
+            dockerfile: services/gateway/Dockerfile
+          - service: user
+            context: .
+            dockerfile: services/user/Dockerfile
+          - service: product
+            context: .
+            dockerfile: services/product/Dockerfile
+          - service: cart
+            context: .
+            dockerfile: services/cart/Dockerfile
+          - service: promotion
+            context: .
+            dockerfile: services/promotion/Dockerfile
+          - service: order
+            context: .
+            dockerfile: services/order/Dockerfile
+          - service: payment
+            context: .
+            dockerfile: services/payment/Dockerfile
+          - service: shipping
+            context: .
+            dockerfile: services/shipping/Dockerfile
+          - service: notification
+            context: .
+            dockerfile: services/notification/Dockerfile
+          - service: search
+            context: .
+            dockerfile: services/search/Dockerfile
+          - service: chat
+            context: .
+            dockerfile: services/chat/Dockerfile
+          - service: assistant
+            context: .
+            dockerfile: services/assistant/Dockerfile
+          - service: aiops
+            context: .
+            dockerfile: services/aiops/Dockerfile
+          - service: web
+            context: web
+            dockerfile: web/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Dockerfile exists
+        id: df
+        run: |
+          if [ -f "${{ matrix.dockerfile }}" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping ${{ matrix.service }} (${{ matrix.dockerfile }} not present yet)"
+          fi
+      - uses: docker/setup-buildx-action@v3
+        if: steps.df.outputs.exists == 'true'
+      - name: Build ${{ matrix.service }} image for Trivy scan
+        if: steps.df.outputs.exists == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: false
+          load: true
+          tags: nexusmart/${{ matrix.service }}:trivy
+      - name: Scan ${{ matrix.service }} image with Trivy
+        if: steps.df.outputs.exists == 'true'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: "image"
+          image-ref: "nexusmart/${{ matrix.service }}:trivy"
+          format: "table"
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: "os,library"
+          severity: "CRITICAL,HIGH"

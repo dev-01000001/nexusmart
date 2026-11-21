@@ -1,0 +1,21 @@
+# Production overrides for promotion (namespace: nexusmart-production)
+replicaCount: 2
+
+image:
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 150m
+    memory: 192Mi
+  limits:
+    cpu: 600m
+    memory: 512Mi
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+config:
+  LOG_LEVEL: "info"
