@@ -79,6 +79,21 @@ func findSiteDomainByID(domains []SiteDomainDTO, id string) *SiteDomainDTO {
 	return nil
 }
 
+func assertAPIErrorCode(t *testing.T, resp *RawResponse, wantCode string) {
+	t.Helper()
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := DecodeJSON(resp, &body); err != nil {
+		t.Fatalf("decode error response (want code=%q): %v", wantCode, err)
+	}
+	if body.Error.Code != wantCode {
+		t.Fatalf("expected error.code=%q, got %q (body=%s)", wantCode, body.Error.Code, string(resp.Body))
+	}
+}
+
 func cleanupCustomDomainsForShop(env *testEnv, adminToken, shopID string) {
 	if shopID == "" || adminToken == "" {
 		return
@@ -232,7 +247,8 @@ func TestE2E_CustomDomains_LifecycleValidationRBACAndPrimary(t *testing.T) {
 			resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerA.AccessToken, nil, map[string]any{
 				"hostname": tc.host,
 			}, http.StatusBadRequest)
-			t.Logf("Bad hostname [%s] (%q) rejected cleanly: HTTP %d", tc.name, tc.host, resp.StatusCode)
+			assertAPIErrorCode(t, resp, "invalid_hostname")
+			t.Logf("Bad hostname [%s] (%q) rejected cleanly: HTTP %d (invalid_hostname)", tc.name, tc.host, resp.StatusCode)
 		}
 
 		domains := listSellerSiteDomains(t, env, sellerA.AccessToken)
@@ -298,18 +314,21 @@ func TestE2E_CustomDomains_LifecycleValidationRBACAndPrimary(t *testing.T) {
 			t.Fatal("prerequisite pending domain was not created")
 		}
 
-		// Seller A already has 1 CUSTOM domain -> adding a second returns 409.
-		env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerA.AccessToken, nil, map[string]any{
+		// Seller A already has 1 CUSTOM domain -> adding a second returns 409 domain_limit.
+		limitResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerA.AccessToken, nil, map[string]any{
 			"hostname": secondCustomHost,
 		}, http.StatusConflict)
+		assertAPIErrorCode(t, limitResp, "domain_limit")
 
-		// Seller B trying to claim Seller A's host (lowercase & uppercase) -> 409.
-		env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerB.AccessToken, nil, map[string]any{
+		// Seller B trying to claim Seller A's host (lowercase & uppercase) -> 409 domain_taken.
+		takenLower := env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerB.AccessToken, nil, map[string]any{
 			"hostname": pendingHost,
 		}, http.StatusConflict)
-		env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerB.AccessToken, nil, map[string]any{
+		assertAPIErrorCode(t, takenLower, "domain_taken")
+		takenUpper := env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerB.AccessToken, nil, map[string]any{
 			"hostname": strings.ToUpper(pendingHost),
 		}, http.StatusConflict)
+		assertAPIErrorCode(t, takenUpper, "domain_taken")
 	})
 
 	// (e) RBAC & cross-tenant isolation across seller, buyer, and admin endpoints.
@@ -420,12 +439,14 @@ func TestE2E_CustomDomains_LifecycleValidationRBACAndPrimary(t *testing.T) {
 		}
 
 		// Seller B cannot claim duplicate ACTIVE host (lower/upper) or check/delete Seller A's domain.
-		env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerB.AccessToken, nil, map[string]any{
+		activeTakenLower := env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerB.AccessToken, nil, map[string]any{
 			"hostname": activeHost,
 		}, http.StatusConflict)
-		env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerB.AccessToken, nil, map[string]any{
+		assertAPIErrorCode(t, activeTakenLower, "domain_taken")
+		activeTakenUpper := env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains", sellerB.AccessToken, nil, map[string]any{
 			"hostname": strings.ToUpper(activeHost),
 		}, http.StatusConflict)
+		assertAPIErrorCode(t, activeTakenUpper, "domain_taken")
 		env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/domains/"+url.PathEscape(activeID)+"/check", sellerB.AccessToken, nil, nil, http.StatusForbidden, http.StatusNotFound)
 		env.mustDoJSON(t, http.MethodDelete, "/api/v1/seller/site/domains/"+url.PathEscape(activeID), sellerB.AccessToken, nil, nil, http.StatusForbidden, http.StatusNotFound)
 	})
