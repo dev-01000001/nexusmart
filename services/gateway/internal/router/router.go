@@ -144,6 +144,7 @@ func New(deps Dependencies) http.Handler {
 				opt.Get("/products/{id}", h.handleGetProduct)
 				opt.Get("/vouchers", h.handleListVouchers)
 				opt.Get("/shops/{id}", h.handleGetShop)
+				h.mountSearchRoutes(opt)
 			})
 
 			// Public flash-sales list with flash-sale rate limit if configured.

@@ -18,6 +18,9 @@ type MemoryStore struct {
 	reservations      map[string]StockReservation
 	flashReservations map[string]FlashSaleStockReservation
 	history           []StockHistoryEntry
+	eventVersion      int64
+	outbox            []OutboxEvent
+	inFlightOutbox    map[string]bool
 
 	// BeforeReserveWrite is an optional test hook invoked right before an optimistic
 	// reserve check inside a transaction to deterministically simulate concurrent updates.
@@ -31,6 +34,7 @@ func NewMemoryStore() *MemoryStore {
 		skus:              make(map[string]SKU),
 		reservations:      make(map[string]StockReservation),
 		flashReservations: make(map[string]FlashSaleStockReservation),
+		inFlightOutbox:    make(map[string]bool),
 	}
 }
 
@@ -45,6 +49,106 @@ func (m *MemoryStore) StockHistory() []StockHistoryEntry {
 	out := make([]StockHistoryEntry, len(m.history))
 	copy(out, m.history)
 	return out
+}
+
+// OutboxEvents returns a deep copy of all recorded outbox events (for test assertions).
+func (m *MemoryStore) OutboxEvents() []OutboxEvent {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]OutboxEvent, len(m.outbox))
+	for i, ev := range m.outbox {
+		out[i] = cloneOutboxEvent(ev)
+	}
+	return out
+}
+
+func (m *MemoryStore) NextProductEventVersion(_ context.Context) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.eventVersion++
+	return m.eventVersion, nil
+}
+
+func (m *MemoryStore) InsertOutboxEvent(ctx context.Context, ev OutboxEvent) error {
+	return m.WithTx(ctx, func(q Queries) error {
+		return q.InsertOutboxEvent(ctx, ev)
+	})
+}
+
+func (m *MemoryStore) ProcessPendingOutbox(ctx context.Context, limit int32, publishFn func(ctx context.Context, ev OutboxEvent) error) (int, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	// Claim up to limit unpublished, non-in-flight events (SKIP LOCKED semantics).
+	m.mu.Lock()
+	if m.inFlightOutbox == nil {
+		m.inFlightOutbox = make(map[string]bool)
+	}
+	batch := make([]OutboxEvent, 0, limit)
+	for _, ev := range m.outbox {
+		if int32(len(batch)) >= limit {
+			break
+		}
+		if ev.PublishedAt != nil || m.inFlightOutbox[ev.ID] {
+			continue
+		}
+		m.inFlightOutbox[ev.ID] = true
+		batch = append(batch, cloneOutboxEvent(ev))
+	}
+	m.mu.Unlock()
+
+	if len(batch) == 0 {
+		return 0, nil
+	}
+
+	type outcome struct {
+		id        string
+		published bool
+		errMsg    string
+	}
+	outcomes := make([]outcome, 0, len(batch))
+	defer func() {
+		m.mu.Lock()
+		for _, ev := range batch {
+			delete(m.inFlightOutbox, ev.ID)
+		}
+		m.mu.Unlock()
+	}()
+
+	published := 0
+	for _, ev := range batch {
+		if err := publishFn(ctx, ev); err != nil {
+			outcomes = append(outcomes, outcome{id: ev.ID, errMsg: err.Error()})
+			continue
+		}
+		outcomes = append(outcomes, outcome{id: ev.ID, published: true})
+		published++
+	}
+
+	now := time.Now().UTC()
+	m.mu.Lock()
+	idxByID := make(map[string]int, len(m.outbox))
+	for i, ev := range m.outbox {
+		idxByID[ev.ID] = i
+	}
+	for _, res := range outcomes {
+		idx, ok := idxByID[res.id]
+		if !ok {
+			continue
+		}
+		m.outbox[idx].Attempts++
+		if res.published {
+			ts := now
+			m.outbox[idx].PublishedAt = &ts
+			m.outbox[idx].LastError = ""
+		} else {
+			m.outbox[idx].LastError = res.errMsg
+		}
+	}
+	m.mu.Unlock()
+
+	return published, nil
 }
 
 type skuOpKind int
@@ -678,6 +782,7 @@ type memTx struct {
 	resTransitions []stagedResTransition
 	newRes         []StockReservation
 	stagedHistory  []StockHistoryEntry
+	stagedOutbox   []OutboxEvent
 }
 
 func (t *memTx) commit() error {
@@ -857,6 +962,20 @@ func (t *memTx) commit() error {
 		computedSKUs[op.skuID] = cur
 	}
 
+	// 4b. Validate new outbox event ID uniqueness
+	if len(t.stagedOutbox) > 0 {
+		seenIDs := make(map[string]struct{}, len(t.store.outbox)+len(t.stagedOutbox))
+		for _, existing := range t.store.outbox {
+			seenIDs[existing.ID] = struct{}{}
+		}
+		for _, ev := range t.stagedOutbox {
+			if _, dup := seenIDs[ev.ID]; dup {
+				return ErrAlreadyExists
+			}
+			seenIDs[ev.ID] = struct{}{}
+		}
+	}
+
 	// 5. Apply all mutations atomically
 	for id := range t.deletedCats {
 		delete(t.store.categories, id)
@@ -888,6 +1007,9 @@ func (t *memTx) commit() error {
 		t.store.reservations[tr.id] = r
 	}
 	t.store.history = append(t.store.history, t.stagedHistory...)
+	for _, ev := range t.stagedOutbox {
+		t.store.outbox = append(t.store.outbox, cloneOutboxEvent(ev))
+	}
 	return nil
 }
 
@@ -1513,6 +1635,31 @@ func (t *memTx) InsertStockHistory(_ context.Context, h StockHistoryEntry) error
 	h.CreatedAt = time.Now().UTC()
 	t.stagedHistory = append(t.stagedHistory, h)
 	return nil
+}
+
+func (t *memTx) NextProductEventVersion(ctx context.Context) (int64, error) {
+	return t.store.NextProductEventVersion(ctx)
+}
+
+func (t *memTx) InsertOutboxEvent(_ context.Context, ev OutboxEvent) error {
+	if ev.CreatedAt.IsZero() {
+		ev.CreatedAt = time.Now().UTC()
+	}
+	t.stagedOutbox = append(t.stagedOutbox, cloneOutboxEvent(ev))
+	return nil
+}
+
+func cloneOutboxEvent(ev OutboxEvent) OutboxEvent {
+	if len(ev.PayloadJSON) > 0 {
+		cp := make([]byte, len(ev.PayloadJSON))
+		copy(cp, ev.PayloadJSON)
+		ev.PayloadJSON = cp
+	}
+	if ev.PublishedAt != nil {
+		ts := *ev.PublishedAt
+		ev.PublishedAt = &ts
+	}
+	return ev
 }
 
 func cloneProduct(p Product) Product {

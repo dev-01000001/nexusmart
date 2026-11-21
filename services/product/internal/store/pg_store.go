@@ -54,6 +54,51 @@ func (s *PgStore) WithTx(ctx context.Context, fn func(q Queries) error) error {
 	return nil
 }
 
+func (s *PgStore) ProcessPendingOutbox(ctx context.Context, limit int32, publishFn func(ctx context.Context, ev OutboxEvent) error) (int, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin outbox tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	q := db.New(tx)
+	rows, err := q.LockPendingOutboxEvents(ctx, limit)
+	if err != nil {
+		return 0, fmt.Errorf("lock pending outbox events: %w", err)
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+
+	published := 0
+	for _, row := range rows {
+		ev := fromDBOutboxEvent(row)
+		if pubErr := publishFn(ctx, ev); pubErr != nil {
+			if markErr := q.MarkOutboxEventAttemptFailed(ctx, db.MarkOutboxEventAttemptFailedParams{
+				ID:        ev.ID,
+				LastError: pubErr.Error(),
+			}); markErr != nil {
+				return published, fmt.Errorf("mark outbox event attempt failed: %w", markErr)
+			}
+			continue
+		}
+		if err := q.MarkOutboxEventPublished(ctx, ev.ID); err != nil {
+			return published, fmt.Errorf("mark outbox event published: %w", err)
+		}
+		published++
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return published, fmt.Errorf("commit outbox tx: %w", err)
+	}
+	return published, nil
+}
+
 type pgQueries struct {
 	q *db.Queries
 }
@@ -680,6 +725,24 @@ func (p *pgQueries) ListExpiredActiveFlashSaleReservations(ctx context.Context, 
 	return out, nil
 }
 
+func (p *pgQueries) NextProductEventVersion(ctx context.Context) (int64, error) {
+	v, err := p.q.NextProductEventVersion(ctx)
+	if err != nil {
+		return 0, mapPgError(err)
+	}
+	return v, nil
+}
+
+func (p *pgQueries) InsertOutboxEvent(ctx context.Context, ev OutboxEvent) error {
+	return mapPgError(p.q.InsertOutboxEvent(ctx, db.InsertOutboxEventParams{
+		ID:          ev.ID,
+		EventType:   ev.EventType,
+		TraceID:     ev.TraceID,
+		Traceparent: ev.Traceparent,
+		PayloadJson: ev.PayloadJSON,
+	}))
+}
+
 func mapPgError(err error) error {
 	if err == nil {
 		return nil
@@ -790,6 +853,30 @@ func fromDBFlashReservation(r db.FlashSaleStockReservation) FlashSaleStockReserv
 		EndsAt:          r.EndsAt,
 		CreatedAt:       r.CreatedAt,
 		UpdatedAt:       r.UpdatedAt,
+	}
+}
+
+func fromDBOutboxEvent(r db.OutboxEvent) OutboxEvent {
+	var payload []byte
+	if len(r.PayloadJson) > 0 {
+		payload = make([]byte, len(r.PayloadJson))
+		copy(payload, r.PayloadJson)
+	}
+	var pubAt *time.Time
+	if r.PublishedAt != nil {
+		ts := *r.PublishedAt
+		pubAt = &ts
+	}
+	return OutboxEvent{
+		ID:          r.ID,
+		EventType:   r.EventType,
+		TraceID:     r.TraceID,
+		Traceparent: r.Traceparent,
+		PayloadJSON: payload,
+		PublishedAt: pubAt,
+		Attempts:    r.Attempts,
+		LastError:   r.LastError,
+		CreatedAt:   r.CreatedAt,
 	}
 }
 

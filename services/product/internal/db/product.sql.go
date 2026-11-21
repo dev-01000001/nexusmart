@@ -818,6 +818,33 @@ func (q *Queries) GetSKUsBatch(ctx context.Context, dollar_1 []string) ([]GetSKU
 	return items, nil
 }
 
+const insertOutboxEvent = `-- name: InsertOutboxEvent :exec
+INSERT INTO outbox_events (
+    id, event_type, trace_id, traceparent, payload_json
+) VALUES (
+    $1, $2, $3, $4, $5
+)
+`
+
+type InsertOutboxEventParams struct {
+	ID          string
+	EventType   string
+	TraceID     string
+	Traceparent string
+	PayloadJson []byte
+}
+
+func (q *Queries) InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventParams) error {
+	_, err := q.db.Exec(ctx, insertOutboxEvent,
+		arg.ID,
+		arg.EventType,
+		arg.TraceID,
+		arg.Traceparent,
+		arg.PayloadJson,
+	)
+	return err
+}
+
 const insertStockHistory = `-- name: InsertStockHistory :exec
 
 INSERT INTO stock_history (
@@ -1252,6 +1279,45 @@ func (q *Queries) ListSKUsByProductIDs(ctx context.Context, dollar_1 []string) (
 	return items, nil
 }
 
+const lockPendingOutboxEvents = `-- name: LockPendingOutboxEvents :many
+SELECT id, event_type, trace_id, traceparent, payload_json, published_at, attempts, last_error, created_at
+FROM outbox_events
+WHERE published_at IS NULL
+ORDER BY created_at ASC
+LIMIT $1
+FOR UPDATE SKIP LOCKED
+`
+
+func (q *Queries) LockPendingOutboxEvents(ctx context.Context, limit int32) ([]OutboxEvent, error) {
+	rows, err := q.db.Query(ctx, lockPendingOutboxEvents, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OutboxEvent{}
+	for rows.Next() {
+		var i OutboxEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventType,
+			&i.TraceID,
+			&i.Traceparent,
+			&i.PayloadJson,
+			&i.PublishedAt,
+			&i.Attempts,
+			&i.LastError,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markFlashSaleReservationReleased = `-- name: MarkFlashSaleReservationReleased :one
 UPDATE flash_sale_stock_reservations
 SET status = 'RELEASED',
@@ -1275,6 +1341,49 @@ func (q *Queries) MarkFlashSaleReservationReleased(ctx context.Context, flashSal
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const markOutboxEventAttemptFailed = `-- name: MarkOutboxEventAttemptFailed :exec
+UPDATE outbox_events
+SET attempts = attempts + 1,
+    last_error = $2
+WHERE id = $1
+`
+
+type MarkOutboxEventAttemptFailedParams struct {
+	ID        string
+	LastError string
+}
+
+func (q *Queries) MarkOutboxEventAttemptFailed(ctx context.Context, arg MarkOutboxEventAttemptFailedParams) error {
+	_, err := q.db.Exec(ctx, markOutboxEventAttemptFailed, arg.ID, arg.LastError)
+	return err
+}
+
+const markOutboxEventPublished = `-- name: MarkOutboxEventPublished :exec
+UPDATE outbox_events
+SET published_at = NOW(),
+    attempts = attempts + 1,
+    last_error = ''
+WHERE id = $1
+`
+
+func (q *Queries) MarkOutboxEventPublished(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, markOutboxEventPublished, id)
+	return err
+}
+
+const nextProductEventVersion = `-- name: NextProductEventVersion :one
+
+SELECT nextval('product_event_version_seq')::bigint AS version
+`
+
+// Outbox events
+func (q *Queries) NextProductEventVersion(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, nextProductEventVersion)
+	var version int64
+	err := row.Scan(&version)
+	return version, err
 }
 
 const releaseSKUOptimistic = `-- name: ReleaseSKUOptimistic :one

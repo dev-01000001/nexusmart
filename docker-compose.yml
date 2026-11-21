@@ -383,6 +383,81 @@ services:
       timeout: 3s
       retries: 20
 
+  search-postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nexusmart}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexusmart_dev_password}
+      POSTGRES_DB: search_db
+    ports:
+      - "127.0.0.1:${SEARCH_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - search_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexusmart} -d search_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-dev-only-meilisearch-master-key-change-me}
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_ENV: development
+    ports:
+      - "127.0.0.1:${MEILI_PORT:-7700}:7700"
+    volumes:
+      - meilisearch_data:/meili_data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:7700/health || curl -fsS http://127.0.0.1:7700/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  search:
+    build:
+      context: .
+      dockerfile: services/search/Dockerfile
+    environment:
+      SERVICE_NAME: search
+      GRPC_PORT: "50059"
+      HTTP_PORT: "8089"
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@search-postgres:5432/search_db?sslmode=disable
+      MEILI_URL: http://meilisearch:7700
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-dev-only-meilisearch-master-key-change-me}
+      MEILI_INDEX: ${MEILI_INDEX:-products}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
+      PRODUCT_GRPC_ADDR: product:50052
+      EMBED_MODE: ${EMBED_MODE:-mock}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      VOYAGE_MODEL: ${VOYAGE_MODEL:-voyage-3-lite}
+      SEARCH_STARTUP_SYNC: ${SEARCH_STARTUP_SYNC:-true}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:${SEARCH_HTTP_PORT:-8089}:8089"
+    depends_on:
+      search-postgres:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      product:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8089/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   gateway:
     build:
       context: .
@@ -409,6 +484,7 @@ services:
       SHIPPING_GRPC_ADDR: shipping:50057
       SHIPPING_HTTP_URL: http://shipping:8087
       NOTIFICATION_GRPC_ADDR: notification:50058
+      SEARCH_GRPC_ADDR: search:50059
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
       OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -437,6 +513,8 @@ services:
       shipping:
         condition: service_healthy
       notification:
+        condition: service_healthy
+      search:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -508,6 +586,7 @@ services:
       PAYMENT_GRPC_ADDR: payment:50056
       SHIPPING_GRPC_ADDR: shipping:50057
       NOTIFICATION_GRPC_ADDR: notification:50058
+      SEARCH_GRPC_ADDR: search:50059
       MAILPIT_URL: http://mailpit:8025
       ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-admin@nexusmart.local}
       ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-AdminDevPassword123!}
@@ -547,3 +626,5 @@ volumes:
   postgres_data:
   redis_data:
   nats_data:
+  search_postgres_data:
+  meilisearch_data:

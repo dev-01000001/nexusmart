@@ -431,3 +431,36 @@ INSERT INTO stock_history (
     actor_id, reason
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+
+-- Outbox events
+
+-- name: NextProductEventVersion :one
+SELECT nextval('product_event_version_seq')::bigint AS version;
+
+-- name: InsertOutboxEvent :exec
+INSERT INTO outbox_events (
+    id, event_type, trace_id, traceparent, payload_json
+) VALUES (
+    $1, $2, $3, $4, $5
+);
+
+-- name: LockPendingOutboxEvents :many
+SELECT id, event_type, trace_id, traceparent, payload_json, published_at, attempts, last_error, created_at
+FROM outbox_events
+WHERE published_at IS NULL
+ORDER BY created_at ASC
+LIMIT $1
+FOR UPDATE SKIP LOCKED;
+
+-- name: MarkOutboxEventPublished :exec
+UPDATE outbox_events
+SET published_at = NOW(),
+    attempts = attempts + 1,
+    last_error = ''
+WHERE id = $1;
+
+-- name: MarkOutboxEventAttemptFailed :exec
+UPDATE outbox_events
+SET attempts = attempts + 1,
+    last_error = $2
+WHERE id = $1;
