@@ -28,21 +28,22 @@ import (
 	"github.com/nexusmart/core/services/user/internal/security"
 	"github.com/nexusmart/core/services/user/internal/service"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "user service exited with error: %v\n", err)
+	cfg := config.Load()
+	log := logger.New(cfg.ServiceName, logger.WithLevel(parseLogLevel(cfg.LogLevel)))
+	if err := run(cfg, log); err != nil {
+		log.Error("user service exited with error", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	cfg := config.Load()
-	log := logger.New(cfg.ServiceName, logger.WithLevel(parseLogLevel(cfg.LogLevel)))
+func run(cfg config.Config, log *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -133,7 +134,7 @@ func run() error {
 		return fmt.Errorf("unsupported CF_MODE %q (expected mock or live)", cfg.CFMode)
 	}
 
-	reg := prometheus.NewRegistry()
+	reg := newMetricsRegistry()
 	red := metrics.NewRED(cfg.ServiceName, reg)
 
 	grpcSrv := grpc.NewServer(
@@ -177,7 +178,7 @@ func run() error {
 
 	opsSrv := &http.Server{
 		Addr:              ":" + cfg.HTTPPort,
-		Handler:           metrics.NewOpsHandler(cfg.ServiceName, readyFn, reg),
+		Handler:           newOpsHandler(cfg.ServiceName, readyFn, reg, red),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -211,6 +212,23 @@ func run() error {
 	_ = opsSrv.Shutdown(shutCtx)
 	grpcSrv.GracefulStop()
 	return nil
+}
+
+func newMetricsRegistry() *prometheus.Registry {
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		collectors.NewGoCollector(),
+	)
+	return reg
+}
+
+func newOpsHandler(serviceName string, readyFn func(context.Context) error, reg prometheus.Gatherer, red *metrics.RED) http.Handler {
+	return telemetry.HTTPMiddleware(serviceName)(
+		red.HTTPMiddleware()(
+			metrics.NewOpsHandler(serviceName, readyFn, reg),
+		),
+	)
 }
 
 func parseLogLevel(lvl string) slog.Level {
