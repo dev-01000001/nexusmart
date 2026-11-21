@@ -1,10 +1,9 @@
 import React from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { loadPublicSitePageBundle } from "@/lib/server/sites";
 import { buildSiteMetadata } from "@/lib/site/seo";
 import { SiteRenderer } from "@/features/site";
-import { loadSiteContext } from "@/features/site/siteContext.server";
+import { loadSiteContext, loadSiteTemplateBundle } from "@/features/site/siteContext.server";
 
 interface PageProps {
   params: Promise<{ host: string }>;
@@ -28,15 +27,14 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function SubdomainSiteHomePage({ params }: PageProps) {
   const { host } = await params;
-  const decodedHost = decodeURIComponent(host);
-  const bundle = await loadPublicSitePageBundle(decodedHost);
+  const bundle = await loadSiteTemplateBundle(host);
   if (!bundle) notFound();
 
-  const { payload, products, vouchers, categories } = bundle;
+  const { payload, templateConfig, products, vouchers, categories } = bundle;
 
   return (
     <SiteRenderer
-      config={payload.config}
+      config={templateConfig}
       shop={payload.shop}
       products={products}
       vouchers={vouchers}

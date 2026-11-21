@@ -1,9 +1,12 @@
 import React from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { loadPublicSitePageBundle } from "@/lib/server/sites";
 import { buildSiteMetadata } from "@/lib/site/seo";
-import { loadSiteContext, loadSiteVouchers } from "@/features/site/siteContext.server";
+import {
+  loadSiteContext,
+  loadSiteTemplateBundle,
+  loadSiteVouchers,
+} from "@/features/site/siteContext.server";
 import { CartClient } from "./CartClient";
 
 export const dynamic = "force-dynamic";
@@ -32,14 +35,13 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function SiteCartPage({ params }: PageProps) {
   const { host } = await params;
-  const decodedHost = decodeURIComponent(host);
   const [bundle, voucherData] = await Promise.all([
-    loadPublicSitePageBundle(decodedHost),
+    loadSiteTemplateBundle(host),
     loadSiteVouchers(host),
   ]);
   if (!bundle) notFound();
 
-  const brandName = bundle.payload.config.theme.brand_name?.trim() || bundle.payload.shop.name;
+  const brandName = bundle.templateConfig.theme.brand_name?.trim() || bundle.payload.shop.name;
   const catalogShops = bundle.shopProfile ? [bundle.shopProfile] : [];
 
   return (
@@ -48,6 +50,10 @@ export default async function SiteCartPage({ params }: PageProps) {
       catalogProducts={bundle.products}
       catalogShops={catalogShops}
       initialVouchers={voucherData?.rawVouchers ?? []}
+      cartConfig={bundle.templateConfig.pages.cart}
+      templateConfig={bundle.templateConfig}
+      shop={bundle.payload.shop}
+      vouchers={bundle.vouchers}
     />
   );
 }

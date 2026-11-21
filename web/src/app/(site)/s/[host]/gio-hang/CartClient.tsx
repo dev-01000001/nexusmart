@@ -4,8 +4,10 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import type { Product } from "@/data/products";
 import type { Shop } from "@/data/shops";
+import type { Voucher } from "@/data/vouchers";
 import { ApiError, api } from "@/lib/api";
 import { formatInt, formatSignedVnd, formatVnd } from "@/lib/format";
+import type { SitePublicShopDTO } from "@/lib/site/types";
 import { useStore } from "@/context/StoreContext";
 import { useSession } from "@/components/SessionProvider";
 import {
@@ -27,6 +29,8 @@ import {
 } from "@/features/commerce/cartEnrich";
 import type { GwDiscountBreakdown, GwVoucher } from "@/features/commerce/types";
 import shared from "@/features/commerce/commerce.module.css";
+import { SiteRenderer } from "@/features/site/SiteRenderer";
+import type { CartPageConfig, SiteTemplateConfig } from "@/features/site/templateTypes";
 import styles from "./page.module.css";
 
 export interface CartClientProps {
@@ -34,6 +38,10 @@ export interface CartClientProps {
   catalogProducts: Product[];
   catalogShops: Shop[];
   initialVouchers: GwVoucher[];
+  cartConfig?: CartPageConfig;
+  templateConfig?: SiteTemplateConfig;
+  shop?: SitePublicShopDTO;
+  vouchers?: Voucher[];
 }
 
 export function CartClient({
@@ -41,6 +49,10 @@ export function CartClient({
   catalogProducts,
   catalogShops,
   initialVouchers,
+  cartConfig,
+  templateConfig,
+  shop,
+  vouchers: siteVouchers = [],
 }: CartClientProps) {
   const { isAuthenticated, loading: sessionLoading } = useSession();
   const {
@@ -57,6 +69,13 @@ export function CartClient({
     saveVoucher,
     showToast,
   } = useStore();
+
+  const cartLayout = cartConfig?.layout ?? templateConfig?.pages.cart.layout ?? "split-summary";
+  const showVouchers = cartConfig?.show_vouchers ?? templateConfig?.pages.cart.show_vouchers ?? true;
+  const showAddons = cartConfig?.show_addons ?? templateConfig?.pages.cart.show_addons ?? true;
+  const trustNote =
+    cartConfig?.trust_note?.trim() || templateConfig?.pages.cart.trust_note?.trim() || "";
+  const extraSections = cartConfig?.sections ?? templateConfig?.pages.cart.sections ?? [];
 
   const [vouchers, setVouchers] = useState<GwVoucher[]>(initialVouchers);
   const [breakdown, setBreakdown] = useState<GwDiscountBreakdown | null>(null);
@@ -92,7 +111,7 @@ export function CartClient({
 
   // Refresh shop vouchers on this host when authenticated (BFF resolves shop from Host).
   const loadShopVouchers = useCallback(async () => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || !showVouchers) return;
     try {
       const vRes = await api<{ vouchers: GwVoucher[] }>("/api/vouchers");
       if (Array.isArray(vRes.vouchers)) {
@@ -101,7 +120,7 @@ export function CartClient({
     } catch {
       // Keep SSR shop vouchers
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, showVouchers]);
 
   useEffect(() => {
     void loadShopVouchers();
@@ -124,7 +143,7 @@ export function CartClient({
     api<{ breakdown: GwDiscountBreakdown; warnings_vi?: string[] }>("/api/vouchers/preview", {
       method: "POST",
       body: {
-        shop_voucher_id: selectedVoucherId || "",
+        shop_voucher_id: showVouchers ? selectedVoucherId || "" : "",
         shipping_fee_vnd: 0,
         flash_sale_item_by_sku: flashSaleItemBySku,
       },
@@ -149,7 +168,7 @@ export function CartClient({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated, activeGroup, selectedVoucherId, flashKey]);
+  }, [isAuthenticated, activeGroup, selectedVoucherId, flashKey, showVouchers]);
 
   const shopVouchers = useMemo(
     () => vouchers.filter((v) => v.scope.toUpperCase() === "SHOP" && v.is_active),
@@ -269,6 +288,17 @@ export function CartClient({
     }
   };
 
+  const renderExtraSections = () =>
+    templateConfig && extraSections.length > 0 ? (
+      <SiteRenderer
+        config={templateConfig}
+        shop={shop ?? { id: "", name: brandName }}
+        products={catalogProducts}
+        vouchers={siteVouchers}
+        sectionsOverride={extraSections}
+      />
+    ) : null;
+
   const renderHeader = (subtitle: string) => (
     <section className={shared.pageHeader}>
       <div className={shared.headerLeadGroup}>
@@ -282,6 +312,7 @@ export function CartClient({
         <p className={shared.pageLead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
           {subtitle}
         </p>
+        {trustNote && <p className={styles.cartTrustNote}>{trustNote}</p>}
       </div>
       <div className={shared.headerAside} data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
         <Button variant="secondary" size="md" href="/san-pham">
@@ -293,13 +324,14 @@ export function CartClient({
 
   if (sessionLoading || (isAuthenticated && cartLoading && !cart)) {
     return (
-      <div className={shared.page}>
+      <div className={`${shared.page} ${styles.cartShell}`} data-cart-layout={cartLayout}>
         {renderHeader("Đang cập nhật sản phẩm, tồn kho và mã ưu đãi trong giỏ hàng của bạn.")}
         <section className={shared.section}>
           <h2 className={shared.sectionTitle}>Danh sách sản phẩm</h2>
           <StateView kind="loading" title="Đang tải giỏ hàng của bạn..." rows={4} />
         </section>
-        {addonProducts.length > 0 && (
+        {renderExtraSections()}
+        {showAddons && addonProducts.length > 0 && (
           <ProductAddonStrip
             title={`Sản phẩm của ${brandName}`}
             subtitle="Các mẫu đang sẵn hàng tại kho của cửa hàng"
@@ -312,7 +344,7 @@ export function CartClient({
 
   if (!isAuthenticated) {
     return (
-      <div className={shared.page}>
+      <div className={`${shared.page} ${styles.cartShell}`} data-cart-layout={cartLayout}>
         {renderHeader(
           `Đăng nhập tài khoản tại ${brandName} để xem giỏ hàng, giữ số lượng tồn kho và áp mã ưu đãi.`
         )}
@@ -338,7 +370,8 @@ export function CartClient({
             </Button>
           </div>
         </section>
-        {addonProducts.length > 0 && (
+        {renderExtraSections()}
+        {showAddons && addonProducts.length > 0 && (
           <ProductAddonStrip
             title={`Sản phẩm nổi bật của ${brandName}`}
             subtitle="Sản phẩm trực tiếp từ kho của cửa hàng"
@@ -351,7 +384,7 @@ export function CartClient({
 
   if (cartError && !cart) {
     return (
-      <div className={shared.page}>
+      <div className={`${shared.page} ${styles.cartShell}`} data-cart-layout={cartLayout}>
         {renderHeader("Chưa thể kết nối đến giỏ hàng lúc này. Sản phẩm bạn đã chọn vẫn được giữ.")}
         <section className={shared.section}>
           <h2 className={shared.sectionTitle}>Trạng thái giỏ hàng</h2>
@@ -363,7 +396,8 @@ export function CartClient({
             onAction={() => void refreshCart()}
           />
         </section>
-        {addonProducts.length > 0 && (
+        {renderExtraSections()}
+        {showAddons && addonProducts.length > 0 && (
           <ProductAddonStrip title={`Sản phẩm của ${brandName}`} products={addonProducts} />
         )}
       </div>
@@ -372,7 +406,7 @@ export function CartClient({
 
   if (!activeGroup || cartItems.length === 0) {
     return (
-      <div className={shared.page}>
+      <div className={`${shared.page} ${styles.cartShell}`} data-cart-layout={cartLayout}>
         {renderHeader(`Bạn chưa có sản phẩm nào của ${brandName} trong giỏ hàng.`)}
         <section
           className={shared.section}
@@ -388,7 +422,8 @@ export function CartClient({
             actionHref="/san-pham"
           />
         </section>
-        {addonProducts.length > 0 && (
+        {renderExtraSections()}
+        {showAddons && addonProducts.length > 0 && (
           <ProductAddonStrip
             title={`Sản phẩm từ ${brandName}`}
             subtitle="Thêm nhanh theo size trực tiếp từ thẻ sản phẩm"
@@ -400,7 +435,10 @@ export function CartClient({
   }
 
   return (
-    <div className={`${shared.page} ${styles.mobileSpacer}`}>
+    <div
+      className={`${shared.page} ${styles.mobileSpacer} ${styles.cartShell}`}
+      data-cart-layout={cartLayout}
+    >
       {renderHeader(
         `Kiểm tra số lượng, áp mã ưu đãi riêng của ${brandName} và tiến hành đặt hàng.`
       )}
@@ -574,7 +612,7 @@ export function CartClient({
                 })}
               </ul>
 
-              {shopVouchers.length > 0 && (
+              {showVouchers && shopVouchers.length > 0 && (
                 <div className={styles.shopVoucherBar}>
                   <div className={styles.shopVoucherHead}>
                     <span className={styles.shopVoucherTitle}>
@@ -665,40 +703,43 @@ export function CartClient({
                 <IconTruck size={18} className={styles.destIcon} />
                 <div>
                   <p>
-                    Phí vận chuyển chính xác sẽ được tính theo địa chỉ nhận hàng ở bước thanh toán.
+                    {trustNote ||
+                      "Phí vận chuyển chính xác sẽ được tính theo địa chỉ nhận hàng ở bước thanh toán."}
                   </p>
                   <p className={styles.coinMeta}>Hỗ trợ đồng kiểm · Thanh toán COD hoặc VietQR.</p>
                 </div>
               </div>
 
-              <form className={styles.summaryBlock} onSubmit={handleApplyManualCode} noValidate>
-                <label htmlFor="cart-manual-code" className={styles.blockHeading}>
-                  Nhập mã giảm giá của {brandName}
-                </label>
-                <div className={shared.codeInputRow}>
-                  <input
-                    id="cart-manual-code"
-                    type="text"
-                    className={shared.input}
-                    value={manualCode}
-                    onChange={(e) => setManualCode(e.target.value)}
-                    placeholder="Nhập mã ưu đãi của cửa hàng"
-                  />
-                  <Button type="submit" variant="ink" size="md" disabled={validatingCode}>
-                    {validatingCode ? "Đang kiểm..." : "Áp mã"}
-                  </Button>
-                </div>
-                {codeFeedback && (
-                  <p
-                    className={`${shared.feedbackBox} ${
-                      codeFeedback.ok ? shared.feedbackSuccess : shared.feedbackError
-                    }`}
-                    role={codeFeedback.ok ? "status" : "alert"}
-                  >
-                    {codeFeedback.message}
-                  </p>
-                )}
-              </form>
+              {showVouchers && (
+                <form className={styles.summaryBlock} onSubmit={handleApplyManualCode} noValidate>
+                  <label htmlFor="cart-manual-code" className={styles.blockHeading}>
+                    Nhập mã giảm giá của {brandName}
+                  </label>
+                  <div className={shared.codeInputRow}>
+                    <input
+                      id="cart-manual-code"
+                      type="text"
+                      className={shared.input}
+                      value={manualCode}
+                      onChange={(e) => setManualCode(e.target.value)}
+                      placeholder="Nhập mã ưu đãi của cửa hàng"
+                    />
+                    <Button type="submit" variant="ink" size="md" disabled={validatingCode}>
+                      {validatingCode ? "Đang kiểm..." : "Áp mã"}
+                    </Button>
+                  </div>
+                  {codeFeedback && (
+                    <p
+                      className={`${shared.feedbackBox} ${
+                        codeFeedback.ok ? shared.feedbackSuccess : shared.feedbackError
+                      }`}
+                      role={codeFeedback.ok ? "status" : "alert"}
+                    >
+                      {codeFeedback.message}
+                    </p>
+                  )}
+                </form>
+              )}
 
               {(previewError || previewWarnings.length > 0) && (
                 <div className={`${shared.feedbackBox} ${shared.feedbackWarn}`} role="status">
@@ -723,12 +764,14 @@ export function CartClient({
                   </div>
                 )}
 
-                <div className={styles.breakdownRow}>
-                  <dt className={styles.breakdownLabel}>Mã giảm giá cửa hàng</dt>
-                  <dd className={`${styles.breakdownDiscount} num`}>
-                    {shopVoucherDiscount > 0 ? formatSignedVnd(-shopVoucherDiscount) : "0₫"}
-                  </dd>
-                </div>
+                {showVouchers && (
+                  <div className={styles.breakdownRow}>
+                    <dt className={styles.breakdownLabel}>Mã giảm giá cửa hàng</dt>
+                    <dd className={`${styles.breakdownDiscount} num`}>
+                      {shopVoucherDiscount > 0 ? formatSignedVnd(-shopVoucherDiscount) : "0₫"}
+                    </dd>
+                  </div>
+                )}
               </dl>
             </div>
 
@@ -778,7 +821,9 @@ export function CartClient({
         </div>
       </section>
 
-      {addonProducts.length > 0 && (
+      {renderExtraSections()}
+
+      {showAddons && addonProducts.length > 0 && (
         <ProductAddonStrip
           title={`Sản phẩm khác từ ${brandName}`}
           subtitle="Chọn thêm sản phẩm giao cùng đơn từ cửa hàng"
