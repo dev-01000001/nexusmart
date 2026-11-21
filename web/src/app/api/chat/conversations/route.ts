@@ -3,11 +3,10 @@ import { gw } from "@/lib/server/gateway";
 import { apiRoute } from "@/lib/server/http";
 import { assertSession } from "@/lib/server/session";
 import { requireRequestSite } from "@/lib/server/sites";
-import { normalizeConversation, type ChatConversationDTO } from "@/features/chat/chatTypes";
-
-interface RawListConversationsResponse {
-  conversations?: unknown[];
-}
+import {
+  normalizeConversation,
+  parseGatewayConversationsResponse,
+} from "@/features/chat/chatTypes";
 
 interface RawCreateConversationResponse {
   conversation?: unknown;
@@ -18,14 +17,12 @@ export const GET = apiRoute(async (req) => {
   const site = await requireRequestSite(req);
   await assertSession();
 
-  const res = await gw<RawListConversationsResponse>("/api/v1/chat/conversations", {
+  const res = await gw<unknown>("/api/v1/chat/conversations", {
     query: { shop_id: site.shopId, scope: "buyer" },
   });
 
   // Defense-in-depth tenant isolation: only return conversations for the current site's shop.
-  const conversations: ChatConversationDTO[] = (res.conversations ?? [])
-    .map((item) => normalizeConversation(item))
-    .filter((c): c is ChatConversationDTO => c !== null && c.shop_id === site.shopId);
+  const { conversations } = parseGatewayConversationsResponse(res, site.shopId);
 
   return Response.json({ conversations }, { headers: { "Cache-Control": "no-store" } });
 });
@@ -54,7 +51,7 @@ export const POST = apiRoute(async (req) => {
     },
   });
 
-  const conversation = normalizeConversation(res.conversation ?? res);
+  const conversation = normalizeConversation(res.conversation);
   if (!conversation) {
     throw new GatewayError("unavailable");
   }

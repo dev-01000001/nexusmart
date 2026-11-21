@@ -43,10 +43,10 @@ export const POST = apiRoute<RouteCtx>(
   {
     messages: {
       INVALID_COMPLAINT_ID: "Mã khiếu nại không hợp lệ.",
-      INVALID_DECISION: "Quyết định phân xử không hợp lệ.",
+      INVALID_RESOLUTION: "Quyết định phân xử không hợp lệ.",
+      INVALID_RETURN_SHIPPING: "Tùy chọn yêu cầu gửi trả hàng không hợp lệ.",
       NOTE_TOO_SHORT: "Ghi chú phân xử cần tối thiểu 5 ký tự.",
       NOTE_TOO_LONG: "Ghi chú phân xử không được vượt quá 2.000 ký tự.",
-      INVALID_REFUND_AMOUNT: "Số tiền hoàn một phần phải là số nguyên VND không âm.",
     },
   }
 );

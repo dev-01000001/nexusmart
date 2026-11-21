@@ -3,11 +3,10 @@ import { gw } from "@/lib/server/gateway";
 import { apiRoute, readJson } from "@/lib/server/http";
 import { assertSellerSession } from "@/features/seller/sellerServer";
 import {
-  mergeMessages,
-  normalizeConversation,
+  buildGatewaySendMessageBody,
   normalizeMessage,
+  parseGatewayMessagesResponse,
   validateOutgoingMessage,
-  type ChatMessageDTO,
 } from "@/features/chat/chatTypes";
 
 type RouteCtx = { params: Promise<{ id: string }> };
@@ -27,14 +26,6 @@ function parseLimit(raw: string | null): number | undefined {
   return Math.min(100, n);
 }
 
-interface RawListMessagesResponse {
-  conversation?: unknown;
-  messages?: unknown[];
-  next_before?: string;
-  latest_cursor?: string;
-  has_more?: boolean;
-}
-
 interface RawSendMessageResponse {
   message?: unknown;
   auto_reply?: unknown;
@@ -51,31 +42,21 @@ export const GET = apiRoute<RouteCtx>(
     const after = sp.get("after")?.trim() || undefined;
     const limit = parseLimit(sp.get("limit"));
 
-    const res = await gw<RawListMessagesResponse>(
+    const res = await gw<unknown>(
       `/api/v1/chat/conversations/${encodeURIComponent(convId)}/messages`,
       { query: { before, after, limit } }
     );
 
-    const conversation = normalizeConversation(res.conversation);
-    if (conversation && conversation.shop_id && conversation.shop_id !== session.user.shopId) {
+    const parsed = parseGatewayMessagesResponse(res);
+    if (
+      parsed.conversation &&
+      parsed.conversation.shop_id &&
+      parsed.conversation.shop_id !== session.user.shopId
+    ) {
       throw new GatewayError("not_found");
     }
 
-    const parsed = (res.messages ?? [])
-      .map((item) => normalizeMessage(item))
-      .filter((m): m is ChatMessageDTO => m !== null);
-    const messages = mergeMessages([], parsed);
-
-    return Response.json(
-      {
-        conversation,
-        messages,
-        next_before: res.next_before ?? "",
-        latest_cursor: res.latest_cursor ?? "",
-        has_more: Boolean(res.has_more),
-      },
-      { headers: { "Cache-Control": "no-store" } }
-    );
+    return Response.json(parsed, { headers: { "Cache-Control": "no-store" } });
   },
   {
     messages: {
@@ -97,22 +78,15 @@ export const POST = apiRoute<RouteCtx>(
       throw new GatewayError("invalid", validated.code);
     }
 
-    const payload = validated.value;
     const res = await gw<RawSendMessageResponse>(
       `/api/v1/chat/conversations/${encodeURIComponent(convId)}/messages`,
       {
         method: "POST",
-        body: {
-          kind: payload.kind,
-          body: payload.body,
-          ref_id: payload.ref_id,
-          ...(payload.client_msg_id ? { client_msg_id: payload.client_msg_id } : {}),
-          ...(payload.metadata ? { metadata_json: JSON.stringify(payload.metadata) } : {}),
-        },
+        body: buildGatewaySendMessageBody(validated.value),
       }
     );
 
-    const message = normalizeMessage(res.message ?? res);
+    const message = normalizeMessage(res.message);
     const autoReply = res.auto_reply ? normalizeMessage(res.auto_reply) : null;
 
     return Response.json(
