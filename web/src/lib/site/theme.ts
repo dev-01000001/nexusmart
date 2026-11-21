@@ -1,6 +1,6 @@
 // Pure theme token validation, WCAG 2.1 contrast calculation, URL sanitization,
 // and scoped CSS custom property mapping. Zero I/O, zero DOM, safe for server + client + tests.
-import { DEFAULT_SITE_THEME, type SiteFontFamily, type SiteTheme } from "./types";
+import { DEFAULT_SITE_THEME, type SiteFontFamily, type SiteTheme } from "./types.ts";
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F]/;

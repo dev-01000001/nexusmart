@@ -7,8 +7,8 @@ import {
   REFRESH_COOKIE,
   REFRESH_MAX_AGE_S,
   baseCookie,
-} from "./config";
-import { GatewayError, errorFromResponse } from "./errors";
+} from "./config.ts";
+import { GatewayError, errorFromResponse } from "./errors.ts";
 
 export interface TokenPair {
   accessToken: string;

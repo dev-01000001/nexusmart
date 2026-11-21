@@ -1,7 +1,7 @@
 // Route-handler plumbing: CSRF origin check, proxy-header trust gating, and uniform error handling.
 import type { NextRequest } from "next/server";
-import { isTrustedProxyHeadersEnabled } from "./config";
-import { GatewayError, errorResponse } from "./errors";
+import { isTrustedProxyHeadersEnabled } from "./config.ts";
+import { GatewayError, errorResponse } from "./errors.ts";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 

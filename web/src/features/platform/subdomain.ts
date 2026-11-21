@@ -1,6 +1,6 @@
 // Pure preview of the address a shop name would get. Client-safe and unit tested.
 // The real subdomain is chosen and validated by the backend when the seller builds the site.
-import { RESERVED_SUBDOMAINS, SUBDOMAIN_PATTERN } from "../../lib/site/host";
+import { RESERVED_SUBDOMAINS, SUBDOMAIN_PATTERN } from "../../lib/site/host.ts";
 
 const MAX_LABEL = 40;
 

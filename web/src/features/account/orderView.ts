@@ -10,12 +10,12 @@ import type {
   PaymentMethod,
   PaymentStatus,
 } from "../../data/orders";
-import { formatAddressLine } from "../commerce/cartEnrich";
+import { formatAddressLine } from "../commerce/cartEnrich.ts";
 import {
   normalizeSalesChannel,
   normalizeStorefrontShopId,
   type SalesChannel,
-} from "../../lib/salesChannel";
+} from "../../lib/salesChannel.ts";
 
 export interface GwAddressSnapshot {
   recipient_name: string;

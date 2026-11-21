@@ -1,7 +1,7 @@
 // Pure shaping of the public site directory (`GET /api/v1/sites`, swarm contract #1).
 // No I/O and only relative imports so it runs in Server Components and `node --test` alike.
-import { classifyHost, deriveSiteOrigin, normalizeHostHeader } from "../../lib/site/host";
-import { sanitizeSafeUrl } from "../../lib/site/theme";
+import { classifyHost, deriveSiteOrigin, normalizeHostHeader } from "../../lib/site/host.ts";
+import { sanitizeSafeUrl } from "../../lib/site/theme.ts";
 
 export const DIRECTORY_PAGE_SIZE = 24;
 export const DIRECTORY_MAX_PAGE_SIZE = 48;

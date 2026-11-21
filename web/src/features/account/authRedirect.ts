@@ -1,6 +1,6 @@
 // Pure post-login destination rules shared by the site and platform auth forms.
 // Safe for client, server and `node --test`.
-import { safeNextPath } from "./accountTypes";
+import { safeNextPath } from "./accountTypes.ts";
 
 export type AuthVariant = "site" | "platform";
 

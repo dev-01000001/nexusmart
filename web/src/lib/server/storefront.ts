@@ -3,7 +3,7 @@
 // whether a backend object or client promo input belongs to that shop. Zero I/O so they are
 // unit-tested directly.
 import type { GwCart, GwPayment, GwVoucher } from "../../features/commerce/types";
-import { GatewayError } from "./errors";
+import { GatewayError } from "./errors.ts";
 
 export const STOREFRONT_CHANNEL = "STOREFRONT";
 

@@ -1,4 +1,4 @@
-// Run: node --import 'data:text/javascript,import{register}from"node:module";import{pathToFileURL}from"node:url";register(pathToFileURL("tools/seed/ts-resolve.mjs"));' --test web/src/features/platform/platform.test.mjs
+// Run: node --test web/src/features/platform/platform.test.mjs (Node 22 type stripping)
 import test from "node:test";
 import assert from "node:assert/strict";
 import {

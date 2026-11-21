@@ -1,7 +1,7 @@
 // Runtime-agnostic (Edge middleware + Node route handlers) lookup of a PUBLISHED site by host.
 // Uses only `fetch`, so middleware and the BFF share one definition of "this host is a live site".
-import { GATEWAY_URL, getSiteHostCacheTtls } from "./config";
-import { createSiteHostCache, type SiteHostLookupResult } from "../site/cache";
+import { GATEWAY_URL, getSiteHostCacheTtls } from "./config.ts";
+import { createSiteHostCache, type SiteHostLookupResult } from "../site/cache.ts";
 
 const SITE_LOOKUP_TIMEOUT_MS = 4000;
 
