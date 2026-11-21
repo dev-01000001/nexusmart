@@ -53,6 +53,10 @@ const (
 	UserService_ListSites_FullMethodName             = "/nexusmart.user.v1.UserService/ListSites"
 	UserService_SuspendSite_FullMethodName           = "/nexusmart.user.v1.UserService/SuspendSite"
 	UserService_ListPublishedSites_FullMethodName    = "/nexusmart.user.v1.UserService/ListPublishedSites"
+	UserService_AddCustomDomain_FullMethodName       = "/nexusmart.user.v1.UserService/AddCustomDomain"
+	UserService_CheckCustomDomain_FullMethodName     = "/nexusmart.user.v1.UserService/CheckCustomDomain"
+	UserService_RemoveCustomDomain_FullMethodName    = "/nexusmart.user.v1.UserService/RemoveCustomDomain"
+	UserService_ListSiteDomains_FullMethodName       = "/nexusmart.user.v1.UserService/ListSiteDomains"
 )
 
 // UserServiceClient is the client API for UserService service.
@@ -93,6 +97,10 @@ type UserServiceClient interface {
 	ListSites(ctx context.Context, in *ListSitesRequest, opts ...grpc.CallOption) (*ListSitesResponse, error)
 	SuspendSite(ctx context.Context, in *SuspendSiteRequest, opts ...grpc.CallOption) (*SuspendSiteResponse, error)
 	ListPublishedSites(ctx context.Context, in *ListPublishedSitesRequest, opts ...grpc.CallOption) (*ListPublishedSitesResponse, error)
+	AddCustomDomain(ctx context.Context, in *AddCustomDomainRequest, opts ...grpc.CallOption) (*AddCustomDomainResponse, error)
+	CheckCustomDomain(ctx context.Context, in *CheckCustomDomainRequest, opts ...grpc.CallOption) (*CheckCustomDomainResponse, error)
+	RemoveCustomDomain(ctx context.Context, in *RemoveCustomDomainRequest, opts ...grpc.CallOption) (*RemoveCustomDomainResponse, error)
+	ListSiteDomains(ctx context.Context, in *ListSiteDomainsRequest, opts ...grpc.CallOption) (*ListSiteDomainsResponse, error)
 }
 
 type userServiceClient struct {
@@ -443,6 +451,46 @@ func (c *userServiceClient) ListPublishedSites(ctx context.Context, in *ListPubl
 	return out, nil
 }
 
+func (c *userServiceClient) AddCustomDomain(ctx context.Context, in *AddCustomDomainRequest, opts ...grpc.CallOption) (*AddCustomDomainResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddCustomDomainResponse)
+	err := c.cc.Invoke(ctx, UserService_AddCustomDomain_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) CheckCustomDomain(ctx context.Context, in *CheckCustomDomainRequest, opts ...grpc.CallOption) (*CheckCustomDomainResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CheckCustomDomainResponse)
+	err := c.cc.Invoke(ctx, UserService_CheckCustomDomain_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) RemoveCustomDomain(ctx context.Context, in *RemoveCustomDomainRequest, opts ...grpc.CallOption) (*RemoveCustomDomainResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveCustomDomainResponse)
+	err := c.cc.Invoke(ctx, UserService_RemoveCustomDomain_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) ListSiteDomains(ctx context.Context, in *ListSiteDomainsRequest, opts ...grpc.CallOption) (*ListSiteDomainsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSiteDomainsResponse)
+	err := c.cc.Invoke(ctx, UserService_ListSiteDomains_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UserServiceServer is the server API for UserService service.
 // All implementations must embed UnimplementedUserServiceServer
 // for forward compatibility.
@@ -481,6 +529,10 @@ type UserServiceServer interface {
 	ListSites(context.Context, *ListSitesRequest) (*ListSitesResponse, error)
 	SuspendSite(context.Context, *SuspendSiteRequest) (*SuspendSiteResponse, error)
 	ListPublishedSites(context.Context, *ListPublishedSitesRequest) (*ListPublishedSitesResponse, error)
+	AddCustomDomain(context.Context, *AddCustomDomainRequest) (*AddCustomDomainResponse, error)
+	CheckCustomDomain(context.Context, *CheckCustomDomainRequest) (*CheckCustomDomainResponse, error)
+	RemoveCustomDomain(context.Context, *RemoveCustomDomainRequest) (*RemoveCustomDomainResponse, error)
+	ListSiteDomains(context.Context, *ListSiteDomainsRequest) (*ListSiteDomainsResponse, error)
 	mustEmbedUnimplementedUserServiceServer()
 }
 
@@ -592,6 +644,18 @@ func (UnimplementedUserServiceServer) SuspendSite(context.Context, *SuspendSiteR
 }
 func (UnimplementedUserServiceServer) ListPublishedSites(context.Context, *ListPublishedSitesRequest) (*ListPublishedSitesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListPublishedSites not implemented")
+}
+func (UnimplementedUserServiceServer) AddCustomDomain(context.Context, *AddCustomDomainRequest) (*AddCustomDomainResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AddCustomDomain not implemented")
+}
+func (UnimplementedUserServiceServer) CheckCustomDomain(context.Context, *CheckCustomDomainRequest) (*CheckCustomDomainResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CheckCustomDomain not implemented")
+}
+func (UnimplementedUserServiceServer) RemoveCustomDomain(context.Context, *RemoveCustomDomainRequest) (*RemoveCustomDomainResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RemoveCustomDomain not implemented")
+}
+func (UnimplementedUserServiceServer) ListSiteDomains(context.Context, *ListSiteDomainsRequest) (*ListSiteDomainsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListSiteDomains not implemented")
 }
 func (UnimplementedUserServiceServer) mustEmbedUnimplementedUserServiceServer() {}
 func (UnimplementedUserServiceServer) testEmbeddedByValue()                     {}
@@ -1226,6 +1290,78 @@ func _UserService_ListPublishedSites_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserService_AddCustomDomain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddCustomDomainRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).AddCustomDomain(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_AddCustomDomain_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).AddCustomDomain(ctx, req.(*AddCustomDomainRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_CheckCustomDomain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CheckCustomDomainRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).CheckCustomDomain(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_CheckCustomDomain_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).CheckCustomDomain(ctx, req.(*CheckCustomDomainRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_RemoveCustomDomain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveCustomDomainRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).RemoveCustomDomain(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_RemoveCustomDomain_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).RemoveCustomDomain(ctx, req.(*RemoveCustomDomainRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_ListSiteDomains_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSiteDomainsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).ListSiteDomains(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_ListSiteDomains_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).ListSiteDomains(ctx, req.(*ListSiteDomainsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UserService_ServiceDesc is the grpc.ServiceDesc for UserService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1368,6 +1504,22 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListPublishedSites",
 			Handler:    _UserService_ListPublishedSites_Handler,
+		},
+		{
+			MethodName: "AddCustomDomain",
+			Handler:    _UserService_AddCustomDomain_Handler,
+		},
+		{
+			MethodName: "CheckCustomDomain",
+			Handler:    _UserService_CheckCustomDomain_Handler,
+		},
+		{
+			MethodName: "RemoveCustomDomain",
+			Handler:    _UserService_RemoveCustomDomain_Handler,
+		},
+		{
+			MethodName: "ListSiteDomains",
+			Handler:    _UserService_ListSiteDomains_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

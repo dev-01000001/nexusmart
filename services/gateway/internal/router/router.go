@@ -215,12 +215,16 @@ func New(deps Dependencies) http.Handler {
 
 					seller.Get("/shop", h.handleSellerGetShop)
 
-					// Phase 2 Seller Site Management
+					// Phase 2 Seller Site Management & Phase 5 Custom Domains
 					seller.Get("/site", h.handleSellerGetSite)
 					seller.Put("/site/draft", h.handleSellerSaveSiteDraft)
 					seller.Post("/site/publish", h.handleSellerPublishSite)
 					seller.Post("/site/rollback", h.handleSellerRollbackSite)
 					seller.Get("/site/versions", h.handleSellerListSiteVersions)
+					seller.Get("/site/domains", h.handleSellerListSiteDomains)
+					seller.Post("/site/domains", h.handleSellerAddCustomDomain)
+					seller.Post("/site/domains/{id}/check", h.handleSellerCheckCustomDomain)
+					seller.Delete("/site/domains/{id}", h.handleSellerRemoveCustomDomain)
 
 					// Section 4.2 Seller Products & Stock
 					seller.Get("/products", h.handleSellerListProducts)
@@ -257,6 +261,8 @@ func New(deps Dependencies) http.Handler {
 					admin.Post("/shops/{id}/review", h.handleAdminReviewShop)
 					admin.Get("/sites", h.handleAdminListSites)
 					admin.Get("/sites/{shop_id}", h.handleAdminGetSiteByShop)
+					admin.Get("/sites/{shop_id}/domains", h.handleAdminListSiteDomains)
+					admin.Delete("/sites/{shop_id}/domains/{id}", h.handleAdminRemoveCustomDomain)
 					admin.Post("/sites/{site_id}/suspend", h.handleAdminSuspendSite)
 					admin.Get("/audit-logs", h.handleAdminListAuditLogs)
 

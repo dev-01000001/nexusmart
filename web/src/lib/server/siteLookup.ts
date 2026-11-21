@@ -60,4 +60,5 @@ export const publishedSiteHostCache = createSiteHostCache({
   positiveTtlMs: ttls.positiveTtlMs,
   negativeTtlMs: ttls.negativeTtlMs,
   maxEntries: 2000,
+  maxNegativeEntries: 1000,
 });

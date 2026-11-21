@@ -9,6 +9,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/services/gateway/internal/httpx"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type siteDTO struct {
@@ -468,4 +470,239 @@ func (h *handler) handleListPublishedSites(w http.ResponseWriter, r *http.Reques
 		"page":      resp.GetPage(),
 		"page_size": resp.GetPageSize(),
 	})
+}
+
+type domainVerificationDTO struct {
+	Type  string `json:"type"`
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+type domainDTO struct {
+	ID           string                  `json:"id"`
+	Host         string                  `json:"host"`
+	Kind         string                  `json:"kind"`
+	Status       string                  `json:"status"`
+	IsPrimary    bool                    `json:"is_primary"`
+	Verification []domainVerificationDTO `json:"verification"`
+	LastError    string                  `json:"last_error"`
+	VerifiedAt   string                  `json:"verified_at,omitempty"`
+	CreatedAt    string                  `json:"created_at,omitempty"`
+}
+
+func mapDomain(d *userv1.Domain) *domainDTO {
+	if d == nil {
+		return nil
+	}
+	records := d.GetVerification()
+	verification := make([]domainVerificationDTO, 0, len(records))
+	for _, rec := range records {
+		if rec == nil {
+			continue
+		}
+		verification = append(verification, domainVerificationDTO{
+			Type:  rec.GetType(),
+			Name:  rec.GetName(),
+			Value: rec.GetValue(),
+		})
+	}
+	return &domainDTO{
+		ID:           d.GetId(),
+		Host:         d.GetHost(),
+		Kind:         d.GetKind(),
+		Status:       d.GetStatus(),
+		IsPrimary:    d.GetIsPrimary(),
+		Verification: verification,
+		LastError:    d.GetLastError(),
+		VerifiedAt:   httpx.FormatTimestamp(d.GetVerifiedAt()),
+		CreatedAt:    httpx.FormatTimestamp(d.GetCreatedAt()),
+	}
+}
+
+func mapDomains(items []*userv1.Domain) []*domainDTO {
+	domains := make([]*domainDTO, 0, len(items))
+	for _, d := range items {
+		if dto := mapDomain(d); dto != nil {
+			domains = append(domains, dto)
+		}
+	}
+	return domains
+}
+
+// writeDomainGRPCError maps contract-specific domain gRPC errors to their stable REST codes.
+func writeDomainGRPCError(w http.ResponseWriter, r *http.Request, err error) {
+	if st, ok := status.FromError(err); ok {
+		msg := st.Message()
+		trimmed := strings.TrimSpace(msg)
+		switch {
+		case st.Code() == codes.InvalidArgument && strings.HasPrefix(trimmed, "invalid_hostname"):
+			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_hostname", msg)
+			return
+		case st.Code() == codes.AlreadyExists && strings.HasPrefix(trimmed, "domain_taken"):
+			httpx.WriteError(w, r, http.StatusConflict, "domain_taken", msg)
+			return
+		case st.Code() == codes.FailedPrecondition && strings.HasPrefix(trimmed, "domain_limit"):
+			httpx.WriteError(w, r, http.StatusConflict, "domain_limit", msg)
+			return
+		}
+	}
+	httpx.WriteGRPCError(w, r, err)
+}
+
+// handleSellerListSiteDomains lists all domains (subdomain + custom) for the seller's JWT shop_id.
+func (h *handler) handleSellerListSiteDomains(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.ListSiteDomains(ctx, &userv1.ListSiteDomainsRequest{
+		ShopId: shopID,
+	})
+	if err != nil {
+		writeDomainGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"domains": mapDomains(resp.GetDomains()),
+	})
+}
+
+// handleSellerAddCustomDomain attaches a custom domain to the seller's site (shop_id strictly from JWT).
+func (h *handler) handleSellerAddCustomDomain(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Hostname string `json:"hostname"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		return
+	}
+	hostname := strings.TrimSpace(body.Hostname)
+	if hostname == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_hostname", "hostname is required")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.AddCustomDomain(ctx, &userv1.AddCustomDomainRequest{
+		ShopId:   shopID,
+		Hostname: hostname,
+	})
+	if err != nil {
+		writeDomainGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+		"domain": mapDomain(resp.GetDomain()),
+	})
+}
+
+// handleSellerCheckCustomDomain triggers a Cloudflare verification check for a custom domain of the seller's shop.
+func (h *handler) handleSellerCheckCustomDomain(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
+	domainID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if domainID == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "domain id is required")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.CheckCustomDomain(ctx, &userv1.CheckCustomDomainRequest{
+		ShopId:   shopID,
+		DomainId: domainID,
+	})
+	if err != nil {
+		writeDomainGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"domain": mapDomain(resp.GetDomain()),
+	})
+}
+
+// handleSellerRemoveCustomDomain removes a custom domain belonging to the seller's JWT shop_id.
+func (h *handler) handleSellerRemoveCustomDomain(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
+	domainID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if domainID == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "domain id is required")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	if _, err := h.clients.User.RemoveCustomDomain(ctx, &userv1.RemoveCustomDomainRequest{
+		ShopId:   shopID,
+		DomainId: domainID,
+	}); err != nil {
+		writeDomainGRPCError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAdminListSiteDomains lists all domains for a shop's site (admin/super_admin only).
+func (h *handler) handleAdminListSiteDomains(w http.ResponseWriter, r *http.Request) {
+	shopID := strings.TrimSpace(chi.URLParam(r, "shop_id"))
+	if shopID == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "shop_id is required")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.ListSiteDomains(ctx, &userv1.ListSiteDomainsRequest{
+		ShopId: shopID,
+	})
+	if err != nil {
+		writeDomainGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"domains": mapDomains(resp.GetDomains()),
+	})
+}
+
+// handleAdminRemoveCustomDomain removes a custom domain from a shop's site (admin/super_admin only).
+func (h *handler) handleAdminRemoveCustomDomain(w http.ResponseWriter, r *http.Request) {
+	shopID := strings.TrimSpace(chi.URLParam(r, "shop_id"))
+	if shopID == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "shop_id is required")
+		return
+	}
+	domainID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if domainID == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "domain id is required")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	if _, err := h.clients.User.RemoveCustomDomain(ctx, &userv1.RemoveCustomDomainRequest{
+		ShopId:   shopID,
+		DomainId: domainID,
+	}); err != nil {
+		writeDomainGRPCError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

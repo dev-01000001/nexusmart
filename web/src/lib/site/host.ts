@@ -1,5 +1,6 @@
 // Pure multi-tenant host normalization, classification, blocked-path rules, and cross-host URL derivation.
 // Zero I/O so it runs identically in Edge/Node middleware, Server Components, and unit tests.
+import { isValidCustomHostname, validateCustomHostname } from "./domains.ts";
 
 export const SUBDOMAIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$/;
 
@@ -98,9 +99,16 @@ export interface ParsedHost {
 
 const INVALID_HOST_CHARS_RE = /[\s/@?#\\,\u0000-\u001F\u007F]/;
 
+function isValidPort(port: string): boolean {
+  if (!/^\d{1,5}$/.test(port)) return false;
+  const n = Number(port);
+  return n >= 1 && n <= 65535;
+}
+
 /**
  * Normalize an incoming `Host` (or trusted `X-Forwarded-Host`) header value:
- * lowercase, strip `:port`, strip trailing `.`, and reject malformed host values.
+ * lowercase, validate & strip `:port` (1-65535), strip at most one trailing `.`,
+ * and reject malformed host values.
  */
 export function normalizeHostHeader(rawHost: string | null | undefined): ParsedHost {
   if (!rawHost) return { hostname: "", port: "" };
@@ -119,7 +127,7 @@ export function normalizeHostHeader(rawHost: string | null | undefined): ParsedH
     if (!rest) return { hostname: ipv6, port: "" };
     if (rest.startsWith(":")) {
       const port = rest.slice(1);
-      if (/^\d{1,5}$/.test(port)) return { hostname: ipv6, port };
+      if (isValidPort(port)) return { hostname: ipv6, port };
     }
     return { hostname: "", port: "" };
   }
@@ -136,11 +144,14 @@ export function normalizeHostHeader(rawHost: string | null | undefined): ParsedH
   if (firstColon !== -1) {
     hostPart = trimmed.slice(0, firstColon);
     port = trimmed.slice(firstColon + 1);
-    if (!/^\d{1,5}$/.test(port)) return { hostname: "", port: "" };
+    if (!isValidPort(port)) return { hostname: "", port: "" };
   }
 
-  // Strip trailing DNS root dot(s)
-  hostPart = hostPart.replace(/\.+$/, "");
+  // Strip at most ONE trailing DNS root dot; reject repeated trailing dots (e.g. `example.com..`).
+  if (hostPart.endsWith("..")) return { hostname: "", port: "" };
+  if (hostPart.endsWith(".")) {
+    hostPart = hostPart.slice(0, -1);
+  }
   if (!hostPart) return { hostname: "", port: "" };
 
   return { hostname: hostPart, port };
@@ -180,13 +191,21 @@ export function isValidSubdomainSyntax(subdomain: string): boolean {
 export type HostClassification =
   | { kind: "root"; hostname: string; port: string }
   | { kind: "site"; hostname: string; port: string; subdomain: string }
+  | { kind: "custom"; hostname: string; port: string }
   | { kind: "unknown"; hostname: string; port: string; reason: string };
+
+export function isTenantSiteHost(
+  cls: HostClassification
+): cls is Extract<HostClassification, { kind: "site" | "custom" }> {
+  return cls.kind === "site" || cls.kind === "custom";
+}
 
 /**
  * Classify a request Host against `rootDomain` (default `nexusmart.localhost`):
  * - `root`: marketplace host (`rootDomain`, `localhost`, `web`, or IPv4/IPv6 literal)
  * - `site`: valid non-reserved single-label `<subdomain>.<rootDomain>`
- * - `unknown`: foreign domain, multi-level subdomain, reserved label, or malformed host
+ * - `custom`: valid external custom domain (resolved against `/sites/by-host` with bounded negative cache)
+ * - `unknown`: reserved/multi-level subdomain, forbidden local/internal host, or malformed host
  */
 export function classifyHost(
   rawHost: string | null | undefined,
@@ -213,7 +232,16 @@ export function classifyHost(
 
   const suffix = `.${cleanRoot}`;
   if (!hostname.endsWith(suffix)) {
-    return { kind: "unknown", hostname, port, reason: "foreign_domain" };
+    if (isValidCustomHostname(hostname, cleanRoot)) {
+      return { kind: "custom", hostname, port };
+    }
+    const validation = validateCustomHostname(hostname, cleanRoot);
+    return {
+      kind: "unknown",
+      hostname,
+      port,
+      reason: validation.ok ? "invalid_custom_host" : validation.reason,
+    };
   }
 
   const label = hostname.slice(0, hostname.length - suffix.length);
@@ -327,7 +355,7 @@ export function deriveMarketplaceOrigin(opts: {
   const proto = opts.proto === "https" ? "https" : "http";
   const cls = classifyHost(opts.rawHost, rootDomain);
 
-  if (cls.kind === "site") {
+  if (isTenantSiteHost(cls)) {
     return `${proto}://${formatHostWithPort(rootDomain, cls.port)}`;
   }
   if (cls.kind === "root") {
@@ -337,7 +365,7 @@ export function deriveMarketplaceOrigin(opts: {
 }
 
 /**
- * Derive the public origin for a shop's subdomain site, preserving the incoming port in dev
+ * Derive the public origin for a shop's subdomain or custom site, preserving the incoming port in dev
  * (e.g. `http://bach-dang.nexusmart.localhost:3300`) unless the site host already carries one.
  */
 export function deriveSiteOrigin(opts: {
@@ -350,4 +378,54 @@ export function deriveSiteOrigin(opts: {
   if (!parsedSite.hostname) return "";
   const reqPort = parsedSite.port || normalizeHostHeader(opts.rawHost).port;
   return `${proto}://${formatHostWithPort(parsedSite.hostname, reqPort)}`;
+}
+
+export interface CanonicalHostRedirectInput {
+  hostClass: HostClassification;
+  primaryHost: string | null | undefined;
+  rootDomain?: string;
+  method: string;
+  pathname: string;
+  search?: string;
+  proto?: string;
+}
+
+/**
+ * Decide whether an incoming request on a site's default subdomain should 308-redirect to the
+ * site's active custom `primary_host`. Returns the target URL or `null`.
+ */
+export function resolveCanonicalHostRedirect(opts: CanonicalHostRedirectInput): string | null {
+  if (opts.hostClass.kind !== "site") return null;
+  if (opts.method.trim().toUpperCase() !== "GET") return null;
+  if (
+    isApiPath(opts.pathname) ||
+    isBlockedSitePath(opts.pathname) ||
+    isSiteMetadataPath(opts.pathname)
+  ) {
+    return null;
+  }
+
+  const cleanRoot = (opts.rootDomain || "nexusmart.localhost")
+    .trim()
+    .toLowerCase()
+    .replace(/^\.+|\.+$/g, "");
+  const parsedPrimary = normalizeHostHeader(opts.primaryHost);
+  if (!parsedPrimary.hostname || parsedPrimary.hostname === opts.hostClass.hostname) {
+    return null;
+  }
+  if (classifyHost(opts.primaryHost, cleanRoot).kind !== "custom") {
+    return null;
+  }
+
+  const targetHost = parsedPrimary.hostname;
+  const isDevLocal =
+    Boolean(opts.hostClass.port) ||
+    cleanRoot === "localhost" ||
+    cleanRoot.endsWith(".localhost");
+  const scheme = isDevLocal ? (opts.proto === "https" ? "https" : "http") : "https";
+  const authority = isDevLocal
+    ? formatHostWithPort(targetHost, opts.hostClass.port)
+    : targetHost;
+
+  return `${scheme}://${authority}${opts.pathname}${opts.search || ""}`;
 }

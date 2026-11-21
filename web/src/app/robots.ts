@@ -3,7 +3,12 @@ import { headers } from "next/headers";
 import { APP_ORIGINS, getSiteRootDomain } from "@/lib/server/config";
 import { resolveRequestHost, resolveRequestProto } from "@/lib/server/http";
 import { fetchPublishedSiteByHost } from "@/lib/server/sites";
-import { classifyHost, deriveMarketplaceOrigin, deriveSiteOrigin } from "@/lib/site/host";
+import {
+  classifyHost,
+  deriveMarketplaceOrigin,
+  deriveSiteOrigin,
+  isTenantSiteHost,
+} from "@/lib/site/host";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +25,7 @@ export default async function robots(): Promise<MetadataRoute.Robots> {
     };
   }
 
-  if (cls.kind === "site") {
+  if (isTenantSiteHost(cls)) {
     const payload = await fetchPublishedSiteByHost(cls.hostname);
     if (!payload) {
       return {

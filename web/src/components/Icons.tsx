@@ -367,3 +367,22 @@ export function IconBolt({ size = 16, className }: IconProps) {
     </svg>
   );
 }
+
+export function IconCopy({ size = 15, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <rect x="7.5" y="7.5" width="9" height="9" rx="1.5" />
+      <path d="M5 12.5H4.5C3.9 12.5 3.5 12.1 3.5 11.5V4.5C3.5 3.9 3.9 3.5 4.5 3.5H11.5C12.1 3.5 12.5 3.9 12.5 4.5V5" />
+    </svg>
+  );
+}
+
+export function IconGlobe({ size = 16, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <circle cx="10" cy="10" r="6.5" />
+      <ellipse cx="10" cy="10" rx="2.8" ry="6.5" />
+      <path d="M3.8 10H16.2" />
+    </svg>
+  );
+}

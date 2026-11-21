@@ -1,10 +1,22 @@
 "use client";
 
-import React, { Suspense, useCallback, useMemo, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button, IconArrowUpRight, IconRefresh, IconSearch, StateView } from "@/components";
+import {
+  Button,
+  IconArrowUpRight,
+  IconGlobe,
+  IconRefresh,
+  IconSearch,
+  StateView,
+} from "@/components";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTimeVi, formatInt } from "@/lib/format";
+import {
+  formatDomainErrorForSeller,
+  getDomainStatusMeta,
+  type SiteDomainDTO,
+} from "@/lib/site/domains";
 import { EMPTY_DASH } from "@/features/admin/adminMeta";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { useAdminContext } from "@/features/admin/AdminShell";
@@ -16,6 +28,13 @@ import { buildPublicSiteUrl } from "@/features/seller/site/siteSummary";
 import styles from "./AdminSitesClient.module.css";
 
 type SiteFilterTab = "all" | "PUBLISHED" | "DRAFT" | "SUSPENDED";
+
+interface ShopDomainsCacheEntry {
+  domains: SiteDomainDTO[];
+  loading: boolean;
+  error: string | null;
+  loaded: boolean;
+}
 
 export interface AdminSitesClientProps {
   initialSites: GwSite[];
@@ -53,6 +72,11 @@ function AdminSitesContent({
   const [reasonErrorId, setReasonErrorId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [domainsByShopId, setDomainsByShopId] = useState<Record<string, ShopDomainsCacheEntry>>({});
+  const [confirmRemoveDomainKey, setConfirmRemoveDomainKey] = useState<string | null>(null);
+  const [removingDomainKey, setRemovingDomainKey] = useState<string | null>(null);
+  const fetchedShopIdsRef = useRef<Set<string>>(new Set());
+  const inflightShopIdsRef = useRef<Set<string>>(new Set());
 
   const resolveShopName = useCallback(
     (site: GwSite) =>
@@ -98,6 +122,111 @@ function AdminSitesContent({
     return filtered[0];
   }, [filtered, selectedId]);
 
+  const activeMobileSite = useMemo(() => {
+    if (!mobileOpenId) return null;
+    return filtered.find((s) => s.id === mobileOpenId) ?? null;
+  }, [filtered, mobileOpenId]);
+
+  const loadShopDomains = useCallback(async (shopId: string, force = false) => {
+    if (!shopId) return;
+    if (
+      !force &&
+      (fetchedShopIdsRef.current.has(shopId) || inflightShopIdsRef.current.has(shopId))
+    ) {
+      return;
+    }
+    inflightShopIdsRef.current.add(shopId);
+    setDomainsByShopId((prev) => ({
+      ...prev,
+      [shopId]: {
+        domains: prev[shopId]?.domains ?? [],
+        loading: true,
+        error: null,
+        loaded: prev[shopId]?.loaded ?? false,
+      },
+    }));
+    try {
+      const res = await api<{ domains?: SiteDomainDTO[] }>(
+        `/api/admin/sites/${encodeURIComponent(shopId)}/domains`
+      );
+      fetchedShopIdsRef.current.add(shopId);
+      setDomainsByShopId((prev) => ({
+        ...prev,
+        [shopId]: {
+          domains: res.domains ?? [],
+          loading: false,
+          error: null,
+          loaded: true,
+        },
+      }));
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : "Không thể tải danh sách tên miền của site lúc này.";
+      setDomainsByShopId((prev) => ({
+        ...prev,
+        [shopId]: {
+          domains: prev[shopId]?.domains ?? [],
+          loading: false,
+          error: msg,
+          loaded: prev[shopId]?.loaded ?? false,
+        },
+      }));
+    } finally {
+      inflightShopIdsRef.current.delete(shopId);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeDesktopSite?.shop_id) {
+      void loadShopDomains(activeDesktopSite.shop_id);
+    }
+  }, [activeDesktopSite?.shop_id, loadShopDomains]);
+
+  useEffect(() => {
+    if (activeMobileSite?.shop_id) {
+      void loadShopDomains(activeMobileSite.shop_id);
+    }
+  }, [activeMobileSite?.shop_id, loadShopDomains]);
+
+  const handleRemoveAdminDomain = async (site: GwSite, domain: SiteDomainDTO) => {
+    if (domain.kind !== "CUSTOM") return;
+    const domainKey = `${site.shop_id}:${domain.id}`;
+    setRemovingDomainKey(domainKey);
+    try {
+      await api<void>(
+        `/api/admin/sites/${encodeURIComponent(site.shop_id)}/domains/${encodeURIComponent(domain.id)}`,
+        { method: "DELETE" }
+      );
+      setDomainsByShopId((prev) => {
+        const entry = prev[site.shop_id];
+        if (!entry) return prev;
+        const remaining = entry.domains
+          .filter((item) => item.id !== domain.id)
+          .map((item) => (item.kind === "SUBDOMAIN" ? { ...item, is_primary: true } : item));
+        return {
+          ...prev,
+          [site.shop_id]: {
+            ...entry,
+            domains: remaining,
+          },
+        };
+      });
+      const fallbackHost = site.subdomain ? `${site.subdomain}.${rootDomain}` : site.primary_host;
+      setSites((prev) =>
+        prev.map((item) => (item.id === site.id ? { ...item, primary_host: fallbackHost } : item))
+      );
+      setConfirmRemoveDomainKey((prev) => (prev === domainKey ? null : prev));
+      showToast(`Đã gỡ tên miền riêng "${domain.host}" khỏi ${resolveShopName(site)}.`);
+      router.refresh();
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : "Không thể gỡ tên miền riêng lúc này.");
+    } finally {
+      setRemovingDomainKey(null);
+    }
+  };
+
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
@@ -109,6 +238,13 @@ function AdminSitesContent({
         shop_name: item.shop_name || shopNameById[item.shop_id] || "",
       }));
       setSites(next);
+      fetchedShopIdsRef.current.clear();
+      const activeShopIds = new Set<string>();
+      if (activeDesktopSite?.shop_id) activeShopIds.add(activeDesktopSite.shop_id);
+      if (activeMobileSite?.shop_id) activeShopIds.add(activeMobileSite.shop_id);
+      for (const shopId of activeShopIds) {
+        void loadShopDomains(shopId, true);
+      }
       showToast("Đã đồng bộ danh sách site gian hàng mới nhất.");
     } catch (err) {
       showToast(err instanceof ApiError ? err.message : "Không thể tải lại danh sách site.");
@@ -188,6 +324,8 @@ function AdminSitesContent({
       : site.published_version_id
         ? "Đã xuất bản"
         : "Chưa xuất bản";
+    const domainState = domainsByShopId[site.shop_id];
+    const domainsLoading = !domainState || domainState.loading;
 
     return (
       <div className={shared.detailWell}>
@@ -245,6 +383,135 @@ function AdminSitesContent({
             <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
               <span className={shared.detailKey}>Lý do tạm khóa hiện tại</span>
               <span className={styles.reasonText}>{site.suspended_reason}</span>
+            </div>
+          )}
+        </div>
+
+        <div className={styles.domainsSection} aria-label="Tên miền của site">
+          <div className={styles.domainsHeader}>
+            <h3 className={styles.domainsTitle}>
+              <IconGlobe size={14} />
+              <span>Tên miền của site</span>
+            </h3>
+            <button
+              type="button"
+              className={styles.domainsReloadBtn}
+              disabled={domainsLoading}
+              onClick={() => void loadShopDomains(site.shop_id, true)}
+            >
+              <IconRefresh size={12} />
+              <span>{domainsLoading ? "Đang tải..." : "Tải lại"}</span>
+            </button>
+          </div>
+
+          {domainsLoading && !domainState?.loaded ? (
+            <p className={styles.domainsStateText}>Đang tải danh sách tên miền...</p>
+          ) : domainState?.error ? (
+            <div className={styles.domainsErrorRow} role="alert">
+              <span>{domainState.error}</span>
+              <Button
+                variant="outline"
+                size="sm"
+                shape="app"
+                onClick={() => void loadShopDomains(site.shop_id, true)}
+              >
+                Thử lại
+              </Button>
+            </div>
+          ) : !domainState || domainState.domains.length === 0 ? (
+            <p className={styles.domainsStateText}>Chưa có bản ghi tên miền nào cho site này.</p>
+          ) : (
+            <div className={styles.domainsList}>
+              {domainState.domains.map((domain) => {
+                const domainMeta = getDomainStatusMeta(domain.status);
+                const domainKey = `${site.shop_id}:${domain.id}`;
+                const isCustom = domain.kind === "CUSTOM";
+                const isConfirming = confirmRemoveDomainKey === domainKey;
+                const isRemoving = removingDomainKey === domainKey;
+                const errorText =
+                  domain.status !== "ACTIVE" &&
+                  (domain.status === "FAILED" || Boolean(domain.last_error))
+                    ? formatDomainErrorForSeller(domain.last_error || "verify")
+                    : "";
+
+                return (
+                  <div key={domain.id} className={styles.domainItem}>
+                    <div className={styles.domainRowMain}>
+                      <div className={styles.domainIdentity}>
+                        <div className={styles.domainHostRow}>
+                          <span className={styles.domainHost}>{domain.host}</span>
+                          {domain.is_primary && (
+                            <span
+                              className={`${shared.channelBadge} ${shared.channelBadgeStorefront}`}
+                            >
+                              Địa chỉ chính
+                            </span>
+                          )}
+                        </div>
+                        <div className={styles.domainMetaRow}>
+                          <span>
+                            {domain.kind === "SUBDOMAIN" ? "Tên miền mặc định" : "Tên miền riêng"}
+                          </span>
+                          <span className={styles.domainMetaItem}>
+                            Xác minh:{" "}
+                            {domain.verified_at ? formatDateTimeVi(domain.verified_at) : EMPTY_DASH}
+                          </span>
+                        </div>
+                        {errorText && <span className={styles.domainErrorNote}>{errorText}</span>}
+                      </div>
+
+                      <div className={styles.domainRight}>
+                        <StatusPill label={domainMeta.label} tone={domainMeta.adminTone} />
+                        {isCustom && !isConfirming && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            shape="app"
+                            className={styles.domainRemoveBtn}
+                            disabled={Boolean(removingDomainKey)}
+                            onClick={() => setConfirmRemoveDomainKey(domainKey)}
+                          >
+                            Gỡ tên miền
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    {isCustom && isConfirming && (
+                      <div
+                        className={styles.domainConfirmBar}
+                        role="region"
+                        aria-label={`Xác nhận gỡ tên miền ${domain.host}`}
+                      >
+                        <span className={styles.domainConfirmText}>
+                          Xác nhận gỡ tên miền{" "}
+                          <span className={styles.domainConfirmHost}>{domain.host}</span>?
+                        </span>
+                        <div className={styles.domainConfirmActions}>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            shape="app"
+                            disabled={isRemoving}
+                            onClick={() => setConfirmRemoveDomainKey(null)}
+                          >
+                            Hủy
+                          </Button>
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            shape="app"
+                            disabled={isRemoving}
+                            onClick={() => void handleRemoveAdminDomain(site, domain)}
+                          >
+                            {isRemoving ? "Đang gỡ..." : "Xác nhận gỡ"}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

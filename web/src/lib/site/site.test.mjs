@@ -11,8 +11,11 @@ import {
   isProtectedPagePath,
   isReservedSubdomain,
   isSiteApiPath,
+  isTenantSiteHost,
   normalizeHostHeader,
+  resolveCanonicalHostRedirect,
 } from "./host.ts";
+import { validateCustomHostname } from "./domains.ts";
 import { createSiteHostCache } from "./cache.ts";
 import {
   buildSiteThemeVars,

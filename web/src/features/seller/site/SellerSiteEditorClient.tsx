@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, IconArrowUpRight, IconPlus, StateView } from "@/components";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTimeVi } from "@/lib/format";
+import type { SiteDomainDTO } from "@/lib/site/domains";
 import { useSellerContext } from "@/features/seller/SellerShell";
 import type { GwCategory, GwSellerProduct, GwSellerShop } from "@/features/seller/sellerApiTypes";
 import common from "@/features/seller/SellerCommon.module.css";
@@ -40,15 +41,20 @@ import {
   validateSubdomainClient,
 } from "./siteEditorUtils";
 import { SectionEditorPanel } from "./SectionEditorPanel";
+import { SellerSiteDomainsSection } from "./SellerSiteDomainsSection";
 import { buildPublicSiteUrl } from "./siteSummary";
+import domainStyles from "./SellerSiteDomains.module.css";
 import styles from "./SellerSiteEditor.module.css";
 
-type EditorTab = "theme" | "sections" | "versions";
+export type EditorTab = "theme" | "domains" | "sections" | "versions";
 
 export interface SellerSiteEditorClientProps {
   initialSite: GwSite | null;
   initialShop: GwSellerShop | null;
   initialVersions: GwSiteVersion[];
+  initialDomains?: SiteDomainDTO[];
+  domainsLoadError?: string | null;
+  initialTab?: EditorTab;
   products: GwSellerProduct[];
   categories: GwCategory[];
   rootDomain: string;
@@ -61,6 +67,9 @@ export function SellerSiteEditorClient({
   initialSite,
   initialShop,
   initialVersions,
+  initialDomains = [],
+  domainsLoadError = null,
+  initialTab = "theme",
   products,
   categories,
   rootDomain,
@@ -74,7 +83,12 @@ export function SellerSiteEditorClient({
 
   const [site, setSite] = useState<GwSite | null>(initialSite);
   const [versions, setVersions] = useState<GwSiteVersion[]>(initialVersions);
-  const [activeTab, setActiveTab] = useState<EditorTab>("theme");
+  const [domains, setDomains] = useState<SiteDomainDTO[]>(initialDomains);
+  const [activeTab, setActiveTab] = useState<EditorTab>(initialTab);
+
+  useEffect(() => {
+    setDomains(initialDomains);
+  }, [initialDomains]);
 
   const [subdomain, setSubdomain] = useState<string>(
     initialSite?.subdomain || suggestSubdomainFromShopName(activeShop?.name ?? "")
@@ -313,6 +327,21 @@ export function SellerSiteEditorClient({
     }
   };
 
+  const handleDomainsChange = (nextDomains: SiteDomainDTO[]) => {
+    setDomains(nextDomains);
+    const activeCustom = nextDomains.find(
+      (d) => d.kind === "CUSTOM" && d.status === "ACTIVE" && d.is_primary
+    );
+    setSite((prev) => {
+      if (!prev) return prev;
+      const fallbackHost = prev.subdomain ? `${prev.subdomain}.${rootDomain}` : prev.primary_host;
+      const nextPrimary = activeCustom ? activeCustom.host : fallbackHost;
+      if (nextPrimary === prev.primary_host) return prev;
+      return { ...prev, primary_host: nextPrimary };
+    });
+    router.refresh();
+  };
+
   if (loadError) {
     return (
       <div className={common.page}>
@@ -409,19 +438,28 @@ export function SellerSiteEditorClient({
         <div className={common.balanceCell}>
           <span className={common.balanceLabel}>Địa chỉ site riêng</span>
           <span className={styles.hostPreviewUrl}>{site?.primary_host || previewHost}</span>
-          {isPublished && site?.primary_host ? (
-            <a
-              href={buildPublicSiteUrl(site.primary_host, requestHost, requestProto) || "#"}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={styles.publicLink}
+          <div className={domainStyles.summaryActionRow}>
+            {isPublished && site?.primary_host ? (
+              <a
+                href={buildPublicSiteUrl(site.primary_host, requestHost, requestProto) || "#"}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={styles.publicLink}
+              >
+                <span>Xem site công khai</span>
+                <IconArrowUpRight size={13} />
+              </a>
+            ) : (
+              <span className={common.balanceCaption}>Hiển thị công khai sau khi xuất bản</span>
+            )}
+            <button
+              type="button"
+              className={domainStyles.summaryManageBtn}
+              onClick={() => setActiveTab("domains")}
             >
-              <span>Xem site công khai</span>
-              <IconArrowUpRight size={13} />
-            </a>
-          ) : (
-            <span className={common.balanceCaption}>Hiển thị công khai sau khi xuất bản</span>
-          )}
+              Quản lý tên miền
+            </button>
+          </div>
         </div>
 
         <div className={common.balanceCell}>
@@ -517,7 +555,16 @@ export function SellerSiteEditorClient({
           className={`${common.underlineTab} ${activeTab === "theme" ? common.underlineTabActive : ""}`}
           onClick={() => setActiveTab("theme")}
         >
-          Tên miền & Giao diện
+          Giao diện
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "domains"}
+          className={`${common.underlineTab} ${activeTab === "domains" ? common.underlineTabActive : ""}`}
+          onClick={() => setActiveTab("domains")}
+        >
+          Tên miền
         </button>
         <button
           type="button"
@@ -852,6 +899,19 @@ export function SellerSiteEditorClient({
             </div>
           </section>
         </div>
+      )}
+
+      {activeTab === "domains" && (
+        <SellerSiteDomainsSection
+          site={site}
+          initialDomains={domains}
+          rootDomain={rootDomain}
+          requestHost={requestHost}
+          requestProto={requestProto}
+          loadError={domainsLoadError}
+          onDomainsChange={handleDomainsChange}
+          onSwitchToTheme={() => setActiveTab("theme")}
+        />
       )}
 
       {activeTab === "sections" && (

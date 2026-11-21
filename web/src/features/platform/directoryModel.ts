@@ -1,6 +1,11 @@
 // Pure shaping of the public site directory (`GET /api/v1/sites`, swarm contract #1).
 // No I/O and only relative imports so it runs in Server Components and `node --test` alike.
-import { classifyHost, deriveSiteOrigin, normalizeHostHeader } from "../../lib/site/host.ts";
+import {
+  classifyHost,
+  deriveSiteOrigin,
+  isTenantSiteHost,
+  normalizeHostHeader,
+} from "../../lib/site/host.ts";
 import { sanitizeSafeUrl } from "../../lib/site/theme.ts";
 
 export const DIRECTORY_PAGE_SIZE = 24;
@@ -69,8 +74,9 @@ export function parseDirectoryPage(raw: string | string[] | undefined): number {
 }
 
 /**
- * Resolve the public host of one directory entry. Only hosts that classify as a site of the
- * configured root domain are accepted, so a bad row can never send visitors to a foreign domain.
+ * Resolve the public host of one directory entry. Only hosts that classify as a tenant site
+ * (valid subdomain under `rootDomain` or valid custom hostname) are accepted; root, localhost,
+ * IP, forbidden, reserved, and malformed hosts are rejected.
  */
 function resolveSiteHost(raw: RawDirectorySite, rootDomain: string): string {
   const candidates = [
@@ -80,7 +86,7 @@ function resolveSiteHost(raw: RawDirectorySite, rootDomain: string): string {
   for (const candidate of candidates) {
     if (!candidate) continue;
     const { hostname } = normalizeHostHeader(candidate);
-    if (hostname && classifyHost(hostname, rootDomain).kind === "site") return hostname;
+    if (hostname && isTenantSiteHost(classifyHost(hostname, rootDomain))) return hostname;
   }
   return "";
 }

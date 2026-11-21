@@ -216,6 +216,195 @@ func TestNormalizeHost(t *testing.T) {
 	}
 }
 
+func TestValidateCustomHostname(t *testing.T) {
+	maxLabel := strings.Repeat("a", 63)
+	// 63 + 1 + 63 + 1 + 63 + 1 + 58 + 1 + 2 = 253 chars
+	maxHost253 := maxLabel + "." + maxLabel + "." + maxLabel + "." + strings.Repeat("b", 58) + ".vn"
+	if len(maxHost253) != 253 {
+		t.Fatalf("test setup bug: expected 253 chars, got %d", len(maxHost253))
+	}
+	tooLong254 := maxLabel + "." + maxLabel + "." + maxLabel + "." + strings.Repeat("b", 59) + ".vn"
+	if len(tooLong254) != 254 {
+		t.Fatalf("test setup bug: expected 254 chars, got %d", len(tooLong254))
+	}
+
+	validCases := []struct {
+		name          string
+		raw           string
+		rootDomain    string
+		allowMockTest bool
+		want          string
+	}{
+		{
+			name:       "standard ascii",
+			raw:        "shop.example.com",
+			rootDomain: "nexusmart.vn",
+			want:       "shop.example.com",
+		},
+		{
+			name:       "uppercase and outer whitespace normalized",
+			raw:        "  Shop-01.MyBrand.VN  ",
+			rootDomain: "nexusmart.vn",
+			want:       "shop-01.mybrand.vn",
+		},
+		{
+			name:       "multi-level subdomain",
+			raw:        "a.b.c.shop-1.example.co.uk",
+			rootDomain: "nexusmart.vn",
+			want:       "a.b.c.shop-1.example.co.uk",
+		},
+		{
+			name:       "vietnamese IDN punycode",
+			raw:        "cửa-hàng.vn",
+			rootDomain: "nexusmart.vn",
+			want:       "xn--ca-hng-lta4562d.vn",
+		},
+		{
+			name:       "uppercase vietnamese IDN punycode",
+			raw:        "CỬA-HÀNG.VN",
+			rootDomain: "nexusmart.vn",
+			want:       "xn--ca-hng-lta4562d.vn",
+		},
+		{
+			name:       "german IDN punycode",
+			raw:        "bücher.example.de",
+			rootDomain: "nexusmart.vn",
+			want:       "xn--bcher-kva.example.de",
+		},
+		{
+			name:       "unrelated domain containing root substring",
+			raw:        "notnexusmart.vn",
+			rootDomain: "nexusmart.vn",
+			want:       "notnexusmart.vn",
+		},
+		{
+			name:       "unrelated domain with root as prefix label",
+			raw:        "nexusmart.vn.other.com",
+			rootDomain: "nexusmart.vn",
+			want:       "nexusmart.vn.other.com",
+		},
+		{
+			name:          "mock verified test domain allowed in mock mode",
+			raw:           "hanoi-knit.verified.test",
+			rootDomain:    "nexusmart.localhost",
+			allowMockTest: true,
+			want:          "hanoi-knit.verified.test",
+		},
+		{
+			name:          "mock pending test domain allowed in mock mode",
+			raw:           "danang.pending.test",
+			rootDomain:    "nexusmart.localhost",
+			allowMockTest: true,
+			want:          "danang.pending.test",
+		},
+		{
+			name:          "mock fail test domain allowed in mock mode",
+			raw:           "shop.fail.test",
+			rootDomain:    "nexusmart.localhost",
+			allowMockTest: true,
+			want:          "shop.fail.test",
+		},
+		{
+			name:       "exact 253 chars and 63 char labels",
+			raw:        maxHost253,
+			rootDomain: "nexusmart.vn",
+			want:       maxHost253,
+		},
+		{
+			name:       "tld ending with test substring is allowed",
+			raw:        "shop.mytest",
+			rootDomain: "nexusmart.vn",
+			want:       "shop.mytest",
+		},
+		{
+			name:       "numeric label allowed when tld is non-numeric",
+			raw:        "123.example.com",
+			rootDomain: "nexusmart.vn",
+			want:       "123.example.com",
+		},
+	}
+
+	for _, tc := range validCases {
+		t.Run("valid/"+tc.name, func(t *testing.T) {
+			got, err := ValidateCustomHostname(tc.raw, tc.rootDomain, tc.allowMockTest)
+			if err != nil {
+				t.Fatalf("ValidateCustomHostname(%q, %q, %v) unexpected error: %v", tc.raw, tc.rootDomain, tc.allowMockTest, err)
+			}
+			if got != tc.want {
+				t.Errorf("ValidateCustomHostname(%q, %q, %v) = %q, want %q", tc.raw, tc.rootDomain, tc.allowMockTest, got, tc.want)
+			}
+		})
+	}
+
+	invalidCases := []struct {
+		name          string
+		raw           string
+		rootDomain    string
+		allowMockTest bool
+	}{
+		{name: "empty", raw: "", rootDomain: "nexusmart.vn"},
+		{name: "only whitespace", raw: "   \t  ", rootDomain: "nexusmart.vn"},
+		{name: "single label", raw: "example", rootDomain: "nexusmart.vn"},
+		{name: "too long 254 chars", raw: tooLong254, rootDomain: "nexusmart.vn"},
+		{name: "label too long 64 chars", raw: strings.Repeat("a", 64) + ".com", rootDomain: "nexusmart.vn"},
+		{name: "leading hyphen in label", raw: "-shop.example.com", rootDomain: "nexusmart.vn"},
+		{name: "trailing hyphen in label", raw: "shop-.example.com", rootDomain: "nexusmart.vn"},
+		{name: "leading hyphen in second label", raw: "shop.-example.com", rootDomain: "nexusmart.vn"},
+		{name: "leading dot", raw: ".example.com", rootDomain: "nexusmart.vn"},
+		{name: "trailing dot", raw: "example.com.", rootDomain: "nexusmart.vn"},
+		{name: "consecutive dots", raw: "shop..example.com", rootDomain: "nexusmart.vn"},
+		{name: "unicode trailing fullwidth dot", raw: "example.com。", rootDomain: "nexusmart.vn"},
+		{name: "unicode consecutive dots", raw: "shop。。example.com", rootDomain: "nexusmart.vn"},
+		{name: "ipv4 address", raw: "192.168.1.1", rootDomain: "nexusmart.vn"},
+		{name: "ipv4 loopback", raw: "127.0.0.1", rootDomain: "nexusmart.vn"},
+		{name: "short numeric ipv4", raw: "127.1", rootDomain: "nexusmart.vn"},
+		{name: "malformed ipv4 numeric tld", raw: "999.999.999.999", rootDomain: "nexusmart.vn"},
+		{name: "all numeric tld", raw: "shop.123", rootDomain: "nexusmart.vn"},
+		{name: "ipv6 address", raw: "::1", rootDomain: "nexusmart.vn"},
+		{name: "bracketed ipv6", raw: "[::1]", rootDomain: "nexusmart.vn"},
+		{name: "with port", raw: "shop.example.com:443", rootDomain: "nexusmart.vn"},
+		{name: "wildcard", raw: "*.example.com", rootDomain: "nexusmart.vn"},
+		{name: "scheme prefix", raw: "https://shop.example.com", rootDomain: "nexusmart.vn"},
+		{name: "path suffix", raw: "shop.example.com/products", rootDomain: "nexusmart.vn"},
+		{name: "backslash", raw: `shop.example.com\path`, rootDomain: "nexusmart.vn"},
+		{name: "userinfo at sign", raw: "user@shop.example.com", rootDomain: "nexusmart.vn"},
+		{name: "query string", raw: "shop.example.com?a=1", rootDomain: "nexusmart.vn"},
+		{name: "fragment", raw: "shop.example.com#top", rootDomain: "nexusmart.vn"},
+		{name: "percent encoding", raw: "shop%20.example.com", rootDomain: "nexusmart.vn"},
+		{name: "whitespace inside", raw: "shop name.example.com", rootDomain: "nexusmart.vn"},
+		{name: "tab inside", raw: "shop\t.example.com", rootDomain: "nexusmart.vn"},
+		{name: "control char null", raw: "shop\x00.example.com", rootDomain: "nexusmart.vn"},
+		{name: "control char bell", raw: "shop\x07.example.com", rootDomain: "nexusmart.vn"},
+		{name: "underscore disallowed", raw: "my_shop.example.com", rootDomain: "nexusmart.vn"},
+		{name: "exact root domain", raw: "nexusmart.vn", rootDomain: "nexusmart.vn"},
+		{name: "exact root domain uppercase and padded root", raw: "NEXUSMART.VN", rootDomain: " .NexusMart.VN. "},
+		{name: "subdomain of root domain", raw: "shop.nexusmart.vn", rootDomain: "nexusmart.vn"},
+		{name: "deep subdomain of root domain", raw: "a.b.nexusmart.vn", rootDomain: "nexusmart.vn"},
+		{name: "localhost", raw: "localhost", rootDomain: "nexusmart.vn"},
+		{name: "localhost with allowMockTest", raw: "localhost", rootDomain: "nexusmart.vn", allowMockTest: true},
+		{name: "subdomain of localhost", raw: "a.localhost", rootDomain: "nexusmart.vn"},
+		{name: "subdomain of localhost even in mock mode", raw: "a.localhost", rootDomain: "nexusmart.vn", allowMockTest: true},
+		{name: "dot local", raw: "a.local", rootDomain: "nexusmart.vn"},
+		{name: "dot local even in mock mode", raw: "a.local", rootDomain: "nexusmart.vn", allowMockTest: true},
+		{name: "dot internal", raw: "a.internal", rootDomain: "nexusmart.vn"},
+		{name: "dot internal even in mock mode", raw: "a.internal", rootDomain: "nexusmart.vn", allowMockTest: true},
+		{name: "dot test disallowed in live mode", raw: "a.test", rootDomain: "nexusmart.vn", allowMockTest: false},
+		{name: "verified test disallowed in live mode", raw: "hanoi-knit.verified.test", rootDomain: "nexusmart.vn", allowMockTest: false},
+	}
+
+	for _, tc := range invalidCases {
+		t.Run("invalid/"+tc.name, func(t *testing.T) {
+			got, err := ValidateCustomHostname(tc.raw, tc.rootDomain, tc.allowMockTest)
+			if err == nil {
+				t.Fatalf("ValidateCustomHostname(%q, %q, %v) unexpectedly succeeded with %q", tc.raw, tc.rootDomain, tc.allowMockTest, got)
+			}
+			if !strings.HasPrefix(err.Error(), "invalid_hostname: ") {
+				t.Errorf("ValidateCustomHostname(%q) error %q missing 'invalid_hostname: ' prefix", tc.raw, err.Error())
+			}
+		})
+	}
+}
+
 func TestValidateSafeURL(t *testing.T) {
 	okURLs := []string{
 		"",

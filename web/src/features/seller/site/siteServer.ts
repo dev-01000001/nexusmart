@@ -1,7 +1,8 @@
 // Server-only helpers for Seller Site Editor, Draft Preview, and BFF Site routes.
-import { revalidatePath, revalidateTag } from "next/cache";
+import { revalidateTag } from "next/cache";
 import { headers } from "next/headers";
 import { getSiteRootDomain as readConfiguredRootDomain } from "@/lib/server/config";
+import { revalidateDomainCaches } from "@/lib/server/domains";
 import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { resolveRequestHost, resolveRequestProto } from "@/lib/server/http";
@@ -99,23 +100,25 @@ export function normalizeGwSiteVersion(raw: RawGwSiteVersion): GwSiteVersion {
 }
 
 /**
- * Revalidate all Next.js cache tags & routes for a site after publish, rollback, or suspend/unsuspend.
+ * Revalidate all Next.js cache tags, layouts, and in-memory host cache entries for a site after
+ * publish, rollback, or suspend/unsuspend (covering both primary_host and default subdomain).
  */
 export function revalidateSiteCache(
-  site: Pick<GwSite, "id" | "shop_id" | "primary_host"> | null | undefined
+  site:
+    (Pick<GwSite, "id" | "shop_id" | "primary_host"> & { subdomain?: string }) | null | undefined
 ): void {
   if (!site) return;
+  const hosts: string[] = [];
+  const primaryHost = site.primary_host?.trim().toLowerCase();
+  if (primaryHost) hosts.push(primaryHost);
+  const subdomain = site.subdomain?.trim().toLowerCase();
+  if (subdomain) {
+    hosts.push(`${subdomain}.${getSiteRootDomain()}`);
+  }
+  revalidateDomainCaches({ shopId: site.shop_id, hosts });
   try {
     if (site.id) {
       revalidateTag(`site:${site.id}`);
-    }
-    if (site.shop_id) {
-      revalidateTag(`site-shop:${site.shop_id}`);
-    }
-    if (site.primary_host) {
-      const host = site.primary_host.trim().toLowerCase();
-      revalidateTag(`site-host:${host}`);
-      revalidatePath(`/s/${host}`, "layout");
     }
   } catch {
     // Revalidation is best-effort outside static-cache contexts.

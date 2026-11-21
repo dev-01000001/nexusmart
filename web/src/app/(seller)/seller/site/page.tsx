@@ -1,5 +1,6 @@
 import React from "react";
 import { headers } from "next/headers";
+import { loadSellerSiteDomainsServer } from "@/lib/server/domains";
 import { resolveRequestHost, resolveRequestProto } from "@/lib/server/http";
 import {
   loadCategories,
@@ -17,9 +18,10 @@ export const dynamic = "force-dynamic";
 export default async function SellerSitePage() {
   await requireSellerPage();
 
-  const [siteRes, versionsRes, productsRes, categoriesRes, h] = await Promise.all([
+  const [siteRes, versionsRes, domainsRes, productsRes, categoriesRes, h] = await Promise.all([
     loadSellerSiteServer(),
     loadSellerSiteVersionsServer(50),
+    loadSellerSiteDomainsServer(),
     loadSellerProducts(100),
     loadCategories(),
     headers(),
@@ -33,6 +35,8 @@ export default async function SellerSitePage() {
       initialSite={siteRes.site}
       initialShop={siteRes.shop}
       initialVersions={versionsRes.versions}
+      initialDomains={domainsRes.domains}
+      domainsLoadError={domainsRes.error}
       products={productsRes.data?.items ?? []}
       categories={categoriesRes.data ?? []}
       rootDomain={siteRes.rootDomain}

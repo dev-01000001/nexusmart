@@ -26,7 +26,7 @@ import {
   type SiteDTO,
   type SitePublicShopDTO,
 } from "@/lib/site/types";
-import { classifyHost, normalizeHostHeader } from "@/lib/site/host";
+import { classifyHost, isTenantSiteHost, normalizeHostHeader } from "@/lib/site/host";
 import { GATEWAY_TIMEOUT_MS, GATEWAY_URL, getSiteRootDomain } from "./config";
 import { GatewayError, logServer } from "./errors";
 import { gw } from "./gateway";
@@ -55,7 +55,7 @@ export async function resolveSiteFromRequest(
 ): Promise<RequestSite | null> {
   const headers = "headers" in source ? source.headers : source;
   const cls = classifyHost(resolveRequestHost(headers), getSiteRootDomain());
-  if (cls.kind !== "site") return null;
+  if (!isTenantSiteHost(cls)) return null;
   const lookup = opts.fresh
     ? await lookupPublishedSiteHost(cls.hostname)
     : await publishedSiteHostCache.resolve(cls.hostname, lookupPublishedSiteHost);

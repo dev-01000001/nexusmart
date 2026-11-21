@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ACCESS_COOKIE, REFRESH_COOKIE, getSiteRootDomain } from "@/lib/server/config";
-import { buildLoginRedirectUrl, resolveRequestHost } from "@/lib/server/http";
+import { buildLoginRedirectUrl, resolveRequestHost, resolveRequestProto } from "@/lib/server/http";
 import { lookupPublishedSiteHost, publishedSiteHostCache } from "@/lib/server/siteLookup";
 import {
   accessExpiresSoon,
@@ -19,6 +19,8 @@ import {
   isProtectedPagePath,
   isSiteApiPath,
   isSiteMetadataPath,
+  isTenantSiteHost,
+  resolveCanonicalHostRedirect,
 } from "@/lib/site/host";
 
 /** Internal headers only the middleware may set; client-supplied copies are always dropped. */
@@ -91,32 +93,30 @@ async function withSession(
 }
 
 export async function middleware(req: NextRequest) {
-  const { pathname } = req.nextUrl;
+  const { pathname, search } = req.nextUrl;
 
   // Direct external access to internal `/s` or `/s/...` is ALWAYS 404 on every host.
   if (isDirectInternalSitePath(pathname)) return notFoundResponse();
 
   // Phase 1 proxy trust rule: `TRUST_PROXY_HEADERS=true` honors x-forwarded-host, otherwise
   // ONLY the HTTP Host header.
-  const hostClass = classifyHost(
-    resolveRequestHost(req.headers, req.nextUrl.host),
-    getSiteRootDomain()
-  );
+  const rootDomain = getSiteRootDomain();
+  const hostClass = classifyHost(resolveRequestHost(req.headers, req.nextUrl.host), rootDomain);
 
-  // Unknown, foreign, reserved, multi-level, or malformed host -> 404 without calling backend.
+  // Unknown, reserved, multi-level, forbidden, or malformed host -> 404 without calling backend.
   if (hostClass.kind === "unknown") return notFoundResponse();
 
   const headers = strippedHeaders(req);
 
-  if (hostClass.kind === "site") {
-    // Seller/admin pages + APIs stay 404 on site hosts without calling backend.
+  if (isTenantSiteHost(hostClass)) {
+    // Seller/admin pages + APIs stay 404 on site & custom hosts without calling backend.
     if (isBlockedSitePath(pathname)) return notFoundResponse();
 
     const lookup = await publishedSiteHostCache.resolve(
       hostClass.hostname,
       lookupPublishedSiteHost
     );
-    // 404 BEFORE any rewrite (prevents host cache poisoning & hides draft/suspended sites).
+    // 404 BEFORE any rewrite (prevents host cache poisoning & hides draft/suspended/unknown sites).
     if (lookup.status !== "found") return notFoundResponse();
 
     headers.set("x-site-host", hostClass.hostname);
@@ -126,8 +126,26 @@ export async function middleware(req: NextRequest) {
     // Buyer + auth BFF (`/api/auth`, `/api/cart`, `/api/checkout`, `/api/payments`,
     // `/api/vouchers`, `/api/orders`): route handlers re-derive the shop from Host and
     // refresh tokens on 401 themselves. Robots/sitemap are host-aware route files.
+    // Never 308 APIs or robots/sitemap.
     if (isSiteApiPath(pathname) || isSiteMetadataPath(pathname)) {
       return NextResponse.next({ request: { headers } });
+    }
+
+    // Redirect GET page requests from a site's default subdomain to its active custom primary_host.
+    const redirectTarget = resolveCanonicalHostRedirect({
+      hostClass,
+      primaryHost: lookup.primaryHost,
+      rootDomain,
+      method: req.method,
+      pathname,
+      search,
+      proto: resolveRequestProto(req.headers, req.url),
+    });
+    if (redirectTarget) {
+      return NextResponse.redirect(redirectTarget, {
+        status: 308,
+        headers: { "Cache-Control": "no-store" },
+      });
     }
 
     const rewriteUrl = req.nextUrl.clone();

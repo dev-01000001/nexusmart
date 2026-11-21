@@ -531,6 +531,57 @@ message ListPublishedSitesResponse {
   int32 page_size = 4;
 }
 
+message DomainVerificationRecord {
+  string type = 1;
+  string name = 2;
+  string value = 3;
+}
+
+message Domain {
+  string id = 1;
+  string host = 2;
+  string kind = 3;
+  string status = 4;
+  bool is_primary = 5;
+  repeated DomainVerificationRecord verification = 6;
+  string last_error = 7;
+  google.protobuf.Timestamp verified_at = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message AddCustomDomainRequest {
+  string shop_id = 1;
+  string hostname = 2;
+}
+
+message AddCustomDomainResponse {
+  Domain domain = 1;
+}
+
+message CheckCustomDomainRequest {
+  string shop_id = 1;
+  string domain_id = 2;
+}
+
+message CheckCustomDomainResponse {
+  Domain domain = 1;
+}
+
+message RemoveCustomDomainRequest {
+  string shop_id = 1;
+  string domain_id = 2;
+}
+
+message RemoveCustomDomainResponse {}
+
+message ListSiteDomainsRequest {
+  string shop_id = 1;
+}
+
+message ListSiteDomainsResponse {
+  repeated Domain domains = 1;
+}
+
 service UserService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   rpc VerifyOTP(VerifyOTPRequest) returns (VerifyOTPResponse);
@@ -566,4 +617,8 @@ service UserService {
   rpc ListSites(ListSitesRequest) returns (ListSitesResponse);
   rpc SuspendSite(SuspendSiteRequest) returns (SuspendSiteResponse);
   rpc ListPublishedSites(ListPublishedSitesRequest) returns (ListPublishedSitesResponse);
+  rpc AddCustomDomain(AddCustomDomainRequest) returns (AddCustomDomainResponse);
+  rpc CheckCustomDomain(CheckCustomDomainRequest) returns (CheckCustomDomainResponse);
+  rpc RemoveCustomDomain(RemoveCustomDomainRequest) returns (RemoveCustomDomainResponse);
+  rpc ListSiteDomains(ListSiteDomainsRequest) returns (ListSiteDomainsResponse);
 }

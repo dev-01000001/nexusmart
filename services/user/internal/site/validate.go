@@ -12,7 +12,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/net/idna"
 )
 
 const (
@@ -218,6 +221,106 @@ func NormalizeHost(raw string) (string, error) {
 		return "", errors.New("empty host")
 	}
 	return h, nil
+}
+
+// ValidateCustomHostname normalizes and validates a seller custom domain hostname.
+// It trims outer whitespace, rejects forbidden characters/wildcards/ports/IPs,
+// converts IDN labels to lowercase ASCII punycode via UTS #46 lookup, enforces
+// DNS length/label constraints, rejects the platform root domain (and its
+// subdomains), and rejects reserved local/internal hostnames (.test is allowed
+// only when allowMockTest is true).
+func ValidateCustomHostname(raw, rootDomain string, allowMockTest bool) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", errors.New("invalid_hostname: hostname is required")
+	}
+
+	for _, r := range s {
+		if unicode.IsSpace(r) {
+			return "", errors.New("invalid_hostname: hostname must not contain whitespace")
+		}
+		if r < 0x20 || r == 0x7f || unicode.IsControl(r) {
+			return "", errors.New("invalid_hostname: hostname must not contain control characters")
+		}
+		switch r {
+		case '/', '\\', '@', '?', '#', ':', '*', '[', ']', '%':
+			return "", fmt.Errorf("invalid_hostname: hostname contains disallowed character %q", r)
+		}
+	}
+
+	if strings.HasPrefix(s, ".") || strings.HasSuffix(s, ".") {
+		return "", errors.New("invalid_hostname: hostname must not start or end with a dot")
+	}
+	if strings.Contains(s, "..") {
+		return "", errors.New("invalid_hostname: hostname must not contain consecutive dots")
+	}
+
+	ascii, err := idna.Lookup.ToASCII(s)
+	if err != nil {
+		return "", fmt.Errorf("invalid_hostname: invalid internationalized domain name: %w", err)
+	}
+	host := strings.ToLower(ascii)
+
+	if strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") {
+		return "", errors.New("invalid_hostname: hostname must not start or end with a dot")
+	}
+	if strings.Contains(host, "..") {
+		return "", errors.New("invalid_hostname: hostname must not contain consecutive dots")
+	}
+	if len(host) < 2 || len(host) > 253 {
+		return "", errors.New("invalid_hostname: hostname length must be between 2 and 253 characters")
+	}
+	if net.ParseIP(host) != nil {
+		return "", errors.New("invalid_hostname: IP addresses are not allowed")
+	}
+
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return "", errors.New("invalid_hostname: hostname must contain at least two labels")
+	}
+	for _, label := range labels {
+		if len(label) < 1 || len(label) > 63 {
+			return "", errors.New("invalid_hostname: each label must be between 1 and 63 characters")
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return "", errors.New("invalid_hostname: labels must not start or end with a hyphen")
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+				return "", errors.New("invalid_hostname: labels must contain only lowercase letters, digits, or hyphens")
+			}
+		}
+	}
+
+	tld := labels[len(labels)-1]
+	allDigits := true
+	for i := 0; i < len(tld); i++ {
+		if tld[i] < '0' || tld[i] > '9' {
+			allDigits = false
+			break
+		}
+	}
+	if allDigits {
+		return "", errors.New("invalid_hostname: top-level domain must not be all numeric")
+	}
+
+	normRoot := strings.Trim(strings.ToLower(strings.TrimSpace(rootDomain)), ".")
+	if normRoot != "" && (host == normRoot || strings.HasSuffix(host, "."+normRoot)) {
+		return "", errors.New("invalid_hostname: hostname must not be the platform root domain or a subdomain of it")
+	}
+
+	if host == "localhost" ||
+		strings.HasSuffix(host, ".localhost") ||
+		strings.HasSuffix(host, ".local") ||
+		strings.HasSuffix(host, ".internal") {
+		return "", errors.New("invalid_hostname: local and internal hostnames are not allowed")
+	}
+	if !allowMockTest && strings.HasSuffix(host, ".test") {
+		return "", errors.New("invalid_hostname: .test hostnames are not allowed")
+	}
+
+	return host, nil
 }
 
 // ValidateSafeURL checks an optional URL/href. Empty is allowed; otherwise only https://...

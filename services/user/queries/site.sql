@@ -58,7 +58,7 @@ SELECT
     s.updated_at
 FROM sites s
 JOIN shops sh ON sh.id = s.shop_id
-LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE
+LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE AND d.status = 'ACTIVE'
 LEFT JOIN site_versions v ON v.id = s.published_version_id
 WHERE s.shop_id = $1
 LIMIT 1;
@@ -80,7 +80,7 @@ SELECT
     s.updated_at
 FROM sites s
 JOIN shops sh ON sh.id = s.shop_id
-LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE
+LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE AND d.status = 'ACTIVE'
 LEFT JOIN site_versions v ON v.id = s.published_version_id
 WHERE s.id = $1
 LIMIT 1;
@@ -105,8 +105,9 @@ FROM domains d
 JOIN sites s ON s.id = d.site_id
 JOIN site_versions v ON v.id = s.published_version_id
 JOIN shops sh ON sh.id = s.shop_id
-LEFT JOIN domains pd ON pd.site_id = s.id AND pd.is_primary = TRUE
+LEFT JOIN domains pd ON pd.site_id = s.id AND pd.is_primary = TRUE AND pd.status = 'ACTIVE'
 WHERE LOWER(d.host) = LOWER($1)
+  AND d.status = 'ACTIVE'
   AND s.status = 'PUBLISHED'
   AND s.published_version_id IS NOT NULL
   AND sh.status = 'ACTIVE'
@@ -131,7 +132,7 @@ SELECT
 FROM sites s
 JOIN site_versions v ON v.id = s.published_version_id
 JOIN shops sh ON sh.id = s.shop_id
-LEFT JOIN domains pd ON pd.site_id = s.id AND pd.is_primary = TRUE
+LEFT JOIN domains pd ON pd.site_id = s.id AND pd.is_primary = TRUE AND pd.status = 'ACTIVE'
 WHERE s.shop_id = $1
   AND s.status = 'PUBLISHED'
   AND s.published_version_id IS NOT NULL
@@ -182,7 +183,7 @@ SELECT
     s.updated_at
 FROM sites s
 JOIN shops sh ON sh.id = s.shop_id
-LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE
+LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE AND d.status = 'ACTIVE'
 LEFT JOIN site_versions v ON v.id = s.published_version_id
 WHERE (sqlc.arg(status)::text = '' OR s.status = sqlc.arg(status)::text)
   AND (
@@ -198,7 +199,7 @@ LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 SELECT COUNT(*)::bigint
 FROM sites s
 JOIN shops sh ON sh.id = s.shop_id
-LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE
+LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE AND d.status = 'ACTIVE'
 WHERE (sqlc.arg(status)::text = '' OR s.status = sqlc.arg(status)::text)
   AND (
       sqlc.arg(query)::text = ''
@@ -241,11 +242,37 @@ SELECT * FROM domains
 WHERE LOWER(host) = LOWER($1)
 LIMIT 1;
 
+-- name: GetDomainByID :one
+SELECT * FROM domains
+WHERE id = $1
+LIMIT 1;
+
+-- name: ListDomainsBySiteID :many
+SELECT * FROM domains
+WHERE site_id = $1
+ORDER BY is_primary DESC, CASE WHEN kind = 'CUSTOM' THEN 0 ELSE 1 END, created_at ASC;
+
+-- name: GetSiteSubdomainDomain :one
+SELECT * FROM domains
+WHERE site_id = $1 AND kind = 'SUBDOMAIN'
+LIMIT 1;
+
+-- name: GetSiteCustomDomain :one
+SELECT * FROM domains
+WHERE site_id = $1 AND kind = 'CUSTOM'
+LIMIT 1;
+
 -- name: UpsertSiteSubdomainDomain :one
 INSERT INTO domains (
     id, site_id, host, kind, is_primary, verified_at, tls_status
 ) VALUES (
-    $1, $2, LOWER($3), 'SUBDOMAIN', TRUE, NOW(), 'MANAGED'
+    $1,
+    $2,
+    LOWER($3),
+    'SUBDOMAIN',
+    NOT EXISTS (SELECT 1 FROM domains d2 WHERE d2.site_id = $2 AND d2.is_primary = TRUE),
+    NOW(),
+    'MANAGED'
 )
 ON CONFLICT (site_id) WHERE kind = 'SUBDOMAIN'
 DO UPDATE SET
@@ -253,6 +280,67 @@ DO UPDATE SET
     verified_at = NOW(),
     updated_at = NOW()
 RETURNING *;
+
+-- name: CreateCustomDomain :one
+INSERT INTO domains (
+    id, site_id, host, kind, is_primary, verified_at, tls_status,
+    status, cf_custom_hostname_id, verification, last_checked_at, last_error
+) VALUES (
+    $1, $2, LOWER($3), 'CUSTOM', $4, $5, $6,
+    $7, $8, $9, $10, $11
+)
+RETURNING *;
+
+-- name: UpdateDomainCFRecordID :one
+UPDATE domains
+SET cf_record_id = $2,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: UpdateDomainVerificationState :one
+UPDATE domains
+SET status = $2,
+    is_primary = $3,
+    verified_at = COALESCE(verified_at, $4),
+    tls_status = $5,
+    verification = $6,
+    last_checked_at = $7,
+    last_error = $8,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: UpdateDomainError :one
+UPDATE domains
+SET last_checked_at = $2,
+    last_error = $3,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: SetSiteDomainPrimary :exec
+UPDATE domains
+SET is_primary = $3,
+    updated_at = NOW()
+WHERE site_id = $1 AND kind = $2;
+
+-- name: MarkCustomDomainRemoving :one
+UPDATE domains
+SET status = 'REMOVING',
+    is_primary = FALSE,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: DeleteDomain :exec
+DELETE FROM domains
+WHERE id = $1;
+
+-- name: ListCustomDomainsByStatus :many
+SELECT * FROM domains
+WHERE kind = 'CUSTOM' AND status = $1
+ORDER BY created_at ASC;
 
 -- name: ListPublishedSites :many
 -- Public directory: only PUBLISHED sites of ACTIVE shops, fields from the published snapshot only.
@@ -269,7 +357,7 @@ SELECT
 FROM sites s
 JOIN site_versions v ON v.id = s.published_version_id
 JOIN shops sh ON sh.id = s.shop_id
-LEFT JOIN domains pd ON pd.site_id = s.id AND pd.is_primary = TRUE
+LEFT JOIN domains pd ON pd.site_id = s.id AND pd.is_primary = TRUE AND pd.status = 'ACTIVE'
 WHERE s.status = 'PUBLISHED'
   AND s.published_version_id IS NOT NULL
   AND sh.status = 'ACTIVE'

@@ -17,6 +17,7 @@
  *     matching web/src/data/flash-sale.ts
  *   - 4 clearly distinct PUBLISHED subdomain storefront sites (bach-dang, sai-gon,
  *     da-nang, ha-noi), one per shop, each with its own colors, font and imagery
+ *     (plus custom domains on ha-noi [ACTIVE] and da-nang [PENDING])
  *
  * Safe to run repeatedly: existing entities are detected and reused with zero
  * duplicates. A site is only re-published when its currently published config
@@ -796,6 +797,10 @@ function buildShowcaseSiteSpecs(seededProducts) {
       mockShopId: "shop-da-nang",
       subdomain: "da-nang",
       publishNote: "Xuất bản giao diện mẫu Sợi Tự Nhiên Đà Nẵng",
+      customDomain: {
+        hostname: "danang.pending.test",
+        expectStatus: "PENDING",
+      },
       config: {
         theme: {
           bg_color: "#EEF2EA",
@@ -897,6 +902,10 @@ function buildShowcaseSiteSpecs(seededProducts) {
       mockShopId: "shop-ha-noi",
       subdomain: "ha-noi",
       publishNote: "Xuất bản giao diện mẫu Dệt Kim Hà Nội",
+      customDomain: {
+        hostname: "hanoi-knit.verified.test",
+        expectStatus: "ACTIVE",
+      },
       config: {
         theme: {
           bg_color: "#2B1A1E",
@@ -1028,7 +1037,11 @@ async function ensurePublishedSite(sellerToken, spec) {
 
   const subdomainMatches = existing !== null && existingSubdomain === targetSubdomain;
   if (subdomainMatches && existing.status === "PUBLISHED") {
-    const publishedCfg = await fetchPublishedSiteConfig(existing.primary_host || targetHost);
+    const existingPrimaryHost = String(existing.primary_host ?? "").trim().toLowerCase();
+    let publishedCfg = await fetchPublishedSiteConfig(existingPrimaryHost || targetHost);
+    if (!publishedCfg && existingPrimaryHost && existingPrimaryHost !== targetHost) {
+      publishedCfg = await fetchPublishedSiteConfig(targetHost);
+    }
     if (siteConfigsEqual(publishedCfg, spec.config)) {
       return { created: false, site: existing };
     }
@@ -1057,6 +1070,101 @@ async function ensurePublishedSite(sellerToken, spec) {
 
   const publishedSite = pubRes.data?.site ?? { subdomain: targetSubdomain, status: "PUBLISHED" };
   return { created: true, site: publishedSite };
+}
+
+/**
+ * Ensures the seller's site has the requested custom domain in the expected status.
+ * Idempotent: reuses a matching host, removes any stale CUSTOM domain on another host
+ * before creating, and calls /check only when ACTIVE is expected.
+ */
+async function ensureCustomDomain(sellerToken, { hostname, expectStatus }) {
+  const targetHost = String(hostname ?? "").trim().toLowerCase();
+  const desiredStatus = String(expectStatus ?? "").trim().toUpperCase();
+  if (!targetHost) {
+    throw new Error("ensureCustomDomain requires a non-empty hostname");
+  }
+
+  const listRes = await gwRequest("GET", "/api/v1/seller/site/domains", {
+    token: sellerToken,
+    allowedStatuses: [200],
+  });
+  const domains = Array.isArray(listRes.data?.domains) ? listRes.data.domains : [];
+
+  let domain =
+    domains.find((d) => String(d?.host ?? "").trim().toLowerCase() === targetHost) ?? null;
+  let created = false;
+
+  if (!domain) {
+    const staleCustoms = domains.filter(
+      (d) =>
+        String(d?.kind ?? "").trim().toUpperCase() === "CUSTOM" &&
+        String(d?.host ?? "").trim().toLowerCase() !== targetHost
+    );
+    for (const stale of staleCustoms) {
+      await gwRequest("DELETE", `/api/v1/seller/site/domains/${encodeURIComponent(stale.id)}`, {
+        token: sellerToken,
+        allowedStatuses: [200, 204],
+      });
+    }
+
+    const addRes = await gwRequest("POST", "/api/v1/seller/site/domains", {
+      token: sellerToken,
+      body: { hostname: targetHost },
+      allowedStatuses: [200, 201],
+    });
+    domain = addRes.data?.domain ?? null;
+    if (!domain?.id) {
+      throw new Error(`POST /api/v1/seller/site/domains for ${targetHost} returned no domain`);
+    }
+    created = true;
+  }
+
+  const statusOf = (d) => String(d?.status ?? "").trim().toUpperCase();
+
+  if (desiredStatus === "ACTIVE") {
+    if (statusOf(domain) !== "ACTIVE") {
+      const checkRes = await gwRequest(
+        "POST",
+        `/api/v1/seller/site/domains/${encodeURIComponent(domain.id)}/check`,
+        {
+          token: sellerToken,
+          allowedStatuses: [200],
+        }
+      );
+      domain = checkRes.data?.domain ?? domain;
+    }
+    if (statusOf(domain) !== "ACTIVE") {
+      throw new Error(
+        `Custom domain ${targetHost} expected status ACTIVE, got ${domain?.status ?? "unknown"}`
+      );
+    }
+
+    const activeHost = String(domain.host || targetHost).trim().toLowerCase();
+    const byHostRes = await gwRequest(
+      "GET",
+      `/api/v1/sites/by-host?host=${encodeURIComponent(activeHost)}`,
+      { allowedStatuses: [200] }
+    );
+    if (byHostRes.data?.site?.status !== "PUBLISHED") {
+      throw new Error(
+        `GET /api/v1/sites/by-host?host=${activeHost} returned unexpected site status ${byHostRes.data?.site?.status ?? "missing"}`
+      );
+    }
+    const primaryHost = String(byHostRes.data?.site?.primary_host || activeHost)
+      .trim()
+      .toLowerCase();
+    return { created, domain, primaryHost };
+  }
+
+  if (desiredStatus === "PENDING") {
+    if (statusOf(domain) !== "PENDING") {
+      throw new Error(
+        `Custom domain ${targetHost} expected status PENDING, got ${domain?.status ?? "unknown"}`
+      );
+    }
+  }
+
+  return { created, domain, primaryHost: null };
 }
 
 async function main() {
@@ -1511,24 +1619,37 @@ async function main() {
     }
   }
 
-  // 7. 4 Showcase Published Subdomain Sites (one per demo shop, distinct themes)
+  // 7. 4 Showcase Published Subdomain Sites (one per demo shop, distinct themes) + custom domains
   const showcaseSiteSpecs = buildShowcaseSiteSpecs(seededProducts);
   for (const spec of showcaseSiteSpecs) {
     const shopEntry = seededShops.get(spec.mockShopId);
     if (!shopEntry) throw new Error(`Missing seeded shop for site ${spec.subdomain} (${spec.mockShopId})`);
     const { created, site } = await ensurePublishedSite(shopEntry.sellerToken, spec);
     summary.sites[created ? "created" : "reused"] += 1;
-    summary.sites.map[spec.subdomain] = {
+    const subdomainHost = `${spec.subdomain}.${SITE_ROOT_DOMAIN}`;
+    const siteSummary = {
       shop_id: shopEntry.shop.id,
       shop_name: shopEntry.shop.name,
       subdomain: spec.subdomain,
-      primary_host: site.primary_host || `${spec.subdomain}.${SITE_ROOT_DOMAIN}`,
+      primary_host: site.primary_host || subdomainHost,
       status: site.status || "PUBLISHED",
       action: created ? "published" : "reused",
       font_family: spec.config.theme.font_family,
       bg_color: spec.config.theme.bg_color,
       accent_color: spec.config.theme.accent_color,
     };
+    if (spec.customDomain) {
+      const custom = await ensureCustomDomain(shopEntry.sellerToken, spec.customDomain);
+      siteSummary.custom_domain = custom.domain.host || spec.customDomain.hostname;
+      siteSummary.custom_domain_status = custom.domain.status;
+      siteSummary.custom_domain_action = custom.created ? "created" : "reused";
+      if (custom.primaryHost) {
+        siteSummary.primary_host = custom.primaryHost;
+      } else if (spec.customDomain.expectStatus === "PENDING") {
+        siteSummary.primary_host = subdomainHost;
+      }
+    }
+    summary.sites.map[spec.subdomain] = siteSummary;
   }
 
   console.log("==> Seed complete:");

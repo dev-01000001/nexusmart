@@ -105,6 +105,67 @@ test("assertSameOrigin rejects cross-site, root-to-site, site-to-root, and forei
   }
 });
 
+test("assertSameOrigin accepts same custom-domain origin and rejects subdomain<->custom CSRF with 403 BAD_ORIGIN", () => {
+  // Same custom host passes in dev (with port)
+  const sameCustomDev = makeReq("http://hanoi-knit.verified.test:3300/api/cart/items", {
+    host: "hanoi-knit.verified.test:3300",
+    origin: "http://hanoi-knit.verified.test:3300",
+    "sec-fetch-site": "same-origin",
+  });
+  assert.doesNotThrow(() => assertSameOrigin(sameCustomDev));
+
+  // Same custom host passes behind trusted HTTPS reverse proxy
+  const sameCustomProd = makeReq("http://web:3000/api/checkout", {
+    host: "web:3000",
+    "x-forwarded-host": "shop.brand.vn",
+    "x-forwarded-proto": "https",
+    origin: "https://shop.brand.vn",
+    "sec-fetch-site": "same-origin",
+  });
+  assert.doesNotThrow(() => assertSameOrigin(sameCustomProd, { trustProxyHeaders: true }));
+
+  const crossHostCases = [
+    // Subdomain -> custom domain CSRF
+    {
+      url: "http://hanoi-knit.verified.test:3300/api/cart/items",
+      host: "hanoi-knit.verified.test:3300",
+      origin: "http://hanoi-knit.nexusmart.localhost:3300",
+    },
+    // Custom domain -> subdomain CSRF
+    {
+      url: "http://hanoi-knit.nexusmart.localhost:3300/api/cart/items",
+      host: "hanoi-knit.nexusmart.localhost:3300",
+      origin: "http://hanoi-knit.verified.test:3300",
+    },
+    // Custom domain -> root seller/admin CSRF
+    {
+      url: "http://nexusmart.localhost:3300/api/seller/site/domains",
+      host: "nexusmart.localhost:3300",
+      origin: "http://hanoi-knit.verified.test:3300",
+    },
+    // Root -> custom domain CSRF
+    {
+      url: "http://hanoi-knit.verified.test:3300/api/checkout",
+      host: "hanoi-knit.verified.test:3300",
+      origin: "http://nexusmart.localhost:3300",
+    },
+    // Custom domain B -> custom domain A CSRF
+    {
+      url: "http://hanoi-knit.verified.test:3300/api/orders",
+      host: "hanoi-knit.verified.test:3300",
+      origin: "http://other-brand.verified.test:3300",
+    },
+  ];
+  for (const c of crossHostCases) {
+    const req = makeReq(c.url, { host: c.host, origin: c.origin });
+    assert.throws(
+      () => assertSameOrigin(req),
+      (err) => err instanceof GatewayError && err.status === 403 && err.code === "BAD_ORIGIN",
+      `expected 403 BAD_ORIGIN for origin=${c.origin} -> host=${c.host}`
+    );
+  }
+});
+
 test("assertSameOrigin rejects Origin: null", () => {
   const req = makeReq("http://127.0.0.1:3201/api/auth/logout", {
     host: "127.0.0.1:3201",

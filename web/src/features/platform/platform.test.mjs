@@ -33,12 +33,51 @@ test("directory site keeps the request port and only safe image URLs", () => {
   assert.equal(site.coverUrl, "https://cdn.example.vn/cover.jpg");
 });
 
-test("directory site falls back to subdomain and rejects foreign or reserved hosts", () => {
+test("directory site accepts custom primary_host, falls back to subdomain, and rejects bad/IP/localhost/forbidden hosts", () => {
+  const custom = normalizeDirectorySite(row({ primary_host: "hanoi-knit.verified.test" }), ctx);
+  assert.equal(custom.host, "hanoi-knit.verified.test");
+  assert.equal(custom.origin, "http://hanoi-knit.verified.test:3401");
+
+  const prodCustom = normalizeDirectorySite(
+    row({ primary_host: "shop.brand.vn" }),
+    { rootDomain: "nexusmart.vn", rawHost: "nexusmart.vn", proto: "https" }
+  );
+  assert.equal(prodCustom.host, "shop.brand.vn");
+  assert.equal(prodCustom.origin, "https://shop.brand.vn");
+
   assert.equal(
     normalizeDirectorySite(row({ primary_host: "" }), ctx).host,
     "bach-dang.nexusmart.localhost"
   );
-  assert.equal(normalizeDirectorySite(row({ primary_host: "evil.com", subdomain: "" }), ctx), null);
+  // Invalid primary_host falls back to valid subdomain.
+  assert.equal(
+    normalizeDirectorySite(row({ primary_host: "shop.local" }), ctx).host,
+    "bach-dang.nexusmart.localhost"
+  );
+
+  // Root, localhost, IP, forbidden, reserved, and malformed hosts are rejected.
+  for (const badHost of [
+    "nexusmart.localhost",
+    "localhost",
+    "foo.localhost",
+    "shop.local",
+    "svc.internal",
+    "127.0.0.1",
+    "[::1]",
+    "999.999.999.999",
+    "*.brand.vn",
+    "bad_host.com",
+    "example.com..",
+    "admin.nexusmart.localhost",
+    "singlelabel",
+  ]) {
+    assert.equal(
+      normalizeDirectorySite(row({ primary_host: badHost, subdomain: "" }), ctx),
+      null,
+      `expected directory site to reject primary_host=${badHost}`
+    );
+  }
+
   assert.equal(normalizeDirectorySite(row({ primary_host: "", subdomain: "admin" }), ctx), null);
   assert.equal(normalizeDirectorySite(row({ shop_name: "" }), ctx), null);
 });

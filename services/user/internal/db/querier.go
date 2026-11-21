@@ -19,14 +19,17 @@ type Querier interface {
 	CountSites(ctx context.Context, arg CountSitesParams) (int64, error)
 	CountUsers(ctx context.Context, arg CountUsersParams) (int64, error)
 	CreateAddress(ctx context.Context, arg CreateAddressParams) (Address, error)
+	CreateCustomDomain(ctx context.Context, arg CreateCustomDomainParams) (Domain, error)
 	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (RefreshToken, error)
 	CreateShop(ctx context.Context, arg CreateShopParams) (Shop, error)
 	CreateSite(ctx context.Context, arg CreateSiteParams) (Site, error)
 	CreateSiteVersion(ctx context.Context, arg CreateSiteVersionParams) (SiteVersion, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteAddress(ctx context.Context, id string) error
+	DeleteDomain(ctx context.Context, id string) error
 	GetAddressByID(ctx context.Context, id string) (Address, error)
 	GetDomainByHost(ctx context.Context, lower string) (Domain, error)
+	GetDomainByID(ctx context.Context, id string) (Domain, error)
 	GetMaxSiteVersionNumber(ctx context.Context, siteID string) (int32, error)
 	GetPublishedSiteByHost(ctx context.Context, lower string) (GetPublishedSiteByHostRow, error)
 	GetPublishedSiteByShopID(ctx context.Context, shopID string) (GetPublishedSiteByShopIDRow, error)
@@ -39,8 +42,10 @@ type Querier interface {
 	GetSiteByShopID(ctx context.Context, shopID string) (Site, error)
 	GetSiteByShopIDForUpdate(ctx context.Context, shopID string) (Site, error)
 	GetSiteBySubdomain(ctx context.Context, lower string) (Site, error)
+	GetSiteCustomDomain(ctx context.Context, siteID string) (Domain, error)
 	GetSiteDetailByID(ctx context.Context, id string) (GetSiteDetailByIDRow, error)
 	GetSiteDetailByShopID(ctx context.Context, shopID string) (GetSiteDetailByShopIDRow, error)
+	GetSiteSubdomainDomain(ctx context.Context, siteID string) (Domain, error)
 	GetSiteVersionByID(ctx context.Context, id string) (SiteVersion, error)
 	GetUserByEmail(ctx context.Context, lower string) (User, error)
 	GetUserByID(ctx context.Context, id string) (User, error)
@@ -49,17 +54,24 @@ type Querier interface {
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) (AuditLog, error)
 	ListAddressesByUserID(ctx context.Context, userID string) ([]Address, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
+	ListCustomDomainsByStatus(ctx context.Context, status string) ([]Domain, error)
+	ListDomainsBySiteID(ctx context.Context, siteID string) ([]Domain, error)
 	// Public directory: only PUBLISHED sites of ACTIVE shops, fields from the published snapshot only.
 	ListPublishedSites(ctx context.Context, arg ListPublishedSitesParams) ([]ListPublishedSitesRow, error)
 	ListShops(ctx context.Context, arg ListShopsParams) ([]Shop, error)
 	ListSiteVersions(ctx context.Context, arg ListSiteVersionsParams) ([]SiteVersion, error)
 	ListSites(ctx context.Context, arg ListSitesParams) ([]ListSitesRow, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
+	MarkCustomDomainRemoving(ctx context.Context, id string) (Domain, error)
 	RevokeAllUserRefreshTokens(ctx context.Context, userID string) error
 	RevokeRefreshTokenByHash(ctx context.Context, tokenHash string) error
 	RevokeRefreshTokenFamily(ctx context.Context, familyID string) error
 	RevokeRefreshTokenWithReplacement(ctx context.Context, arg RevokeRefreshTokenWithReplacementParams) (int64, error)
+	SetSiteDomainPrimary(ctx context.Context, arg SetSiteDomainPrimaryParams) error
 	UpdateAddress(ctx context.Context, arg UpdateAddressParams) (Address, error)
+	UpdateDomainCFRecordID(ctx context.Context, arg UpdateDomainCFRecordIDParams) (Domain, error)
+	UpdateDomainError(ctx context.Context, arg UpdateDomainErrorParams) (Domain, error)
+	UpdateDomainVerificationState(ctx context.Context, arg UpdateDomainVerificationStateParams) (Domain, error)
 	UpdateShopReview(ctx context.Context, arg UpdateShopReviewParams) (Shop, error)
 	UpdateSiteDraft(ctx context.Context, arg UpdateSiteDraftParams) (Site, error)
 	UpdateSitePublished(ctx context.Context, arg UpdateSitePublishedParams) (Site, error)

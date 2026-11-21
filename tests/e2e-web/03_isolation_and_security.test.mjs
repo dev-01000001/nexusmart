@@ -17,6 +17,7 @@ import {
   pickPlatformVoucher,
   pickShopVoucher,
   pickSku,
+  primarySiteHost,
   quoteShipping,
   registerBuyer,
   resolveSite,
@@ -132,7 +133,7 @@ describe("03. Cross-site isolation, IDOR, 401 guards, CSRF across hosts, body ta
 
   it("all 4 seeded sites render distinct themes, isolate products/vouchers, and return 404 on cross-shop PDP", async () => {
     for (const shop of Object.values(SEEDED)) {
-      const host = siteHost(shop.sub);
+      const host = primarySiteHost(shop);
       const home = await new Browser(`theme-${shop.sub}`).at(host).page("/");
       expectStatus(home, 200, `GET ${host}/`);
       assert.ok(home.text.includes(shop.shopName), `${host}/ must render ${shop.shopName}`);

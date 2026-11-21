@@ -61,10 +61,10 @@ export function buildSiteMetadata(opts: {
     opts.config.theme.tagline?.trim() ||
     `${brandName} — Cửa hàng chính hãng vận hành trên NexusMart.`;
   const robots = buildSiteRobotsMeta(opts.config);
+  const cleanOrigin = opts.siteOrigin?.trim().replace(/\/+$/, "") || "";
   const ogUrl =
-    opts.siteOrigin && opts.pathname
-      ? `${opts.siteOrigin.replace(/\/+$/, "")}${opts.pathname}`
-      : opts.siteOrigin || undefined;
+    cleanOrigin && opts.pathname ? `${cleanOrigin}${opts.pathname}` : cleanOrigin || undefined;
+  const canonicalUrl = opts.canonicalUrl?.trim() || ogUrl;
 
   const metadata: Metadata = {
     title: fullTitle,
@@ -79,8 +79,8 @@ export function buildSiteMetadata(opts: {
     },
   };
 
-  if (opts.canonicalUrl) {
-    metadata.alternates = { canonical: opts.canonicalUrl };
+  if (canonicalUrl) {
+    metadata.alternates = { canonical: canonicalUrl };
   }
 
   return metadata;

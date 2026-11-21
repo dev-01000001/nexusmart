@@ -9,6 +9,8 @@ import {
   demoCredentials,
   listPublishedSites,
   loginOn,
+  primaryHostOf,
+  primarySiteHost,
   registerBuyer,
 } from "./lib/fixtures.mjs";
 
@@ -20,10 +22,21 @@ const PRICE_RE = /\d{1,3}(?:[.,]\d{3})+\s?(?:₫|đ(?![a-zà-ỹ])|VND)/i;
 
 const bare = (host) => host.replace(/:\d+$/, "");
 
-/** Hostnames `<label>.<root>` linked from an HTML/RSC document. */
+/** Hostnames (`<label>.<root>` and custom domains from `href="https?://<host>..."`) linked in HTML/RSC. */
 function linkedSiteHosts(html) {
-  const re = new RegExp(`([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\\.${ROOT.replace(/\./g, "\\.")}(?![a-z0-9.-])`, "gi");
-  return new Set([...html.matchAll(re)].map((m) => `${m[1].toLowerCase()}.${ROOT}`));
+  const hosts = new Set();
+  const subRe = new RegExp(`([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\\.${ROOT.replace(/\./g, "\\.")}(?![a-z0-9.-])`, "gi");
+  for (const m of html.matchAll(subRe)) {
+    hosts.add(`${m[1].toLowerCase()}.${ROOT}`);
+  }
+  const hrefRe = /\bhref=["']https?:\/\/([a-z0-9.-]+)(?::\d+)?(?:[/?#"']|$)/gi;
+  for (const m of html.matchAll(hrefRe)) {
+    const h = m[1].toLowerCase().replace(/\.+$/, "");
+    if (h && h !== ROOT && h !== "localhost") {
+      hosts.add(h);
+    }
+  }
+  return hosts;
 }
 
 describe("01. Root host = NexusMart platform only (intro, site directory, redirects, RBAC, SEO)", () => {
@@ -47,11 +60,20 @@ describe("01. Root host = NexusMart platform only (intro, site directory, redire
     for (const shop of Object.values(SEEDED)) {
       assert.ok(subs.has(shop.sub), `seeded site ${shop.sub} must be PUBLISHED and listed`);
     }
+    const seededBySub = new Map(Object.values(SEEDED).map((shop) => [shop.sub, shop]));
     for (const s of directory.sites) {
       for (const field of ["site_id", "shop_id", "shop_name", "subdomain", "primary_host", "logo_url", "cover_url", "tagline"]) {
         assert.ok(field in s, `directory site ${s.subdomain} missing field ${field}`);
       }
-      assert.equal(s.primary_host, `${s.subdomain}.${ROOT}`, `primary_host of ${s.subdomain}`);
+      const matchedShop = seededBySub.get(s.subdomain);
+      if (matchedShop) {
+        assert.equal(s.primary_host, primaryHostOf(matchedShop, ROOT), `primary_host of ${s.subdomain}`);
+      } else {
+        assert.ok(
+          typeof s.primary_host === "string" && s.primary_host.trim().length > 0,
+          `primary_host of ${s.subdomain} must be non-empty`
+        );
+      }
     }
     const capped = await fetch(`${config.gatewayURL}/api/v1/sites?page=1&page_size=500`);
     assert.equal(capped.status, 200);
@@ -60,8 +82,9 @@ describe("01. Root host = NexusMart platform only (intro, site directory, redire
 
     // Every seeded listed site is actually served by the web app.
     for (const shop of Object.values(SEEDED)) {
-      const home = await new Browser("dir-probe").at(siteHost(shop.sub)).page("/");
-      assert.equal(home.status, 200, `listed site ${shop.sub}.${ROOT} must serve its home page`);
+      const host = primarySiteHost(shop);
+      const home = await new Browser("dir-probe").at(host).page("/");
+      assert.equal(home.status, 200, `listed site ${host} must serve its home page`);
     }
   });
 
@@ -110,7 +133,7 @@ describe("01. Root host = NexusMart platform only (intro, site directory, redire
       combinedHtml += "\n" + next.text;
     }
     for (const shop of Object.values(SEEDED)) {
-      const expectedHost = `${shop.sub}.${ROOT}`;
+      const expectedHost = primaryHostOf(shop, ROOT);
       assert.ok(allLinked.has(expectedHost), `root directory must list seeded PUBLISHED site ${expectedHost}`);
       assert.ok(combinedHtml.includes(shop.shopName), `root directory must show shop name ${shop.shopName}`);
     }
@@ -300,7 +323,8 @@ describe("01. Root host = NexusMart platform only (intro, site directory, redire
     expectStatus(sitemap, 200, `GET ${ROOT_HOST}/sitemap.xml`);
     assert.ok(sitemap.text.includes(ROOT), "root sitemap must include root intro URL");
     for (const shop of Object.values(SEEDED)) {
-      assert.ok(sitemap.text.includes(`${shop.sub}.${ROOT}`), `root sitemap must link site ${shop.sub}`);
+      const expectedHost = primaryHostOf(shop, ROOT);
+      assert.ok(sitemap.text.includes(expectedHost), `root sitemap must link site ${expectedHost}`);
     }
     for (const removed of ["/san-pham/", "/danh-muc", "/flash-sale", "/voucher", "/bo-suu-tap"]) {
       assert.equal(sitemap.text.includes(removed), false, `root sitemap must not list removed marketplace URL ${removed}`);

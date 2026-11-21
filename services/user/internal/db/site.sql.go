@@ -43,7 +43,7 @@ const countSites = `-- name: CountSites :one
 SELECT COUNT(*)::bigint
 FROM sites s
 JOIN shops sh ON sh.id = s.shop_id
-LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE
+LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE AND d.status = 'ACTIVE'
 WHERE ($1::text = '' OR s.status = $1::text)
   AND (
       $2::text = ''
@@ -63,6 +63,66 @@ func (q *Queries) CountSites(ctx context.Context, arg CountSitesParams) (int64, 
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const createCustomDomain = `-- name: CreateCustomDomain :one
+INSERT INTO domains (
+    id, site_id, host, kind, is_primary, verified_at, tls_status,
+    status, cf_custom_hostname_id, verification, last_checked_at, last_error
+) VALUES (
+    $1, $2, LOWER($3), 'CUSTOM', $4, $5, $6,
+    $7, $8, $9, $10, $11
+)
+RETURNING id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at, status, cf_record_id, cf_custom_hostname_id, verification, last_checked_at, last_error
+`
+
+type CreateCustomDomainParams struct {
+	ID                 string     `json:"id"`
+	SiteID             string     `json:"site_id"`
+	Lower              string     `json:"lower"`
+	IsPrimary          bool       `json:"is_primary"`
+	VerifiedAt         *time.Time `json:"verified_at"`
+	TlsStatus          string     `json:"tls_status"`
+	Status             string     `json:"status"`
+	CfCustomHostnameID *string    `json:"cf_custom_hostname_id"`
+	Verification       []byte     `json:"verification"`
+	LastCheckedAt      *time.Time `json:"last_checked_at"`
+	LastError          *string    `json:"last_error"`
+}
+
+func (q *Queries) CreateCustomDomain(ctx context.Context, arg CreateCustomDomainParams) (Domain, error) {
+	row := q.db.QueryRow(ctx, createCustomDomain,
+		arg.ID,
+		arg.SiteID,
+		arg.Lower,
+		arg.IsPrimary,
+		arg.VerifiedAt,
+		arg.TlsStatus,
+		arg.Status,
+		arg.CfCustomHostnameID,
+		arg.Verification,
+		arg.LastCheckedAt,
+		arg.LastError,
+	)
+	var i Domain
+	err := row.Scan(
+		&i.ID,
+		&i.SiteID,
+		&i.Host,
+		&i.Kind,
+		&i.IsPrimary,
+		&i.VerifiedAt,
+		&i.TlsStatus,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Status,
+		&i.CfRecordID,
+		&i.CfCustomHostnameID,
+		&i.Verification,
+		&i.LastCheckedAt,
+		&i.LastError,
+	)
+	return i, err
 }
 
 const createSite = `-- name: CreateSite :one
@@ -144,8 +204,18 @@ func (q *Queries) CreateSiteVersion(ctx context.Context, arg CreateSiteVersionPa
 	return i, err
 }
 
+const deleteDomain = `-- name: DeleteDomain :exec
+DELETE FROM domains
+WHERE id = $1
+`
+
+func (q *Queries) DeleteDomain(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, deleteDomain, id)
+	return err
+}
+
 const getDomainByHost = `-- name: GetDomainByHost :one
-SELECT id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at FROM domains
+SELECT id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at, status, cf_record_id, cf_custom_hostname_id, verification, last_checked_at, last_error FROM domains
 WHERE LOWER(host) = LOWER($1)
 LIMIT 1
 `
@@ -163,6 +233,41 @@ func (q *Queries) GetDomainByHost(ctx context.Context, lower string) (Domain, er
 		&i.TlsStatus,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Status,
+		&i.CfRecordID,
+		&i.CfCustomHostnameID,
+		&i.Verification,
+		&i.LastCheckedAt,
+		&i.LastError,
+	)
+	return i, err
+}
+
+const getDomainByID = `-- name: GetDomainByID :one
+SELECT id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at, status, cf_record_id, cf_custom_hostname_id, verification, last_checked_at, last_error FROM domains
+WHERE id = $1
+LIMIT 1
+`
+
+func (q *Queries) GetDomainByID(ctx context.Context, id string) (Domain, error) {
+	row := q.db.QueryRow(ctx, getDomainByID, id)
+	var i Domain
+	err := row.Scan(
+		&i.ID,
+		&i.SiteID,
+		&i.Host,
+		&i.Kind,
+		&i.IsPrimary,
+		&i.VerifiedAt,
+		&i.TlsStatus,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Status,
+		&i.CfRecordID,
+		&i.CfCustomHostnameID,
+		&i.Verification,
+		&i.LastCheckedAt,
+		&i.LastError,
 	)
 	return i, err
 }
@@ -200,8 +305,9 @@ FROM domains d
 JOIN sites s ON s.id = d.site_id
 JOIN site_versions v ON v.id = s.published_version_id
 JOIN shops sh ON sh.id = s.shop_id
-LEFT JOIN domains pd ON pd.site_id = s.id AND pd.is_primary = TRUE
+LEFT JOIN domains pd ON pd.site_id = s.id AND pd.is_primary = TRUE AND pd.status = 'ACTIVE'
 WHERE LOWER(d.host) = LOWER($1)
+  AND d.status = 'ACTIVE'
   AND s.status = 'PUBLISHED'
   AND s.published_version_id IS NOT NULL
   AND sh.status = 'ACTIVE'
@@ -266,7 +372,7 @@ SELECT
 FROM sites s
 JOIN site_versions v ON v.id = s.published_version_id
 JOIN shops sh ON sh.id = s.shop_id
-LEFT JOIN domains pd ON pd.site_id = s.id AND pd.is_primary = TRUE
+LEFT JOIN domains pd ON pd.site_id = s.id AND pd.is_primary = TRUE AND pd.status = 'ACTIVE'
 WHERE s.shop_id = $1
   AND s.status = 'PUBLISHED'
   AND s.published_version_id IS NOT NULL
@@ -435,6 +541,35 @@ func (q *Queries) GetSiteBySubdomain(ctx context.Context, lower string) (Site, e
 	return i, err
 }
 
+const getSiteCustomDomain = `-- name: GetSiteCustomDomain :one
+SELECT id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at, status, cf_record_id, cf_custom_hostname_id, verification, last_checked_at, last_error FROM domains
+WHERE site_id = $1 AND kind = 'CUSTOM'
+LIMIT 1
+`
+
+func (q *Queries) GetSiteCustomDomain(ctx context.Context, siteID string) (Domain, error) {
+	row := q.db.QueryRow(ctx, getSiteCustomDomain, siteID)
+	var i Domain
+	err := row.Scan(
+		&i.ID,
+		&i.SiteID,
+		&i.Host,
+		&i.Kind,
+		&i.IsPrimary,
+		&i.VerifiedAt,
+		&i.TlsStatus,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Status,
+		&i.CfRecordID,
+		&i.CfCustomHostnameID,
+		&i.Verification,
+		&i.LastCheckedAt,
+		&i.LastError,
+	)
+	return i, err
+}
+
 const getSiteDetailByID = `-- name: GetSiteDetailByID :one
 SELECT
     s.id,
@@ -452,7 +587,7 @@ SELECT
     s.updated_at
 FROM sites s
 JOIN shops sh ON sh.id = s.shop_id
-LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE
+LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE AND d.status = 'ACTIVE'
 LEFT JOIN site_versions v ON v.id = s.published_version_id
 WHERE s.id = $1
 LIMIT 1
@@ -512,7 +647,7 @@ SELECT
     s.updated_at
 FROM sites s
 JOIN shops sh ON sh.id = s.shop_id
-LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE
+LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE AND d.status = 'ACTIVE'
 LEFT JOIN site_versions v ON v.id = s.published_version_id
 WHERE s.shop_id = $1
 LIMIT 1
@@ -555,6 +690,35 @@ func (q *Queries) GetSiteDetailByShopID(ctx context.Context, shopID string) (Get
 	return i, err
 }
 
+const getSiteSubdomainDomain = `-- name: GetSiteSubdomainDomain :one
+SELECT id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at, status, cf_record_id, cf_custom_hostname_id, verification, last_checked_at, last_error FROM domains
+WHERE site_id = $1 AND kind = 'SUBDOMAIN'
+LIMIT 1
+`
+
+func (q *Queries) GetSiteSubdomainDomain(ctx context.Context, siteID string) (Domain, error) {
+	row := q.db.QueryRow(ctx, getSiteSubdomainDomain, siteID)
+	var i Domain
+	err := row.Scan(
+		&i.ID,
+		&i.SiteID,
+		&i.Host,
+		&i.Kind,
+		&i.IsPrimary,
+		&i.VerifiedAt,
+		&i.TlsStatus,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Status,
+		&i.CfRecordID,
+		&i.CfCustomHostnameID,
+		&i.Verification,
+		&i.LastCheckedAt,
+		&i.LastError,
+	)
+	return i, err
+}
+
 const getSiteVersionByID = `-- name: GetSiteVersionByID :one
 SELECT id, site_id, version_number, config, published_by, note, created_at FROM site_versions
 WHERE id = $1
@@ -576,6 +740,90 @@ func (q *Queries) GetSiteVersionByID(ctx context.Context, id string) (SiteVersio
 	return i, err
 }
 
+const listCustomDomainsByStatus = `-- name: ListCustomDomainsByStatus :many
+SELECT id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at, status, cf_record_id, cf_custom_hostname_id, verification, last_checked_at, last_error FROM domains
+WHERE kind = 'CUSTOM' AND status = $1
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListCustomDomainsByStatus(ctx context.Context, status string) ([]Domain, error) {
+	rows, err := q.db.Query(ctx, listCustomDomainsByStatus, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Domain{}
+	for rows.Next() {
+		var i Domain
+		if err := rows.Scan(
+			&i.ID,
+			&i.SiteID,
+			&i.Host,
+			&i.Kind,
+			&i.IsPrimary,
+			&i.VerifiedAt,
+			&i.TlsStatus,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Status,
+			&i.CfRecordID,
+			&i.CfCustomHostnameID,
+			&i.Verification,
+			&i.LastCheckedAt,
+			&i.LastError,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDomainsBySiteID = `-- name: ListDomainsBySiteID :many
+SELECT id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at, status, cf_record_id, cf_custom_hostname_id, verification, last_checked_at, last_error FROM domains
+WHERE site_id = $1
+ORDER BY is_primary DESC, CASE WHEN kind = 'CUSTOM' THEN 0 ELSE 1 END, created_at ASC
+`
+
+func (q *Queries) ListDomainsBySiteID(ctx context.Context, siteID string) ([]Domain, error) {
+	rows, err := q.db.Query(ctx, listDomainsBySiteID, siteID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Domain{}
+	for rows.Next() {
+		var i Domain
+		if err := rows.Scan(
+			&i.ID,
+			&i.SiteID,
+			&i.Host,
+			&i.Kind,
+			&i.IsPrimary,
+			&i.VerifiedAt,
+			&i.TlsStatus,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Status,
+			&i.CfRecordID,
+			&i.CfCustomHostnameID,
+			&i.Verification,
+			&i.LastCheckedAt,
+			&i.LastError,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPublishedSites = `-- name: ListPublishedSites :many
 SELECT
     s.id,
@@ -590,7 +838,7 @@ SELECT
 FROM sites s
 JOIN site_versions v ON v.id = s.published_version_id
 JOIN shops sh ON sh.id = s.shop_id
-LEFT JOIN domains pd ON pd.site_id = s.id AND pd.is_primary = TRUE
+LEFT JOIN domains pd ON pd.site_id = s.id AND pd.is_primary = TRUE AND pd.status = 'ACTIVE'
 WHERE s.status = 'PUBLISHED'
   AND s.published_version_id IS NOT NULL
   AND sh.status = 'ACTIVE'
@@ -704,7 +952,7 @@ SELECT
     s.updated_at
 FROM sites s
 JOIN shops sh ON sh.id = s.shop_id
-LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE
+LEFT JOIN domains d ON d.site_id = s.id AND d.is_primary = TRUE AND d.status = 'ACTIVE'
 LEFT JOIN site_versions v ON v.id = s.published_version_id
 WHERE ($1::text = '' OR s.status = $1::text)
   AND (
@@ -777,6 +1025,187 @@ func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]ListSit
 		return nil, err
 	}
 	return items, nil
+}
+
+const markCustomDomainRemoving = `-- name: MarkCustomDomainRemoving :one
+UPDATE domains
+SET status = 'REMOVING',
+    is_primary = FALSE,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at, status, cf_record_id, cf_custom_hostname_id, verification, last_checked_at, last_error
+`
+
+func (q *Queries) MarkCustomDomainRemoving(ctx context.Context, id string) (Domain, error) {
+	row := q.db.QueryRow(ctx, markCustomDomainRemoving, id)
+	var i Domain
+	err := row.Scan(
+		&i.ID,
+		&i.SiteID,
+		&i.Host,
+		&i.Kind,
+		&i.IsPrimary,
+		&i.VerifiedAt,
+		&i.TlsStatus,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Status,
+		&i.CfRecordID,
+		&i.CfCustomHostnameID,
+		&i.Verification,
+		&i.LastCheckedAt,
+		&i.LastError,
+	)
+	return i, err
+}
+
+const setSiteDomainPrimary = `-- name: SetSiteDomainPrimary :exec
+UPDATE domains
+SET is_primary = $3,
+    updated_at = NOW()
+WHERE site_id = $1 AND kind = $2
+`
+
+type SetSiteDomainPrimaryParams struct {
+	SiteID    string `json:"site_id"`
+	Kind      string `json:"kind"`
+	IsPrimary bool   `json:"is_primary"`
+}
+
+func (q *Queries) SetSiteDomainPrimary(ctx context.Context, arg SetSiteDomainPrimaryParams) error {
+	_, err := q.db.Exec(ctx, setSiteDomainPrimary, arg.SiteID, arg.Kind, arg.IsPrimary)
+	return err
+}
+
+const updateDomainCFRecordID = `-- name: UpdateDomainCFRecordID :one
+UPDATE domains
+SET cf_record_id = $2,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at, status, cf_record_id, cf_custom_hostname_id, verification, last_checked_at, last_error
+`
+
+type UpdateDomainCFRecordIDParams struct {
+	ID         string  `json:"id"`
+	CfRecordID *string `json:"cf_record_id"`
+}
+
+func (q *Queries) UpdateDomainCFRecordID(ctx context.Context, arg UpdateDomainCFRecordIDParams) (Domain, error) {
+	row := q.db.QueryRow(ctx, updateDomainCFRecordID, arg.ID, arg.CfRecordID)
+	var i Domain
+	err := row.Scan(
+		&i.ID,
+		&i.SiteID,
+		&i.Host,
+		&i.Kind,
+		&i.IsPrimary,
+		&i.VerifiedAt,
+		&i.TlsStatus,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Status,
+		&i.CfRecordID,
+		&i.CfCustomHostnameID,
+		&i.Verification,
+		&i.LastCheckedAt,
+		&i.LastError,
+	)
+	return i, err
+}
+
+const updateDomainError = `-- name: UpdateDomainError :one
+UPDATE domains
+SET last_checked_at = $2,
+    last_error = $3,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at, status, cf_record_id, cf_custom_hostname_id, verification, last_checked_at, last_error
+`
+
+type UpdateDomainErrorParams struct {
+	ID            string     `json:"id"`
+	LastCheckedAt *time.Time `json:"last_checked_at"`
+	LastError     *string    `json:"last_error"`
+}
+
+func (q *Queries) UpdateDomainError(ctx context.Context, arg UpdateDomainErrorParams) (Domain, error) {
+	row := q.db.QueryRow(ctx, updateDomainError, arg.ID, arg.LastCheckedAt, arg.LastError)
+	var i Domain
+	err := row.Scan(
+		&i.ID,
+		&i.SiteID,
+		&i.Host,
+		&i.Kind,
+		&i.IsPrimary,
+		&i.VerifiedAt,
+		&i.TlsStatus,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Status,
+		&i.CfRecordID,
+		&i.CfCustomHostnameID,
+		&i.Verification,
+		&i.LastCheckedAt,
+		&i.LastError,
+	)
+	return i, err
+}
+
+const updateDomainVerificationState = `-- name: UpdateDomainVerificationState :one
+UPDATE domains
+SET status = $2,
+    is_primary = $3,
+    verified_at = COALESCE(verified_at, $4),
+    tls_status = $5,
+    verification = $6,
+    last_checked_at = $7,
+    last_error = $8,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at, status, cf_record_id, cf_custom_hostname_id, verification, last_checked_at, last_error
+`
+
+type UpdateDomainVerificationStateParams struct {
+	ID            string     `json:"id"`
+	Status        string     `json:"status"`
+	IsPrimary     bool       `json:"is_primary"`
+	VerifiedAt    *time.Time `json:"verified_at"`
+	TlsStatus     string     `json:"tls_status"`
+	Verification  []byte     `json:"verification"`
+	LastCheckedAt *time.Time `json:"last_checked_at"`
+	LastError     *string    `json:"last_error"`
+}
+
+func (q *Queries) UpdateDomainVerificationState(ctx context.Context, arg UpdateDomainVerificationStateParams) (Domain, error) {
+	row := q.db.QueryRow(ctx, updateDomainVerificationState,
+		arg.ID,
+		arg.Status,
+		arg.IsPrimary,
+		arg.VerifiedAt,
+		arg.TlsStatus,
+		arg.Verification,
+		arg.LastCheckedAt,
+		arg.LastError,
+	)
+	var i Domain
+	err := row.Scan(
+		&i.ID,
+		&i.SiteID,
+		&i.Host,
+		&i.Kind,
+		&i.IsPrimary,
+		&i.VerifiedAt,
+		&i.TlsStatus,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Status,
+		&i.CfRecordID,
+		&i.CfCustomHostnameID,
+		&i.Verification,
+		&i.LastCheckedAt,
+		&i.LastError,
+	)
+	return i, err
 }
 
 const updateSiteDraft = `-- name: UpdateSiteDraft :one
@@ -917,14 +1346,20 @@ const upsertSiteSubdomainDomain = `-- name: UpsertSiteSubdomainDomain :one
 INSERT INTO domains (
     id, site_id, host, kind, is_primary, verified_at, tls_status
 ) VALUES (
-    $1, $2, LOWER($3), 'SUBDOMAIN', TRUE, NOW(), 'MANAGED'
+    $1,
+    $2,
+    LOWER($3),
+    'SUBDOMAIN',
+    NOT EXISTS (SELECT 1 FROM domains d2 WHERE d2.site_id = $2 AND d2.is_primary = TRUE),
+    NOW(),
+    'MANAGED'
 )
 ON CONFLICT (site_id) WHERE kind = 'SUBDOMAIN'
 DO UPDATE SET
     host = EXCLUDED.host,
     verified_at = NOW(),
     updated_at = NOW()
-RETURNING id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at
+RETURNING id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at, status, cf_record_id, cf_custom_hostname_id, verification, last_checked_at, last_error
 `
 
 type UpsertSiteSubdomainDomainParams struct {
@@ -946,6 +1381,12 @@ func (q *Queries) UpsertSiteSubdomainDomain(ctx context.Context, arg UpsertSiteS
 		&i.TlsStatus,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Status,
+		&i.CfRecordID,
+		&i.CfCustomHostnameID,
+		&i.Verification,
+		&i.LastCheckedAt,
+		&i.LastError,
 	)
 	return i, err
 }

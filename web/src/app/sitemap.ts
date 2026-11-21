@@ -7,7 +7,12 @@ import {
 import { APP_ORIGINS, getSiteRootDomain } from "@/lib/server/config";
 import { resolveRequestHost, resolveRequestProto } from "@/lib/server/http";
 import { loadPublicSitePageBundle } from "@/lib/server/sites";
-import { classifyHost, deriveMarketplaceOrigin, deriveSiteOrigin } from "@/lib/site/host";
+import {
+  classifyHost,
+  deriveMarketplaceOrigin,
+  deriveSiteOrigin,
+  isTenantSiteHost,
+} from "@/lib/site/host";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +28,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     return [];
   }
 
-  if (cls.kind === "site") {
+  if (isTenantSiteHost(cls)) {
     const bundle = await loadPublicSitePageBundle(cls.hostname);
     if (!bundle) return [];
 

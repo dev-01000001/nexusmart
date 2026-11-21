@@ -855,3 +855,31 @@ type AuditLogsListResponse struct {
 	PageSize int32         `json:"page_size"`
 	Total    int64         `json:"total"`
 }
+
+// --- Custom Domains (Phase 5) ---
+
+type DomainVerificationRecordDTO struct {
+	Type  string `json:"type"`
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+type SiteDomainDTO struct {
+	ID           string                        `json:"id"`
+	Host         string                        `json:"host"`
+	Kind         string                        `json:"kind"`
+	Status       string                        `json:"status"`
+	IsPrimary    bool                          `json:"is_primary"`
+	Verification []DomainVerificationRecordDTO `json:"verification"`
+	LastError    string                        `json:"last_error,omitempty"`
+	VerifiedAt   string                        `json:"verified_at,omitempty"`
+	CreatedAt    string                        `json:"created_at,omitempty"`
+}
+
+type SiteDomainResponse struct {
+	Domain SiteDomainDTO `json:"domain"`
+}
+
+type SiteDomainsListResponse struct {
+	Domains []SiteDomainDTO `json:"domains"`
+}

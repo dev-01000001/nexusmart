@@ -57,3 +57,188 @@
   font-size: 12px;
   color: var(--negative);
 }
+
+/* Site domains inspection block inside Admin detail well */
+.domainsSection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid #e3e8eb; /* taste-skill-ignore: admin detail divider */
+}
+
+.domainsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.domainsTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--ink);
+}
+
+.domainsReloadBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: var(--radius-control);
+  border: 1px solid #d4dde1; /* taste-skill-ignore: compact admin reload action */
+  background: var(--card);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  transition: background-color var(--t-hover) ease;
+}
+
+.domainsReloadBtn:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+.domainsReloadBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.domainsStateText {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--muted);
+}
+
+.domainsErrorRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.domainsList {
+  background: var(--card);
+  border: 1px solid #e6ecee; /* taste-skill-ignore: admin domains flat list */
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+
+.domainItem {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 14px;
+}
+
+.domainItem + .domainItem {
+  border-top: 1px solid #eaeaea; /* taste-skill-ignore: admin domain row hairline */
+}
+
+.domainRowMain {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 14px;
+  flex-wrap: wrap;
+}
+
+.domainIdentity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+.domainHostRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.domainHost {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--ink);
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+.domainMetaRow {
+  display: flex;
+  align-items: center;
+  gap: 8px 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--muted);
+}
+
+.domainMetaItem {
+  font-variant-numeric: tabular-nums;
+}
+
+.domainRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.domainErrorNote {
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--negative);
+}
+
+.domainRemoveBtn {
+  color: var(--negative);
+}
+
+.domainConfirmBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+}
+
+.domainConfirmText {
+  font-size: 13px;
+  line-height: 18px;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+
+.domainConfirmHost {
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.domainConfirmActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}

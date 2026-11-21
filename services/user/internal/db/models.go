@@ -41,15 +41,21 @@ type AuditLog struct {
 }
 
 type Domain struct {
-	ID         string     `json:"id"`
-	SiteID     string     `json:"site_id"`
-	Host       string     `json:"host"`
-	Kind       string     `json:"kind"`
-	IsPrimary  bool       `json:"is_primary"`
-	VerifiedAt *time.Time `json:"verified_at"`
-	TlsStatus  string     `json:"tls_status"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	ID                 string     `json:"id"`
+	SiteID             string     `json:"site_id"`
+	Host               string     `json:"host"`
+	Kind               string     `json:"kind"`
+	IsPrimary          bool       `json:"is_primary"`
+	VerifiedAt         *time.Time `json:"verified_at"`
+	TlsStatus          string     `json:"tls_status"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	Status             string     `json:"status"`
+	CfRecordID         *string    `json:"cf_record_id"`
+	CfCustomHostnameID *string    `json:"cf_custom_hostname_id"`
+	Verification       []byte     `json:"verification"`
+	LastCheckedAt      *time.Time `json:"last_checked_at"`
+	LastError          *string    `json:"last_error"`
 }
 
 type RefreshToken struct {

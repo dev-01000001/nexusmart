@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { ROOT_HOST, siteHost } from "./config.mjs";
+import { ROOT_HOST, config, siteHost, withPort } from "./config.mjs";
 import { Browser, expectStatus, gw, uid } from "./http.mjs";
 import { waitForOTP } from "./mailpit.mjs";
 
@@ -24,6 +24,7 @@ export const SEEDED = {
   },
   daNang: {
     sub: "da-nang",
+    pendingCustomDomain: "danang.pending.test",
     shopName: "Sợi Tự Nhiên Đà Nẵng",
     shopSlug: "soi-tu-nhien-da-nang",
     productSlug: "combo-3-quan-lot-brief-soi-tre",
@@ -32,6 +33,7 @@ export const SEEDED = {
   },
   haNoi: {
     sub: "ha-noi",
+    customDomain: "hanoi-knit.verified.test",
     shopName: "Dệt Kim Hà Nội",
     shopSlug: "det-kim-ha-noi",
     productSlug: "quan-jogger-ni-chan-cua-xam-muoi-tieu",
@@ -39,6 +41,16 @@ export const SEEDED = {
     theme: { mode: "dark", bg: "#2B1A1E", accent: "#E9B949" },
   },
 };
+
+/** Primary bare hostname for a seeded shop (ACTIVE custom domain when configured, else `<sub>.<root>`). */
+export function primaryHostOf(shop, root = config.siteRootDomain) {
+  return shop.customDomain || `${shop.sub}.${root}`;
+}
+
+/** Primary Host header value (with optional port) for a seeded shop. */
+export function primarySiteHost(shop) {
+  return withPort(primaryHostOf(shop));
+}
 
 export const demoCredentials = {
   seller: {

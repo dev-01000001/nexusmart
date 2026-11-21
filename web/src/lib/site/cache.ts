@@ -21,6 +21,7 @@ export interface SiteHostCacheOptions {
   positiveTtlMs?: number;
   negativeTtlMs?: number;
   maxEntries?: number;
+  maxNegativeEntries?: number;
   now?: () => number;
 }
 
@@ -41,22 +42,45 @@ export function createSiteHostCache(opts: SiteHostCacheOptions = {}): SiteHostCa
   const positiveTtlMs = Math.max(1, opts.positiveTtlMs ?? 3000);
   const negativeTtlMs = Math.max(1, opts.negativeTtlMs ?? 1500);
   const maxEntries = Math.max(1, opts.maxEntries ?? 2000);
+  const maxNegativeEntries = Math.max(
+    0,
+    Math.min(maxEntries, opts.maxNegativeEntries ?? maxEntries)
+  );
   const now = opts.now ?? (() => Date.now());
 
   const store = new Map<string, CacheEntry>();
+  const negativeKeys = new Set<string>();
   const inflight = new Map<string, Promise<SiteHostLookupResult>>();
 
-  function evictIfNeeded(currentTime: number): void {
-    if (store.size < maxEntries) return;
+  function deleteKey(key: string): void {
+    store.delete(key);
+    negativeKeys.delete(key);
+  }
+
+  function purgeExpired(currentTime: number): void {
     for (const [k, entry] of store) {
       if (entry.expiresAt <= currentTime) {
-        store.delete(k);
+        deleteKey(k);
       }
     }
+  }
+
+  function evictOldestNegative(): boolean {
+    const oldestNegative = negativeKeys.values().next().value;
+    if (oldestNegative === undefined) return false;
+    deleteKey(oldestNegative);
+    return true;
+  }
+
+  function evictForTotalCapacity(currentTime: number): void {
+    if (store.size < maxEntries) return;
+    purgeExpired(currentTime);
     while (store.size >= maxEntries) {
-      const oldestKey = store.keys().next().value;
-      if (oldestKey === undefined) break;
-      store.delete(oldestKey);
+      if (!evictOldestNegative()) {
+        const oldestKey = store.keys().next().value;
+        if (oldestKey === undefined) break;
+        deleteKey(oldestKey);
+      }
     }
   }
 
@@ -65,7 +89,7 @@ export function createSiteHostCache(opts: SiteHostCacheOptions = {}): SiteHostCa
     const entry = store.get(key);
     if (!entry) return null;
     if (entry.expiresAt <= now()) {
-      store.delete(key);
+      deleteKey(key);
       return null;
     }
     if (entry.status === "found") {
@@ -82,8 +106,8 @@ export function createSiteHostCache(opts: SiteHostCacheOptions = {}): SiteHostCa
   function setFound(host: string, value: Omit<CachedSiteHostHit, "status">): void {
     const key = host.toLowerCase();
     const t = now();
-    store.delete(key);
-    evictIfNeeded(t);
+    deleteKey(key);
+    evictForTotalCapacity(t);
     store.set(key, {
       status: "found",
       ...value,
@@ -94,12 +118,26 @@ export function createSiteHostCache(opts: SiteHostCacheOptions = {}): SiteHostCa
   function setNotFound(host: string): void {
     const key = host.toLowerCase();
     const t = now();
-    store.delete(key);
-    evictIfNeeded(t);
+    deleteKey(key);
+    if (maxNegativeEntries <= 0) return;
+    if (negativeKeys.size >= maxNegativeEntries || store.size >= maxEntries) {
+      purgeExpired(t);
+    }
+    while (negativeKeys.size >= maxNegativeEntries) {
+      if (!evictOldestNegative()) break;
+    }
+    while (store.size >= maxEntries) {
+      if (!evictOldestNegative()) {
+        const oldestKey = store.keys().next().value;
+        if (oldestKey === undefined) break;
+        deleteKey(oldestKey);
+      }
+    }
     store.set(key, {
       status: "not_found",
       expiresAt: t + negativeTtlMs,
     });
+    negativeKeys.add(key);
   }
 
   async function resolve(
@@ -141,10 +179,11 @@ export function createSiteHostCache(opts: SiteHostCacheOptions = {}): SiteHostCa
     setNotFound,
     resolve,
     delete: (host: string) => {
-      store.delete(host.toLowerCase());
+      deleteKey(host.toLowerCase());
     },
     clear: () => {
       store.clear();
+      negativeKeys.clear();
       inflight.clear();
     },
     size: () => store.size,
