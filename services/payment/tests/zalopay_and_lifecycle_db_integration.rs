@@ -901,3 +901,232 @@ async fn test_pg_zalopay_full_lifecycle_refunds_seller_balance_and_reconciliatio
 
     teardown_isolated_db(admin_pool, pool, &db_name).await;
 }
+
+#[tokio::test]
+async fn test_pg_production_rejects_mock_key_callback_while_dev_confirms() {
+    let Ok(base_db_url) = std::env::var("PAYMENT_TEST_DATABASE_URL") else {
+        eprintln!(
+            "skipping PG integration test (set PAYMENT_TEST_DATABASE_URL to run against Postgres)"
+        );
+        return;
+    };
+
+    use nexusmart_payment::config::{AppEnv, VietQrMode, DEFAULT_ZALOPAY_MOCK_KEY2};
+    use nexusmart_payment::webhook_security::compute_hmac_hex;
+
+    let (admin_pool, pool, db_name, isolated_url) = setup_isolated_db(&base_db_url).await;
+
+    // 1. Dev config with default mock ZaloPay key2 (`zalopay-mock-key2-dev`)
+    let mut dev_cfg = Config::from_env();
+    dev_cfg.app_env = AppEnv::Development;
+    dev_cfg.database_url = isolated_url.clone();
+    dev_cfg.webhook_secret = "dev-only-payment-webhook-hmac-secret".to_string();
+    dev_cfg.jwt_secret = TEST_USER_JWT_SECRET.to_string();
+    dev_cfg.service_jwt_secret = TEST_SVC_JWT_SECRET.to_string();
+    dev_cfg.vietqr_mode = VietQrMode::Mock;
+    dev_cfg.zalopay_mode = ZaloPayMode::Mock;
+    dev_cfg.zalopay_key1.clear();
+    dev_cfg.zalopay_key2.clear();
+
+    let auth = GrpcAuth::new(TEST_USER_JWT_SECRET, TEST_SVC_JWT_SECRET).unwrap();
+    let dev_svc = PaymentService::new(pool.clone(), dev_cfg.clone(), Metrics::new());
+    let dev_app = build_router(dev_svc.clone(), auth.clone());
+
+    // Create pending ZaloPay payment & pending VietQR payment
+    let zp_pay = dev_svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: "grp-sec-zp".into(),
+            order_id: "ord-sec-zp".into(),
+            user_id: "buyer-sec".into(),
+            amount_vnd: 450_000,
+            method: PaymentMethod::ZaloPay,
+            shop_allocations: vec![],
+            expires_at: None,
+            idempotency_key: Some("idem-sec-zp".into()),
+            supersede_previous: false,
+            sales_channel: "MARKETPLACE".into(),
+            storefront_shop_id: String::new(),
+            trace_id: "trace-sec-zp".into(),
+        })
+        .await
+        .unwrap();
+
+    let vq_pay = dev_svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: "grp-sec-vq".into(),
+            order_id: "ord-sec-vq".into(),
+            user_id: "buyer-sec".into(),
+            amount_vnd: 220_000,
+            method: PaymentMethod::VietQr,
+            shop_allocations: vec![],
+            expires_at: None,
+            idempotency_key: Some("idem-sec-vq".into()),
+            supersede_previous: false,
+            sales_channel: "MARKETPLACE".into(),
+            storefront_shop_id: String::new(),
+            trace_id: "trace-sec-vq".into(),
+        })
+        .await
+        .unwrap();
+
+    // Attacker builds callback signed with public repo key `zalopay-mock-key2-dev`
+    let forged_zp_cb = dev_svc.zalopay().build_mock_callback_signed(
+        Some(zp_pay.payment.id),
+        Some("grp-sec-zp".into()),
+        Some("ord-sec-zp".into()),
+        &zp_pay.payment.provider_order_code,
+        "ZP-FORGED-9001",
+        450_000,
+        Utc::now().timestamp_millis(),
+    );
+
+    // 2. Production config (valid sandbox keys) MUST reject forged callback (401) and keep payment pending
+    let mut prod_cfg = dev_cfg.clone();
+    prod_cfg.app_env = AppEnv::Production;
+    prod_cfg.zalopay_mode = ZaloPayMode::Sandbox;
+    prod_cfg.zalopay_key1 = "prod-real-key1-987654321".to_string();
+    prod_cfg.zalopay_key2 = "prod-real-key2-abcdef123".to_string();
+    prod_cfg.vietqr_mode = VietQrMode::PayOs;
+    prod_cfg.webhook_secret = "prod-real-webhook-secret-998877".to_string();
+    prod_cfg.payos_client_id = "prod-payos-cid".to_string();
+    prod_cfg.payos_api_key = "prod-payos-api-key".to_string();
+    prod_cfg.payos_checksum_key = "prod-payos-checksum-key".to_string();
+    assert!(prod_cfg.validate().is_ok());
+
+    let prod_svc = PaymentService::new(pool.clone(), prod_cfg, Metrics::new());
+    let prod_app = build_router(prod_svc, auth.clone());
+
+    let prod_zp_resp = prod_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/webhooks/zalopay")
+                .header("content-type", "application/json")
+                .body(Body::from(forged_zp_cb.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(prod_zp_resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Also verify forged VietQR webhook signed with `.env.example` secret is rejected (401)
+    let forged_vq_body = serde_json::to_vec(&json!({
+        "provider_tx_id": "VQ-FORGED-9001",
+        "payment_id": vq_pay.payment.id.to_string(),
+        "order_id": "ord-sec-vq",
+        "provider_order_code": vq_pay.payment.provider_order_code,
+        "amount_vnd": 220_000,
+        "status": "SUCCEEDED",
+    }))
+    .unwrap();
+    let forged_vq_sig = compute_hmac_hex("dev-only-payment-webhook-hmac-secret", &forged_vq_body);
+    let ts_now = Utc::now().timestamp().to_string();
+    let prod_vq_resp = prod_app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/webhooks/vietqr")
+                .header("content-type", "application/json")
+                .header("x-signature", &forged_vq_sig)
+                .header("x-timestamp", &ts_now)
+                .body(Body::from(forged_vq_body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(prod_vq_resp.status(), StatusCode::UNAUTHORIZED);
+
+    // 3. Misconfigured production router (mock / repo key) fails validate() AND rejects with 503
+    let mut mis_prod_cfg = dev_cfg.clone();
+    mis_prod_cfg.app_env = AppEnv::Production;
+    mis_prod_cfg.zalopay_key2 = DEFAULT_ZALOPAY_MOCK_KEY2.to_string();
+    assert!(mis_prod_cfg.validate().is_err());
+
+    let mis_prod_app = build_router(
+        PaymentService::new(pool.clone(), mis_prod_cfg, Metrics::new()),
+        auth,
+    );
+    let mis_zp_resp = mis_prod_app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/webhooks/zalopay")
+                .header("content-type", "application/json")
+                .body(Body::from(forged_zp_cb.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mis_zp_resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // Both payments MUST remain pending after all production rejection attempts
+    assert_eq!(
+        dev_svc
+            .get_payment(Some(zp_pay.payment.id), None, None)
+            .await
+            .unwrap()
+            .payment
+            .status,
+        "pending"
+    );
+    assert_eq!(
+        dev_svc
+            .get_payment(Some(vq_pay.payment.id), None, None)
+            .await
+            .unwrap()
+            .payment
+            .status,
+        "pending"
+    );
+
+    // 4. Dev router STILL accepts `zalopay-mock-key2-dev` and dev VietQR webhook -> 200 OK & succeeded
+    let dev_zp_resp = dev_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/webhooks/zalopay")
+                .header("content-type", "application/json")
+                .body(Body::from(forged_zp_cb))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dev_zp_resp.status(), StatusCode::OK);
+    assert_eq!(
+        dev_svc
+            .get_payment(Some(zp_pay.payment.id), None, None)
+            .await
+            .unwrap()
+            .payment
+            .status,
+        "succeeded"
+    );
+
+    let dev_vq_resp = dev_app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/webhooks/vietqr")
+                .header("content-type", "application/json")
+                .header("x-signature", &forged_vq_sig)
+                .header("x-timestamp", &ts_now)
+                .body(Body::from(forged_vq_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dev_vq_resp.status(), StatusCode::OK);
+    assert_eq!(
+        dev_svc
+            .get_payment(Some(vq_pay.payment.id), None, None)
+            .await
+            .unwrap()
+            .payment
+            .status,
+        "succeeded"
+    );
+
+    teardown_isolated_db(admin_pool, pool, &db_name).await;
+}
