@@ -35,8 +35,7 @@ export const POST = apiRoute(async (req) => {
     );
   }
 
-  const subdomain =
-    typeof raw.subdomain === "string" ? raw.subdomain.trim().toLowerCase() : "";
+  const subdomain = typeof raw.subdomain === "string" ? raw.subdomain.trim().toLowerCase() : "";
 
   try {
     const data = await gw<{ site?: RawGwSite | null; template_id?: string }>(
