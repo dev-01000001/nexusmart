@@ -2,7 +2,11 @@
 // and lossless v1 -> v2 converter for Declarative Theme JSON v2 (ADR-0001).
 // Pure TS (zero DOM/Node-only APIs) — safe for RSC, client components, and Node 22 unit tests.
 
-import { ALLOWED_SITE_FONTS, DEFAULT_SITE_THEME, type SiteFontFamily } from "../../lib/site/types.ts";
+import {
+  ALLOWED_SITE_FONTS,
+  DEFAULT_SITE_THEME,
+  type SiteFontFamily,
+} from "../../lib/site/types.ts";
 import { checkThemeContrast, isValidHexColor } from "../../lib/site/theme.ts";
 import {
   ALLOWED_ARCHETYPES,
@@ -57,9 +61,15 @@ const UNSAFE_TEXT_PATTERNS: ReadonlyArray<{ re: RegExp; reason: string }> = [
   { re: /<\s*\/?\s*script\b/i, reason: "chứa thẻ <script> không được phép" },
   { re: /<\s*\/?\s*style\b/i, reason: "chứa thẻ <style> không được phép" },
   { re: /<\s*\/?\s*svg\b/i, reason: "chứa thẻ <svg> không được phép" },
-  { re: /<\s*\/?\s*(iframe|object|embed|link|meta)\b/i, reason: "chứa thẻ HTML nhúng không an toàn" },
+  {
+    re: /<\s*\/?\s*(iframe|object|embed|link|meta)\b/i,
+    reason: "chứa thẻ HTML nhúng không an toàn",
+  },
   { re: /\bon[a-z]{2,20}\s*=/i, reason: "chứa thuộc tính sự kiện HTML (on*=)" },
-  { re: /\b(javascript|vbscript)\s*:/i, reason: "chứa giao thức thực thi mã (javascript:/vbscript:)" },
+  {
+    re: /\b(javascript|vbscript)\s*:/i,
+    reason: "chứa giao thức thực thi mã (javascript:/vbscript:)",
+  },
   { re: /\bdata\s*:/i, reason: "chứa URI data: không được phép" },
   { re: /\bexpression\s*\(/i, reason: "chứa biểu thức CSS expression()" },
   { re: /\burl\s*\(/i, reason: "chứa hàm CSS url()" },
@@ -592,7 +602,9 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
       return {
         ok: false,
         config: null,
-        issues: [{ path: "$", line: 1, column: 1, code: "INVALID_JSON", message: "Cấu hình rỗng." }],
+        issues: [
+          { path: "$", line: 1, column: 1, code: "INVALID_JSON", message: "Cấu hình rỗng." },
+        ],
       };
     }
     return validateSiteTemplateJson(serialized);
@@ -607,7 +619,11 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
     issues.push({ path, line: loc.line, column: loc.column, code, message });
   }
 
-  function checkAllowedKeys(obj: Record<string, unknown>, path: string, allowed: readonly string[]): void {
+  function checkAllowedKeys(
+    obj: Record<string, unknown>,
+    path: string,
+    allowed: readonly string[]
+  ): void {
     const set = new Set(allowed);
     for (const k of Object.keys(obj)) {
       if (!set.has(k)) {
@@ -661,7 +677,11 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
   ): T {
     if (val === undefined || val === "") {
       if (required && !allowed.includes("" as T)) {
-        addIssue(path, "REQUIRED", `Cần chọn một trong các giá trị: ${allowed.filter(Boolean).join(", ")}.`);
+        addIssue(
+          path,
+          "REQUIRED",
+          `Cần chọn một trong các giá trị: ${allowed.filter(Boolean).join(", ")}.`
+        );
       }
       return fallback;
     }
@@ -685,7 +705,13 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
     return val;
   }
 
-  function checkInt(val: unknown, path: string, min: number, max: number, fallback: number): number {
+  function checkInt(
+    val: unknown,
+    path: string,
+    min: number,
+    max: number,
+    fallback: number
+  ): number {
     if (val === undefined) return fallback;
     if (typeof val !== "number" || !Number.isInteger(val)) {
       addIssue(path, "INVALID_TYPE", "Giá trị phải là số nguyên.");
@@ -705,7 +731,13 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
     }
     checkAllowedKeys(raw, path, ["id", "type", "props"]);
     const id = checkText(raw.id, `${path}.id`, 1, 64, false);
-    const type = checkEnum<SiteBlockType>(raw.type, `${path}.type`, ALLOWED_BLOCK_TYPES, "paragraph", true);
+    const type = checkEnum<SiteBlockType>(
+      raw.type,
+      `${path}.type`,
+      ALLOWED_BLOCK_TYPES,
+      "paragraph",
+      true
+    );
     if (!isRecord(raw.props)) {
       addIssue(`${path}.props`, "INVALID_TYPE", "block.props phải là một đối tượng JSON.");
       return null;
@@ -728,7 +760,12 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
       case "badge": {
         checkAllowedKeys(p, pp, ["label", "tone"]);
         const label = checkText(p.label, `${pp}.label`, 1, 48, false);
-        const tone = checkEnum(p.tone, `${pp}.tone`, ["", "neutral", "accent", "band"] as const, "neutral");
+        const tone = checkEnum(
+          p.tone,
+          `${pp}.tone`,
+          ["", "neutral", "accent", "band"] as const,
+          "neutral"
+        );
         return { id, type, props: { label, tone } };
       }
       case "cta": {
@@ -738,7 +775,12 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
         if (hrefErr) addIssue(`${pp}.href`, "UNSAFE_URL", hrefErr);
         const href = typeof p.href === "string" ? p.href.trim() : "";
         if (!href) addIssue(`${pp}.href`, "REQUIRED", "Đường dẫn nút CTA là bắt buộc.");
-        const style = checkEnum(p.style, `${pp}.style`, ["", "primary", "secondary", "link"] as const, "primary");
+        const style = checkEnum(
+          p.style,
+          `${pp}.style`,
+          ["", "primary", "secondary", "link"] as const,
+          "primary"
+        );
         return { id, type, props: { label, href, style } };
       }
       case "image": {
@@ -748,7 +790,12 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
         const image_url = typeof p.image_url === "string" ? p.image_url.trim() : "";
         const alt = checkText(p.alt, `${pp}.alt`, 0, 140, false);
         const caption = checkText(p.caption, `${pp}.caption`, 0, 200, false);
-        const aspect = checkEnum(p.aspect, `${pp}.aspect`, ["", "16:9", "4:3", "3:4", "1:1"] as const, "4:3");
+        const aspect = checkEnum(
+          p.aspect,
+          `${pp}.aspect`,
+          ["", "16:9", "4:3", "3:4", "1:1"] as const,
+          "4:3"
+        );
         return { id, type, props: { image_url, alt, caption, aspect } };
       }
       case "stat": {
@@ -786,7 +833,15 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
       addIssue(path, "INVALID_TYPE", "Mỗi section phải là một đối tượng JSON.");
       return null;
     }
-    checkAllowedKeys(raw, path, ["id", "type", "visible", "variant", "settings", "props", "blocks"]);
+    checkAllowedKeys(raw, path, [
+      "id",
+      "type",
+      "visible",
+      "variant",
+      "settings",
+      "props",
+      "blocks",
+    ]);
     const id = checkText(raw.id, `${path}.id`, 1, 64, false);
     const type = checkEnum<SiteSectionV2Type>(
       raw.type,
@@ -856,7 +911,14 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
 
     switch (type) {
       case "hero": {
-        checkAllowedKeys(p, pp, ["eyebrow", "title", "subtitle", "image_url", "cta_label", "cta_href"]);
+        checkAllowedKeys(p, pp, [
+          "eyebrow",
+          "title",
+          "subtitle",
+          "image_url",
+          "cta_label",
+          "cta_href",
+        ]);
         const imgErr = validateImageUrlStrict(p.image_url, false);
         if (imgErr) addIssue(`${pp}.image_url`, "UNSAFE_IMAGE_URL", imgErr);
         const hrefErr = validateSafeHrefStrict(p.cta_href);
@@ -885,7 +947,9 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
               addIssue(`${pp}.product_ids`, "TOO_MANY_ITEMS", "Chọn tối đa 12 sản phẩm.");
             }
             for (let i = 0; i < Math.min(p.product_ids.length, 12); i++) {
-              product_ids.push(checkText(p.product_ids[i], `${pp}.product_ids[${i}]`, 1, 64, false));
+              product_ids.push(
+                checkText(p.product_ids[i], `${pp}.product_ids[${i}]`, 1, 64, false)
+              );
             }
           }
         }
@@ -1025,7 +1089,13 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
         };
       }
       case "sku_matrix": {
-        checkAllowedKeys(p, pp, ["title", "subtitle", "category_slug", "limit", "show_out_of_stock"]);
+        checkAllowedKeys(p, pp, [
+          "title",
+          "subtitle",
+          "category_slug",
+          "limit",
+          "show_out_of_stock",
+        ]);
         return {
           ...base,
           type,
@@ -1077,7 +1147,11 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
   const sv = rootVal.schema_version;
   const isV1 = sv === undefined || sv === 1;
   if (!isV1 && sv !== SITE_SCHEMA_VERSION_V2) {
-    addIssue("schema_version", "UNSUPPORTED_VERSION", "schema_version phải là 2 (hoặc bỏ trống cho v1).");
+    addIssue(
+      "schema_version",
+      "UNSUPPORTED_VERSION",
+      "schema_version phải là 2 (hoặc bỏ trống cho v1)."
+    );
   }
 
   if (isV1) {
@@ -1097,7 +1171,11 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
   if (!isV1) {
     const rawTid = checkText(rootVal.template_id, "template_id", 1, 64, false);
     if (rawTid && !TEMPLATE_ID_RE.test(rawTid)) {
-      addIssue("template_id", "INVALID_TEMPLATE_ID", "template_id chỉ gồm chữ thường, số và dấu gạch nối.");
+      addIssue(
+        "template_id",
+        "INVALID_TEMPLATE_ID",
+        "template_id chỉ gồm chữ thường, số và dấu gạch nối."
+      );
     }
     templateId = rawTid || "custom";
   }
@@ -1279,7 +1357,13 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
           true
         ),
         show_announcement: checkBool(rl.show_announcement, "layout.show_announcement", false),
-        announcement_text: checkText(rl.announcement_text, "layout.announcement_text", 0, 140, false),
+        announcement_text: checkText(
+          rl.announcement_text,
+          "layout.announcement_text",
+          0,
+          140,
+          false
+        ),
         slots,
       };
     }
@@ -1292,7 +1376,11 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
   let pages: SitePagesConfig = createDefaultPagesConfig();
   if (!isV1) {
     if (!isRecord(rootVal.pages)) {
-      addIssue("pages", "REQUIRED", "Khối pages (catalog, pdp, cart, info) là bắt buộc ở schema v2.");
+      addIssue(
+        "pages",
+        "REQUIRED",
+        "Khối pages (catalog, pdp, cart, info) là bắt buộc ở schema v2."
+      );
     } else {
       const rp = rootVal.pages;
       checkAllowedKeys(rp, "pages", ["catalog", "pdp", "cart", "info"]);
@@ -1313,7 +1401,13 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
           "sections",
         ]);
         catalog = {
-          layout: checkEnum(c.layout, "pages.catalog.layout", ALLOWED_CATALOG_LAYOUTS, "top-bar", true),
+          layout: checkEnum(
+            c.layout,
+            "pages.catalog.layout",
+            ALLOWED_CATALOG_LAYOUTS,
+            "top-bar",
+            true
+          ),
           columns: checkInt(c.columns, "pages.catalog.columns", 1, 5, 4),
           show_filters: checkBool(c.show_filters, "pages.catalog.show_filters", true),
           show_search: checkBool(c.show_search, "pages.catalog.show_search", true),
@@ -1339,7 +1433,13 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
           "sections",
         ]);
         pdp = {
-          layout: checkEnum(d.layout, "pages.pdp.layout", ALLOWED_PDP_LAYOUTS, "classic-split", true),
+          layout: checkEnum(
+            d.layout,
+            "pages.pdp.layout",
+            ALLOWED_PDP_LAYOUTS,
+            "classic-split",
+            true
+          ),
           gallery_style: checkEnum(
             d.gallery_style,
             "pages.pdp.gallery_style",
@@ -1368,7 +1468,13 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
           "sections",
         ]);
         cart = {
-          layout: checkEnum(ct.layout, "pages.cart.layout", ALLOWED_CART_LAYOUTS, "split-summary", true),
+          layout: checkEnum(
+            ct.layout,
+            "pages.cart.layout",
+            ALLOWED_CART_LAYOUTS,
+            "split-summary",
+            true
+          ),
           show_vouchers: checkBool(ct.show_vouchers, "pages.cart.show_vouchers", true),
           show_addons: checkBool(ct.show_addons, "pages.cart.show_addons", true),
           trust_note: checkText(ct.trust_note, "pages.cart.trust_note", 0, 240, true),
@@ -1389,8 +1495,18 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
           "sections",
         ]);
         info = {
-          layout: checkEnum(inf.layout, "pages.info.layout", ALLOWED_INFO_LAYOUTS, "split-hero", true),
-          show_factory_profile: checkBool(inf.show_factory_profile, "pages.info.show_factory_profile", true),
+          layout: checkEnum(
+            inf.layout,
+            "pages.info.layout",
+            ALLOWED_INFO_LAYOUTS,
+            "split-hero",
+            true
+          ),
+          show_factory_profile: checkBool(
+            inf.show_factory_profile,
+            "pages.info.show_factory_profile",
+            true
+          ),
           show_toc: checkBool(inf.show_toc, "pages.info.show_toc", false),
           show_showcase: checkBool(inf.show_showcase, "pages.info.show_showcase", true),
           sections: validateSectionList(inf.sections, "pages.info.sections", MAX_PAGE_SECTIONS),
@@ -1464,42 +1580,51 @@ export function normalizeSiteTemplateConfig(
 
   // Graceful fallback normalization for older persisted drafts with minor defaults missing.
   const rawTheme = isRecord(obj.theme) ? obj.theme : {};
-  const fontRaw = typeof rawTheme.font_family === "string" ? rawTheme.font_family.trim().toLowerCase() : "";
+  const fontRaw =
+    typeof rawTheme.font_family === "string" ? rawTheme.font_family.trim().toLowerCase() : "";
   const font_family: SiteFontFamily = (ALLOWED_SITE_FONTS as readonly string[]).includes(fontRaw)
     ? (fontRaw as SiteFontFamily)
     : "work-sans";
 
   const theme: SiteThemeV2 = {
-    bg_color: typeof rawTheme.bg_color === "string" && isValidHexColor(rawTheme.bg_color)
-      ? rawTheme.bg_color.toUpperCase()
-      : DEFAULT_SITE_THEME.bg_color,
-    surface_color: typeof rawTheme.surface_color === "string" && isValidHexColor(rawTheme.surface_color)
-      ? rawTheme.surface_color.toUpperCase()
-      : DEFAULT_SITE_THEME.surface_color,
-    text_color: typeof rawTheme.text_color === "string" && isValidHexColor(rawTheme.text_color)
-      ? rawTheme.text_color.toUpperCase()
-      : DEFAULT_SITE_THEME.text_color,
-    accent_color: typeof rawTheme.accent_color === "string" && isValidHexColor(rawTheme.accent_color)
-      ? rawTheme.accent_color.toUpperCase()
-      : DEFAULT_SITE_THEME.accent_color,
+    bg_color:
+      typeof rawTheme.bg_color === "string" && isValidHexColor(rawTheme.bg_color)
+        ? rawTheme.bg_color.toUpperCase()
+        : DEFAULT_SITE_THEME.bg_color,
+    surface_color:
+      typeof rawTheme.surface_color === "string" && isValidHexColor(rawTheme.surface_color)
+        ? rawTheme.surface_color.toUpperCase()
+        : DEFAULT_SITE_THEME.surface_color,
+    text_color:
+      typeof rawTheme.text_color === "string" && isValidHexColor(rawTheme.text_color)
+        ? rawTheme.text_color.toUpperCase()
+        : DEFAULT_SITE_THEME.text_color,
+    accent_color:
+      typeof rawTheme.accent_color === "string" && isValidHexColor(rawTheme.accent_color)
+        ? rawTheme.accent_color.toUpperCase()
+        : DEFAULT_SITE_THEME.accent_color,
     accent_text_color:
       typeof rawTheme.accent_text_color === "string" && isValidHexColor(rawTheme.accent_text_color)
         ? rawTheme.accent_text_color.toUpperCase()
         : DEFAULT_SITE_THEME.accent_text_color,
     font_family,
     logo_url: sanitizeSafeImageUrl(typeof rawTheme.logo_url === "string" ? rawTheme.logo_url : ""),
-    banner_url: sanitizeSafeImageUrl(typeof rawTheme.banner_url === "string" ? rawTheme.banner_url : ""),
+    banner_url: sanitizeSafeImageUrl(
+      typeof rawTheme.banner_url === "string" ? rawTheme.banner_url : ""
+    ),
     brand_name:
       (typeof rawTheme.brand_name === "string" && rawTheme.brand_name.trim()) ||
       fallbackBrandName ||
       DEFAULT_SITE_THEME.brand_name,
     tagline: typeof rawTheme.tagline === "string" ? rawTheme.tagline.trim() : "",
     radius:
-      typeof rawTheme.radius === "string" && (ALLOWED_RADII as readonly string[]).includes(rawTheme.radius)
+      typeof rawTheme.radius === "string" &&
+      (ALLOWED_RADII as readonly string[]).includes(rawTheme.radius)
         ? (rawTheme.radius as SiteThemeV2["radius"])
         : "",
     density:
-      typeof rawTheme.density === "string" && (ALLOWED_DENSITIES as readonly string[]).includes(rawTheme.density)
+      typeof rawTheme.density === "string" &&
+      (ALLOWED_DENSITIES as readonly string[]).includes(rawTheme.density)
         ? (rawTheme.density as SiteThemeV2["density"])
         : "",
   };
@@ -1509,7 +1634,8 @@ export function normalizeSiteTemplateConfig(
   const rSlots = isRecord(rl.slots) ? rl.slots : {};
   const layout: SiteLayoutConfig = {
     archetype:
-      typeof rl.archetype === "string" && (ALLOWED_ARCHETYPES as readonly string[]).includes(rl.archetype)
+      typeof rl.archetype === "string" &&
+      (ALLOWED_ARCHETYPES as readonly string[]).includes(rl.archetype)
         ? (rl.archetype as SiteLayoutConfig["archetype"])
         : defaultLayout.archetype,
     header_style:
@@ -1544,7 +1670,9 @@ export function normalizeSiteTemplateConfig(
   const sections: SiteSectionV2[] = Array.isArray(obj.sections)
     ? obj.sections
         .slice(0, MAX_HOME_SECTIONS)
-        .filter((s): s is SiteSectionV2 => isRecord(s) && typeof s.type === "string" && isRecord(s.props))
+        .filter(
+          (s): s is SiteSectionV2 => isRecord(s) && typeof s.type === "string" && isRecord(s.props)
+        )
     : [];
 
   return {

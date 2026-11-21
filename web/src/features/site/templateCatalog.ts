@@ -101,9 +101,18 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           props: {
             title: "Cam kết cửa hàng",
             items: [
-              { heading: "Đổi size 45 ngày", detail: "Hỗ trợ đổi cỡ tận nơi không phát sinh phí hai chiều." },
-              { heading: "Đồng kiểm khi nhận", detail: "Kiểm tra đúng phom dáng và chất vải trước khi thanh toán." },
-              { heading: "Minh bạch chất liệu", detail: "Công bố định lượng GSM và tỷ lệ sợi rõ ràng trên từng mẫu." },
+              {
+                heading: "Đổi size 45 ngày",
+                detail: "Hỗ trợ đổi cỡ tận nơi không phát sinh phí hai chiều.",
+              },
+              {
+                heading: "Đồng kiểm khi nhận",
+                detail: "Kiểm tra đúng phom dáng và chất vải trước khi thanh toán.",
+              },
+              {
+                heading: "Minh bạch chất liệu",
+                detail: "Công bố định lượng GSM và tỷ lệ sợi rõ ràng trên từng mẫu.",
+              },
             ],
           },
         },
@@ -377,7 +386,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           props: {
             eyebrow: "Sẵn kho hôm nay",
             title: "Đầy đủ size từ S đến 2XL — giao nhanh từ kho",
-            subtitle: "Xem giá niêm yết, tồn kho thực tế và mã giảm giá của cửa hàng trên cùng một màn hình.",
+            subtitle:
+              "Xem giá niêm yết, tồn kho thực tế và mã giảm giá của cửa hàng trên cùng một màn hình.",
             image_url: "/banners/campaign-green-fiber.jpg",
             cta_label: "Mở toàn bộ kho hàng",
             cta_href: "/san-pham",
@@ -432,10 +442,22 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           props: {
             title: "Quy chuẩn giao nhận",
             items: [
-              { heading: "Xuất kho trong ngày", detail: "Đơn trước 17h được đóng gói và bàn giao ngay trong ngày." },
-              { heading: "Tồn kho đồng bộ", detail: "Số lượng hiển thị khớp trực tiếp tồn kho thực tế từng SKU." },
-              { heading: "Đổi size 45 ngày", detail: "Đổi cỡ tận nơi cho sản phẩm chưa sử dụng còn nguyên tem." },
-              { heading: "Thanh toán linh hoạt", detail: "Hỗ trợ COD đồng kiểm và chuyển khoản VietQR tự động." },
+              {
+                heading: "Xuất kho trong ngày",
+                detail: "Đơn trước 17h được đóng gói và bàn giao ngay trong ngày.",
+              },
+              {
+                heading: "Tồn kho đồng bộ",
+                detail: "Số lượng hiển thị khớp trực tiếp tồn kho thực tế từng SKU.",
+              },
+              {
+                heading: "Đổi size 45 ngày",
+                detail: "Đổi cỡ tận nơi cho sản phẩm chưa sử dụng còn nguyên tem.",
+              },
+              {
+                heading: "Thanh toán linh hoạt",
+                detail: "Hỗ trợ COD đồng kiểm và chuyển khoản VietQR tự động.",
+              },
             ],
           },
         },
@@ -553,10 +575,38 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
             subtitle: "Thông số đo thực tế trên mỗi lô vải trước khi xuất hàng.",
           },
           blocks: [
-            { id: "ca-m1", type: "stat", props: { value: "220gsm", label: "Định lượng vải", note: "Đứng phom, không lộ" } },
-            { id: "ca-m2", type: "stat", props: { value: "< 2%", label: "Độ co rút sau giặt", note: "Xử lý pre-shrunk 3 chu kỳ" } },
-            { id: "ca-m3", type: "stat", props: { value: "45 ngày", label: "Đổi size tận nơi", note: "Bưu tá nhận đổi hai chiều" } },
-            { id: "ca-m4", type: "stat", props: { value: "100%", label: "Kiểm QC từng chiếc", note: "Soi mật độ mũi kim trước đóng gói" } },
+            {
+              id: "ca-m1",
+              type: "stat",
+              props: { value: "220gsm", label: "Định lượng vải", note: "Đứng phom, không lộ" },
+            },
+            {
+              id: "ca-m2",
+              type: "stat",
+              props: {
+                value: "< 2%",
+                label: "Độ co rút sau giặt",
+                note: "Xử lý pre-shrunk 3 chu kỳ",
+              },
+            },
+            {
+              id: "ca-m3",
+              type: "stat",
+              props: {
+                value: "45 ngày",
+                label: "Đổi size tận nơi",
+                note: "Bưu tá nhận đổi hai chiều",
+              },
+            },
+            {
+              id: "ca-m4",
+              type: "stat",
+              props: {
+                value: "100%",
+                label: "Kiểm QC từng chiếc",
+                note: "Soi mật độ mũi kim trước đóng gói",
+              },
+            },
           ],
         },
         {
@@ -595,10 +645,22 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           props: {
             title: "Quy trình 4 bước trước khi đến tay bạn",
             items: [
-              { heading: "01. Chọn sợi & dệt mộc", detail: "Chọn sợi bông Compact và Modal gỗ sồi đạt chuẩn OEKO-TEX." },
-              { heading: "02. Giặt thử chống co rút", detail: "Đo co rút 3 chu kỳ giúp giữ ổn định chiều dài và cổ áo." },
-              { heading: "03. Cắt rập & may chập phẳng", detail: "Đường may êm mịn, giảm cọ xát ở vai và nách áo." },
-              { heading: "04. Đồng kiểm & hậu mãi 45 ngày", detail: "Hỗ trợ đổi cỡ tận nhà khi sản phẩm còn nguyên tem." },
+              {
+                heading: "01. Chọn sợi & dệt mộc",
+                detail: "Chọn sợi bông Compact và Modal gỗ sồi đạt chuẩn OEKO-TEX.",
+              },
+              {
+                heading: "02. Giặt thử chống co rút",
+                detail: "Đo co rút 3 chu kỳ giúp giữ ổn định chiều dài và cổ áo.",
+              },
+              {
+                heading: "03. Cắt rập & may chập phẳng",
+                detail: "Đường may êm mịn, giảm cọ xát ở vai và nách áo.",
+              },
+              {
+                heading: "04. Đồng kiểm & hậu mãi 45 ngày",
+                detail: "Hỗ trợ đổi cỡ tận nhà khi sản phẩm còn nguyên tem.",
+              },
             ],
           },
         },
@@ -663,7 +725,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
         logo_url: "/banners/campaign-running.jpg",
         banner_url: "/banners/campaign-running.jpg",
         brand_name: "Phòng Chạy Active",
-        tagline: "Trang phục Dry-Fit siêu nhẹ, thoát ẩm nhanh cho chạy bộ và tập luyện cường độ cao.",
+        tagline:
+          "Trang phục Dry-Fit siêu nhẹ, thoát ẩm nhanh cho chạy bộ và tập luyện cường độ cao.",
         radius: "none",
         density: "balanced",
       },
@@ -709,10 +772,30 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
             subtitle: "Kiểm thử thực tế trên đường chạy nhiệt đới.",
           },
           blocks: [
-            { id: "sp-t1", type: "stat", props: { value: "145g", label: "Trọng lượng áo", note: "Nhẹ không bám mồ hôi" } },
-            { id: "sp-t2", type: "stat", props: { value: "45 phút", label: "Khô phơi gió", note: "Cấu trúc lỗ thoáng khí" } },
-            { id: "sp-t3", type: "stat", props: { value: "4-Way", label: "Độ đàn hồi", note: "Phục hồi phom tức thì" } },
-            { id: "sp-t4", type: "stat", props: { value: "Flatlock", label: "Đường may phẳng", note: "Giảm ma sát khi chạy dài" } },
+            {
+              id: "sp-t1",
+              type: "stat",
+              props: { value: "145g", label: "Trọng lượng áo", note: "Nhẹ không bám mồ hôi" },
+            },
+            {
+              id: "sp-t2",
+              type: "stat",
+              props: { value: "45 phút", label: "Khô phơi gió", note: "Cấu trúc lỗ thoáng khí" },
+            },
+            {
+              id: "sp-t3",
+              type: "stat",
+              props: { value: "4-Way", label: "Độ đàn hồi", note: "Phục hồi phom tức thì" },
+            },
+            {
+              id: "sp-t4",
+              type: "stat",
+              props: {
+                value: "Flatlock",
+                label: "Đường may phẳng",
+                note: "Giảm ma sát khi chạy dài",
+              },
+            },
           ],
         },
         {
@@ -915,9 +998,18 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           props: {
             title: "Dịch vụ chăm sóc riêng",
             items: [
-              { heading: "Tư vấn cỡ cá nhân", detail: "Hỗ trợ chọn phom theo số đo vai, ngực và thói quen mặc." },
-              { heading: "Đổi cỡ tận nơi 45 ngày", detail: "Xử lý ưu tiên đổi size hai chiều tại địa chỉ khách yêu cầu." },
-              { heading: "Đóng gói bảo vệ", detail: "Hộp cứng chống ẩm kèm giấy lụa bảo vệ sợi vải tự nhiên." },
+              {
+                heading: "Tư vấn cỡ cá nhân",
+                detail: "Hỗ trợ chọn phom theo số đo vai, ngực và thói quen mặc.",
+              },
+              {
+                heading: "Đổi cỡ tận nơi 45 ngày",
+                detail: "Xử lý ưu tiên đổi size hai chiều tại địa chỉ khách yêu cầu.",
+              },
+              {
+                heading: "Đóng gói bảo vệ",
+                detail: "Hộp cứng chống ẩm kèm giấy lụa bảo vệ sợi vải tự nhiên.",
+              },
             ],
           },
         },
@@ -1013,7 +1105,11 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
             cta_href: "/san-pham",
           },
           blocks: [
-            { id: "op-h-b1", type: "cta", props: { label: "Xem chính sách đổi trả", href: "/chinh-sach", style: "secondary" } },
+            {
+              id: "op-h-b1",
+              type: "cta",
+              props: { label: "Xem chính sách đổi trả", href: "/chinh-sach", style: "secondary" },
+            },
           ],
         },
         {
@@ -1027,9 +1123,29 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
             subtitle: "Số liệu thực tế từ đơn hàng trên cửa hàng.",
           },
           blocks: [
-            { id: "op-m1", type: "stat", props: { value: "45 ngày", label: "Đổi size tận nhà", note: "Không cần giải thích phức tạp" } },
-            { id: "op-m2", type: "stat", props: { value: "1–3 ngày", label: "Giao toàn quốc", note: "Đóng gói trực tiếp tại kho" } },
-            { id: "op-m3", type: "stat", props: { value: "100%", label: "Đồng kiểm COD", note: "Xem vải và cỡ trước khi trả" } },
+            {
+              id: "op-m1",
+              type: "stat",
+              props: {
+                value: "45 ngày",
+                label: "Đổi size tận nhà",
+                note: "Không cần giải thích phức tạp",
+              },
+            },
+            {
+              id: "op-m2",
+              type: "stat",
+              props: {
+                value: "1–3 ngày",
+                label: "Giao toàn quốc",
+                note: "Đóng gói trực tiếp tại kho",
+              },
+            },
+            {
+              id: "op-m3",
+              type: "stat",
+              props: { value: "100%", label: "Đồng kiểm COD", note: "Xem vải và cỡ trước khi trả" },
+            },
           ],
         },
         {
@@ -1106,8 +1222,15 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           props: {
             title: "Câu hỏi thường gặp & Cam kết",
             items: [
-              { heading: "Làm sao chọn đúng size?", detail: "Mỗi trang sản phẩm đều ghi rõ phom mặc và chất liệu; bạn được đổi size miễn phí trong 45 ngày." },
-              { heading: "Có được kiểm hàng trước không?", detail: "Mọi đơn COD đều hỗ trợ đồng kiểm đúng mẫu, đúng màu và đúng kích cỡ." },
+              {
+                heading: "Làm sao chọn đúng size?",
+                detail:
+                  "Mỗi trang sản phẩm đều ghi rõ phom mặc và chất liệu; bạn được đổi size miễn phí trong 45 ngày.",
+              },
+              {
+                heading: "Có được kiểm hàng trước không?",
+                detail: "Mọi đơn COD đều hỗ trợ đồng kiểm đúng mẫu, đúng màu và đúng kích cỡ.",
+              },
             ],
           },
         },
@@ -1183,7 +1306,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
         container_width: "full",
         card_style: "compact-row",
         show_announcement: true,
-        announcement_text: "Cập nhật tồn kho trực tiếp theo từng SKU · Xuất hóa đơn & giao toàn quốc",
+        announcement_text:
+          "Cập nhật tồn kho trực tiếp theo từng SKU · Xuất hóa đơn & giao toàn quốc",
         slots: { search: true, chat: true, assistant: true },
       },
       sections: [
@@ -1211,7 +1335,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           settings: { surface: "surface", padding: "normal", max_items: 16 },
           props: {
             title: "Bảng tồn kho nhanh theo SKU",
-            subtitle: "Hiển thị mã màu, dải size sẵn hàng, đơn giá VND và liên kết đặt mua trực tiếp.",
+            subtitle:
+              "Hiển thị mã màu, dải size sẵn hàng, đơn giá VND và liên kết đặt mua trực tiếp.",
             category_slug: "",
             limit: 16,
             show_out_of_stock: true,
@@ -1239,9 +1364,18 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           props: {
             title: "Chính sách kho vận & đổi trả",
             items: [
-              { heading: "Tồn kho thời gian thực", detail: "Mỗi biến thể màu và size được khóa tồn kho tự động khi đặt đơn." },
-              { heading: "Đóng gói chuẩn mã SKU", detail: "Dán nhãn mã phân loại rõ ràng giúp kiểm nhận nhanh cho đơn nhiều món." },
-              { heading: "Hỗ trợ đổi cỡ 45 ngày", detail: "Đổi size linh hoạt theo chính sách minh bạch của gian hàng." },
+              {
+                heading: "Tồn kho thời gian thực",
+                detail: "Mỗi biến thể màu và size được khóa tồn kho tự động khi đặt đơn.",
+              },
+              {
+                heading: "Đóng gói chuẩn mã SKU",
+                detail: "Dán nhãn mã phân loại rõ ràng giúp kiểm nhận nhanh cho đơn nhiều món.",
+              },
+              {
+                heading: "Hỗ trợ đổi cỡ 45 ngày",
+                detail: "Đổi size linh hoạt theo chính sách minh bạch của gian hàng.",
+              },
             ],
           },
         },
