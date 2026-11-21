@@ -1,0 +1,16 @@
+{
+  "name": "nexusmart-playwright-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright browser E2E suite for NexusMart storefront buyer flows",
+  "scripts": {
+    "test": "playwright test",
+    "test:list": "playwright test --list",
+    "typecheck": "tsc --noEmit",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0",
+    "typescript": "^5.8.3"
+  }
+}
