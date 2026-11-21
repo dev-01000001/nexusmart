@@ -266,3 +266,142 @@ func TestWebSocketAuthFramesSyncPermissionsAndMultiInstance(t *testing.T) {
 		t.Fatalf("expected 1 missed message, got %+v", items)
 	}
 }
+
+func TestWebSocketOriginPolicyTicketVsCookie(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	const secret = "ws-origin-test-secret"
+	jwtMgr, err := auth.NewManager(secret, auth.DefaultAccessTTL)
+	if err != nil {
+		t.Fatalf("jwt manager: %v", err)
+	}
+	ticketMgr, err := ticket.NewManager(rdb, secret, 60*time.Second)
+	if err != nil {
+		t.Fatalf("ticket manager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	st := store.NewMemStore()
+	h := hub.New(rdb, "ws-origin-inst", nil, nil)
+	go h.Run(ctx)
+	waitCtx, waitCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer waitCancel()
+	if err := h.WaitSubscribed(waitCtx); err != nil {
+		t.Fatalf("hub subscribe: %v", err)
+	}
+
+	svc := service.NewChatService(st, h, ticketMgr, nil, nil)
+	handler := NewHandler(svc, h, jwtMgr, ticketMgr, Config{
+		SiteRootDomain: "nexusmart.localhost",
+		PingInterval:   2 * time.Second,
+		ShutdownCtx:    ctx,
+	}, nil)
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	buyerTok, _, _, _ := jwtMgr.SignAccessToken("buyer-origin", "buyer", "")
+	buyerClaims, _ := jwtMgr.VerifyAccessToken(buyerTok)
+
+	// 1. Direct ticket auth allows custom shop domain Origin (not in *.SITE_ROOT_DOMAIN).
+	t1, _, err := svc.CreateWSTicket(ctx, buyerClaims)
+	if err != nil {
+		t.Fatalf("create ticket 1: %v", err)
+	}
+	conn1, _, err := websocket.Dial(ctx, wsURL+"?ticket="+t1, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": []string{"https://custom-brand.vn"}},
+	})
+	if err != nil {
+		t.Fatalf("ticket auth with custom domain Origin should succeed, got err=%v", err)
+	}
+	_ = readJSONFrame(ctx, t, conn1)
+	_ = conn1.CloseNow()
+
+	// 2. Ticket auth with custom domain Origin still succeeds even when an ambient cookie is also sent.
+	t2, _, err := svc.CreateWSTicket(ctx, buyerClaims)
+	if err != nil {
+		t.Fatalf("create ticket 2: %v", err)
+	}
+	conn2, _, err := websocket.Dial(ctx, wsURL+"?ticket="+t2, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Origin": []string{"https://another-custom-shop.example"},
+			"Cookie": []string{"nm_at=" + buyerTok},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ticket auth with ambient cookie and custom Origin should succeed, got err=%v", err)
+	}
+	_ = readJSONFrame(ctx, t, conn2)
+	_ = conn2.CloseNow()
+
+	// 3. Invalid ticket + valid cookie fails with 401 and must NOT fall back to cookie.
+	if _, resp, err := websocket.Dial(ctx, wsURL+"?ticket=invalid-ticket", &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Origin": []string{"http://shop.nexusmart.localhost:3300"},
+			"Cookie": []string{"nm_at=" + buyerTok},
+		},
+	}); err == nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("invalid ticket with valid cookie must return 401, got resp=%v err=%v", resp, err)
+	}
+
+	// 4. Cookie auth MUST reject untrusted / custom domain Origins with 403.
+	for _, tc := range []struct {
+		name   string
+		cookie string
+		origin string
+	}{
+		{name: "dev_cookie_evil_origin", cookie: "nm_at=" + buyerTok, origin: "https://evil.example"},
+		{name: "host_cookie_custom_origin", cookie: "__Host-nm_at=" + buyerTok, origin: "https://custom-brand.vn"},
+	} {
+		if _, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+			HTTPHeader: http.Header{
+				"Origin": []string{tc.origin},
+				"Cookie": []string{tc.cookie},
+			},
+		}); err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s: expected 403 Forbidden for untrusted Origin, got resp=%v err=%v", tc.name, resp, err)
+		}
+	}
+
+	// 5. Cookie auth allows trusted *.SITE_ROOT_DOMAIN Origin.
+	connCookieOK, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Origin": []string{"http://bach-dang.nexusmart.localhost:3300"},
+			"Cookie": []string{"nm_at=" + buyerTok},
+		},
+	})
+	if err != nil {
+		t.Fatalf("cookie auth with *.SITE_ROOT_DOMAIN Origin should succeed, got err=%v", err)
+	}
+	_ = readJSONFrame(ctx, t, connCookieOK)
+	_ = connCookieOK.CloseNow()
+
+	// 6. Gateway-proxied cookie auth (Bearer + X-Chat-Auth-Method: cookie) enforces strict Origin check,
+	// whereas gateway-proxied ticket auth (Bearer without cookie marker) allows custom domains.
+	if _, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Origin":         []string{"https://evil.example"},
+			"Authorization":  []string{"Bearer " + buyerTok},
+			authMethodHeader: []string{"cookie"},
+		},
+	}); err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("gateway-proxied cookie auth with evil Origin must return 403, got resp=%v err=%v", resp, err)
+	}
+
+	connProxyTicket, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Origin":        []string{"https://custom-brand.vn"},
+			"Authorization": []string{"Bearer " + buyerTok},
+		},
+	})
+	if err != nil {
+		t.Fatalf("gateway-proxied ticket/bearer auth with custom domain Origin should succeed, got err=%v", err)
+	}
+	_ = readJSONFrame(ctx, t, connProxyTicket)
+	_ = connProxyTicket.CloseNow()
+}

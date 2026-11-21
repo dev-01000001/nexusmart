@@ -26,8 +26,9 @@ const (
 	defaultWriteTimeout = 10 * time.Second
 	opTimeout           = 10 * time.Second
 
-	cookieSecureAT = "__Host-nm_at"
-	cookieDevAT    = "nm_at"
+	cookieSecureAT   = "__Host-nm_at"
+	cookieDevAT      = "nm_at"
+	authMethodHeader = "X-Chat-Auth-Method"
 )
 
 // RevocationChecker checks whether a JWT JTI has been revoked in Redis.
@@ -114,17 +115,24 @@ func NewHandler(
 // ServeHTTP authenticates before upgrading, registers with the Hub, handles optional ?after= sync,
 // and runs concurrent reader/writer loops with keepalive pings and structured error frames.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	claims, statusCode, errCode, errMsg := h.authenticate(r)
+	claims, usedCookie, statusCode, errCode, errMsg := h.authenticate(r)
 	if claims == nil {
 		writeHTTPError(w, statusCode, errCode, errMsg)
 		return
 	}
 
 	// CompressionDisabled avoids per-connection flate buffers (~30-64 KB each) for 1,000+ sockets.
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+	// Single-use ticket / Bearer credentials are not auto-sent by browsers, so custom shop domains
+	// do not require Origin allowlisting; cookie-authenticated upgrades enforce strict OriginPatterns.
+	acceptOpts := &websocket.AcceptOptions{
 		CompressionMode: websocket.CompressionDisabled,
-		OriginPatterns:  h.originPatterns,
-	})
+	}
+	if usedCookie || strings.EqualFold(strings.TrimSpace(r.Header.Get(authMethodHeader)), "cookie") {
+		acceptOpts.OriginPatterns = h.originPatterns
+	} else {
+		acceptOpts.InsecureSkipVerify = true
+	}
+	conn, err := websocket.Accept(w, r, acceptOpts)
 	if err != nil {
 		h.log.WarnContext(r.Context(), "websocket accept failed", slog.String("error", err.Error()))
 		return
@@ -187,29 +195,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = conn.Close(websocket.StatusNormalClosure, "")
 }
 
-func (h *Handler) authenticate(r *http.Request) (claims *auth.Claims, httpStatus int, errCode, errMsg string) {
+func (h *Handler) authenticate(r *http.Request) (claims *auth.Claims, usedCookie bool, httpStatus int, errCode, errMsg string) {
 	// 1. Authorization: Bearer <jwt>
 	if authHeader := strings.TrimSpace(r.Header.Get("Authorization")); authHeader != "" {
-		return h.verifyJWTAndRevocation(r.Context(), authHeader)
+		c, st, code, msg := h.verifyJWTAndRevocation(r.Context(), authHeader)
+		return c, false, st, code, msg
 	}
 
-	// 2. BFF access-token cookies (__Host-nm_at preferred, fallback nm_at)
-	if c, err := r.Cookie(cookieSecureAT); err == nil && strings.TrimSpace(c.Value) != "" {
-		return h.verifyJWTAndRevocation(r.Context(), c.Value)
-	}
-	if c, err := r.Cookie(cookieDevAT); err == nil && strings.TrimSpace(c.Value) != "" {
-		return h.verifyJWTAndRevocation(r.Context(), c.Value)
-	}
-
-	// 3. One-time ?ticket=<t> query parameter (never logged)
+	// 2. One-time ?ticket=<t> query parameter (never logged; checked before Cookie so explicit
+	// tickets from custom domains are never overshadowed by an ambient host cookie).
 	if rawTicket := strings.TrimSpace(r.URL.Query().Get("ticket")); rawTicket != "" {
 		redeemed, err := h.svc.ExchangeWSTicket(r.Context(), rawTicket)
 		if err != nil {
 			if errors.Is(err, ticket.ErrInvalidTicket) || errors.Is(err, ticket.ErrRevokedToken) {
-				return nil, http.StatusUnauthorized, "UNAUTHENTICATED", err.Error()
+				return nil, false, http.StatusUnauthorized, "UNAUTHENTICATED", err.Error()
 			}
 			h.log.ErrorContext(r.Context(), "ws ticket exchange error", slog.String("error", err.Error()))
-			return nil, http.StatusServiceUnavailable, "UNAVAILABLE", "authentication service unavailable"
+			return nil, false, http.StatusServiceUnavailable, "UNAVAILABLE", "authentication service unavailable"
 		}
 		return &auth.Claims{
 			Role:   redeemed.Role,
@@ -218,10 +220,20 @@ func (h *Handler) authenticate(r *http.Request) (claims *auth.Claims, httpStatus
 				Subject: redeemed.UserID,
 				ID:      redeemed.JTI,
 			},
-		}, http.StatusOK, "", ""
+		}, false, http.StatusOK, "", ""
 	}
 
-	return nil, http.StatusUnauthorized, "UNAUTHENTICATED", "missing websocket credentials"
+	// 3. BFF access-token cookies (__Host-nm_at preferred, fallback nm_at)
+	if c, err := r.Cookie(cookieSecureAT); err == nil && strings.TrimSpace(c.Value) != "" {
+		cl, st, code, msg := h.verifyJWTAndRevocation(r.Context(), c.Value)
+		return cl, true, st, code, msg
+	}
+	if c, err := r.Cookie(cookieDevAT); err == nil && strings.TrimSpace(c.Value) != "" {
+		cl, st, code, msg := h.verifyJWTAndRevocation(r.Context(), c.Value)
+		return cl, true, st, code, msg
+	}
+
+	return nil, false, http.StatusUnauthorized, "UNAUTHENTICATED", "missing websocket credentials"
 }
 
 func (h *Handler) verifyJWTAndRevocation(ctx context.Context, rawToken string) (*auth.Claims, int, string, string) {
