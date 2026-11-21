@@ -105,7 +105,7 @@ class DockerOps:
         args: Sequence[str],
         *,
         check: bool = True,
-        timeout: float = 30.0,
+        timeout: float = 60.0,
         input_text: Optional[str] = None,
     ) -> CommandResult:
         cmd = ["docker", *args]
@@ -220,15 +220,15 @@ class DockerOps:
 
     def stop_container(self, container: str, *, timeout_secs: int = 10) -> None:
         self._log(f"stopping container {container}")
-        self.run_cli(["stop", "-t", str(timeout_secs), container], check=True, timeout=timeout_secs + 15.0)
+        self.run_cli(["stop", "-t", str(timeout_secs), container], check=True, timeout=timeout_secs + 50.0)
 
     def start_container(self, container: str) -> None:
         self._log(f"starting container {container}")
-        self.run_cli(["start", container], check=True, timeout=30.0)
+        self.run_cli(["start", container], check=True, timeout=60.0)
 
     def remove_container_force(self, container: str) -> None:
         self._log(f"removing container {container}")
-        self.run_cli(["rm", "-f", container], check=False, timeout=20.0)
+        self.run_cli(["rm", "-f", container], check=False, timeout=60.0)
 
     def pause_container(self, container: str) -> bool:
         """Pause a running container (uses Docker Unix socket for low-latency pulsing when available)."""
@@ -435,7 +435,7 @@ class DockerOps:
         if self.compose_network:
             args.extend(["--network", self.compose_network])
         args.extend([image, "/bin/sh", "-c", script])
-        self.run_cli(args, check=True, timeout=20.0)
+        self.run_cli(args, check=True, timeout=60.0)
 
     def wait_container_healthy(
         self,
