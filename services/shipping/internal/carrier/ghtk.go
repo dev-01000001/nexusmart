@@ -1,0 +1,647 @@
+package carrier
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/nexusmart/core/services/shipping/internal/address"
+)
+
+const (
+	CodeGHTK               = "ghtk"
+	NameGHTK               = "Giao Hang Tiet Kiem (GHTK)"
+	defaultGHTKBaseURL     = "https://services-staging.ghtklab.com"
+	placeholderGHTKToken   = "sandbox-ghtk-token"
+	ghtkServiceRoad        = "ROAD"
+	ghtkServiceXFast       = "XFAST"
+	ghtkServiceRoadName    = "GHTK Đường Bộ"
+	ghtkServiceXFastName   = "GHTK Nhanh"
+	ghtkTimestampFormatSQL = "2006-01-02 15:04:05"
+)
+
+// GHTKConfig configures the GHTK carrier adapter.
+type GHTKConfig struct {
+	Mode       string // "mock" or "sandbox"
+	BaseURL    string
+	Token      string
+	HTTPClient *http.Client
+}
+
+type ghtkMockStatus struct {
+	rawStatus  string
+	occurredAt time.Time
+}
+
+// GHTKAdapter implements Carrier for Giao Hang Tiet Kiem (sandbox HTTP + deterministic mock mode).
+type GHTKAdapter struct {
+	mode         string
+	baseURL      string
+	token        string
+	client       *http.Client
+	mu           sync.RWMutex
+	mockStatuses map[string]ghtkMockStatus
+}
+
+// NewGHTKAdapter creates a GHTK adapter in mock or sandbox mode.
+// Falls back to mock mode when Mode != "sandbox" or Token is empty/placeholder ("sandbox-ghtk-token").
+func NewGHTKAdapter(cfg GHTKConfig) *GHTKAdapter {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	token := strings.TrimSpace(cfg.Token)
+	if mode != "sandbox" || token == "" || token == placeholderGHTKToken {
+		mode = "mock"
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = defaultGHTKBaseURL
+	}
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 5 * time.Second}
+	}
+	return &GHTKAdapter{
+		mode:         mode,
+		baseURL:      baseURL,
+		token:        token,
+		client:       httpClient,
+		mockStatuses: make(map[string]ghtkMockStatus),
+	}
+}
+
+func (g *GHTKAdapter) Code() string { return CodeGHTK }
+func (g *GHTKAdapter) Name() string { return NameGHTK }
+func (g *GHTKAdapter) IsMock() bool { return g.mode != "sandbox" }
+
+// CanPoll reports true in sandbox mode or when mock status overrides are staged for polling tests.
+func (g *GHTKAdapter) CanPoll() bool {
+	if g.mode == "sandbox" {
+		return true
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return len(g.mockStatuses) > 0
+}
+
+// SetMockStatus stages a carrier status for trackingCode in mock mode so polling tests can observe status changes.
+// Passing an empty status removes any staged status for trackingCode.
+func (g *GHTKAdapter) SetMockStatus(trackingCode, status string) {
+	code := strings.TrimSpace(trackingCode)
+	if code == "" {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	st := strings.TrimSpace(status)
+	if st == "" {
+		delete(g.mockStatuses, code)
+		return
+	}
+	g.mockStatuses[code] = ghtkMockStatus{
+		rawStatus:  st,
+		occurredAt: time.Now().UTC(),
+	}
+}
+
+func (g *GHTKAdapter) CalculateFee(ctx context.Context, req FeeRequest) ([]Quote, error) {
+	if g.mode != "sandbox" {
+		return g.mockQuotes(req), nil
+	}
+	return g.sandboxCalculateFee(ctx, req)
+}
+
+func (g *GHTKAdapter) CreateShipment(ctx context.Context, req ShipmentRequest) (*ShipmentResult, error) {
+	if g.mode != "sandbox" {
+		return g.mockCreateShipment(req), nil
+	}
+	return g.sandboxCreateShipment(ctx, req)
+}
+
+func (g *GHTKAdapter) CancelShipment(ctx context.Context, trackingCode string) error {
+	if g.mode != "sandbox" {
+		return nil
+	}
+	return g.sandboxCancelShipment(ctx, trackingCode)
+}
+
+func (g *GHTKAdapter) GetStatus(ctx context.Context, trackingCode string) (*TrackingStatus, error) {
+	if g.mode != "sandbox" {
+		return g.mockGetStatus(trackingCode), nil
+	}
+	return g.sandboxGetStatus(ctx, trackingCode)
+}
+
+func (g *GHTKAdapter) mockQuotes(req FeeRequest) []Quote {
+	baseFee, roadDays := routeZoneFee(req.FromProvinceCode, req.ToProvinceCode, 20000, 28000, 35000)
+	weightSurcharge := weightFeeVND(req.WeightGrams, 1000, 500, 4500)
+	codFee := int64(0)
+	if req.CODAmountVND > 0 {
+		codFee = 1500
+	}
+	roadTotal := baseFee + weightSurcharge + codFee
+	xfastDays := roadDays - 1
+	if xfastDays < 1 {
+		xfastDays = 1
+	}
+
+	return []Quote{
+		{
+			CarrierCode:   CodeGHTK,
+			CarrierName:   NameGHTK,
+			ServiceCode:   ghtkServiceRoad,
+			ServiceName:   ghtkServiceRoadName,
+			FeeVND:        roadTotal,
+			EstimatedDays: roadDays,
+			IsFallback:    false,
+		},
+		{
+			CarrierCode:   CodeGHTK,
+			CarrierName:   NameGHTK,
+			ServiceCode:   ghtkServiceXFast,
+			ServiceName:   ghtkServiceXFastName,
+			FeeVND:        roadTotal + 11000,
+			EstimatedDays: xfastDays,
+			IsFallback:    false,
+		},
+	}
+}
+
+func (g *GHTKAdapter) mockCreateShipment(req ShipmentRequest) *ShipmentResult {
+	svc := strings.ToUpper(strings.TrimSpace(req.ServiceCode))
+	if svc == "" {
+		svc = ghtkServiceRoad
+	}
+	quotes := g.mockQuotes(FeeRequest{
+		FromProvinceCode: req.FromAddress.ProvinceCode,
+		ToProvinceCode:   req.ToAddress.ProvinceCode,
+		WeightGrams:      req.WeightGrams,
+		CODAmountVND:     req.CODAmountVND,
+	})
+	fee := quotes[0].FeeVND
+	for _, q := range quotes {
+		if strings.EqualFold(q.ServiceCode, svc) {
+			fee = q.FeeVND
+			break
+		}
+	}
+
+	tracking := deterministicGHTKTracking(req.OrderID, req.Direction, req.ReturnRequestID, svc)
+	return &ShipmentResult{
+		CarrierCode:  CodeGHTK,
+		ServiceCode:  svc,
+		TrackingCode: tracking,
+		LabelURL:     fmt.Sprintf("https://sandbox.ghtk.local/labels/%s.pdf", tracking),
+		FeeVND:       fee,
+		Status:       StatusCreated,
+	}
+}
+
+func (g *GHTKAdapter) mockGetStatus(trackingCode string) *TrackingStatus {
+	g.mu.RLock()
+	entry, ok := g.mockStatuses[strings.TrimSpace(trackingCode)]
+	g.mu.RUnlock()
+	if !ok {
+		return &TrackingStatus{
+			TrackingCode: trackingCode,
+			Changed:      false,
+		}
+	}
+	mapped, valid := MapCarrierStatus(entry.rawStatus)
+	if !valid {
+		return &TrackingStatus{
+			TrackingCode: trackingCode,
+			RawStatus:    entry.rawStatus,
+			Changed:      false,
+		}
+	}
+	return &TrackingStatus{
+		TrackingCode: trackingCode,
+		Status:       mapped,
+		RawStatus:    entry.rawStatus,
+		Description:  "Synced from GHTK status polling",
+		OccurredAt:   entry.occurredAt,
+		Changed:      true,
+	}
+}
+
+func deterministicGHTKTracking(orderID, direction, returnRequestID, serviceCode string) string {
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" {
+		shortID := strings.ToUpper(strings.ReplaceAll(uuid.NewString(), "-", "")[:10])
+		return "GHTK-" + shortID
+	}
+	dir := strings.ToLower(strings.TrimSpace(direction))
+	if dir == "" {
+		dir = "forward"
+	}
+	seed := strings.Join([]string{orderID, dir, strings.TrimSpace(returnRequestID), strings.ToUpper(strings.TrimSpace(serviceCode))}, "|")
+	sum := sha256.Sum256([]byte(seed))
+	return fmt.Sprintf("GHTK-%010X", sum[:5])
+}
+
+type ghtkResolvedLocation struct {
+	Province string
+	District string
+	Ward     string
+}
+
+func resolveGHTKLocation(provinceCode, provinceName, wardCode, wardName, legacyProvince, legacyDistrict string) ghtkResolvedLocation {
+	fb := address.LookupLegacyFallback(wardCode)
+
+	prov := strings.TrimSpace(legacyProvince)
+	if prov == "" && fb.Found && fb.LegacyProvince != "" {
+		prov = fb.LegacyProvince
+	}
+	if prov == "" {
+		prov = strings.TrimSpace(provinceName)
+	}
+	if prov == "" && fb.Found {
+		prov = fb.ProvinceName
+	}
+	if prov == "" {
+		prov = address.ProvinceName(provinceCode)
+	}
+	if prov == "" {
+		prov = strings.TrimSpace(provinceCode)
+	}
+
+	ward := strings.TrimSpace(wardName)
+	if ward == "" && fb.Found {
+		ward = fb.WardName
+	}
+	if ward == "" {
+		ward = address.WardName(wardCode)
+	}
+	if ward == "" {
+		ward = strings.TrimSpace(wardCode)
+	}
+
+	dist := strings.TrimSpace(legacyDistrict)
+	if dist == "" && fb.Found && fb.LegacyDistrict != "" {
+		dist = fb.LegacyDistrict
+	}
+	if dist == "" {
+		dist = ward
+	}
+	if dist == "" {
+		dist = prov
+	}
+
+	return ghtkResolvedLocation{
+		Province: prov,
+		District: dist,
+		Ward:     ward,
+	}
+}
+
+type ghtkFeeResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Fee     struct {
+		Name         string `json:"name"`
+		Fee          int64  `json:"fee"`
+		InsuranceFee int64  `json:"insurance_fee"`
+		Delivery     bool   `json:"delivery"`
+	} `json:"fee"`
+}
+
+func (g *GHTKAdapter) sandboxCalculateFee(ctx context.Context, req FeeRequest) ([]Quote, error) {
+	weight := req.WeightGrams
+	if weight <= 0 {
+		weight = 500
+	}
+	fromLoc := resolveGHTKLocation(
+		req.FromProvinceCode,
+		req.FromProvinceName,
+		req.FromWardCode,
+		req.FromWardName,
+		req.FromLegacyProvince,
+		req.FromLegacyDistrict,
+	)
+	toLoc := resolveGHTKLocation(
+		req.ToProvinceCode,
+		req.ToProvinceName,
+		req.ToWardCode,
+		req.ToWardName,
+		req.ToLegacyProvince,
+		req.ToLegacyDistrict,
+	)
+
+	params := url.Values{}
+	params.Set("pick_province", fromLoc.Province)
+	params.Set("pick_district", fromLoc.District)
+	if fromLoc.Ward != "" {
+		params.Set("pick_ward", fromLoc.Ward)
+	}
+	params.Set("province", toLoc.Province)
+	params.Set("district", toLoc.District)
+	if toLoc.Ward != "" {
+		params.Set("ward", toLoc.Ward)
+	}
+	params.Set("weight", strconv.Itoa(int(weight)))
+	if req.CODAmountVND > 0 {
+		params.Set("value", strconv.FormatInt(req.CODAmountVND, 10))
+	}
+	params.Set("transport", "road")
+
+	var resp ghtkFeeResponse
+	if err := g.doRequest(ctx, http.MethodGet, "/services/shipment/fee?"+params.Encode(), nil, &resp); err != nil {
+		return nil, err
+	}
+	totalFee := resp.Fee.Fee + resp.Fee.InsuranceFee
+	if !resp.Success || totalFee <= 0 {
+		return nil, fmt.Errorf("ghtk fee api error: %s", resp.Message)
+	}
+
+	_, days := routeZoneFee(req.FromProvinceCode, req.ToProvinceCode, 0, 0, 0)
+	return []Quote{
+		{
+			CarrierCode:   CodeGHTK,
+			CarrierName:   NameGHTK,
+			ServiceCode:   ghtkServiceRoad,
+			ServiceName:   ghtkServiceRoadName,
+			FeeVND:        totalFee,
+			EstimatedDays: days,
+			IsFallback:    false,
+		},
+	}, nil
+}
+
+type ghtkOrderProduct struct {
+	Name     string  `json:"name"`
+	Weight   float64 `json:"weight"`
+	Quantity int     `json:"quantity"`
+}
+
+type ghtkOrderDetail struct {
+	ID           string `json:"id"`
+	PickName     string `json:"pick_name"`
+	PickAddress  string `json:"pick_address"`
+	PickProvince string `json:"pick_province"`
+	PickDistrict string `json:"pick_district"`
+	PickWard     string `json:"pick_ward,omitempty"`
+	PickTel      string `json:"pick_tel"`
+	Name         string `json:"name"`
+	Address      string `json:"address"`
+	Province     string `json:"province"`
+	District     string `json:"district"`
+	Ward         string `json:"ward,omitempty"`
+	Hamlet       string `json:"hamlet"`
+	Tel          string `json:"tel"`
+	PickMoney    int64  `json:"pick_money"`
+	Value        int64  `json:"value,omitempty"`
+	Transport    string `json:"transport"`
+	IsFreeship   int    `json:"is_freeship"`
+}
+
+type ghtkCreatePayload struct {
+	Products []ghtkOrderProduct `json:"products"`
+	Order    ghtkOrderDetail    `json:"order"`
+}
+
+type ghtkCreateResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Order   struct {
+		PartnerID string `json:"partner_id"`
+		Label     string `json:"label"`
+		Fee       int64  `json:"fee"`
+		StatusID  int    `json:"status_id"`
+	} `json:"order"`
+}
+
+func (g *GHTKAdapter) sandboxCreateShipment(ctx context.Context, req ShipmentRequest) (*ShipmentResult, error) {
+	weight := req.WeightGrams
+	if weight <= 0 {
+		weight = 500
+	}
+	fromLoc := resolveGHTKLocation(
+		req.FromAddress.ProvinceCode,
+		req.FromAddress.ProvinceName,
+		req.FromAddress.WardCode,
+		req.FromAddress.WardName,
+		req.FromAddress.LegacyProvince,
+		req.FromAddress.LegacyDistrict,
+	)
+	toLoc := resolveGHTKLocation(
+		req.ToAddress.ProvinceCode,
+		req.ToAddress.ProvinceName,
+		req.ToAddress.WardCode,
+		req.ToAddress.WardName,
+		req.ToAddress.LegacyProvince,
+		req.ToAddress.LegacyDistrict,
+	)
+
+	itemName := strings.TrimSpace(req.ItemsSummary)
+	if itemName == "" {
+		itemName = "NexusMart Order"
+	}
+	svc := strings.ToUpper(strings.TrimSpace(req.ServiceCode))
+	if svc == "" {
+		svc = ghtkServiceRoad
+	}
+	transport := "road"
+	if svc == ghtkServiceXFast || svc == "FLY" || svc == "EXPRESS" {
+		transport = "fly"
+	}
+
+	partnerOrderID := req.OrderID
+	if strings.EqualFold(strings.TrimSpace(req.Direction), "return") {
+		if strings.TrimSpace(req.ReturnRequestID) != "" {
+			partnerOrderID = req.OrderID + "-return-" + strings.TrimSpace(req.ReturnRequestID)
+		} else {
+			partnerOrderID = req.OrderID + "-return"
+		}
+	}
+
+	payload := ghtkCreatePayload{
+		Products: []ghtkOrderProduct{
+			{
+				Name:     itemName,
+				Weight:   float64(weight) / 1000.0,
+				Quantity: 1,
+			},
+		},
+		Order: ghtkOrderDetail{
+			ID:           partnerOrderID,
+			PickName:     req.FromAddress.Name,
+			PickAddress:  req.FromAddress.StreetAddress,
+			PickProvince: fromLoc.Province,
+			PickDistrict: fromLoc.District,
+			PickWard:     fromLoc.Ward,
+			PickTel:      req.FromAddress.Phone,
+			Name:         req.ToAddress.Name,
+			Address:      req.ToAddress.StreetAddress,
+			Province:     toLoc.Province,
+			District:     toLoc.District,
+			Ward:         toLoc.Ward,
+			Hamlet:       "Khác",
+			Tel:          req.ToAddress.Phone,
+			PickMoney:    req.CODAmountVND,
+			Value:        req.CODAmountVND,
+			Transport:    transport,
+			IsFreeship:   1,
+		},
+	}
+
+	var resp ghtkCreateResponse
+	if err := g.doRequest(ctx, http.MethodPost, "/services/shipment/order", payload, &resp); err != nil {
+		return nil, err
+	}
+	if !resp.Success || strings.TrimSpace(resp.Order.Label) == "" {
+		return nil, fmt.Errorf("ghtk create api error: %s", resp.Message)
+	}
+
+	return &ShipmentResult{
+		CarrierCode:  CodeGHTK,
+		ServiceCode:  svc,
+		TrackingCode: resp.Order.Label,
+		LabelURL:     fmt.Sprintf("%s/services/label/%s", g.baseURL, url.PathEscape(resp.Order.Label)),
+		FeeVND:       resp.Order.Fee,
+		Status:       StatusCreated,
+	}, nil
+}
+
+type ghtkBasicResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+func (g *GHTKAdapter) sandboxCancelShipment(ctx context.Context, trackingCode string) error {
+	var resp ghtkBasicResponse
+	path := "/services/shipment/cancel/" + url.PathEscape(strings.TrimSpace(trackingCode))
+	if err := g.doRequest(ctx, http.MethodPost, path, nil, &resp); err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("ghtk cancel api error: %s", resp.Message)
+	}
+	return nil
+}
+
+type ghtkStatusResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Order   struct {
+		LabelID    string          `json:"label_id"`
+		PartnerID  string          `json:"partner_id"`
+		Status     json.RawMessage `json:"status"`
+		StatusText string          `json:"status_text"`
+		Modified   string          `json:"modified"`
+	} `json:"order"`
+}
+
+func (g *GHTKAdapter) sandboxGetStatus(ctx context.Context, trackingCode string) (*TrackingStatus, error) {
+	var resp ghtkStatusResponse
+	path := "/services/shipment/v2/" + url.PathEscape(strings.TrimSpace(trackingCode))
+	if err := g.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("ghtk status api error: %s", resp.Message)
+	}
+
+	rawStatus := parseGHTKRawStatus(resp.Order.Status)
+	mapped, ok := MapCarrierStatus(rawStatus)
+	if !ok {
+		return &TrackingStatus{
+			TrackingCode: trackingCode,
+			RawStatus:    rawStatus,
+			Changed:      false,
+		}, nil
+	}
+
+	ts := parseGHTKTimestamp(resp.Order.Modified)
+	desc := strings.TrimSpace(resp.Order.StatusText)
+	if desc == "" {
+		desc = "Synced from GHTK status polling"
+	}
+	return &TrackingStatus{
+		TrackingCode: trackingCode,
+		Status:       mapped,
+		RawStatus:    rawStatus,
+		Description:  desc,
+		OccurredAt:   ts,
+		Changed:      true,
+	}, nil
+}
+
+func parseGHTKRawStatus(raw json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+	var asStr string
+	if err := json.Unmarshal(raw, &asStr); err == nil {
+		return strings.TrimSpace(asStr)
+	}
+	var asNum int64
+	if err := json.Unmarshal(raw, &asNum); err == nil {
+		return strconv.FormatInt(asNum, 10)
+	}
+	return strings.Trim(trimmed, "\"")
+}
+
+func parseGHTKTimestamp(raw string) time.Time {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return time.Now().UTC()
+	}
+	if ts, err := time.Parse(time.RFC3339, s); err == nil {
+		return ts.UTC()
+	}
+	if ts, err := time.Parse(ghtkTimestampFormatSQL, s); err == nil {
+		return ts.UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (g *GHTKAdapter) doRequest(ctx context.Context, method, path string, body any, dst any) error {
+	var bodyReader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return &NonRetryableError{Err: fmt.Errorf("marshal ghtk request: %w", err)}
+		}
+		bodyReader = bytes.NewReader(raw)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, g.baseURL+path, bodyReader)
+	if err != nil {
+		return &NonRetryableError{Err: fmt.Errorf("build ghtk http request: %w", err)}
+	}
+	req.Header.Set("Token", g.token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("ghtk http request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read ghtk response: %w", err)
+	}
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
+		return &NonRetryableError{Err: fmt.Errorf("ghtk rejected request status=%d body=%s", resp.StatusCode, string(respBody))}
+	}
+	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
+		return fmt.Errorf("ghtk transient error status=%d", resp.StatusCode)
+	}
+	if err := json.Unmarshal(respBody, dst); err != nil {
+		return fmt.Errorf("decode ghtk response: %w", err)
+	}
+	return nil
+}

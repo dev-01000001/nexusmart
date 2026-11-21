@@ -24,6 +24,7 @@ type MemoryStore struct {
 	items           map[string][]db.OrderItem
 	timelines       map[string][]db.OrderTimelineEvent
 	returnRequests  map[string]db.ReturnRequest
+	complaints      map[string]db.Complaint
 	outbox          []db.OutboxEvent
 	processedEvents map[string]db.ProcessedEvent
 	deadLetters     []db.DeadLetterEvent
@@ -37,6 +38,7 @@ func NewMemoryStore() *MemoryStore {
 		items:           make(map[string][]db.OrderItem),
 		timelines:       make(map[string][]db.OrderTimelineEvent),
 		returnRequests:  make(map[string]db.ReturnRequest),
+		complaints:      make(map[string]db.Complaint),
 		processedEvents: make(map[string]db.ProcessedEvent),
 	}
 }

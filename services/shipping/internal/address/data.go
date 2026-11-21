@@ -56,6 +56,22 @@ type LegacyMatch struct {
 	LegacyWardCode     string
 }
 
+// LegacyFallback holds reverse-mapped 3-level legacy province/district/ward metadata for a 2-level wardCode.
+// External carriers such as GHTK and GHN that still require legacy district/ward fields can use this fallback (UC-SHIP01).
+type LegacyFallback struct {
+	Found              bool
+	ProvinceCode       string
+	ProvinceName       string
+	WardCode           string
+	WardName           string
+	LegacyProvince     string
+	LegacyDistrict     string
+	LegacyWard         string
+	LegacyProvinceCode string
+	LegacyDistrictCode string
+	LegacyWardCode     string
+}
+
 // Provinces returns all 34 Vietnam provinces and centrally-run municipalities.
 func Provinces() []Province {
 	out := make([]Province, len(vietnamProvinces))
@@ -75,6 +91,167 @@ func LegacyMappings() []LegacyMapping {
 	out := make([]LegacyMapping, len(legacyMappings))
 	copy(out, legacyMappings)
 	return out
+}
+
+// ProvinceByCode looks up a province by its 2-digit code.
+func ProvinceByCode(provinceCode string) (Province, bool) {
+	code := strings.TrimSpace(provinceCode)
+	if code == "" {
+		return Province{}, false
+	}
+	for _, p := range vietnamProvinces {
+		if p.Code == code {
+			return p, true
+		}
+	}
+	return Province{}, false
+}
+
+// ProvinceName returns the display name for a province code, or "" if unknown.
+func ProvinceName(provinceCode string) string {
+	p, ok := ProvinceByCode(provinceCode)
+	if !ok {
+		return ""
+	}
+	return p.Name
+}
+
+// WardByCode looks up a seeded ward by its code.
+func WardByCode(wardCode string) (Ward, bool) {
+	code := strings.TrimSpace(wardCode)
+	if code == "" {
+		return Ward{}, false
+	}
+	for _, w := range vietnamWards {
+		if w.Code == code {
+			return w, true
+		}
+	}
+	return Ward{}, false
+}
+
+// WardName returns the display name for a ward code, or "" if unknown.
+func WardName(wardCode string) string {
+	w, ok := WardByCode(wardCode)
+	if !ok {
+		return ""
+	}
+	return w.Name
+}
+
+// LookupLegacyFallback resolves the province/ward names and reverse legacy 3-level
+// province/district/ward fallback for a 2-level wardCode.
+func LookupLegacyFallback(wardCode string) LegacyFallback {
+	w, ok := WardByCode(wardCode)
+	if !ok {
+		return LegacyFallback{Found: false}
+	}
+	provName := ProvinceName(w.ProvinceCode)
+
+	var (
+		detailed    *LegacyMapping
+		wardDefault *LegacyMapping
+		provDefault *LegacyMapping
+	)
+	for i := range legacyMappings {
+		m := &legacyMappings[i]
+		if m.WardCode == w.Code {
+			if m.LegacyDistrict != "" && detailed == nil {
+				detailed = m
+				break
+			}
+			if wardDefault == nil {
+				wardDefault = m
+			}
+		} else if m.ProvinceCode == w.ProvinceCode && m.LegacyDistrict == "" && provDefault == nil {
+			provDefault = m
+		}
+	}
+
+	chosen := detailed
+	if chosen == nil {
+		chosen = wardDefault
+	}
+	if chosen == nil {
+		chosen = provDefault
+	}
+
+	fb := LegacyFallback{
+		Found:        true,
+		ProvinceCode: w.ProvinceCode,
+		ProvinceName: provName,
+		WardCode:     w.Code,
+		WardName:     w.Name,
+	}
+	if chosen != nil {
+		fb.LegacyProvince = chosen.LegacyProvince
+		fb.LegacyDistrict = chosen.LegacyDistrict
+		fb.LegacyWard = chosen.LegacyWard
+		fb.LegacyProvinceCode = chosen.LegacyProvinceCode
+		fb.LegacyDistrictCode = chosen.LegacyDistrictCode
+		fb.LegacyWardCode = chosen.LegacyWardCode
+	}
+	if fb.LegacyProvince == "" {
+		fb.LegacyProvince = provName
+	}
+	if fb.LegacyDistrict == "" {
+		fb.LegacyDistrict = w.Name
+	}
+	if fb.LegacyWard == "" {
+		fb.LegacyWard = w.Name
+	}
+	return fb
+}
+
+// MapLegacyAddress maps a legacy 3-level (63-province / district / ward) address
+// to the new 34-province 2-level administrative catalog using normalized matching.
+func MapLegacyAddress(legacyProv, legacyDist, legacyWard string) LegacyMatch {
+	pNorm := NormalizeName(legacyProv)
+	dNorm := NormalizeName(legacyDist)
+	wNorm := NormalizeName(legacyWard)
+	if pNorm == "" {
+		return LegacyMatch{Found: false}
+	}
+
+	var best *LegacyMapping
+	bestScore := 0
+	for i := range legacyMappings {
+		cand := &legacyMappings[i]
+		if NormalizeName(cand.LegacyProvince) != pNorm {
+			continue
+		}
+		cd := NormalizeName(cand.LegacyDistrict)
+		cw := NormalizeName(cand.LegacyWard)
+		score := 0
+		switch {
+		case dNorm != "" && wNorm != "" && cd == dNorm && cw == wNorm:
+			score = 3
+		case dNorm != "" && cd == dNorm:
+			score = 2
+		case dNorm == "" && wNorm != "" && cw == wNorm:
+			score = 2
+		case cd == "" && cw == "":
+			score = 1
+		}
+		if score > bestScore {
+			bestScore = score
+			best = cand
+		}
+	}
+	if best == nil {
+		return LegacyMatch{Found: false}
+	}
+
+	return LegacyMatch{
+		Found:              true,
+		ProvinceCode:       best.ProvinceCode,
+		ProvinceName:       ProvinceName(best.ProvinceCode),
+		WardCode:           best.WardCode,
+		WardName:           WardName(best.WardCode),
+		LegacyProvinceCode: best.LegacyProvinceCode,
+		LegacyDistrictCode: best.LegacyDistrictCode,
+		LegacyWardCode:     best.LegacyWardCode,
+	}
 }
 
 // RegionOfProvince returns the macro-region (north, central, south) for a province code.
@@ -110,17 +287,24 @@ func NormalizeName(input string) string {
 
 	// Handle common abbreviations and administrative prefixes.
 	aliases := map[string]string{
-		"hcm":     "ho chi minh",
-		"tphcm":   "ho chi minh",
-		"tp hcm":  "ho chi minh",
-		"sai gon": "ho chi minh",
-		"saigon":  "ho chi minh",
-		"hn":      "ha noi",
-		"dn":      "da nang",
-		"hp":      "hai phong",
-		"ct":      "can tho",
-		"brvt":    "ba ria vung tau",
-		"br vt":   "ba ria vung tau",
+		"hcm":      "ho chi minh",
+		"tphcm":    "ho chi minh",
+		"tp hcm":   "ho chi minh",
+		"sai gon":  "ho chi minh",
+		"saigon":   "ho chi minh",
+		"hn":       "ha noi",
+		"tp hn":    "ha noi",
+		"dn":       "da nang",
+		"tp dn":    "da nang",
+		"hp":       "hai phong",
+		"tp hp":    "hai phong",
+		"ct":       "can tho",
+		"tp ct":    "can tho",
+		"brvt":     "ba ria vung tau",
+		"br vt":    "ba ria vung tau",
+		"tth":      "thua thien hue",
+		"dac lac":  "dak lak",
+		"dac nong": "dak nong",
 	}
 	if mapped, ok := aliases[s]; ok {
 		return mapped
@@ -154,6 +338,19 @@ func NormalizeName(input string) string {
 					break
 				}
 			}
+		}
+	}
+	// Support compact numeric district/ward shorthand like "q1", "q7", "p1".
+	if len(s) >= 2 && (s[0] == 'q' || s[0] == 'p') && s[1] >= '0' && s[1] <= '9' {
+		allDigits := true
+		for i := 1; i < len(s); i++ {
+			if s[i] < '0' || s[i] > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			s = s[1:]
 		}
 	}
 	if mapped, ok := aliases[s]; ok {

@@ -19,16 +19,23 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	OrderService_CreateCheckout_FullMethodName       = "/nexusmart.order.v1.OrderService/CreateCheckout"
-	OrderService_GetOrder_FullMethodName             = "/nexusmart.order.v1.OrderService/GetOrder"
-	OrderService_ListOrders_FullMethodName           = "/nexusmart.order.v1.OrderService/ListOrders"
-	OrderService_CancelOrder_FullMethodName          = "/nexusmart.order.v1.OrderService/CancelOrder"
-	OrderService_SellerConfirmOrder_FullMethodName   = "/nexusmart.order.v1.OrderService/SellerConfirmOrder"
-	OrderService_SellerShipOrder_FullMethodName      = "/nexusmart.order.v1.OrderService/SellerShipOrder"
-	OrderService_BuyerConfirmReceived_FullMethodName = "/nexusmart.order.v1.OrderService/BuyerConfirmReceived"
-	OrderService_RequestReturn_FullMethodName        = "/nexusmart.order.v1.OrderService/RequestReturn"
-	OrderService_GetOrderTimeline_FullMethodName     = "/nexusmart.order.v1.OrderService/GetOrderTimeline"
-	OrderService_MarkPaymentResult_FullMethodName    = "/nexusmart.order.v1.OrderService/MarkPaymentResult"
+	OrderService_CreateCheckout_FullMethodName        = "/nexusmart.order.v1.OrderService/CreateCheckout"
+	OrderService_GetOrder_FullMethodName              = "/nexusmart.order.v1.OrderService/GetOrder"
+	OrderService_ListOrders_FullMethodName            = "/nexusmart.order.v1.OrderService/ListOrders"
+	OrderService_CancelOrder_FullMethodName           = "/nexusmart.order.v1.OrderService/CancelOrder"
+	OrderService_SellerConfirmOrder_FullMethodName    = "/nexusmart.order.v1.OrderService/SellerConfirmOrder"
+	OrderService_SellerShipOrder_FullMethodName       = "/nexusmart.order.v1.OrderService/SellerShipOrder"
+	OrderService_BuyerConfirmReceived_FullMethodName  = "/nexusmart.order.v1.OrderService/BuyerConfirmReceived"
+	OrderService_RequestReturn_FullMethodName         = "/nexusmart.order.v1.OrderService/RequestReturn"
+	OrderService_ListOrderReturns_FullMethodName      = "/nexusmart.order.v1.OrderService/ListOrderReturns"
+	OrderService_ApproveReturn_FullMethodName         = "/nexusmart.order.v1.OrderService/ApproveReturn"
+	OrderService_RejectReturn_FullMethodName          = "/nexusmart.order.v1.OrderService/RejectReturn"
+	OrderService_ConfirmReturnReceived_FullMethodName = "/nexusmart.order.v1.OrderService/ConfirmReturnReceived"
+	OrderService_CreateComplaint_FullMethodName       = "/nexusmart.order.v1.OrderService/CreateComplaint"
+	OrderService_ListComplaints_FullMethodName        = "/nexusmart.order.v1.OrderService/ListComplaints"
+	OrderService_ResolveComplaint_FullMethodName      = "/nexusmart.order.v1.OrderService/ResolveComplaint"
+	OrderService_GetOrderTimeline_FullMethodName      = "/nexusmart.order.v1.OrderService/GetOrderTimeline"
+	OrderService_MarkPaymentResult_FullMethodName     = "/nexusmart.order.v1.OrderService/MarkPaymentResult"
 )
 
 // OrderServiceClient is the client API for OrderService service.
@@ -43,6 +50,13 @@ type OrderServiceClient interface {
 	SellerShipOrder(ctx context.Context, in *SellerShipOrderRequest, opts ...grpc.CallOption) (*SellerShipOrderResponse, error)
 	BuyerConfirmReceived(ctx context.Context, in *BuyerConfirmReceivedRequest, opts ...grpc.CallOption) (*BuyerConfirmReceivedResponse, error)
 	RequestReturn(ctx context.Context, in *RequestReturnRequest, opts ...grpc.CallOption) (*RequestReturnResponse, error)
+	ListOrderReturns(ctx context.Context, in *ListOrderReturnsRequest, opts ...grpc.CallOption) (*ListOrderReturnsResponse, error)
+	ApproveReturn(ctx context.Context, in *ApproveReturnRequest, opts ...grpc.CallOption) (*ApproveReturnResponse, error)
+	RejectReturn(ctx context.Context, in *RejectReturnRequest, opts ...grpc.CallOption) (*RejectReturnResponse, error)
+	ConfirmReturnReceived(ctx context.Context, in *ConfirmReturnReceivedRequest, opts ...grpc.CallOption) (*ConfirmReturnReceivedResponse, error)
+	CreateComplaint(ctx context.Context, in *CreateComplaintRequest, opts ...grpc.CallOption) (*CreateComplaintResponse, error)
+	ListComplaints(ctx context.Context, in *ListComplaintsRequest, opts ...grpc.CallOption) (*ListComplaintsResponse, error)
+	ResolveComplaint(ctx context.Context, in *ResolveComplaintRequest, opts ...grpc.CallOption) (*ResolveComplaintResponse, error)
 	GetOrderTimeline(ctx context.Context, in *GetOrderTimelineRequest, opts ...grpc.CallOption) (*GetOrderTimelineResponse, error)
 	MarkPaymentResult(ctx context.Context, in *MarkPaymentResultRequest, opts ...grpc.CallOption) (*MarkPaymentResultResponse, error)
 }
@@ -135,6 +149,76 @@ func (c *orderServiceClient) RequestReturn(ctx context.Context, in *RequestRetur
 	return out, nil
 }
 
+func (c *orderServiceClient) ListOrderReturns(ctx context.Context, in *ListOrderReturnsRequest, opts ...grpc.CallOption) (*ListOrderReturnsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListOrderReturnsResponse)
+	err := c.cc.Invoke(ctx, OrderService_ListOrderReturns_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orderServiceClient) ApproveReturn(ctx context.Context, in *ApproveReturnRequest, opts ...grpc.CallOption) (*ApproveReturnResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApproveReturnResponse)
+	err := c.cc.Invoke(ctx, OrderService_ApproveReturn_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orderServiceClient) RejectReturn(ctx context.Context, in *RejectReturnRequest, opts ...grpc.CallOption) (*RejectReturnResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RejectReturnResponse)
+	err := c.cc.Invoke(ctx, OrderService_RejectReturn_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orderServiceClient) ConfirmReturnReceived(ctx context.Context, in *ConfirmReturnReceivedRequest, opts ...grpc.CallOption) (*ConfirmReturnReceivedResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConfirmReturnReceivedResponse)
+	err := c.cc.Invoke(ctx, OrderService_ConfirmReturnReceived_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orderServiceClient) CreateComplaint(ctx context.Context, in *CreateComplaintRequest, opts ...grpc.CallOption) (*CreateComplaintResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateComplaintResponse)
+	err := c.cc.Invoke(ctx, OrderService_CreateComplaint_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orderServiceClient) ListComplaints(ctx context.Context, in *ListComplaintsRequest, opts ...grpc.CallOption) (*ListComplaintsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListComplaintsResponse)
+	err := c.cc.Invoke(ctx, OrderService_ListComplaints_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orderServiceClient) ResolveComplaint(ctx context.Context, in *ResolveComplaintRequest, opts ...grpc.CallOption) (*ResolveComplaintResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResolveComplaintResponse)
+	err := c.cc.Invoke(ctx, OrderService_ResolveComplaint_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *orderServiceClient) GetOrderTimeline(ctx context.Context, in *GetOrderTimelineRequest, opts ...grpc.CallOption) (*GetOrderTimelineResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetOrderTimelineResponse)
@@ -167,6 +251,13 @@ type OrderServiceServer interface {
 	SellerShipOrder(context.Context, *SellerShipOrderRequest) (*SellerShipOrderResponse, error)
 	BuyerConfirmReceived(context.Context, *BuyerConfirmReceivedRequest) (*BuyerConfirmReceivedResponse, error)
 	RequestReturn(context.Context, *RequestReturnRequest) (*RequestReturnResponse, error)
+	ListOrderReturns(context.Context, *ListOrderReturnsRequest) (*ListOrderReturnsResponse, error)
+	ApproveReturn(context.Context, *ApproveReturnRequest) (*ApproveReturnResponse, error)
+	RejectReturn(context.Context, *RejectReturnRequest) (*RejectReturnResponse, error)
+	ConfirmReturnReceived(context.Context, *ConfirmReturnReceivedRequest) (*ConfirmReturnReceivedResponse, error)
+	CreateComplaint(context.Context, *CreateComplaintRequest) (*CreateComplaintResponse, error)
+	ListComplaints(context.Context, *ListComplaintsRequest) (*ListComplaintsResponse, error)
+	ResolveComplaint(context.Context, *ResolveComplaintRequest) (*ResolveComplaintResponse, error)
 	GetOrderTimeline(context.Context, *GetOrderTimelineRequest) (*GetOrderTimelineResponse, error)
 	MarkPaymentResult(context.Context, *MarkPaymentResultRequest) (*MarkPaymentResultResponse, error)
 	mustEmbedUnimplementedOrderServiceServer()
@@ -202,6 +293,27 @@ func (UnimplementedOrderServiceServer) BuyerConfirmReceived(context.Context, *Bu
 }
 func (UnimplementedOrderServiceServer) RequestReturn(context.Context, *RequestReturnRequest) (*RequestReturnResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RequestReturn not implemented")
+}
+func (UnimplementedOrderServiceServer) ListOrderReturns(context.Context, *ListOrderReturnsRequest) (*ListOrderReturnsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListOrderReturns not implemented")
+}
+func (UnimplementedOrderServiceServer) ApproveReturn(context.Context, *ApproveReturnRequest) (*ApproveReturnResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ApproveReturn not implemented")
+}
+func (UnimplementedOrderServiceServer) RejectReturn(context.Context, *RejectReturnRequest) (*RejectReturnResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RejectReturn not implemented")
+}
+func (UnimplementedOrderServiceServer) ConfirmReturnReceived(context.Context, *ConfirmReturnReceivedRequest) (*ConfirmReturnReceivedResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ConfirmReturnReceived not implemented")
+}
+func (UnimplementedOrderServiceServer) CreateComplaint(context.Context, *CreateComplaintRequest) (*CreateComplaintResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateComplaint not implemented")
+}
+func (UnimplementedOrderServiceServer) ListComplaints(context.Context, *ListComplaintsRequest) (*ListComplaintsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListComplaints not implemented")
+}
+func (UnimplementedOrderServiceServer) ResolveComplaint(context.Context, *ResolveComplaintRequest) (*ResolveComplaintResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ResolveComplaint not implemented")
 }
 func (UnimplementedOrderServiceServer) GetOrderTimeline(context.Context, *GetOrderTimelineRequest) (*GetOrderTimelineResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetOrderTimeline not implemented")
@@ -374,6 +486,132 @@ func _OrderService_RequestReturn_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OrderService_ListOrderReturns_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListOrderReturnsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).ListOrderReturns(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_ListOrderReturns_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).ListOrderReturns(ctx, req.(*ListOrderReturnsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OrderService_ApproveReturn_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApproveReturnRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).ApproveReturn(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_ApproveReturn_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).ApproveReturn(ctx, req.(*ApproveReturnRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OrderService_RejectReturn_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RejectReturnRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).RejectReturn(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_RejectReturn_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).RejectReturn(ctx, req.(*RejectReturnRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OrderService_ConfirmReturnReceived_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConfirmReturnReceivedRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).ConfirmReturnReceived(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_ConfirmReturnReceived_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).ConfirmReturnReceived(ctx, req.(*ConfirmReturnReceivedRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OrderService_CreateComplaint_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateComplaintRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).CreateComplaint(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_CreateComplaint_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).CreateComplaint(ctx, req.(*CreateComplaintRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OrderService_ListComplaints_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListComplaintsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).ListComplaints(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_ListComplaints_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).ListComplaints(ctx, req.(*ListComplaintsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OrderService_ResolveComplaint_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveComplaintRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).ResolveComplaint(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_ResolveComplaint_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).ResolveComplaint(ctx, req.(*ResolveComplaintRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OrderService_GetOrderTimeline_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetOrderTimelineRequest)
 	if err := dec(in); err != nil {
@@ -448,6 +686,34 @@ var OrderService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RequestReturn",
 			Handler:    _OrderService_RequestReturn_Handler,
+		},
+		{
+			MethodName: "ListOrderReturns",
+			Handler:    _OrderService_ListOrderReturns_Handler,
+		},
+		{
+			MethodName: "ApproveReturn",
+			Handler:    _OrderService_ApproveReturn_Handler,
+		},
+		{
+			MethodName: "RejectReturn",
+			Handler:    _OrderService_RejectReturn_Handler,
+		},
+		{
+			MethodName: "ConfirmReturnReceived",
+			Handler:    _OrderService_ConfirmReturnReceived_Handler,
+		},
+		{
+			MethodName: "CreateComplaint",
+			Handler:    _OrderService_CreateComplaint_Handler,
+		},
+		{
+			MethodName: "ListComplaints",
+			Handler:    _OrderService_ListComplaints_Handler,
+		},
+		{
+			MethodName: "ResolveComplaint",
+			Handler:    _OrderService_ResolveComplaint_Handler,
 		},
 		{
 			MethodName: "GetOrderTimeline",

@@ -1,0 +1,22 @@
+# Staging overrides for notification (namespace: nexusmart-staging)
+replicaCount: 1
+
+image:
+  tag: "staging"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 192Mi
+
+pdb:
+  enabled: false
+
+config:
+  SMTP_HOST: "mailpit"
+  SMTP_PORT: "1025"
+  SMTP_FROM: "no-reply@staging.nexusmart.local"

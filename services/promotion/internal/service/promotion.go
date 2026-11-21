@@ -1085,12 +1085,27 @@ func (s *PromotionService) ReleasePromotion(ctx context.Context, req *promotionv
 		return nil, status.Error(codes.PermissionDenied, "only admins or internal services can release promotions")
 	}
 
-	orderID := strings.TrimSpace(req.GetOrderId())
+	alreadyReleased, err := s.ReleaseReservationByOrderID(ctx, req.GetOrderId())
+	if err != nil {
+		return nil, err
+	}
+
+	return &promotionv1.ReleasePromotionResponse{
+		Released:        true,
+		AlreadyReleased: alreadyReleased,
+	}, nil
+}
+
+// ReleaseReservationByOrderID idempotently releases Redis and Postgres promotion reservations
+// for in-process callers (such as the `order.refunded` JetStream consumer) without weakening
+// authentication on the external ReleasePromotion gRPC RPC.
+func (s *PromotionService) ReleaseReservationByOrderID(ctx context.Context, orderID string) (bool, error) {
+	orderID = strings.TrimSpace(orderID)
 	if orderID == "" {
-		return nil, status.Error(codes.InvalidArgument, "order_id is required")
+		return false, status.Error(codes.InvalidArgument, "order_id is required")
 	}
 	if err := validateKeySegment("order_id", orderID); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return false, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	// Collect known touched keys from Postgres (optional hint for Redis Cluster semantics)
@@ -1110,18 +1125,15 @@ func (s *PromotionService) ReleasePromotion(ctx context.Context, req *promotionv
 
 	redisOutcome, err := s.engine.Release(ctx, orderID, extraKeys...)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "release redis promotion reservation: %v", err)
+		return false, status.Errorf(codes.Internal, "release redis promotion reservation: %v", err)
 	}
 
 	pgAlreadyReleased, err := s.store.ReleaseReservation(ctx, orderID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "release postgres promotion reservation: %v", err)
+		return false, status.Errorf(codes.Internal, "release postgres promotion reservation: %v", err)
 	}
 
-	return &promotionv1.ReleasePromotionResponse{
-		Released:        true,
-		AlreadyReleased: redisOutcome.AlreadyReleased && pgAlreadyReleased,
-	}, nil
+	return redisOutcome.AlreadyReleased && pgAlreadyReleased, nil
 }
 
 func (s *PromotionService) compensateRedisRelease(orderID string) {

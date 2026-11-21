@@ -108,7 +108,12 @@ func main() {
 	}
 	promoSvc.StartFlashSaleSweeper(ctx, cfg.FlashSaleSweepInterval)
 
-	nc, consumer, err := connectNATS(ctx, cfg.NATSURL, cfg.NATSStream, pgStore, log)
+	releaseFn := func(rctx context.Context, orderID string) error {
+		_, releaseErr := promoSvc.ReleaseReservationByOrderID(rctx, orderID)
+		return releaseErr
+	}
+
+	nc, consumer, err := connectNATS(ctx, cfg.NATSURL, cfg.NATSStream, pgStore, releaseFn, log)
 	if err != nil {
 		log.Error("failed to start nats consumer", slog.String("error", err.Error()))
 		os.Exit(1)

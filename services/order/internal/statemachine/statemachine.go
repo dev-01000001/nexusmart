@@ -34,8 +34,26 @@ var allowedTransitions = map[orderv1.OrderStatus]map[orderv1.OrderStatus]struct{
 		orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED: {},
 	},
 	orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED: {
+		orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED: {},
+		orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED: {},
+		orderv1.OrderStatus_ORDER_STATUS_RETURNED:        {},
+		orderv1.OrderStatus_ORDER_STATUS_COMPLETED:       {},
+	},
+	orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED: {
+		orderv1.OrderStatus_ORDER_STATUS_RETURNING: {},
+		orderv1.OrderStatus_ORDER_STATUS_REFUNDED:  {},
 		orderv1.OrderStatus_ORDER_STATUS_RETURNED:  {},
-		orderv1.OrderStatus_ORDER_STATUS_COMPLETED: {},
+	},
+	orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED: {
+		orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED: {},
+		orderv1.OrderStatus_ORDER_STATUS_COMPLETED:       {},
+	},
+	orderv1.OrderStatus_ORDER_STATUS_RETURNING: {
+		orderv1.OrderStatus_ORDER_STATUS_RETURNED: {},
+		orderv1.OrderStatus_ORDER_STATUS_REFUNDED: {},
+	},
+	orderv1.OrderStatus_ORDER_STATUS_RETURNED: {
+		orderv1.OrderStatus_ORDER_STATUS_REFUNDED: {},
 	},
 }
 
@@ -83,6 +101,14 @@ func StatusToString(s orderv1.OrderStatus) string {
 		return "RETURN_REQUESTED"
 	case orderv1.OrderStatus_ORDER_STATUS_RETURNED:
 		return "RETURNED"
+	case orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED:
+		return "RETURN_APPROVED"
+	case orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED:
+		return "RETURN_REJECTED"
+	case orderv1.OrderStatus_ORDER_STATUS_RETURNING:
+		return "RETURNING"
+	case orderv1.OrderStatus_ORDER_STATUS_REFUNDED:
+		return "REFUNDED"
 	default:
 		return "UNSPECIFIED"
 	}
@@ -111,6 +137,14 @@ func StringToStatus(raw string) orderv1.OrderStatus {
 		return orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED
 	case "RETURNED":
 		return orderv1.OrderStatus_ORDER_STATUS_RETURNED
+	case "RETURN_APPROVED":
+		return orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED
+	case "RETURN_REJECTED":
+		return orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED
+	case "RETURNING":
+		return orderv1.OrderStatus_ORDER_STATUS_RETURNING
+	case "REFUNDED":
+		return orderv1.OrderStatus_ORDER_STATUS_REFUNDED
 	default:
 		return orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED
 	}
@@ -123,6 +157,8 @@ func PaymentMethodToString(m orderv1.OrderPaymentMethod) string {
 		return "COD"
 	case orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR:
 		return "VIETQR"
+	case orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_ZALOPAY:
+		return "ZALOPAY"
 	default:
 		return "UNSPECIFIED"
 	}
@@ -137,7 +173,126 @@ func StringToPaymentMethod(raw string) orderv1.OrderPaymentMethod {
 		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD
 	case "VIETQR":
 		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR
+	case "ZALOPAY":
+		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_ZALOPAY
 	default:
 		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED
+	}
+}
+
+// IsOnlinePaymentMethod reports whether m is a prepaid online payment method (VietQR or ZaloPay).
+func IsOnlinePaymentMethod(m orderv1.OrderPaymentMethod) bool {
+	return m == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR ||
+		m == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_ZALOPAY
+}
+
+// IsOnlinePaymentMethodString reports whether a persisted payment_method string is an online payment method.
+func IsOnlinePaymentMethodString(raw string) bool {
+	return IsOnlinePaymentMethod(StringToPaymentMethod(raw))
+}
+
+// ReturnRequestStatusToString converts proto ReturnRequestStatus to its canonical uppercase DB string.
+func ReturnRequestStatusToString(s orderv1.ReturnRequestStatus) string {
+	switch s {
+	case orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_PENDING:
+		return "PENDING"
+	case orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_APPROVED:
+		return "APPROVED"
+	case orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_REJECTED:
+		return "REJECTED"
+	case orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_RETURNING:
+		return "RETURNING"
+	case orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_RETURNED:
+		return "RETURNED"
+	case orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_REFUNDED:
+		return "REFUNDED"
+	case orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_ESCALATED:
+		return "ESCALATED"
+	default:
+		return "UNSPECIFIED"
+	}
+}
+
+// StringToReturnRequestStatus converts a persisted string status into proto ReturnRequestStatus.
+func StringToReturnRequestStatus(raw string) orderv1.ReturnRequestStatus {
+	normalized := strings.ToUpper(strings.TrimSpace(raw))
+	normalized = strings.TrimPrefix(normalized, "RETURN_REQUEST_STATUS_")
+	switch normalized {
+	case "PENDING":
+		return orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_PENDING
+	case "APPROVED":
+		return orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_APPROVED
+	case "REJECTED":
+		return orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_REJECTED
+	case "RETURNING":
+		return orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_RETURNING
+	case "RETURNED":
+		return orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_RETURNED
+	case "REFUNDED":
+		return orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_REFUNDED
+	case "ESCALATED":
+		return orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_ESCALATED
+	default:
+		return orderv1.ReturnRequestStatus_RETURN_REQUEST_STATUS_UNSPECIFIED
+	}
+}
+
+// ComplaintStatusToString converts proto ComplaintStatus to its canonical uppercase DB string.
+func ComplaintStatusToString(s orderv1.ComplaintStatus) string {
+	switch s {
+	case orderv1.ComplaintStatus_COMPLAINT_STATUS_OPEN:
+		return "OPEN"
+	case orderv1.ComplaintStatus_COMPLAINT_STATUS_RESOLVED:
+		return "RESOLVED"
+	case orderv1.ComplaintStatus_COMPLAINT_STATUS_DISMISSED:
+		return "DISMISSED"
+	default:
+		return "UNSPECIFIED"
+	}
+}
+
+// StringToComplaintStatus converts a persisted string status into proto ComplaintStatus.
+func StringToComplaintStatus(raw string) orderv1.ComplaintStatus {
+	normalized := strings.ToUpper(strings.TrimSpace(raw))
+	normalized = strings.TrimPrefix(normalized, "COMPLAINT_STATUS_")
+	switch normalized {
+	case "OPEN":
+		return orderv1.ComplaintStatus_COMPLAINT_STATUS_OPEN
+	case "RESOLVED":
+		return orderv1.ComplaintStatus_COMPLAINT_STATUS_RESOLVED
+	case "DISMISSED":
+		return orderv1.ComplaintStatus_COMPLAINT_STATUS_DISMISSED
+	default:
+		return orderv1.ComplaintStatus_COMPLAINT_STATUS_UNSPECIFIED
+	}
+}
+
+// ComplaintResolutionToString converts proto ComplaintResolution to its canonical uppercase DB string.
+func ComplaintResolutionToString(r orderv1.ComplaintResolution) string {
+	switch r {
+	case orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_REFUND:
+		return "REFUND"
+	case orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_REPLACE:
+		return "REPLACE"
+	case orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_DISMISS:
+		return "DISMISS"
+	default:
+		return ""
+	}
+}
+
+// StringToComplaintResolution converts a persisted string resolution into proto ComplaintResolution.
+func StringToComplaintResolution(raw string) orderv1.ComplaintResolution {
+	normalized := strings.ToUpper(strings.TrimSpace(raw))
+	normalized = strings.TrimPrefix(normalized, "COMPLAINT_RESOLUTION_")
+	switch normalized {
+	case "REFUND":
+		return orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_REFUND
+	case "REPLACE":
+		return orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_REPLACE
+	case "DISMISS":
+		return orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_DISMISS
+	default:
+		return orderv1.ComplaintResolution_COMPLAINT_RESOLUTION_UNSPECIFIED
 	}
 }

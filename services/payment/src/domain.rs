@@ -9,6 +9,7 @@ use crate::error::{PaymentError, Result};
 pub enum PaymentMethod {
     Cod,
     VietQr,
+    ZaloPay,
 }
 
 impl PaymentMethod {
@@ -16,13 +17,19 @@ impl PaymentMethod {
         match self {
             Self::Cod => "COD",
             Self::VietQr => "VIETQR",
+            Self::ZaloPay => "ZALOPAY",
         }
+    }
+
+    pub fn is_online(self) -> bool {
+        matches!(self, Self::VietQr | Self::ZaloPay)
     }
 
     pub fn parse(raw: &str) -> Result<Self> {
         match raw.trim().to_ascii_uppercase().as_str() {
             "COD" => Ok(Self::Cod),
             "VIETQR" | "VIET_QR" | "QR" => Ok(Self::VietQr),
+            "ZALOPAY" | "ZALO_PAY" | "ZLP" => Ok(Self::ZaloPay),
             other => Err(PaymentError::Validation(format!(
                 "unsupported payment method: {other}"
             ))),

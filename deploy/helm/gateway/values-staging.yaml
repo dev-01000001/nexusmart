@@ -1,0 +1,42 @@
+# Staging overrides for gateway (namespace: nexusmart-staging)
+replicaCount: 1
+
+image:
+  tag: "staging"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 300m
+    memory: 256Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+pdb:
+  enabled: false
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  hosts:
+    - host: "api.staging.nexusmart.local"
+      paths:
+        - path: "/"
+          pathType: Prefix
+  tls: []
+
+config:
+  SITE_ROOT_DOMAIN: "staging.nexusmart.local"
+  LOG_LEVEL: "info"

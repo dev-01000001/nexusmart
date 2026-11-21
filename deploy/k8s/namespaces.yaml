@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nexusmart-staging
+  labels:
+    app.kubernetes.io/part-of: nexusmart
+    app.kubernetes.io/managed-by: kubectl
+    nexusmart.vn/environment: staging
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nexusmart-production
+  labels:
+    app.kubernetes.io/part-of: nexusmart
+    app.kubernetes.io/managed-by: kubectl
+    nexusmart.vn/environment: production

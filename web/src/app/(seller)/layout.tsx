@@ -1,5 +1,6 @@
 import React from "react";
 import { SellerShell } from "@/features/seller/SellerShell";
+import { countPendingReturns } from "@/features/seller/sellerReturns";
 import {
   loadSellerOrders,
   loadSellerShop,
@@ -17,15 +18,19 @@ export default async function SellerLayout({ children }: { children: React.React
     ? await Promise.all([loadSellerShop(), loadSellerOrders(50), loadSellerSiteSummaryServer()])
     : [{ data: null, error: null }, { data: null, error: null }, summarizeSellerSite(null)];
 
-  const pendingOrdersCount = (ordersRes.data?.items ?? []).filter(
+  const orderItems = ordersRes.data?.items ?? [];
+  const pendingOrdersCount = orderItems.filter(
     (o) => o.status.toUpperCase() === "CONFIRMED"
   ).length;
+  const pendingReturnsCount = countPendingReturns(orderItems);
 
   return (
     <SellerShell
       user={session.user}
       shop={shopRes.data}
       pendingOrdersCount={pendingOrdersCount}
+      pendingReturnsCount={pendingReturnsCount}
+      unreadChatCount={0}
       site={site}
     >
       {children}

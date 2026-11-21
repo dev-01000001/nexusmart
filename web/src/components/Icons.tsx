@@ -386,3 +386,21 @@ export function IconGlobe({ size = 16, className }: IconProps) {
     </svg>
   );
 }
+
+export function IconSend({ size = 16, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <path d="M16.5 3.5L9.2 10.8" />
+      <path d="M16.5 3.5L11.8 16.5L9.2 10.8L3.5 8.2L16.5 3.5Z" />
+    </svg>
+  );
+}
+
+export function IconFlag({ size = 16, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <path d="M4.5 3.5V16.5" />
+      <path d="M4.5 4.2H14.5L12.7 7.6L14.5 11H4.5" />
+    </svg>
+  );
+}

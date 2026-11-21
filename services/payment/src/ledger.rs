@@ -208,6 +208,35 @@ pub fn build_vietqr_confirm_tx(
     }
 }
 
+/// ZaloPay confirmed: Debit gateway_clearing, Credit escrow_liability
+pub fn build_zalopay_confirm_tx(
+    payment_id: Uuid,
+    amount_vnd: i64,
+    channel: ChannelAttribution,
+) -> LedgerTransactionDraft {
+    LedgerTransactionDraft {
+        idempotency_key: format!("zalopay-confirm:{payment_id}"),
+        reference_type: "payment_zalopay".to_string(),
+        reference_id: payment_id.to_string(),
+        description: format!("ZaloPay payment confirmed for payment {payment_id}"),
+        channel,
+        lines: vec![
+            LedgerLine::debit(
+                ACCOUNT_GATEWAY_CLEARING,
+                AccountType::Asset,
+                None,
+                amount_vnd,
+            ),
+            LedgerLine::credit(
+                ACCOUNT_ESCROW_LIABILITY,
+                AccountType::Liability,
+                None,
+                amount_vnd,
+            ),
+        ],
+    }
+}
+
 /// COD confirmed: Debit cod_receivable, Credit escrow_liability
 pub fn build_cod_confirm_tx(
     payment_id: Uuid,
@@ -286,6 +315,128 @@ pub fn build_refund_tx(
             ),
         ],
     }
+}
+
+/// Refund on a sub-order allocation that was ALREADY settled (`pending_release` or `released`):
+/// Proportionally reverses `seller_pending:<shop_id>` (or `seller_available:<shop_id>` when
+/// `from_available` is true), `platform_fee_revenue`, and `shipping_fee_payable` into
+/// `refund_payable` using strictly balanced integer VND arithmetic.
+#[allow(clippy::too_many_arguments)]
+pub fn build_settled_refund_tx(
+    refund_id: Uuid,
+    payment_id: Uuid,
+    shop_id: &str,
+    from_available: bool,
+    seller_net_vnd: i64,
+    commission_vnd: i64,
+    shipping_fee_vnd: i64,
+    refund_amount_vnd: i64,
+    reason: &str,
+    channel: ChannelAttribution,
+) -> Result<LedgerTransactionDraft> {
+    if shop_id.trim().is_empty() {
+        return Err(PaymentError::LedgerInvariant(
+            "shop_id must not be empty for settled refund".to_string(),
+        ));
+    }
+    if seller_net_vnd < 0 || commission_vnd < 0 || shipping_fee_vnd < 0 {
+        return Err(PaymentError::LedgerInvariant(
+            "allocation split amounts must be non-negative".to_string(),
+        ));
+    }
+    let alloc_total = seller_net_vnd
+        .checked_add(commission_vnd)
+        .and_then(|v| v.checked_add(shipping_fee_vnd))
+        .ok_or_else(|| {
+            PaymentError::LedgerInvariant("settled refund allocation sum overflow".to_string())
+        })?;
+    if alloc_total <= 0 || refund_amount_vnd <= 0 {
+        return Err(PaymentError::LedgerInvariant(
+            "settled refund allocation total and refund_amount_vnd must be positive".to_string(),
+        ));
+    }
+    if refund_amount_vnd > alloc_total {
+        return Err(PaymentError::LedgerInvariant(format!(
+            "settled refund amount ({refund_amount_vnd}) exceeds allocation total ({alloc_total})"
+        )));
+    }
+
+    let (rev_seller, rev_commission, rev_shipping) = if refund_amount_vnd == alloc_total {
+        (seller_net_vnd, commission_vnd, shipping_fee_vnd)
+    } else {
+        let total128 = alloc_total as i128;
+        let ref128 = refund_amount_vnd as i128;
+        let mut s = ((seller_net_vnd as i128 * ref128) / total128) as i64;
+        let mut c = ((commission_vnd as i128 * ref128) / total128) as i64;
+        let mut sh = ((shipping_fee_vnd as i128 * ref128) / total128) as i64;
+        let mut rem = refund_amount_vnd - s - c - sh;
+
+        let add_s = rem.min(seller_net_vnd - s);
+        s += add_s;
+        rem -= add_s;
+
+        let add_c = rem.min(commission_vnd - c);
+        c += add_c;
+        rem -= add_c;
+
+        let add_sh = rem.min(shipping_fee_vnd - sh);
+        sh += add_sh;
+        rem -= add_sh;
+
+        debug_assert_eq!(rem, 0);
+        (s, c, sh)
+    };
+
+    let seller_acct = if from_available {
+        account_seller_available(shop_id)
+    } else {
+        account_seller_pending(shop_id)
+    };
+
+    let mut lines = Vec::with_capacity(4);
+    if rev_seller > 0 {
+        lines.push(LedgerLine::debit(
+            seller_acct,
+            AccountType::Liability,
+            Some(shop_id.to_string()),
+            rev_seller,
+        ));
+    }
+    if rev_commission > 0 {
+        lines.push(LedgerLine::debit(
+            ACCOUNT_PLATFORM_FEE_REVENUE,
+            AccountType::Revenue,
+            None,
+            rev_commission,
+        ));
+    }
+    if rev_shipping > 0 {
+        lines.push(LedgerLine::debit(
+            ACCOUNT_SHIPPING_FEE_PAYABLE,
+            AccountType::Liability,
+            None,
+            rev_shipping,
+        ));
+    }
+    lines.push(LedgerLine::credit(
+        ACCOUNT_REFUND_PAYABLE,
+        AccountType::Liability,
+        None,
+        refund_amount_vnd,
+    ));
+
+    let draft = LedgerTransactionDraft {
+        idempotency_key: format!("refund-accrual:{refund_id}"),
+        reference_type: "refund".to_string(),
+        reference_id: refund_id.to_string(),
+        description: format!(
+            "Settled refund {refund_id} for payment {payment_id} shop {shop_id}: {reason}"
+        ),
+        channel,
+        lines,
+    };
+    draft.validate()?;
+    Ok(draft)
 }
 
 /// Refund disbursement settled out via gateway/bank:

@@ -27,6 +27,7 @@ type Config struct {
 	ShippingGRPCAddr     string
 	ShippingHTTPURL      string
 	NotificationGRPCAddr string
+	SearchGRPCAddr       string
 	GRPCCallTimeout      time.Duration
 	OTLPEndpoint         string
 	OTLPInsecure         bool
@@ -55,6 +56,7 @@ func Load() Config {
 		ShippingGRPCAddr:     env.EnvString("SHIPPING_GRPC_ADDR", "localhost:50057"),
 		ShippingHTTPURL:      env.EnvString("SHIPPING_HTTP_URL", "http://localhost:8087"),
 		NotificationGRPCAddr: env.EnvString("NOTIFICATION_GRPC_ADDR", "localhost:50058"),
+		SearchGRPCAddr:       env.EnvString("SEARCH_GRPC_ADDR", "localhost:50059"),
 		GRPCCallTimeout:      env.EnvDuration("GRPC_CALL_TIMEOUT", 10*time.Second),
 		OTLPEndpoint:         env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		OTLPInsecure:         env.EnvBool("OTEL_EXPORTER_OTLP_INSECURE", true),

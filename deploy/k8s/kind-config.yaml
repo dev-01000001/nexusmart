@@ -1,0 +1,13 @@
+# Lightweight single-node kind cluster configuration for local NexusMart K8s verification.
+# Intentionally avoids fixed host port mappings so it never collides with local compose or host services.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: nexusmart-local
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"

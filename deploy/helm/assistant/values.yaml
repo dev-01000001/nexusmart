@@ -1,0 +1,133 @@
+replicaCount: 1
+revisionHistoryLimit: 5
+terminationGracePeriodSeconds: 30
+
+image:
+  repository: ghcr.io/nexusmart/assistant
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+strategy:
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
+service:
+  type: ClusterIP
+  httpPort: 8091
+  grpcPort: 50061
+
+metrics:
+  enabled: true
+  path: "/metrics"
+
+probes:
+  readiness:
+    path: "/readyz"
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    successThreshold: 1
+    failureThreshold: 3
+  liveness:
+    path: "/healthz"
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 180
+
+pdb:
+  enabled: false
+  minAvailable: 1
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts: []
+  tls: []
+
+# Non-secret configuration rendered into ConfigMap (separated from image).
+config:
+  SERVICE_NAME: "assistant"
+  HTTP_PORT: "8091"
+  GRPC_PORT: "50061"
+  REDIS_ADDR: "redis:6379"
+  NATS_URL: "nats://nats:4222"
+  NATS_STREAM: "NEXUSMART"
+  NATS_DLQ_STREAM: "NEXUSMART_DLQ"
+  GATEWAY_URL: "http://gateway:8080"
+  SEARCH_GRPC_ADDR: "search:50059"
+  PRODUCT_GRPC_ADDR: "product:50052"
+  CHAT_GRPC_ADDR: "chat:50060"
+  LLM_MODE: "mock"
+  LLM_MODEL: "claude-opus-5-5"
+  LLM_TIMEOUT: "45s"
+  EMBED_MODE: "mock"
+  VOYAGE_MODEL: "voyage-3-lite"
+  ASSISTANT_DAILY_USER_TOKEN_LIMIT: "50000"
+  ASSISTANT_DAILY_COST_LIMIT_VND: "500000"
+  ASSISTANT_CACHE_TTL: "10m"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
+  OTEL_EXPORTER_OTLP_INSECURE: "true"
+  LOG_LEVEL: "info"
+
+# Runtime secrets injected via pre-created Kubernetes Secret (never committed in Git).
+secrets:
+  existingSecret: "nexusmart-assistant-secret"
+  optional: false
+
+extraEnv: []
+nodeSelector: {}
+tolerations: []
+affinity: {}

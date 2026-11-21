@@ -189,6 +189,14 @@ func orderStatusString(st orderv1.OrderStatus) string {
 		return "RETURN_REQUESTED"
 	case orderv1.OrderStatus_ORDER_STATUS_RETURNED:
 		return "RETURNED"
+	case orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED:
+		return "RETURN_APPROVED"
+	case orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED:
+		return "RETURN_REJECTED"
+	case orderv1.OrderStatus_ORDER_STATUS_RETURNING:
+		return "RETURNING"
+	case orderv1.OrderStatus_ORDER_STATUS_REFUNDED:
+		return "REFUNDED"
 	default:
 		return ""
 	}
@@ -214,6 +222,14 @@ func parseOrderStatus(s string) orderv1.OrderStatus {
 		return orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED
 	case "RETURNED", "ORDER_STATUS_RETURNED":
 		return orderv1.OrderStatus_ORDER_STATUS_RETURNED
+	case "RETURN_APPROVED", "ORDER_STATUS_RETURN_APPROVED":
+		return orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED
+	case "RETURN_REJECTED", "ORDER_STATUS_RETURN_REJECTED":
+		return orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED
+	case "RETURNING", "ORDER_STATUS_RETURNING":
+		return orderv1.OrderStatus_ORDER_STATUS_RETURNING
+	case "REFUNDED", "ORDER_STATUS_REFUNDED":
+		return orderv1.OrderStatus_ORDER_STATUS_REFUNDED
 	default:
 		return orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED
 	}
@@ -225,6 +241,8 @@ func orderPaymentMethodString(m orderv1.OrderPaymentMethod) string {
 		return "COD"
 	case orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR:
 		return "VIETQR"
+	case orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_ZALOPAY:
+		return "ZALOPAY"
 	default:
 		return ""
 	}
@@ -236,6 +254,8 @@ func parseOrderPaymentMethod(s string) orderv1.OrderPaymentMethod {
 		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD
 	case "VIETQR", "ORDER_PAYMENT_METHOD_VIETQR":
 		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR
+	case "ZALOPAY", "ORDER_PAYMENT_METHOD_ZALOPAY":
+		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_ZALOPAY
 	default:
 		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED
 	}

@@ -1,0 +1,120 @@
+replicaCount: 1
+revisionHistoryLimit: 5
+terminationGracePeriodSeconds: 30
+
+image:
+  repository: ghcr.io/nexusmart/web
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+strategy:
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
+service:
+  type: ClusterIP
+  httpPort: 3000
+
+metrics:
+  enabled: false
+  path: "/metrics"
+
+probes:
+  readiness:
+    path: "/"
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    successThreshold: 1
+    failureThreshold: 3
+  liveness:
+    path: "/"
+    initialDelaySeconds: 20
+    periodSeconds: 20
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+resources:
+  requests:
+    cpu: 150m
+    memory: 256Mi
+  limits:
+    cpu: 600m
+    memory: 768Mi
+
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 180
+
+pdb:
+  enabled: false
+  minAvailable: 1
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts: []
+  tls: []
+
+# Non-secret configuration rendered into ConfigMap (separated from image).
+config:
+  NODE_ENV: "production"
+  PORT: "3000"
+  HOSTNAME: "0.0.0.0"
+  GATEWAY_URL: "http://gateway:8080"
+  GATEWAY_TIMEOUT_MS: "8000"
+  COOKIE_SECURE: "false"
+  APP_ORIGIN: ""
+  SITE_ROOT_DOMAIN: "nexusmart.local"
+  REFRESH_TOKEN_TTL_SECONDS: "604800"
+  LOG_LEVEL: "info"
+
+# Runtime secrets injected via pre-created Kubernetes Secret (never committed in Git).
+secrets:
+  existingSecret: ""
+  optional: false
+
+extraEnv: []
+nodeSelector: {}
+tolerations: []
+affinity: {}

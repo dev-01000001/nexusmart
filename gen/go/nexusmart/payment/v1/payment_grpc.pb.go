@@ -19,14 +19,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PaymentService_CreatePayment_FullMethodName     = "/nexusmart.payment.v1.PaymentService/CreatePayment"
-	PaymentService_GetPayment_FullMethodName        = "/nexusmart.payment.v1.PaymentService/GetPayment"
-	PaymentService_CancelPayment_FullMethodName     = "/nexusmart.payment.v1.PaymentService/CancelPayment"
-	PaymentService_CreateRefund_FullMethodName      = "/nexusmart.payment.v1.PaymentService/CreateRefund"
-	PaymentService_GetLedgerSummary_FullMethodName  = "/nexusmart.payment.v1.PaymentService/GetLedgerSummary"
-	PaymentService_GetSellerBalance_FullMethodName  = "/nexusmart.payment.v1.PaymentService/GetSellerBalance"
-	PaymentService_ReleaseEscrow_FullMethodName     = "/nexusmart.payment.v1.PaymentService/ReleaseEscrow"
-	PaymentService_RunReconciliation_FullMethodName = "/nexusmart.payment.v1.PaymentService/RunReconciliation"
+	PaymentService_CreatePayment_FullMethodName             = "/nexusmart.payment.v1.PaymentService/CreatePayment"
+	PaymentService_GetPayment_FullMethodName                = "/nexusmart.payment.v1.PaymentService/GetPayment"
+	PaymentService_CancelPayment_FullMethodName             = "/nexusmart.payment.v1.PaymentService/CancelPayment"
+	PaymentService_CreateRefund_FullMethodName              = "/nexusmart.payment.v1.PaymentService/CreateRefund"
+	PaymentService_GetLedgerSummary_FullMethodName          = "/nexusmart.payment.v1.PaymentService/GetLedgerSummary"
+	PaymentService_GetSellerBalance_FullMethodName          = "/nexusmart.payment.v1.PaymentService/GetSellerBalance"
+	PaymentService_ReleaseEscrow_FullMethodName             = "/nexusmart.payment.v1.PaymentService/ReleaseEscrow"
+	PaymentService_RunReconciliation_FullMethodName         = "/nexusmart.payment.v1.PaymentService/RunReconciliation"
+	PaymentService_ListReconciliationReports_FullMethodName = "/nexusmart.payment.v1.PaymentService/ListReconciliationReports"
 )
 
 // PaymentServiceClient is the client API for PaymentService service.
@@ -41,6 +42,7 @@ type PaymentServiceClient interface {
 	GetSellerBalance(ctx context.Context, in *GetSellerBalanceRequest, opts ...grpc.CallOption) (*GetSellerBalanceResponse, error)
 	ReleaseEscrow(ctx context.Context, in *ReleaseEscrowRequest, opts ...grpc.CallOption) (*ReleaseEscrowResponse, error)
 	RunReconciliation(ctx context.Context, in *RunReconciliationRequest, opts ...grpc.CallOption) (*RunReconciliationResponse, error)
+	ListReconciliationReports(ctx context.Context, in *ListReconciliationReportsRequest, opts ...grpc.CallOption) (*ListReconciliationReportsResponse, error)
 }
 
 type paymentServiceClient struct {
@@ -131,6 +133,16 @@ func (c *paymentServiceClient) RunReconciliation(ctx context.Context, in *RunRec
 	return out, nil
 }
 
+func (c *paymentServiceClient) ListReconciliationReports(ctx context.Context, in *ListReconciliationReportsRequest, opts ...grpc.CallOption) (*ListReconciliationReportsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListReconciliationReportsResponse)
+	err := c.cc.Invoke(ctx, PaymentService_ListReconciliationReports_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PaymentServiceServer is the server API for PaymentService service.
 // All implementations must embed UnimplementedPaymentServiceServer
 // for forward compatibility.
@@ -143,6 +155,7 @@ type PaymentServiceServer interface {
 	GetSellerBalance(context.Context, *GetSellerBalanceRequest) (*GetSellerBalanceResponse, error)
 	ReleaseEscrow(context.Context, *ReleaseEscrowRequest) (*ReleaseEscrowResponse, error)
 	RunReconciliation(context.Context, *RunReconciliationRequest) (*RunReconciliationResponse, error)
+	ListReconciliationReports(context.Context, *ListReconciliationReportsRequest) (*ListReconciliationReportsResponse, error)
 	mustEmbedUnimplementedPaymentServiceServer()
 }
 
@@ -176,6 +189,9 @@ func (UnimplementedPaymentServiceServer) ReleaseEscrow(context.Context, *Release
 }
 func (UnimplementedPaymentServiceServer) RunReconciliation(context.Context, *RunReconciliationRequest) (*RunReconciliationResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RunReconciliation not implemented")
+}
+func (UnimplementedPaymentServiceServer) ListReconciliationReports(context.Context, *ListReconciliationReportsRequest) (*ListReconciliationReportsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListReconciliationReports not implemented")
 }
 func (UnimplementedPaymentServiceServer) mustEmbedUnimplementedPaymentServiceServer() {}
 func (UnimplementedPaymentServiceServer) testEmbeddedByValue()                        {}
@@ -342,6 +358,24 @@ func _PaymentService_RunReconciliation_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PaymentService_ListReconciliationReports_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListReconciliationReportsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).ListReconciliationReports(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_ListReconciliationReports_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).ListReconciliationReports(ctx, req.(*ListReconciliationReportsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PaymentService_ServiceDesc is the grpc.ServiceDesc for PaymentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -380,6 +414,10 @@ var PaymentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RunReconciliation",
 			Handler:    _PaymentService_RunReconciliation_Handler,
+		},
+		{
+			MethodName: "ListReconciliationReports",
+			Handler:    _PaymentService_ListReconciliationReports_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

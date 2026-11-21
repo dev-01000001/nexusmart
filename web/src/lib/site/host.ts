@@ -271,10 +271,14 @@ export function isDirectInternalSitePath(pathname: string): boolean {
 
 const SITE_ALLOWED_API_PREFIXES = [
   "/api/auth",
+  "/api/assistant",
   "/api/cart",
+  "/api/chat",
   "/api/checkout",
   "/api/orders",
   "/api/payments",
+  "/api/products",
+  "/api/search",
   "/api/vouchers",
 ] as const;
 
@@ -300,10 +304,14 @@ export function isBlockedSitePath(pathname: string): boolean {
 }
 
 const BUYER_API_PREFIXES = [
+  "/api/assistant",
   "/api/cart",
+  "/api/chat",
   "/api/checkout",
   "/api/orders",
   "/api/payments",
+  "/api/products",
+  "/api/search",
   "/api/vouchers",
 ] as const;
 

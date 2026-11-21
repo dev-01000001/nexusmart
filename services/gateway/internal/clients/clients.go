@@ -11,6 +11,7 @@ import (
 	paymentv1 "github.com/nexusmart/core/gen/go/nexusmart/payment/v1"
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	promotionv1 "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1"
+	searchv1 "github.com/nexusmart/core/gen/go/nexusmart/search/v1"
 	shippingv1 "github.com/nexusmart/core/gen/go/nexusmart/shipping/v1"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
@@ -31,6 +32,7 @@ type Clients struct {
 	Payment      paymentv1.PaymentServiceClient
 	Shipping     shippingv1.ShippingServiceClient
 	Notification notificationv1.NotificationServiceClient
+	Search       searchv1.SearchServiceClient
 
 	Timeout time.Duration
 	conns   []*grpc.ClientConn
@@ -106,6 +108,13 @@ func New(cfg config.Config) (*Clients, error) {
 	c.Payment = paymentv1.NewPaymentServiceClient(paymentConn)
 	c.Shipping = shippingv1.NewShippingServiceClient(shippingConn)
 	c.Notification = notificationv1.NewNotificationServiceClient(notifConn)
+	if cfg.SearchGRPCAddr != "" {
+		searchConn, err := addConn("search", cfg.SearchGRPCAddr)
+		if err != nil {
+			return nil, err
+		}
+		c.Search = searchv1.NewSearchServiceClient(searchConn)
+	}
 
 	return c, nil
 }

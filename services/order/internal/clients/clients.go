@@ -64,6 +64,7 @@ type PaymentClient interface {
 type ShippingClient interface {
 	CalculateFee(ctx context.Context, req *shippingv1.CalculateFeeRequest, opts ...grpc.CallOption) (*shippingv1.CalculateFeeResponse, error)
 	CreateShipment(ctx context.Context, req *shippingv1.CreateShipmentRequest, opts ...grpc.CallOption) (*shippingv1.CreateShipmentResponse, error)
+	CreateReturnShipment(ctx context.Context, req *shippingv1.CreateReturnShipmentRequest, opts ...grpc.CallOption) (*shippingv1.CreateReturnShipmentResponse, error)
 	CancelShipment(ctx context.Context, req *shippingv1.CancelShipmentRequest, opts ...grpc.CallOption) (*shippingv1.CancelShipmentResponse, error)
 }
 

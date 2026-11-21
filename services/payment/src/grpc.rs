@@ -8,7 +8,8 @@ use uuid::Uuid;
 use crate::auth::GrpcAuth;
 use crate::domain::{
     CreatePaymentInput, CreateRefundInput, PaymentMethod as DomainMethod, PaymentWithAllocations,
-    ReconciliationItemRecord, RefundRecord, SalesChannel, ShopAllocationInput,
+    ReconciliationItemRecord, ReconciliationRunRecord, RefundRecord, SalesChannel,
+    ShopAllocationInput,
 };
 use crate::service::PaymentService;
 use crate::telemetry::extract_or_generate_trace_id;
@@ -23,7 +24,8 @@ use pb::{
     AccountBalance, CancelPaymentRequest, CancelPaymentResponse, CreatePaymentRequest,
     CreatePaymentResponse, CreateRefundRequest, CreateRefundResponse, GetLedgerSummaryRequest,
     GetLedgerSummaryResponse, GetPaymentRequest, GetPaymentResponse, GetSellerBalanceRequest,
-    GetSellerBalanceResponse, Payment, PaymentMethod, PaymentStatus, ReconciliationItem,
+    GetSellerBalanceResponse, ListReconciliationReportsRequest, ListReconciliationReportsResponse,
+    Payment, PaymentMethod, PaymentStatus, ReconciliationItem, ReconciliationReportSummary,
     ReconciliationStatus, Refund, RefundStatus, ReleaseEscrowRequest, ReleaseEscrowResponse,
     RunReconciliationRequest, RunReconciliationResponse, ShopAllocation,
 };

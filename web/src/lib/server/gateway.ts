@@ -90,6 +90,70 @@ export async function gw<T>(path: string, opts: GwOptions = {}): Promise<T> {
   }
 }
 
+export interface GwRawOptions {
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  query?: Record<string, QueryValue | QueryValue[]>;
+  body?: unknown;
+  auth?: "user" | "none";
+  accept?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Call the gateway and return the raw 2xx `Response` (used by SSE streaming proxies).
+ * Attaches the user's session cookie JWT when present, rotates once on 401, and throws
+ * `GatewayError` on non-2xx or transport errors so callers never leak upstream internals.
+ */
+export async function gwRaw(path: string, opts: GwRawOptions = {}): Promise<Response> {
+  const method = opts.method ?? "GET";
+  const reqHeaders: Record<string, string> = {
+    Accept: opts.accept ?? "text/event-stream",
+  };
+  if (opts.body !== undefined) reqHeaders["Content-Type"] = "application/json";
+
+  const h = await headers();
+  const ip = resolveForwardedClientIp(h);
+  if (ip) reqHeaders["X-Forwarded-For"] = ip;
+
+  let store: Awaited<ReturnType<typeof cookies>> | undefined;
+  let access: string | undefined;
+  if (opts.auth !== "none") {
+    store = await cookies();
+    access = store.get(ACCESS_COOKIE)?.value || undefined;
+  }
+
+  const url = buildUrl(path, opts.query);
+  const timeoutMs = opts.timeoutMs ?? 60_000;
+  const send = async (token?: string): Promise<Response> => {
+    const signals: AbortSignal[] = [AbortSignal.timeout(timeoutMs)];
+    if (opts.signal) signals.push(opts.signal);
+    const combinedSignal =
+      signals.length > 1 && typeof AbortSignal.any === "function"
+        ? AbortSignal.any(signals)
+        : (opts.signal ?? signals[0]);
+    try {
+      return await fetch(url, {
+        method,
+        headers: token ? { ...reqHeaders, Authorization: `Bearer ${token}` } : reqHeaders,
+        body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+        cache: "no-store",
+        signal: combinedSignal,
+      });
+    } catch {
+      throw new GatewayError("unavailable");
+    }
+  };
+
+  let res = await send(access);
+  if (res.status === 401 && store) {
+    const fresh = await refreshInPlace(store);
+    if (fresh) res = await send(fresh);
+  }
+  if (!res.ok) throw await errorFromResponse(res);
+  return res;
+}
+
 function buildUrl(path: string, query?: GwOptions["query"]): string {
   const u = new URL(path.startsWith("/") ? path : `/${path}`, `${GATEWAY_URL}/`);
   for (const [k, v] of Object.entries(query ?? {})) {

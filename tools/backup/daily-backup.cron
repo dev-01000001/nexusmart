@@ -1,0 +1,22 @@
+# NexusMart PostgreSQL daily backup & weekly restore drill (host cron example)
+#
+# Install on a host running Docker Compose:
+#   1. Create persistent backup and log directories owned by the operator user:
+#        mkdir -p /var/backups/nexusmart /var/log/nexusmart
+#   2. Adjust REPO_DIR, PG_CONTAINER, and PG_USER below, then install via:
+#        crontab -e   # or copy into /etc/cron.d/nexusmart-backup (add user column)
+#
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+REPO_DIR=/opt/nexusmart
+BACKUP_DIR=/var/backups/nexusmart
+PG_CONTAINER=nexus_ecom-postgres-1
+PG_USER=nexusmart
+RETENTION_DAYS=7
+
+# Daily full backup of all discovered Postgres databases at 02:00 UTC
+0 2 * * * flock -n /tmp/nexusmart-backup.lock "$REPO_DIR/tools/backup/backup.sh" >> /var/log/nexusmart/backup.log 2>&1
+
+# Weekly automated restore drill against the latest snapshot every Sunday at 03:00 UTC
+0 3 * * 0 flock -n /tmp/nexusmart-restore-drill.lock "$REPO_DIR/tools/backup/restore-drill.sh" >> /var/log/nexusmart/restore-drill.log 2>&1

@@ -6,6 +6,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.6.0
+	github.com/nats-io/nats.go v1.36.0
 	github.com/nexusmart/core/gen/go v0.0.0
 	github.com/nexusmart/core/pkg/common v0.0.0
 	google.golang.org/grpc v1.65.0

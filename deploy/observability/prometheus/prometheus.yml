@@ -1,0 +1,81 @@
+global:
+  scrape_interval: 10s
+  scrape_timeout: 8s
+  evaluation_interval: 10s
+  external_labels:
+    cluster: nexusmart-compose
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090
+
+  - job_name: otel-collector
+    static_configs:
+      - targets:
+          - otel-collector:8889
+
+  - job_name: nexusmart-services
+    honor_labels: true
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["gateway:8080"]
+        labels:
+          service: gateway
+      - targets: ["user:8081"]
+        labels:
+          service: user
+      - targets: ["product:8082"]
+        labels:
+          service: product
+      - targets: ["cart:8083"]
+        labels:
+          service: cart
+      - targets: ["promotion:8084"]
+        labels:
+          service: promotion
+      - targets: ["order:8085"]
+        labels:
+          service: order
+      - targets: ["payment:8086"]
+        labels:
+          service: payment
+      - targets: ["shipping:8087"]
+        labels:
+          service: shipping
+      - targets: ["notification:8088"]
+        labels:
+          service: notification
+      - targets: ["search:8089"]
+        labels:
+          service: search
+      - targets: ["chat:8090"]
+        labels:
+          service: chat
+      - targets: ["assistant:8091"]
+        labels:
+          service: assistant
+      - targets: ["aiops:8092"]
+        labels:
+          service: aiops
+
+  - job_name: cadvisor
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - cadvisor:8080
+    metric_relabel_configs:
+      - source_labels: [container_label_com_docker_compose_service]
+        regex: (.+)
+        target_label: service
+        replacement: $1

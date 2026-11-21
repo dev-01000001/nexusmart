@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package nexusmart.search.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/nexusmart/core/gen/go/nexusmart/search/v1;searchv1";
+
+message SearchItem {
+  string id = 1;
+  string shop_id = 2;
+  string category_id = 3;
+  string category_slug = 4;
+  string category_name = 5;
+  string name = 6;
+  string description = 7;
+  repeated string images = 8;
+  string status = 9;
+  int64 min_price_vnd = 10;
+  int64 max_price_vnd = 11;
+  int32 total_stock = 12;
+  bool in_stock = 13;
+  double score = 14;
+  google.protobuf.Timestamp created_at = 15;
+  google.protobuf.Timestamp updated_at = 16;
+}
+
+message FacetBucket {
+  string value = 1;
+  string label = 2;
+  int64 count = 3;
+}
+
+message SearchFacets {
+  repeated FacetBucket categories = 1;
+  repeated FacetBucket shops = 2;
+  repeated FacetBucket price_ranges = 3;
+}
+
+message SearchRequest {
+  string query = 1;
+  string shop_id = 2;
+  string category = 3;
+  int64 min_price_vnd = 4;
+  int64 max_price_vnd = 5;
+  string sort = 6;
+  int32 page = 7;
+  int32 page_size = 8;
+  string mode = 9;
+  bool in_stock_only = 10;
+}
+
+message SearchResponse {
+  repeated SearchItem items = 1;
+  int64 total = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+  SearchFacets facets = 5;
+}
+
+message SuggestRequest {
+  string query = 1;
+  string shop_id = 2;
+  int32 limit = 3;
+}
+
+message Suggestion {
+  string text = 1;
+  string kind = 2;
+  string product_id = 3;
+  string category_slug = 4;
+  int64 min_price_vnd = 5;
+}
+
+message SuggestResponse {
+  repeated Suggestion suggestions = 1;
+}
+
+message SimilarProductsRequest {
+  string product_id = 1;
+  string query = 2;
+  string shop_id = 3;
+  string category = 4;
+  int64 min_price_vnd = 5;
+  int64 max_price_vnd = 6;
+  int32 limit = 7;
+  bool in_stock_only = 8;
+}
+
+message SimilarProductsResponse {
+  repeated SearchItem items = 1;
+}
+
+service SearchService {
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc Suggest(SuggestRequest) returns (SuggestResponse);
+  rpc SimilarProducts(SimilarProductsRequest) returns (SimilarProductsResponse);
+}

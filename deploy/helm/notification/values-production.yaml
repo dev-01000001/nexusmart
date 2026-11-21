@@ -1,0 +1,23 @@
+# Production overrides for notification (namespace: nexusmart-production)
+replicaCount: 2
+
+image:
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 400m
+    memory: 384Mi
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+config:
+  SMTP_HOST: "smtp.nexusmart.internal"
+  SMTP_PORT: "587"
+  SMTP_FROM: "no-reply@nexusmart.vn"

@@ -27,6 +27,40 @@ impl VietQrMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZaloPayMode {
+    Mock,
+    Sandbox,
+}
+
+impl ZaloPayMode {
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "sandbox" => Self::Sandbox,
+            _ => Self::Mock,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Mock => "zalopay_mock",
+            Self::Sandbox => "zalopay",
+        }
+    }
+}
+
+/// Returns true when a secret/key is empty or clearly a template placeholder.
+pub fn is_placeholder_secret(raw: &str) -> bool {
+    let lower = raw.trim().to_ascii_lowercase();
+    lower.is_empty()
+        || lower.contains("placeholder")
+        || lower.contains("change-me")
+        || lower.contains("changeme")
+        || lower.starts_with("your_")
+        || lower.starts_with("your-")
+        || lower.starts_with('<')
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub service_name: String,
@@ -54,6 +88,12 @@ pub struct Config {
     pub sepay_base_url: String,
     pub sepay_api_token: String,
     pub sepay_bank_code: String,
+    pub zalopay_mode: ZaloPayMode,
+    pub zalopay_app_id: i64,
+    pub zalopay_key1: String,
+    pub zalopay_key2: String,
+    pub zalopay_base_url: String,
+    pub zalopay_callback_url: String,
     pub external_http_timeout: Duration,
     pub external_max_retries: u32,
     pub expiration_scan_interval: Duration,
@@ -87,6 +127,12 @@ impl fmt::Debug for Config {
             .field("payos_checksum_key", &"[REDACTED]")
             .field("sepay_base_url", &self.sepay_base_url)
             .field("sepay_api_token", &"[REDACTED]")
+            .field("zalopay_mode", &self.zalopay_mode)
+            .field("zalopay_app_id", &self.zalopay_app_id)
+            .field("zalopay_key1", &"[REDACTED]")
+            .field("zalopay_key2", &"[REDACTED]")
+            .field("zalopay_base_url", &self.zalopay_base_url)
+            .field("zalopay_callback_url", &self.zalopay_callback_url)
             .field("external_http_timeout", &self.external_http_timeout)
             .field("external_max_retries", &self.external_max_retries)
             .field("expiration_scan_interval", &self.expiration_scan_interval)
@@ -130,6 +176,15 @@ impl Config {
             sepay_base_url: env_string("SEPAY_BASE_URL", "https://my.sepay.vn"),
             sepay_api_token: env_string("SEPAY_API_TOKEN", ""),
             sepay_bank_code: env_string("SEPAY_BANK_CODE", "MBBank"),
+            zalopay_mode: ZaloPayMode::parse(&env_string("ZALOPAY_MODE", "mock")),
+            zalopay_app_id: env_i64("ZALOPAY_APP_ID", 2554),
+            zalopay_key1: env_string("ZALOPAY_KEY1", ""),
+            zalopay_key2: env_string("ZALOPAY_KEY2", ""),
+            zalopay_base_url: env_string("ZALOPAY_BASE_URL", "https://sb-openapi.zalopay.vn"),
+            zalopay_callback_url: env_string(
+                "ZALOPAY_CALLBACK_URL",
+                "http://localhost:8086/webhooks/zalopay",
+            ),
             external_http_timeout: Duration::from_secs(env_u64("EXTERNAL_HTTP_TIMEOUT_SECS", 5)),
             external_max_retries: env_u32("EXTERNAL_MAX_RETRIES", 3),
             expiration_scan_interval: Duration::from_secs(env_u64(

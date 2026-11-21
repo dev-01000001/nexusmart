@@ -13,6 +13,7 @@ import {
   IconMenu,
   IconPackage,
   IconSliders,
+  IconSpark,
   IconStore,
   IconTag,
   IconWallet,
@@ -24,11 +25,6 @@ import {
   resolvePresentationShopKey,
   type GwSellerShop,
 } from "./sellerApiTypes";
-import {
-  getPendingInteractionCount,
-  getShopMockChatThreads,
-  useSellerSession,
-} from "./sellerStore";
 import type { SellerSiteSummary } from "./site/siteSummary";
 import styles from "@/app/(seller)/layout.module.css";
 
@@ -61,15 +57,24 @@ export interface SellerShellProps {
   user: SessionUser;
   shop: GwSellerShop | null;
   pendingOrdersCount: number;
+  pendingReturnsCount?: number;
+  unreadChatCount?: number;
   site: SellerSiteSummary;
   children: React.ReactNode;
 }
 
-export function SellerShell({ user, shop, pendingOrdersCount, site, children }: SellerShellProps) {
+export function SellerShell({
+  user,
+  shop,
+  pendingOrdersCount,
+  pendingReturnsCount = 0,
+  unreadChatCount = 0,
+  site,
+  children,
+}: SellerShellProps) {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const mockSession = useSellerSession();
 
   const presentationShopKey = resolvePresentationShopKey(shop?.name);
 
@@ -91,12 +96,6 @@ export function SellerShell({ user, shop, pendingOrdersCount, site, children }: 
     return () => window.clearTimeout(t);
   }, [toastMessage]);
 
-  const pendingInteractionCount = getPendingInteractionCount(presentationShopKey, mockSession);
-  const unreadChatCount = getShopMockChatThreads(presentationShopKey, mockSession).reduce(
-    (sum, t) => sum + t.unreadBySeller,
-    0
-  );
-
   const navItems: SellerNavItem[] = [
     { href: "/seller", label: "Tổng quan", icon: <IconDashboard size={16} /> },
     { href: "/seller/san-pham", label: "Sản phẩm", icon: <IconPackage size={16} /> },
@@ -111,11 +110,12 @@ export function SellerShell({ user, shop, pendingOrdersCount, site, children }: 
       href: "/seller/tuong-tac",
       label: "Tương tác",
       icon: <IconFileText size={16} />,
-      badge: pendingInteractionCount > 0 ? pendingInteractionCount : undefined,
+      badge: pendingReturnsCount > 0 ? pendingReturnsCount : undefined,
     },
     { href: "/seller/ho-so", label: "Hồ sơ & Vận hành", icon: <IconSliders size={16} /> },
     { href: "/seller/site", label: "Site bán hàng", icon: <IconHome size={16} /> },
     { href: "/seller/tai-chinh", label: "Tài chính", icon: <IconWallet size={16} /> },
+    { href: "/seller/bao-cao-ai", label: "Báo cáo AI", icon: <IconSpark size={16} /> },
     {
       href: "/seller/chat",
       label: "Tin nhắn",

@@ -20,13 +20,14 @@ use crate::domain::{
 use crate::error::{PaymentError, Result};
 use crate::ledger::{
     self, build_cod_confirm_tx, build_escrow_release_tx, build_escrow_settle_tx,
-    build_late_payment_refund_tx, build_refund_tx, build_seller_payout_tx, build_vietqr_confirm_tx,
-    LedgerSummary, SellerBalance,
+    build_late_payment_refund_tx, build_refund_tx, build_seller_payout_tx, build_settled_refund_tx,
+    build_vietqr_confirm_tx, build_zalopay_confirm_tx, LedgerSummary, SellerBalance,
 };
 use crate::metrics::Metrics;
 use crate::telemetry::mask_bank_account;
 use crate::vietqr::{ProviderTransaction, VietQrAdapter};
 use crate::webhook_security::{decide_webhook_action, IncomingWebhookPayload, WebhookDecision};
+use crate::zalopay::ZaloPayAdapter;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookProcessResult {
@@ -49,6 +50,7 @@ pub struct PaymentService {
     pool: PgPool,
     config: Config,
     vietqr: VietQrAdapter,
+    zalopay: ZaloPayAdapter,
     metrics: Metrics,
     sse_tx: broadcast::Sender<PaymentSseEvent>,
 }
@@ -56,11 +58,13 @@ pub struct PaymentService {
 impl PaymentService {
     pub fn new(pool: PgPool, config: Config, metrics: Metrics) -> Self {
         let vietqr = VietQrAdapter::from_config(&config);
+        let zalopay = ZaloPayAdapter::from_config(&config);
         let (sse_tx, _) = broadcast::channel(512);
         Self {
             pool,
             config,
             vietqr,
+            zalopay,
             metrics,
             sse_tx,
         }
@@ -80,6 +84,10 @@ impl PaymentService {
 
     pub fn vietqr(&self) -> &VietQrAdapter {
         &self.vietqr
+    }
+
+    pub fn zalopay(&self) -> &ZaloPayAdapter {
+        &self.zalopay
     }
 
     pub fn subscribe_sse(&self) -> broadcast::Receiver<PaymentSseEvent> {

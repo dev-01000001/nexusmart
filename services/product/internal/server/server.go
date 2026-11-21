@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -17,6 +19,8 @@ import (
 
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
+	"github.com/nexusmart/core/pkg/common/telemetry"
+	"github.com/nexusmart/core/services/product/internal/events"
 	"github.com/nexusmart/core/services/product/internal/store"
 )
 
@@ -30,9 +34,11 @@ const (
 // Server implements productv1.ProductServiceServer.
 type Server struct {
 	productv1.UnimplementedProductServiceServer
-	store  store.Store
-	logger *slog.Logger
-	nowFn  func() time.Time
+	store          store.Store
+	logger         *slog.Logger
+	nowFn          func() time.Time
+	notifierMu     sync.RWMutex
+	outboxNotifier func()
 }
 
 // New constructs a ProductService gRPC server.
@@ -52,6 +58,55 @@ func (s *Server) SetClock(fn func() time.Time) {
 	if fn != nil {
 		s.nowFn = fn
 	}
+}
+
+// SetOutboxNotifier registers an optional callback invoked after a transaction commits outbox events.
+func (s *Server) SetOutboxNotifier(fn func()) {
+	s.notifierMu.Lock()
+	s.outboxNotifier = fn
+	s.notifierMu.Unlock()
+}
+
+func (s *Server) notifyOutbox() {
+	s.notifierMu.RLock()
+	fn := s.outboxNotifier
+	s.notifierMu.RUnlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+func (s *Server) enqueueProductEvent(ctx context.Context, q store.Queries, eventType, productID, shopID string) error {
+	version, err := q.NextProductEventVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("next product event version: %w", err)
+	}
+	occurredAt := s.nowFn().UTC()
+	payloadBytes, err := json.Marshal(events.ProductEventPayload{
+		ProductID:  productID,
+		ShopID:     shopID,
+		Version:    version,
+		OccurredAt: occurredAt.Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal product event payload: %w", err)
+	}
+	traceID, traceparent := traceMetaFromContext(ctx)
+	return q.InsertOutboxEvent(ctx, store.OutboxEvent{
+		ID:          uuid.NewString(),
+		EventType:   eventType,
+		TraceID:     traceID,
+		Traceparent: traceparent,
+		PayloadJSON: payloadBytes,
+		CreatedAt:   occurredAt,
+	})
+}
+
+func traceMetaFromContext(ctx context.Context) (string, string) {
+	traceID := telemetry.TraceIDFromContext(ctx)
+	carrier := map[string]string{}
+	telemetry.InjectTraceHeaders(ctx, carrier)
+	return traceID, carrier["traceparent"]
 }
 
 // --- Categories ---
@@ -303,6 +358,9 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 			}
 			createdSKUs = append(createdSKUs, sk)
 		}
+		if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductCreated, createdProd.ID, createdProd.ShopID); evErr != nil {
+			return evErr
+		}
 		return nil
 	})
 	if err != nil {
@@ -311,6 +369,7 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 		}
 		return nil, status.Errorf(codes.Internal, "create product: %v", err)
 	}
+	s.notifyOutbox()
 
 	return &productv1.CreateProductResponse{
 		Product: toProtoProduct(createdProd, createdSKUs),
@@ -487,6 +546,9 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 			return listErr
 		}
 		resultSKUs = skus
+		if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductUpdated, updatedProd.ID, updatedProd.ShopID); evErr != nil {
+			return evErr
+		}
 		return nil
 	})
 	if err != nil {
@@ -498,6 +560,7 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 		}
 		return nil, status.Errorf(codes.Internal, "update product: %v", err)
 	}
+	s.notifyOutbox()
 
 	return &productv1.UpdateProductResponse{
 		Product: toProtoProduct(updatedProd, resultSKUs),

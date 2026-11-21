@@ -27,6 +27,22 @@ type CheckoutGroup struct {
 	StorefrontShopID     string     `json:"storefront_shop_id"`
 }
 
+type Complaint struct {
+	ID               string     `json:"id"`
+	ReturnRequestID  string     `json:"return_request_id"`
+	OrderID          string     `json:"order_id"`
+	BuyerID          string     `json:"buyer_id"`
+	ShopID           string     `json:"shop_id"`
+	Reason           string     `json:"reason"`
+	EvidenceURLsJSON []byte     `json:"evidence_urls_json"`
+	Status           string     `json:"status"`
+	Resolution       string     `json:"resolution"`
+	AdminNote        string     `json:"admin_note"`
+	ResolvedBy       string     `json:"resolved_by"`
+	CreatedAt        time.Time  `json:"created_at"`
+	ResolvedAt       *time.Time `json:"resolved_at"`
+}
+
 type DeadLetterEvent struct {
 	ID           string    `json:"id"`
 	Subject      string    `json:"subject"`
@@ -117,12 +133,19 @@ type ProcessedEvent struct {
 }
 
 type ReturnRequest struct {
-	ID               string    `json:"id"`
-	OrderID          string    `json:"order_id"`
-	BuyerID          string    `json:"buyer_id"`
-	Reason           string    `json:"reason"`
-	EvidenceURLsJSON []byte    `json:"evidence_urls_json"`
-	Status           string    `json:"status"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID                  string    `json:"id"`
+	OrderID             string    `json:"order_id"`
+	BuyerID             string    `json:"buyer_id"`
+	Reason              string    `json:"reason"`
+	EvidenceURLsJSON    []byte    `json:"evidence_urls_json"`
+	Status              string    `json:"status"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+	ShopID              string    `json:"shop_id"`
+	ItemsJSON           []byte    `json:"items_json"`
+	SellerNote          string    `json:"seller_note"`
+	ReverseTrackingCode string    `json:"reverse_tracking_code"`
+	ReverseLabelURL     string    `json:"reverse_label_url"`
+	RefundAmountVND     int64     `json:"refund_amount_vnd"`
+	RefundID            string    `json:"refund_id"`
 }

@@ -1,0 +1,21 @@
+# Staging overrides for shipping (namespace: nexusmart-staging)
+replicaCount: 1
+
+image:
+  tag: "staging"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+pdb:
+  enabled: false
+
+config:
+  GHN_MODE: "mock"
+  MOCK_CARRIER_ENABLED: "true"

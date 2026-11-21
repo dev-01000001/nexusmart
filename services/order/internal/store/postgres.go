@@ -770,9 +770,12 @@ func (s *PostgresStore) TransitionOrderReturnRequested(ctx context.Context, para
 		ID:               params.ReturnRequestID,
 		OrderID:          params.OrderID,
 		BuyerID:          params.BuyerID,
+		ShopID:           params.ShopID,
+		ItemsJSON:        defaultJSONArray(params.ItemsJSON),
 		Reason:           params.Reason,
-		EvidenceURLsJSON: params.EvidenceURLsJSON,
+		EvidenceURLsJSON: defaultJSONArray(params.EvidenceURLsJSON),
 		Status:           "PENDING",
+		RefundAmountVND:  params.RefundAmountVND,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -790,6 +793,12 @@ func (s *PostgresStore) TransitionOrderReturnRequested(ctx context.Context, para
 		return nil, nil, err
 	}
 
+	if params.OutboxEvent.ID != "" {
+		if err := q.InsertOutboxEvent(ctx, params.OutboxEvent); err != nil {
+			return nil, nil, err
+		}
+	}
+
 	agg, err := loadOrderAggregate(ctx, q, params.OrderID)
 	if err != nil {
 		return nil, nil, err
@@ -798,6 +807,630 @@ func (s *PostgresStore) TransitionOrderReturnRequested(ctx context.Context, para
 		return nil, nil, err
 	}
 	return agg, &retReq, nil
+}
+
+func (s *PostgresStore) GetReturnRequestByID(ctx context.Context, id string) (*db.ReturnRequest, error) {
+	row, err := s.queries.GetReturnRequestByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &row, nil
+}
+
+func (s *PostgresStore) GetLatestReturnRequestByOrderID(ctx context.Context, orderID string) (*db.ReturnRequest, error) {
+	row, err := s.queries.GetLatestReturnRequestByOrderID(ctx, orderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &row, nil
+}
+
+func (s *PostgresStore) ListReturnRequestsFiltered(ctx context.Context, orderID, buyerID, shopID, status string, limit, offset int32) ([]db.ReturnRequest, int64, error) {
+	total, err := s.queries.CountReturnRequestsFiltered(ctx, db.CountReturnRequestsFilteredParams{
+		OrderID: orderID,
+		BuyerID: buyerID,
+		ShopID:  shopID,
+		Status:  status,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.queries.ListReturnRequestsFiltered(ctx, db.ListReturnRequestsFilteredParams{
+		OrderID:    orderID,
+		BuyerID:    buyerID,
+		ShopID:     shopID,
+		Status:     status,
+		PageLimit:  limit,
+		PageOffset: offset,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return rows, total, nil
+}
+
+func (s *PostgresStore) ApproveReturnReturning(ctx context.Context, params ApproveReturnReturningParams) (*OrderAggregate, *db.ReturnRequest, *db.Complaint, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("begin approve return tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := s.queries.WithTx(tx)
+
+	var resolvedComplaint *db.Complaint
+	if params.ComplaintID != "" {
+		cp, err := q.GetComplaintByIDForUpdate(ctx, params.ComplaintID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, nil, nil, ErrNotFound
+			}
+			return nil, nil, nil, err
+		}
+		if cp.Status != "OPEN" {
+			return nil, nil, nil, ErrComplaintNotOpen
+		}
+	}
+
+	ord, err := q.GetOrderByIDForUpdate(ctx, params.OrderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, nil, ErrNotFound
+		}
+		return nil, nil, nil, err
+	}
+
+	rr, err := q.GetReturnRequestByIDForUpdate(ctx, params.ReturnRequestID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, nil, ErrNotFound
+		}
+		return nil, nil, nil, err
+	}
+
+	curStatus := statemachine.StringToStatus(ord.Status)
+	if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := statemachine.ValidateTransition(orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED, orderv1.OrderStatus_ORDER_STATUS_RETURNING); err != nil {
+		return nil, nil, nil, err
+	}
+
+	if _, err := q.UpdateOrderStatus(ctx, db.UpdateOrderStatusParams{
+		ID:     ord.ID,
+		Status: statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURNING),
+	}); err != nil {
+		return nil, nil, nil, err
+	}
+
+	updatedRR, err := q.UpdateReturnRequest(ctx, db.UpdateReturnRequestParams{
+		ID:                  rr.ID,
+		Status:              "RETURNING",
+		SellerNote:          params.SellerNote,
+		ReverseTrackingCode: params.ReverseTrackingCode,
+		ReverseLabelURL:     params.ReverseLabelURL,
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+		ID:         uuid.NewString(),
+		OrderID:    ord.ID,
+		FromStatus: ord.Status,
+		ToStatus:   statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED),
+		ActorID:    params.ActorID,
+		ActorRole:  params.ActorRole,
+		Note:       params.ApproveNote,
+	}); err != nil {
+		return nil, nil, nil, err
+	}
+	if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+		ID:         uuid.NewString(),
+		OrderID:    ord.ID,
+		FromStatus: statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURN_APPROVED),
+		ToStatus:   statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURNING),
+		ActorID:    params.ActorID,
+		ActorRole:  params.ActorRole,
+		Note:       params.ReturningNote,
+	}); err != nil {
+		return nil, nil, nil, err
+	}
+
+	if params.ComplaintID != "" {
+		cp, err := q.ResolveComplaintRow(ctx, db.ResolveComplaintRowParams{
+			ID:         params.ComplaintID,
+			Status:     params.ComplaintStatus,
+			Resolution: params.ComplaintResolution,
+			AdminNote:  params.AdminNote,
+			ResolvedBy: params.ResolvedBy,
+		})
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		resolvedComplaint = &cp
+	}
+
+	for _, ob := range params.OutboxEvents {
+		if ob.ID != "" {
+			if err := q.InsertOutboxEvent(ctx, ob); err != nil {
+				return nil, nil, nil, err
+			}
+		}
+	}
+
+	agg, err := loadOrderAggregate(ctx, q, ord.ID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, nil, err
+	}
+	return agg, &updatedRR, resolvedComplaint, nil
+}
+
+func (s *PostgresStore) CompleteReturnRefund(ctx context.Context, params CompleteReturnRefundParams) (*CompleteReturnRefundOutcome, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin complete return refund tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := s.queries.WithTx(tx)
+
+	if params.EventID != "" {
+		inserted, err := q.TryMarkEventProcessed(ctx, db.TryMarkEventProcessedParams{
+			EventID:   params.EventID,
+			EventType: params.EventType,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if inserted == 0 {
+			return &CompleteReturnRefundOutcome{AlreadyProcessed: true}, nil
+		}
+	}
+
+	var lockedComplaint *db.Complaint
+	if params.ComplaintID != "" {
+		cp, err := q.GetComplaintByIDForUpdate(ctx, params.ComplaintID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, ErrNotFound
+			}
+			return nil, err
+		}
+		if cp.Status != "OPEN" {
+			return nil, ErrComplaintNotOpen
+		}
+		lockedComplaint = &cp
+	}
+
+	ord, err := q.GetOrderByIDForUpdate(ctx, params.OrderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	var rr *db.ReturnRequest
+	if params.ReturnRequestID != "" {
+		row, err := q.GetReturnRequestByIDForUpdate(ctx, params.ReturnRequestID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, ErrNotFound
+			}
+			return nil, err
+		}
+		rr = &row
+	}
+
+	curStatus := statemachine.StringToStatus(ord.Status)
+	if curStatus == orderv1.OrderStatus_ORDER_STATUS_REFUNDED {
+		agg, err := loadOrderAggregate(ctx, q, ord.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return &CompleteReturnRefundOutcome{
+			AlreadyRefunded: true,
+			Order:           agg,
+			ReturnRequest:   rr,
+			Complaint:       lockedComplaint,
+		}, nil
+	}
+
+	fromForRefund := ord.Status
+	if params.IntermediateStatus != orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED && curStatus != params.IntermediateStatus {
+		if err := statemachine.ValidateTransition(curStatus, params.IntermediateStatus); err != nil {
+			return nil, err
+		}
+		if err := statemachine.ValidateTransition(params.IntermediateStatus, orderv1.OrderStatus_ORDER_STATUS_REFUNDED); err != nil {
+			return nil, err
+		}
+		interStr := statemachine.StatusToString(params.IntermediateStatus)
+		interActor := params.IntermediateActorID
+		if interActor == "" {
+			interActor = params.ActorID
+		}
+		interRole := params.IntermediateActorRole
+		if interRole == "" {
+			interRole = params.ActorRole
+		}
+		if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+			ID:         uuid.NewString(),
+			OrderID:    ord.ID,
+			FromStatus: ord.Status,
+			ToStatus:   interStr,
+			ActorID:    interActor,
+			ActorRole:  interRole,
+			Note:       params.IntermediateNote,
+		}); err != nil {
+			return nil, err
+		}
+		fromForRefund = interStr
+	} else {
+		if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_REFUNDED); err != nil {
+			return nil, err
+		}
+	}
+
+	if _, err := q.UpdateOrderStatus(ctx, db.UpdateOrderStatusParams{
+		ID:            ord.ID,
+		Status:        statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_REFUNDED),
+		PaymentStatus: params.PaymentStatus,
+	}); err != nil {
+		return nil, err
+	}
+
+	if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+		ID:         uuid.NewString(),
+		OrderID:    ord.ID,
+		FromStatus: fromForRefund,
+		ToStatus:   statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_REFUNDED),
+		ActorID:    params.ActorID,
+		ActorRole:  params.ActorRole,
+		Note:       params.Note,
+	}); err != nil {
+		return nil, err
+	}
+
+	if rr != nil {
+		updatedRR, err := q.UpdateReturnRequest(ctx, db.UpdateReturnRequestParams{
+			ID:              rr.ID,
+			Status:          "REFUNDED",
+			SellerNote:      params.SellerNote,
+			RefundAmountVND: params.RefundAmountVND,
+			RefundID:        params.RefundID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		rr = &updatedRR
+	}
+
+	if params.ComplaintID != "" {
+		cp, err := q.ResolveComplaintRow(ctx, db.ResolveComplaintRowParams{
+			ID:         params.ComplaintID,
+			Status:     params.ComplaintStatus,
+			Resolution: params.ComplaintResolution,
+			AdminNote:  params.AdminNote,
+			ResolvedBy: params.ResolvedBy,
+		})
+		if err != nil {
+			return nil, err
+		}
+		lockedComplaint = &cp
+	}
+
+	for _, ob := range params.OutboxEvents {
+		if ob.ID != "" {
+			if err := q.InsertOutboxEvent(ctx, ob); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	agg, err := loadOrderAggregate(ctx, q, ord.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &CompleteReturnRefundOutcome{
+		Order:         agg,
+		ReturnRequest: rr,
+		Complaint:     lockedComplaint,
+	}, nil
+}
+
+func (s *PostgresStore) RejectReturnAndCreateComplaint(ctx context.Context, params RejectReturnParams) (*OrderAggregate, *db.ReturnRequest, *db.Complaint, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("begin reject return tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := s.queries.WithTx(tx)
+
+	ord, err := q.GetOrderByIDForUpdate(ctx, params.OrderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, nil, ErrNotFound
+		}
+		return nil, nil, nil, err
+	}
+
+	rr, err := q.GetReturnRequestByIDForUpdate(ctx, params.ReturnRequestID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, nil, ErrNotFound
+		}
+		return nil, nil, nil, err
+	}
+
+	curStatus := statemachine.StringToStatus(ord.Status)
+	if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED); err != nil {
+		return nil, nil, nil, err
+	}
+
+	if _, err := q.UpdateOrderStatus(ctx, db.UpdateOrderStatusParams{
+		ID:     ord.ID,
+		Status: statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED),
+	}); err != nil {
+		return nil, nil, nil, err
+	}
+
+	updatedRR, err := q.UpdateReturnRequest(ctx, db.UpdateReturnRequestParams{
+		ID:         rr.ID,
+		Status:     "REJECTED",
+		SellerNote: params.Reason,
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+		ID:         uuid.NewString(),
+		OrderID:    ord.ID,
+		FromStatus: ord.Status,
+		ToStatus:   statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURN_REJECTED),
+		ActorID:    params.ActorID,
+		ActorRole:  params.ActorRole,
+		Note:       params.Note,
+	}); err != nil {
+		return nil, nil, nil, err
+	}
+
+	cp, cpErr := q.GetComplaintByReturnRequestID(ctx, rr.ID)
+	if cpErr != nil {
+		if !errors.Is(cpErr, pgx.ErrNoRows) {
+			return nil, nil, nil, cpErr
+		}
+		evJSON := params.EvidenceURLsJSON
+		if len(evJSON) == 0 {
+			evJSON = defaultJSONArray(rr.EvidenceURLsJSON)
+		}
+		shopID := rr.ShopID
+		if shopID == "" {
+			shopID = ord.ShopID
+		}
+		cp, err = q.InsertComplaint(ctx, db.InsertComplaintParams{
+			ID:               params.ComplaintID,
+			ReturnRequestID:  rr.ID,
+			OrderID:          ord.ID,
+			BuyerID:          ord.BuyerID,
+			ShopID:           shopID,
+			Reason:           params.ComplaintReason,
+			EvidenceURLsJSON: defaultJSONArray(evJSON),
+			Status:           "OPEN",
+		})
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
+
+	agg, err := loadOrderAggregate(ctx, q, ord.ID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, nil, err
+	}
+	return agg, &updatedRR, &cp, nil
+}
+
+func (s *PostgresStore) GetComplaintByID(ctx context.Context, id string) (*db.Complaint, error) {
+	row, err := s.queries.GetComplaintByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &row, nil
+}
+
+func (s *PostgresStore) GetComplaintByReturnRequestID(ctx context.Context, returnRequestID string) (*db.Complaint, error) {
+	row, err := s.queries.GetComplaintByReturnRequestID(ctx, returnRequestID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &row, nil
+}
+
+func (s *PostgresStore) UpsertOpenComplaint(ctx context.Context, params UpsertComplaintParams) (*db.Complaint, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin upsert complaint tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := s.queries.WithTx(tx)
+
+	existing, err := q.GetComplaintByReturnRequestID(ctx, params.ReturnRequestID)
+	if err == nil {
+		if existing.Status != "OPEN" {
+			return nil, ErrComplaintNotOpen
+		}
+		updated, err := q.UpdateComplaintDetails(ctx, db.UpdateComplaintDetailsParams{
+			ID:               existing.ID,
+			Reason:           params.Reason,
+			UpdateEvidence:   params.UpdateEvidence,
+			EvidenceURLsJSON: defaultJSONArray(params.EvidenceURLsJSON),
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return &updated, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+
+	created, err := q.InsertComplaint(ctx, db.InsertComplaintParams{
+		ID:               params.ComplaintID,
+		ReturnRequestID:  params.ReturnRequestID,
+		OrderID:          params.OrderID,
+		BuyerID:          params.BuyerID,
+		ShopID:           params.ShopID,
+		Reason:           params.Reason,
+		EvidenceURLsJSON: defaultJSONArray(params.EvidenceURLsJSON),
+		Status:           "OPEN",
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+func (s *PostgresStore) ListComplaintsFiltered(ctx context.Context, status, orderID, shopID string, limit, offset int32) ([]db.Complaint, int64, error) {
+	total, err := s.queries.CountComplaintsFiltered(ctx, db.CountComplaintsFilteredParams{
+		Status:  status,
+		OrderID: orderID,
+		ShopID:  shopID,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.queries.ListComplaintsFiltered(ctx, db.ListComplaintsFilteredParams{
+		Status:     status,
+		OrderID:    orderID,
+		ShopID:     shopID,
+		PageLimit:  limit,
+		PageOffset: offset,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return rows, total, nil
+}
+
+func (s *PostgresStore) DismissComplaintAndCompleteOrder(ctx context.Context, params DismissComplaintParams) (*OrderAggregate, *db.ReturnRequest, *db.Complaint, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("begin dismiss complaint tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := s.queries.WithTx(tx)
+
+	cp, err := q.GetComplaintByIDForUpdate(ctx, params.ComplaintID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, nil, ErrNotFound
+		}
+		return nil, nil, nil, err
+	}
+	if cp.Status != "OPEN" {
+		return nil, nil, nil, ErrComplaintNotOpen
+	}
+
+	ord, err := q.GetOrderByIDForUpdate(ctx, params.OrderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, nil, ErrNotFound
+		}
+		return nil, nil, nil, err
+	}
+
+	curStatus := statemachine.StringToStatus(ord.Status)
+	if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_COMPLETED); err != nil {
+		return nil, nil, nil, err
+	}
+
+	if _, err := q.UpdateOrderCompleted(ctx, ord.ID); err != nil {
+		return nil, nil, nil, err
+	}
+
+	resolvedCP, err := q.ResolveComplaintRow(ctx, db.ResolveComplaintRowParams{
+		ID:         cp.ID,
+		Status:     "DISMISSED",
+		Resolution: "DISMISS",
+		AdminNote:  params.AdminNote,
+		ResolvedBy: params.ResolvedBy,
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+		ID:         uuid.NewString(),
+		OrderID:    ord.ID,
+		FromStatus: ord.Status,
+		ToStatus:   statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_COMPLETED),
+		ActorID:    params.ResolvedBy,
+		ActorRole:  params.ActorRole,
+		Note:       params.Note,
+	}); err != nil {
+		return nil, nil, nil, err
+	}
+
+	if params.OutboxEvent.ID != "" {
+		if err := q.InsertOutboxEvent(ctx, params.OutboxEvent); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+
+	var rrPtr *db.ReturnRequest
+	if rr, err := q.GetReturnRequestByID(ctx, cp.ReturnRequestID); err == nil {
+		rrPtr = &rr
+	}
+
+	agg, err := loadOrderAggregate(ctx, q, ord.ID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, nil, err
+	}
+	return agg, rrPtr, &resolvedCP, nil
+}
+
+func defaultJSONArray(b []byte) []byte {
+	if len(b) == 0 {
+		return []byte("[]")
+	}
+	return b
 }
 
 func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params ShipmentUpdateParams) (*ShipmentUpdateOutcome, error) {

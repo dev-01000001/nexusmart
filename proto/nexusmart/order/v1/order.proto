@@ -17,12 +17,42 @@ enum OrderStatus {
   ORDER_STATUS_CANCELLED = 7;
   ORDER_STATUS_RETURN_REQUESTED = 8;
   ORDER_STATUS_RETURNED = 9;
+  ORDER_STATUS_RETURN_APPROVED = 10;
+  ORDER_STATUS_RETURN_REJECTED = 11;
+  ORDER_STATUS_RETURNING = 12;
+  ORDER_STATUS_REFUNDED = 13;
 }
 
 enum OrderPaymentMethod {
   ORDER_PAYMENT_METHOD_UNSPECIFIED = 0;
   ORDER_PAYMENT_METHOD_COD = 1;
   ORDER_PAYMENT_METHOD_VIETQR = 2;
+  ORDER_PAYMENT_METHOD_ZALOPAY = 3;
+}
+
+enum ReturnRequestStatus {
+  RETURN_REQUEST_STATUS_UNSPECIFIED = 0;
+  RETURN_REQUEST_STATUS_PENDING = 1;
+  RETURN_REQUEST_STATUS_APPROVED = 2;
+  RETURN_REQUEST_STATUS_REJECTED = 3;
+  RETURN_REQUEST_STATUS_RETURNING = 4;
+  RETURN_REQUEST_STATUS_RETURNED = 5;
+  RETURN_REQUEST_STATUS_REFUNDED = 6;
+  RETURN_REQUEST_STATUS_ESCALATED = 7;
+}
+
+enum ComplaintStatus {
+  COMPLAINT_STATUS_UNSPECIFIED = 0;
+  COMPLAINT_STATUS_OPEN = 1;
+  COMPLAINT_STATUS_RESOLVED = 2;
+  COMPLAINT_STATUS_DISMISSED = 3;
+}
+
+enum ComplaintResolution {
+  COMPLAINT_RESOLUTION_UNSPECIFIED = 0;
+  COMPLAINT_RESOLUTION_REFUND = 1;
+  COMPLAINT_RESOLUTION_REPLACE = 2;
+  COMPLAINT_RESOLUTION_DISMISS = 3;
 }
 
 enum PaymentResultStatus {
@@ -223,16 +253,149 @@ message BuyerConfirmReceivedResponse {
   Order order = 1;
 }
 
+message ReturnItemInput {
+  string order_item_id = 1;
+  string sku_id = 2;
+  int32 quantity = 3;
+}
+
+message ReturnRequest {
+  string id = 1;
+  string order_id = 2;
+  string buyer_id = 3;
+  string shop_id = 4;
+  repeated ReturnItemInput items = 5;
+  string reason = 6;
+  repeated string photos = 7;
+  ReturnRequestStatus status = 8;
+  string seller_note = 9;
+  string reverse_tracking_code = 10;
+  string reverse_label_url = 11;
+  int64 refund_amount_vnd = 12;
+  string refund_id = 13;
+  google.protobuf.Timestamp created_at = 14;
+  google.protobuf.Timestamp updated_at = 15;
+}
+
+message Complaint {
+  string id = 1;
+  string return_request_id = 2;
+  string order_id = 3;
+  string buyer_id = 4;
+  string shop_id = 5;
+  string reason = 6;
+  repeated string evidence_urls = 7;
+  ComplaintStatus status = 8;
+  ComplaintResolution resolution = 9;
+  string admin_note = 10;
+  string resolved_by = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp resolved_at = 13;
+}
+
 message RequestReturnRequest {
   string order_id = 1;
   string buyer_id = 2;
   string reason = 3;
   repeated string evidence_urls = 4;
+  repeated ReturnItemInput items = 5;
 }
 
 message RequestReturnResponse {
   Order order = 1;
   string return_request_id = 2;
+  ReturnRequest return_request = 3;
+}
+
+message ListOrderReturnsRequest {
+  string order_id = 1;
+  string shop_id = 2;
+  ReturnRequestStatus status = 3;
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+message ListOrderReturnsResponse {
+  repeated ReturnRequest returns = 1;
+  int64 total = 2;
+}
+
+message ApproveReturnRequest {
+  string return_request_id = 1;
+  string shop_id = 2;
+  string seller_user_id = 3;
+  string note = 4;
+  bool immediate_refund = 5;
+  string carrier_code = 6;
+  string service_code = 7;
+}
+
+message ApproveReturnResponse {
+  Order order = 1;
+  ReturnRequest return_request = 2;
+}
+
+message RejectReturnRequest {
+  string return_request_id = 1;
+  string shop_id = 2;
+  string seller_user_id = 3;
+  string reason = 4;
+}
+
+message RejectReturnResponse {
+  Order order = 1;
+  ReturnRequest return_request = 2;
+  Complaint complaint = 3;
+}
+
+message ConfirmReturnReceivedRequest {
+  string return_request_id = 1;
+  string shop_id = 2;
+  string seller_user_id = 3;
+  string note = 4;
+}
+
+message ConfirmReturnReceivedResponse {
+  Order order = 1;
+  ReturnRequest return_request = 2;
+}
+
+message CreateComplaintRequest {
+  string order_id = 1;
+  string return_request_id = 2;
+  string buyer_id = 3;
+  string reason = 4;
+  repeated string evidence_urls = 5;
+}
+
+message CreateComplaintResponse {
+  Complaint complaint = 1;
+}
+
+message ListComplaintsRequest {
+  ComplaintStatus status = 1;
+  string order_id = 2;
+  string shop_id = 3;
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+message ListComplaintsResponse {
+  repeated Complaint complaints = 1;
+  int64 total = 2;
+}
+
+message ResolveComplaintRequest {
+  string complaint_id = 1;
+  ComplaintResolution resolution = 2;
+  string admin_note = 3;
+  bool require_return_shipping = 4;
+}
+
+message ResolveComplaintResponse {
+  Complaint complaint = 1;
+  Order order = 2;
+  ReturnRequest return_request = 3;
 }
 
 message GetOrderTimelineRequest {
@@ -267,6 +430,13 @@ service OrderService {
   rpc SellerShipOrder(SellerShipOrderRequest) returns (SellerShipOrderResponse);
   rpc BuyerConfirmReceived(BuyerConfirmReceivedRequest) returns (BuyerConfirmReceivedResponse);
   rpc RequestReturn(RequestReturnRequest) returns (RequestReturnResponse);
+  rpc ListOrderReturns(ListOrderReturnsRequest) returns (ListOrderReturnsResponse);
+  rpc ApproveReturn(ApproveReturnRequest) returns (ApproveReturnResponse);
+  rpc RejectReturn(RejectReturnRequest) returns (RejectReturnResponse);
+  rpc ConfirmReturnReceived(ConfirmReturnReceivedRequest) returns (ConfirmReturnReceivedResponse);
+  rpc CreateComplaint(CreateComplaintRequest) returns (CreateComplaintResponse);
+  rpc ListComplaints(ListComplaintsRequest) returns (ListComplaintsResponse);
+  rpc ResolveComplaint(ResolveComplaintRequest) returns (ResolveComplaintResponse);
   rpc GetOrderTimeline(GetOrderTimelineRequest) returns (GetOrderTimelineResponse);
   rpc MarkPaymentResult(MarkPaymentResultRequest) returns (MarkPaymentResultResponse);
 }

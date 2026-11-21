@@ -10,6 +10,7 @@ enum PaymentMethod {
   PAYMENT_METHOD_UNSPECIFIED = 0;
   PAYMENT_METHOD_COD = 1;
   PAYMENT_METHOD_VIETQR = 2;
+  PAYMENT_METHOD_ZALOPAY = 3;
 }
 
 enum PaymentStatus {
@@ -203,6 +204,31 @@ message RunReconciliationResponse {
   repeated ReconciliationItem items = 6;
   // Applied sales channel filter: "" (all), "MARKETPLACE", or "STOREFRONT".
   string sales_channel = 7;
+  int32 auto_healed_count = 8;
+}
+
+message ReconciliationReportSummary {
+  string run_id = 1;
+  string provider = 2;
+  string run_date = 3;
+  string sales_channel = 4;
+  int32 matched_count = 5;
+  int32 missing_local_count = 6;
+  int32 missing_provider_count = 7;
+  int32 amount_mismatch_count = 8;
+  int32 auto_healed_count = 9;
+  string status = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp completed_at = 12;
+}
+
+message ListReconciliationReportsRequest {
+  int32 limit = 1;
+  string sales_channel = 2;
+}
+
+message ListReconciliationReportsResponse {
+  repeated ReconciliationReportSummary reports = 1;
 }
 
 service PaymentService {
@@ -214,4 +240,5 @@ service PaymentService {
   rpc GetSellerBalance(GetSellerBalanceRequest) returns (GetSellerBalanceResponse);
   rpc ReleaseEscrow(ReleaseEscrowRequest) returns (ReleaseEscrowResponse);
   rpc RunReconciliation(RunReconciliationRequest) returns (RunReconciliationResponse);
+  rpc ListReconciliationReports(ListReconciliationReportsRequest) returns (ListReconciliationReportsResponse);
 }

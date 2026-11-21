@@ -146,6 +146,18 @@ type StockHistoryEntry struct {
 	CreatedAt      time.Time
 }
 
+type OutboxEvent struct {
+	ID          string
+	EventType   string
+	TraceID     string
+	Traceparent string
+	PayloadJSON []byte
+	PublishedAt *time.Time
+	Attempts    int32
+	LastError   string
+	CreatedAt   time.Time
+}
+
 type ListProductsFilter struct {
 	CategoryID  string
 	Keyword     string
@@ -208,11 +220,15 @@ type Queries interface {
 	RestoreFlashSaleReservationConsumed(ctx context.Context, flashSaleItemID string, qty int32) (FlashSaleStockReservation, error)
 	MarkFlashSaleReservationReleased(ctx context.Context, flashSaleItemID string) (FlashSaleStockReservation, error)
 	ListExpiredActiveFlashSaleReservations(ctx context.Context, now time.Time, limit int32) ([]FlashSaleStockReservation, error)
+
+	NextProductEventVersion(ctx context.Context) (int64, error)
+	InsertOutboxEvent(ctx context.Context, ev OutboxEvent) error
 }
 
 // Store is the top-level persistence interface supporting transactions and health pings.
 type Store interface {
 	Queries
 	WithTx(ctx context.Context, fn func(q Queries) error) error
+	ProcessPendingOutbox(ctx context.Context, limit int32, publishFn func(ctx context.Context, ev OutboxEvent) error) (int, error)
 	Ping(ctx context.Context) error
 }

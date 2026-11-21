@@ -49,6 +49,27 @@ func (q *Queries) CompleteCheckoutGroup(ctx context.Context, arg CompleteCheckou
 	return err
 }
 
+const countComplaintsFiltered = `-- name: CountComplaintsFiltered :one
+SELECT COUNT(*)
+FROM complaints
+WHERE ($1::text = '' OR status = $1::text)
+  AND ($2::text = '' OR order_id = $2::text)
+  AND ($3::text = '' OR shop_id = $3::text)
+`
+
+type CountComplaintsFilteredParams struct {
+	Status  string `json:"status"`
+	OrderID string `json:"order_id"`
+	ShopID  string `json:"shop_id"`
+}
+
+func (q *Queries) CountComplaintsFiltered(ctx context.Context, arg CountComplaintsFilteredParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countComplaintsFiltered, arg.Status, arg.OrderID, arg.ShopID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countOrdersFiltered = `-- name: CountOrdersFiltered :one
 SELECT COUNT(*)
 FROM orders
@@ -74,6 +95,34 @@ func (q *Queries) CountOrdersFiltered(ctx context.Context, arg CountOrdersFilter
 		arg.Status,
 		arg.SalesChannel,
 		arg.StorefrontShopID,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countReturnRequestsFiltered = `-- name: CountReturnRequestsFiltered :one
+SELECT COUNT(*)
+FROM return_requests
+WHERE ($1::text = '' OR order_id = $1::text)
+  AND ($2::text = '' OR buyer_id = $2::text)
+  AND ($3::text = '' OR shop_id = $3::text)
+  AND ($4::text = '' OR status = $4::text)
+`
+
+type CountReturnRequestsFilteredParams struct {
+	OrderID string `json:"order_id"`
+	BuyerID string `json:"buyer_id"`
+	ShopID  string `json:"shop_id"`
+	Status  string `json:"status"`
+}
+
+func (q *Queries) CountReturnRequestsFiltered(ctx context.Context, arg CountReturnRequestsFilteredParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countReturnRequestsFiltered,
+		arg.OrderID,
+		arg.BuyerID,
+		arg.ShopID,
+		arg.Status,
 	)
 	var count int64
 	err := row.Scan(&count)
@@ -221,6 +270,119 @@ func (q *Queries) GetCheckoutGroupByID(ctx context.Context, id string) (Checkout
 	return i, err
 }
 
+const getComplaintByID = `-- name: GetComplaintByID :one
+SELECT id, return_request_id, order_id, buyer_id, shop_id, reason, evidence_urls_json, status, resolution, admin_note, resolved_by, created_at, resolved_at
+FROM complaints
+WHERE id = $1
+`
+
+func (q *Queries) GetComplaintByID(ctx context.Context, id string) (Complaint, error) {
+	row := q.db.QueryRow(ctx, getComplaintByID, id)
+	var i Complaint
+	err := row.Scan(
+		&i.ID,
+		&i.ReturnRequestID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.ShopID,
+		&i.Reason,
+		&i.EvidenceURLsJSON,
+		&i.Status,
+		&i.Resolution,
+		&i.AdminNote,
+		&i.ResolvedBy,
+		&i.CreatedAt,
+		&i.ResolvedAt,
+	)
+	return i, err
+}
+
+const getComplaintByIDForUpdate = `-- name: GetComplaintByIDForUpdate :one
+SELECT id, return_request_id, order_id, buyer_id, shop_id, reason, evidence_urls_json, status, resolution, admin_note, resolved_by, created_at, resolved_at
+FROM complaints
+WHERE id = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetComplaintByIDForUpdate(ctx context.Context, id string) (Complaint, error) {
+	row := q.db.QueryRow(ctx, getComplaintByIDForUpdate, id)
+	var i Complaint
+	err := row.Scan(
+		&i.ID,
+		&i.ReturnRequestID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.ShopID,
+		&i.Reason,
+		&i.EvidenceURLsJSON,
+		&i.Status,
+		&i.Resolution,
+		&i.AdminNote,
+		&i.ResolvedBy,
+		&i.CreatedAt,
+		&i.ResolvedAt,
+	)
+	return i, err
+}
+
+const getComplaintByReturnRequestID = `-- name: GetComplaintByReturnRequestID :one
+SELECT id, return_request_id, order_id, buyer_id, shop_id, reason, evidence_urls_json, status, resolution, admin_note, resolved_by, created_at, resolved_at
+FROM complaints
+WHERE return_request_id = $1
+`
+
+func (q *Queries) GetComplaintByReturnRequestID(ctx context.Context, returnRequestID string) (Complaint, error) {
+	row := q.db.QueryRow(ctx, getComplaintByReturnRequestID, returnRequestID)
+	var i Complaint
+	err := row.Scan(
+		&i.ID,
+		&i.ReturnRequestID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.ShopID,
+		&i.Reason,
+		&i.EvidenceURLsJSON,
+		&i.Status,
+		&i.Resolution,
+		&i.AdminNote,
+		&i.ResolvedBy,
+		&i.CreatedAt,
+		&i.ResolvedAt,
+	)
+	return i, err
+}
+
+const getLatestReturnRequestByOrderID = `-- name: GetLatestReturnRequestByOrderID :one
+SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, shop_id, items_json, seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id
+FROM return_requests
+WHERE order_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+func (q *Queries) GetLatestReturnRequestByOrderID(ctx context.Context, orderID string) (ReturnRequest, error) {
+	row := q.db.QueryRow(ctx, getLatestReturnRequestByOrderID, orderID)
+	var i ReturnRequest
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.Reason,
+		&i.EvidenceURLsJSON,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ShopID,
+		&i.ItemsJSON,
+		&i.SellerNote,
+		&i.ReverseTrackingCode,
+		&i.ReverseLabelURL,
+		&i.RefundAmountVND,
+		&i.RefundID,
+	)
+	return i, err
+}
+
 const getOrderByID = `-- name: GetOrderByID :one
 SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id
 FROM orders
@@ -308,6 +470,115 @@ func (q *Queries) GetOrderByIDForUpdate(ctx context.Context, id string) (Order, 
 		&i.UpdatedAt,
 		&i.SalesChannel,
 		&i.StorefrontShopID,
+	)
+	return i, err
+}
+
+const getReturnRequestByID = `-- name: GetReturnRequestByID :one
+SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, shop_id, items_json, seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id
+FROM return_requests
+WHERE id = $1
+`
+
+func (q *Queries) GetReturnRequestByID(ctx context.Context, id string) (ReturnRequest, error) {
+	row := q.db.QueryRow(ctx, getReturnRequestByID, id)
+	var i ReturnRequest
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.Reason,
+		&i.EvidenceURLsJSON,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ShopID,
+		&i.ItemsJSON,
+		&i.SellerNote,
+		&i.ReverseTrackingCode,
+		&i.ReverseLabelURL,
+		&i.RefundAmountVND,
+		&i.RefundID,
+	)
+	return i, err
+}
+
+const getReturnRequestByIDForUpdate = `-- name: GetReturnRequestByIDForUpdate :one
+SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, shop_id, items_json, seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id
+FROM return_requests
+WHERE id = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetReturnRequestByIDForUpdate(ctx context.Context, id string) (ReturnRequest, error) {
+	row := q.db.QueryRow(ctx, getReturnRequestByIDForUpdate, id)
+	var i ReturnRequest
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.Reason,
+		&i.EvidenceURLsJSON,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ShopID,
+		&i.ItemsJSON,
+		&i.SellerNote,
+		&i.ReverseTrackingCode,
+		&i.ReverseLabelURL,
+		&i.RefundAmountVND,
+		&i.RefundID,
+	)
+	return i, err
+}
+
+const insertComplaint = `-- name: InsertComplaint :one
+INSERT INTO complaints (
+    id, return_request_id, order_id, buyer_id, shop_id, reason, evidence_urls_json, status
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8
+)
+RETURNING id, return_request_id, order_id, buyer_id, shop_id, reason, evidence_urls_json, status, resolution, admin_note, resolved_by, created_at, resolved_at
+`
+
+type InsertComplaintParams struct {
+	ID               string `json:"id"`
+	ReturnRequestID  string `json:"return_request_id"`
+	OrderID          string `json:"order_id"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	Reason           string `json:"reason"`
+	EvidenceURLsJSON []byte `json:"evidence_urls_json"`
+	Status           string `json:"status"`
+}
+
+func (q *Queries) InsertComplaint(ctx context.Context, arg InsertComplaintParams) (Complaint, error) {
+	row := q.db.QueryRow(ctx, insertComplaint,
+		arg.ID,
+		arg.ReturnRequestID,
+		arg.OrderID,
+		arg.BuyerID,
+		arg.ShopID,
+		arg.Reason,
+		arg.EvidenceURLsJSON,
+		arg.Status,
+	)
+	var i Complaint
+	err := row.Scan(
+		&i.ID,
+		&i.ReturnRequestID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.ShopID,
+		&i.Reason,
+		&i.EvidenceURLsJSON,
+		&i.Status,
+		&i.Resolution,
+		&i.AdminNote,
+		&i.ResolvedBy,
+		&i.CreatedAt,
+		&i.ResolvedAt,
 	)
 	return i, err
 }
@@ -554,20 +825,29 @@ func (q *Queries) InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventPa
 
 const insertReturnRequest = `-- name: InsertReturnRequest :one
 INSERT INTO return_requests (
-    id, order_id, buyer_id, reason, evidence_urls_json, status
+    id, order_id, buyer_id, shop_id, items_json, reason, evidence_urls_json, status,
+    seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6
+    $1, $2, $3, $4, $5, $6, $7, $8,
+    $9, $10, $11, $12, $13
 )
-RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at
+RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, shop_id, items_json, seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id
 `
 
 type InsertReturnRequestParams struct {
-	ID               string `json:"id"`
-	OrderID          string `json:"order_id"`
-	BuyerID          string `json:"buyer_id"`
-	Reason           string `json:"reason"`
-	EvidenceURLsJSON []byte `json:"evidence_urls_json"`
-	Status           string `json:"status"`
+	ID                  string `json:"id"`
+	OrderID             string `json:"order_id"`
+	BuyerID             string `json:"buyer_id"`
+	ShopID              string `json:"shop_id"`
+	ItemsJSON           []byte `json:"items_json"`
+	Reason              string `json:"reason"`
+	EvidenceURLsJSON    []byte `json:"evidence_urls_json"`
+	Status              string `json:"status"`
+	SellerNote          string `json:"seller_note"`
+	ReverseTrackingCode string `json:"reverse_tracking_code"`
+	ReverseLabelURL     string `json:"reverse_label_url"`
+	RefundAmountVND     int64  `json:"refund_amount_vnd"`
+	RefundID            string `json:"refund_id"`
 }
 
 func (q *Queries) InsertReturnRequest(ctx context.Context, arg InsertReturnRequestParams) (ReturnRequest, error) {
@@ -575,9 +855,16 @@ func (q *Queries) InsertReturnRequest(ctx context.Context, arg InsertReturnReque
 		arg.ID,
 		arg.OrderID,
 		arg.BuyerID,
+		arg.ShopID,
+		arg.ItemsJSON,
 		arg.Reason,
 		arg.EvidenceURLsJSON,
 		arg.Status,
+		arg.SellerNote,
+		arg.ReverseTrackingCode,
+		arg.ReverseLabelURL,
+		arg.RefundAmountVND,
+		arg.RefundID,
 	)
 	var i ReturnRequest
 	err := row.Scan(
@@ -589,6 +876,13 @@ func (q *Queries) InsertReturnRequest(ctx context.Context, arg InsertReturnReque
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ShopID,
+		&i.ItemsJSON,
+		&i.SellerNote,
+		&i.ReverseTrackingCode,
+		&i.ReverseLabelURL,
+		&i.RefundAmountVND,
+		&i.RefundID,
 	)
 	return i, err
 }
@@ -647,6 +941,64 @@ func (q *Queries) IsEventProcessed(ctx context.Context, eventID string) (bool, e
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const listComplaintsFiltered = `-- name: ListComplaintsFiltered :many
+SELECT id, return_request_id, order_id, buyer_id, shop_id, reason, evidence_urls_json, status, resolution, admin_note, resolved_by, created_at, resolved_at
+FROM complaints
+WHERE ($1::text = '' OR status = $1::text)
+  AND ($2::text = '' OR order_id = $2::text)
+  AND ($3::text = '' OR shop_id = $3::text)
+ORDER BY created_at DESC, id DESC
+LIMIT $5 OFFSET $4
+`
+
+type ListComplaintsFilteredParams struct {
+	Status     string `json:"status"`
+	OrderID    string `json:"order_id"`
+	ShopID     string `json:"shop_id"`
+	PageOffset int32  `json:"page_offset"`
+	PageLimit  int32  `json:"page_limit"`
+}
+
+func (q *Queries) ListComplaintsFiltered(ctx context.Context, arg ListComplaintsFilteredParams) ([]Complaint, error) {
+	rows, err := q.db.Query(ctx, listComplaintsFiltered,
+		arg.Status,
+		arg.OrderID,
+		arg.ShopID,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Complaint{}
+	for rows.Next() {
+		var i Complaint
+		if err := rows.Scan(
+			&i.ID,
+			&i.ReturnRequestID,
+			&i.OrderID,
+			&i.BuyerID,
+			&i.ShopID,
+			&i.Reason,
+			&i.EvidenceURLsJSON,
+			&i.Status,
+			&i.Resolution,
+			&i.AdminNote,
+			&i.ResolvedBy,
+			&i.CreatedAt,
+			&i.ResolvedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listOrderItemsByOrderID = `-- name: ListOrderItemsByOrderID :many
@@ -927,11 +1279,74 @@ func (q *Queries) ListOrdersFiltered(ctx context.Context, arg ListOrdersFiltered
 	return items, nil
 }
 
+const listReturnRequestsFiltered = `-- name: ListReturnRequestsFiltered :many
+SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, shop_id, items_json, seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id
+FROM return_requests
+WHERE ($1::text = '' OR order_id = $1::text)
+  AND ($2::text = '' OR buyer_id = $2::text)
+  AND ($3::text = '' OR shop_id = $3::text)
+  AND ($4::text = '' OR status = $4::text)
+ORDER BY created_at DESC, id DESC
+LIMIT $6 OFFSET $5
+`
+
+type ListReturnRequestsFilteredParams struct {
+	OrderID    string `json:"order_id"`
+	BuyerID    string `json:"buyer_id"`
+	ShopID     string `json:"shop_id"`
+	Status     string `json:"status"`
+	PageOffset int32  `json:"page_offset"`
+	PageLimit  int32  `json:"page_limit"`
+}
+
+func (q *Queries) ListReturnRequestsFiltered(ctx context.Context, arg ListReturnRequestsFilteredParams) ([]ReturnRequest, error) {
+	rows, err := q.db.Query(ctx, listReturnRequestsFiltered,
+		arg.OrderID,
+		arg.BuyerID,
+		arg.ShopID,
+		arg.Status,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ReturnRequest{}
+	for rows.Next() {
+		var i ReturnRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrderID,
+			&i.BuyerID,
+			&i.Reason,
+			&i.EvidenceURLsJSON,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ShopID,
+			&i.ItemsJSON,
+			&i.SellerNote,
+			&i.ReverseTrackingCode,
+			&i.ReverseLabelURL,
+			&i.RefundAmountVND,
+			&i.RefundID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockExpiredPendingOrders = `-- name: LockExpiredPendingOrders :many
 SELECT id, checkout_group_id, payment_id
 FROM orders
 WHERE status = 'PENDING'
-  AND payment_method = 'VIETQR'
+  AND payment_method IN ('VIETQR', 'ZALOPAY')
   AND payment_expires_at IS NOT NULL
   AND payment_expires_at <= NOW()
 ORDER BY payment_expires_at ASC
@@ -1034,6 +1449,52 @@ func (q *Queries) MarkOutboxEventPublished(ctx context.Context, id string) error
 	return err
 }
 
+const resolveComplaintRow = `-- name: ResolveComplaintRow :one
+UPDATE complaints
+SET status = $2,
+    resolution = $3,
+    admin_note = $4,
+    resolved_by = $5,
+    resolved_at = NOW()
+WHERE id = $1
+RETURNING id, return_request_id, order_id, buyer_id, shop_id, reason, evidence_urls_json, status, resolution, admin_note, resolved_by, created_at, resolved_at
+`
+
+type ResolveComplaintRowParams struct {
+	ID         string `json:"id"`
+	Status     string `json:"status"`
+	Resolution string `json:"resolution"`
+	AdminNote  string `json:"admin_note"`
+	ResolvedBy string `json:"resolved_by"`
+}
+
+func (q *Queries) ResolveComplaintRow(ctx context.Context, arg ResolveComplaintRowParams) (Complaint, error) {
+	row := q.db.QueryRow(ctx, resolveComplaintRow,
+		arg.ID,
+		arg.Status,
+		arg.Resolution,
+		arg.AdminNote,
+		arg.ResolvedBy,
+	)
+	var i Complaint
+	err := row.Scan(
+		&i.ID,
+		&i.ReturnRequestID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.ShopID,
+		&i.Reason,
+		&i.EvidenceURLsJSON,
+		&i.Status,
+		&i.Resolution,
+		&i.AdminNote,
+		&i.ResolvedBy,
+		&i.CreatedAt,
+		&i.ResolvedAt,
+	)
+	return i, err
+}
+
 const tryMarkEventProcessed = `-- name: TryMarkEventProcessed :execrows
 INSERT INTO processed_events (event_id, event_type)
 VALUES ($1, $2)
@@ -1070,6 +1531,47 @@ type UpdateCheckoutGroupPaymentStatusParams struct {
 func (q *Queries) UpdateCheckoutGroupPaymentStatus(ctx context.Context, arg UpdateCheckoutGroupPaymentStatusParams) error {
 	_, err := q.db.Exec(ctx, updateCheckoutGroupPaymentStatus, arg.ID, arg.PaymentStatus, arg.PaymentID)
 	return err
+}
+
+const updateComplaintDetails = `-- name: UpdateComplaintDetails :one
+UPDATE complaints
+SET reason = CASE WHEN $2::text <> '' THEN $2::text ELSE reason END,
+    evidence_urls_json = CASE WHEN $3::boolean THEN $4::jsonb ELSE evidence_urls_json END
+WHERE id = $1
+RETURNING id, return_request_id, order_id, buyer_id, shop_id, reason, evidence_urls_json, status, resolution, admin_note, resolved_by, created_at, resolved_at
+`
+
+type UpdateComplaintDetailsParams struct {
+	ID               string `json:"id"`
+	Reason           string `json:"reason"`
+	UpdateEvidence   bool   `json:"update_evidence"`
+	EvidenceURLsJSON []byte `json:"evidence_urls_json"`
+}
+
+func (q *Queries) UpdateComplaintDetails(ctx context.Context, arg UpdateComplaintDetailsParams) (Complaint, error) {
+	row := q.db.QueryRow(ctx, updateComplaintDetails,
+		arg.ID,
+		arg.Reason,
+		arg.UpdateEvidence,
+		arg.EvidenceURLsJSON,
+	)
+	var i Complaint
+	err := row.Scan(
+		&i.ID,
+		&i.ReturnRequestID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.ShopID,
+		&i.Reason,
+		&i.EvidenceURLsJSON,
+		&i.Status,
+		&i.Resolution,
+		&i.AdminNote,
+		&i.ResolvedBy,
+		&i.CreatedAt,
+		&i.ResolvedAt,
+	)
+	return i, err
 }
 
 const updateOrderCompleted = `-- name: UpdateOrderCompleted :one
@@ -1361,4 +1863,58 @@ type UpdateOrderTrackingCodeParams struct {
 func (q *Queries) UpdateOrderTrackingCode(ctx context.Context, arg UpdateOrderTrackingCodeParams) error {
 	_, err := q.db.Exec(ctx, updateOrderTrackingCode, arg.ID, arg.TrackingCode)
 	return err
+}
+
+const updateReturnRequest = `-- name: UpdateReturnRequest :one
+UPDATE return_requests
+SET status = CASE WHEN $2::text <> '' THEN $2::text ELSE status END,
+    seller_note = CASE WHEN $3::text <> '' THEN $3::text ELSE seller_note END,
+    reverse_tracking_code = CASE WHEN $4::text <> '' THEN $4::text ELSE reverse_tracking_code END,
+    reverse_label_url = CASE WHEN $5::text <> '' THEN $5::text ELSE reverse_label_url END,
+    refund_amount_vnd = CASE WHEN $6::bigint > 0 THEN $6::bigint ELSE refund_amount_vnd END,
+    refund_id = CASE WHEN $7::text <> '' THEN $7::text ELSE refund_id END,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, shop_id, items_json, seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id
+`
+
+type UpdateReturnRequestParams struct {
+	ID                  string `json:"id"`
+	Status              string `json:"status"`
+	SellerNote          string `json:"seller_note"`
+	ReverseTrackingCode string `json:"reverse_tracking_code"`
+	ReverseLabelURL     string `json:"reverse_label_url"`
+	RefundAmountVND     int64  `json:"refund_amount_vnd"`
+	RefundID            string `json:"refund_id"`
+}
+
+func (q *Queries) UpdateReturnRequest(ctx context.Context, arg UpdateReturnRequestParams) (ReturnRequest, error) {
+	row := q.db.QueryRow(ctx, updateReturnRequest,
+		arg.ID,
+		arg.Status,
+		arg.SellerNote,
+		arg.ReverseTrackingCode,
+		arg.ReverseLabelURL,
+		arg.RefundAmountVND,
+		arg.RefundID,
+	)
+	var i ReturnRequest
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.Reason,
+		&i.EvidenceURLsJSON,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ShopID,
+		&i.ItemsJSON,
+		&i.SellerNote,
+		&i.ReverseTrackingCode,
+		&i.ReverseLabelURL,
+		&i.RefundAmountVND,
+		&i.RefundID,
+	)
+	return i, err
 }

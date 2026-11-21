@@ -132,6 +132,8 @@ func paymentMethodString(m paymentv1.PaymentMethod) string {
 		return "COD"
 	case paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR:
 		return "VIETQR"
+	case paymentv1.PaymentMethod_PAYMENT_METHOD_ZALOPAY:
+		return "ZALOPAY"
 	default:
 		return ""
 	}
@@ -143,6 +145,8 @@ func parsePaymentMethod(s string) paymentv1.PaymentMethod {
 		return paymentv1.PaymentMethod_PAYMENT_METHOD_COD
 	case "VIETQR", "PAYMENT_METHOD_VIETQR":
 		return paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR
+	case "ZALOPAY", "PAYMENT_METHOD_ZALOPAY":
+		return paymentv1.PaymentMethod_PAYMENT_METHOD_ZALOPAY
 	default:
 		return paymentv1.PaymentMethod_PAYMENT_METHOD_UNSPECIFIED
 	}
@@ -444,6 +448,7 @@ func (h *handler) handleAdminReconcilePayments(w http.ResponseWriter, r *http.Re
 		"missing_local_count":    resp.GetMissingLocalCount(),
 		"missing_provider_count": resp.GetMissingProviderCount(),
 		"amount_mismatch_count":  resp.GetAmountMismatchCount(),
+		"auto_healed_count":      resp.GetAutoHealedCount(),
 		"sales_channel":          resp.GetSalesChannel(),
 		"items":                  items,
 	})

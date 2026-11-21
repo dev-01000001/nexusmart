@@ -10,10 +10,12 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nats-io/nats.go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
@@ -23,6 +25,7 @@ import (
 	"github.com/nexusmart/core/pkg/common/logger"
 	"github.com/nexusmart/core/pkg/common/metrics"
 	"github.com/nexusmart/core/pkg/common/telemetry"
+	"github.com/nexusmart/core/services/product/internal/events"
 	"github.com/nexusmart/core/services/product/internal/server"
 	"github.com/nexusmart/core/services/product/internal/store"
 	"github.com/nexusmart/core/services/product/migrations"
@@ -43,6 +46,9 @@ func run() error {
 	grpcPort := env.EnvString("GRPC_PORT", "50052")
 	httpPort := env.EnvString("HTTP_PORT", "8082")
 	databaseURL := env.EnvString("DATABASE_URL", "")
+	natsURL := strings.TrimSpace(env.EnvString("NATS_URL", ""))
+	natsStream := env.EnvString("NATS_STREAM", events.DefaultStreamName)
+	outboxPollInterval := env.EnvDuration("OUTBOX_POLL_INTERVAL", events.DefaultPollInterval)
 	jwtSecret := env.EnvString("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me")
 	otelEndpoint := env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	sweepInterval := env.EnvDuration("FLASH_SALE_SWEEP_INTERVAL", 2*time.Second)
@@ -101,6 +107,42 @@ func run() error {
 	)
 	productSrv := server.New(pgStore, log)
 	productSrv.StartFlashSaleSweeper(ctx, sweepInterval)
+
+	var (
+		nc   *nats.Conn
+		bgWG sync.WaitGroup
+	)
+	if natsURL != "" {
+		var js nats.JetStreamContext
+		nc, js, err = connectNATSWithRetry(ctx, natsURL, natsStream, log)
+		if err != nil {
+			return fmt.Errorf("connect nats: %w", err)
+		}
+		defer nc.Close()
+		log.Info("connected to NATS JetStream", slog.String("stream", natsStream))
+
+		triggerCh := make(chan struct{}, 1)
+		productSrv.SetOutboxNotifier(func() {
+			select {
+			case triggerCh <- struct{}{}:
+			default:
+			}
+		})
+
+		outboxRelay := events.NewOutboxRelay(pgStore, js, log, outboxPollInterval, triggerCh)
+		bgWG.Add(1)
+		go func() {
+			defer bgWG.Done()
+			outboxRelay.Run(ctx)
+		}()
+		defer func() {
+			stop()
+			bgWG.Wait()
+		}()
+	} else {
+		log.Info("NATS_URL not set; outbox relay disabled")
+	}
+
 	productv1.RegisterProductServiceServer(grpcServer, productSrv)
 	reflection.Register(grpcServer)
 
@@ -112,7 +154,13 @@ func run() error {
 	opsHandler := metrics.NewOpsHandler(serviceName, func(rctx context.Context) error {
 		pingCtx, cancel := context.WithTimeout(rctx, 2*time.Second)
 		defer cancel()
-		return pgStore.Ping(pingCtx)
+		if err := pgStore.Ping(pingCtx); err != nil {
+			return fmt.Errorf("postgres not ready: %w", err)
+		}
+		if nc != nil && !nc.IsConnected() {
+			return errors.New("nats not connected")
+		}
+		return nil
 	}, nil)
 	httpHandler := telemetry.HTTPMiddleware(serviceName)(red.HTTPMiddleware()(opsHandler))
 
@@ -149,6 +197,43 @@ func run() error {
 	_ = httpServer.Shutdown(shutCtx)
 	grpcServer.GracefulStop()
 	return nil
+}
+
+func connectNATSWithRetry(ctx context.Context, natsURL, streamName string, log *slog.Logger) (*nats.Conn, nats.JetStreamContext, error) {
+	var lastErr error
+	for attempt := 1; attempt <= 15; attempt++ {
+		nc, err := nats.Connect(
+			natsURL,
+			nats.Name("nexusmart-product"),
+			nats.MaxReconnects(-1),
+			nats.ReconnectWait(time.Second),
+		)
+		if err == nil {
+			js, jsErr := nc.JetStream()
+			if jsErr == nil {
+				ensureErr := events.EnsureStreams(js, streamName)
+				if ensureErr == nil {
+					return nc, js, nil
+				}
+				lastErr = ensureErr
+			} else {
+				lastErr = jsErr
+			}
+			nc.Close()
+		} else {
+			lastErr = err
+		}
+
+		log.Warn("waiting for nats jetstream", slog.Int("attempt", attempt), slog.String("error", lastErr.Error()))
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, nil, fmt.Errorf("nats unavailable after retries: %w", lastErr)
 }
 
 func connectPostgresWithRetry(ctx context.Context, databaseURL string, log *slog.Logger) (*pgxpool.Pool, error) {

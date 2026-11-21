@@ -45,6 +45,14 @@ struct ReconciliationQuery {
     sales_channel: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct ReconciliationReportsQuery {
+    #[serde(default)]
+    limit: Option<i32>,
+    #[serde(default)]
+    sales_channel: String,
+}
+
 pub fn build_router(service: PaymentService, auth: GrpcAuth) -> Router {
     let metrics = service.metrics().clone();
     let state = HttpState { service, auth };
@@ -55,6 +63,7 @@ pub fn build_router(service: PaymentService, auth: GrpcAuth) -> Router {
         .route("/metrics", get(metrics_handler))
         .route("/webhooks/payment", post(handle_payment_webhook))
         .route("/webhooks/vietqr", post(handle_vietqr_webhook))
+        .route("/webhooks/zalopay", post(handle_zalopay_webhook))
         .route("/payments/{id}/events", get(payment_events_sse))
         .route("/internal/ledger/summary", get(internal_ledger_summary))
         .route(
@@ -64,6 +73,10 @@ pub fn build_router(service: PaymentService, auth: GrpcAuth) -> Router {
         .route(
             "/internal/reconciliation/run",
             post(internal_reconciliation_run),
+        )
+        .route(
+            "/internal/reconciliation/reports",
+            get(internal_reconciliation_reports),
         )
         .layer(middleware::from_fn_with_state(
             metrics,

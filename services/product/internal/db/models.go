@@ -32,6 +32,18 @@ type FlashSaleStockReservation struct {
 	UpdatedAt       time.Time
 }
 
+type OutboxEvent struct {
+	ID          string
+	EventType   string
+	TraceID     string
+	Traceparent string
+	PayloadJson []byte
+	PublishedAt *time.Time
+	Attempts    int32
+	LastError   string
+	CreatedAt   time.Time
+}
+
 type Product struct {
 	ID              string
 	ShopID          string

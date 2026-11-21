@@ -32,18 +32,20 @@ type carrierQuoteDTO struct {
 }
 
 type shipmentDTO struct {
-	ShipmentID   string `json:"shipment_id"`
-	OrderID      string `json:"order_id"`
-	ShopID       string `json:"shop_id"`
-	CarrierCode  string `json:"carrier_code"`
-	ServiceCode  string `json:"service_code"`
-	TrackingCode string `json:"tracking_code"`
-	LabelURL     string `json:"label_url"`
-	Status       string `json:"status"`
-	FeeVND       int64  `json:"fee_vnd"`
-	CODAmountVND int64  `json:"cod_amount_vnd"`
-	CreatedAt    string `json:"created_at,omitempty"`
-	UpdatedAt    string `json:"updated_at,omitempty"`
+	ShipmentID      string `json:"shipment_id"`
+	OrderID         string `json:"order_id"`
+	ShopID          string `json:"shop_id"`
+	CarrierCode     string `json:"carrier_code"`
+	ServiceCode     string `json:"service_code"`
+	TrackingCode    string `json:"tracking_code"`
+	LabelURL        string `json:"label_url"`
+	Status          string `json:"status"`
+	FeeVND          int64  `json:"fee_vnd"`
+	CODAmountVND    int64  `json:"cod_amount_vnd"`
+	Direction       string `json:"direction,omitempty"`
+	ReturnRequestID string `json:"return_request_id,omitempty"`
+	CreatedAt       string `json:"created_at,omitempty"`
+	UpdatedAt       string `json:"updated_at,omitempty"`
 }
 
 type shipmentEventDTO struct {
@@ -83,18 +85,20 @@ func mapShipment(s *shippingv1.Shipment) *shipmentDTO {
 		return nil
 	}
 	return &shipmentDTO{
-		ShipmentID:   s.GetShipmentId(),
-		OrderID:      s.GetOrderId(),
-		ShopID:       s.GetShopId(),
-		CarrierCode:  s.GetCarrierCode(),
-		ServiceCode:  s.GetServiceCode(),
-		TrackingCode: s.GetTrackingCode(),
-		LabelURL:     s.GetLabelUrl(),
-		Status:       shipmentStatusString(s.GetStatus()),
-		FeeVND:       s.GetFeeVnd(),
-		CODAmountVND: s.GetCodAmountVnd(),
-		CreatedAt:    httpx.FormatTimestamp(s.GetCreatedAt()),
-		UpdatedAt:    httpx.FormatTimestamp(s.GetUpdatedAt()),
+		ShipmentID:      s.GetShipmentId(),
+		OrderID:         s.GetOrderId(),
+		ShopID:          s.GetShopId(),
+		CarrierCode:     s.GetCarrierCode(),
+		ServiceCode:     s.GetServiceCode(),
+		TrackingCode:    s.GetTrackingCode(),
+		LabelURL:        s.GetLabelUrl(),
+		Status:          shipmentStatusString(s.GetStatus()),
+		FeeVND:          s.GetFeeVnd(),
+		CODAmountVND:    s.GetCodAmountVnd(),
+		Direction:       s.GetDirection(),
+		ReturnRequestID: s.GetReturnRequestId(),
+		CreatedAt:       httpx.FormatTimestamp(s.GetCreatedAt()),
+		UpdatedAt:       httpx.FormatTimestamp(s.GetUpdatedAt()),
 	}
 }
 
@@ -240,7 +244,8 @@ func (h *handler) handleGetShipment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, err := h.clients.Shipping.GetShipment(ctx, &shippingv1.GetShipmentRequest{
-		OrderId: orderID,
+		OrderId:   orderID,
+		Direction: r.URL.Query().Get("direction"),
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)

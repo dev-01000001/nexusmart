@@ -2,249 +2,385 @@
 
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { getProductsByShop } from "@/data/products";
-import { getDefaultProductMeta, type FitFeedbackKind } from "@/data/seller";
-import { Button, IconPlus, StateView } from "@/components";
+import { useRouter, useSearchParams } from "next/navigation";
+import {
+  Button,
+  IconArrowUpRight,
+  IconCheck,
+  IconRefresh,
+  IconSearch,
+  IconSpark,
+  StateView,
+} from "@/components";
+import { api, ApiError } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
+import { sanitizeSafeUrl } from "@/lib/site/theme";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { useSellerContext } from "@/features/seller/SellerShell";
 import {
-  answerSellerQuestion,
-  createSellerFaqItem,
-  parseUiState,
-  replyToSellerReview,
-  toggleSellerFaqActive,
-  useSellerSession,
-} from "@/features/seller/sellerStore";
+  getSellerOrderStatusMeta,
+  getSellerProductStatusMeta,
+  summarizeOrderItems,
+  type GwSellerOrder,
+  type GwSellerProduct,
+} from "@/features/seller/sellerApiTypes";
+import {
+  countPendingReturns,
+  getNotificationCategoryLabel,
+  getReturnStatusMeta,
+  normalizeProductReviewSummary,
+  normalizeSellerNotifications,
+  normalizeSellerReturns,
+  parseUiStateParam,
+  summarizeNotifications,
+  validateRejectReason,
+  type SellerNotification,
+  type SellerProductReviewSummary,
+  type SellerReturnRequest,
+} from "@/features/seller/sellerReturns";
 import common from "@/features/seller/SellerCommon.module.css";
 import styles from "./page.module.css";
 
-type InteractionTab = "reviews" | "qa" | "waiting";
-type ReviewFilter = "all" | "unreplied" | "photo" | "fit_issue";
+type InteractionTab = "returns" | "reviews" | "notifications";
+type ReturnFilter = "all" | "pending" | "returned";
+type NotifFilter = "all" | "unread";
 
-const FIT_META: Record<FitFeedbackKind, { label: string; cls: string }> = {
-  chat: { label: "Hơi chật", cls: `${common.pill} ${common.pillWarn}` },
-  dung: { label: "Đúng cỡ", cls: `${common.pill} ${common.pillPos}` },
-  rong: { label: "Hơi rộng", cls: `${common.pill} ${common.pillWarn}` },
-};
+interface ProductSummaryState {
+  loading: boolean;
+  data: SellerProductReviewSummary | null;
+  error: string | null;
+}
 
-const FAQ_TOPICS = [
-  "Chọn size",
-  "Chất liệu & giặt ủi",
-  "Giao hàng & đổi trả 45 ngày",
-  "Hóa đơn VAT",
-];
+interface OrderReturnsState {
+  loading: boolean;
+  items: SellerReturnRequest[];
+  error: string | null;
+}
 
-function SellerInteractionContent() {
+export interface SellerInteractionClientProps {
+  initialOrders: GwSellerOrder[];
+  ordersError: string | null;
+  products: GwSellerProduct[];
+  productsError: string | null;
+  initialNotifications: SellerNotification[];
+  notificationsError: string | null;
+}
+
+function pillCls(tone: "pos" | "warn" | "neg" | "neutral"): string {
+  if (tone === "pos") return `${common.pill} ${common.pillPos}`;
+  if (tone === "warn") return `${common.pill} ${common.pillWarn}`;
+  if (tone === "neg") return `${common.pill} ${common.pillNeg}`;
+  return common.pill;
+}
+
+function SellerInteractionContent({
+  initialOrders,
+  ordersError,
+  products,
+  productsError,
+  initialNotifications,
+  notificationsError,
+}: SellerInteractionClientProps) {
+  const router = useRouter();
   const searchParams = useSearchParams();
-  const uiState = parseUiState(searchParams.get("state"));
-  const initialTab = searchParams.get("tab") as InteractionTab | null;
-
-  const { shop, presentationShopKey, showToast } = useSellerContext();
-  const session = useSellerSession();
+  const uiState = parseUiStateParam(searchParams.get("state"));
+  const initialTabParam = searchParams.get("tab") as InteractionTab | null;
+  const { shop, showToast } = useSellerContext();
   const shopDisplayName = shop?.name ?? "Gian hàng của bạn";
-  const [notifiedSkus, setNotifiedSkus] = useState<Record<string, boolean>>({});
 
   const [tab, setTab] = useState<InteractionTab>(
-    initialTab && ["reviews", "qa", "waiting"].includes(initialTab) ? initialTab : "reviews"
+    initialTabParam && ["returns", "reviews", "notifications"].includes(initialTabParam)
+      ? initialTabParam
+      : "returns"
   );
 
-  // Reviews tab state
-  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("all");
-  const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({});
+  // Tab 1: Returns & Refunds state
+  const [orders, setOrders] = useState<GwSellerOrder[]>(initialOrders);
+  const [returnFilter, setReturnFilter] = useState<ReturnFilter>("all");
+  const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+  const [orderReturnsMap, setOrderReturnsMap] = useState<Record<string, OrderReturnsState>>({});
+  const [returnBusyId, setReturnBusyId] = useState<string | null>(null);
+  const [rejectOpenId, setRejectOpenId] = useState<string | null>(null);
+  const [rejectDrafts, setRejectDrafts] = useState<Record<string, string>>({});
+  const [rejectErrors, setRejectErrors] = useState<Record<string, string>>({});
 
-  // Q&A + FAQ tab state
-  const [qaFilter, setQaFilter] = useState<"all" | "unanswered">("all");
-  const [qaDrafts, setQaDrafts] = useState<Record<string, string>>({});
-  const [showFaqForm, setShowFaqForm] = useState(false);
-  const [faqTopic, setFaqTopic] = useState(FAQ_TOPICS[0]);
-  const [faqQuestion, setFaqQuestion] = useState("");
-  const [faqAnswer, setFaqAnswer] = useState("");
+  // Tab 2: AI Review Summaries state
+  const [productQuery, setProductQuery] = useState("");
+  const [summaryMap, setSummaryMap] = useState<Record<string, ProductSummaryState>>({});
 
-  const shopProducts = useMemo(() => getProductsByShop(presentationShopKey), [presentationShopKey]);
+  // Tab 3: Operational Notifications state
+  const [notifications, setNotifications] = useState<SellerNotification[]>(initialNotifications);
+  const [notifError, setNotifError] = useState<string | null>(notificationsError);
+  const [notifFilter, setNotifFilter] = useState<NotifFilter>("all");
+  const [notifBusy, setNotifBusy] = useState(false);
 
-  const reviews = useMemo(
-    () => session.reviews.filter((r) => r.shopId === presentationShopKey),
-    [session.reviews, presentationShopKey]
+  const returnOrders = useMemo(
+    () =>
+      orders.filter((o) => {
+        const st = o.status.toUpperCase();
+        return st === "RETURN_REQUESTED" || st === "RETURNED";
+      }),
+    [orders]
   );
-  const questions = useMemo(
-    () => session.questions.filter((q) => q.shopId === presentationShopKey),
-    [session.questions, presentationShopKey]
-  );
-  const faqs = useMemo(
-    () => session.faqs.filter((f) => f.shopId === presentationShopKey),
-    [session.faqs, presentationShopKey]
+
+  const pendingReturnsCount = useMemo(() => countPendingReturns(returnOrders), [returnOrders]);
+  const returnedOrdersCount = useMemo(
+    () => returnOrders.filter((o) => o.status.toUpperCase() === "RETURNED").length,
+    [returnOrders]
   );
 
-  const backInStockRows = useMemo(() => {
-    const rows: Array<{
-      productId: string;
-      productName: string;
-      productImage: string;
-      skuCode: string;
-      colorName: string;
-      size: string;
-      stock: number;
-      waitingCount: number;
-      wishlistCount: number;
-      price: number;
-    }> = [];
-    for (const p of shopProducts) {
-      const meta = getDefaultProductMeta(p.id, p.categorySlug);
-      for (const sku of p.skus) {
-        const waiting = notifiedSkus[sku.skuCode]
-          ? 0
-          : (meta.backInStockSubscribers[sku.skuCode] ?? 0);
-        if (waiting > 0 || sku.stock <= 5) {
-          const color = p.colors.find((c) => c.code === sku.colorCode);
-          rows.push({
-            productId: p.id,
-            productName: p.shortName,
-            productImage: color?.image ?? p.image,
-            skuCode: sku.skuCode,
-            colorName: color?.name ?? sku.colorCode,
-            size: sku.size,
-            stock: sku.stock,
-            waitingCount: waiting,
-            wishlistCount: meta.wishlistCount,
-            price: sku.price,
-          });
-        }
-      }
-    }
-    return rows.sort((a, b) => b.waitingCount - a.waitingCount || a.stock - b.stock);
-  }, [shopProducts, notifiedSkus]);
-
-  const wishlistRanking = useMemo(() => {
-    return shopProducts
-      .map((p) => {
-        const meta = getDefaultProductMeta(p.id, p.categorySlug);
-        const waiting = Object.entries(meta.backInStockSubscribers).reduce(
-          (s, [code, n]) => s + (notifiedSkus[code] ? 0 : n),
-          0
-        );
-        return {
-          productId: p.id,
-          shortName: p.shortName,
-          categoryName: p.categoryName,
-          price: p.price,
-          wishlistCount: meta.wishlistCount,
-          waitingCount: waiting,
-        };
-      })
-      .sort((a, b) => b.wishlistCount - a.wishlistCount);
-  }, [shopProducts, notifiedSkus]);
-
-  const unrepliedReviewsCount = reviews.filter((r) => !r.reply).length;
-  const photoReviewsCount = reviews.filter((r) => r.hasPhoto).length;
-  const fitStats = useMemo(() => {
-    const total = reviews.length;
-    if (total === 0) return { chat: 0, dung: 0, rong: 0 };
-    const chatCount = reviews.filter((r) => r.fitFeedback === "chat").length;
-    const rongCount = reviews.filter((r) => r.fitFeedback === "rong").length;
-    const chat = Math.round((chatCount / total) * 100);
-    const rong = Math.round((rongCount / total) * 100);
-    const dung = Math.max(0, 100 - chat - rong);
-    return { chat, dung, rong };
-  }, [reviews]);
-
-  const filteredReviews = useMemo(() => {
-    return reviews.filter((r) => {
-      if (reviewFilter === "unreplied") return !r.reply;
-      if (reviewFilter === "photo") return r.hasPhoto;
-      if (reviewFilter === "fit_issue") return r.fitFeedback !== "dung";
+  const filteredReturnOrders = useMemo(() => {
+    return returnOrders.filter((o) => {
+      const st = o.status.toUpperCase();
+      if (returnFilter === "pending") return st === "RETURN_REQUESTED";
+      if (returnFilter === "returned") return st === "RETURNED";
       return true;
     });
-  }, [reviews, reviewFilter]);
+  }, [returnOrders, returnFilter]);
 
-  const unansweredQuestionsCount = questions.filter((q) => !q.answer).length;
-  const filteredQuestions = useMemo(
-    () => (qaFilter === "unanswered" ? questions.filter((q) => !q.answer) : questions),
-    [questions, qaFilter]
+  const filteredProducts = useMemo(() => {
+    const q = productQuery.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter((p) => p.name.toLowerCase().includes(q));
+  }, [products, productQuery]);
+
+  const notifSummary = useMemo(() => summarizeNotifications(notifications), [notifications]);
+  const filteredNotifications = useMemo(
+    () => (notifFilter === "unread" ? notifications.filter((n) => !n.is_read) : notifications),
+    [notifications, notifFilter]
   );
 
-  const totalWaitingCustomers = backInStockRows.reduce((s, r) => s + r.waitingCount, 0);
-  const totalWishlists = wishlistRanking.reduce((s, r) => s + r.wishlistCount, 0);
-  const maxWishlist = Math.max(1, ...wishlistRanking.map((w) => w.wishlistCount));
-
-  const handleReplyReview = (reviewId: string) => {
-    const text = (reviewDrafts[reviewId] ?? "").trim();
-    if (!text) return;
-    replyToSellerReview(reviewId, text);
-    setReviewDrafts((prev) => ({ ...prev, [reviewId]: "" }));
-    showToast("Đã đăng phản hồi công khai của xưởng dưới đánh giá.");
+  const loadOrderReturns = async (orderId: string) => {
+    setOrderReturnsMap((prev) => ({
+      ...prev,
+      [orderId]: { loading: true, items: prev[orderId]?.items ?? [], error: null },
+    }));
+    try {
+      const res = await api<{ returns?: SellerReturnRequest[] }>(
+        `/api/seller/orders/${encodeURIComponent(orderId)}/returns`
+      );
+      setOrderReturnsMap((prev) => ({
+        ...prev,
+        [orderId]: {
+          loading: false,
+          items: normalizeSellerReturns(res),
+          error: null,
+        },
+      }));
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : "Dịch vụ đổi trả tạm thời chưa phản hồi. Vui lòng thử lại sau.";
+      setOrderReturnsMap((prev) => ({
+        ...prev,
+        [orderId]: { loading: false, items: [], error: msg },
+      }));
+    }
   };
 
-  const handleAnswerQuestion = (questionId: string) => {
-    const text = (qaDrafts[questionId] ?? "").trim();
-    if (!text) return;
-    answerSellerQuestion(questionId, text);
-    setQaDrafts((prev) => ({ ...prev, [questionId]: "" }));
-    showToast("Đã gửi câu trả lời công khai lên trang sản phẩm.");
+  const handleToggleOrderReturns = (orderId: string) => {
+    if (expandedOrderId === orderId) {
+      setExpandedOrderId(null);
+      return;
+    }
+    setExpandedOrderId(orderId);
+    if (!orderReturnsMap[orderId]) {
+      void loadOrderReturns(orderId);
+    }
   };
 
-  const handleCreateFaq = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (faqQuestion.trim().length < 6 || faqAnswer.trim().length < 10) return;
-    createSellerFaqItem({
-      id: `faq-custom-${Date.now()}`,
-      shopId: presentationShopKey,
-      topic: faqTopic,
-      question: faqQuestion.trim(),
-      answer: faqAnswer.trim(),
-      updatedAt: "2026-11-20",
-      active: true,
-    });
-    setFaqQuestion("");
-    setFaqAnswer("");
-    setShowFaqForm(false);
-    showToast("Đã thêm câu hỏi thường gặp vào bộ FAQ riêng của xưởng.");
+  const handleApproveReturn = async (orderId: string, orderCode: string, ret: SellerReturnRequest) => {
+    if (returnBusyId) return;
+    setReturnBusyId(ret.id);
+    try {
+      const res = await api<{ return_request?: SellerReturnRequest | null }>(
+        `/api/seller/returns/${encodeURIComponent(ret.id)}/approve`,
+        { method: "POST", body: {} }
+      );
+      setOrderReturnsMap((prev) => {
+        const entry = prev[orderId];
+        if (!entry) return prev;
+        return {
+          ...prev,
+          [orderId]: {
+            ...entry,
+            items: entry.items.map((item) =>
+              item.id === ret.id ? (res.return_request ?? { ...item, status: "APPROVED" }) : item
+            ),
+          },
+        };
+      });
+      setOrders((prev) =>
+        prev.map((o) => (o.id === orderId ? { ...o, status: "RETURNED" } : o))
+      );
+      if (rejectOpenId === ret.id) setRejectOpenId(null);
+      showToast(`Đã duyệt yêu cầu đổi trả cho đơn ${orderCode}.`);
+      router.refresh();
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : "Không thể duyệt yêu cầu đổi trả lúc này.");
+    } finally {
+      setReturnBusyId(null);
+    }
   };
 
-  const handleQuickRestock = (_productId: string, skuCode: string) => {
-    setNotifiedSkus((prev) => ({ ...prev, [skuCode]: true }));
-    showToast(
-      `Đã ghi nhận thông báo mẫu cho ${skuCode}. Vào mục Sản phẩm để cập nhật tồn kho thật.`
-    );
+  const handleRejectReturn = async (orderId: string, orderCode: string, ret: SellerReturnRequest) => {
+    if (returnBusyId) return;
+    const check = validateRejectReason(rejectDrafts[ret.id] ?? "");
+    if (!check.ok) {
+      setRejectErrors((prev) => ({ ...prev, [ret.id]: check.error }));
+      return;
+    }
+    setRejectErrors((prev) => ({ ...prev, [ret.id]: "" }));
+    setReturnBusyId(ret.id);
+    try {
+      const res = await api<{ return_request?: SellerReturnRequest | null }>(
+        `/api/seller/returns/${encodeURIComponent(ret.id)}/reject`,
+        { method: "POST", body: { reason: check.value } }
+      );
+      setOrderReturnsMap((prev) => {
+        const entry = prev[orderId];
+        if (!entry) return prev;
+        return {
+          ...prev,
+          [orderId]: {
+            ...entry,
+            items: entry.items.map((item) =>
+              item.id === ret.id
+                ? (res.return_request ?? {
+                    ...item,
+                    status: "REJECTED",
+                    reject_reason: check.value,
+                  })
+                : item
+            ),
+          },
+        };
+      });
+      setRejectOpenId(null);
+      setRejectDrafts((prev) => ({ ...prev, [ret.id]: "" }));
+      showToast(`Đã từ chối yêu cầu đổi trả cho đơn ${orderCode}.`);
+      router.refresh();
+    } catch (err) {
+      showToast(
+        err instanceof ApiError ? err.message : "Không thể từ chối yêu cầu đổi trả lúc này."
+      );
+    } finally {
+      setReturnBusyId(null);
+    }
+  };
+
+  const handleLoadReviewSummary = async (productId: string) => {
+    setSummaryMap((prev) => ({
+      ...prev,
+      [productId]: { loading: true, data: prev[productId]?.data ?? null, error: null },
+    }));
+    try {
+      const raw = await api<unknown>(
+        `/api/seller/products/${encodeURIComponent(productId)}/review-summary`
+      );
+      const normalized = normalizeProductReviewSummary(raw, productId);
+      setSummaryMap((prev) => ({
+        ...prev,
+        [productId]: { loading: false, data: normalized, error: null },
+      }));
+    } catch (err) {
+      const msg =
+        err instanceof ApiError && (err.status === 404 || err.status === 503 || err.status === 0)
+          ? "Chưa có dữ liệu tóm tắt AI cho sản phẩm này hoặc dịch vụ đánh giá AI tạm thời chưa hoạt động."
+          : err instanceof ApiError
+            ? err.message
+            : "Không thể tải tóm tắt đánh giá AI lúc này.";
+      setSummaryMap((prev) => ({
+        ...prev,
+        [productId]: { loading: false, data: null, error: msg },
+      }));
+    }
+  };
+
+  const handleRefreshNotifications = async () => {
+    if (notifBusy) return;
+    setNotifBusy(true);
+    setNotifError(null);
+    try {
+      const raw = await api<unknown>("/api/seller/notifications?page=1&page_size=50");
+      const normalized = normalizeSellerNotifications(raw);
+      setNotifications(normalized.items);
+      showToast("Đã làm mới danh sách thông báo vận hành.");
+    } catch (err) {
+      setNotifError(
+        err instanceof ApiError ? err.message : "Không thể tải thông báo vận hành lúc này."
+      );
+    } finally {
+      setNotifBusy(false);
+    }
+  };
+
+  const handleMarkNotificationRead = async (ids: string[], markAll = false) => {
+    if (notifBusy) return;
+    setNotifBusy(true);
+    try {
+      await api<{ updated_count: number; unread_count: number }>("/api/seller/notifications/read", {
+        method: "POST",
+        body: markAll ? { mark_all: true } : { notification_ids: ids },
+      });
+      const idSet = new Set(ids);
+      setNotifications((prev) =>
+        prev.map((n) => (markAll || idSet.has(n.id) ? { ...n, is_read: true } : n))
+      );
+      showToast(
+        markAll ? "Đã đánh dấu tất cả thông báo là đã đọc." : "Đã đánh dấu thông báo là đã đọc."
+      );
+    } catch (err) {
+      showToast(
+        err instanceof ApiError ? err.message : "Không thể cập nhật trạng thái thông báo."
+      );
+    } finally {
+      setNotifBusy(false);
+    }
   };
 
   return (
     <div className={common.page}>
       <header className={common.pageHeader}>
         <div className={common.headerText}>
-          <h1 className={common.title}>Tương tác khách hàng</h1>
+          <h1 className={common.title}>Tương tác &amp; Xử lý sau bán</h1>
           <p className={common.finding}>
-            {shopDisplayName} · {formatInt(unrepliedReviewsCount)} đánh giá chưa phản hồi,{" "}
-            {formatInt(unansweredQuestionsCount)} câu hỏi sản phẩm chờ trả lời · Dữ liệu mẫu cục bộ
+            {shopDisplayName} · {formatInt(pendingReturnsCount)} yêu cầu đổi trả chờ duyệt ·{" "}
+            {formatInt(products.length)} sản phẩm · {formatInt(notifSummary.unread)} thông báo chưa
+            đọc
           </p>
         </div>
         <div className={common.headerActions}>
-          {tab === "qa" && (
-            <Button
-              variant="ink"
-              size="sm"
-              shape="app"
-              onClick={() => setShowFaqForm((prev) => !prev)}
-            >
-              <IconPlus size={14} />
-              <span>{showFaqForm ? "Đóng mẫu FAQ" : "Thêm câu FAQ xưởng"}</span>
+          {tab === "returns" && (
+            <Button variant="outline" size="sm" shape="app" href="/seller/don-hang">
+              <span>Xem tất cả đơn hàng</span>
+              <IconArrowUpRight size={14} />
             </Button>
           )}
-          {tab === "reviews" && unrepliedReviewsCount > 0 && (
-            <Button
-              variant="ink"
-              size="sm"
-              shape="app"
-              onClick={() => setReviewFilter("unreplied")}
-            >
-              Lọc chưa trả lời ({formatInt(unrepliedReviewsCount)})
-            </Button>
-          )}
-          {tab === "waiting" && (
-            <Button variant="ink" size="sm" shape="app" href="/seller/san-pham">
-              Quản lý tồn kho SKU
-            </Button>
+          {tab === "notifications" && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                shape="app"
+                disabled={notifBusy}
+                onClick={() => void handleRefreshNotifications()}
+              >
+                <IconRefresh size={14} />
+                <span>Làm mới</span>
+              </Button>
+              <Button
+                variant="ink"
+                size="sm"
+                shape="app"
+                disabled={notifBusy || notifSummary.unread === 0}
+                onClick={() => void handleMarkNotificationRead([], true)}
+              >
+                <IconCheck size={14} />
+                <span>Đánh dấu tất cả đã đọc</span>
+              </Button>
+            </>
           )}
         </div>
       </header>
@@ -253,7 +389,7 @@ function SellerInteractionContent() {
         <StateView
           kind="loading"
           surface="app"
-          title="Đang tải đánh giá, hỏi đáp và danh sách khách chờ hàng..."
+          title="Đang tải yêu cầu đổi trả, đánh giá sản phẩm và thông báo..."
           rows={5}
         />
       )}
@@ -263,10 +399,9 @@ function SellerInteractionContent() {
           kind="error"
           surface="app"
           title="Không thể tải dữ liệu tương tác gian hàng"
-          message="Dịch vụ đánh giá và hỏi đáp tạm thời chưa phản hồi."
-          lastUpdated="02:18 · 20/11/2026"
+          message="Hệ thống tương tác tạm thời chưa phản hồi. Vui lòng thử tải lại."
           actionLabel="Thử lại"
-          actionHref="/seller/tuong-tac"
+          onAction={() => router.refresh()}
         />
       )}
 
@@ -274,10 +409,10 @@ function SellerInteractionContent() {
         <StateView
           kind="empty"
           surface="app"
-          title="Gian hàng chưa có đánh giá hay câu hỏi nào"
-          message="Khi đơn hàng hoàn tất hoặc khách gửi câu hỏi trên site gian hàng, nội dung sẽ hiển thị tại đây."
-          actionLabel="Quản lý sản phẩm"
-          actionHref="/seller/san-pham"
+          title="Chưa có mục tương tác nào cần xử lý"
+          message="Khi phát sinh yêu cầu đổi trả hoặc thông báo mới, nội dung sẽ hiển thị tại đây."
+          actionLabel="Về tổng quan"
+          actionHref="/seller"
         />
       )}
 
@@ -287,123 +422,95 @@ function SellerInteractionContent() {
             <button
               type="button"
               role="tab"
+              aria-selected={tab === "returns"}
+              className={`${common.underlineTab} ${tab === "returns" ? common.underlineTabActive : ""}`}
+              onClick={() => setTab("returns")}
+            >
+              Đổi trả &amp; Hoàn tiền ({formatInt(returnOrders.length)})
+            </button>
+            <button
+              type="button"
+              role="tab"
               aria-selected={tab === "reviews"}
               className={`${common.underlineTab} ${tab === "reviews" ? common.underlineTabActive : ""}`}
               onClick={() => setTab("reviews")}
             >
-              Đánh giá ({formatInt(reviews.length)})
+              Tóm tắt đánh giá AI ({formatInt(products.length)})
             </button>
             <button
               type="button"
               role="tab"
-              aria-selected={tab === "qa"}
-              className={`${common.underlineTab} ${tab === "qa" ? common.underlineTabActive : ""}`}
-              onClick={() => setTab("qa")}
+              aria-selected={tab === "notifications"}
+              className={`${common.underlineTab} ${tab === "notifications" ? common.underlineTabActive : ""}`}
+              onClick={() => setTab("notifications")}
             >
-              Hỏi đáp &amp; FAQ ({formatInt(questions.length + faqs.length)})
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "waiting"}
-              className={`${common.underlineTab} ${tab === "waiting" ? common.underlineTabActive : ""}`}
-              onClick={() => setTab("waiting")}
-            >
-              Chờ hàng &amp; Yêu thích ({formatInt(totalWaitingCustomers)})
+              Thông báo vận hành ({formatInt(notifSummary.unread)})
             </button>
           </div>
 
-          {/* TAB 1: Customer Reviews (Sample data) + Fit breakdown */}
-          {tab === "reviews" && (
+          {tab === "returns" && (
             <>
-              <section className={common.balanceStrip3} aria-label="Tổng hợp đánh giá và độ vừa">
+              <section className={common.balanceStrip3} aria-label="Thống kê yêu cầu đổi trả">
                 <div className={common.balanceCell}>
-                  <span className={common.balanceLabel}>Đánh giá chờ phản hồi</span>
+                  <span className={common.balanceLabel}>Chờ gian hàng duyệt</span>
                   <span
-                    className={`${common.balanceValue} ${unrepliedReviewsCount === 0 ? common.balanceValueZero : ""}`}
+                    className={`${common.balanceValue} ${pendingReturnsCount === 0 ? common.balanceValueZero : ""}`}
                   >
-                    {formatInt(unrepliedReviewsCount)} / {formatInt(reviews.length)}
+                    {formatInt(pendingReturnsCount)}
                   </span>
                   <span className={common.balanceCaption}>
-                    Chỉ ghi nhận từ đơn hàng đã hoàn tất
+                    Ưu tiên phản hồi sớm để tránh phát sinh khiếu nại
                   </span>
                 </div>
-
                 <div className={common.balanceCell}>
-                  <span className={common.balanceLabel}>
-                    Tỷ lệ độ vừa thực tế (Chật / Đúng / Rộng)
-                  </span>
-                  <div className={styles.fitBarTrack} aria-label="Biểu đồ tỷ lệ độ vừa">
-                    {fitStats.chat > 0 && (
-                      <div className={styles.fitSegTight} style={{ width: `${fitStats.chat}%` }} />
-                    )}
-                    {fitStats.dung > 0 && (
-                      <div
-                        className={styles.fitSegCorrect}
-                        style={{ width: `${fitStats.dung}%` }}
-                      />
-                    )}
-                    {fitStats.rong > 0 && (
-                      <div className={styles.fitSegLoose} style={{ width: `${fitStats.rong}%` }} />
-                    )}
-                  </div>
-                  <div className={styles.fitLegend}>
-                    <span className={styles.fitLegendItem}>
-                      <span
-                        className={styles.legendDot}
-                        style={{ backgroundColor: "var(--ink)" }}
-                      />
-                      Chật {fitStats.chat}%
-                    </span>
-                    <span className={styles.fitLegendItem}>
-                      <span
-                        className={styles.legendDot}
-                        style={{ backgroundColor: "var(--chart-1)" }}
-                      />
-                      Đúng cỡ {fitStats.dung}%
-                    </span>
-                    <span className={styles.fitLegendItem}>
-                      <span
-                        className={styles.legendDot}
-                        style={{ backgroundColor: "var(--chart-muted)" }}
-                      />
-                      Rộng {fitStats.rong}%
-                    </span>
-                  </div>
-                </div>
-
-                <div className={common.balanceCell}>
-                  <span className={common.balanceLabel}>Đánh giá có ảnh &amp; số đo</span>
-                  <span className={common.balanceValue}>
-                    {formatInt(photoReviewsCount)} / {formatInt(reviews.length)}
+                  <span className={common.balanceLabel}>Đã xử lý / hoàn trả</span>
+                  <span
+                    className={`${common.balanceValue} ${returnedOrdersCount === 0 ? common.balanceValueZero : ""}`}
+                  >
+                    {formatInt(returnedOrdersCount)}
                   </span>
                   <span className={common.balanceCaption}>
-                    Giúp người mua mới đối chiếu phom chuẩn hơn
+                    Đơn đã hoàn tất quy trình đổi trả về gian hàng
+                  </span>
+                </div>
+                <div className={common.balanceCell}>
+                  <span className={common.balanceLabel}>Tổng đơn có yêu cầu đổi trả</span>
+                  <span
+                    className={`${common.balanceValue} ${returnOrders.length === 0 ? common.balanceValueZero : ""}`}
+                  >
+                    {formatInt(returnOrders.length)}
+                  </span>
+                  <span className={common.balanceCaption}>
+                    Tính trên {formatInt(orders.length)} đơn hàng gần nhất của shop
                   </span>
                 </div>
               </section>
 
-              <section className={common.card} aria-labelledby="reviews-list-heading">
+              <section className={common.card} aria-labelledby="returns-list-heading">
                 <div className={common.cardHeader}>
-                  <h2 id="reviews-list-heading" className={common.cardTitle}>
-                    Danh sách đánh giá từ đơn hoàn tất
-                  </h2>
-                  <div className={common.segmented} role="tablist" aria-label="Lọc đánh giá">
+                  <div>
+                    <h2 id="returns-list-heading" className={common.cardTitle}>
+                      Danh sách đơn hàng đổi trả &amp; hoàn tiền
+                    </h2>
+                    <span className={common.cardMeta}>
+                      Mở từng đơn để xem minh chứng khách gửi và duyệt hoặc từ chối trực tiếp
+                    </span>
+                  </div>
+                  <div className={common.segmented} role="tablist" aria-label="Lọc trạng thái đổi trả">
                     {(
                       [
-                        ["all", `Tất cả (${reviews.length})`],
-                        ["unreplied", `Chưa trả lời (${unrepliedReviewsCount})`],
-                        ["photo", `Có ảnh (${photoReviewsCount})`],
-                        ["fit_issue", "Chật / Rộng"],
+                        ["all", `Tất cả (${formatInt(returnOrders.length)})`],
+                        ["pending", `Chờ duyệt (${formatInt(pendingReturnsCount)})`],
+                        ["returned", `Đã hoàn trả (${formatInt(returnedOrdersCount)})`],
                       ] as const
                     ).map(([k, lbl]) => (
                       <button
                         key={k}
                         type="button"
                         role="tab"
-                        aria-selected={reviewFilter === k}
-                        className={`${common.segmentedBtn} ${reviewFilter === k ? common.segmentedBtnActive : ""}`}
-                        onClick={() => setReviewFilter(k)}
+                        aria-selected={returnFilter === k}
+                        className={`${common.segmentedBtn} ${returnFilter === k ? common.segmentedBtnActive : ""}`}
+                        onClick={() => setReturnFilter(k)}
                       >
                         {lbl}
                       </button>
@@ -411,75 +518,290 @@ function SellerInteractionContent() {
                   </div>
                 </div>
 
-                {filteredReviews.length === 0 ? (
+                {ordersError ? (
+                  <StateView
+                    kind="error"
+                    surface="app"
+                    title="Không thể tải danh sách đơn đổi trả"
+                    message={ordersError}
+                    actionLabel="Tải lại"
+                    onAction={() => router.refresh()}
+                  />
+                ) : filteredReturnOrders.length === 0 ? (
                   <div className={common.inlineEmpty}>
-                    Không có đánh giá nào thuộc nhóm bộ lọc hiện tại.
+                    Không có đơn hàng nào có yêu cầu đổi trả trong nhóm bộ lọc hiện tại.
                   </div>
                 ) : (
-                  <div className={styles.reviewList}>
-                    {filteredReviews.map((rev) => {
-                      const fitInfo = FIT_META[rev.fitFeedback];
+                  <div className={styles.itemList}>
+                    {filteredReturnOrders.map((order) => {
+                      const stMeta = getSellerOrderStatusMeta(order.status);
+                      const isOpen = expandedOrderId === order.id;
+                      const detailState = orderReturnsMap[order.id];
+
                       return (
-                        <article key={rev.id} className={styles.reviewItem}>
-                          <div className={styles.reviewTop}>
-                            <div className={styles.reviewProd}>
-                              <img
-                                src={rev.productImage}
-                                alt={rev.productName}
-                                className={styles.reviewThumb}
-                                width={40}
-                                height={53}
-                              />
-                              <div>
-                                <div className={styles.reviewTitle}>
-                                  {rev.productName} · {rev.skuLabel}
-                                </div>
-                                <div className={styles.reviewMeta}>
-                                  {rev.buyerName} ({rev.buyerMeasurements}) · Đơn{" "}
-                                  {rev.verifiedOrderCode} · {formatDateTimeVi(rev.createdAt)}
-                                </div>
+                        <article key={order.id} className={styles.itemRow}>
+                          <div className={styles.itemTop}>
+                            <div className={styles.itemMain}>
+                              <div className={styles.itemTitleRow}>
+                                <Link
+                                  href={`/seller/don-hang/${order.id}`}
+                                  className={common.cellLink}
+                                >
+                                  {order.order_code}
+                                </Link>
+                                <span className={pillCls(stMeta.tone)}>{stMeta.label}</span>
                               </div>
+                              <p className={styles.itemSub}>{summarizeOrderItems(order.items)}</p>
+                              <p className={styles.itemMeta}>
+                                Giá trị đơn {formatVnd(order.total_payable_vnd)}
+                                {order.created_at
+                                  ? ` · Đặt lúc ${formatDateTimeVi(order.created_at)}`
+                                  : ""}
+                              </p>
                             </div>
-                            <div className={styles.reviewBadges}>
-                              <span className={common.pill}>{rev.rating}/5 điểm</span>
-                              <span className={fitInfo.cls}>{fitInfo.label}</span>
-                              {rev.hasPhoto && <span className={common.pill}>Có ảnh mẫu</span>}
+
+                            <div className={styles.rowActions}>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                shape="app"
+                                onClick={() => handleToggleOrderReturns(order.id)}
+                              >
+                                {isOpen ? "Thu gọn yêu cầu" : "Xem yêu cầu đổi trả"}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                shape="app"
+                                href={`/seller/don-hang/${order.id}`}
+                              >
+                                <span>Mở đơn</span>
+                                <IconArrowUpRight size={14} />
+                              </Button>
                             </div>
                           </div>
 
-                          <p className={styles.reviewBody}>{rev.comment}</p>
+                          {isOpen && (
+                            <div className={styles.detailPanel}>
+                              {detailState?.loading ? (
+                                <p className={styles.mutedLine}>
+                                  Đang tải chi tiết yêu cầu đổi trả...
+                                </p>
+                              ) : detailState?.error ? (
+                                <div className={styles.errorRow}>
+                                  <span>{detailState.error}</span>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    shape="app"
+                                    onClick={() => void loadOrderReturns(order.id)}
+                                  >
+                                    Thử lại
+                                  </Button>
+                                </div>
+                              ) : !detailState || detailState.items.length === 0 ? (
+                                <p className={styles.mutedLine}>
+                                  Chưa có hồ sơ đổi trả chi tiết từ dịch vụ đổi trả cho đơn{" "}
+                                  {order.order_code}. Bạn có thể kiểm tra thêm tại trang chi tiết
+                                  đơn.
+                                </p>
+                              ) : (
+                                <div className={styles.returnDetailList}>
+                                  {detailState.items.map((ret) => {
+                                    const retMeta = getReturnStatusMeta(ret.status);
+                                    const isRejectOpen = rejectOpenId === ret.id;
+                                    const isProcessing = returnBusyId === ret.id;
+                                    const safePhotos = ret.photos
+                                      .map((p) => sanitizeSafeUrl(p))
+                                      .filter(Boolean);
 
-                          {rev.reply ? (
-                            <div className={styles.replyBox}>
-                              <span className={styles.replyHead}>
-                                Phản hồi công khai của {shopDisplayName} ·{" "}
-                                {formatDateTimeVi(rev.reply.repliedAt)}
-                              </span>
-                              <p className={styles.replyText}>{rev.reply.text}</p>
-                            </div>
-                          ) : (
-                            <div className={styles.composerRow}>
-                              <input
-                                type="text"
-                                className={styles.composerInput}
-                                value={reviewDrafts[rev.id] ?? ""}
-                                onChange={(e) =>
-                                  setReviewDrafts((prev) => ({
-                                    ...prev,
-                                    [rev.id]: e.target.value,
-                                  }))
-                                }
-                                placeholder="Nhập phản hồi công khai của xưởng (cảm ơn hoặc hướng dẫn đổi size)..."
-                                aria-label={`Phản hồi đánh giá của ${rev.buyerName}`}
-                              />
-                              <Button
-                                variant="ink"
-                                size="sm"
-                                shape="app"
-                                onClick={() => handleReplyReview(rev.id)}
-                              >
-                                Gửi phản hồi
-                              </Button>
+                                    return (
+                                      <div key={ret.id} className={styles.returnCard}>
+                                        <div className={styles.returnHead}>
+                                          <div>
+                                            <strong className={styles.returnCode}>
+                                              Yêu cầu {ret.id}
+                                            </strong>
+                                            {ret.created_at && (
+                                              <span className={common.cellSub}>
+                                                Gửi lúc {formatDateTimeVi(ret.created_at)}
+                                              </span>
+                                            )}
+                                          </div>
+                                          <span className={pillCls(retMeta.tone)}>
+                                            {retMeta.label}
+                                          </span>
+                                        </div>
+
+                                        <div className={styles.returnGrid}>
+                                          <div>
+                                            <span className={styles.returnLabel}>Lý do khách gửi</span>
+                                            <p className={styles.returnValue}>
+                                              {ret.reason || "Không có ghi chú"}
+                                            </p>
+                                          </div>
+                                          {ret.refund_amount_vnd > 0 && (
+                                            <div>
+                                              <span className={styles.returnLabel}>
+                                                Số tiền hoàn dự kiến
+                                              </span>
+                                              <p className={styles.returnValue}>
+                                                {formatVnd(ret.refund_amount_vnd)}
+                                              </p>
+                                            </div>
+                                          )}
+                                          {ret.items.length > 0 && (
+                                            <div>
+                                              <span className={styles.returnLabel}>
+                                                Sản phẩm hoàn
+                                              </span>
+                                              <p className={styles.returnValue}>
+                                                {ret.items
+                                                  .map((it) => {
+                                                    const name =
+                                                      it.product_name || it.sku_name || it.sku_id;
+                                                    return `${name} x${formatInt(it.quantity)}`;
+                                                  })
+                                                  .join(", ")}
+                                              </p>
+                                            </div>
+                                          )}
+                                          {safePhotos.length > 0 && (
+                                            <div>
+                                              <span className={styles.returnLabel}>
+                                                Ảnh minh chứng
+                                              </span>
+                                              <div className={styles.photoLinks}>
+                                                {safePhotos.map((photoUrl, idx) => (
+                                                  <a
+                                                    key={`${ret.id}-p-${idx}`}
+                                                    href={photoUrl}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className={common.cellLink}
+                                                  >
+                                                    Ảnh {idx + 1}
+                                                  </a>
+                                                ))}
+                                              </div>
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        {ret.reject_reason && (
+                                          <p className={styles.mutedLine}>
+                                            Lý do từ chối đã gửi: {ret.reject_reason}
+                                          </p>
+                                        )}
+
+                                        {retMeta.canDecide && (
+                                          <div className={styles.decisionArea}>
+                                            {isRejectOpen && (
+                                              <div className={common.field}>
+                                                <label
+                                                  htmlFor={`tuong-tac-reject-${ret.id}`}
+                                                  className={common.fieldLabel}
+                                                >
+                                                  Lý do từ chối (tối thiểu 5 ký tự)
+                                                </label>
+                                                <textarea
+                                                  id={`tuong-tac-reject-${ret.id}`}
+                                                  className={common.textArea}
+                                                  value={rejectDrafts[ret.id] ?? ""}
+                                                  onChange={(e) => {
+                                                    const v = e.target.value;
+                                                    setRejectDrafts((prev) => ({
+                                                      ...prev,
+                                                      [ret.id]: v,
+                                                    }));
+                                                    if (rejectErrors[ret.id]) {
+                                                      setRejectErrors((prev) => ({
+                                                        ...prev,
+                                                        [ret.id]: "",
+                                                      }));
+                                                    }
+                                                  }}
+                                                  placeholder="Nhập lý do từ chối rõ ràng cho người mua..."
+                                                />
+                                                {rejectErrors[ret.id] && (
+                                                  <span className={common.fieldError}>
+                                                    {rejectErrors[ret.id]}
+                                                  </span>
+                                                )}
+                                              </div>
+                                            )}
+
+                                            <div className={styles.formActions}>
+                                              {isRejectOpen ? (
+                                                <>
+                                                  <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    shape="app"
+                                                    disabled={isProcessing}
+                                                    onClick={() => setRejectOpenId(null)}
+                                                  >
+                                                    Đóng
+                                                  </Button>
+                                                  <Button
+                                                    variant="danger"
+                                                    size="sm"
+                                                    shape="app"
+                                                    disabled={isProcessing}
+                                                    onClick={() =>
+                                                      void handleRejectReturn(
+                                                        order.id,
+                                                        order.order_code,
+                                                        ret
+                                                      )
+                                                    }
+                                                  >
+                                                    {isProcessing
+                                                      ? "Đang gửi..."
+                                                      : "Xác nhận từ chối"}
+                                                  </Button>
+                                                </>
+                                              ) : (
+                                                <>
+                                                  <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    shape="app"
+                                                    disabled={isProcessing}
+                                                    onClick={() => setRejectOpenId(ret.id)}
+                                                  >
+                                                    Từ chối đổi trả
+                                                  </Button>
+                                                  <Button
+                                                    variant="ink"
+                                                    size="sm"
+                                                    shape="app"
+                                                    disabled={isProcessing}
+                                                    onClick={() =>
+                                                      void handleApproveReturn(
+                                                        order.id,
+                                                        order.order_code,
+                                                        ret
+                                                      )
+                                                    }
+                                                  >
+                                                    <IconCheck size={14} />
+                                                    <span>
+                                                      {isProcessing
+                                                        ? "Đang xử lý..."
+                                                        : "Duyệt đổi trả"}
+                                                    </span>
+                                                  </Button>
+                                                </>
+                                              )}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
                           )}
                         </article>
@@ -491,425 +813,328 @@ function SellerInteractionContent() {
             </>
           )}
 
-          {/* TAB 2: Public Q&A on PDP + Shop Custom FAQs */}
-          {tab === "qa" && (
-            <>
-              <section className={common.card} aria-labelledby="pdp-qa-heading">
-                <div className={common.cardHeader}>
-                  <div>
-                    <h2 id="pdp-qa-heading" className={common.cardTitle}>
-                      Câu hỏi công khai trên trang sản phẩm
-                    </h2>
-                    <span className={common.cardMeta}>
-                      Nội dung trả lời hiển thị trực tiếp trên trang sản phẩm của site gian hàng
-                    </span>
-                  </div>
-                  <div
-                    className={common.segmented}
-                    role="tablist"
-                    aria-label="Lọc câu hỏi sản phẩm"
-                  >
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={qaFilter === "all"}
-                      className={`${common.segmentedBtn} ${qaFilter === "all" ? common.segmentedBtnActive : ""}`}
-                      onClick={() => setQaFilter("all")}
-                    >
-                      Tất cả ({formatInt(questions.length)})
-                    </button>
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={qaFilter === "unanswered"}
-                      className={`${common.segmentedBtn} ${qaFilter === "unanswered" ? common.segmentedBtnActive : ""}`}
-                      onClick={() => setQaFilter("unanswered")}
-                    >
-                      Chờ trả lời ({formatInt(unansweredQuestionsCount)})
-                    </button>
-                  </div>
+          {tab === "reviews" && (
+            <section className={common.card} aria-labelledby="ai-reviews-heading">
+              <div className={common.cardHeader}>
+                <div>
+                  <h2 id="ai-reviews-heading" className={common.cardTitle}>
+                    Tóm tắt đánh giá sản phẩm do AI tổng hợp
+                  </h2>
+                  <span className={common.cardMeta}>
+                    Chọn sản phẩm để xem tổng hợp ưu điểm và nhược điểm từ đánh giá thực tế của
+                    người mua
+                  </span>
                 </div>
+                <div className={common.searchWrap}>
+                  <span className={common.searchIcon}>
+                    <IconSearch size={14} />
+                  </span>
+                  <input
+                    type="search"
+                    className={common.searchInput}
+                    value={productQuery}
+                    onChange={(e) => setProductQuery(e.target.value)}
+                    placeholder="Tìm theo tên sản phẩm..."
+                    aria-label="Tìm sản phẩm để xem tóm tắt đánh giá AI"
+                  />
+                </div>
+              </div>
 
-                {filteredQuestions.length === 0 ? (
-                  <div className={common.inlineEmpty}>
-                    Toàn bộ câu hỏi trên trang sản phẩm đã được xưởng giải đáp.
-                  </div>
-                ) : (
-                  <div className={styles.reviewList}>
-                    {filteredQuestions.map((q) => (
-                      <article key={q.id} className={styles.reviewItem}>
-                        <div className={styles.reviewTop}>
-                          <div>
-                            <div className={styles.reviewTitle}>{q.productName}</div>
-                            <div className={styles.reviewMeta}>
-                              {q.buyerName} hỏi lúc {formatDateTimeVi(q.askedAt)}
+              {productsError ? (
+                <StateView
+                  kind="error"
+                  surface="app"
+                  title="Không thể tải danh sách sản phẩm"
+                  message={productsError}
+                  actionLabel="Tải lại"
+                  onAction={() => router.refresh()}
+                />
+              ) : filteredProducts.length === 0 ? (
+                <div className={common.inlineEmpty}>
+                  {products.length === 0
+                    ? "Gian hàng chưa có sản phẩm nào. Tạo sản phẩm đầu tiên để nhận đánh giá từ khách."
+                    : "Không tìm thấy sản phẩm khớp với từ khóa tìm kiếm."}
+                </div>
+              ) : (
+                <div className={styles.itemList}>
+                  {filteredProducts.map((product) => {
+                    const pMeta = getSellerProductStatusMeta(product.status);
+                    const sumState = summaryMap[product.id];
+                    const priceText =
+                      product.max_price_vnd > product.min_price_vnd
+                        ? `${formatVnd(product.min_price_vnd)} - ${formatVnd(product.max_price_vnd)}`
+                        : formatVnd(product.min_price_vnd);
+
+                    return (
+                      <article key={product.id} className={styles.itemRow}>
+                        <div className={styles.itemTop}>
+                          <div className={styles.itemMain}>
+                            <div className={styles.itemTitleRow}>
+                              <Link
+                                href={`/seller/san-pham/${product.id}`}
+                                className={common.cellLink}
+                              >
+                                {product.name}
+                              </Link>
+                              <span className={pillCls(pMeta.tone)}>{pMeta.label}</span>
                             </div>
+                            <p className={styles.itemMeta}>
+                              Giá bán {priceText} · {formatInt(product.skus?.length ?? 0)} biến thể
+                              SKU
+                            </p>
                           </div>
-                          <span
-                            className={
-                              q.answer
-                                ? `${common.pill} ${common.pillPos}`
-                                : `${common.pill} ${common.pillWarn}`
-                            }
-                          >
-                            {q.answer ? "Đã trả lời" : "Chờ xưởng trả lời"}
-                          </span>
-                        </div>
-                        <p className={styles.reviewBody}>{q.question}</p>
 
-                        {q.answer ? (
-                          <div className={styles.replyBox}>
-                            <span className={styles.replyHead}>
-                              Giải đáp từ {shopDisplayName}
-                              {q.answeredAt ? ` · ${formatDateTimeVi(q.answeredAt)}` : ""}
-                            </span>
-                            <p className={styles.replyText}>{q.answer}</p>
-                          </div>
-                        ) : (
-                          <div className={styles.composerRow}>
-                            <input
-                              type="text"
-                              className={styles.composerInput}
-                              value={qaDrafts[q.id] ?? ""}
-                              onChange={(e) =>
-                                setQaDrafts((prev) => ({ ...prev, [q.id]: e.target.value }))
-                              }
-                              placeholder="Nhập câu trả lời chi tiết về chất liệu, phom dáng hoặc cách bảo quản..."
-                              aria-label={`Trả lời câu hỏi của ${q.buyerName}`}
-                            />
+                          <div className={styles.rowActions}>
                             <Button
-                              variant="ink"
+                              variant={sumState?.data ? "outline" : "ink"}
                               size="sm"
                               shape="app"
-                              onClick={() => handleAnswerQuestion(q.id)}
+                              disabled={sumState?.loading}
+                              onClick={() => void handleLoadReviewSummary(product.id)}
                             >
-                              Đăng trả lời
+                              <IconSpark size={14} />
+                              <span>
+                                {sumState?.loading
+                                  ? "Đang tổng hợp..."
+                                  : sumState?.data
+                                    ? "Làm mới tóm tắt AI"
+                                    : "Xem tóm tắt AI"}
+                              </span>
                             </Button>
+                          </div>
+                        </div>
+
+                        {sumState && !sumState.loading && (
+                          <div className={styles.detailPanel}>
+                            {sumState.error ? (
+                              <div className={styles.errorRow}>
+                                <span>{sumState.error}</span>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  shape="app"
+                                  onClick={() => void handleLoadReviewSummary(product.id)}
+                                >
+                                  Thử lại
+                                </Button>
+                              </div>
+                            ) : sumState.data && !sumState.data.ready ? (
+                              <p className={styles.mutedLine}>
+                                Chưa đủ 10 đánh giá để tổng hợp tóm tắt AI
+                                {sumState.data.review_count > 0
+                                  ? ` (hiện có ${formatInt(sumState.data.review_count)} đánh giá).`
+                                  : "."}
+                              </p>
+                            ) : sumState.data ? (
+                              <div className={styles.aiSummaryBox}>
+                                <div className={styles.returnHead}>
+                                  <strong className={styles.returnCode}>
+                                    Tổng hợp từ {formatInt(sumState.data.review_count)} đánh giá
+                                    {sumState.data.average_rating > 0
+                                      ? ` · Điểm trung bình ${sumState.data.average_rating.toFixed(1).replace(".", ",")}/5`
+                                      : ""}
+                                  </strong>
+                                  {sumState.data.updated_at && (
+                                    <span className={common.cardMeta}>
+                                      Cập nhật {formatDateTimeVi(sumState.data.updated_at)}
+                                    </span>
+                                  )}
+                                </div>
+
+                                {sumState.data.summary && (
+                                  <p className={styles.summaryLead}>{sumState.data.summary}</p>
+                                )}
+
+                                <div className={styles.prosConsGrid}>
+                                  <div className={styles.prosBox}>
+                                    <span className={styles.prosTitle}>Ưu điểm nổi bật</span>
+                                    {sumState.data.pros.length === 0 ? (
+                                      <p className={styles.mutedLine}>Chưa có ghi nhận nổi bật.</p>
+                                    ) : (
+                                      <ul className={styles.bulletList}>
+                                        {sumState.data.pros.map((item, idx) => (
+                                          <li key={`${product.id}-pro-${idx}`}>{item}</li>
+                                        ))}
+                                      </ul>
+                                    )}
+                                  </div>
+                                  <div className={styles.consBox}>
+                                    <span className={styles.consTitle}>Nhược điểm cần lưu ý</span>
+                                    {sumState.data.cons.length === 0 ? (
+                                      <p className={styles.mutedLine}>Chưa ghi nhận điểm trừ.</p>
+                                    ) : (
+                                      <ul className={styles.bulletList}>
+                                        {sumState.data.cons.map((item, idx) => (
+                                          <li key={`${product.id}-con-${idx}`}>{item}</li>
+                                        ))}
+                                      </ul>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            ) : null}
                           </div>
                         )}
                       </article>
-                    ))}
-                  </div>
-                )}
-              </section>
-
-              <section className={common.card} aria-labelledby="shop-faq-heading">
-                <div className={common.cardHeader}>
-                  <div>
-                    <h2 id="shop-faq-heading" className={common.cardTitle}>
-                      Bộ câu hỏi thường gặp (FAQ) riêng của {shopDisplayName}
-                    </h2>
-                    <span className={common.cardMeta}>
-                      Hiển thị trong khối Câu hỏi thường gặp trên site riêng của gian hàng
-                    </span>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    shape="app"
-                    onClick={() => setShowFaqForm((prev) => !prev)}
-                  >
-                    <IconPlus size={14} />
-                    <span>{showFaqForm ? "Đóng" : "Soạn FAQ mới"}</span>
-                  </Button>
+                    );
+                  })}
                 </div>
-
-                {showFaqForm && (
-                  <form className={styles.inlineForm} onSubmit={handleCreateFaq}>
-                    <div className={styles.formGrid2}>
-                      <div className={common.field}>
-                        <label htmlFor="faq-topic" className={common.fieldLabel}>
-                          Nhóm chủ đề FAQ
-                        </label>
-                        <select
-                          id="faq-topic"
-                          className={common.textInput}
-                          value={faqTopic}
-                          onChange={(e) => setFaqTopic(e.target.value)}
-                        >
-                          {FAQ_TOPICS.map((t) => (
-                            <option key={t} value={t}>
-                              {t}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className={common.field}>
-                        <label htmlFor="faq-q" className={common.fieldLabel}>
-                          Câu hỏi thường gặp
-                        </label>
-                        <input
-                          id="faq-q"
-                          type="text"
-                          className={common.textInput}
-                          value={faqQuestion}
-                          onChange={(e) => setFaqQuestion(e.target.value)}
-                          placeholder="Ví dụ: Áo cotton 220gsm có bị co sau khi sấy máy không?"
-                        />
-                      </div>
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="faq-a" className={common.fieldLabel}>
-                        Nội dung giải đáp chuẩn của xưởng
-                      </label>
-                      <textarea
-                        id="faq-a"
-                        className={common.textArea}
-                        value={faqAnswer}
-                        onChange={(e) => setFaqAnswer(e.target.value)}
-                        placeholder="Nhập câu trả lời rõ ràng, trung thực theo thực tế sản xuất của xưởng..."
-                      />
-                    </div>
-                    <div className={styles.formActions}>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        shape="app"
-                        onClick={() => setShowFaqForm(false)}
-                      >
-                        Hủy
-                      </Button>
-                      <Button type="submit" variant="ink" size="sm" shape="app">
-                        Lưu vào bộ FAQ
-                      </Button>
-                    </div>
-                  </form>
-                )}
-
-                <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
-                  <table className={common.dataTable}>
-                    <thead>
-                      <tr>
-                        <th>Chủ đề</th>
-                        <th>Câu hỏi &amp; Giải đáp</th>
-                        <th>Cập nhật</th>
-                        <th className={common.numCol}>Hiển thị</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {faqs.map((f) => (
-                        <tr key={f.id}>
-                          <td>
-                            <span className={common.pill}>{f.topic}</span>
-                          </td>
-                          <td>
-                            <strong>{f.question}</strong>
-                            <span className={common.cellSub}>{f.answer}</span>
-                          </td>
-                          <td>{f.updatedAt}</td>
-                          <td className={common.numCol}>
-                            <input
-                              type="checkbox"
-                              className={common.toggleSwitch}
-                              checked={f.active}
-                              onChange={(e) => {
-                                toggleSellerFaqActive(f.id, e.target.checked);
-                                showToast("Đã cập nhật hiển thị mục FAQ.");
-                              }}
-                              aria-label={`Hiển thị FAQ ${f.question}`}
-                            />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className={common.mobileList}>
-                  {faqs.map((f) => (
-                    <div key={f.id} className={common.mobileRow}>
-                      <div className={common.mobileRowTop}>
-                        <div>
-                          <strong>{f.question}</strong>
-                          <span className={common.cellSub}>
-                            {f.topic} · {f.updatedAt}
-                          </span>
-                        </div>
-                        <input
-                          type="checkbox"
-                          className={common.toggleSwitch}
-                          checked={f.active}
-                          onChange={(e) => toggleSellerFaqActive(f.id, e.target.checked)}
-                          aria-label={`Hiển thị FAQ ${f.question}`}
-                        />
-                      </div>
-                      <p className={styles.replyText}>{f.answer}</p>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            </>
+              )}
+            </section>
           )}
 
-          {/* TAB 3: Back-in-stock subscribers & Wishlist ranking */}
-          {tab === "waiting" && (
+          {tab === "notifications" && (
             <>
-              <section className={common.balanceStrip3} aria-label="Tổng hợp chờ hàng và yêu thích">
+              <section className={common.balanceStrip3} aria-label="Tổng hợp thông báo vận hành">
                 <div className={common.balanceCell}>
-                  <span className={common.balanceLabel}>Khách đăng ký Báo có hàng</span>
+                  <span className={common.balanceLabel}>Thông báo chưa đọc</span>
                   <span
-                    className={`${common.balanceValue} ${totalWaitingCustomers === 0 ? common.balanceValueZero : ""}`}
+                    className={`${common.balanceValue} ${notifSummary.unread === 0 ? common.balanceValueZero : ""}`}
                   >
-                    {formatInt(totalWaitingCustomers)}
+                    {formatInt(notifSummary.unread)}
                   </span>
                   <span className={common.balanceCaption}>
-                    Tự động gửi thông báo khi xưởng nhập tồn &gt; 0
+                    Trên tổng {formatInt(notifSummary.total)} thông báo gần nhất
                   </span>
                 </div>
                 <div className={common.balanceCell}>
-                  <span className={common.balanceLabel}>Tổng lượt yêu thích gian hàng</span>
-                  <span className={common.balanceValue}>{formatInt(totalWishlists)}</span>
+                  <span className={common.balanceLabel}>Liên quan đến đơn hàng</span>
+                  <span
+                    className={`${common.balanceValue} ${notifSummary.byCategory.order === 0 ? common.balanceValueZero : ""}`}
+                  >
+                    {formatInt(notifSummary.byCategory.order)}
+                  </span>
                   <span className={common.balanceCaption}>
-                    Trên {formatInt(shopProducts.length)} sản phẩm đang mở bán
+                    Đơn mới, vận chuyển và yêu cầu đổi trả
                   </span>
                 </div>
                 <div className={common.balanceCell}>
-                  <span className={common.balanceLabel}>SKU ưu tiên nhập kho</span>
-                  <span className={common.balanceValue}>
-                    {formatInt(backInStockRows.filter((r) => r.waitingCount > 0).length)}
+                  <span className={common.balanceLabel}>Khuyến mãi &amp; Hệ thống</span>
+                  <span
+                    className={`${common.balanceValue} ${notifSummary.byCategory.promotion + notifSummary.byCategory.system === 0 ? common.balanceValueZero : ""}`}
+                  >
+                    {formatInt(notifSummary.byCategory.promotion + notifSummary.byCategory.system)}
                   </span>
                   <span className={common.balanceCaption}>
-                    Các biến thể có khách chờ mua lại ngay
+                    Flash sale, phê duyệt và thông báo nền tảng
                   </span>
                 </div>
               </section>
 
-              <div className={styles.waitingGrid}>
-                <section className={common.card} aria-labelledby="bis-heading">
-                  <div className={common.cardHeader}>
-                    <h2 id="bis-heading" className={common.cardTitle}>
-                      SKU có khách đăng ký Báo có hàng
+              <section className={common.card} aria-labelledby="notifications-heading">
+                <div className={common.cardHeader}>
+                  <div>
+                    <h2 id="notifications-heading" className={common.cardTitle}>
+                      Hộp thông báo vận hành gian hàng
                     </h2>
-                    <span className={common.cardMeta}>Xếp theo lượng khách chờ cao nhất</span>
+                    <span className={common.cardMeta}>
+                      Cập nhật trực tiếp từ hệ thống thông báo NexusMart
+                    </span>
                   </div>
+                  <div className={common.segmented} role="tablist" aria-label="Lọc thông báo">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={notifFilter === "all"}
+                      className={`${common.segmentedBtn} ${notifFilter === "all" ? common.segmentedBtnActive : ""}`}
+                      onClick={() => setNotifFilter("all")}
+                    >
+                      Tất cả ({formatInt(notifSummary.total)})
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={notifFilter === "unread"}
+                      className={`${common.segmentedBtn} ${notifFilter === "unread" ? common.segmentedBtnActive : ""}`}
+                      onClick={() => setNotifFilter("unread")}
+                    >
+                      Chưa đọc ({formatInt(notifSummary.unread)})
+                    </button>
+                  </div>
+                </div>
 
-                  {backInStockRows.length === 0 ? (
-                    <div className={common.inlineEmpty}>
-                      Mọi biến thể đều đủ tồn kho và không có khách đang chờ báo hàng.
-                    </div>
-                  ) : (
-                    <>
-                      <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
-                        <table className={common.dataTable}>
-                          <thead>
-                            <tr>
-                              <th>Sản phẩm &amp; biến thể</th>
-                              <th className={common.numCol}>Tồn kho</th>
-                              <th className={common.numCol}>Khách chờ</th>
-                              <th className={common.numCol}>Thao tác</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {backInStockRows.map((row) => (
-                              <tr key={row.skuCode}>
-                                <td>
-                                  <div className={styles.reviewProd}>
-                                    <img
-                                      src={row.productImage}
-                                      alt={row.productName}
-                                      className={styles.reviewThumb}
-                                      width={34}
-                                      height={45}
-                                    />
-                                    <div>
-                                      <Link href="/seller/san-pham" className={common.cellLink}>
-                                        {row.productName}
-                                      </Link>
-                                      <span className={common.cellSub}>
-                                        {row.colorName} / Size {row.size} · {row.skuCode}
-                                      </span>
-                                    </div>
-                                  </div>
-                                </td>
-                                <td className={common.numCol}>
-                                  <span className={row.stock === 0 ? common.deltaNeg : ""}>
-                                    {formatInt(row.stock)}
-                                  </span>
-                                </td>
-                                <td className={common.numCol}>
-                                  <strong>{formatInt(row.waitingCount)}</strong>
-                                </td>
-                                <td className={common.numCol}>
-                                  <button
-                                    type="button"
-                                    className={styles.actionBtnSm}
-                                    onClick={() => handleQuickRestock(row.productId, row.skuCode)}
-                                  >
-                                    {row.waitingCount > 0 ? "Nhập +20 & báo khách" : "Nhập +20"}
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-
-                      <div className={common.mobileList}>
-                        {backInStockRows.map((row) => (
-                          <div key={row.skuCode} className={common.mobileRow}>
-                            <div className={common.mobileRowTop}>
-                              <div>
-                                <strong>
-                                  {row.productName} · {row.colorName} / {row.size}
-                                </strong>
-                                <span className={common.cellSub}>
-                                  Tồn {formatInt(row.stock)} · {formatInt(row.waitingCount)} khách
-                                  chờ
+                {notifError && notifications.length === 0 ? (
+                  <StateView
+                    kind="error"
+                    surface="app"
+                    title="Không thể tải thông báo vận hành"
+                    message={notifError}
+                    actionLabel="Thử lại"
+                    onAction={() => void handleRefreshNotifications()}
+                  />
+                ) : filteredNotifications.length === 0 ? (
+                  <div className={common.inlineEmpty}>
+                    {notifFilter === "unread"
+                      ? "Tất cả thông báo vận hành đã được đọc."
+                      : "Chưa có thông báo vận hành nào."}
+                  </div>
+                ) : (
+                  <div className={styles.itemList}>
+                    {filteredNotifications.map((item) => {
+                      const safeLink = sanitizeSafeUrl(item.link);
+                      const isExternal = safeLink.startsWith("https://");
+                      return (
+                        <article
+                          key={item.id}
+                          className={`${styles.itemRow} ${!item.is_read ? styles.notifUnread : ""}`}
+                        >
+                          <div className={styles.itemTop}>
+                            <div className={styles.itemMain}>
+                              <div className={styles.itemTitleRow}>
+                                {!item.is_read && (
+                                  <span
+                                    className={styles.unreadDot}
+                                    aria-label="Thông báo chưa đọc"
+                                  />
+                                )}
+                                <strong className={styles.notifTitle}>{item.title}</strong>
+                                <span className={common.pill}>
+                                  {getNotificationCategoryLabel(item.category)}
                                 </span>
                               </div>
-                              <button
-                                type="button"
-                                className={styles.actionBtnSm}
-                                onClick={() => handleQuickRestock(row.productId, row.skuCode)}
-                              >
-                                +20 &amp; báo
-                              </button>
+                              {item.body && <p className={styles.itemSub}>{item.body}</p>}
+                              <p className={styles.itemMeta}>
+                                {item.created_at
+                                  ? formatDateTimeVi(item.created_at)
+                                  : "Mới cập nhật"}
+                              </p>
+                            </div>
+
+                            <div className={styles.rowActions}>
+                              {safeLink &&
+                                (isExternal ? (
+                                  <a
+                                    href={safeLink}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className={common.cardLink}
+                                  >
+                                    Xem chi tiết
+                                  </a>
+                                ) : (
+                                  <Link href={safeLink} className={common.cardLink}>
+                                    Xem chi tiết
+                                  </Link>
+                                ))}
+                              {!item.is_read && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  shape="app"
+                                  disabled={notifBusy}
+                                  onClick={() => void handleMarkNotificationRead([item.id], false)}
+                                >
+                                  Đánh dấu đã đọc
+                                </Button>
+                              )}
                             </div>
                           </div>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </section>
-
-                <section className={common.card} aria-labelledby="wish-rank-heading">
-                  <div className={common.cardHeader}>
-                    <h2 id="wish-rank-heading" className={common.cardTitle}>
-                      Lượt yêu thích theo mẫu
-                    </h2>
-                    <span className={common.cardMeta}>Theo dõi nhu cầu mua lặp</span>
+                        </article>
+                      );
+                    })}
                   </div>
-
-                  <div>
-                    {wishlistRanking.map((item, idx) => (
-                      <div key={item.productId} className={styles.wishRow}>
-                        <div className={styles.wishTop}>
-                          <Link href="/seller/san-pham" className={common.cellLink}>
-                            {item.shortName}
-                          </Link>
-                          <span className={styles.wishCount}>
-                            {formatInt(item.wishlistCount)} lượt thích
-                          </span>
-                        </div>
-                        <span className={common.cardMeta}>
-                          {item.categoryName} · {formatVnd(item.price)}
-                          {item.waitingCount > 0
-                            ? ` · ${formatInt(item.waitingCount)} khách chờ hàng`
-                            : ""}
-                        </span>
-                        <div className={styles.rankBarTrack}>
-                          <div
-                            className={idx === 0 ? styles.rankBarFillTop : styles.rankBarFill}
-                            style={{
-                              width: `${Math.max(6, Math.round((item.wishlistCount / maxWishlist) * 100))}%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              </div>
+                )}
+              </section>
             </>
           )}
         </>
@@ -918,10 +1143,10 @@ function SellerInteractionContent() {
   );
 }
 
-export default function SellerInteractionPage() {
+export default function SellerInteractionClient(props: SellerInteractionClientProps) {
   return (
     <SellerSuspense>
-      <SellerInteractionContent />
+      <SellerInteractionContent {...props} />
     </SellerSuspense>
   );
 }

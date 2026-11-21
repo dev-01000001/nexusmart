@@ -5,6 +5,34 @@ export const GATEWAY_URL = (process.env.GATEWAY_URL || "http://localhost:28080")
   ""
 );
 
+/**
+ * Browser-reachable WebSocket base URL for `/api/v1/chat/ws`.
+ * Defaults to converting `NEXT_PUBLIC_GATEWAY_URL` (or `GATEWAY_URL`) from http(s) to ws(s).
+ */
+export function buildChatWsUrl(ticket: string): string {
+  const explicit = (process.env.NEXT_PUBLIC_CHAT_WS_URL || "").trim();
+  let base: URL;
+  try {
+    if (explicit) {
+      base = new URL(explicit);
+    } else {
+      const gwOrigin = (process.env.NEXT_PUBLIC_GATEWAY_URL || GATEWAY_URL).trim();
+      const parsed = new URL(gwOrigin);
+      parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+      parsed.pathname = "/api/v1/chat/ws";
+      parsed.search = "";
+      parsed.hash = "";
+      base = parsed;
+    }
+  } catch {
+    base = new URL("ws://localhost:28080/api/v1/chat/ws");
+  }
+  if (ticket) {
+    base.searchParams.set("ticket", ticket);
+  }
+  return base.toString();
+}
+
 /** Default timeout for one gateway call (ms). */
 export const GATEWAY_TIMEOUT_MS = Number(process.env.GATEWAY_TIMEOUT_MS) || 8000;
 
