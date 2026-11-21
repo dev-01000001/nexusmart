@@ -28,6 +28,11 @@ lint:
 		echo "==> rustfmt & clippy services/payment"; \
 		(cd services/payment && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings); \
 	fi
+	@set -euo pipefail; \
+	if [ -f services/aiops/Cargo.toml ]; then \
+		echo "==> rustfmt & clippy services/aiops"; \
+		(cd services/aiops && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings); \
+	fi
 
 test:
 	@set -euo pipefail; \
@@ -41,6 +46,11 @@ test:
 	if [ -f services/payment/Cargo.toml ]; then \
 		echo "==> cargo test services/payment"; \
 		(cd services/payment && cargo test); \
+	fi
+	@set -euo pipefail; \
+	if [ -f services/aiops/Cargo.toml ]; then \
+		echo "==> cargo test services/aiops"; \
+		(cd services/aiops && cargo test); \
 	fi
 
 up:
@@ -67,4 +77,15 @@ e2e-web:
 eval-assistant:
 	cd evals/assistant && go run ./cmd/evalrunner --mode=$${LLM_MODE:-mock}
 
+
+.PHONY: obs-up obs-down chaos
+obs-up:
+	docker compose --profile obs up -d --build --no-deps prometheus alertmanager telegram-relay loki promtail tempo cadvisor grafana aiops
+
+obs-down:
+	docker compose --profile obs stop aiops grafana cadvisor tempo promtail loki alertmanager telegram-relay prometheus
+	docker compose --profile obs rm -f aiops grafana cadvisor tempo promtail loki alertmanager telegram-relay prometheus
+
+chaos:
+	./tools/chaos/run.sh
 

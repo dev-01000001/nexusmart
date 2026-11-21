@@ -1,0 +1,12 @@
+# Optional Docker Compose override enabling OTel Collector trace export to Grafana Tempo
+# without modifying infra/otel-collector-config.yaml.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f deploy/observability/compose.otel-tempo.yml --profile obs up -d otel-collector tempo
+services:
+  otel-collector:
+    volumes:
+      - ./deploy/observability/otel-collector-obs.yaml:/etc/otel-collector-config.yaml:ro
+    depends_on:
+      tempo:
+        condition: service_started
