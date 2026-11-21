@@ -3,6 +3,7 @@ import Link from "next/link";
 import { buildSiteThemeVars, isDarkHex } from "@/lib/site/theme";
 import type { SiteConfig } from "@/lib/site/types";
 import { SiteAssistantWidget } from "@/features/assistant";
+import { SiteChatWidget } from "@/features/chat";
 import { SiteHeaderActions, SiteMotion, SiteNav, SiteToast } from "./SiteChrome";
 import { SITE_NAV_ITEMS } from "./siteNav";
 import type { SiteSectionV2, SiteTemplateConfig } from "./templateTypes";
@@ -96,9 +97,12 @@ export function SiteShell({
   const headerStyle = layout.header_style;
   const footerStyle = layout.footer_style;
   const showSearchSlot = layout.slots?.search !== false;
+  const showChatSlot = layout.slots?.chat !== false;
   const showAssistantSlot = layout.slots?.assistant !== false;
 
-  const renderBrandMark = (opts: { withTagline?: boolean; centeredWordmark?: "editorial" | "maison" } = {}) => {
+  const renderBrandMark = (
+    opts: { withTagline?: boolean; centeredWordmark?: "editorial" | "maison" } = {}
+  ) => {
     if (opts.centeredWordmark === "maison") {
       return (
         <span className={tplStyles.mastheadCenterBrand}>
@@ -260,7 +264,11 @@ export function SiteShell({
                       {a.label}
                     </span>
                   ) : (
-                    <a key={a.id} href={`/#${encodeURIComponent(a.id)}`} className={tplStyles.anchorLink}>
+                    <a
+                      key={a.id}
+                      href={`/#${encodeURIComponent(a.id)}`}
+                      className={tplStyles.anchorLink}
+                    >
                       {a.label}
                     </a>
                   )
@@ -506,6 +514,9 @@ export function SiteShell({
       {!previewMode && <SiteToast />}
       {!previewMode && shopId && showAssistantSlot && (
         <SiteAssistantWidget shopId={shopId} brandName={brandName} />
+      )}
+      {!previewMode && shopId && showChatSlot && (
+        <SiteChatWidget shopId={shopId} brandName={brandName} />
       )}
     </div>
   );

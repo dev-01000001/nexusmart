@@ -409,7 +409,10 @@ export function SiteInfoView({
       )}
 
       {infoConfig.show_showcase && showcaseProducts.length > 0 && (
-        <section id="info-showcase" className={`${styles.siteSection} ${styles.siteSectionSurface}`}>
+        <section
+          id="info-showcase"
+          className={`${styles.siteSection} ${styles.siteSectionSurface}`}
+        >
           <div className={tplStyles.container}>
             <div className={styles.sectionHead} data-reveal="">
               <div className={styles.sectionHeadCopy}>

@@ -43,7 +43,11 @@ function effectivePrice(p: Product): number {
   return p.price;
 }
 
-function resolveCatalogGridClass(layout: CatalogPageConfig["layout"], columns: number, count: number): string {
+function resolveCatalogGridClass(
+  layout: CatalogPageConfig["layout"],
+  columns: number,
+  count: number
+): string {
   if (layout === "single-strip") return tplStyles.singleStripList;
   if (layout === "editorial-magazine" || layout === "luxury-curated" || columns === 2) {
     return tplStyles.gridCols2;
@@ -70,7 +74,8 @@ export function SiteCatalogView({
 }: SiteCatalogViewProps) {
   const layout = pageConfig?.layout ?? templateConfig?.pages.catalog.layout ?? "top-bar";
   const columns = pageConfig?.columns ?? templateConfig?.pages.catalog.columns ?? 4;
-  const showFilters = pageConfig?.show_filters ?? templateConfig?.pages.catalog.show_filters ?? true;
+  const showFilters =
+    pageConfig?.show_filters ?? templateConfig?.pages.catalog.show_filters ?? true;
   const showSearch = pageConfig?.show_search ?? templateConfig?.pages.catalog.show_search ?? true;
   const showSkuMatrix =
     pageConfig?.show_sku_matrix ??
@@ -81,7 +86,9 @@ export function SiteCatalogView({
     templateConfig?.pages.catalog.intro_title?.trim() ||
     `Sản phẩm của ${brandName}`;
   const introSubtitle =
-    pageConfig?.intro_subtitle?.trim() || templateConfig?.pages.catalog.intro_subtitle?.trim() || "";
+    pageConfig?.intro_subtitle?.trim() ||
+    templateConfig?.pages.catalog.intro_subtitle?.trim() ||
+    "";
   const extraSections = pageConfig?.sections ?? templateConfig?.pages.catalog.sections ?? [];
 
   const cardStyle: SiteCardStyle =
@@ -93,7 +100,8 @@ export function SiteCatalogView({
           ? "editorial"
           : (templateConfig?.layout.card_style ?? "minimal");
 
-  const pageSize = columns === 5 ? 10 : layout === "editorial-magazine" || layout === "luxury-curated" ? 6 : 8;
+  const pageSize =
+    columns === 5 ? 10 : layout === "editorial-magazine" || layout === "luxury-curated" ? 6 : 8;
 
   const [selectedCategory, setSelectedCategory] = useState<string>(initialCategory);
   const [query, setQuery] = useState<string>(initialQuery);
@@ -495,7 +503,11 @@ export function SiteCatalogView({
                     </select>
 
                     {showSkuMatrix && (
-                      <div className={tplStyles.viewToggleGroup} role="group" aria-label="Chế độ xem">
+                      <div
+                        className={tplStyles.viewToggleGroup}
+                        role="group"
+                        aria-label="Chế độ xem"
+                      >
                         <button
                           type="button"
                           className={`${tplStyles.viewToggleBtn} ${

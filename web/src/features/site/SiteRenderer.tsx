@@ -126,7 +126,11 @@ function selectCollectionProducts(
   return filtered.slice(0, cap);
 }
 
-function resolveGridClass(variant: string | undefined, columns: number | undefined, count: number): string {
+function resolveGridClass(
+  variant: string | undefined,
+  columns: number | undefined,
+  count: number
+): string {
   if (variant === "editorial-asym") return tplStyles.gridEditorialAsym;
   if (variant === "list-sku") return tplStyles.gridListSku;
   if (variant === "dense-5" || columns === 5) return tplStyles.gridCols5;
@@ -186,10 +190,7 @@ function renderSingleBlock(block: SiteSectionBlock, previewMode: boolean): React
       if (!imgUrl) return null;
       return (
         <figure key={block.id} className={tplStyles.blockFigure} data-reveal="">
-          <div
-            className={tplStyles.blockImageFrame}
-            data-aspect={block.props.aspect || "4:3"}
-          >
+          <div className={tplStyles.blockImageFrame} data-aspect={block.props.aspect || "4:3"}>
             <img
               src={imgUrl}
               alt={block.props.alt || block.props.caption || "Ảnh minh họa cửa hàng"}
@@ -338,13 +339,7 @@ function renderHeroSection(
   );
 
   const imgEl = (
-    <img
-      src={heroImg}
-      alt={titleText}
-      width={1365}
-      height={768}
-      className={styles.heroMediaImg}
-    />
+    <img src={heroImg} alt={titleText} width={1365} height={768} className={styles.heroMediaImg} />
   );
 
   let body: React.ReactNode;
@@ -436,7 +431,8 @@ function renderFeaturedProductsSection(
   previewMode: boolean
 ) {
   const { props, variant, settings, blocks } = section;
-  const maxItems = settings?.max_items && settings.max_items > 0 ? settings.max_items : props.limit ?? 8;
+  const maxItems =
+    settings?.max_items && settings.max_items > 0 ? settings.max_items : (props.limit ?? 8);
   const items = selectFeaturedProducts(products, props.product_ids, maxItems);
   const gridClass = resolveGridClass(variant, settings?.columns, items.length);
   const effectiveCardStyle: SiteCardStyle = variant === "list-sku" ? "compact-row" : cardStyle;
@@ -453,7 +449,10 @@ function renderFeaturedProductsSection(
       data-padding={sectionPaddingAttr(section)}
     >
       <div className={tplStyles.sectionInner}>
-        <div className={isCentered ? tplStyles.sectionHeadCentered : styles.sectionHead} data-reveal="">
+        <div
+          className={isCentered ? tplStyles.sectionHeadCentered : styles.sectionHead}
+          data-reveal=""
+        >
           <div className={styles.sectionHeadCopy}>
             <h2 className={styles.sectionTitle}>{props.title || "Sản phẩm nổi bật"}</h2>
             {props.subtitle?.trim() && (
@@ -504,7 +503,8 @@ function renderCollectionSection(
   previewMode: boolean
 ) {
   const { props, variant, settings, blocks } = section;
-  const maxItems = settings?.max_items && settings.max_items > 0 ? settings.max_items : props.limit ?? 4;
+  const maxItems =
+    settings?.max_items && settings.max_items > 0 ? settings.max_items : (props.limit ?? 4);
   const items = selectCollectionProducts(
     products,
     props.category_slug,
@@ -604,7 +604,8 @@ function renderTextSection(
     .split(/\n{2,}/)
     .map((p) => p.trim())
     .filter(Boolean);
-  const isCentered = variant === "centered" || props.align === "center" || settings?.align === "center";
+  const isCentered =
+    variant === "centered" || props.align === "center" || settings?.align === "center";
 
   return (
     <section
@@ -699,7 +700,9 @@ function renderBannerSection(
           <div className={tplStyles.bannerCompact} data-reveal="">
             <div className={styles.sectionHeadCopy}>
               <h2 className={styles.sectionTitle}>{props.title}</h2>
-              {props.subtitle?.trim() && <p className={tplStyles.blockParagraph}>{props.subtitle}</p>}
+              {props.subtitle?.trim() && (
+                <p className={tplStyles.blockParagraph}>{props.subtitle}</p>
+              )}
             </div>
             {props.cta_label?.trim() && (
               <SafeActionLink
@@ -877,7 +880,8 @@ function renderVoucherStripSection(
         ) : (
           <div className={styles.emptyPanel} data-reveal="">
             <p className={styles.prosePara}>
-              Cửa hàng hiện chưa mở mã giảm giá mới. Mức giá niêm yết luôn cập nhật trực tiếp từ kho.
+              Cửa hàng hiện chưa mở mã giảm giá mới. Mức giá niêm yết luôn cập nhật trực tiếp từ
+              kho.
             </p>
           </div>
         )}
@@ -964,16 +968,21 @@ function renderLookbookSection(
   const fallbackImages: Array<Extract<SiteSectionBlock, { type: "image" }>> =
     imageBlocks.length > 0
       ? imageBlocks
-      : products.slice(0, variant === "duo-split" ? 2 : variant === "strip-4" ? 4 : 3).map((p, i) => ({
-          id: `${section.id}-fallback-${i}`,
-          type: "image",
-          props: {
-            image_url: sanitizeSafeImageUrl(p.onModelImage) || sanitizeSafeImageUrl(p.image) || "/banners/fabric-closeup.jpg",
-            alt: p.name,
-            caption: p.name,
-            aspect: i === 0 && variant === "asym-3" ? "3:4" : "4:3",
-          },
-        }));
+      : products
+          .slice(0, variant === "duo-split" ? 2 : variant === "strip-4" ? 4 : 3)
+          .map((p, i) => ({
+            id: `${section.id}-fallback-${i}`,
+            type: "image",
+            props: {
+              image_url:
+                sanitizeSafeImageUrl(p.onModelImage) ||
+                sanitizeSafeImageUrl(p.image) ||
+                "/banners/fabric-closeup.jpg",
+              alt: p.name,
+              caption: p.name,
+              aspect: i === 0 && variant === "asym-3" ? "3:4" : "4:3",
+            },
+          }));
 
   const gridClass =
     variant === "duo-split"
@@ -1101,7 +1110,10 @@ function renderSkuMatrixSection(
   const showOos = props.show_out_of_stock !== false;
   const maxRows = Math.max(
     1,
-    Math.min(24, settings?.max_items && settings.max_items > 0 ? settings.max_items : props.limit ?? 12)
+    Math.min(
+      24,
+      settings?.max_items && settings.max_items > 0 ? settings.max_items : (props.limit ?? 12)
+    )
   );
 
   const colorMapByProduct = new Map<string, Map<string, { name: string; hex: string }>>();
@@ -1196,9 +1208,7 @@ function renderSkuMatrixSection(
                           <strong>
                             {colorName} / {sku.size}
                           </strong>
-                          <span>
-                            {sku.stock > 0 ? `Còn ${formatInt(sku.stock)}` : "Hết hàng"}
-                          </span>
+                          <span>{sku.stock > 0 ? `Còn ${formatInt(sku.stock)}` : "Hết hàng"}</span>
                         </span>
                       );
                     })}
@@ -1323,9 +1333,7 @@ function renderTestimonialsSection(
           </div>
         ) : (
           <div className={styles.emptyPanel}>
-            <p className={styles.prosePara}>
-              Chưa có nhận xét nào được thêm vào mục đánh giá này.
-            </p>
+            <p className={styles.prosePara}>Chưa có nhận xét nào được thêm vào mục đánh giá này.</p>
           </div>
         )}
 

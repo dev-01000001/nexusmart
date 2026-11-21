@@ -166,7 +166,11 @@ export function SitePdpView({
   const renderGallery = () => {
     if (galleryStyle === "stacked" || layout === "editorial-tall") {
       return (
-        <div className={tplStyles.pdpStackedGallery} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
+        <div
+          className={tplStyles.pdpStackedGallery}
+          data-rise=""
+          style={{ "--i": 1 } as React.CSSProperties}
+        >
           {gallery.slice(0, 4).map((src, idx) => (
             <div key={src} className={styles.pdpMainFrame}>
               <img
@@ -239,7 +243,9 @@ export function SitePdpView({
       <div className={tplStyles.pdpSkuMatrixWrap} data-reveal="">
         <div className={styles.sectionHead} style={{ marginBottom: 4 }}>
           <div className={styles.sectionHeadCopy}>
-            <h2 className={styles.pdpOptionLabel}>Bảng biến thể SKU sẵn kho (bấm dòng để chọn nhanh)</h2>
+            <h2 className={styles.pdpOptionLabel}>
+              Bảng biến thể SKU sẵn kho (bấm dòng để chọn nhanh)
+            </h2>
           </div>
         </div>
         <div className={tplStyles.tableScrollWrap}>
@@ -437,12 +443,7 @@ export function SitePdpView({
 
       {(product.fabric || product.fit || product.origin) && (
         <p className={styles.productSpec}>
-          {[
-            product.fabric,
-            product.gsm > 0 ? `${product.gsm}gsm` : "",
-            product.fit,
-            product.origin,
-          ]
+          {[product.fabric, product.gsm > 0 ? `${product.gsm}gsm` : "", product.fit, product.origin]
             .filter(Boolean)
             .join(" · ")}
         </p>
@@ -467,11 +468,7 @@ export function SitePdpView({
             )}
           </div>
           {validShopVouchers.slice(0, 3).map((v) => (
-            <p
-              key={v.id || v.code}
-              className={styles.pdpHandoffNote}
-              style={{ color: "inherit" }}
-            >
+            <p key={v.id || v.code} className={styles.pdpHandoffNote} style={{ color: "inherit" }}>
               <strong>{v.code}</strong> ·{" "}
               {v.discountType === "percent"
                 ? `Giảm ${v.discountValue}%`
@@ -542,8 +539,7 @@ export function SitePdpView({
 
   const useEditorialTwoCol = layout === "editorial-tall" || galleryStyle === "stacked";
   const useDenseTwoCol = layout === "dense-spec" || layout === "sku-order-matrix";
-  const relatedGridClass =
-    relatedProducts.length === 3 ? tplStyles.gridCols3 : tplStyles.gridCols4;
+  const relatedGridClass = relatedProducts.length === 3 ? tplStyles.gridCols3 : tplStyles.gridCols4;
 
   return (
     <div data-pdp-layout={layout} data-pdp-gallery={galleryStyle}>
@@ -741,28 +737,29 @@ export function SitePdpView({
 
           {renderSkuMatrixTable()}
 
-          {showStoryBand && (product.fabric || product.fit || product.origin || product.gsm > 0) && (
-            <div className={tplStyles.pdpStoryBand} data-reveal="">
-              <div className={tplStyles.pdpStoryCell}>
-                <span className={tplStyles.pdpStoryLabel}>Chất liệu</span>
-                <span className={tplStyles.pdpStoryVal}>{product.fabric || "Sợi chọn lọc"}</span>
+          {showStoryBand &&
+            (product.fabric || product.fit || product.origin || product.gsm > 0) && (
+              <div className={tplStyles.pdpStoryBand} data-reveal="">
+                <div className={tplStyles.pdpStoryCell}>
+                  <span className={tplStyles.pdpStoryLabel}>Chất liệu</span>
+                  <span className={tplStyles.pdpStoryVal}>{product.fabric || "Sợi chọn lọc"}</span>
+                </div>
+                <div className={tplStyles.pdpStoryCell}>
+                  <span className={tplStyles.pdpStoryLabel}>Định lượng vải</span>
+                  <span className={`${tplStyles.pdpStoryVal} num`}>
+                    {product.gsm > 0 ? `${product.gsm}gsm` : "Tiêu chuẩn xưởng"}
+                  </span>
+                </div>
+                <div className={tplStyles.pdpStoryCell}>
+                  <span className={tplStyles.pdpStoryLabel}>Phom mặc</span>
+                  <span className={tplStyles.pdpStoryVal}>{product.fit || "Regular"}</span>
+                </div>
+                <div className={tplStyles.pdpStoryCell}>
+                  <span className={tplStyles.pdpStoryLabel}>Xuất xứ hoàn thiện</span>
+                  <span className={tplStyles.pdpStoryVal}>{product.origin || brandName}</span>
+                </div>
               </div>
-              <div className={tplStyles.pdpStoryCell}>
-                <span className={tplStyles.pdpStoryLabel}>Định lượng vải</span>
-                <span className={`${tplStyles.pdpStoryVal} num`}>
-                  {product.gsm > 0 ? `${product.gsm}gsm` : "Tiêu chuẩn xưởng"}
-                </span>
-              </div>
-              <div className={tplStyles.pdpStoryCell}>
-                <span className={tplStyles.pdpStoryLabel}>Phom mặc</span>
-                <span className={tplStyles.pdpStoryVal}>{product.fit || "Regular"}</span>
-              </div>
-              <div className={tplStyles.pdpStoryCell}>
-                <span className={tplStyles.pdpStoryLabel}>Xuất xứ hoàn thiện</span>
-                <span className={tplStyles.pdpStoryVal}>{product.origin || brandName}</span>
-              </div>
-            </div>
-          )}
+            )}
 
           {!previewMode && (
             <div className={tplStyles.pdpReviewSummaryWrap}>
