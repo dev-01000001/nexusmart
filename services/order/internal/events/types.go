@@ -35,64 +35,70 @@ type Envelope struct {
 
 // OrderCreatedPayload matches docs/contracts.md Section 5.
 type OrderCreatedPayload struct {
-	CheckoutGroupID string `json:"checkout_group_id"`
-	OrderID         string `json:"order_id"`
-	OrderCode       string `json:"order_code"`
-	BuyerID         string `json:"buyer_id"`
-	ShopID          string `json:"shop_id"`
-	PaymentMethod   string `json:"payment_method"`
-	TotalPayableVND int64  `json:"total_payable_vnd"`
+	CheckoutGroupID  string `json:"checkout_group_id"`
+	OrderID          string `json:"order_id"`
+	OrderCode        string `json:"order_code"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	StorefrontShopID string `json:"storefront_shop_id,omitempty"`
+	PaymentMethod    string `json:"payment_method"`
+	TotalPayableVND  int64  `json:"total_payable_vnd"`
 }
 
 // OrderConfirmedPayload matches docs/contracts.md Section 5.
 type OrderConfirmedPayload struct {
-	OrderID         string `json:"order_id"`
-	OrderCode       string `json:"order_code"`
-	BuyerID         string `json:"buyer_id"`
-	ShopID          string `json:"shop_id"`
-	PaymentMethod   string `json:"payment_method"`
-	TotalPayableVND int64  `json:"total_payable_vnd"`
+	OrderID          string `json:"order_id"`
+	OrderCode        string `json:"order_code"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	StorefrontShopID string `json:"storefront_shop_id,omitempty"`
+	PaymentMethod    string `json:"payment_method"`
+	TotalPayableVND  int64  `json:"total_payable_vnd"`
 }
 
 // OrderCancelledPayload matches docs/contracts.md Section 5.
 type OrderCancelledPayload struct {
-	OrderID   string `json:"order_id"`
-	OrderCode string `json:"order_code"`
-	BuyerID   string `json:"buyer_id"`
-	ShopID    string `json:"shop_id"`
-	Reason    string `json:"reason"`
-	WasPaid   bool   `json:"was_paid"`
+	OrderID          string `json:"order_id"`
+	OrderCode        string `json:"order_code"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	StorefrontShopID string `json:"storefront_shop_id,omitempty"`
+	Reason           string `json:"reason"`
+	WasPaid          bool   `json:"was_paid"`
 }
 
 // OrderShippedPayload matches docs/contracts.md Section 5.
 type OrderShippedPayload struct {
-	OrderID      string `json:"order_id"`
-	OrderCode    string `json:"order_code"`
-	BuyerID      string `json:"buyer_id"`
-	ShopID       string `json:"shop_id"`
-	CarrierCode  string `json:"carrier_code"`
-	TrackingCode string `json:"tracking_code"`
+	OrderID          string `json:"order_id"`
+	OrderCode        string `json:"order_code"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	StorefrontShopID string `json:"storefront_shop_id,omitempty"`
+	CarrierCode      string `json:"carrier_code"`
+	TrackingCode     string `json:"tracking_code"`
 }
 
 // OrderDeliveredPayload matches docs/contracts.md Section 5.
 type OrderDeliveredPayload struct {
-	OrderID      string `json:"order_id"`
-	OrderCode    string `json:"order_code"`
-	BuyerID      string `json:"buyer_id"`
-	ShopID       string `json:"shop_id"`
-	TrackingCode string `json:"tracking_code"`
+	OrderID          string `json:"order_id"`
+	OrderCode        string `json:"order_code"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	StorefrontShopID string `json:"storefront_shop_id,omitempty"`
+	TrackingCode     string `json:"tracking_code"`
 }
 
 // OrderCompletedPayload matches docs/contracts.md Section 5.
 type OrderCompletedPayload struct {
-	OrderID         string `json:"order_id"`
-	OrderCode       string `json:"order_code"`
-	BuyerID         string `json:"buyer_id"`
-	ShopID          string `json:"shop_id"`
-	SubtotalVND     int64  `json:"subtotal_vnd"`
-	CommissionVND   int64  `json:"commission_vnd"`
-	TotalPayableVND int64  `json:"total_payable_vnd"`
-	CoinsReward     int64  `json:"coins_reward"`
+	OrderID          string `json:"order_id"`
+	OrderCode        string `json:"order_code"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	StorefrontShopID string `json:"storefront_shop_id,omitempty"`
+	SubtotalVND      int64  `json:"subtotal_vnd"`
+	CommissionVND    int64  `json:"commission_vnd"`
+	TotalPayableVND  int64  `json:"total_payable_vnd"`
+	CoinsReward      int64  `json:"coins_reward"`
 }
 
 // PaymentSucceededPayload matches docs/contracts.md Section 5.

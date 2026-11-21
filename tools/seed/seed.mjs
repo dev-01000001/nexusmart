@@ -15,11 +15,13 @@
  *   - 11 vouchers matching web/src/data/vouchers.ts (platform, freeship, shop)
  *   - 3 active/upcoming flash sale slots (12:00 live, 18:00 & 21:00 upcoming)
  *     matching web/src/data/flash-sale.ts
- *   - 2 clearly distinct PUBLISHED subdomain storefront sites (bach-dang & sai-gon),
- *     leaving Đà Nẵng and Hà Nội without sites for E2E lifecycle tests
+ *   - 4 clearly distinct PUBLISHED subdomain storefront sites (bach-dang, sai-gon,
+ *     da-nang, ha-noi), one per shop, each with its own colors, font and imagery
  *
  * Safe to run repeatedly: existing entities are detected and reused with zero
- * duplicates or extra site versions. Exits 0 on success.
+ * duplicates. A site is only re-published when its currently published config
+ * differs from the spec, so repeated runs never create extra site versions.
+ * Exits 0 on success.
  */
 import { register } from "node:module";
 
@@ -521,8 +523,9 @@ function siteConfigsEqual(a, b) {
 }
 
 /**
- * Builds the 2 showcase subdomain storefront site specs (Xưởng Dệt Bạch Đằng & Kho Basic Sài Gòn).
- * Sợi Tự Nhiên Đà Nẵng and Dệt Kim Hà Nội are intentionally left without sites for QA E2E lifecycle tests.
+ * Builds the 4 showcase subdomain storefront site specs, one per demo shop. Each theme uses a
+ * different palette (light cream/blue, dark charcoal/amber, light sage/green, dark wine/gold)
+ * and a different allow-listed font so the sites are clearly distinguishable.
  */
 function buildShowcaseSiteSpecs(seededProducts) {
   const productUuid = (mockId) => seededProducts.get(mockId)?.product?.id ?? "";
@@ -538,6 +541,20 @@ function buildShowcaseSiteSpecs(seededProducts) {
     productUuid("prod-short-run"),
     productUuid("prod-aokhoac-gio"),
     productUuid("prod-at-oversize"),
+  ].filter(Boolean);
+
+  const daNangProductIds = [
+    productUuid("prod-polo-kem"),
+    productUuid("prod-polo-xanhda"),
+    productUuid("prod-short-linen"),
+    productUuid("prod-dolot-brief"),
+  ].filter(Boolean);
+
+  const haNoiProductIds = [
+    productUuid("prod-polo-detkim"),
+    productUuid("prod-jogger-terry"),
+    productUuid("prod-jogger-tech"),
+    productUuid("prod-tat-cotrung"),
   ].filter(Boolean);
 
   return [
@@ -775,9 +792,224 @@ function buildShowcaseSiteSpecs(seededProducts) {
         ],
       },
     },
+    {
+      mockShopId: "shop-da-nang",
+      subdomain: "da-nang",
+      publishNote: "Xuất bản giao diện mẫu Sợi Tự Nhiên Đà Nẵng",
+      config: {
+        theme: {
+          bg_color: "#EEF2EA",
+          surface_color: "#F9FBF6",
+          text_color: "#1F2A22",
+          accent_color: "#3F6B4F",
+          accent_text_color: "#FFFFFF",
+          font_family: "ibm-plex-sans",
+          logo_url: "/banners/campaign-green-fiber.jpg",
+          banner_url: "/banners/campaign-office.jpg",
+          brand_name: "Sợi Tự Nhiên Đà Nẵng",
+          tagline: "Áo polo pique, quần short linen và đồ lót sợi tre thoáng mát cho miền Trung nắng gió",
+        },
+        sections: [
+          {
+            id: "dn-hero",
+            type: "hero",
+            visible: true,
+            props: {
+              eyebrow: "Sợi thực vật từ Đà Nẵng",
+              title: "Lanh, tre và cotton pique cho ngày nắng",
+              subtitle:
+                "Chất liệu sợi thực vật thoáng khí như lanh pha bông và sợi tre thiên nhiên, nhuộm tông trung tính dễ phối từ công sở đến cuối tuần.",
+              image_url: "/banners/campaign-office.jpg",
+              cta_label: "Xem đồ sợi tự nhiên",
+              cta_href: "/san-pham",
+            },
+          },
+          {
+            id: "dn-collection",
+            type: "collection",
+            visible: true,
+            props: {
+              title: "Polo Pique và Short Linen",
+              subtitle: "Thoáng nhẹ cho công sở mùa nóng và du lịch cuối tuần.",
+              collection_slug: "cong-so-soi-tu-nhien",
+              category_slug: "ao-polo",
+              image_url: "/banners/campaign-green-fiber.jpg",
+              limit: 3,
+            },
+          },
+          {
+            id: "dn-featured",
+            type: "featured_products",
+            visible: true,
+            props: {
+              title: "Được chọn nhiều tại xưởng Hòa Khánh",
+              subtitle: "Polo cotton pique chải kỹ, short linen pha cotton và combo đồ lót sợi tre.",
+              product_ids: daNangProductIds,
+              limit: 4,
+            },
+          },
+          {
+            id: "dn-text",
+            type: "text",
+            visible: true,
+            props: {
+              title: "Giặt mềm enzyme, chạm dịu từ lần mặc đầu",
+              body: "Sợi Tự Nhiên Đà Nẵng làm việc với Xưởng Sợi Tự Nhiên Miền Trung tại Khu công nghiệp Hòa Khánh. Sợi lanh và sợi tre được giặt mềm bằng enzyme sinh học, nẹp cổ polo và bo tay dệt rib 1:1 được kiểm tra độ thẳng sau khi hấp hơi, và từng lô sợi được hút ẩm, cân lại trọng lượng trước khi xuất kho.",
+              align: "center",
+            },
+          },
+          {
+            id: "dn-vouchers",
+            type: "voucher_strip",
+            visible: true,
+            props: {
+              title: "Ưu đãi của Sợi Tự Nhiên",
+              subtitle: "Lưu mã của gian hàng và áp dụng ngay ở bước thanh toán.",
+              limit: 3,
+            },
+          },
+          {
+            id: "dn-policies",
+            type: "policies",
+            visible: true,
+            props: {
+              title: "Mua sắm an tâm",
+              items: [
+                {
+                  heading: "Đổi trả miễn phí 45 ngày",
+                  detail: "Đổi size hai chiều tận nơi cho sản phẩm còn nguyên tem mác.",
+                },
+                {
+                  heading: "Giao nhanh nội thành Đà Nẵng",
+                  detail: "Giao nhanh nội thành Đà Nẵng trong 3 giờ, gửi từ kho số 76 đường Bạch Đằng, Phường Hải Châu.",
+                },
+                {
+                  heading: "Miễn phí vận chuyển từ 229.000đ",
+                  detail: "Đơn hàng của gian hàng từ 229.000đ được miễn phí giao tiêu chuẩn.",
+                },
+              ],
+            },
+          },
+        ],
+      },
+    },
+    {
+      mockShopId: "shop-ha-noi",
+      subdomain: "ha-noi",
+      publishNote: "Xuất bản giao diện mẫu Dệt Kim Hà Nội",
+      config: {
+        theme: {
+          bg_color: "#2B1A1E",
+          surface_color: "#3A2328",
+          text_color: "#F7EDE8",
+          accent_color: "#E9B949",
+          accent_text_color: "#2B1A1E",
+          font_family: "plus-jakarta-sans",
+          logo_url: "/atmosphere/cotton-twill-slate.jpg",
+          banner_url: "/atmosphere/jacquard-loom-poster.jpg",
+          brand_name: "Dệt Kim Hà Nội",
+          tagline: "Áo polo dệt kim, jogger nỉ chân cua và tất cotton gân theo tay nghề dệt kim miền Bắc",
+        },
+        sections: [
+          {
+            id: "hn-banner",
+            type: "banner",
+            visible: true,
+            props: {
+              title: "Dệt kim và nỉ chân cua 320gsm",
+              subtitle: "Đứng phom cho tiết trời mát và môi trường điều hòa.",
+              image_url: "/atmosphere/jacquard-loom-poster.jpg",
+              cta_label: "Xem bộ sưu tập",
+              cta_href: "/san-pham",
+            },
+          },
+          {
+            id: "hn-featured",
+            type: "featured_products",
+            visible: true,
+            props: {
+              title: "Hàng dệt kim tiêu biểu",
+              subtitle: "Cổ polo đứng dáng, bo gấu jogger dày dặn và tất cotton chải kỹ nối mũi liền mạch.",
+              product_ids: haNoiProductIds,
+              limit: 4,
+            },
+          },
+          {
+            id: "hn-vouchers",
+            type: "voucher_strip",
+            visible: true,
+            props: {
+              title: "Mã giảm giá Dệt Kim Hà Nội",
+              subtitle: "Áp dụng cho đơn đặt trực tiếp tại gian hàng.",
+              limit: 2,
+            },
+          },
+          {
+            id: "hn-collection",
+            type: "collection",
+            visible: true,
+            props: {
+              title: "Tất cotton gân và thể thao",
+              subtitle: "Nối mũi liền mạch, áp dụng chính sách bù lẻ chiếc thất lạc.",
+              collection_slug: "combo-tat-cotton-ha-noi",
+              category_slug: "tat-phu-kien",
+              image_url: "/atmosphere/cotton-twill-slate.jpg",
+              limit: 2,
+            },
+          },
+          {
+            id: "hn-text",
+            type: "text",
+            visible: true,
+            props: {
+              title: "Tay nghề dệt kim từ năm 2018",
+              body: "Dệt Kim Hà Nội kế thừa tay nghề dệt kim truyền thống miền Bắc tại Xưởng Dệt kim truyền thống Minh Khai. Mắt dệt áo polo được soi trên bàn sáng, bo gấu jogger và cổ tất được thử giãn qua 500 nhịp kéo, và mũi tất được nối liền mạch, rà kim loại trước khi đóng hộp.",
+              align: "left",
+            },
+          },
+          {
+            id: "hn-policies",
+            type: "policies",
+            visible: true,
+            props: {
+              title: "Chính sách của gian hàng",
+              items: [
+                {
+                  heading: "Đổi trả miễn phí 45 ngày",
+                  detail: "Đổi size hai chiều và bù lẻ chiếc tất thất lạc.",
+                },
+                {
+                  heading: "Giao nhanh nội thành Hà Nội",
+                  detail: "Giao nhanh nội thành Hà Nội trong 2 đến 4 giờ với đơn đặt trước 17:00.",
+                },
+                {
+                  heading: "Miễn phí vận chuyển từ 199.000đ",
+                  detail: "Đơn hàng của gian hàng từ 199.000đ được miễn phí giao tiêu chuẩn.",
+                },
+              ],
+            },
+          },
+        ],
+      },
+    },
   ];
 }
 
+/** Returns the currently PUBLISHED config for a host via the public resolver, or null if not live. */
+async function fetchPublishedSiteConfig(host) {
+  if (!host) return null;
+  const res = await gwRequest("GET", `/api/v1/sites/by-host?host=${encodeURIComponent(host)}`, {
+    allowedStatuses: [200, 404],
+  });
+  if (res.status !== 200 || res.data?.site?.status !== "PUBLISHED") return null;
+  return res.data.site.config ?? null;
+}
+
+/**
+ * Ensures the seller's site is PUBLISHED on spec.subdomain with exactly spec.config.
+ * Publishes a new version only when the live published config (or subdomain) differs, so
+ * repeated runs never create extra site versions. The draft is rewritten only when it differs.
+ */
 async function ensurePublishedSite(sellerToken, spec) {
   const getRes = await gwRequest("GET", "/api/v1/seller/site", {
     token: sellerToken,
@@ -786,25 +1018,24 @@ async function ensurePublishedSite(sellerToken, spec) {
   const existing = getRes.status === 200 ? (getRes.data?.site ?? null) : null;
   const existingSubdomain = String(existing?.subdomain ?? "").trim().toLowerCase();
   const targetSubdomain = spec.subdomain.trim().toLowerCase();
-  const existingPublishedCfg =
-    existing?.published_config ?? existing?.published_config_json ?? existing?.config ?? existing?.config_json ?? null;
-  const existingDraftCfg =
-    existing?.draft_config ?? existing?.draft_config_json ?? existing?.config ?? existing?.config_json ?? null;
+  const targetHost = `${targetSubdomain}.${SITE_ROOT_DOMAIN}`;
 
-  if (
-    existing &&
-    existing.status === "PUBLISHED" &&
-    existingSubdomain === targetSubdomain &&
-    siteConfigsEqual(existingPublishedCfg ?? existingDraftCfg, spec.config)
-  ) {
-    return { created: false, site: existing };
+  if (existing?.status === "SUSPENDED") {
+    throw new Error(
+      `Site ${existingSubdomain || targetSubdomain} is SUSPENDED by admin; unsuspend it before re-running seed`
+    );
   }
 
-  const draftMatches =
-    existing &&
-    existingSubdomain === targetSubdomain &&
-    siteConfigsEqual(existingDraftCfg, spec.config);
+  const subdomainMatches = existing !== null && existingSubdomain === targetSubdomain;
+  if (subdomainMatches && existing.status === "PUBLISHED") {
+    const publishedCfg = await fetchPublishedSiteConfig(existing.primary_host || targetHost);
+    if (siteConfigsEqual(publishedCfg, spec.config)) {
+      return { created: false, site: existing };
+    }
+  }
 
+  // GET /seller/site returns the current draft config.
+  const draftMatches = subdomainMatches && siteConfigsEqual(existing.config, spec.config);
   if (!draftMatches) {
     await gwRequest("PUT", "/api/v1/seller/site/draft", {
       token: sellerToken,
@@ -824,7 +1055,7 @@ async function ensurePublishedSite(sellerToken, spec) {
     allowedStatuses: [200, 201],
   });
 
-  const publishedSite = pubRes.data?.site ?? existing ?? { subdomain: targetSubdomain, status: "PUBLISHED" };
+  const publishedSite = pubRes.data?.site ?? { subdomain: targetSubdomain, status: "PUBLISHED" };
   return { created: true, site: publishedSite };
 }
 
@@ -1069,7 +1300,13 @@ async function main() {
     }
   }
 
-  // 5. 11 Vouchers matching VOUCHERS
+  // 5. 11 Vouchers matching VOUCHERS (every demo shop must own at least one SHOP voucher)
+  const shopsWithoutVoucher = SHOPS.filter(
+    (s) => !VOUCHERS.some((v) => v.scope === "shop" && v.shopId === s.id)
+  ).map((s) => s.id);
+  if (shopsWithoutVoucher.length > 0) {
+    throw new Error(`Missing SHOP voucher in web/src/data/vouchers.ts for: ${shopsWithoutVoucher.join(", ")}`);
+  }
   const vListRes = await gwRequest("GET", "/api/v1/vouchers", {
     token: adminToken,
     allowedStatuses: [200],
@@ -1274,7 +1511,7 @@ async function main() {
     }
   }
 
-  // 7. 2 Showcase Published Subdomain Sites (bach-dang & sai-gon; Đà Nẵng & Hà Nội left unpublished for QA E2E)
+  // 7. 4 Showcase Published Subdomain Sites (one per demo shop, distinct themes)
   const showcaseSiteSpecs = buildShowcaseSiteSpecs(seededProducts);
   for (const spec of showcaseSiteSpecs) {
     const shopEntry = seededShops.get(spec.mockShopId);
@@ -1287,6 +1524,10 @@ async function main() {
       subdomain: spec.subdomain,
       primary_host: site.primary_host || `${spec.subdomain}.${SITE_ROOT_DOMAIN}`,
       status: site.status || "PUBLISHED",
+      action: created ? "published" : "reused",
+      font_family: spec.config.theme.font_family,
+      bg_color: spec.config.theme.bg_color,
+      accent_color: spec.config.theme.accent_color,
     };
   }
 

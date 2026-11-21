@@ -708,3 +708,64 @@ func (s *Server) SuspendSite(ctx context.Context, req *userv1.SuspendSiteRequest
 		),
 	}, nil
 }
+
+const (
+	publishedSitesDefaultPageSize int32 = 24
+	publishedSitesMaxPageSize     int32 = 48
+)
+
+func normalizePublishedSitesPagination(page, pageSize int32) (int32, int32) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = publishedSitesDefaultPageSize
+	}
+	if pageSize > publishedSitesMaxPageSize {
+		pageSize = publishedSitesMaxPageSize
+	}
+	return page, pageSize
+}
+
+// ListPublishedSites is PUBLIC (no JWT): the platform site directory. It returns only PUBLISHED
+// sites whose shop is ACTIVE, newest publish first, with card fields taken from the published
+// snapshot (never draft_config) and the public shop profile.
+func (s *Server) ListPublishedSites(ctx context.Context, req *userv1.ListPublishedSitesRequest) (*userv1.ListPublishedSitesResponse, error) {
+	page, pageSize := normalizePublishedSitesPagination(req.GetPage(), req.GetPageSize())
+
+	rows, err := s.store.ListPublishedSites(ctx, db.ListPublishedSitesParams{
+		PageLimit:  pageSize,
+		PageOffset: (page - 1) * pageSize,
+	})
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to list published sites")
+	}
+	total, err := s.store.CountPublishedSites(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to count published sites")
+	}
+
+	out := make([]*userv1.PublishedSiteSummary, 0, len(rows))
+	for _, row := range rows {
+		item := &userv1.PublishedSiteSummary{
+			SiteId:      row.ID,
+			ShopId:      row.ShopID,
+			ShopName:    row.ShopName,
+			Subdomain:   row.Subdomain,
+			PrimaryHost: s.sitePrimaryHost(row.Subdomain, row.PrimaryHost),
+			LogoUrl:     row.LogoUrl,
+			CoverUrl:    row.CoverUrl,
+			Tagline:     row.Tagline,
+		}
+		if row.PublishedAt != nil {
+			item.PublishedAt = timestamppb.New(*row.PublishedAt)
+		}
+		out = append(out, item)
+	}
+	return &userv1.ListPublishedSitesResponse{
+		Sites:    out,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+	}, nil
+}

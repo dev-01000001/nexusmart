@@ -33,6 +33,8 @@ type NotificationService struct {
 	repo         store.Repository
 	mailer       mailer.Sender
 	userResolver userclient.Resolver
+	siteResolver userclient.SiteResolver
+	siteLinks    SiteLinkConfig
 	logger       *slog.Logger
 }
 
@@ -42,16 +44,22 @@ func NewNotificationService(
 	mailSender mailer.Sender,
 	userResolver userclient.Resolver,
 	logger *slog.Logger,
+	opts ...Option,
 ) *NotificationService {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &NotificationService{
+	s := &NotificationService{
 		repo:         repo,
 		mailer:       mailSender,
 		userResolver: userResolver,
+		siteLinks:    SiteLinkConfig{Scheme: "https", LookupTimeout: defaultSiteLookupTimeout},
 		logger:       logger,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // ListNotifications returns paginated notifications and unread count for userID.
@@ -165,6 +173,12 @@ func (s *NotificationService) ProcessEvent(ctx context.Context, subject string, 
 				}
 			}
 		}
+	}
+
+	// Order links point to the order page on the site host where the order was placed
+	// (resolved via UserService OUTSIDE the transaction; failures only drop the link).
+	if (plan.orderID != "" || plan.storefrontShopID != "") && (plan.inApp != nil || plan.email != nil) {
+		applyOrderLink(plan, s.resolveOrderURL(ctx, plan.orderID, plan.storefrontShopID, plan.isOrderGroup))
 	}
 
 	// Short DB-only transaction: atomic processed_events dedup + contact/order cache + in-app notification.
@@ -285,12 +299,16 @@ func shouldSendEmail(p store.Preferences, category string) bool {
 type eventPlan struct {
 	userID        string
 	lookupOrderID string
-	category      string
-	inApp         *store.Notification
-	email         *mailer.Message
-	forceEmail    bool
-	cacheContact  *store.UserContact
-	cacheOrder    *store.OrderParticipant
+	// orderID/storefrontShopID drive the absolute order link on the shop site (see applyOrderLink).
+	orderID          string
+	storefrontShopID string
+	isOrderGroup     bool
+	category         string
+	inApp            *store.Notification
+	email            *mailer.Message
+	forceEmail       bool
+	cacheContact     *store.UserContact
+	cacheOrder       *store.OrderParticipant
 }
 
 func (s *NotificationService) buildNotificationPlan(eventType string, env Envelope) (*eventPlan, error) {
@@ -367,12 +385,13 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "order.created":
 		var p struct {
-			OrderID         string `json:"order_id"`
-			OrderCode       string `json:"order_code"`
-			BuyerID         string `json:"buyer_id"`
-			ShopID          string `json:"shop_id"`
-			PaymentMethod   string `json:"payment_method"`
-			TotalPayableVND int64  `json:"total_payable_vnd"`
+			OrderID          string `json:"order_id"`
+			OrderCode        string `json:"order_code"`
+			BuyerID          string `json:"buyer_id"`
+			ShopID           string `json:"shop_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
+			PaymentMethod    string `json:"payment_method"`
+			TotalPayableVND  int64  `json:"total_payable_vnd"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OrderID == "" || p.BuyerID == "" {
 			return nil, fmt.Errorf("%w: invalid order.created payload", ErrMalformedPayload)
@@ -380,19 +399,21 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		code := orderLabel(p.OrderCode, p.OrderID)
 		body := fmt.Sprintf("Đơn hàng %s đã được tạo (%s) với tổng thanh toán %d VND.", code, p.PaymentMethod, p.TotalPayableVND)
 		return &eventPlan{
-			userID:   p.BuyerID,
-			category: store.CategoryOrder,
+			userID:           p.BuyerID,
+			category:         store.CategoryOrder,
+			orderID:          p.OrderID,
+			storefrontShopID: p.StorefrontShopID,
 			cacheOrder: &store.OrderParticipant{
-				OrderID:   p.OrderID,
-				BuyerID:   p.BuyerID,
-				ShopID:    p.ShopID,
-				OrderCode: p.OrderCode,
+				OrderID:          p.OrderID,
+				BuyerID:          p.BuyerID,
+				ShopID:           p.ShopID,
+				OrderCode:        p.OrderCode,
+				StorefrontShopID: p.StorefrontShopID,
 			},
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     fmt.Sprintf("Đặt hàng thành công %s", code),
 				Body:      body,
-				Link:      "/orders/" + p.OrderID,
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
@@ -403,12 +424,13 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "order.confirmed":
 		var p struct {
-			OrderID         string `json:"order_id"`
-			OrderCode       string `json:"order_code"`
-			BuyerID         string `json:"buyer_id"`
-			ShopID          string `json:"shop_id"`
-			PaymentMethod   string `json:"payment_method"`
-			TotalPayableVND int64  `json:"total_payable_vnd"`
+			OrderID          string `json:"order_id"`
+			OrderCode        string `json:"order_code"`
+			BuyerID          string `json:"buyer_id"`
+			ShopID           string `json:"shop_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
+			PaymentMethod    string `json:"payment_method"`
+			TotalPayableVND  int64  `json:"total_payable_vnd"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OrderID == "" || p.BuyerID == "" {
 			return nil, fmt.Errorf("%w: invalid order.confirmed payload", ErrMalformedPayload)
@@ -416,19 +438,21 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		code := orderLabel(p.OrderCode, p.OrderID)
 		body := fmt.Sprintf("Đơn hàng %s đã được xác nhận (%d VND) và đang chờ người bán chuẩn bị.", code, p.TotalPayableVND)
 		return &eventPlan{
-			userID:   p.BuyerID,
-			category: store.CategoryOrder,
+			userID:           p.BuyerID,
+			category:         store.CategoryOrder,
+			orderID:          p.OrderID,
+			storefrontShopID: p.StorefrontShopID,
 			cacheOrder: &store.OrderParticipant{
-				OrderID:   p.OrderID,
-				BuyerID:   p.BuyerID,
-				ShopID:    p.ShopID,
-				OrderCode: p.OrderCode,
+				OrderID:          p.OrderID,
+				BuyerID:          p.BuyerID,
+				ShopID:           p.ShopID,
+				OrderCode:        p.OrderCode,
+				StorefrontShopID: p.StorefrontShopID,
 			},
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     fmt.Sprintf("Đơn hàng %s đã được xác nhận", code),
 				Body:      body,
-				Link:      "/orders/" + p.OrderID,
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
@@ -439,11 +463,12 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "order.cancelled":
 		var p struct {
-			OrderID   string `json:"order_id"`
-			OrderCode string `json:"order_code"`
-			BuyerID   string `json:"buyer_id"`
-			ShopID    string `json:"shop_id"`
-			Reason    string `json:"reason"`
+			OrderID          string `json:"order_id"`
+			OrderCode        string `json:"order_code"`
+			BuyerID          string `json:"buyer_id"`
+			ShopID           string `json:"shop_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
+			Reason           string `json:"reason"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OrderID == "" || p.BuyerID == "" {
 			return nil, fmt.Errorf("%w: invalid order.cancelled payload", ErrMalformedPayload)
@@ -454,19 +479,21 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 			body += fmt.Sprintf(" Lý do: %s", p.Reason)
 		}
 		return &eventPlan{
-			userID:   p.BuyerID,
-			category: store.CategoryOrder,
+			userID:           p.BuyerID,
+			category:         store.CategoryOrder,
+			orderID:          p.OrderID,
+			storefrontShopID: p.StorefrontShopID,
 			cacheOrder: &store.OrderParticipant{
-				OrderID:   p.OrderID,
-				BuyerID:   p.BuyerID,
-				ShopID:    p.ShopID,
-				OrderCode: p.OrderCode,
+				OrderID:          p.OrderID,
+				BuyerID:          p.BuyerID,
+				ShopID:           p.ShopID,
+				OrderCode:        p.OrderCode,
+				StorefrontShopID: p.StorefrontShopID,
 			},
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     fmt.Sprintf("Đơn hàng %s đã hủy", code),
 				Body:      body,
-				Link:      "/orders/" + p.OrderID,
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
@@ -477,12 +504,13 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "order.shipped":
 		var p struct {
-			OrderID      string `json:"order_id"`
-			OrderCode    string `json:"order_code"`
-			BuyerID      string `json:"buyer_id"`
-			ShopID       string `json:"shop_id"`
-			CarrierCode  string `json:"carrier_code"`
-			TrackingCode string `json:"tracking_code"`
+			OrderID          string `json:"order_id"`
+			OrderCode        string `json:"order_code"`
+			BuyerID          string `json:"buyer_id"`
+			ShopID           string `json:"shop_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
+			CarrierCode      string `json:"carrier_code"`
+			TrackingCode     string `json:"tracking_code"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OrderID == "" || p.BuyerID == "" {
 			return nil, fmt.Errorf("%w: invalid order.shipped payload", ErrMalformedPayload)
@@ -490,19 +518,21 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		code := orderLabel(p.OrderCode, p.OrderID)
 		body := fmt.Sprintf("Đơn hàng %s đã được giao cho đơn vị vận chuyển %s (mã vận đơn: %s).", code, p.CarrierCode, p.TrackingCode)
 		return &eventPlan{
-			userID:   p.BuyerID,
-			category: store.CategoryOrder,
+			userID:           p.BuyerID,
+			category:         store.CategoryOrder,
+			orderID:          p.OrderID,
+			storefrontShopID: p.StorefrontShopID,
 			cacheOrder: &store.OrderParticipant{
-				OrderID:   p.OrderID,
-				BuyerID:   p.BuyerID,
-				ShopID:    p.ShopID,
-				OrderCode: p.OrderCode,
+				OrderID:          p.OrderID,
+				BuyerID:          p.BuyerID,
+				ShopID:           p.ShopID,
+				OrderCode:        p.OrderCode,
+				StorefrontShopID: p.StorefrontShopID,
 			},
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     fmt.Sprintf("Đơn hàng %s đang được giao", code),
 				Body:      body,
-				Link:      "/orders/" + p.OrderID,
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
@@ -513,11 +543,12 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "order.delivered":
 		var p struct {
-			OrderID      string `json:"order_id"`
-			OrderCode    string `json:"order_code"`
-			BuyerID      string `json:"buyer_id"`
-			ShopID       string `json:"shop_id"`
-			TrackingCode string `json:"tracking_code"`
+			OrderID          string `json:"order_id"`
+			OrderCode        string `json:"order_code"`
+			BuyerID          string `json:"buyer_id"`
+			ShopID           string `json:"shop_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
+			TrackingCode     string `json:"tracking_code"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OrderID == "" || p.BuyerID == "" {
 			return nil, fmt.Errorf("%w: invalid order.delivered payload", ErrMalformedPayload)
@@ -525,19 +556,21 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		code := orderLabel(p.OrderCode, p.OrderID)
 		body := fmt.Sprintf("Đơn hàng %s (mã vận đơn %s) đã giao thành công. Vui lòng kiểm tra và xác nhận đã nhận hàng.", code, p.TrackingCode)
 		return &eventPlan{
-			userID:   p.BuyerID,
-			category: store.CategoryOrder,
+			userID:           p.BuyerID,
+			category:         store.CategoryOrder,
+			orderID:          p.OrderID,
+			storefrontShopID: p.StorefrontShopID,
 			cacheOrder: &store.OrderParticipant{
-				OrderID:   p.OrderID,
-				BuyerID:   p.BuyerID,
-				ShopID:    p.ShopID,
-				OrderCode: p.OrderCode,
+				OrderID:          p.OrderID,
+				BuyerID:          p.BuyerID,
+				ShopID:           p.ShopID,
+				OrderCode:        p.OrderCode,
+				StorefrontShopID: p.StorefrontShopID,
 			},
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     fmt.Sprintf("Đơn hàng %s đã giao thành công", code),
 				Body:      body,
-				Link:      "/orders/" + p.OrderID,
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
@@ -548,11 +581,12 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "order.completed":
 		var p struct {
-			OrderID     string `json:"order_id"`
-			OrderCode   string `json:"order_code"`
-			BuyerID     string `json:"buyer_id"`
-			ShopID      string `json:"shop_id"`
-			CoinsReward int64  `json:"coins_reward"`
+			OrderID          string `json:"order_id"`
+			OrderCode        string `json:"order_code"`
+			BuyerID          string `json:"buyer_id"`
+			ShopID           string `json:"shop_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
+			CoinsReward      int64  `json:"coins_reward"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OrderID == "" || p.BuyerID == "" {
 			return nil, fmt.Errorf("%w: invalid order.completed payload", ErrMalformedPayload)
@@ -560,19 +594,21 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		code := orderLabel(p.OrderCode, p.OrderID)
 		body := fmt.Sprintf("Đơn hàng %s đã hoàn tất. Bạn nhận được %d xu thưởng.", code, p.CoinsReward)
 		return &eventPlan{
-			userID:   p.BuyerID,
-			category: store.CategoryOrder,
+			userID:           p.BuyerID,
+			category:         store.CategoryOrder,
+			orderID:          p.OrderID,
+			storefrontShopID: p.StorefrontShopID,
 			cacheOrder: &store.OrderParticipant{
-				OrderID:   p.OrderID,
-				BuyerID:   p.BuyerID,
-				ShopID:    p.ShopID,
-				OrderCode: p.OrderCode,
+				OrderID:          p.OrderID,
+				BuyerID:          p.BuyerID,
+				ShopID:           p.ShopID,
+				OrderCode:        p.OrderCode,
+				StorefrontShopID: p.StorefrontShopID,
 			},
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     fmt.Sprintf("Đơn hàng %s hoàn tất", code),
 				Body:      body,
-				Link:      "/orders/" + p.OrderID,
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
@@ -583,26 +619,29 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "payment.succeeded":
 		var p struct {
-			PaymentID    string `json:"payment_id"`
-			OrderID      string `json:"order_id"`
-			OrderGroupID string `json:"order_group_id"`
-			UserID       string `json:"user_id"`
-			AmountVND    int64  `json:"amount_vnd"`
-			Method       string `json:"method"`
-			ProviderTxID string `json:"provider_tx_id"`
+			PaymentID        string `json:"payment_id"`
+			OrderID          string `json:"order_id"`
+			OrderGroupID     string `json:"order_group_id"`
+			UserID           string `json:"user_id"`
+			AmountVND        int64  `json:"amount_vnd"`
+			Method           string `json:"method"`
+			ProviderTxID     string `json:"provider_tx_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.UserID == "" {
 			return nil, fmt.Errorf("%w: invalid payment.succeeded payload", ErrMalformedPayload)
 		}
 		body := fmt.Sprintf("Thanh toán %d VND qua %s thành công (mã giao dịch: %s).", p.AmountVND, p.Method, p.ProviderTxID)
 		return &eventPlan{
-			userID:   p.UserID,
-			category: store.CategoryOrder,
+			userID:           p.UserID,
+			category:         store.CategoryOrder,
+			orderID:          p.OrderID,
+			storefrontShopID: p.StorefrontShopID,
+			isOrderGroup:     p.OrderGroupID != "" && (p.OrderID == "" || p.OrderID == p.OrderGroupID),
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     "Thanh toán thành công",
 				Body:      body,
-				Link:      orderLink(p.OrderID),
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
@@ -613,23 +652,27 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "payment.failed":
 		var p struct {
-			PaymentID string `json:"payment_id"`
-			OrderID   string `json:"order_id"`
-			UserID    string `json:"user_id"`
-			Reason    string `json:"reason"`
+			PaymentID        string `json:"payment_id"`
+			OrderGroupID     string `json:"order_group_id"`
+			OrderID          string `json:"order_id"`
+			UserID           string `json:"user_id"`
+			Reason           string `json:"reason"`
+			StorefrontShopID string `json:"storefront_shop_id"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.UserID == "" {
 			return nil, fmt.Errorf("%w: invalid payment.failed payload", ErrMalformedPayload)
 		}
 		body := fmt.Sprintf("Thanh toán thất bại cho giao dịch %s. Lý do: %s", p.PaymentID, p.Reason)
 		return &eventPlan{
-			userID:   p.UserID,
-			category: store.CategoryOrder,
+			userID:           p.UserID,
+			category:         store.CategoryOrder,
+			orderID:          p.OrderID,
+			storefrontShopID: p.StorefrontShopID,
+			isOrderGroup:     p.OrderGroupID != "" && (p.OrderID == "" || p.OrderID == p.OrderGroupID),
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     "Thanh toán thất bại",
 				Body:      body,
-				Link:      orderLink(p.OrderID),
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
@@ -640,23 +683,27 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "payment.expired":
 		var p struct {
-			PaymentID string `json:"payment_id"`
-			OrderID   string `json:"order_id"`
-			UserID    string `json:"user_id"`
-			Reason    string `json:"reason"`
+			PaymentID        string `json:"payment_id"`
+			OrderGroupID     string `json:"order_group_id"`
+			OrderID          string `json:"order_id"`
+			UserID           string `json:"user_id"`
+			Reason           string `json:"reason"`
+			StorefrontShopID string `json:"storefront_shop_id"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.UserID == "" {
 			return nil, fmt.Errorf("%w: invalid payment.expired payload", ErrMalformedPayload)
 		}
 		body := fmt.Sprintf("Phiên thanh toán %s đã hết hạn và đơn hàng đã được hủy tự động.", p.PaymentID)
 		return &eventPlan{
-			userID:   p.UserID,
-			category: store.CategoryOrder,
+			userID:           p.UserID,
+			category:         store.CategoryOrder,
+			orderID:          p.OrderID,
+			storefrontShopID: p.StorefrontShopID,
+			isOrderGroup:     p.OrderGroupID != "" && (p.OrderID == "" || p.OrderID == p.OrderGroupID),
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     "Thanh toán hết hạn",
 				Body:      body,
-				Link:      orderLink(p.OrderID),
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
@@ -667,12 +714,13 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "payment.refunded":
 		var p struct {
-			RefundID  string `json:"refund_id"`
-			PaymentID string `json:"payment_id"`
-			OrderID   string `json:"order_id"`
-			UserID    string `json:"user_id"`
-			AmountVND int64  `json:"amount_vnd"`
-			Reason    string `json:"reason"`
+			RefundID         string `json:"refund_id"`
+			PaymentID        string `json:"payment_id"`
+			OrderID          string `json:"order_id"`
+			UserID           string `json:"user_id"`
+			AmountVND        int64  `json:"amount_vnd"`
+			Reason           string `json:"reason"`
+			StorefrontShopID string `json:"storefront_shop_id"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.UserID == "" {
 			return nil, fmt.Errorf("%w: invalid payment.refunded payload", ErrMalformedPayload)
@@ -682,13 +730,14 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 			body += fmt.Sprintf(" Lý do: %s", p.Reason)
 		}
 		return &eventPlan{
-			userID:   p.UserID,
-			category: store.CategoryOrder,
+			userID:           p.UserID,
+			category:         store.CategoryOrder,
+			orderID:          p.OrderID,
+			storefrontShopID: p.StorefrontShopID,
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     "Hoàn tiền thành công",
 				Body:      body,
-				Link:      orderLink(p.OrderID),
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
@@ -719,11 +768,11 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 			userID:        p.BuyerID,
 			lookupOrderID: p.OrderID,
 			category:      store.CategoryOrder,
+			orderID:       p.OrderID,
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     fmt.Sprintf("Cập nhật vận chuyển (%s)", p.Status),
 				Body:      body,
-				Link:      "/orders/" + p.OrderID,
 				CreatedAt: now,
 			},
 		}, nil
@@ -739,11 +788,4 @@ func orderLabel(code, id string) string {
 		return code
 	}
 	return id
-}
-
-func orderLink(orderID string) string {
-	if strings.TrimSpace(orderID) == "" {
-		return "/orders"
-	}
-	return "/orders/" + orderID
 }

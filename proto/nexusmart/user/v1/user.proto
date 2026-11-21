@@ -504,6 +504,33 @@ message SuspendSiteResponse {
   Site site = 1;
 }
 
+// PublishedSiteSummary is the public directory card of a PUBLISHED site whose shop is ACTIVE.
+// Fields come only from the published config and public shop profile (never the draft).
+message PublishedSiteSummary {
+  string site_id = 1;
+  string shop_id = 2;
+  string shop_name = 3;
+  string subdomain = 4;
+  string primary_host = 5;
+  string logo_url = 6;
+  string cover_url = 7;
+  string tagline = 8;
+  google.protobuf.Timestamp published_at = 9;
+}
+
+// ListPublishedSitesRequest is public (no JWT). page_size defaults to 24, capped at 48.
+message ListPublishedSitesRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+}
+
+message ListPublishedSitesResponse {
+  repeated PublishedSiteSummary sites = 1;
+  int64 total = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
 service UserService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   rpc VerifyOTP(VerifyOTPRequest) returns (VerifyOTPResponse);
@@ -538,4 +565,5 @@ service UserService {
   rpc ListSiteVersions(ListSiteVersionsRequest) returns (ListSiteVersionsResponse);
   rpc ListSites(ListSitesRequest) returns (ListSitesResponse);
   rpc SuspendSite(SuspendSiteRequest) returns (SuspendSiteResponse);
+  rpc ListPublishedSites(ListPublishedSitesRequest) returns (ListPublishedSitesResponse);
 }

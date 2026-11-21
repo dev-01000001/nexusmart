@@ -472,7 +472,7 @@ export function AdminShopsClient(props: AdminShopsClientProps) {
     <Suspense fallback={<AdminSuspenseFallback title="Duyệt gian hàng" />}>
       <AdminStateGate
         title="Duyệt gian hàng"
-        subtitle="Thẩm định giấy phép kinh doanh và kích hoạt gian hàng đăng ký trên sàn."
+        subtitle="Thẩm định giấy phép kinh doanh và kích hoạt gian hàng đăng ký trên NexusMart."
         emptyTitle="Hàng đợi duyệt gian hàng đang trống"
         emptyMessage="Tất cả hồ sơ đăng ký mở gian hàng mới đã được xử lý hoàn tất."
         errorTitle="Không thể tải danh sách hồ sơ gian hàng"

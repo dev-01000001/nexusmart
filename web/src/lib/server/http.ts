@@ -1,6 +1,6 @@
 // Route-handler plumbing: CSRF origin check, proxy-header trust gating, and uniform error handling.
 import type { NextRequest } from "next/server";
-import { APP_ORIGINS, isTrustedProxyHeadersEnabled } from "./config";
+import { isTrustedProxyHeadersEnabled } from "./config";
 import { GatewayError, errorResponse } from "./errors";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -99,13 +99,14 @@ export function buildLoginRedirectUrl(
 }
 
 /**
- * CSRF guard for write requests. Checks Fetch-Metadata (`Sec-Fetch-Site`), then validates the
- * `Origin` header (or `Referer` fallback ONLY when `Origin` is absent) against `APP_ORIGINS` or
- * the request host/protocol (ignoring `x-forwarded-host`/`x-forwarded-proto` unless
- * `TRUST_PROXY_HEADERS=true`). Rejects foreign origins, `Origin: null`, cross-site/same-site
- * Fetch-Metadata, and requests carrying neither `Origin` nor `Referer` with 403 `BAD_ORIGIN`.
- * Server actions are already origin-checked by Next; route handlers must call this
- * (`apiRoute` does it automatically for non-GET/HEAD/OPTIONS methods).
+ * CSRF guard for write requests. Checks Fetch-Metadata (`Sec-Fetch-Site`), then requires the
+ * `Origin` header (or `Referer` fallback ONLY when `Origin` is absent) to be EXACTLY the host
+ * serving this request (ignoring `x-forwarded-host`/`x-forwarded-proto` unless
+ * `TRUST_PROXY_HEADERS=true`). Every site and the root host are separate origins: a write from
+ * another site or from the root host is rejected. Also rejects `Origin: null`,
+ * cross-site/same-site Fetch-Metadata, and requests carrying neither `Origin` nor `Referer`
+ * with 403 `BAD_ORIGIN`. Server actions are already origin-checked by Next; route handlers must
+ * call this (`apiRoute` does it automatically for non-GET/HEAD/OPTIONS methods).
  */
 export function assertSameOrigin(req: Request, opts: ProxyTrustOptions = {}): void {
   const bad = () => new GatewayError("forbidden", "BAD_ORIGIN");
@@ -131,15 +132,17 @@ export function assertSameOrigin(req: Request, opts: ProxyTrustOptions = {}): vo
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw bad();
 
-  if (APP_ORIGINS.length > 0) {
-    if (!APP_ORIGINS.includes(parsed.origin)) throw bad();
-    return;
-  }
-
-  const host = resolveRequestHost(req.headers, "", opts);
-  if (!host || parsed.host !== host) throw bad();
-
+  const rawHost = resolveRequestHost(req.headers, "", opts).toLowerCase();
   const expectedProto = resolveRequestProto(req.headers, req.url, opts);
+  if (!rawHost) throw bad();
+  let expectedHost: string;
+  try {
+    expectedHost = new URL(`${expectedProto === "https" ? "https" : "http"}://${rawHost}`).host;
+  } catch {
+    throw bad();
+  }
+  if (!expectedHost || parsed.host !== expectedHost) throw bad();
+
   if (
     (expectedProto === "http" || expectedProto === "https") &&
     parsed.protocol !== `${expectedProto}:`

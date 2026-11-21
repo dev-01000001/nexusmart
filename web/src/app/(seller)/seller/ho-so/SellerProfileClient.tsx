@@ -1,20 +1,18 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { SHOPS, getShopById } from "@/data";
-import type { SellerSizeChartRow } from "@/data";
-import { Button, IconCheck, IconPlus, StateView } from "@/components";
-import { formatInt, formatVnd } from "@/lib/format";
+import type { SellerSizeChartRow } from "@/data/seller";
+import { Button, IconCheck, StateView } from "@/components";
+import { formatVnd } from "@/lib/format";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { useSellerContext } from "@/features/seller/SellerShell";
 import {
-  addShopCollectionItem,
   getShopFactoryProfileWithSession,
   getShopOperationsConfigWithSession,
   getShopSizeChartsWithSession,
   parseUiState,
-  toggleShopMenuLinkVisibility,
   updateShopFactoryProfile,
   updateShopOperationsConfig,
   updateShopSizeCharts,
@@ -56,16 +54,6 @@ function recommendSizeFromChart(
   return rows[bestIdx] ?? rows[0];
 }
 
-function slugifyCollection(text: string): string {
-  return text
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/đ/gi, "d")
-    .replace(/[^a-zA-Z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .toLowerCase();
-}
-
 function SellerProfileOpsContent() {
   const searchParams = useSearchParams();
   const uiState = parseUiState(searchParams.get("state"));
@@ -73,21 +61,20 @@ function SellerProfileOpsContent() {
 
   const { shop, presentationShopKey, showToast } = useSellerContext();
   const session = useSellerSession();
-  const activeShop = getShopById(presentationShopKey) ?? SHOPS[0];
-  const displayShopName = shop?.name ?? activeShop.name;
+  const displayShopName = shop?.name ?? "Gian hàng của bạn";
 
   const [tab, setTab] = useState<ProfileTab>(
     initialTab && ["factory", "sizechart", "shipping"].includes(initialTab) ? initialTab : "factory"
   );
 
-  const profile = getShopFactoryProfileWithSession(activeShop.id, session);
-  const sizeCharts = getShopSizeChartsWithSession(activeShop.id, session);
-  const opsConfig = getShopOperationsConfigWithSession(activeShop.id, session);
+  const profile = getShopFactoryProfileWithSession(presentationShopKey, session);
+  const sizeCharts = getShopSizeChartsWithSession(presentationShopKey, session);
+  const opsConfig = getShopOperationsConfigWithSession(presentationShopKey, session);
 
   return (
     <SellerProfileOpsInner
-      key={activeShop.id}
-      shopId={activeShop.id}
+      key={presentationShopKey}
+      shopId={presentationShopKey}
       shopName={displayShopName}
       shopShortName={displayShopName}
       uiState={uiState}
@@ -133,10 +120,6 @@ function SellerProfileOpsInner({
   const [monthlyCapacity, setMonthlyCapacity] = useState(profile.monthlyCapacity);
   const [yarnText, setYarnText] = useState(profile.yarnSources.join("\n"));
 
-  const [showColForm, setShowColForm] = useState(false);
-  const [colName, setColName] = useState("");
-  const [colDesc, setColDesc] = useState("");
-
   // Tab 2: Size charts drafts & live simulator
   const [sizeGroup, setSizeGroup] = useState<SizeGroupKey>("tops");
   const [topsRows, setTopsRows] = useState<SellerSizeChartRow[]>(sizeCharts.tops);
@@ -181,23 +164,6 @@ function SellerProfileOpsInner({
     onNotify(`Đã lưu hồ sơ xưởng & nguồn sợi cho ${shopShortName}.`);
   };
 
-  const handleAddCollection = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (colName.trim().length < 3) return;
-    addShopCollectionItem(shopId, {
-      id: `col-custom-${Date.now()}`,
-      name: colName.trim(),
-      slug: slugifyCollection(colName.trim()) || "bst-moi",
-      description: colDesc.trim() || "Bộ sưu tập riêng của gian hàng trên NexusMart.",
-      productCount: 0,
-      featured: true,
-    });
-    setColName("");
-    setColDesc("");
-    setShowColForm(false);
-    onNotify(`Đã tạo BST "${colName.trim()}" và mở chọn trong trang đăng sản phẩm.`);
-  };
-
   const updateSizeRow = (
     idx: number,
     field: keyof Omit<SellerSizeChartRow, "size">,
@@ -222,7 +188,7 @@ function SellerProfileOpsInner({
       updatedAt: "2026-11-20",
     });
     onNotify(
-      `Đã lưu bảng quy đổi size ${sizeGroup === "tops" ? "nhóm Áo" : "nhóm Quần"} và đồng bộ lên widget gợi ý size toàn sàn.`
+      `Đã lưu bảng quy đổi size ${sizeGroup === "tops" ? "nhóm Áo" : "nhóm Quần"} cho site gian hàng.`
     );
   };
 
@@ -243,7 +209,7 @@ function SellerProfileOpsInner({
       returnExceptionNote: exceptionNote.trim(),
     });
     onNotify(
-      `Đã cập nhật cấu hình giao hàng (freeship từ ${formatVnd(freeShipThresholdVnd)}) và huy hiệu đổi trả 45 ngày.`
+      `Đã cập nhật cấu hình giao hàng (freeship từ ${formatVnd(freeShipThresholdVnd)}) và chính sách đổi trả.`
     );
   };
 
@@ -254,11 +220,13 @@ function SellerProfileOpsInner({
     <div className={common.page}>
       <header className={common.pageHeader}>
         <div className={common.headerText}>
-          <h1 className={common.title}>Hồ sơ xưởng, Bảng size & Vận hành</h1>
+          <h1 className={common.title}>Hồ sơ xưởng, Bảng size &amp; Vận hành</h1>
           <p className={common.finding}>
-            {shopName} · Freeship xưởng từ {formatVnd(opsConfig.freeShipThresholdVnd)} ·{" "}
-            {opsConfig.return45DaysEnabled ? "Đổi trả 45 ngày tận nơi" : "Đổi trả chuẩn sàn"} ·{" "}
-            {opsConfig.fastDeliveryEnabled ? "Đang bật giao nhanh nội thành" : "Giao tiêu chuẩn"}
+            {shopName} · Freeship gian hàng từ {formatVnd(opsConfig.freeShipThresholdVnd)} ·{" "}
+            {opsConfig.return45DaysEnabled
+              ? "Đổi trả 45 ngày tận nơi"
+              : "Đổi trả theo chính sách shop"}{" "}
+            · {opsConfig.fastDeliveryEnabled ? "Đang bật giao nhanh nội thành" : "Giao tiêu chuẩn"}
           </p>
         </div>
         <div className={common.headerActions}>
@@ -266,6 +234,11 @@ function SellerProfileOpsInner({
             <Button variant="ink" size="sm" shape="app" onClick={handleSaveSizeCharts}>
               <IconCheck size={14} />
               <span>Lưu bảng size xưởng</span>
+            </Button>
+          )}
+          {tab === "factory" && (
+            <Button variant="outline" size="sm" shape="app" href="/seller/site">
+              Chỉnh giao diện &amp; bố cục site
             </Button>
           )}
         </div>
@@ -297,7 +270,7 @@ function SellerProfileOpsInner({
           kind="empty"
           surface="app"
           title="Gian hàng chưa hoàn thiện hồ sơ xưởng và bảng size"
-          message="Khai báo nguồn sợi, quy chuẩn QC và bảng size riêng để nhận huy hiệu minh bạch xưởng."
+          message="Khai báo nguồn sợi, quy chuẩn QC và bảng size riêng để hiển thị trên site gian hàng."
           actionLabel="Mở cấu hình ngay"
           actionHref="/seller/ho-so"
         />
@@ -317,7 +290,7 @@ function SellerProfileOpsInner({
               className={`${common.underlineTab} ${tab === "factory" ? common.underlineTabActive : ""}`}
               onClick={() => setTab("factory")}
             >
-              Hồ sơ xưởng & QC
+              Hồ sơ xưởng &amp; QC
             </button>
             <button
               type="button"
@@ -335,11 +308,11 @@ function SellerProfileOpsInner({
               className={`${common.underlineTab} ${tab === "shipping" ? common.underlineTabActive : ""}`}
               onClick={() => setTab("shipping")}
             >
-              Giao hàng & Đổi trả
+              Giao hàng &amp; Đổi trả
             </button>
           </div>
 
-          {/* TAB 1: Factory profile, Yarn sources, QC standards, Shop menu & Collections */}
+          {/* TAB 1: Factory profile, Yarn sources, QC standards */}
           {tab === "factory" && (
             <div className={styles.twoCol}>
               <form
@@ -349,7 +322,7 @@ function SellerProfileOpsInner({
               >
                 <div className={common.cardHeader}>
                   <h2 id="factory-info-heading" className={common.cardTitle}>
-                    Thông tin nhà máy & nguồn sợi
+                    Thông tin nhà máy &amp; nguồn sợi
                   </h2>
                   <span className={`${common.pill} ${common.pillPos}`}>Đã kiểm định QC</span>
                 </div>
@@ -410,7 +383,7 @@ function SellerProfileOpsInner({
 
                   <div className={common.field}>
                     <label htmlFor="fac-yarn" className={common.fieldLabel}>
-                      Nguồn sợi & vật liệu chủ lực (mỗi dòng một mục)
+                      Nguồn sợi &amp; vật liệu chủ lực (mỗi dòng một mục)
                     </label>
                     <textarea
                       id="fac-yarn"
@@ -433,7 +406,9 @@ function SellerProfileOpsInner({
                   <h2 id="qc-heading" className={common.cardTitle}>
                     Quy chuẩn kiểm định QC tại xưởng
                   </h2>
-                  <span className={common.cardMeta}>Hiển thị tại mục Minh bạch xưởng</span>
+                  <Link href="/seller/site" className={common.cardLink}>
+                    Tùy chỉnh trang Giới thiệu trên site
+                  </Link>
                 </div>
                 <div className={styles.qcList}>
                   {profile.qcStandards.map((qc) => (
@@ -447,112 +422,16 @@ function SellerProfileOpsInner({
                   ))}
                   <div className={styles.qcRow}>
                     <div className={styles.qcHead}>
-                      <span className={styles.qcTitle}>Chính sách đối chiếu & hậu kiểm sàn</span>
+                      <span className={styles.qcTitle}>
+                        Quy trình lưu mẫu &amp; đối chiếu chất lượng
+                      </span>
                       <span className={common.pill}>Định kỳ quý</span>
                     </div>
                     <p className={styles.qcDesc}>
                       Mọi lô sản xuất lưu mẫu đối chứng tại kho và cho phép đồng kiểm khi giao hàng
-                      theo quy chuẩn NexusMart.
+                      để đảm bảo chất lượng ổn định trên site gian hàng.
                     </p>
                   </div>
-                </div>
-              </section>
-
-              <section className={common.card} aria-labelledby="shop-menu-heading">
-                <div className={common.cardHeader}>
-                  <h2 id="shop-menu-heading" className={common.cardTitle}>
-                    Menu nội bộ gian hàng
-                  </h2>
-                  <span className={common.cardMeta}>Giữ header sàn, cấu hình dải mục shop</span>
-                </div>
-                <div className={styles.menuList}>
-                  {profile.shopMenu.map((item) => (
-                    <div key={item.id} className={styles.menuRow}>
-                      <div>
-                        <span className={styles.menuLabel}>{item.label}</span>
-                        <span className={styles.menuSlug}>/bst/{item.targetCollection}</span>
-                      </div>
-                      <input
-                        type="checkbox"
-                        className={common.toggleSwitch}
-                        checked={item.visible}
-                        onChange={(e) => {
-                          toggleShopMenuLinkVisibility(shopId, item.id, e.target.checked);
-                          onNotify(
-                            e.target.checked
-                              ? `Đã hiển thị mục "${item.label}" trên menu gian hàng.`
-                              : `Đã ẩn mục "${item.label}" khỏi menu gian hàng.`
-                          );
-                        }}
-                        aria-label={`Hiển thị mục menu ${item.label}`}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </section>
-
-              <section className={common.card} aria-labelledby="shop-cols-heading">
-                <div className={common.cardHeader}>
-                  <h2 id="shop-cols-heading" className={common.cardTitle}>
-                    Bộ sưu tập (BST) riêng của shop ({formatInt(profile.collections.length)})
-                  </h2>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    shape="app"
-                    onClick={() => setShowColForm((prev) => !prev)}
-                  >
-                    <IconPlus size={14} />
-                    <span>{showColForm ? "Đóng" : "Tạo BST"}</span>
-                  </Button>
-                </div>
-
-                {showColForm && (
-                  <form className={styles.addCollectionForm} onSubmit={handleAddCollection}>
-                    <div className={common.field}>
-                      <label htmlFor="col-name" className={common.fieldLabel}>
-                        Tên bộ sưu tập mới
-                      </label>
-                      <input
-                        id="col-name"
-                        type="text"
-                        className={common.textInput}
-                        value={colName}
-                        onChange={(e) => setColName(e.target.value)}
-                        placeholder="Ví dụ: Đồ mặc nhà Cotton Mùa Thu"
-                      />
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="col-desc" className={common.fieldLabel}>
-                        Mô tả ngắn lợi ích BST
-                      </label>
-                      <input
-                        id="col-desc"
-                        type="text"
-                        className={common.textInput}
-                        value={colDesc}
-                        onChange={(e) => setColDesc(e.target.value)}
-                        placeholder="Thoáng nhẹ, ít nhăn, giữ phom giặt máy"
-                      />
-                    </div>
-                    <div className={styles.formActions}>
-                      <Button type="submit" variant="ink" size="sm" shape="app">
-                        Lưu bộ sưu tập
-                      </Button>
-                    </div>
-                  </form>
-                )}
-
-                <div className={styles.qcList}>
-                  {profile.collections.map((col) => (
-                    <div key={col.id} className={styles.qcRow}>
-                      <div className={styles.qcHead}>
-                        <span className={styles.qcTitle}>{col.name}</span>
-                        <span className={common.pill}>{formatInt(col.productCount)} SP</span>
-                      </div>
-                      <p className={styles.qcDesc}>{col.description}</p>
-                    </div>
-                  ))}
                 </div>
               </section>
             </div>
@@ -568,8 +447,8 @@ function SellerProfileOpsInner({
                       Bảng quy đổi thông số size riêng của {shopShortName}
                     </h2>
                     <span className={common.cardMeta}>
-                      Widget gợi ý size toàn sàn tự đọc bảng này để giảm tỷ lệ đổi trả lệch phom ·
-                      Cập nhật {sizeCharts.updatedAt}
+                      Bảng gợi ý chọn size trên site gian hàng đọc thông số từ bảng này · Cập nhật{" "}
+                      {sizeCharts.updatedAt}
                     </span>
                   </div>
                   <div className={common.segmented} role="tablist" aria-label="Nhóm bảng size">
@@ -739,13 +618,12 @@ function SellerProfileOpsInner({
                   <div className={styles.formActions}>
                     <Button variant="ink" size="sm" shape="app" onClick={handleSaveSizeCharts}>
                       <IconCheck size={14} />
-                      <span>Lưu & đồng bộ bảng size</span>
+                      <span>Lưu &amp; đồng bộ bảng size</span>
                     </Button>
                   </div>
                 </div>
               </section>
 
-              {/* Live preview of platform size recommendation reading this shop's table */}
               <section className={common.card} aria-labelledby="size-sim-heading">
                 <div className={common.cardHeader}>
                   <h2 id="size-sim-heading" className={common.cardTitle}>
@@ -826,7 +704,7 @@ function SellerProfileOpsInner({
             </div>
           )}
 
-          {/* TAB 3: Shipping threshold, Fast inner-city delivery & 45-day Return / 2-Way Exchange */}
+          {/* TAB 3: Shipping threshold, Fast inner-city delivery & Return policy */}
           {tab === "shipping" && (
             <div className={styles.twoCol}>
               <form
@@ -839,7 +717,7 @@ function SellerProfileOpsInner({
                     Cấu hình vận chuyển và cam kết đổi trả
                   </h2>
                   <span className={common.cardMeta}>
-                    Áp dụng trên giỏ hàng, bước thanh toán và huy hiệu trang sản phẩm
+                    Hiển thị trên site riêng, trang sản phẩm và chính sách bán hàng
                   </span>
                 </div>
 
@@ -859,7 +737,7 @@ function SellerProfileOpsInner({
                         onChange={(e) => setFreeShipStr(e.target.value)}
                       />
                       <span className={common.fieldHint}>
-                        Ngưỡng toàn sàn: 249.000₫ (hiển thị {formatVnd(liveFreeShip)})
+                        Áp dụng cho đơn trên site từ {formatVnd(liveFreeShip)}
                       </span>
                     </div>
 
@@ -946,8 +824,7 @@ function SellerProfileOpsInner({
                           Cam kết đổi trả miễn phí 45 ngày (Huy hiệu xưởng)
                         </span>
                         <span className={styles.switchDesc}>
-                          Hiển thị huy hiệu Đổi trả 45 ngày trên trang gian hàng và các sản phẩm áp
-                          dụng.
+                          Hiển thị huy hiệu Đổi trả 45 ngày trên site riêng và các sản phẩm áp dụng.
                         </span>
                       </div>
                       <input
@@ -979,7 +856,7 @@ function SellerProfileOpsInner({
 
                   <div className={common.field}>
                     <label htmlFor="ops-exc" className={common.fieldLabel}>
-                      Ghi chú ngoại lệ đổi trả (theo khung sàn)
+                      Ghi chú ngoại lệ đổi trả của gian hàng
                     </label>
                     <textarea
                       id="ops-exc"
@@ -998,11 +875,10 @@ function SellerProfileOpsInner({
                 </div>
               </form>
 
-              {/* Right preview showing buyer-facing badges & cart freeship bar */}
               <section className={common.card} aria-labelledby="badge-preview-heading">
                 <div className={common.cardHeader}>
                   <h2 id="badge-preview-heading" className={common.cardTitle}>
-                    Xem trước huy hiệu xưởng trên trang mua hàng
+                    Xem trước cam kết trên site gian hàng
                   </h2>
                 </div>
 
@@ -1022,7 +898,7 @@ function SellerProfileOpsInner({
                 </div>
 
                 <div className={styles.previewWell}>
-                  <span className={styles.previewHeading}>Thanh tiến độ Freeship gian hàng</span>
+                  <span className={styles.previewHeading}>Chính sách giao hàng của gian hàng</span>
                   <p className={styles.previewLine}>
                     Miễn phí vận chuyển cho đơn từ <strong>{formatVnd(liveFreeShip)}</strong> tại{" "}
                     {shopShortName} (tiết kiệm {formatVnd(liveShipFee)} phí giao tiêu chuẩn).

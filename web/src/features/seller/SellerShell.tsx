@@ -29,12 +29,14 @@ import {
   getShopMockChatThreads,
   useSellerSession,
 } from "./sellerStore";
+import type { SellerSiteSummary } from "./site/siteSummary";
 import styles from "@/app/(seller)/layout.module.css";
 
 interface SellerContextValue {
   user: SessionUser;
   shop: GwSellerShop | null;
   presentationShopKey: string;
+  site: SellerSiteSummary;
   showToast: (message: string) => void;
 }
 
@@ -59,10 +61,11 @@ export interface SellerShellProps {
   user: SessionUser;
   shop: GwSellerShop | null;
   pendingOrdersCount: number;
+  site: SellerSiteSummary;
   children: React.ReactNode;
 }
 
-export function SellerShell({ user, shop, pendingOrdersCount, children }: SellerShellProps) {
+export function SellerShell({ user, shop, pendingOrdersCount, site, children }: SellerShellProps) {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -111,7 +114,7 @@ export function SellerShell({ user, shop, pendingOrdersCount, children }: Seller
       badge: pendingInteractionCount > 0 ? pendingInteractionCount : undefined,
     },
     { href: "/seller/ho-so", label: "Hồ sơ & Vận hành", icon: <IconSliders size={16} /> },
-    { href: "/seller/site", label: "Site riêng", icon: <IconHome size={16} /> },
+    { href: "/seller/site", label: "Site bán hàng", icon: <IconHome size={16} /> },
     { href: "/seller/tai-chinh", label: "Tài chính", icon: <IconWallet size={16} /> },
     {
       href: "/seller/chat",
@@ -131,7 +134,7 @@ export function SellerShell({ user, shop, pendingOrdersCount, children }: Seller
   const shopStatus = shop ? getShopStatusLabel(shop.status) : null;
 
   return (
-    <SellerContext.Provider value={{ user, shop, presentationShopKey, showToast }}>
+    <SellerContext.Provider value={{ user, shop, presentationShopKey, site, showToast }}>
       <div className={styles.shell}>
         <header className={styles.mobileBar}>
           <div className={styles.mobileLeft}>
@@ -204,11 +207,24 @@ export function SellerShell({ user, shop, pendingOrdersCount, children }: Seller
           </nav>
 
           <div className={styles.bottom}>
-            <span className={styles.groupLabel}>Chuyển khu vực</span>
-            <Link href="/" className={styles.navItem}>
-              <IconArrowUpRight size={16} />
-              <span className={styles.navLabel}>Cửa hàng người mua</span>
-            </Link>
+            {site.url ? (
+              <a
+                href={site.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={styles.navItem}
+              >
+                <IconArrowUpRight size={16} />
+                <span className={styles.navLabel}>Xem site</span>
+              </a>
+            ) : (
+              <Link href="/seller/site" className={styles.navItem}>
+                <IconArrowUpRight size={16} />
+                <span className={styles.navLabel}>
+                  {site.state === "suspended" ? "Site đang bị khóa" : "Site chưa mở bán"}
+                </span>
+              </Link>
+            )}
             <p className={styles.shopMeta}>
               {user.fullName || user.email}
               {shop?.contact_phone ? ` · ${shop.contact_phone}` : ""}

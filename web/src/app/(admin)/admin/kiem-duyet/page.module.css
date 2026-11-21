@@ -1,4 +1,4 @@
-/* Kiểm duyệt Đánh giá, Hỏi đáp & Media (/admin/kiem-duyet) — Framed sheet queue & inspection */
+/* Duyệt sản phẩm (/admin/kiem-duyet) — hàng đợi & khung chi tiết */
 
 .kpiSpacer {
   margin-top: 20px;
@@ -43,74 +43,8 @@
   flex: 1;
 }
 
-.checklistRow {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.checkOk {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 13px;
-  color: var(--positive);
-}
-
-.checkWarn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 13px;
-  color: var(--negative);
-}
-
-.excerptCell {
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.bannedSection {
-  margin-top: 24px;
-}
-
-.bannedForm {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: end;
-  padding: 14px;
-  margin-bottom: 14px;
-  border-radius: var(--radius-control);
-  background: var(--bg);
-}
-
-.fieldGroup {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-@media (max-width: 960px) {
-  .excerptCell {
-    max-width: 210px;
-  }
-
-  .bannedForm {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 720px) {
   .previewRow {
     flex-direction: column;
-  }
-
-  .bannedForm {
-    grid-template-columns: minmax(0, 1fr);
   }
 }

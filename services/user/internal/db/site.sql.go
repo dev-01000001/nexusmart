@@ -10,6 +10,22 @@ import (
 	"time"
 )
 
+const countPublishedSites = `-- name: CountPublishedSites :one
+SELECT COUNT(*)::bigint
+FROM sites s
+JOIN shops sh ON sh.id = s.shop_id
+WHERE s.status = 'PUBLISHED'
+  AND s.published_version_id IS NOT NULL
+  AND sh.status = 'ACTIVE'
+`
+
+func (q *Queries) CountPublishedSites(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countPublishedSites)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countSiteVersions = `-- name: CountSiteVersions :one
 SELECT COUNT(*)::bigint
 FROM site_versions
@@ -558,6 +574,76 @@ func (q *Queries) GetSiteVersionByID(ctx context.Context, id string) (SiteVersio
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listPublishedSites = `-- name: ListPublishedSites :many
+SELECT
+    s.id,
+    s.shop_id,
+    sh.name AS shop_name,
+    s.subdomain,
+    COALESCE(pd.host, '') AS primary_host,
+    COALESCE(v.config->'theme'->>'logo_url', '')::text AS logo_url,
+    COALESCE(v.config->'theme'->>'banner_url', '')::text AS cover_url,
+    COALESCE(NULLIF(v.config->'theme'->>'tagline', ''), sh.description, '')::text AS tagline,
+    s.published_at
+FROM sites s
+JOIN site_versions v ON v.id = s.published_version_id
+JOIN shops sh ON sh.id = s.shop_id
+LEFT JOIN domains pd ON pd.site_id = s.id AND pd.is_primary = TRUE
+WHERE s.status = 'PUBLISHED'
+  AND s.published_version_id IS NOT NULL
+  AND sh.status = 'ACTIVE'
+ORDER BY s.published_at DESC NULLS LAST, s.id
+LIMIT $2 OFFSET $1
+`
+
+type ListPublishedSitesParams struct {
+	PageOffset int32 `json:"page_offset"`
+	PageLimit  int32 `json:"page_limit"`
+}
+
+type ListPublishedSitesRow struct {
+	ID          string     `json:"id"`
+	ShopID      string     `json:"shop_id"`
+	ShopName    string     `json:"shop_name"`
+	Subdomain   string     `json:"subdomain"`
+	PrimaryHost string     `json:"primary_host"`
+	LogoUrl     string     `json:"logo_url"`
+	CoverUrl    string     `json:"cover_url"`
+	Tagline     string     `json:"tagline"`
+	PublishedAt *time.Time `json:"published_at"`
+}
+
+// Public directory: only PUBLISHED sites of ACTIVE shops, fields from the published snapshot only.
+func (q *Queries) ListPublishedSites(ctx context.Context, arg ListPublishedSitesParams) ([]ListPublishedSitesRow, error) {
+	rows, err := q.db.Query(ctx, listPublishedSites, arg.PageOffset, arg.PageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPublishedSitesRow{}
+	for rows.Next() {
+		var i ListPublishedSitesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ShopID,
+			&i.ShopName,
+			&i.Subdomain,
+			&i.PrimaryHost,
+			&i.LogoUrl,
+			&i.CoverUrl,
+			&i.Tagline,
+			&i.PublishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listSiteVersions = `-- name: ListSiteVersions :many

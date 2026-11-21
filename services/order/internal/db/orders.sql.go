@@ -56,13 +56,15 @@ WHERE ($1::text = '' OR buyer_id = $1::text)
   AND ($2::text = '' OR shop_id = $2::text)
   AND ($3::text = '' OR status = $3::text)
   AND ($4::text = '' OR sales_channel = $4::text)
+  AND ($5::text = '' OR storefront_shop_id = $5::text)
 `
 
 type CountOrdersFilteredParams struct {
-	BuyerID      string `json:"buyer_id"`
-	ShopID       string `json:"shop_id"`
-	Status       string `json:"status"`
-	SalesChannel string `json:"sales_channel"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	Status           string `json:"status"`
+	SalesChannel     string `json:"sales_channel"`
+	StorefrontShopID string `json:"storefront_shop_id"`
 }
 
 func (q *Queries) CountOrdersFiltered(ctx context.Context, arg CountOrdersFilteredParams) (int64, error) {
@@ -71,6 +73,7 @@ func (q *Queries) CountOrdersFiltered(ctx context.Context, arg CountOrdersFilter
 		arg.ShopID,
 		arg.Status,
 		arg.SalesChannel,
+		arg.StorefrontShopID,
 	)
 	var count int64
 	err := row.Scan(&count)
@@ -849,17 +852,19 @@ WHERE ($1::text = '' OR buyer_id = $1::text)
   AND ($2::text = '' OR shop_id = $2::text)
   AND ($3::text = '' OR status = $3::text)
   AND ($4::text = '' OR sales_channel = $4::text)
+  AND ($5::text = '' OR storefront_shop_id = $5::text)
 ORDER BY created_at DESC, id DESC
-LIMIT $6 OFFSET $5
+LIMIT $7 OFFSET $6
 `
 
 type ListOrdersFilteredParams struct {
-	BuyerID      string `json:"buyer_id"`
-	ShopID       string `json:"shop_id"`
-	Status       string `json:"status"`
-	SalesChannel string `json:"sales_channel"`
-	PageOffset   int32  `json:"page_offset"`
-	PageLimit    int32  `json:"page_limit"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	Status           string `json:"status"`
+	SalesChannel     string `json:"sales_channel"`
+	StorefrontShopID string `json:"storefront_shop_id"`
+	PageOffset       int32  `json:"page_offset"`
+	PageLimit        int32  `json:"page_limit"`
 }
 
 func (q *Queries) ListOrdersFiltered(ctx context.Context, arg ListOrdersFilteredParams) ([]Order, error) {
@@ -868,6 +873,7 @@ func (q *Queries) ListOrdersFiltered(ctx context.Context, arg ListOrdersFiltered
 		arg.ShopID,
 		arg.Status,
 		arg.SalesChannel,
+		arg.StorefrontShopID,
 		arg.PageOffset,
 		arg.PageLimit,
 	)

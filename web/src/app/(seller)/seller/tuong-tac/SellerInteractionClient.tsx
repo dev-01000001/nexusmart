@@ -3,8 +3,8 @@
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { SHOPS, getDefaultProductMeta, getProductsByShop, getShopById } from "@/data";
-import type { FitFeedbackKind, LookbookStatus } from "@/data";
+import { getProductsByShop } from "@/data/products";
+import { getDefaultProductMeta, type FitFeedbackKind } from "@/data/seller";
 import { Button, IconPlus, StateView } from "@/components";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
@@ -12,17 +12,15 @@ import { useSellerContext } from "@/features/seller/SellerShell";
 import {
   answerSellerQuestion,
   createSellerFaqItem,
-  createSellerLookbookPost,
   parseUiState,
   replyToSellerReview,
-  submitSellerLookbookForReview,
   toggleSellerFaqActive,
   useSellerSession,
 } from "@/features/seller/sellerStore";
 import common from "@/features/seller/SellerCommon.module.css";
 import styles from "./page.module.css";
 
-type InteractionTab = "reviews" | "qa" | "lookbook" | "waiting";
+type InteractionTab = "reviews" | "qa" | "waiting";
 type ReviewFilter = "all" | "unreplied" | "photo" | "fit_issue";
 
 const FIT_META: Record<FitFeedbackKind, { label: string; cls: string }> = {
@@ -30,13 +28,6 @@ const FIT_META: Record<FitFeedbackKind, { label: string; cls: string }> = {
   dung: { label: "Đúng cỡ", cls: `${common.pill} ${common.pillPos}` },
   rong: { label: "Hơi rộng", cls: `${common.pill} ${common.pillWarn}` },
 };
-
-const LOOKBOOK_CATEGORIES = [
-  "Phối đồ hằng ngày",
-  "Chạy bộ & thể thao",
-  "Công sở tối giản",
-  "Bảo quản vải",
-];
 
 const FAQ_TOPICS = [
   "Chọn size",
@@ -52,14 +43,11 @@ function SellerInteractionContent() {
 
   const { shop, presentationShopKey, showToast } = useSellerContext();
   const session = useSellerSession();
-  const activeShop = getShopById(presentationShopKey) ?? SHOPS[0];
-  const shopDisplayName = shop?.name ?? activeShop.name;
+  const shopDisplayName = shop?.name ?? "Gian hàng của bạn";
   const [notifiedSkus, setNotifiedSkus] = useState<Record<string, boolean>>({});
 
   const [tab, setTab] = useState<InteractionTab>(
-    initialTab && ["reviews", "qa", "lookbook", "waiting"].includes(initialTab)
-      ? initialTab
-      : "reviews"
+    initialTab && ["reviews", "qa", "waiting"].includes(initialTab) ? initialTab : "reviews"
   );
 
   // Reviews tab state
@@ -74,32 +62,21 @@ function SellerInteractionContent() {
   const [faqQuestion, setFaqQuestion] = useState("");
   const [faqAnswer, setFaqAnswer] = useState("");
 
-  // Lookbook tab state
-  const [lbFilter, setLbFilter] = useState<"all" | LookbookStatus>("all");
-  const [showLbForm, setShowLbForm] = useState(false);
-  const [lbTitle, setLbTitle] = useState("");
-  const [lbCategory, setLbCategory] = useState(LOOKBOOK_CATEGORIES[0]);
-  const [lbExcerpt, setLbExcerpt] = useState("");
-  const [lbTaggedIds, setLbTaggedIds] = useState<string[]>([]);
-
-  const shopProducts = useMemo(() => getProductsByShop(activeShop.id), [activeShop.id]);
+  const shopProducts = useMemo(() => getProductsByShop(presentationShopKey), [presentationShopKey]);
 
   const reviews = useMemo(
-    () => session.reviews.filter((r) => r.shopId === activeShop.id),
-    [session.reviews, activeShop.id]
+    () => session.reviews.filter((r) => r.shopId === presentationShopKey),
+    [session.reviews, presentationShopKey]
   );
   const questions = useMemo(
-    () => session.questions.filter((q) => q.shopId === activeShop.id),
-    [session.questions, activeShop.id]
+    () => session.questions.filter((q) => q.shopId === presentationShopKey),
+    [session.questions, presentationShopKey]
   );
   const faqs = useMemo(
-    () => session.faqs.filter((f) => f.shopId === activeShop.id),
-    [session.faqs, activeShop.id]
+    () => session.faqs.filter((f) => f.shopId === presentationShopKey),
+    [session.faqs, presentationShopKey]
   );
-  const lookbooks = useMemo(
-    () => session.lookbooks.filter((l) => l.shopId === activeShop.id),
-    [session.lookbooks, activeShop.id]
-  );
+
   const backInStockRows = useMemo(() => {
     const rows: Array<{
       productId: string;
@@ -159,7 +136,6 @@ function SellerInteractionContent() {
       .sort((a, b) => b.wishlistCount - a.wishlistCount);
   }, [shopProducts, notifiedSkus]);
 
-  // Review stats (computed strictly from rows)
   const unrepliedReviewsCount = reviews.filter((r) => !r.reply).length;
   const photoReviewsCount = reviews.filter((r) => r.hasPhoto).length;
   const fitStats = useMemo(() => {
@@ -188,21 +164,6 @@ function SellerInteractionContent() {
     [questions, qaFilter]
   );
 
-  const lbCounts = useMemo(
-    () => ({
-      all: lookbooks.length,
-      da_dang: lookbooks.filter((l) => l.status === "da_dang").length,
-      cho_duyet: lookbooks.filter((l) => l.status === "cho_duyet").length,
-      nhap: lookbooks.filter((l) => l.status === "nhap").length,
-    }),
-    [lookbooks]
-  );
-
-  const filteredLookbooks = useMemo(
-    () => (lbFilter === "all" ? lookbooks : lookbooks.filter((l) => l.status === lbFilter)),
-    [lookbooks, lbFilter]
-  );
-
   const totalWaitingCustomers = backInStockRows.reduce((s, r) => s + r.waitingCount, 0);
   const totalWishlists = wishlistRanking.reduce((s, r) => s + r.wishlistCount, 0);
   const maxWishlist = Math.max(1, ...wishlistRanking.map((w) => w.wishlistCount));
@@ -228,7 +189,7 @@ function SellerInteractionContent() {
     if (faqQuestion.trim().length < 6 || faqAnswer.trim().length < 10) return;
     createSellerFaqItem({
       id: `faq-custom-${Date.now()}`,
-      shopId: activeShop.id,
+      shopId: presentationShopKey,
       topic: faqTopic,
       question: faqQuestion.trim(),
       answer: faqAnswer.trim(),
@@ -241,48 +202,6 @@ function SellerInteractionContent() {
     showToast("Đã thêm câu hỏi thường gặp vào bộ FAQ riêng của xưởng.");
   };
 
-  const toggleLbProduct = (prodId: string) => {
-    setLbTaggedIds((prev) =>
-      prev.includes(prodId) ? prev.filter((id) => id !== prodId) : [...prev, prodId]
-    );
-  };
-
-  const handleCreateLookbook = (targetStatus: "nhap" | "cho_duyet") => {
-    if (lbTitle.trim().length < 6) {
-      showToast("Tiêu đề bài Lookbook cần tối thiểu 6 ký tự.");
-      return;
-    }
-    const tagged = lbTaggedIds.length > 0 ? lbTaggedIds : [shopProducts[0]?.id].filter(Boolean);
-    const coverProd = shopProducts.find((p) => p.id === tagged[0]) ?? shopProducts[0];
-    createSellerLookbookPost({
-      id: `lb-custom-${Date.now()}`,
-      shopId: activeShop.id,
-      title: lbTitle.trim(),
-      category: lbCategory,
-      excerpt:
-        lbExcerpt.trim() ||
-        "Bài phối đồ thực tế gắn thẻ SKU trực tiếp từ kho của gian hàng để người mua chọn cỡ nhanh.",
-      coverImage: coverProd?.image ?? "/products/ao-thun-cotton-trang.png",
-      taggedProductIds: tagged,
-      status: targetStatus,
-      submittedAt: "2026-11-20",
-      adminNote:
-        targetStatus === "cho_duyet"
-          ? "Đã gửi hàng đợi biên tập nội dung Admin duyệt đăng lên Sổ tay vải & Phối đồ."
-          : undefined,
-      views: 0,
-    });
-    setLbTitle("");
-    setLbExcerpt("");
-    setLbTaggedIds([]);
-    setShowLbForm(false);
-    showToast(
-      targetStatus === "cho_duyet"
-        ? "Đã gửi bài Lookbook gắn SKU sang Admin chờ duyệt."
-        : "Đã lưu bản nháp bài Lookbook."
-    );
-  };
-
   const handleQuickRestock = (_productId: string, skuCode: string) => {
     setNotifiedSkus((prev) => ({ ...prev, [skuCode]: true }));
     showToast(
@@ -290,18 +209,11 @@ function SellerInteractionContent() {
     );
   };
 
-  const lbStatusPill = (status: LookbookStatus) =>
-    status === "da_dang"
-      ? { label: "Đã đăng", cls: `${common.pill} ${common.pillPos}` }
-      : status === "cho_duyet"
-        ? { label: "Chờ Admin duyệt", cls: `${common.pill} ${common.pillWarn}` }
-        : { label: "Bản nháp", cls: common.pill };
-
   return (
     <div className={common.page}>
       <header className={common.pageHeader}>
         <div className={common.headerText}>
-          <h1 className={common.title}>Tương tác & Nội dung gian hàng</h1>
+          <h1 className={common.title}>Tương tác khách hàng</h1>
           <p className={common.finding}>
             {shopDisplayName} · {formatInt(unrepliedReviewsCount)} đánh giá chưa phản hồi,{" "}
             {formatInt(unansweredQuestionsCount)} câu hỏi sản phẩm chờ trả lời · Dữ liệu mẫu cục bộ
@@ -317,17 +229,6 @@ function SellerInteractionContent() {
             >
               <IconPlus size={14} />
               <span>{showFaqForm ? "Đóng mẫu FAQ" : "Thêm câu FAQ xưởng"}</span>
-            </Button>
-          )}
-          {tab === "lookbook" && (
-            <Button
-              variant="ink"
-              size="sm"
-              shape="app"
-              onClick={() => setShowLbForm((prev) => !prev)}
-            >
-              <IconPlus size={14} />
-              <span>{showLbForm ? "Đóng trình soạn" : "Gửi bài Lookbook mới"}</span>
             </Button>
           )}
           {tab === "reviews" && unrepliedReviewsCount > 0 && (
@@ -352,7 +253,7 @@ function SellerInteractionContent() {
         <StateView
           kind="loading"
           surface="app"
-          title="Đang tải đánh giá, hỏi đáp, bài viết Lookbook và danh sách khách chờ hàng..."
+          title="Đang tải đánh giá, hỏi đáp và danh sách khách chờ hàng..."
           rows={5}
         />
       )}
@@ -362,7 +263,7 @@ function SellerInteractionContent() {
           kind="error"
           surface="app"
           title="Không thể tải dữ liệu tương tác gian hàng"
-          message="Dịch vụ đánh giá và nội dung tạm thời chưa phản hồi."
+          message="Dịch vụ đánh giá và hỏi đáp tạm thời chưa phản hồi."
           lastUpdated="02:18 · 20/11/2026"
           actionLabel="Thử lại"
           actionHref="/seller/tuong-tac"
@@ -374,12 +275,9 @@ function SellerInteractionContent() {
           kind="empty"
           surface="app"
           title="Gian hàng chưa có đánh giá hay câu hỏi nào"
-          message="Khi đơn hàng hoàn tất hoặc khách gửi câu hỏi trên trang sản phẩm, nội dung sẽ hiển thị tại đây."
-          actionLabel="Gửi bài Lookbook đầu tiên"
-          onAction={() => {
-            setTab("lookbook");
-            setShowLbForm(true);
-          }}
+          message="Khi đơn hàng hoàn tất hoặc khách gửi câu hỏi trên site gian hàng, nội dung sẽ hiển thị tại đây."
+          actionLabel="Quản lý sản phẩm"
+          actionHref="/seller/san-pham"
         />
       )}
 
@@ -402,16 +300,7 @@ function SellerInteractionContent() {
               className={`${common.underlineTab} ${tab === "qa" ? common.underlineTabActive : ""}`}
               onClick={() => setTab("qa")}
             >
-              Hỏi đáp & FAQ ({formatInt(questions.length + faqs.length)})
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "lookbook"}
-              className={`${common.underlineTab} ${tab === "lookbook" ? common.underlineTabActive : ""}`}
-              onClick={() => setTab("lookbook")}
-            >
-              Lookbook & Bài viết ({formatInt(lookbooks.length)})
+              Hỏi đáp &amp; FAQ ({formatInt(questions.length + faqs.length)})
             </button>
             <button
               type="button"
@@ -420,7 +309,7 @@ function SellerInteractionContent() {
               className={`${common.underlineTab} ${tab === "waiting" ? common.underlineTabActive : ""}`}
               onClick={() => setTab("waiting")}
             >
-              Chờ hàng & Yêu thích ({formatInt(totalWaitingCustomers)})
+              Chờ hàng &amp; Yêu thích ({formatInt(totalWaitingCustomers)})
             </button>
           </div>
 
@@ -484,7 +373,7 @@ function SellerInteractionContent() {
                 </div>
 
                 <div className={common.balanceCell}>
-                  <span className={common.balanceLabel}>Đánh giá có ảnh & số đo</span>
+                  <span className={common.balanceLabel}>Đánh giá có ảnh &amp; số đo</span>
                   <span className={common.balanceValue}>
                     {formatInt(photoReviewsCount)} / {formatInt(reviews.length)}
                   </span>
@@ -563,7 +452,7 @@ function SellerInteractionContent() {
                           {rev.reply ? (
                             <div className={styles.replyBox}>
                               <span className={styles.replyHead}>
-                                Phản hồi công khai của {activeShop.shortName} ·{" "}
+                                Phản hồi công khai của {shopDisplayName} ·{" "}
                                 {formatDateTimeVi(rev.reply.repliedAt)}
                               </span>
                               <p className={styles.replyText}>{rev.reply.text}</p>
@@ -580,7 +469,7 @@ function SellerInteractionContent() {
                                     [rev.id]: e.target.value,
                                   }))
                                 }
-                                placeholder="Nhập phản hồi công khai của xưởng (cảm ơn hoặc hướng dẫn đổi size 45 ngày)..."
+                                placeholder="Nhập phản hồi công khai của xưởng (cảm ơn hoặc hướng dẫn đổi size)..."
                                 aria-label={`Phản hồi đánh giá của ${rev.buyerName}`}
                               />
                               <Button
@@ -612,7 +501,7 @@ function SellerInteractionContent() {
                       Câu hỏi công khai trên trang sản phẩm
                     </h2>
                     <span className={common.cardMeta}>
-                      Nội dung trả lời đi qua bộ lọc từ cấm của sàn trước khi hiển thị công khai
+                      Nội dung trả lời hiển thị trực tiếp trên trang sản phẩm của site gian hàng
                     </span>
                   </div>
                   <div
@@ -671,7 +560,7 @@ function SellerInteractionContent() {
                         {q.answer ? (
                           <div className={styles.replyBox}>
                             <span className={styles.replyHead}>
-                              Giải đáp từ {activeShop.shortName}
+                              Giải đáp từ {shopDisplayName}
                               {q.answeredAt ? ` · ${formatDateTimeVi(q.answeredAt)}` : ""}
                             </span>
                             <p className={styles.replyText}>{q.answer}</p>
@@ -708,10 +597,10 @@ function SellerInteractionContent() {
                 <div className={common.cardHeader}>
                   <div>
                     <h2 id="shop-faq-heading" className={common.cardTitle}>
-                      Bộ câu hỏi thường gặp (FAQ) riêng của {activeShop.shortName}
+                      Bộ câu hỏi thường gặp (FAQ) riêng của {shopDisplayName}
                     </h2>
                     <span className={common.cardMeta}>
-                      Hiển thị trong khối Câu hỏi thường gặp trên trang sản phẩm và trang gian hàng
+                      Hiển thị trong khối Câu hỏi thường gặp trên site riêng của gian hàng
                     </span>
                   </div>
                   <Button
@@ -792,7 +681,7 @@ function SellerInteractionContent() {
                     <thead>
                       <tr>
                         <th>Chủ đề</th>
-                        <th>Câu hỏi & Giải đáp</th>
+                        <th>Câu hỏi &amp; Giải đáp</th>
                         <th>Cập nhật</th>
                         <th className={common.numCol}>Hiển thị</th>
                       </tr>
@@ -852,250 +741,7 @@ function SellerInteractionContent() {
             </>
           )}
 
-          {/* TAB 3: Lookbook & Editorial Posts waiting Admin review */}
-          {tab === "lookbook" && (
-            <>
-              <div
-                className={common.countCards4}
-                role="tablist"
-                aria-label="Lọc trạng thái bài viết"
-              >
-                {(
-                  [
-                    ["all", "Tất cả bài viết", lbCounts.all],
-                    ["da_dang", "Đã đăng trên sàn", lbCounts.da_dang],
-                    ["cho_duyet", "Chờ Admin duyệt", lbCounts.cho_duyet],
-                    ["nhap", "Bản nháp", lbCounts.nhap],
-                  ] as const
-                ).map(([k, lbl, cnt]) => (
-                  <button
-                    key={k}
-                    type="button"
-                    role="tab"
-                    aria-selected={lbFilter === k}
-                    className={`${common.countCard} ${lbFilter === k ? common.countCardSelected : ""}`}
-                    onClick={() => setLbFilter(k)}
-                  >
-                    <span className={common.countCardLabel}>{lbl}</span>
-                    <span className={common.countCardValue}>{formatInt(cnt)}</span>
-                  </button>
-                ))}
-              </div>
-
-              <div
-                className={common.chipScroller}
-                role="tablist"
-                aria-label="Lọc trạng thái bài viết"
-              >
-                {(
-                  [
-                    ["all", "Tất cả", lbCounts.all],
-                    ["da_dang", "Đã đăng", lbCounts.da_dang],
-                    ["cho_duyet", "Chờ duyệt", lbCounts.cho_duyet],
-                    ["nhap", "Nháp", lbCounts.nhap],
-                  ] as const
-                ).map(([k, lbl, cnt]) => (
-                  <button
-                    key={k}
-                    type="button"
-                    role="tab"
-                    aria-selected={lbFilter === k}
-                    className={`${common.chipBtn} ${lbFilter === k ? common.chipBtnActive : ""}`}
-                    onClick={() => setLbFilter(k)}
-                  >
-                    <span>{lbl}</span>
-                    <span className={common.chipCount}>{formatInt(cnt)}</span>
-                  </button>
-                ))}
-              </div>
-
-              <section className={common.card} aria-labelledby="lookbook-heading">
-                <div className={common.cardHeader}>
-                  <div>
-                    <h2 id="lookbook-heading" className={common.cardTitle}>
-                      Lookbook & Bài viết phối đồ gắn SKU
-                    </h2>
-                    <span className={common.cardMeta}>
-                      Bài viết được duyệt sẽ hiển thị trên Sổ tay vải & Phối đồ kèm thẻ Mua ngay
-                    </span>
-                  </div>
-                </div>
-
-                {showLbForm && (
-                  <div className={styles.inlineForm}>
-                    <div className={styles.formGrid2}>
-                      <div className={common.field}>
-                        <label htmlFor="lb-title" className={common.fieldLabel}>
-                          Tiêu đề bài Lookbook / Phối đồ
-                        </label>
-                        <input
-                          id="lb-title"
-                          type="text"
-                          className={common.textInput}
-                          value={lbTitle}
-                          onChange={(e) => setLbTitle(e.target.value)}
-                          placeholder="Ví dụ: Phối 2 áo thun Cotton Compact cho lịch làm việc 5 ngày"
-                        />
-                      </div>
-                      <div className={common.field}>
-                        <label htmlFor="lb-cat" className={common.fieldLabel}>
-                          Chuyên mục tạp chí sàn
-                        </label>
-                        <select
-                          id="lb-cat"
-                          className={common.textInput}
-                          value={lbCategory}
-                          onChange={(e) => setLbCategory(e.target.value)}
-                        >
-                          {LOOKBOOK_CATEGORIES.map((cat) => (
-                            <option key={cat} value={cat}>
-                              {cat}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className={common.field}>
-                      <label htmlFor="lb-excerpt" className={common.fieldLabel}>
-                        Tóm tắt & gợi ý phối đồ
-                      </label>
-                      <textarea
-                        id="lb-excerpt"
-                        className={common.textArea}
-                        value={lbExcerpt}
-                        onChange={(e) => setLbExcerpt(e.target.value)}
-                        placeholder="Mô tả ngắn cách phối màu, chọn cỡ và hoàn cảnh mặc..."
-                      />
-                    </div>
-
-                    <div className={common.field}>
-                      <span className={common.fieldLabel}>
-                        Gắn thẻ sản phẩm của {activeShop.shortName} nhúng trong bài
-                      </span>
-                      <div className={styles.skuChipGrid}>
-                        {shopProducts.map((p) => {
-                          const selected = lbTaggedIds.includes(p.id);
-                          return (
-                            <button
-                              key={p.id}
-                              type="button"
-                              className={`${styles.skuChip} ${selected ? styles.skuChipActive : ""}`}
-                              aria-pressed={selected}
-                              onClick={() => toggleLbProduct(p.id)}
-                            >
-                              {p.shortName}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    <div className={styles.formActions}>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        shape="app"
-                        onClick={() => setShowLbForm(false)}
-                      >
-                        Hủy
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        shape="app"
-                        onClick={() => handleCreateLookbook("nhap")}
-                      >
-                        Lưu bản nháp
-                      </Button>
-                      <Button
-                        variant="ink"
-                        size="sm"
-                        shape="app"
-                        onClick={() => handleCreateLookbook("cho_duyet")}
-                      >
-                        Gửi Admin duyệt đăng
-                      </Button>
-                    </div>
-                  </div>
-                )}
-
-                {filteredLookbooks.length === 0 ? (
-                  <div className={common.inlineEmpty}>
-                    Chưa có bài Lookbook nào ở trạng thái này.
-                  </div>
-                ) : (
-                  <div className={styles.reviewList}>
-                    {filteredLookbooks.map((lb) => {
-                      const st = lbStatusPill(lb.status);
-                      return (
-                        <article key={lb.id} className={styles.reviewItem}>
-                          <div className={styles.reviewTop}>
-                            <div className={styles.reviewProd}>
-                              <img
-                                src={lb.coverImage}
-                                alt={lb.title}
-                                className={styles.reviewThumb}
-                                width={40}
-                                height={53}
-                              />
-                              <div>
-                                <div className={styles.reviewTitle}>{lb.title}</div>
-                                <div className={styles.reviewMeta}>
-                                  {lb.category} · Gửi ngày {lb.submittedAt}
-                                  {lb.views > 0 ? ` · ${formatInt(lb.views)} lượt xem` : ""}
-                                </div>
-                              </div>
-                            </div>
-                            <div className={styles.reviewBadges}>
-                              <span className={st.cls}>{st.label}</span>
-                              {lb.status === "nhap" && (
-                                <button
-                                  type="button"
-                                  className={styles.actionBtnSm}
-                                  onClick={() => {
-                                    submitSellerLookbookForReview(lb.id);
-                                    showToast(`Đã gửi bài "${lb.title}" chờ Admin duyệt.`);
-                                  }}
-                                >
-                                  Gửi duyệt
-                                </button>
-                              )}
-                            </div>
-                          </div>
-
-                          <p className={styles.reviewBody}>{lb.excerpt}</p>
-
-                          <div className={styles.taggedSkuRow}>
-                            {lb.taggedProductIds.map((pid) => {
-                              const p = shopProducts.find((item) => item.id === pid);
-                              return (
-                                <Link
-                                  key={pid}
-                                  href={`/seller/san-pham/${pid}`}
-                                  className={styles.taggedSkuPill}
-                                >
-                                  SKU gắn thẻ: {p?.shortName ?? pid}
-                                </Link>
-                              );
-                            })}
-                          </div>
-
-                          {lb.adminNote && (
-                            <span className={common.cardMeta}>
-                              Ghi chú biên tập: {lb.adminNote}
-                            </span>
-                          )}
-                        </article>
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
-            </>
-          )}
-
-          {/* TAB 4: Back-in-stock subscribers & Wishlist ranking */}
+          {/* TAB 3: Back-in-stock subscribers & Wishlist ranking */}
           {tab === "waiting" && (
             <>
               <section className={common.balanceStrip3} aria-label="Tổng hợp chờ hàng và yêu thích">
@@ -1147,7 +793,7 @@ function SellerInteractionContent() {
                         <table className={common.dataTable}>
                           <thead>
                             <tr>
-                              <th>Sản phẩm & biến thể</th>
+                              <th>Sản phẩm &amp; biến thể</th>
                               <th className={common.numCol}>Tồn kho</th>
                               <th className={common.numCol}>Khách chờ</th>
                               <th className={common.numCol}>Thao tác</th>
@@ -1166,10 +812,7 @@ function SellerInteractionContent() {
                                       height={45}
                                     />
                                     <div>
-                                      <Link
-                                        href={`/seller/san-pham/${row.productId}`}
-                                        className={common.cellLink}
-                                      >
+                                      <Link href="/seller/san-pham" className={common.cellLink}>
                                         {row.productName}
                                       </Link>
                                       <span className={common.cellSub}>
@@ -1219,7 +862,7 @@ function SellerInteractionContent() {
                                 className={styles.actionBtnSm}
                                 onClick={() => handleQuickRestock(row.productId, row.skuCode)}
                               >
-                                +20 & báo
+                                +20 &amp; báo
                               </button>
                             </div>
                           </div>
@@ -1241,10 +884,7 @@ function SellerInteractionContent() {
                     {wishlistRanking.map((item, idx) => (
                       <div key={item.productId} className={styles.wishRow}>
                         <div className={styles.wishTop}>
-                          <Link
-                            href={`/seller/san-pham/${item.productId}`}
-                            className={common.cellLink}
-                          >
+                          <Link href="/seller/san-pham" className={common.cellLink}>
                             {item.shortName}
                           </Link>
                           <span className={styles.wishCount}>

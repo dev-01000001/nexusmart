@@ -135,6 +135,10 @@ func (s *OrderService) ListOrders(ctx context.Context, req *orderv1.ListOrdersRe
 	if err != nil {
 		return nil, err
 	}
+	storefrontFilter := strings.TrimSpace(req.GetStorefrontShopId())
+	if _, perr := uuid.Parse(storefrontFilter); storefrontFilter != "" && perr != nil {
+		return nil, status.Error(codes.InvalidArgument, "storefront_shop_id must be a UUID")
+	}
 
 	page := req.GetPage()
 	if page < 1 {
@@ -149,7 +153,7 @@ func (s *OrderService) ListOrders(ctx context.Context, req *orderv1.ListOrdersRe
 	}
 	offset := (page - 1) * pageSize
 
-	aggs, total, err := s.store.ListOrdersFiltered(ctx, buyerFilter, shopFilter, statusFilter, salesChannelFilter, pageSize, offset)
+	aggs, total, err := s.store.ListOrdersFiltered(ctx, buyerFilter, shopFilter, statusFilter, salesChannelFilter, storefrontFilter, pageSize, offset)
 	if err != nil {
 		return nil, mapStoreError(err)
 	}
@@ -211,12 +215,13 @@ func (s *OrderService) CancelOrder(ctx context.Context, req *orderv1.CancelOrder
 			ordPaid := statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
 				strings.EqualFold(ord.PaymentStatus, "SUCCEEDED")
 			payload, _ := json.Marshal(events.OrderCancelledPayload{
-				OrderID:   ord.ID,
-				OrderCode: ord.OrderCode,
-				BuyerID:   ord.BuyerID,
-				ShopID:    ord.ShopID,
-				Reason:    reason,
-				WasPaid:   ordPaid,
+				OrderID:          ord.ID,
+				OrderCode:        ord.OrderCode,
+				BuyerID:          ord.BuyerID,
+				ShopID:           ord.ShopID,
+				StorefrontShopID: ord.StorefrontShopID,
+				Reason:           reason,
+				WasPaid:          ordPaid,
 			})
 			return []db.InsertOutboxEventParams{
 				{
@@ -503,12 +508,13 @@ func (s *OrderService) SellerShipOrder(ctx context.Context, req *orderv1.SellerS
 
 	traceID, traceparent := traceMetaFromContext(ctx)
 	outboxPayload, err := json.Marshal(events.OrderShippedPayload{
-		OrderID:      agg.Order.ID,
-		OrderCode:    agg.Order.OrderCode,
-		BuyerID:      agg.Order.BuyerID,
-		ShopID:       agg.Order.ShopID,
-		CarrierCode:  carrierCode,
-		TrackingCode: trackingCode,
+		OrderID:          agg.Order.ID,
+		OrderCode:        agg.Order.OrderCode,
+		BuyerID:          agg.Order.BuyerID,
+		ShopID:           agg.Order.ShopID,
+		StorefrontShopID: agg.Order.StorefrontShopID,
+		CarrierCode:      carrierCode,
+		TrackingCode:     trackingCode,
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "marshal order.shipped event: %v", err)
@@ -622,14 +628,15 @@ func (s *OrderService) BuyerConfirmReceived(ctx context.Context, req *orderv1.Bu
 	coinsReward := ComputeRewardCoins(agg.Order.SubtotalVND, s.cfg.RewardCoinsBPS)
 	traceID, traceparent := traceMetaFromContext(ctx)
 	payloadBytes, err := json.Marshal(events.OrderCompletedPayload{
-		OrderID:         agg.Order.ID,
-		OrderCode:       agg.Order.OrderCode,
-		BuyerID:         agg.Order.BuyerID,
-		ShopID:          agg.Order.ShopID,
-		SubtotalVND:     agg.Order.SubtotalVND,
-		CommissionVND:   agg.Order.CommissionVND,
-		TotalPayableVND: agg.Order.TotalPayableVND,
-		CoinsReward:     coinsReward,
+		OrderID:          agg.Order.ID,
+		OrderCode:        agg.Order.OrderCode,
+		BuyerID:          agg.Order.BuyerID,
+		ShopID:           agg.Order.ShopID,
+		StorefrontShopID: agg.Order.StorefrontShopID,
+		SubtotalVND:      agg.Order.SubtotalVND,
+		CommissionVND:    agg.Order.CommissionVND,
+		TotalPayableVND:  agg.Order.TotalPayableVND,
+		CoinsReward:      coinsReward,
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "marshal order.completed event: %v", err)

@@ -183,6 +183,39 @@ func TestE2E_SalesChannel(t *testing.T) {
 		assertOrderChannel(t, "buyer GET /orders/{id}", env.getOrder(t, buyer.AccessToken, ord.ID), "STOREFRONT", seller1.ShopID)
 		assertOrderChannel(t, "seller GET /seller/orders/{id}", env.getSellerOrder(t, seller1.AccessToken, ord.ID), "STOREFRONT", seller1.ShopID)
 
+		// Verify buyer GET /api/v1/orders?storefront_shop_id=<uuid> filtering, pagination, isolation, and UUID validation.
+		buyerSFResp := env.mustDoJSON(t, http.MethodGet, "/api/v1/orders?storefront_shop_id="+url.QueryEscape(seller1.ShopID)+"&page=1&page_size=10", buyer.AccessToken, nil, nil, http.StatusOK)
+		var buyerSFList OrdersListResponse
+		if err := DecodeJSON(buyerSFResp, &buyerSFList); err != nil {
+			t.Fatalf("decode buyer storefront_shop_id orders: %v", err)
+		}
+		if buyerSFList.Total < 1 || len(buyerSFList.Items) < 1 {
+			t.Fatalf("expected >= 1 order for buyer filtered by storefront_shop_id=%s, got total=%d", seller1.ShopID, buyerSFList.Total)
+		}
+		foundInBuyerSF := false
+		for _, item := range buyerSFList.Items {
+			assertOrderChannel(t, "buyer storefront_shop_id filter item", item, "STOREFRONT", seller1.ShopID)
+			if item.ID == ord.ID {
+				foundInBuyerSF = true
+			}
+		}
+		if !foundInBuyerSF {
+			t.Fatalf("order %s missing from GET /api/v1/orders?storefront_shop_id=%s", ord.ID, seller1.ShopID)
+		}
+		// Filtering by another shop's storefront_shop_id must exclude shopA's order.
+		buyerOtherSFResp := env.mustDoJSON(t, http.MethodGet, "/api/v1/orders?storefront_shop_id="+url.QueryEscape(seller2.ShopID)+"&page=1&page_size=10", buyer.AccessToken, nil, nil, http.StatusOK)
+		var buyerOtherSFList OrdersListResponse
+		if err := DecodeJSON(buyerOtherSFResp, &buyerOtherSFList); err != nil {
+			t.Fatalf("decode buyer other storefront_shop_id orders: %v", err)
+		}
+		for _, item := range buyerOtherSFList.Items {
+			if item.ID == ord.ID {
+				t.Fatalf("shopA order %s leaked into GET /api/v1/orders?storefront_shop_id=%s", ord.ID, seller2.ShopID)
+			}
+		}
+		// Invalid storefront_shop_id UUID must return 400.
+		env.mustDoJSON(t, http.MethodGet, "/api/v1/orders?storefront_shop_id=not-a-uuid", buyer.AccessToken, nil, nil, http.StatusBadRequest)
+
 		sellerListResp := env.mustDoJSON(t, http.MethodGet, "/api/v1/seller/orders?sales_channel=STOREFRONT&page=1&page_size=50", seller1.AccessToken, nil, nil, http.StatusOK)
 		var sellerList OrdersListResponse
 		if err := DecodeJSON(sellerListResp, &sellerList); err != nil {

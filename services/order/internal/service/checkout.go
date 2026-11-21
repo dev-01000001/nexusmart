@@ -1209,13 +1209,14 @@ func buildCheckoutBatch(
 		}
 
 		createdPayload, err := json.Marshal(events.OrderCreatedPayload{
-			CheckoutGroupID: checkoutGroupID,
-			OrderID:         orderID,
-			OrderCode:       orderCode,
-			BuyerID:         buyerID,
-			ShopID:          p.shopID,
-			PaymentMethod:   methodStr,
-			TotalPayableVND: p.totalPayableVND,
+			CheckoutGroupID:  checkoutGroupID,
+			OrderID:          orderID,
+			OrderCode:        orderCode,
+			BuyerID:          buyerID,
+			ShopID:           p.shopID,
+			StorefrontShopID: storefrontShopID,
+			PaymentMethod:    methodStr,
+			TotalPayableVND:  p.totalPayableVND,
 		})
 		if err != nil {
 			return store.CheckoutBatch{}, err
@@ -1233,12 +1234,13 @@ func buildCheckoutBatch(
 
 		if initialStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
 			confirmedPayload, err := json.Marshal(events.OrderConfirmedPayload{
-				OrderID:         orderID,
-				OrderCode:       orderCode,
-				BuyerID:         buyerID,
-				ShopID:          p.shopID,
-				PaymentMethod:   methodStr,
-				TotalPayableVND: p.totalPayableVND,
+				OrderID:          orderID,
+				OrderCode:        orderCode,
+				BuyerID:          buyerID,
+				ShopID:           p.shopID,
+				StorefrontShopID: storefrontShopID,
+				PaymentMethod:    methodStr,
+				TotalPayableVND:  p.totalPayableVND,
 			})
 			if err != nil {
 				return store.CheckoutBatch{}, err

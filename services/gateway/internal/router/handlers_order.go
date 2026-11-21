@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/gateway/internal/httpx"
@@ -352,16 +353,24 @@ func (h *handler) handleListBuyerOrders(w http.ResponseWriter, r *http.Request) 
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", errMsg)
 		return
 	}
+	// storefront_shop_id narrows the caller's OWN orders to one shop site; buyer_id always comes
+	// from the JWT, so this filter can never widen access.
+	storefrontShopID := strings.TrimSpace(q.Get("storefront_shop_id"))
+	if storefrontShopID != "" && uuid.Validate(storefrontShopID) != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "storefront_shop_id must be a UUID")
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Order.ListOrders(ctx, &orderv1.ListOrdersRequest{
-		BuyerId:      auth.UserIDFromContext(r.Context()),
-		Status:       parseOrderStatus(q.Get("status")),
-		RoleScope:    "buyer",
-		Page:         page,
-		PageSize:     pageSize,
-		SalesChannel: salesChannel,
+		BuyerId:          auth.UserIDFromContext(r.Context()),
+		Status:           parseOrderStatus(q.Get("status")),
+		RoleScope:        "buyer",
+		Page:             page,
+		PageSize:         pageSize,
+		SalesChannel:     salesChannel,
+		StorefrontShopId: storefrontShopID,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -613,17 +622,23 @@ func (h *handler) handleAdminListOrders(w http.ResponseWriter, r *http.Request) 
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", errMsg)
 		return
 	}
+	storefrontShopID := strings.TrimSpace(q.Get("storefront_shop_id"))
+	if storefrontShopID != "" && uuid.Validate(storefrontShopID) != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "storefront_shop_id must be a UUID")
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Order.ListOrders(ctx, &orderv1.ListOrdersRequest{
-		BuyerId:      q.Get("buyer_id"),
-		ShopId:       q.Get("shop_id"),
-		Status:       parseOrderStatus(q.Get("status")),
-		RoleScope:    "admin",
-		Page:         page,
-		PageSize:     pageSize,
-		SalesChannel: salesChannel,
+		BuyerId:          q.Get("buyer_id"),
+		ShopId:           q.Get("shop_id"),
+		Status:           parseOrderStatus(q.Get("status")),
+		RoleScope:        "admin",
+		Page:             page,
+		PageSize:         pageSize,
+		SalesChannel:     salesChannel,
+		StorefrontShopId: storefrontShopID,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)

@@ -1,10 +1,15 @@
 // Shared DTO types and pure view helpers for Seller Center backend integration.
-import type { OrderStatusMeta } from "@/data";
 import {
   normalizeSalesChannel,
   normalizeStorefrontShopId,
   type SalesChannel,
 } from "../../lib/salesChannel";
+
+export interface SellerOrderStatusMeta {
+  label: string;
+  tone: "neutral" | "warn" | "pos" | "neg";
+  description: string;
+}
 
 export interface GwSellerShop {
   id: string;
@@ -200,7 +205,7 @@ export interface SellerOrderAction {
   shortLabel: string;
 }
 
-export function getSellerOrderStatusMeta(status: string): OrderStatusMeta {
+export function getSellerOrderStatusMeta(status: string): SellerOrderStatusMeta {
   switch (status.toUpperCase()) {
     case "PENDING":
       return {

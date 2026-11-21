@@ -2,12 +2,22 @@ import { GatewayError } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { apiRoute, readJson } from "@/lib/server/http";
 import { assertSession } from "@/lib/server/session";
+import { requireRequestSite } from "@/lib/server/sites";
+import {
+  STOREFRONT_CHANNEL,
+  hasPlatformPromoInput,
+  isSiteShopVoucher,
+  resolveSiteShopVoucherMap,
+  scopeCartToShop,
+} from "@/lib/server/storefront";
 import { translatePromotionWarning } from "@/features/commerce/checkoutErrors";
 import type { GwCart, GwDiscountBreakdown, GwVoucher } from "@/features/commerce/types";
 
 interface ValidateBody {
   code?: string;
+  shipping_fee_vnd?: number;
   shipping_fees?: Record<string, number>;
+  shop_voucher_id?: string | null;
   shop_voucher_ids?: Record<string, string | null | undefined>;
   platform_voucher_id?: string | null;
   freeship_voucher_id?: string | null;
@@ -17,8 +27,15 @@ interface ValidateBody {
 
 export const POST = apiRoute(
   async (req) => {
+    const site = await requireRequestSite(req);
     await assertSession();
     const body = await readJson<ValidateBody>(req);
+
+    if (hasPlatformPromoInput(body)) {
+      throw new GatewayError("invalid", "PLATFORM_PROMO_NOT_ALLOWED");
+    }
+    resolveSiteShopVoucherMap(body, site.shopId);
+
     const rawCode = (body.code ?? "").trim();
     if (!rawCode) {
       throw new GatewayError("invalid", "INVALID_ARGUMENT");
@@ -27,20 +44,29 @@ export const POST = apiRoute(
     const cleanUpper = rawCode.toUpperCase();
 
     const [{ vouchers }, { cart }] = await Promise.all([
-      gw<{ vouchers: GwVoucher[] }>("/api/v1/vouchers"),
-      gw<{ cart: GwCart }>("/api/v1/cart"),
+      gw<{ vouchers?: GwVoucher[] | null }>("/api/v1/vouchers", {
+        query: {
+          shop_id: site.shopId,
+          scope: "SHOP",
+          sales_channel: STOREFRONT_CHANNEL,
+          storefront_shop_id: site.shopId,
+        },
+      }),
+      gw<{ cart: GwCart }>("/api/v1/cart", { query: { shop_id: site.shopId } }),
     ]);
 
-    const found = (vouchers ?? []).find(
-      (v) => v.code.toUpperCase() === cleanUpper || v.id === rawCode
-    );
+    const siteVouchers = (vouchers ?? []).filter((v) => isSiteShopVoucher(v, site.shopId));
+    const found = siteVouchers.find((v) => v.code.toUpperCase() === cleanUpper || v.id === rawCode);
     if (!found) {
+      // Reject platform, freeship, foreign-shop, and nonexistent codes with 404.
+      const reason = `Mã ưu đãi ${cleanUpper} không tồn tại hoặc không áp dụng tại cửa hàng này.`;
       return Response.json(
         {
           valid: false,
-          reason: `Không tìm thấy mã ưu đãi ${cleanUpper}. Bạn kiểm tra lại ký tự nhé.`,
+          reason,
+          error: { code: "VOUCHER_NOT_FOUND", message: reason },
         },
-        { headers: { "Cache-Control": "no-store" } }
+        { status: 404, headers: { "Cache-Control": "no-store" } }
       );
     }
 
@@ -63,7 +89,8 @@ export const POST = apiRoute(
       );
     }
 
-    const groups = cart?.shop_groups ?? [];
+    const scopedCart = scopeCartToShop(cart, site.shopId);
+    const groups = scopedCart.shop_groups;
     if (groups.length === 0) {
       return Response.json(
         { valid: false, voucher: found, reason: "Giỏ hàng đang trống nên chưa thể áp mã ưu đãi." },
@@ -71,39 +98,13 @@ export const POST = apiRoute(
       );
     }
 
-    const scope = found.scope.toUpperCase();
-    if (scope === "SHOP" && !groups.some((g) => g.shop_id === found.shop_id)) {
-      return Response.json(
-        {
-          valid: false,
-          voucher: found,
-          reason: `Giỏ hàng chưa có sản phẩm thuộc gian hàng áp dụng mã ${found.code}.`,
-        },
-        { headers: { "Cache-Control": "no-store" } }
-      );
-    }
-
-    const shopVoucherIds: Record<string, string> = {};
-    for (const [k, v] of Object.entries(body.shop_voucher_ids ?? {})) {
-      if (k.trim() && typeof v === "string" && v.trim()) shopVoucherIds[k.trim()] = v.trim();
-    }
-    let platformVoucherId = (body.platform_voucher_id ?? "").trim();
-    let freeshipVoucherId = (body.freeship_voucher_id ?? "").trim();
-
-    if (scope === "SHOP") {
-      shopVoucherIds[found.shop_id] = found.id;
-    } else if (scope === "FREESHIP") {
-      freeshipVoucherId = found.id;
-    } else {
-      platformVoucherId = found.id;
-    }
-
-    const fees = body.shipping_fees ?? {};
+    const rawFee = body.shipping_fee_vnd ?? body.shipping_fees?.[site.shopId] ?? 0;
+    const shippingFeeVnd = Math.max(0, Math.trunc(Number(rawFee) || 0));
     const flashBySku = body.flash_sale_item_by_sku ?? {};
     const shopItems = groups.map((g) => ({
-      shop_id: g.shop_id,
+      shop_id: site.shopId,
       subtotal_vnd: g.subtotal_vnd,
-      shipping_fee_vnd: Math.max(0, Math.trunc(Number(fees[g.shop_id] ?? 0) || 0)),
+      shipping_fee_vnd: shippingFeeVnd,
       items: g.items.map((it) => ({
         sku_id: it.sku_id,
         quantity: it.quantity,
@@ -118,46 +119,36 @@ export const POST = apiRoute(
         method: "POST",
         body: {
           shop_items: shopItems,
-          shop_voucher_ids: shopVoucherIds,
-          platform_voucher_id: platformVoucherId,
-          freeship_voucher_id: freeshipVoucherId,
-          coins_to_use: Math.max(0, Math.trunc(Number(body.coins_to_use ?? 0) || 0)),
+          shop_voucher_ids: { [site.shopId]: found.id },
+          platform_voucher_id: "",
+          freeship_voucher_id: "",
+          coins_to_use: 0,
+          sales_channel: STOREFRONT_CHANNEL,
+          storefront_shop_id: site.shopId,
         },
       }
     );
 
     const warningsVi = (breakdown.warnings ?? []).map(translatePromotionWarning);
     const safeBreakdown: GwDiscountBreakdown = { ...breakdown, warnings: warningsVi };
+    const discountVnd =
+      breakdown.shops.find((s) => s.shop_id === site.shopId)?.shop_voucher_discount_vnd ?? 0;
 
-    let discountVnd = 0;
-    if (scope === "SHOP") {
-      discountVnd =
-        breakdown.shops.find((s) => s.shop_id === found.shop_id)?.shop_voucher_discount_vnd ?? 0;
-    } else if (scope === "FREESHIP") {
-      discountVnd = breakdown.total_freeship_discount_vnd;
-    } else {
-      discountVnd = breakdown.total_platform_voucher_discount_vnd;
-    }
-
-    // If freeship voucher is valid on order subtotal but shipping_fee_vnd was 0 in cart preview,
-    // still accept it unless preview returned a warning for it.
-    const hasBlockingWarning =
-      warningsVi.length > 0 &&
-      discountVnd <= 0 &&
-      !(
-        scope === "FREESHIP" &&
-        breakdown.total_shipping_fee_vnd === 0 &&
-        found.min_order_vnd <= breakdown.total_subtotal_vnd
-      );
-
-    if (hasBlockingWarning || (discountVnd <= 0 && scope !== "FREESHIP")) {
+    if (discountVnd <= 0) {
       const reason =
         warningsVi[0] ||
         (found.min_order_vnd > 0
           ? `Đơn hàng cần tối thiểu ${found.min_order_vnd.toLocaleString("vi-VN")}₫ để dùng mã ${found.code}.`
           : `Mã ${found.code} chưa đủ điều kiện áp dụng cho giỏ hàng hiện tại.`);
       return Response.json(
-        { valid: false, voucher: found, scope, shop_id: found.shop_id, discount_vnd: 0, reason },
+        {
+          valid: false,
+          voucher: found,
+          scope: "SHOP",
+          shop_id: site.shopId,
+          discount_vnd: 0,
+          reason,
+        },
         { headers: { "Cache-Control": "no-store" } }
       );
     }
@@ -166,8 +157,8 @@ export const POST = apiRoute(
       {
         valid: true,
         voucher: found,
-        scope,
-        shop_id: found.shop_id || undefined,
+        scope: "SHOP",
+        shop_id: site.shopId,
         discount_vnd: discountVnd,
         breakdown: safeBreakdown,
       },
@@ -177,6 +168,9 @@ export const POST = apiRoute(
   {
     messages: {
       INVALID_ARGUMENT: "Vui lòng nhập mã ưu đãi cần kiểm tra.",
+      PLATFORM_PROMO_NOT_ALLOWED:
+        "Cửa hàng này chỉ hỗ trợ mã ưu đãi riêng của gian hàng, không áp dụng mã sàn hay Xu.",
+      FOREIGN_SHOP_VOUCHER: "Mã ưu đãi không thuộc cửa hàng này.",
     },
   }
 );

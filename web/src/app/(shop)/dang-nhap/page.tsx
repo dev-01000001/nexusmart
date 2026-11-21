@@ -1,400 +1,127 @@
-"use client";
-
-import React, { Suspense, useMemo, useState } from "react";
+import type { Metadata } from "next";
+import React from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { PRODUCTS } from "@/data";
-import { MODEL_SHOTS } from "@/data/media";
-import { ApiError, api } from "@/lib/api";
-import { useSession, type SessionUser } from "@/components/SessionProvider";
-import { useStore } from "@/context/StoreContext";
-import { Button, StateView } from "@/components";
-import { safeNextPath } from "@/features/account/accountTypes";
-import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
-import shared from "@/features/commerce/commerce.module.css";
+import { FABRIC_MEDIA, MEDIA_BANNERS, WORKSHOP_MEDIA } from "@/data/media";
+import { LoginForm } from "@/features/account/AuthForms";
+import { PlatformMotion } from "@/features/platform/PlatformMotion";
 import styles from "./page.module.css";
 
-const MEMBER_PERKS = [
+export const metadata: Metadata = {
+  title: "Đăng nhập",
+  description:
+    "Đăng nhập Kênh người bán hoặc Cổng quản trị trên nền tảng NexusMart. Khách mua hàng sẽ được dẫn tới danh bạ cửa hàng.",
+};
+
+const PLATFORM_ROLES = [
   {
-    title: "Giao nhanh 34 tỉnh thành",
-    detail: "Miễn phí vận chuyển toàn sàn cho đơn từ 249.000₫, theo dõi hành trình trực tiếp.",
+    title: "Kênh người bán",
+    detail:
+      "Quản lý sản phẩm, tồn kho từng phiên bản, tùy biến giao diện cửa hàng trên tên miền phụ, xử lý đơn và theo dõi đối soát VND.",
   },
   {
-    title: "Đổi trả tận nơi 45 ngày",
-    detail: "Đổi size hai chiều miễn phí tại nhà, hoàn tiền nhanh vào Thứ Hai và Thứ Năm.",
+    title: "Cổng quản trị nền tảng",
+    detail:
+      "Duyệt hồ sơ mở gian hàng, kiểm duyệt sản phẩm, quản lý trạng thái xuất bản trang cửa hàng và kiểm tra cân đối sổ cái.",
   },
   {
-    title: "Hoàn 1–6% Xu mọi đơn hàng",
-    detail: "Nhân đôi Xu vào mỗi Thứ Sáu và dùng trừ trực tiếp khi thanh toán tại cả 4 xưởng.",
+    title: "Khách mua hàng ghé thăm",
+    detail:
+      "Mỗi cửa hàng giữ giỏ hàng và đơn hàng riêng trên tên miền của mình. Nếu đăng nhập tại đây, hệ thống đưa bạn tới danh bạ gian hàng.",
   },
 ];
 
-function LoginPageContent() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const viewState = usePageStateParam();
-  const { user, isAuthenticated, setUser, logout } = useSession();
-  const { refreshCart, showToast } = useStore();
+const EDITORIAL_FRAMES = [
+  { src: WORKSHOP_MEDIA.src, alt: WORKSHOP_MEDIA.alt },
+  { src: FABRIC_MEDIA.src, alt: FABRIC_MEDIA.alt },
+  { src: MEDIA_BANNERS.everyday.src, alt: "Không gian trưng bày cửa hàng trực tuyến" },
+  { src: MEDIA_BANNERS.office.src, alt: "Nhận diện riêng của từng thương hiệu trên NexusMart" },
+];
 
-  const nextParam = searchParams.get("next");
-  const nextTarget = safeNextPath(nextParam, "/tai-khoan");
-  const prefilledEmail = searchParams.get("email") ?? "";
-  const verifiedNotice = searchParams.get("verified") === "1";
-
-  const [email, setEmail] = useState(prefilledEmail);
-  const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [needsVerificationEmail, setNeedsVerificationEmail] = useState<string | null>(null);
-
-  useRevealOnScroll(`${viewState ?? "live"}-${isAuthenticated}`);
-
-  const showcaseProducts = useMemo(
-    () =>
-      PRODUCTS.filter((p) =>
-        ["prod-at-trang", "prod-polo-xanhda", "prod-short-daily", "prod-jogger-terry"].includes(
-          p.id
-        )
-      ),
-    []
-  );
-
-  const registerHref = nextParam ? `/dang-ky?next=${encodeURIComponent(nextTarget)}` : "/dang-ky";
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanEmail = email.trim();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      setError("Vui lòng nhập địa chỉ email hợp lệ (ví dụ: tenban@nexusmart.vn).");
-      return;
-    }
-    if (password.length < 6) {
-      setError("Mật khẩu cần có tối thiểu 6 ký tự.");
-      return;
-    }
-
-    setError(null);
-    setNeedsVerificationEmail(null);
-    setSubmitting(true);
-    try {
-      const res = await api<{ user: SessionUser }>("/api/auth/login", {
-        method: "POST",
-        body: { email: cleanEmail, password },
-      });
-      setUser(res.user);
-      void refreshCart();
-      showToast(`Chào mừng ${res.user.fullName || res.user.email} trở lại NexusMart.`);
-      router.push(nextTarget);
-      router.refresh();
-    } catch (err) {
-      if (err instanceof ApiError) {
-        setError(err.message);
-        if (err.code === "FAILED_PRECONDITION") {
-          setNeedsVerificationEmail(cleanEmail);
-        }
-      } else {
-        setError("Hệ thống đăng nhập đang bận. Bạn vui lòng thử lại sau.");
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  if (viewState === "loading") {
-    return (
-      <div className={shared.page}>
-        <section className={shared.pageHeader}>
-          <div className={styles.authHeader}>
-            <h1 className={shared.pageTitle}>Đăng nhập</h1>
-            <p className={styles.authLead}>Đang kiểm tra trạng thái đăng nhập của bạn.</p>
-          </div>
-        </section>
-        <section className={shared.section}>
-          <h2 className={shared.sectionTitle}>Xác thực tài khoản</h2>
-          <StateView kind="loading" title="Đang đăng nhập NexusMart..." rows={3} />
-        </section>
-      </div>
-    );
-  }
-
-  if (viewState === "error") {
-    return (
-      <div className={shared.page}>
-        <section className={shared.pageHeader}>
-          <div className={styles.authHeader}>
-            <h1 className={shared.pageTitle}>Đăng nhập</h1>
-            <p className={styles.authLead}>Dịch vụ đăng nhập đang tạm gián đoạn.</p>
-          </div>
-        </section>
-        <section className={shared.section}>
-          <h2 className={shared.sectionTitle}>Trạng thái đăng nhập</h2>
-          <StateView
-            kind="error"
-            title="Chưa thể kết nối lúc này"
-            message="Vui lòng thử lại sau ít phút hoặc quay về trang chủ tiếp tục xem sản phẩm."
-            actionLabel="Thử lại"
-            actionHref="/dang-nhap"
-          />
-        </section>
-      </div>
-    );
-  }
-
-  if (viewState === "empty") {
-    return (
-      <div className={shared.page}>
-        <section className={shared.pageHeader}>
-          <div className={styles.authHeader}>
-            <h1 className={shared.pageTitle}>Đăng nhập</h1>
-            <p className={styles.authLead}>Chưa có phiên đăng nhập nào đang mở.</p>
-          </div>
-        </section>
-        <section className={shared.section}>
-          <h2 className={shared.sectionTitle}>Tài khoản thành viên</h2>
-          <StateView
-            kind="empty"
-            title="Chưa có phiên đăng nhập gần đây"
-            message="Tạo tài khoản mới hoặc mở lại biểu mẫu đăng nhập để tiếp tục mua sắm."
-            actionLabel="Mở biểu mẫu đăng nhập"
-            actionHref="/dang-nhap"
-          />
-        </section>
-      </div>
-    );
-  }
-
+export default function PlatformLoginPage() {
   return (
-    <div className={shared.page}>
-      <section className={shared.section}>
-        <div className={styles.authGrid}>
-          {/* Left column: heading + primary form immediately above the fold */}
-          <div className={styles.formCol}>
-            <div className={styles.authHeader}>
-              <h1 className={`${shared.pageTitle} lines`}>
-                <span className="line">
-                  <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-                    Đăng nhập tài khoản
-                  </span>
+    <div className={styles.page}>
+      <PlatformMotion depKey="platform-login" />
+
+      <section className={styles.grid} aria-label="Đăng nhập nền tảng NexusMart">
+        <div className={styles.formCol}>
+          <header className={styles.header}>
+            <h1 className={`${styles.title} lines`}>
+              <span className="line">
+                <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
+                  Đăng nhập
                 </span>
-              </h1>
-              <p
-                className={styles.authLead}
-                data-rise=""
-                style={{ "--i": 1 } as React.CSSProperties}
-              >
-                Quản lý đơn hàng, địa chỉ nhận hàng và ví Xu Hội viên Nexus trên cùng một tài khoản.
-              </p>
-            </div>
+              </span>
+            </h1>
+            <p className={styles.lead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
+              Dành cho người bán quản trị cửa hàng và quản trị viên nền tảng. Phiên đăng nhập chỉ áp
+              dụng trên địa chỉ này.
+            </p>
+          </header>
 
-            {verifiedNotice && (
-              <div className={styles.sessionBar} role="status">
-                <p className={styles.bodyText}>
-                  Tài khoản đã được xác thực thành công. Nhập mật khẩu bên dưới để đăng nhập.
-                </p>
-              </div>
-            )}
+          <div data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
+            <LoginForm
+              variant="platform"
+              buyerHref="/#danh-ba-gian-hang"
+              registerHref="/dang-ky?role=seller"
+            />
+          </div>
 
-            {isAuthenticated && user && (
+          <div
+            className={styles.buyerNotice}
+            data-rise=""
+            style={{ "--i": 3 } as React.CSSProperties}
+          >
+            <p className={styles.buyerNoticeTitle}>Bạn đang tìm trang để mua hàng?</p>
+            <p className={styles.buyerNoticeText}>
+              Hãy mở trực tiếp trang của cửa hàng bạn muốn mua trong{" "}
+              <Link href="/#danh-ba-gian-hang" className={styles.inlineLink}>
+                danh bạ gian hàng
+              </Link>{" "}
+              và đăng nhập tại đó để xem giỏ hàng và lịch sử đơn.
+            </p>
+          </div>
+        </div>
+
+        <aside className={styles.asideCol} aria-label="Thông tin vai trò trên trang gốc">
+          <div className={styles.darkBand} data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
+            <h2 className={styles.darkHeading}>Làm việc trên địa chỉ nền tảng</h2>
+            <ul className={styles.pointList}>
+              {PLATFORM_ROLES.map((item, idx) => (
+                <li
+                  key={item.title}
+                  className={styles.pointRow}
+                  data-rise=""
+                  style={{ "--i": idx + 3 } as React.CSSProperties}
+                >
+                  <span className={styles.pointTitle}>{item.title}</span>
+                  <p className={styles.pointDesc}>{item.detail}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className={styles.photoStrip}>
+            {EDITORIAL_FRAMES.map((frame, idx) => (
               <div
-                className={styles.sessionBar}
+                key={frame.src}
+                className={styles.photoFrame}
                 data-rise=""
-                style={{ "--i": 2 } as React.CSSProperties}
+                style={{ "--i": idx + 6 } as React.CSSProperties}
               >
-                <p className={styles.bodyText}>
-                  Đang đăng nhập: <strong>{user.fullName || user.email}</strong> ({user.email}).
-                </p>
-                <div className={shared.formActions}>
-                  <Button variant="ink" size="sm" href={nextTarget}>
-                    Tiếp tục
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => void logout("/dang-nhap")}
-                  >
-                    Đăng xuất
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            <form
-              className={styles.authPanel}
-              onSubmit={handleSubmit}
-              noValidate
-              data-rise=""
-              style={{ "--i": 2 } as React.CSSProperties}
-            >
-              <div
-                className={shared.field}
-                data-rise=""
-                style={{ "--i": 3 } as React.CSSProperties}
-              >
-                <label htmlFor="login-email" className={shared.fieldLabel}>
-                  Địa chỉ email
-                </label>
-                <input
-                  id="login-email"
-                  type="email"
-                  autoComplete="email"
-                  className={shared.input}
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="tenban@nexusmart.vn"
-                  disabled={submitting}
-                  required
+                <Image
+                  src={frame.src}
+                  alt={frame.alt}
+                  fill
+                  priority
+                  sizes="(max-width: 640px) 50vw, (max-width: 960px) 25vw, 13vw"
+                  className={styles.photoImg}
                 />
               </div>
-
-              <div
-                className={shared.field}
-                data-rise=""
-                style={{ "--i": 4 } as React.CSSProperties}
-              >
-                <label htmlFor="login-password" className={shared.fieldLabel}>
-                  Mật khẩu
-                </label>
-                <div className={styles.passwordWrap}>
-                  <input
-                    id="login-password"
-                    type={showPassword ? "text" : "password"}
-                    autoComplete="current-password"
-                    className={shared.input}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Nhập mật khẩu tài khoản"
-                    disabled={submitting}
-                    required
-                  />
-                  <button
-                    type="button"
-                    className={styles.toggleBtn}
-                    onClick={() => setShowPassword((v) => !v)}
-                  >
-                    {showPassword ? "Ẩn" : "Hiện"}
-                  </button>
-                </div>
-              </div>
-
-              {error && (
-                <div role="alert" className={styles.errorStack}>
-                  <p className={shared.fieldError}>{error}</p>
-                  {needsVerificationEmail && (
-                    <Link
-                      href={`/dang-ky?step=otp&email=${encodeURIComponent(needsVerificationEmail)}${
-                        nextParam ? `&next=${encodeURIComponent(nextTarget)}` : ""
-                      }`}
-                      className={styles.switchLink}
-                    >
-                      Nhập mã xác thực email ngay
-                    </Link>
-                  )}
-                </div>
-              )}
-
-              <div data-rise="" style={{ "--i": 5 } as React.CSSProperties}>
-                <Button type="submit" variant="primary" size="lg" fullWidth disabled={submitting}>
-                  {submitting ? "Đang đăng nhập..." : "Đăng nhập vào NexusMart"}
-                </Button>
-              </div>
-
-              <p
-                className={styles.switchLine}
-                data-rise=""
-                style={{ "--i": 6 } as React.CSSProperties}
-              >
-                Chưa có tài khoản NexusMart?{" "}
-                <Link href={registerHref} className={styles.switchLink}>
-                  Tạo tài khoản mới
-                </Link>{" "}
-                ·{" "}
-                <Link href="/tra-cuu-don-hang" className={styles.switchLink}>
-                  Tra cứu đơn hàng
-                </Link>
-              </p>
-            </form>
-
-            <div
-              className={styles.quickAccess}
-              data-rise=""
-              style={{ "--i": 7 } as React.CSSProperties}
-            >
-              <p className={styles.quickTitle}>An tâm mua sắm trực tiếp từ xưởng</p>
-              <p className={styles.bodyText}>
-                Đơn hàng, địa chỉ giao nhận và giỏ hàng được đồng bộ an toàn giữa các thiết bị khi
-                bạn đăng nhập.
-              </p>
-            </div>
+            ))}
           </div>
-
-          {/* Right column: dark member perks band + 4 real editorial lookbook frames */}
-          <div className={styles.showcaseCol}>
-            <div
-              className={styles.perksBand}
-              data-rise=""
-              style={{ "--i": 3 } as React.CSSProperties}
-            >
-              <h2 className={styles.perksHeading}>Quyền lợi thành viên Nexus</h2>
-              <ul className={styles.perkList}>
-                {MEMBER_PERKS.map((item, idx) => (
-                  <li
-                    key={item.title}
-                    className={styles.perkRow}
-                    data-rise=""
-                    style={{ "--i": idx + 4 } as React.CSSProperties}
-                  >
-                    <span className={styles.perkTitle}>{item.title}</span>
-                    <p className={styles.perkDesc}>{item.detail}</p>
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            <div className={styles.photoGrid}>
-              {showcaseProducts.map((product, idx) => {
-                const shot = MODEL_SHOTS[product.id];
-                return (
-                  <Link
-                    key={product.id}
-                    href={`/san-pham/${product.slug}`}
-                    className={styles.photoLink}
-                    data-rise=""
-                    style={{ "--i": idx + 7 } as React.CSSProperties}
-                  >
-                    <Image
-                      src={shot?.src ?? product.image}
-                      alt={shot?.alt ?? product.name}
-                      width={shot?.width ?? 896}
-                      height={shot?.height ?? 1200}
-                      sizes="(max-width: 640px) 50vw, (max-width: 960px) 25vw, 13vw"
-                      priority
-                      className={styles.photoImg}
-                    />
-                    <span className={styles.photoCaption}>{product.shortName}</span>
-                  </Link>
-                );
-              })}
-            </div>
-          </div>
-        </div>
+        </aside>
       </section>
     </div>
-  );
-}
-
-export default function LoginPage() {
-  return (
-    <Suspense
-      fallback={
-        <div className={shared.page}>
-          <StateView kind="loading" title="Đang mở trang đăng nhập..." rows={3} />
-        </div>
-      }
-    >
-      <LoginPageContent />
-    </Suspense>
   );
 }

@@ -2,19 +2,15 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "@/lib/api";
-import { DEFAULT_BODY_PROFILE, type BodyProfile } from "@/lib/sizing";
 import { useSession } from "@/components/SessionProvider";
-import { MockStoreProvider } from "@/mock/MockStoreContext";
 import type { GwCart, GwCartItem } from "@/features/commerce/types";
 
 /**
  * Viewer-only browser convenience preferences.
  * STRICT RULE: Never store cart items, orders, auth tokens, addresses, or PII here.
- * Only 4 non-sensitive viewer preferences live here:
- * - bodyProfile: height/weight/shape for client-side size recommendation
- * - wishlist: local product bookmarks (no backend wishlist service in Phase 0b)
+ * Only 2 non-sensitive viewer preferences live here:
+ * - wishlist: local product bookmarks (no backend wishlist service)
  * - recentlyViewed: last 12 visited product IDs
- * - cookiePrefs: cookie consent banner toggles
  */
 const VIEWER_PREFS_STORAGE_KEY = "nexusmart_viewer_prefs_v1";
 
@@ -22,13 +18,6 @@ export interface WishlistEntry {
   productId: string;
   skuCode?: string;
   addedAt: string;
-}
-
-export interface CookiePreferences {
-  essential: true;
-  analytics: boolean;
-  personalization: boolean;
-  updatedAt?: string;
 }
 
 export interface AddToCartInput {
@@ -57,7 +46,7 @@ export interface SaveVoucherResult {
 }
 
 export interface StoreContextValue {
-  // Real backend cart (single source of truth = /api/cart, never localStorage)
+  // Real backend cart for the current shop site (single source of truth = /api/cart, never localStorage)
   cart: GwCart | null;
   cartItems: GwCartItem[];
   cartCount: number;
@@ -71,87 +60,55 @@ export interface StoreContextValue {
   removeCartItem: (skuId: string) => Promise<CartMutationResult>;
   clearCart: (skuIds?: string[]) => Promise<boolean>;
 
-  // In-memory checkout promotion selections (validated & priced by backend /api/vouchers/preview)
-  selectedShopVouchers: Record<string, string | null>;
-  platformVoucherId: string | null;
-  freeshipVoucherId: string | null;
-  useCoins: boolean;
+  // In-memory shop voucher & flash-sale selections for the current site checkout
+  selectedVoucherId: string | null;
   flashSaleItemBySku: Record<string, string>;
-  setShopVoucher: (shopId: string, idOrCode: string | null) => void;
-  setPlatformVoucher: (idOrCode: string | null) => void;
-  setFreeshipVoucher: (idOrCode: string | null) => void;
-  setUseCoins: (enabled: boolean) => void;
+  setSelectedVoucher: (idOrCode: string | null) => void;
   saveVoucher: (idOrCode: string) => Promise<SaveVoucherResult>;
   resetVoucherSelection: () => void;
 
   // Viewer-only convenience preferences (persisted in localStorage, zero PII/cart/orders/tokens)
-  bodyProfile: BodyProfile;
-  updateBodyProfile: (next: BodyProfile) => void;
   wishlist: WishlistEntry[];
   toggleWishlist: (productId: string, skuCode?: string) => boolean;
   isWishlisted: (productId: string, skuCode?: string) => boolean;
   recentlyViewed: string[];
   recordProductView: (productId: string) => void;
   clearRecentlyViewed: () => void;
-  cookiePrefs: CookiePreferences;
-  updateCookiePrefs: (next: Partial<CookiePreferences>) => void;
 
-  // UI shell overlays & toasts
-  cookieModalOpen: boolean;
-  openCookieModal: () => void;
-  closeCookieModal: () => void;
-  chatOpen: boolean;
-  chatShopId: string | null;
-  openChat: (shopId?: string) => void;
-  closeChat: () => void;
-  aiOpen: boolean;
-  openAi: () => void;
-  closeAi: () => void;
+  // Global toast notifications
   toastMessage: string | null;
   showToast: (message: string) => void;
   dismissToast: () => void;
 }
 
-const INITIAL_COOKIE_PREFS: CookiePreferences = {
-  essential: true,
-  analytics: true,
-  personalization: true,
-};
-
 const StoreContext = createContext<StoreContextValue | null>(null);
+
+function isLiveSiteHostDocument(): boolean {
+  if (typeof document === "undefined") return false;
+  return Boolean(document.querySelector('[data-site-root][data-site-preview="false"]'));
+}
 
 export function StoreProvider({ children }: { children: React.ReactNode }) {
   const { user: sessionUser, isAuthenticated: sessionAuthed } = useSession();
   const [hydrated, setHydrated] = useState(false);
 
-  // Real backend cart state
+  // Real backend cart state (strictly scoped to the current host site by /api/cart)
   const [cart, setCart] = useState<GwCart | null>(null);
-  const [cartLoading, setCartLoading] = useState<boolean>(sessionAuthed);
+  const [cartLoading, setCartLoading] = useState<boolean>(false);
   const [cartAuthenticated, setCartAuthenticated] = useState<boolean | null>(
     sessionAuthed ? true : false
   );
   const [cartError, setCartError] = useState<string | null>(null);
 
-  // In-memory voucher/coin/flash selection for active cart & checkout
-  const [selectedShopVouchers, setSelectedShopVouchers] = useState<Record<string, string | null>>(
-    {}
-  );
-  const [platformVoucherId, setPlatformVoucherId] = useState<string | null>(null);
-  const [freeshipVoucherId, setFreeshipVoucherId] = useState<string | null>(null);
-  const [useCoins, setUseCoins] = useState<boolean>(false);
+  // In-memory shop voucher & flash selection for the current site
+  const [selectedVoucherId, setSelectedVoucherId] = useState<string | null>(null);
   const [flashSaleItemBySku, setFlashSaleItemBySku] = useState<Record<string, string>>({});
 
   // Viewer-only convenience preferences
-  const [bodyProfile, setBodyProfile] = useState<BodyProfile>(DEFAULT_BODY_PROFILE);
   const [wishlist, setWishlist] = useState<WishlistEntry[]>([]);
   const [recentlyViewed, setRecentlyViewed] = useState<string[]>([]);
-  const [cookiePrefs, setCookiePrefs] = useState<CookiePreferences>(INITIAL_COOKIE_PREFS);
 
-  // UI overlays & toast
-  const [cookieModalOpen, setCookieModalOpen] = useState(false);
-  const [chatOpen, setChatOpen] = useState(false);
-  const [chatShopId, setChatShopId] = useState<string | null>(null);
-  const [aiOpen, setAiOpen] = useState(false);
+  // Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const showToast = useCallback((message: string) => {
@@ -168,14 +125,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const raw = window.localStorage.getItem(VIEWER_PREFS_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<{
-          bodyProfile: BodyProfile;
           wishlist: WishlistEntry[];
           recentlyViewed: string[];
-          cookiePrefs: CookiePreferences;
         }>;
-        if (parsed.bodyProfile && typeof parsed.bodyProfile.heightCm === "number") {
-          setBodyProfile(parsed.bodyProfile);
-        }
         if (Array.isArray(parsed.wishlist)) {
           setWishlist(
             parsed.wishlist.filter(
@@ -188,14 +140,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           setRecentlyViewed(
             parsed.recentlyViewed.filter((id): id is string => typeof id === "string").slice(0, 12)
           );
-        }
-        if (parsed.cookiePrefs && typeof parsed.cookiePrefs.analytics === "boolean") {
-          setCookiePrefs({
-            essential: true,
-            analytics: parsed.cookiePrefs.analytics,
-            personalization: Boolean(parsed.cookiePrefs.personalization),
-            updatedAt: parsed.cookiePrefs.updatedAt,
-          });
         }
       }
       // Clean up legacy mock store key if present from pre-integration visits
@@ -213,16 +157,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       window.localStorage.setItem(
         VIEWER_PREFS_STORAGE_KEY,
         JSON.stringify({
-          bodyProfile,
           wishlist,
           recentlyViewed,
-          cookiePrefs,
         })
       );
     } catch {
       // Ignore storage quota errors
     }
-  }, [hydrated, bodyProfile, wishlist, recentlyViewed, cookiePrefs]);
+  }, [hydrated, wishlist, recentlyViewed]);
 
   const refreshCart = useCallback(async (): Promise<GwCart | null> => {
     setCartLoading(true);
@@ -240,6 +182,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         setCartError(null);
         return null;
       }
+      if (err instanceof ApiError && err.status === 404) {
+        // Buyer cart API only lives on published shop site hosts (404 on root/suspended hosts).
+        setCart(null);
+        setCartError(null);
+        return null;
+      }
       const message =
         err instanceof ApiError
           ? err.message
@@ -251,7 +199,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Sync real backend cart automatically whenever authenticated session changes
+  // Sync real backend cart automatically on live shop site hosts whenever the session changes
   useEffect(() => {
     if (!sessionUser?.id) {
       setCart(null);
@@ -259,10 +207,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       setCartError(null);
       setCartLoading(false);
       setFlashSaleItemBySku({});
-      setSelectedShopVouchers({});
-      setPlatformVoucherId(null);
-      setFreeshipVoucherId(null);
-      setUseCoins(false);
+      setSelectedVoucherId(null);
+      return;
+    }
+    if (!isLiveSiteHostDocument()) {
+      setCart(null);
+      setCartLoading(false);
+      setCartError(null);
       return;
     }
     void refreshCart();
@@ -418,10 +369,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   );
 
   const resetVoucherSelection = useCallback(() => {
-    setSelectedShopVouchers({});
-    setPlatformVoucherId(null);
-    setFreeshipVoucherId(null);
-    setUseCoins(false);
+    setSelectedVoucherId(null);
   }, []);
 
   const clearCart = useCallback(
@@ -451,8 +399,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     [resetVoucherSelection, showToast]
   );
 
-  const setShopVoucher = useCallback((shopId: string, idOrCode: string | null) => {
-    setSelectedShopVouchers((prev) => ({ ...prev, [shopId]: idOrCode }));
+  const setSelectedVoucher = useCallback((idOrCode: string | null) => {
+    setSelectedVoucherId(idOrCode ? idOrCode.trim() : null);
   }, []);
 
   const saveVoucher = useCallback(
@@ -465,12 +413,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           { method: "POST", body: {} }
         );
         const label = data.voucher?.code || clean;
-        const message = `Đã lưu mã ${label} vào ví voucher của bạn.`;
+        const message = `Đã lưu mã ${label} vào tài khoản của bạn.`;
         showToast(message);
         return { ok: true, message };
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
-          const message = "Vui lòng đăng nhập để lưu mã ưu đãi vào ví của bạn.";
+          const message = "Vui lòng đăng nhập để lưu mã ưu đãi.";
           showToast(message);
           return { ok: false, unauthenticated: true, message };
         }
@@ -483,14 +431,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   );
 
   // Viewer-only preference actions
-  const updateBodyProfile = useCallback(
-    (next: BodyProfile) => {
-      setBodyProfile(next);
-      showToast(`Đã lưu hồ sơ số đo (${next.heightCm} cm · ${next.weightKg} kg) cho toàn sàn.`);
-    },
-    [showToast]
-  );
-
   const toggleWishlist = useCallback(
     (productId: string, skuCode?: string): boolean => {
       let added = false;
@@ -532,37 +472,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setRecentlyViewed([]);
   }, []);
 
-  const updateCookiePrefs = useCallback(
-    (next: Partial<CookiePreferences>) => {
-      setCookiePrefs((prev) => ({
-        ...prev,
-        ...next,
-        essential: true,
-        updatedAt: new Date().toISOString(),
-      }));
-      showToast("Đã lưu tùy chọn cookie của bạn.");
-    },
-    [showToast]
-  );
-
-  const openCookieModal = useCallback(() => setCookieModalOpen(true), []);
-  const closeCookieModal = useCallback(() => setCookieModalOpen(false), []);
-
-  const openChat = useCallback((shopId?: string) => {
-    setAiOpen(false);
-    if (shopId) setChatShopId(shopId);
-    setChatOpen(true);
-  }, []);
-
-  const closeChat = useCallback(() => setChatOpen(false), []);
-
-  const openAi = useCallback(() => {
-    setChatOpen(false);
-    setAiOpen(true);
-  }, []);
-
-  const closeAi = useCallback(() => setAiOpen(false), []);
-
   const value = useMemo<StoreContextValue>(
     () => ({
       cart,
@@ -576,37 +485,17 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       updateCartItemQty,
       removeCartItem,
       clearCart,
-      selectedShopVouchers,
-      platformVoucherId,
-      freeshipVoucherId,
-      useCoins,
+      selectedVoucherId,
       flashSaleItemBySku,
-      setShopVoucher,
-      setPlatformVoucher: setPlatformVoucherId,
-      setFreeshipVoucher: setFreeshipVoucherId,
-      setUseCoins,
+      setSelectedVoucher,
       saveVoucher,
       resetVoucherSelection,
-      bodyProfile,
-      updateBodyProfile,
       wishlist,
       toggleWishlist,
       isWishlisted,
       recentlyViewed,
       recordProductView,
       clearRecentlyViewed,
-      cookiePrefs,
-      updateCookiePrefs,
-      cookieModalOpen,
-      openCookieModal,
-      closeCookieModal,
-      chatOpen,
-      chatShopId,
-      openChat,
-      closeChat,
-      aiOpen,
-      openAi,
-      closeAi,
       toastMessage,
       showToast,
       dismissToast,
@@ -623,45 +512,24 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       updateCartItemQty,
       removeCartItem,
       clearCart,
-      selectedShopVouchers,
-      platformVoucherId,
-      freeshipVoucherId,
-      useCoins,
+      selectedVoucherId,
       flashSaleItemBySku,
-      setShopVoucher,
+      setSelectedVoucher,
       saveVoucher,
       resetVoucherSelection,
-      bodyProfile,
-      updateBodyProfile,
       wishlist,
       toggleWishlist,
       isWishlisted,
       recentlyViewed,
       recordProductView,
       clearRecentlyViewed,
-      cookiePrefs,
-      updateCookiePrefs,
-      cookieModalOpen,
-      openCookieModal,
-      closeCookieModal,
-      chatOpen,
-      chatShopId,
-      openChat,
-      closeChat,
-      aiOpen,
-      openAi,
-      closeAi,
       toastMessage,
       showToast,
       dismissToast,
     ]
   );
 
-  return (
-    <StoreContext.Provider value={value}>
-      <MockStoreProvider notify={showToast}>{children}</MockStoreProvider>
-    </StoreContext.Provider>
-  );
+  return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
 }
 
 export function useStore(): StoreContextValue {

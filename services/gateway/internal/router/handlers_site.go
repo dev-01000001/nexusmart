@@ -423,3 +423,49 @@ func (h *handler) handleAdminSuspendSite(w http.ResponseWriter, r *http.Request)
 		"site": mapSite(resp.GetSite()),
 	})
 }
+
+type publishedSiteDTO struct {
+	SiteID      string `json:"site_id"`
+	ShopID      string `json:"shop_id"`
+	ShopName    string `json:"shop_name"`
+	Subdomain   string `json:"subdomain"`
+	PrimaryHost string `json:"primary_host"`
+	LogoURL     string `json:"logo_url"`
+	CoverURL    string `json:"cover_url"`
+	Tagline     string `json:"tagline"`
+}
+
+// handleListPublishedSites serves the public platform site directory (no JWT): PUBLISHED sites of
+// ACTIVE shops only, newest publish first. page_size defaults to 24 and is capped at 48 upstream.
+func (h *handler) handleListPublishedSites(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.ListPublishedSites(ctx, &userv1.ListPublishedSitesRequest{
+		Page:     httpx.ParseInt32Query(r, "page", 1),
+		PageSize: httpx.ParseInt32Query(r, "page_size", 24),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	sites := make([]publishedSiteDTO, 0, len(resp.GetSites()))
+	for _, s := range resp.GetSites() {
+		sites = append(sites, publishedSiteDTO{
+			SiteID:      s.GetSiteId(),
+			ShopID:      s.GetShopId(),
+			ShopName:    s.GetShopName(),
+			Subdomain:   s.GetSubdomain(),
+			PrimaryHost: s.GetPrimaryHost(),
+			LogoURL:     s.GetLogoUrl(),
+			CoverURL:    s.GetCoverUrl(),
+			Tagline:     s.GetTagline(),
+		})
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"sites":     sites,
+		"total":     resp.GetTotal(),
+		"page":      resp.GetPage(),
+		"page_size": resp.GetPageSize(),
+	})
+}

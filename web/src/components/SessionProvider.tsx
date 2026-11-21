@@ -21,7 +21,7 @@ export interface SessionContextValue {
 
 const SessionContext = createContext<SessionContextValue | null>(null);
 
-const PROTECTED_PREFIXES = ["/tai-khoan", "/don-hang", "/seller", "/admin"];
+const PROTECTED_PREFIXES = ["/tai-khoan", "/don-hang", "/thanh-toan/cho", "/seller", "/admin"];
 
 function isProtectedRoute(pathname: string | null): boolean {
   if (!pathname) return false;

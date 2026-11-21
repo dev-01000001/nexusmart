@@ -9,7 +9,6 @@ import {
   type GwAdminOrder,
   type GwAdminProduct,
   type GwAdminShop,
-  type GwAdminVoucher,
   type GwAuditLog,
   type GwLedgerSummary,
 } from "./adminApiTypes";
@@ -118,15 +117,6 @@ export async function loadAdminProducts(
       query: { status: status || undefined, page: 1, page_size: pageSize },
     });
     return { data: { items: res.items ?? [], total: res.total ?? 0 }, error: null };
-  } catch (err) {
-    return { data: null, error: safeLoadError(err) };
-  }
-}
-
-export async function loadAdminVouchers(): Promise<AdminLoadResult<GwAdminVoucher[]>> {
-  try {
-    const res = await gw<{ vouchers: GwAdminVoucher[] }>("/api/v1/vouchers");
-    return { data: res.vouchers ?? [], error: null };
   } catch (err) {
     return { data: null, error: safeLoadError(err) };
   }

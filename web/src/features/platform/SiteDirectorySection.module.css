@@ -1,0 +1,262 @@
+/* Real PUBLISHED site directory on crisp white band (zero resting shadow, zero 1px border). */
+
+.band {
+  width: 100%;
+  background: var(--surface-white);
+  padding: clamp(56px, 7vw, 92px) var(--margin);
+  scroll-margin-top: 84px;
+}
+
+.inner {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(28px, 3.5vw, 40px);
+}
+
+.head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px 32px;
+}
+
+.headCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.heading {
+  font-size: clamp(26px, 2.4vw, 34px);
+  font-weight: 400;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+  color: var(--ink);
+}
+
+.lead {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 60ch;
+}
+
+.count {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--accent-tint-ink);
+  background: var(--accent-tint);
+  padding: 8px 14px;
+  white-space: nowrap;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(20px, 2.4vw, 28px);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--ink);
+  min-width: 0;
+  transition: background-color var(--t-hover) ease;
+}
+
+.card:hover {
+  background: var(--surface-subtle);
+}
+
+.coverWrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--surface-muted);
+  overflow: hidden;
+}
+
+.coverImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  transition: transform 420ms var(--ease-out);
+}
+
+.card:hover .coverImg {
+  transform: scale(1.03);
+}
+
+.coverFallback {
+  width: 100%;
+  height: 100%;
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.coverInitial {
+  font-size: 40px;
+  font-weight: 300;
+  letter-spacing: -0.02em;
+}
+
+.cardBody {
+  padding: clamp(20px, 2.4vw, 26px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+}
+
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.logoFrame {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  background: var(--surface-white);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.logoImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.logoInitial {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.brandMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.siteName {
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.25;
+  color: var(--ink-strong);
+}
+
+.siteHost {
+  font-size: 14px;
+  color: var(--ink-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tagline {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 56ch;
+}
+
+.visitLine {
+  margin-top: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.card:hover .visitLine {
+  color: var(--accent-hover);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Pagination */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-top: 8px;
+}
+
+.pageNumbers {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pageBtn,
+.pageBtnDisabled,
+.pageNum,
+.pageNumActive {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 14px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.pageBtn,
+.pageNum {
+  background: var(--surface-subtle);
+  color: var(--ink);
+  transition: background-color var(--t-hover) ease;
+}
+
+.pageBtn:hover,
+.pageNum:hover {
+  background: var(--surface-muted);
+}
+
+.pageNumActive {
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+}
+
+.pageBtnDisabled {
+  background: var(--bg);
+  color: var(--muted);
+}
+
+.pageGap {
+  padding: 0 6px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+@media (max-width: 860px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,4 +1,6 @@
-import { PLATFORM_FREESHIP_THRESHOLD, getShopById, type ShopSizeRow, type SizeCode } from "../data";
+import type { SizeCode } from "../data/products";
+import { getShopById, type ShopSizeRow } from "../data/shops";
+import { PLATFORM_FREESHIP_THRESHOLD } from "../data/vouchers";
 import { getProvinceByCode, getShippingFeeForProvince } from "./provinces";
 
 export type BodyShape = "gay" | "vua" | "day";

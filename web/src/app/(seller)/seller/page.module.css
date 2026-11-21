@@ -300,6 +300,98 @@ table.compareTable tbody tr:last-child td {
   background: var(--surface);
 }
 
+/* Site status band: whether buyers can reach the shop's site (the only place orders come from) */
+.siteBand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 16px var(--card-pad);
+  background: var(--card);
+  border: 1px solid var(--border); /* taste-skill-ignore: app panel 1px border per seller-sheet.md */
+  border-radius: var(--radius-card);
+}
+
+.siteBandAlert {
+  background: var(--pill-warning-bg);
+  border-color: transparent;
+}
+
+.siteBandText {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.siteBandHost,
+.siteBandHeadline {
+  font-size: var(--fs-section);
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.siteBandNote {
+  max-width: 68ch;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--muted);
+}
+
+.siteBandAlert .siteBandNote {
+  color: var(--ink);
+}
+
+.siteBandActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.siteBandPrimary,
+.siteBandSecondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-control);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color var(--t-hover) ease;
+}
+
+.siteBandPrimary {
+  background: var(--primary-ink-bg);
+  color: var(--primary-ink-fg);
+}
+
+.siteBandPrimary:hover {
+  background: #142026;
+}
+
+.siteBandSecondary {
+  background: var(--card);
+  color: var(--ink);
+  border: 1px solid var(--control); /* taste-skill-ignore: app outlined button */
+}
+
+.siteBandSecondary:hover {
+  background: var(--bg);
+}
+
+.siteBandPrimary:focus-visible,
+.siteBandSecondary:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
 @media (max-width: 1040px) {
   .pairedGrid {
     grid-template-columns: minmax(0, 1fr);
@@ -351,6 +443,17 @@ table.compareTable tbody tr:last-child td {
 }
 
 @media (max-width: 640px) {
+  .siteBand {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    padding: 16px;
+  }
+
+  .siteBandActions > * {
+    flex: 1 1 0;
+  }
+
   table.compareTable {
     display: none;
   }

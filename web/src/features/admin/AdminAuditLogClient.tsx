@@ -16,11 +16,12 @@ import {
 import shared from "./adminShared.module.css";
 import styles from "@/app/(admin)/admin/audit-log/page.module.css";
 
-type AuditTargetTab = "all" | "shop" | "user" | "other";
+type AuditTargetTab = "all" | "shop" | "site" | "user" | "other";
 
 function bucketTarget(targetType: string): AuditTargetTab {
   const t = targetType.toLowerCase();
   if (t === "shop") return "shop";
+  if (t === "site") return "site";
   if (t === "user") return "user";
   return "other";
 }
@@ -48,6 +49,7 @@ function AuditLogContent({
     const map: Record<AuditTargetTab, number> = {
       all: initialLogs.length,
       shop: 0,
+      site: 0,
       user: 0,
       other: 0,
     };
@@ -92,6 +94,7 @@ function AuditLogContent({
   const tabs: Array<{ id: AuditTargetTab; label: string }> = [
     { id: "all", label: "Tất cả" },
     { id: "shop", label: "Gian hàng" },
+    { id: "site", label: "Site gian hàng" },
     { id: "user", label: "Tài khoản" },
     { id: "other", label: "Khác" },
   ];

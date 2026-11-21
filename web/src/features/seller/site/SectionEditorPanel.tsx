@@ -25,6 +25,8 @@ const COLLECTION_SUGGESTIONS: ReadonlyArray<{ slug: string; label: string }> = [
 
 const INTERNAL_HREF_SUGGESTIONS: ReadonlyArray<{ href: string; label: string }> = [
   { href: "/san-pham", label: "Tất cả sản phẩm" },
+  { href: "/flash-sale", label: "Flash sale của cửa hàng" },
+  { href: "/voucher", label: "Mã giảm giá" },
   { href: "/chinh-sach", label: "Trang chính sách" },
   { href: "/gioi-thieu", label: "Trang giới thiệu" },
 ];

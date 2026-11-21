@@ -241,11 +241,60 @@ export function isDirectInternalSitePath(pathname: string): boolean {
   return matchesPrefix(pathname, "/s");
 }
 
-const SITE_BLOCKED_PREFIXES = ["/api", "/seller", "/admin", "/s"] as const;
+const SITE_ALLOWED_API_PREFIXES = [
+  "/api/auth",
+  "/api/cart",
+  "/api/checkout",
+  "/api/orders",
+  "/api/payments",
+  "/api/vouchers",
+] as const;
 
-/** Routes forbidden on subdomain site hosts (must return 404 immediately). */
+const SITE_BLOCKED_PAGE_PREFIXES = ["/seller", "/admin", "/s"] as const;
+
+/** Buyer + auth BFF APIs allowed on a PUBLISHED site host (never rewritten to `/s/[host]`). */
+export function isSiteApiPath(pathname: string): boolean {
+  return SITE_ALLOWED_API_PREFIXES.some((prefix) => matchesPrefix(pathname, prefix));
+}
+
+/**
+ * Seller/admin pages + APIs, the internal `/s` tree, and any non-allowlisted `/api` path are 404
+ * on subdomain site hosts.
+ */
 export function isBlockedSitePath(pathname: string): boolean {
-  return SITE_BLOCKED_PREFIXES.some((prefix) => matchesPrefix(pathname, prefix));
+  if (SITE_BLOCKED_PAGE_PREFIXES.some((prefix) => matchesPrefix(pathname, prefix))) {
+    return true;
+  }
+  if (isApiPath(pathname)) {
+    return !isSiteApiPath(pathname);
+  }
+  return false;
+}
+
+const BUYER_API_PREFIXES = [
+  "/api/cart",
+  "/api/checkout",
+  "/api/orders",
+  "/api/payments",
+  "/api/vouchers",
+] as const;
+
+/** Buyer commerce APIs: served only on a PUBLISHED site host, 404 on the root host. */
+export function isBuyerApiPath(pathname: string): boolean {
+  return BUYER_API_PREFIXES.some((prefix) => matchesPrefix(pathname, prefix));
+}
+
+export function isApiPath(pathname: string): boolean {
+  return matchesPrefix(pathname, "/api");
+}
+
+const SITE_PROTECTED_PREFIXES = ["/tai-khoan", "/don-hang", "/thanh-toan/cho"] as const;
+const ROOT_PROTECTED_PREFIXES = ["/seller", "/admin"] as const;
+
+/** Pages that require a session: buyer account/orders on a site, seller/admin on the root. */
+export function isProtectedPagePath(pathname: string, hostKind: "root" | "site"): boolean {
+  const prefixes = hostKind === "site" ? SITE_PROTECTED_PREFIXES : ROOT_PROTECTED_PREFIXES;
+  return prefixes.some((prefix) => matchesPrefix(pathname, prefix));
 }
 
 export function isSiteMetadataPath(pathname: string): boolean {
@@ -301,32 +350,4 @@ export function deriveSiteOrigin(opts: {
   if (!parsedSite.hostname) return "";
   const reqPort = parsedSite.port || normalizeHostHeader(opts.rawHost).port;
   return `${proto}://${formatHostWithPort(parsedSite.hostname, reqPort)}`;
-}
-
-/**
- * Build the marketplace cart handoff URL from a subdomain site Buy/Add-to-cart action.
- */
-export function buildStorefrontCartUrl(opts: {
-  marketplaceOrigin: string;
-  shopId: string;
-  siteHost: string;
-  skuId?: string;
-  qty?: number;
-  flashSaleItemId?: string;
-}): string {
-  const base = opts.marketplaceOrigin.replace(/\/+$/, "");
-  const params = new URLSearchParams();
-  params.set("shop", opts.shopId);
-  params.set("channel", "storefront");
-  if (opts.skuId) {
-    params.set("sku", opts.skuId);
-    params.set("qty", String(Math.max(1, Math.trunc(opts.qty ?? 1))));
-  }
-  if (opts.flashSaleItemId) {
-    params.set("flash", opts.flashSaleItemId);
-  }
-  if (opts.siteHost) {
-    params.set("site", opts.siteHost);
-  }
-  return `${base}/gio-hang?${params.toString()}`;
 }

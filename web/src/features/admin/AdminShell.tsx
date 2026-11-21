@@ -4,24 +4,20 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  IconAlert,
   IconArrowUpRight,
   IconClose,
   IconDashboard,
   IconFileText,
   IconHome,
   IconMenu,
-  IconPackage,
   IconSearch,
   IconShield,
-  IconSliders,
   IconStore,
   IconTag,
   IconWallet,
   NexusMark,
 } from "@/components/Icons";
 import type { SessionUser } from "@/lib/server/session";
-import { useAdminDisputes, usePendingModerationCount } from "./auditStore";
 import styles from "@/app/(admin)/layout.module.css";
 
 interface AdminContextValue {
@@ -72,8 +68,6 @@ export function AdminShell({
   const pathname = usePathname();
   const router = useRouter();
   const searchRef = useRef<HTMLInputElement | null>(null);
-  const disputes = useAdminDisputes();
-  const mockPendingModeration = usePendingModerationCount();
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -112,9 +106,6 @@ export function AdminShell({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const openDisputes = disputes.filter((d) => d.status !== "da_xu_ly").length;
-  const totalModerationBadge = pendingProductReviews + mockPendingModeration;
-
   const opsNavItems: AdminNavItem[] = [
     { href: "/admin", label: "Tổng quan", icon: <IconDashboard size={16} /> },
     {
@@ -124,46 +115,43 @@ export function AdminShell({
       badge: pendingShopApprovals > 0 ? pendingShopApprovals : undefined,
     },
     {
+      href: "/admin/kiem-duyet",
+      label: "Duyệt sản phẩm",
+      icon: <IconShield size={16} />,
+      badge: pendingProductReviews > 0 ? pendingProductReviews : undefined,
+    },
+    {
       href: "/admin/sites",
       label: "Site gian hàng",
       icon: <IconHome size={16} />,
     },
     {
-      href: "/admin/kiem-duyet",
-      label: "Kiểm duyệt mở",
-      icon: <IconShield size={16} />,
-      badge: totalModerationBadge > 0 ? totalModerationBadge : undefined,
+      href: "/admin/flash-sale",
+      label: "Flash sale",
+      icon: <IconTag size={16} />,
     },
-    {
-      href: "/admin/khieu-nai",
-      label: "Khiếu nại mở",
-      icon: <IconAlert size={16} />,
-      badge: openDisputes > 0 ? openDisputes : undefined,
-    },
+  ];
+
+  const financeAuditNavItems: AdminNavItem[] = [
     {
       href: "/admin/doi-soat",
-      label: "Đối soát thanh toán",
+      label: "Đối soát & sổ cái",
       icon: <IconWallet size={16} />,
       badge: ledgerUnbalanced ? 1 : undefined,
       alertBadge: ledgerUnbalanced,
     },
+    { href: "/admin/audit-log", label: "Nhật ký kiểm toán", icon: <IconFileText size={16} /> },
   ];
 
-  const platformNavItems: AdminNavItem[] = [
-    { href: "/admin/noi-dung", label: "Nội dung & chiến dịch", icon: <IconPackage size={16} /> },
-    { href: "/admin/thanh-vien", label: "Hội viên & khuyến mãi", icon: <IconTag size={16} /> },
-    { href: "/admin/cau-hinh", label: "Cấu hình sàn", icon: <IconSliders size={16} /> },
-    { href: "/admin/audit-log", label: "Nhật ký hệ thống", icon: <IconFileText size={16} /> },
-  ];
-
-  const allNavItems = [...opsNavItems, ...platformNavItems];
+  const allNavItems = [...opsNavItems, ...financeAuditNavItems];
 
   const isActive = (href: string) =>
     href === "/admin"
       ? pathname === "/admin"
       : pathname === href || pathname.startsWith(`${href}/`);
 
-  const activeTitle = allNavItems.find((item) => isActive(item.href))?.label ?? "Quản trị sàn";
+  const activeTitle =
+    allNavItems.find((item) => isActive(item.href))?.label ?? "Quản trị NexusMart";
   const displayName = user.fullName || user.email || "Quản trị viên";
   const initials = getInitials(displayName);
 
@@ -171,22 +159,19 @@ export function AdminShell({
     e.preventDefault();
     const trimmed = query.trim();
     if (!trimmed) return;
+    const lower = trimmed.toLowerCase();
     const upper = trimmed.toUpperCase();
-    if (upper.startsWith("KN-")) {
-      router.push(`/admin/khieu-nai?q=${encodeURIComponent(trimmed)}`);
-    } else if (upper.startsWith("DS-")) {
+    if (upper.startsWith("DS-")) {
       router.push(`/admin/doi-soat?q=${encodeURIComponent(trimmed)}`);
-    } else if (
-      trimmed.toLowerCase().startsWith("admin.") ||
-      trimmed.toLowerCase().startsWith("tr-")
-    ) {
+    } else if (lower.startsWith("admin.") || lower.startsWith("site.") || lower.startsWith("tr-")) {
       router.push(`/admin/audit-log?q=${encodeURIComponent(trimmed)}`);
-    } else if (upper.startsWith("DG-") || upper.startsWith("QA-") || upper.startsWith("MD-")) {
+    } else if (upper.startsWith("SP-") || upper.startsWith("SKU-") || upper.startsWith("NM-")) {
       router.push(`/admin/kiem-duyet?q=${encodeURIComponent(trimmed)}`);
-    } else if (upper.startsWith("NXGIFT") || upper.startsWith("FS-") || upper.startsWith("SV-")) {
-      router.push(`/admin/thanh-vien?q=${encodeURIComponent(trimmed)}`);
-    } else if (upper.startsWith("BV-") || upper.startsWith("NH-") || upper.startsWith("DM-")) {
-      router.push(`/admin/noi-dung?q=${encodeURIComponent(trimmed)}`);
+    } else if (upper.startsWith("FS-")) {
+      router.push(`/admin/flash-sale?q=${encodeURIComponent(trimmed)}`);
+    } else if (lower.includes(".nexusmart") || lower.startsWith("site:")) {
+      const siteQuery = lower.startsWith("site:") ? trimmed.slice(5).trim() : trimmed;
+      router.push(`/admin/sites?q=${encodeURIComponent(siteQuery || trimmed)}`);
     } else {
       router.push(`/admin/gian-hang?q=${encodeURIComponent(trimmed)}`);
     }
@@ -227,7 +212,7 @@ export function AdminShell({
               className={styles.searchInput}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Tìm gian hàng, khiếu nại KN-, nhật ký kiểm toán..."
+              placeholder="Tìm gian hàng, sản phẩm, tên miền site, nhật ký..."
               aria-label="Tìm kiếm trong hệ thống quản trị"
             />
             <span className={styles.searchHint} aria-hidden="true">
@@ -247,7 +232,7 @@ export function AdminShell({
 
         <aside
           className={`${styles.sidebar} ${menuOpen ? styles.sidebarOpen : ""}`}
-          aria-label="Điều hướng Quản trị sàn"
+          aria-label="Điều hướng Quản trị nền tảng"
         >
           <div className={styles.sheetHeader}>
             <span className={styles.topBarLeft}>
@@ -270,7 +255,7 @@ export function AdminShell({
               className={styles.searchInput}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Tìm gian hàng, KN-, nhật ký..."
+              placeholder="Tìm gian hàng, sản phẩm, nhật ký..."
               aria-label="Tìm kiếm quản trị"
             />
           </form>
@@ -296,8 +281,8 @@ export function AdminShell({
               );
             })}
 
-            <span className={styles.groupLabel}>Quản trị sàn</span>
-            {platformNavItems.map((item) => {
+            <span className={styles.groupLabel}>Tài chính &amp; kiểm toán</span>
+            {financeAuditNavItems.map((item) => {
               const active = isActive(item.href);
               return (
                 <Link
@@ -322,7 +307,7 @@ export function AdminShell({
             <span className={styles.groupLabel}>Chuyển khu vực</span>
             <Link href="/" className={styles.navItem}>
               <IconArrowUpRight size={16} />
-              <span className={styles.navLabel}>Cửa hàng người mua</span>
+              <span className={styles.navLabel}>Trang chủ NexusMart</span>
             </Link>
           </div>
         </aside>

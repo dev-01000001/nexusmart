@@ -14,6 +14,12 @@ export default async function robots(): Promise<MetadataRoute.Robots> {
   const rootDomain = getSiteRootDomain();
   const cls = classifyHost(rawHost, rootDomain);
 
+  if (cls.kind === "unknown") {
+    return {
+      rules: [{ userAgent: "*", disallow: "/" }],
+    };
+  }
+
   if (cls.kind === "site") {
     const payload = await fetchPublishedSiteByHost(cls.hostname);
     if (!payload) {
@@ -31,7 +37,16 @@ export default async function robots(): Promise<MetadataRoute.Robots> {
         {
           userAgent: "*",
           allow: "/",
-          disallow: ["/api/", "/seller/", "/admin/", "/s/"],
+          disallow: [
+            "/api/",
+            "/seller/",
+            "/admin/",
+            "/s/",
+            "/gio-hang",
+            "/thanh-toan",
+            "/tai-khoan",
+            "/don-hang",
+          ],
         },
       ],
       sitemap: `${siteOrigin}/sitemap.xml`,
@@ -39,7 +54,7 @@ export default async function robots(): Promise<MetadataRoute.Robots> {
     };
   }
 
-  const marketplaceOrigin = deriveMarketplaceOrigin({
+  const platformOrigin = deriveMarketplaceOrigin({
     rawHost,
     proto,
     rootDomain,
@@ -51,19 +66,10 @@ export default async function robots(): Promise<MetadataRoute.Robots> {
       {
         userAgent: "*",
         allow: "/",
-        disallow: [
-          "/api/",
-          "/seller/",
-          "/admin/",
-          "/s/",
-          "/tai-khoan/",
-          "/don-hang/",
-          "/gio-hang/",
-          "/thanh-toan/",
-        ],
+        disallow: ["/api/", "/seller/", "/admin/", "/s/"],
       },
     ],
-    sitemap: `${marketplaceOrigin}/sitemap.xml`,
-    host: marketplaceOrigin,
+    sitemap: `${platformOrigin}/sitemap.xml`,
+    host: platformOrigin,
   };
 }

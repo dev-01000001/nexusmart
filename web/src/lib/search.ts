@@ -1,4 +1,5 @@
-import { PRODUCTS, SHOPS, TRENDING_KEYWORDS, type Product, type TrendingKeyword } from "../data";
+import { PRODUCTS, type Product } from "../data/products";
+import { SHOPS } from "../data/shops";
 
 /**
  * Strips Vietnamese diacritics, maps đ/Đ -> d, lowercases and collapses whitespace.
@@ -197,34 +198,4 @@ export function suggestSpelling(query: string): string | null {
     }
   }
   return best ? best.display : null;
-}
-
-export interface InstantSearchResult {
-  products: Product[];
-  keywords: TrendingKeyword[];
-  spellingSuggestion: string | null;
-}
-
-export function getInstantSearchSuggestions(query: string, limit = 5): InstantSearchResult {
-  const clean = normalizeVietnamese(query);
-  if (!clean) {
-    return {
-      products: PRODUCTS.slice(0, limit),
-      keywords: TRENDING_KEYWORDS,
-      spellingSuggestion: null,
-    };
-  }
-
-  const matchedProducts = searchProducts(query, PRODUCTS).slice(0, limit);
-  const matchedKeywords = TRENDING_KEYWORDS.filter(
-    (kw) =>
-      normalizeVietnamese(kw.label).includes(clean) || normalizeVietnamese(kw.query).includes(clean)
-  );
-  const spellingSuggestion = matchedProducts.length === 0 ? suggestSpelling(query) : null;
-
-  return {
-    products: matchedProducts,
-    keywords: matchedKeywords.length > 0 ? matchedKeywords : TRENDING_KEYWORDS.slice(0, 4),
-    spellingSuggestion,
-  };
 }

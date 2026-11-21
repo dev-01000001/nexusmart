@@ -3,4 +3,4 @@ export { SiteRenderer, type SiteRendererProps } from "./SiteRenderer";
 export { SiteProductCard, type SiteProductCardProps } from "./SiteProductCard";
 export { SiteCatalogView, type SiteCatalogViewProps } from "./SiteCatalogView";
 export { SitePdpView, type SitePdpViewProps } from "./SitePdpView";
-export { SiteMotion } from "./SiteMotion";
+export { SiteMotion, useSitePathname } from "./SiteChrome";

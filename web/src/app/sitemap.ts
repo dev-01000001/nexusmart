@@ -1,6 +1,9 @@
 import type { MetadataRoute } from "next";
 import { headers } from "next/headers";
-import { loadCatalog } from "@/lib/catalog";
+import {
+  directoryContextFromHeaders,
+  loadAllDirectorySites,
+} from "@/features/platform/directory.server";
 import { APP_ORIGINS, getSiteRootDomain } from "@/lib/server/config";
 import { resolveRequestHost, resolveRequestProto } from "@/lib/server/http";
 import { loadPublicSitePageBundle } from "@/lib/server/sites";
@@ -15,6 +18,10 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const rootDomain = getSiteRootDomain();
   const cls = classifyHost(rawHost, rootDomain);
   const now = new Date();
+
+  if (cls.kind === "unknown") {
+    return [];
+  }
 
   if (cls.kind === "site") {
     const bundle = await loadPublicSitePageBundle(cls.hostname);
@@ -47,7 +54,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     return entries;
   }
 
-  const marketplaceOrigin = deriveMarketplaceOrigin({
+  const platformOrigin = deriveMarketplaceOrigin({
     rawHost,
     proto,
     rootDomain,
@@ -55,54 +62,29 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   });
 
   const entries: MetadataRoute.Sitemap = [
-    { url: `${marketplaceOrigin}/`, lastModified: now, changeFrequency: "daily", priority: 1 },
+    { url: `${platformOrigin}/`, lastModified: now, changeFrequency: "daily", priority: 1 },
     {
-      url: `${marketplaceOrigin}/danh-muc`,
+      url: `${platformOrigin}/ve-nexusmart`,
       lastModified: now,
-      changeFrequency: "daily",
-      priority: 0.9,
-    },
-    {
-      url: `${marketplaceOrigin}/flash-sale`,
-      lastModified: now,
-      changeFrequency: "hourly",
-      priority: 0.85,
-    },
-    {
-      url: `${marketplaceOrigin}/voucher`,
-      lastModified: now,
-      changeFrequency: "daily",
-      priority: 0.8,
-    },
-    {
-      url: `${marketplaceOrigin}/bo-suu-tap`,
-      lastModified: now,
-      changeFrequency: "weekly",
+      changeFrequency: "monthly",
       priority: 0.7,
     },
     {
-      url: `${marketplaceOrigin}/ve-nexusmart`,
+      url: `${platformOrigin}/tro-giup`,
       lastModified: now,
       changeFrequency: "monthly",
-      priority: 0.5,
+      priority: 0.6,
     },
   ];
 
-  const catalog = await loadCatalog().catch(() => ({ products: [], shops: [] }));
-  for (const product of catalog.products) {
+  const dirCtx = directoryContextFromHeaders(h, `${proto}://${rawHost}`);
+  const sites = await loadAllDirectorySites(20, dirCtx);
+  for (const site of sites) {
     entries.push({
-      url: `${marketplaceOrigin}/san-pham/${encodeURIComponent(product.slug)}`,
+      url: `${site.origin}/`,
       lastModified: now,
       changeFrequency: "daily",
       priority: 0.8,
-    });
-  }
-  for (const shop of catalog.shops) {
-    entries.push({
-      url: `${marketplaceOrigin}/gian-hang/${encodeURIComponent(shop.slug)}`,
-      lastModified: now,
-      changeFrequency: "weekly",
-      priority: 0.7,
     });
   }
 

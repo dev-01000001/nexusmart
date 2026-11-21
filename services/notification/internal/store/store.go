@@ -75,6 +75,8 @@ type OrderParticipant struct {
 	BuyerID   string
 	ShopID    string
 	OrderCode string
+	// StorefrontShopID is the shop whose site the order was placed on; empty for MARKETPLACE orders.
+	StorefrontShopID string
 }
 
 // TxStore exposes DB-only operations executed atomically inside an idempotent event transaction.
@@ -336,10 +338,11 @@ func (t *pgTxStore) UpsertOrderParticipant(ctx context.Context, p OrderParticipa
 		return nil
 	}
 	return t.q.UpsertOrderParticipant(ctx, db.UpsertOrderParticipantParams{
-		OrderID:   p.OrderID,
-		BuyerID:   p.BuyerID,
-		ShopID:    p.ShopID,
-		OrderCode: p.OrderCode,
+		OrderID:          p.OrderID,
+		BuyerID:          p.BuyerID,
+		ShopID:           p.ShopID,
+		OrderCode:        p.OrderCode,
+		StorefrontShopID: p.StorefrontShopID,
 	})
 }
 
@@ -352,10 +355,11 @@ func (t *pgTxStore) GetOrderParticipant(ctx context.Context, orderID string) (Or
 		return OrderParticipant{}, false, err
 	}
 	return OrderParticipant{
-		OrderID:   row.OrderID,
-		BuyerID:   row.BuyerID,
-		ShopID:    row.ShopID,
-		OrderCode: row.OrderCode,
+		OrderID:          row.OrderID,
+		BuyerID:          row.BuyerID,
+		ShopID:           row.ShopID,
+		OrderCode:        row.OrderCode,
+		StorefrontShopID: row.StorefrontShopID,
 	}, true, nil
 }
 

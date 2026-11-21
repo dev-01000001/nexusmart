@@ -2,21 +2,26 @@ import { GatewayError } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { apiRoute } from "@/lib/server/http";
 import { assertSession } from "@/lib/server/session";
+import { requireRequestSite } from "@/lib/server/sites";
+import { scopeCartToShop } from "@/lib/server/storefront";
 import type { GwCart } from "@/features/commerce/types";
 
+const NO_STORE = { "Cache-Control": "no-store" };
+
+/** The buyer's cart lines of THIS site's shop only (shop derived from Host). */
 export const GET = apiRoute(async (req) => {
+  const site = await requireRequestSite(req);
   await assertSession();
-  const shopId = req.nextUrl.searchParams.get("shop_id")?.trim() || undefined;
-  const data = await gw<{ cart: GwCart }>("/api/v1/cart", {
-    query: shopId ? { shop_id: shopId } : undefined,
-  });
-  return Response.json(data, { headers: { "Cache-Control": "no-store" } });
+  const data = await gw<{ cart: GwCart }>("/api/v1/cart", { query: { shop_id: site.shopId } });
+  return Response.json({ cart: scopeCartToShop(data.cart, site.shopId) }, { headers: NO_STORE });
 });
 
+/** Clear this site's lines (all, or the listed `sku_ids`). Lines of other sites are untouched. */
 export const DELETE = apiRoute(async (req) => {
-  const session = await assertSession();
-  let skuIds: string[] | undefined;
-  let shopId = req.nextUrl.searchParams.get("shop_id")?.trim() || undefined;
+  const site = await requireRequestSite(req);
+  await assertSession();
+
+  let skuIds: string[] = [];
   const raw = await req.text();
   if (raw.trim()) {
     let parsed: unknown;
@@ -25,44 +30,21 @@ export const DELETE = apiRoute(async (req) => {
     } catch {
       throw new GatewayError("invalid", "INVALID_JSON");
     }
-    if (parsed && typeof parsed === "object") {
-      if ("sku_ids" in parsed) {
-        const list = (parsed as { sku_ids?: unknown }).sku_ids;
-        if (Array.isArray(list)) {
-          skuIds = list.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
-        }
-      }
-      if ("shop_id" in parsed) {
-        const rawShop = (parsed as { shop_id?: unknown }).shop_id;
-        if (typeof rawShop === "string" && rawShop.trim()) {
-          shopId = rawShop.trim();
-        }
-      }
+    const list = (parsed as { sku_ids?: unknown } | null)?.sku_ids;
+    if (Array.isArray(list)) {
+      skuIds = list
+        .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+        .map((x) => x.trim());
     }
   }
 
-  const deleteBody: Record<string, unknown> = {};
-  if (skuIds && skuIds.length > 0) deleteBody.sku_ids = skuIds;
-  if (shopId) deleteBody.shop_id = shopId;
-
   await gw<{ ok: boolean }>("/api/v1/cart", {
     method: "DELETE",
-    body: Object.keys(deleteBody).length > 0 ? deleteBody : undefined,
+    body: skuIds.length > 0 ? { sku_ids: skuIds, shop_id: site.shopId } : { shop_id: site.shopId },
   });
-
-  if ((skuIds && skuIds.length > 0) || shopId) {
-    const fresh = await gw<{ cart: GwCart }>("/api/v1/cart");
-    return Response.json(
-      { ok: true, cart: fresh.cart },
-      { headers: { "Cache-Control": "no-store" } }
-    );
-  }
-
-  const emptyCart: GwCart = {
-    user_id: session.user.id,
-    shop_groups: [],
-    total_items: 0,
-    total_vnd: 0,
-  };
-  return Response.json({ ok: true, cart: emptyCart }, { headers: { "Cache-Control": "no-store" } });
+  const fresh = await gw<{ cart: GwCart }>("/api/v1/cart", { query: { shop_id: site.shopId } });
+  return Response.json(
+    { ok: true, cart: scopeCartToShop(fresh.cart, site.shopId) },
+    { headers: NO_STORE }
+  );
 });

@@ -55,19 +55,29 @@ func (q *Queries) DeleteProcessedEvent(ctx context.Context, eventID string) erro
 }
 
 const getOrderParticipant = `-- name: GetOrderParticipant :one
-SELECT order_id, buyer_id, shop_id, order_code, updated_at
+SELECT order_id, buyer_id, shop_id, order_code, storefront_shop_id, updated_at
 FROM order_participants
 WHERE order_id = $1
 `
 
-func (q *Queries) GetOrderParticipant(ctx context.Context, orderID string) (OrderParticipant, error) {
+type GetOrderParticipantRow struct {
+	OrderID          string
+	BuyerID          string
+	ShopID           string
+	OrderCode        string
+	StorefrontShopID string
+	UpdatedAt        pgtype.Timestamptz
+}
+
+func (q *Queries) GetOrderParticipant(ctx context.Context, orderID string) (GetOrderParticipantRow, error) {
 	row := q.db.QueryRow(ctx, getOrderParticipant, orderID)
-	var i OrderParticipant
+	var i GetOrderParticipantRow
 	err := row.Scan(
 		&i.OrderID,
 		&i.BuyerID,
 		&i.ShopID,
 		&i.OrderCode,
+		&i.StorefrontShopID,
 		&i.UpdatedAt,
 	)
 	return i, err
@@ -323,20 +333,22 @@ func (q *Queries) MarkSelectedNotificationsRead(ctx context.Context, arg MarkSel
 }
 
 const upsertOrderParticipant = `-- name: UpsertOrderParticipant :exec
-INSERT INTO order_participants (order_id, buyer_id, shop_id, order_code, updated_at)
-VALUES ($1, $2, $3, $4, NOW())
+INSERT INTO order_participants (order_id, buyer_id, shop_id, order_code, storefront_shop_id, updated_at)
+VALUES ($1, $2, $3, $4, $5, NOW())
 ON CONFLICT (order_id) DO UPDATE SET
     buyer_id = CASE WHEN EXCLUDED.buyer_id <> '' THEN EXCLUDED.buyer_id ELSE order_participants.buyer_id END,
     shop_id = CASE WHEN EXCLUDED.shop_id <> '' THEN EXCLUDED.shop_id ELSE order_participants.shop_id END,
     order_code = CASE WHEN EXCLUDED.order_code <> '' THEN EXCLUDED.order_code ELSE order_participants.order_code END,
+    storefront_shop_id = CASE WHEN EXCLUDED.storefront_shop_id <> '' THEN EXCLUDED.storefront_shop_id ELSE order_participants.storefront_shop_id END,
     updated_at = NOW()
 `
 
 type UpsertOrderParticipantParams struct {
-	OrderID   string
-	BuyerID   string
-	ShopID    string
-	OrderCode string
+	OrderID          string
+	BuyerID          string
+	ShopID           string
+	OrderCode        string
+	StorefrontShopID string
 }
 
 func (q *Queries) UpsertOrderParticipant(ctx context.Context, arg UpsertOrderParticipantParams) error {
@@ -345,6 +357,7 @@ func (q *Queries) UpsertOrderParticipant(ctx context.Context, arg UpsertOrderPar
 		arg.BuyerID,
 		arg.ShopID,
 		arg.OrderCode,
+		arg.StorefrontShopID,
 	)
 	return err
 }

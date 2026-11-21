@@ -300,6 +300,8 @@ services:
       SMTP_PORT: ${SMTP_PORT:-1025}
       SMTP_FROM: ${SMTP_FROM:-no-reply@nexusmart.local}
       USER_GRPC_ADDR: user:50051
+      SITE_URL_SCHEME: ${SITE_URL_SCHEME:-https}
+      SITE_URL_PORT: ${SITE_URL_PORT:-}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}

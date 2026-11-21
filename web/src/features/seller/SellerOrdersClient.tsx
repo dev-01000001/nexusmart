@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Button, IconCheck, IconSearch, StateView } from "@/components";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
-import { getSalesChannelMeta, normalizeSalesChannel } from "@/lib/salesChannel";
+import { getSalesChannelMeta } from "@/lib/salesChannel";
 import { useSellerContext } from "./SellerShell";
 import {
   computeSellerNetReceivable,
@@ -64,7 +64,6 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
   );
   const [query, setQuery] = useState("");
   const [paymentFilter, setPaymentFilter] = useState<"all" | "COD" | "VIETQR">("all");
-  const [channelFilter, setChannelFilter] = useState<"all" | "MARKETPLACE" | "STOREFRONT">("all");
 
   const counts = useMemo(
     () => ({
@@ -88,8 +87,6 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
     return orders.filter((o) => {
       if (filter !== "all" && bucketOf(o.status) !== filter) return false;
       if (paymentFilter !== "all" && o.payment_method.toUpperCase() !== paymentFilter) return false;
-      if (channelFilter !== "all" && normalizeSalesChannel(o.sales_channel) !== channelFilter)
-        return false;
       if (q) {
         const addr = o.shipping_address;
         const summary = summarizeOrderItems(o.items).toLowerCase();
@@ -103,7 +100,7 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
       }
       return true;
     });
-  }, [orders, filter, paymentFilter, channelFilter, query]);
+  }, [orders, filter, paymentFilter, query]);
 
   const handleAction = async (order: GwSellerOrder) => {
     const action = getNextBackendOrderAction(order.status);
@@ -305,19 +302,6 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
                   <option value="all">Mọi hình thức thanh toán</option>
                   <option value="VIETQR">VietQR</option>
                   <option value="COD">Thu hộ COD</option>
-                </select>
-
-                <select
-                  className={common.filterSelect}
-                  value={channelFilter}
-                  onChange={(e) =>
-                    setChannelFilter(e.target.value as "all" | "MARKETPLACE" | "STOREFRONT")
-                  }
-                  aria-label="Lọc theo kênh bán"
-                >
-                  <option value="all">Mọi kênh bán</option>
-                  <option value="MARKETPLACE">Sàn NexusMart</option>
-                  <option value="STOREFRONT">Site riêng</option>
                 </select>
               </div>
               <span className={common.cardMeta}>

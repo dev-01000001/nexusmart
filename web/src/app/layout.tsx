@@ -15,11 +15,11 @@ const workSans = Work_Sans({
 
 export const metadata: Metadata = {
   title: {
-    default: "NexusMart · Đồ basic đa gian hàng Việt Nam",
+    default: "NexusMart · Nền tảng tạo cửa hàng trực tuyến cho gian hàng Việt Nam",
     template: "%s · NexusMart",
   },
   description:
-    "Sàn thương mại điện tử đa gian hàng đồ basic nam nữ Việt Nam, minh bạch chất liệu và bảng size, giao hàng 34 tỉnh thành.",
+    "Nền tảng vận hành cửa hàng trực tuyến theo tên miền riêng cho gian hàng Việt Nam: giao diện tùy biến, tồn kho thời gian thực, thanh toán COD & VietQR, đối soát minh bạch.",
 };
 
 export default async function RootLayout({

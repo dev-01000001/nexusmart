@@ -133,6 +133,7 @@ WHERE (sqlc.arg(buyer_id)::text = '' OR buyer_id = sqlc.arg(buyer_id)::text)
   AND (sqlc.arg(shop_id)::text = '' OR shop_id = sqlc.arg(shop_id)::text)
   AND (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text)
   AND (sqlc.arg(sales_channel)::text = '' OR sales_channel = sqlc.arg(sales_channel)::text)
+  AND (sqlc.arg(storefront_shop_id)::text = '' OR storefront_shop_id = sqlc.arg(storefront_shop_id)::text)
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 
@@ -142,7 +143,8 @@ FROM orders
 WHERE (sqlc.arg(buyer_id)::text = '' OR buyer_id = sqlc.arg(buyer_id)::text)
   AND (sqlc.arg(shop_id)::text = '' OR shop_id = sqlc.arg(shop_id)::text)
   AND (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text)
-  AND (sqlc.arg(sales_channel)::text = '' OR sales_channel = sqlc.arg(sales_channel)::text);
+  AND (sqlc.arg(sales_channel)::text = '' OR sales_channel = sqlc.arg(sales_channel)::text)
+  AND (sqlc.arg(storefront_shop_id)::text = '' OR storefront_shop_id = sqlc.arg(storefront_shop_id)::text);
 
 -- name: UpdateOrderPaymentInfoByGroup :exec
 UPDATE orders

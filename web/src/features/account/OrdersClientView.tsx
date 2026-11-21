@@ -3,15 +3,21 @@
 import React, { Suspense, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ORDER_STATUS_META, PAYMENT_METHOD_LABELS, PAYMENT_STATUS_META, PRODUCTS } from "@/data";
-import type { OrderStatus, Product, Shop, StatusTone } from "@/data";
+import {
+  ORDER_STATUS_META,
+  PAYMENT_METHOD_LABELS,
+  PAYMENT_STATUS_META,
+  type OrderStatus,
+  type StatusTone,
+} from "@/data/orders";
+import type { Product } from "@/data/products";
 import { formatDateTimeVi, formatVnd } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
-import { Button, IconChat, StateView } from "@/components";
+import { Button, StateView } from "@/components";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import shared from "@/features/commerce/commerce.module.css";
-import styles from "@/app/(shop)/don-hang/page.module.css";
+import styles from "./OrdersClientView.module.css";
 import type { OrderView } from "./orderView";
 
 type FilterKey = "all" | "cho_thanh_toan" | OrderStatus;
@@ -23,7 +29,7 @@ const FILTER_TABS: Array<{ key: FilterKey; label: string }> = [
   { key: "dang_chuan_bi", label: "Đang chuẩn bị" },
   { key: "dang_giao", label: "Đang giao" },
   { key: "da_giao", label: "Đã giao" },
-  { key: "yeu_cau_tra_hang", label: "Đổi trả 45 ngày" },
+  { key: "yeu_cau_tra_hang", label: "Đổi trả" },
   { key: "da_huy", label: "Đã hủy" },
 ];
 
@@ -43,66 +49,31 @@ function isUnpaidVietQr(order: OrderView): boolean {
 }
 
 export interface OrdersClientViewProps {
+  brandName: string;
   initialOrders: OrderView[];
   totalOrders: number;
-  shops: Shop[];
   suggestedProducts: Product[];
   initialError?: string | null;
 }
 
 function OrdersClientInner({
+  brandName,
   initialOrders,
   totalOrders,
-  shops,
   suggestedProducts,
   initialError = null,
 }: OrdersClientViewProps) {
   const router = useRouter();
   const viewState = usePageStateParam();
-  const { openChat, addToCart, showToast } = useStore();
+  const { addToCart, showToast } = useStore();
   const [activeTab, setActiveTab] = useState<FilterKey>("all");
-  const [selectedShopId, setSelectedShopId] = useState<string>("all");
   const [reorderingId, setReorderingId] = useState<string | null>(null);
 
-  useRevealOnScroll(
-    `${viewState ?? "live"}-${activeTab}-${selectedShopId}-${initialOrders.length}`
-  );
-
-  // Count how many sub-orders belong to each checkout group so multi-shop orders are clearly labeled.
-  const groupCounts = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const o of initialOrders) {
-      if (!o.checkoutGroupId) continue;
-      map.set(o.checkoutGroupId, (map.get(o.checkoutGroupId) ?? 0) + 1);
-    }
-    return map;
-  }, [initialOrders]);
-
-  const filterShops = useMemo(() => {
-    const seen = new Map<string, { id: string; label: string }>();
-    for (const sh of shops) {
-      const backendKey = sh.backendId ?? sh.id;
-      seen.set(backendKey, { id: backendKey, label: sh.shortName || sh.name });
-    }
-    for (const o of initialOrders) {
-      if (!seen.has(o.shopId)) {
-        seen.set(o.shopId, { id: o.shopId, label: o.shopName });
-      }
-    }
-    return [...seen.values()];
-  }, [shops, initialOrders]);
-
-  const shopScopedOrders = useMemo(
-    () =>
-      selectedShopId === "all"
-        ? initialOrders
-        : initialOrders.filter((o) => o.shopId === selectedShopId),
-    [initialOrders, selectedShopId]
-  );
+  useRevealOnScroll(`${viewState ?? "live"}-${activeTab}-${initialOrders.length}`);
 
   const counts = useMemo(() => {
     const map: Record<FilterKey, number> = {
-      all: shopScopedOrders.length,
+      all: initialOrders.length,
       cho_thanh_toan: 0,
       cho_xac_nhan: 0,
       dang_chuan_bi: 0,
@@ -111,29 +82,27 @@ function OrdersClientInner({
       yeu_cau_tra_hang: 0,
       da_huy: 0,
     };
-    for (const order of shopScopedOrders) {
+    for (const order of initialOrders) {
       map[order.status] += 1;
       if (isUnpaidVietQr(order)) {
         map.cho_thanh_toan += 1;
       }
     }
     return map;
-  }, [shopScopedOrders]);
+  }, [initialOrders]);
 
   const filteredOrders = useMemo(() => {
-    if (activeTab === "all") return shopScopedOrders;
+    if (activeTab === "all") return initialOrders;
     if (activeTab === "cho_thanh_toan") {
-      return shopScopedOrders.filter(isUnpaidVietQr);
+      return initialOrders.filter(isUnpaidVietQr);
     }
-    return shopScopedOrders.filter((o) => o.status === activeTab);
-  }, [shopScopedOrders, activeTab]);
+    return initialOrders.filter((o) => o.status === activeTab);
+  }, [initialOrders, activeTab]);
 
   const inProgressCount = initialOrders.filter(
     (o) => o.status === "cho_xac_nhan" || o.status === "dang_chuan_bi" || o.status === "dang_giao"
   ).length;
   const pendingPayCount = initialOrders.filter(isUnpaidVietQr).length;
-
-  const addonProducts = suggestedProducts.length > 0 ? suggestedProducts : PRODUCTS.slice(0, 4);
 
   const handleReorder = async (order: OrderView) => {
     setReorderingId(order.id);
@@ -171,7 +140,7 @@ function OrdersClientInner({
         <h1 className={`${shared.pageTitle} lines`}>
           <span className="line">
             <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-              Đơn hàng của tôi
+              Đơn hàng tại {brandName}
             </span>
           </span>
         </h1>
@@ -204,12 +173,14 @@ function OrdersClientInner({
   if (viewState === "loading") {
     return (
       <div className={shared.page}>
-        {renderHeader("Đang cập nhật lịch sử đơn hàng và trạng thái giao nhận của bạn.")}
+        {renderHeader(`Đang cập nhật lịch sử đơn hàng của bạn tại ${brandName}.`)}
         <section className={shared.section}>
           <h2 className={shared.sectionTitle}>Danh sách đơn hàng</h2>
           <StateView kind="loading" title="Đang tải danh sách đơn hàng..." rows={5} />
         </section>
-        <ProductAddonStrip title="Sản phẩm cơ bản nổi bật" products={addonProducts} />
+        {suggestedProducts.length > 0 && (
+          <ProductAddonStrip title={`Sản phẩm của ${brandName}`} products={suggestedProducts} />
+        )}
       </div>
     );
   }
@@ -228,7 +199,9 @@ function OrdersClientInner({
             actionHref="/don-hang"
           />
         </section>
-        <ProductAddonStrip title="Gợi ý xem nhanh danh mục" products={addonProducts} />
+        {suggestedProducts.length > 0 && (
+          <ProductAddonStrip title={`Sản phẩm của ${brandName}`} products={suggestedProducts} />
+        )}
       </div>
     );
   }
@@ -236,7 +209,7 @@ function OrdersClientInner({
   if (viewState === "empty" || initialOrders.length === 0) {
     return (
       <div className={shared.page}>
-        {renderHeader("Bạn chưa có đơn hàng nào. Khám phá đồ cơ bản chuẩn chất liệu để bắt đầu.")}
+        {renderHeader(`Bạn chưa có đơn hàng nào tại ${brandName}.`)}
         <section
           className={shared.section}
           data-rise=""
@@ -246,12 +219,14 @@ function OrdersClientInner({
           <StateView
             kind="empty"
             title="Chưa có đơn hàng nào"
-            message="Mọi đơn đặt từ các xưởng dệt Việt Nam trên NexusMart sẽ được lưu và theo dõi từng chặng tại đây."
-            actionLabel="Khám phá danh mục"
-            actionHref="/danh-muc"
+            message={`Mọi đơn hàng bạn đặt tại ${brandName} sẽ được lưu và theo dõi từng chặng tại đây.`}
+            actionLabel="Xem sản phẩm cửa hàng"
+            actionHref="/san-pham"
           />
         </section>
-        <ProductAddonStrip title="Gợi ý cho đơn hàng đầu tiên" products={addonProducts} />
+        {suggestedProducts.length > 0 && (
+          <ProductAddonStrip title={`Gợi ý từ ${brandName}`} products={suggestedProducts} />
+        )}
       </div>
     );
   }
@@ -259,7 +234,7 @@ function OrdersClientInner({
   return (
     <div className={shared.page}>
       {renderHeader(
-        "Theo dõi hành trình giao hàng, hoàn tất thanh toán VietQR hoặc quản lý đổi trả trong 45 ngày."
+        `Theo dõi hành trình giao hàng, hoàn tất thanh toán VietQR hoặc gửi yêu cầu đổi trả cho các đơn đặt tại ${brandName}.`
       )}
 
       <section className={shared.section}>
@@ -294,31 +269,6 @@ function OrdersClientInner({
               );
             })}
           </div>
-
-          {filterShops.length > 0 && (
-            <div className={styles.shopFilterBar} role="group" aria-label="Lọc theo gian hàng">
-              <span className={styles.shopFilterLabel}>Gian hàng:</span>
-              <button
-                type="button"
-                className={`${styles.shopChip} ${selectedShopId === "all" ? styles.shopChipActive : ""}`}
-                onClick={() => setSelectedShopId("all")}
-              >
-                Tất cả xưởng
-              </button>
-              {filterShops.map((shop) => (
-                <button
-                  key={shop.id}
-                  type="button"
-                  className={`${styles.shopChip} ${
-                    selectedShopId === shop.id ? styles.shopChipActive : ""
-                  }`}
-                  onClick={() => setSelectedShopId(shop.id)}
-                >
-                  {shop.label}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
 
         {filteredOrders.length === 0 ? (
@@ -327,10 +277,7 @@ function OrdersClientInner({
             title="Không có đơn hàng khớp bộ lọc hiện tại"
             message="Đặt lại bộ lọc để xem toàn bộ lịch sử mua hàng của bạn."
             actionLabel="Xem tất cả đơn hàng"
-            onAction={() => {
-              setActiveTab("all");
-              setSelectedShopId("all");
-            }}
+            onAction={() => setActiveTab("all")}
           />
         ) : (
           <div className={styles.orderList}>
@@ -338,9 +285,6 @@ function OrdersClientInner({
               const meta = ORDER_STATUS_META[order.status];
               const payMeta = order.paymentStatus ? PAYMENT_STATUS_META[order.paymentStatus] : null;
               const pendingQr = isUnpaidVietQr(order);
-              const groupSize = order.checkoutGroupId
-                ? (groupCounts.get(order.checkoutGroupId) ?? 1)
-                : 1;
 
               return (
                 <article
@@ -354,18 +298,7 @@ function OrdersClientInner({
                       <Link href={`/don-hang/${order.id}`} className={`${styles.orderCode} num`}>
                         {order.orderCode}
                       </Link>
-                      {order.shopSlug ? (
-                        <Link href={`/gian-hang/${order.shopSlug}`} className={styles.shopLink}>
-                          {order.shopName}
-                        </Link>
-                      ) : (
-                        <span className={styles.shopLink}>{order.shopName}</span>
-                      )}
-                      {groupSize > 1 && (
-                        <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
-                          Đơn gộp {groupSize} gian hàng
-                        </span>
-                      )}
+                      <span className={styles.shopLink}>{brandName}</span>
                       {order.createdAt && (
                         <span className={`${styles.orderDate} num`}>
                           {formatDateTimeVi(order.createdAt)}
@@ -446,10 +379,6 @@ function OrdersClientInner({
                       <Button variant="ink" size="sm" href={`/don-hang/${order.id}`}>
                         Xem chi tiết
                       </Button>
-                      <Button variant="secondary" size="sm" onClick={() => openChat(order.shopId)}>
-                        <IconChat size={14} />
-                        <span>Chat xưởng</span>
-                      </Button>
                       <Button
                         variant="secondary"
                         size="sm"
@@ -467,11 +396,13 @@ function OrdersClientInner({
         )}
       </section>
 
-      <ProductAddonStrip
-        title="Mua thêm đồ cơ bản từ xưởng dệt"
-        subtitle="Chuẩn chất liệu, đổi trả 45 ngày và giao nhanh toàn quốc"
-        products={addonProducts}
-      />
+      {suggestedProducts.length > 0 && (
+        <ProductAddonStrip
+          title={`Mua thêm từ ${brandName}`}
+          subtitle="Sản phẩm sẵn hàng tại kho của cửa hàng"
+          products={suggestedProducts}
+        />
+      )}
     </div>
   );
 }

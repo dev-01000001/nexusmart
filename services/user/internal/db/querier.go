@@ -13,6 +13,7 @@ type Querier interface {
 	ClearUserDefaultAddresses(ctx context.Context, userID string) error
 	CountActiveAdmins(ctx context.Context) (int64, error)
 	CountAuditLogs(ctx context.Context, arg CountAuditLogsParams) (int64, error)
+	CountPublishedSites(ctx context.Context) (int64, error)
 	CountShops(ctx context.Context, status string) (int64, error)
 	CountSiteVersions(ctx context.Context, siteID string) (int64, error)
 	CountSites(ctx context.Context, arg CountSitesParams) (int64, error)
@@ -48,6 +49,8 @@ type Querier interface {
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) (AuditLog, error)
 	ListAddressesByUserID(ctx context.Context, userID string) ([]Address, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
+	// Public directory: only PUBLISHED sites of ACTIVE shops, fields from the published snapshot only.
+	ListPublishedSites(ctx context.Context, arg ListPublishedSitesParams) ([]ListPublishedSitesRow, error)
 	ListShops(ctx context.Context, arg ListShopsParams) ([]Shop, error)
 	ListSiteVersions(ctx context.Context, arg ListSiteVersionsParams) ([]SiteVersion, error)
 	ListSites(ctx context.Context, arg ListSitesParams) ([]ListSitesRow, error)

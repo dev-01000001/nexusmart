@@ -1,42 +1,28 @@
 import { NextResponse, type NextRequest } from "next/server";
-import {
-  ACCESS_COOKIE,
-  GATEWAY_URL,
-  REFRESH_COOKIE,
-  getSiteHostCacheTtls,
-  getSiteRootDomain,
-} from "@/lib/server/config";
+import { ACCESS_COOKIE, REFRESH_COOKIE, getSiteRootDomain } from "@/lib/server/config";
 import { buildLoginRedirectUrl, resolveRequestHost } from "@/lib/server/http";
+import { lookupPublishedSiteHost, publishedSiteHostCache } from "@/lib/server/siteLookup";
 import {
   accessExpiresSoon,
   applyAuthCookiesToHeader,
   clearAuthCookies,
   rotateRefreshToken,
   setAuthCookies,
+  type TokenPair,
 } from "@/lib/server/tokens";
 import {
   classifyHost,
+  isApiPath,
   isBlockedSitePath,
+  isBuyerApiPath,
   isDirectInternalSitePath,
+  isProtectedPagePath,
+  isSiteApiPath,
   isSiteMetadataPath,
 } from "@/lib/site/host";
-import { createSiteHostCache, type SiteHostLookupResult } from "@/lib/site/cache";
 
-const PROTECTED_PREFIXES = ["/tai-khoan", "/don-hang", "/seller", "/admin"];
-const SITE_LOOKUP_TIMEOUT_MS = 4000;
-
-const ttls = getSiteHostCacheTtls();
-const siteHostCache = createSiteHostCache({
-  positiveTtlMs: ttls.positiveTtlMs,
-  negativeTtlMs: ttls.negativeTtlMs,
-  maxEntries: 2000,
-});
-
-function isProtectedPath(pathname: string): boolean {
-  return PROTECTED_PREFIXES.some(
-    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
-  );
-}
+/** Internal headers only the middleware may set; client-supplied copies are always dropped. */
+const INTERNAL_SITE_HEADERS = ["x-site-host", "x-site-id", "x-site-shop-id"] as const;
 
 function notFoundResponse(): NextResponse {
   return new NextResponse("Not Found", {
@@ -48,70 +34,59 @@ function notFoundResponse(): NextResponse {
   });
 }
 
-function redirectToLogin(req: NextRequest, clearCookies: boolean): NextResponse {
-  const target = buildLoginRedirectUrl(req);
-  const res = NextResponse.redirect(target);
-  if (clearCookies) clearAuthCookies(res.cookies);
-  return res;
+function strippedHeaders(req: NextRequest): Headers {
+  const h = new Headers(req.headers);
+  for (const name of INTERNAL_SITE_HEADERS) h.delete(name);
+  return h;
 }
 
-function nextWithCookies(
+type Forward = (headers: Headers) => NextResponse;
+
+/**
+ * Session upkeep for page requests on the CURRENT host only (cookies are host-only, so every
+ * site and the root rotate their own refresh token independently). Protected pages without a
+ * live session redirect to `/dang-nhap?next=…` on the same host.
+ */
+async function withSession(
   req: NextRequest,
-  pair: Awaited<ReturnType<typeof rotateRefreshToken>>
-): NextResponse {
-  const reqHeaders = new Headers(req.headers);
-  const updated = applyAuthCookiesToHeader(req.headers.get("cookie"), pair);
-  if (updated) reqHeaders.set("cookie", updated);
-  else reqHeaders.delete("cookie");
+  headers: Headers,
+  protectedRoute: boolean,
+  forward: Forward
+): Promise<NextResponse> {
+  const access = req.cookies.get(ACCESS_COOKIE)?.value;
+  const refresh = req.cookies.get(REFRESH_COOKIE)?.value;
 
-  const res = NextResponse.next({ request: { headers: reqHeaders } });
-  if (pair) setAuthCookies(res.cookies, pair);
-  else clearAuthCookies(res.cookies);
-  return res;
-}
+  const redirectToLogin = (clearCookies: boolean) => {
+    const res = NextResponse.redirect(buildLoginRedirectUrl(req), 307);
+    if (clearCookies) clearAuthCookies(res.cookies);
+    return res;
+  };
+  const forwardWithPair = (pair: TokenPair | null) => {
+    const updated = applyAuthCookiesToHeader(req.headers.get("cookie"), pair);
+    if (updated) headers.set("cookie", updated);
+    else headers.delete("cookie");
+    const res = forward(headers);
+    if (pair) setAuthCookies(res.cookies, pair);
+    else clearAuthCookies(res.cookies);
+    return res;
+  };
 
-async function lookupPublishedSiteHost(hostname: string): Promise<SiteHostLookupResult> {
+  if (!access && !refresh) {
+    return protectedRoute ? redirectToLogin(false) : forward(headers);
+  }
+  // Access token present and not close to expiry. Server Components still verify the real
+  // identity and role against backend /api/v1/users/me.
+  if (access && !accessExpiresSoon(access)) return forward(headers);
+  if (!refresh) {
+    return protectedRoute ? redirectToLogin(true) : forwardWithPair(null);
+  }
   try {
-    const res = await fetch(
-      `${GATEWAY_URL}/api/v1/sites/by-host?host=${encodeURIComponent(hostname)}`,
-      {
-        method: "GET",
-        headers: { Accept: "application/json" },
-        cache: "no-store",
-        signal: AbortSignal.timeout(SITE_LOOKUP_TIMEOUT_MS),
-      }
-    );
-
-    if (res.status === 404) {
-      return { status: "not_found" };
-    }
-    if (!res.ok) {
-      return { status: "error" };
-    }
-
-    const data = (await res.json()) as {
-      site?: { id?: string; shop_id?: string; status?: string; primary_host?: string };
-      shop?: { status?: string };
-    };
-    const site = data?.site;
-    const shopStatus = data?.shop?.status ? String(data.shop.status).toUpperCase() : "ACTIVE";
-    if (
-      !site?.id ||
-      !site?.shop_id ||
-      String(site.status ?? "").toUpperCase() !== "PUBLISHED" ||
-      shopStatus !== "ACTIVE"
-    ) {
-      return { status: "not_found" };
-    }
-
-    return {
-      status: "found",
-      siteId: site.id,
-      shopId: site.shop_id,
-      primaryHost: (site.primary_host || hostname).toLowerCase(),
-    };
+    const pair = await rotateRefreshToken(refresh);
+    if (pair) return forwardWithPair(pair);
+    return protectedRoute ? redirectToLogin(true) : forwardWithPair(null);
   } catch {
-    return { status: "error" };
+    // Backend unavailable or rate-limited: keep existing cookies and let the page handle outage.
+    return forward(headers);
   }
 }
 
@@ -119,92 +94,64 @@ export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // Direct external access to internal `/s` or `/s/...` is ALWAYS 404 on every host.
-  if (isDirectInternalSitePath(pathname)) {
-    return notFoundResponse();
-  }
+  if (isDirectInternalSitePath(pathname)) return notFoundResponse();
 
-  // Strictly obey Phase 1 proxy trust rule (`TRUST_PROXY_HEADERS === "true"` -> honor x-forwarded-host,
-  // else ONLY the HTTP Host header).
-  const rawHost = resolveRequestHost(req.headers, req.nextUrl.host);
-  const hostClass = classifyHost(rawHost, getSiteRootDomain());
+  // Phase 1 proxy trust rule: `TRUST_PROXY_HEADERS=true` honors x-forwarded-host, otherwise
+  // ONLY the HTTP Host header.
+  const hostClass = classifyHost(
+    resolveRequestHost(req.headers, req.nextUrl.host),
+    getSiteRootDomain()
+  );
 
-  // Unknown, foreign, reserved, multi-level, or malformed host -> 404 immediately WITHOUT calling backend.
-  if (hostClass.kind === "unknown") {
-    return notFoundResponse();
-  }
+  // Unknown, foreign, reserved, multi-level, or malformed host -> 404 without calling backend.
+  if (hostClass.kind === "unknown") return notFoundResponse();
 
-  // Subdomain site host branch: anonymous multi-tenant site serving.
+  const headers = strippedHeaders(req);
+
   if (hostClass.kind === "site") {
-    // Block `/api`, `/seller`, `/admin`, `/s` on site hosts without calling backend.
-    if (isBlockedSitePath(pathname)) {
-      return notFoundResponse();
-    }
+    // Seller/admin pages + APIs stay 404 on site hosts without calling backend.
+    if (isBlockedSitePath(pathname)) return notFoundResponse();
 
-    const lookup = await siteHostCache.resolve(hostClass.hostname, lookupPublishedSiteHost);
-    if (lookup.status !== "found") {
-      // Return 404 BEFORE any rewrite (prevents host cache poisoning & hides draft/suspended sites).
-      return notFoundResponse();
-    }
+    const lookup = await publishedSiteHostCache.resolve(
+      hostClass.hostname,
+      lookupPublishedSiteHost
+    );
+    // 404 BEFORE any rewrite (prevents host cache poisoning & hides draft/suspended sites).
+    if (lookup.status !== "found") return notFoundResponse();
 
-    const reqHeaders = new Headers(req.headers);
-    reqHeaders.set("x-site-host", hostClass.hostname);
-    reqHeaders.set("x-site-id", lookup.siteId);
-    reqHeaders.set("x-site-shop-id", lookup.shopId);
+    headers.set("x-site-host", hostClass.hostname);
+    headers.set("x-site-id", lookup.siteId);
+    headers.set("x-site-shop-id", lookup.shopId);
 
-    // Host-aware robots.txt & sitemap.xml are served directly by app/robots.ts & app/sitemap.ts.
-    if (isSiteMetadataPath(pathname)) {
-      return NextResponse.next({ request: { headers: reqHeaders } });
+    // Buyer + auth BFF (`/api/auth`, `/api/cart`, `/api/checkout`, `/api/payments`,
+    // `/api/vouchers`, `/api/orders`): route handlers re-derive the shop from Host and
+    // refresh tokens on 401 themselves. Robots/sitemap are host-aware route files.
+    if (isSiteApiPath(pathname) || isSiteMetadataPath(pathname)) {
+      return NextResponse.next({ request: { headers } });
     }
 
     const rewriteUrl = req.nextUrl.clone();
-    const suffix = pathname === "/" ? "" : pathname;
-    rewriteUrl.pathname = `/s/${encodeURIComponent(hostClass.hostname)}${suffix}`;
-    return NextResponse.rewrite(rewriteUrl, { request: { headers: reqHeaders } });
+    rewriteUrl.pathname = `/s/${encodeURIComponent(hostClass.hostname)}${pathname === "/" ? "" : pathname}`;
+    return withSession(req, headers, isProtectedPagePath(pathname, "site"), (h) =>
+      NextResponse.rewrite(rewriteUrl, { request: { headers: h } })
+    );
   }
 
-  // Root marketplace host branch: identical to Phase 1 behavior.
-  if (pathname === "/api" || pathname.startsWith("/api/") || isSiteMetadataPath(pathname)) {
-    return NextResponse.next();
+  // Root (platform) host: buyer commerce APIs do not exist here.
+  if (isBuyerApiPath(pathname)) return notFoundResponse();
+  if (isApiPath(pathname) || isSiteMetadataPath(pathname)) {
+    return NextResponse.next({ request: { headers } });
   }
-
-  const protectedRoute = isProtectedPath(pathname);
-  const access = req.cookies.get(ACCESS_COOKIE)?.value;
-  const refresh = req.cookies.get(REFRESH_COOKIE)?.value;
-
-  // No session cookies at all.
-  if (!access && !refresh) {
-    return protectedRoute ? redirectToLogin(req, false) : NextResponse.next();
-  }
-
-  // Access token is present and not close to expiry: let the request through.
-  // Server Components still verify real identity & role against backend /api/v1/users/me.
-  if (access && !accessExpiresSoon(access)) {
-    return NextResponse.next();
-  }
-
-  // Access token is missing, malformed, or expiring soon.
-  if (!refresh) {
-    return protectedRoute ? redirectToLogin(req, true) : nextWithCookies(req, null);
-  }
-
-  try {
-    const pair = await rotateRefreshToken(refresh);
-    if (pair) {
-      return nextWithCookies(req, pair);
-    }
-    return protectedRoute ? redirectToLogin(req, true) : nextWithCookies(req, null);
-  } catch {
-    // Backend unavailable or rate-limited: keep existing cookies and let the page handle outage.
-    return NextResponse.next();
-  }
+  return withSession(req, headers, isProtectedPagePath(pathname, "root"), (h) =>
+    NextResponse.next({ request: { headers: h } })
+  );
 }
 
 export const config = {
   matcher: [
     /*
      * Match pages, `/api/**`, `/robots.txt`, and `/sitemap.xml` so multi-tenant host isolation
-     * blocks `/api`, `/seller`, `/admin`, `/s` on site hosts and rejects unknown hosts before
-     * any route handler runs. Excludes Next internals and static public media/assets.
+     * runs before any route handler. Excludes Next internals and static public media/assets.
      */
     "/((?!_next/static|_next/image|favicon\\.ico|products/|models/|banners/|videos/|atmosphere/|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico|mp4|webm|css|js|map|woff2?|ttf|json)$).*)",
   ],

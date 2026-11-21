@@ -1,21 +1,20 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { FlashSaleItem } from "@/data/flash-sale";
 import type { Product, SizeCode } from "@/data/products";
 import type { Voucher } from "@/data/vouchers";
+import { useStore } from "@/context/StoreContext";
 import { formatDiscountPercent, formatInt, formatVnd } from "@/lib/format";
-import { buildStorefrontCartUrl } from "@/lib/site/host";
 import { sanitizeSafeUrl } from "@/lib/site/theme";
+import { useSitePathname } from "./SiteChrome";
 import { SiteProductCard } from "./SiteProductCard";
 import styles from "./site.module.css";
 
 export interface SitePdpViewProps {
   brandName: string;
-  shopId: string;
-  siteHost: string;
-  marketplaceOrigin: string;
   product: Product;
   shopVouchers: Voucher[];
   relatedProducts: Product[];
@@ -24,14 +23,19 @@ export interface SitePdpViewProps {
 
 export function SitePdpView({
   brandName,
-  shopId,
-  siteHost,
-  marketplaceOrigin,
   product,
   shopVouchers,
   relatedProducts,
   liveFlashItem = null,
 }: SitePdpViewProps) {
+  const router = useRouter();
+  const pathname = useSitePathname();
+  const { addToCart, recordProductView } = useStore();
+
+  useEffect(() => {
+    recordProductView(product.id);
+  }, [product.id, recordProductView]);
+
   const gallery = useMemo(() => {
     const raw = [
       product.onModelImage,
@@ -58,6 +62,8 @@ export function SitePdpView({
   );
   const [activeImage, setActiveImage] = useState<string>(gallery[0]);
   const [qty, setQty] = useState<number>(1);
+  const [busyAction, setBusyAction] = useState<"add" | "buy" | null>(null);
+  const [addedNotice, setAddedNotice] = useState<string | null>(null);
 
   const selectedSku = useMemo(() => {
     return (
@@ -81,20 +87,39 @@ export function SitePdpView({
   const comparePrice = flashPrice ? skuPrice : product.originalPrice;
   const hasDiscount = typeof comparePrice === "number" && comparePrice > displayPrice;
 
-  const buyUrl = buildStorefrontCartUrl({
-    marketplaceOrigin,
-    shopId,
-    siteHost,
-    skuId: skuId || undefined,
-    qty: clampedQty,
-    flashSaleItemId,
-  });
-
   // Strict defense in depth: only SHOP vouchers render on a shop's subdomain PDP.
   const validShopVouchers = useMemo(
     () => shopVouchers.filter((v) => v.scope === "shop"),
     [shopVouchers]
   );
+
+  const handleCartAction = async (mode: "add" | "buy") => {
+    if (!skuId || maxStock <= 0 || busyAction) return;
+    setBusyAction(mode);
+    setAddedNotice(null);
+    try {
+      const res = await addToCart({
+        skuId,
+        quantity: clampedQty,
+        flashSaleItemId,
+        productName: product.shortName || product.name,
+        size: String(selectedSize),
+      });
+      if (res.unauthenticated) {
+        router.push(`/dang-nhap?next=${encodeURIComponent(pathname || "/san-pham")}`);
+        return;
+      }
+      if (res.ok) {
+        if (mode === "buy") {
+          router.push("/thanh-toan");
+          return;
+        }
+        setAddedNotice(res.message || "Đã thêm sản phẩm vào giỏ hàng.");
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  };
 
   const relatedGridClass =
     relatedProducts.length === 3
@@ -216,6 +241,7 @@ export function SitePdpView({
                           const colorImg = sanitizeSafeUrl(color.image);
                           if (colorImg) setActiveImage(colorImg);
                           setQty(1);
+                          setAddedNotice(null);
                         }}
                       >
                         {color.name}
@@ -245,6 +271,7 @@ export function SitePdpView({
                         onClick={() => {
                           setSelectedSize(size);
                           setQty(1);
+                          setAddedNotice(null);
                         }}
                       >
                         {size}
@@ -286,7 +313,12 @@ export function SitePdpView({
 
             {validShopVouchers.length > 0 && (
               <div className={styles.pdpShopVoucherBox} data-reveal="">
-                <p className={styles.pdpOptionLabel}>Ưu đãi riêng của {brandName}</p>
+                <div className={styles.voucherFoot} style={{ paddingTop: 0 }}>
+                  <p className={styles.pdpOptionLabel}>Ưu đãi riêng của {brandName}</p>
+                  <Link href="/voucher" className={styles.sectionLink}>
+                    Xem kho mã
+                  </Link>
+                </div>
                 {validShopVouchers.slice(0, 3).map((v) => (
                   <p
                     key={v.id || v.code}
@@ -306,21 +338,43 @@ export function SitePdpView({
             <div className={styles.pdpCtaStack}>
               {maxStock > 0 && skuId ? (
                 <>
-                  <a href={buyUrl} className={styles.btnPrimary}>
-                    Mua ngay trên NexusMart · {formatVnd(displayPrice * clampedQty)}
-                  </a>
-                  <a href={buyUrl} className={styles.btnSecondary}>
-                    Thêm vào giỏ hàng của {brandName}
-                  </a>
+                  <button
+                    type="button"
+                    className={styles.btnPrimary}
+                    disabled={busyAction !== null}
+                    onClick={() => void handleCartAction("buy")}
+                  >
+                    {busyAction === "buy"
+                      ? "Đang chuyển tới thanh toán..."
+                      : `Mua ngay · ${formatVnd(displayPrice * clampedQty)}`}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.btnSecondary}
+                    disabled={busyAction !== null}
+                    onClick={() => void handleCartAction("add")}
+                  >
+                    {busyAction === "add" ? "Đang thêm vào giỏ..." : "Thêm vào giỏ hàng"}
+                  </button>
                 </>
               ) : (
                 <button type="button" className={styles.btnPrimary} disabled>
                   Phân loại tạm hết hàng
                 </button>
               )}
+
+              {addedNotice && (
+                <p className={styles.pdpAddedNotice} role="status">
+                  <span>{addedNotice}</span>{" "}
+                  <Link href="/gio-hang" className={styles.sectionLink}>
+                    Mở giỏ hàng
+                  </Link>
+                </p>
+              )}
+
               <p className={styles.pdpHandoffNote}>
-                Giỏ hàng và thanh toán được xử lý an toàn trên NexusMart, giữ nguyên sản phẩm và mã
-                ưu đãi riêng của {brandName}.
+                Đặt hàng trực tiếp tại {brandName}, hỗ trợ thanh toán khi nhận hàng (COD) đồng kiểm
+                hoặc chuyển khoản VietQR.
               </p>
             </div>
 

@@ -2,13 +2,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildStorefrontCartUrl,
   classifyHost,
   deriveMarketplaceOrigin,
   deriveSiteOrigin,
   isBlockedSitePath,
+  isBuyerApiPath,
   isDirectInternalSitePath,
+  isProtectedPagePath,
   isReservedSubdomain,
+  isSiteApiPath,
   normalizeHostHeader,
 } from "./host.ts";
 import { createSiteHostCache } from "./cache.ts";
@@ -31,10 +33,6 @@ import {
   buildSiteRobotsMeta,
   hasSubstantiveSiteContent,
 } from "./seo.ts";
-import {
-  buildMarketplaceCheckoutPayload,
-  resolveCheckoutPayload,
-} from "../../features/commerce/checkoutPayload.ts";
 
 test("normalizeHostHeader lowercases, strips port and trailing dot, handles IPv6, rejects malformed", () => {
   assert.deepEqual(normalizeHostHeader("Bach-Dang.NexusMart.Localhost.:3300"), {
@@ -52,7 +50,7 @@ test("normalizeHostHeader lowercases, strips port and trailing dot, handles IPv6
 test("classifyHost identifies root hosts, valid single-label site hosts, and rejects reserved/unknown/multi-level", () => {
   const root = "nexusmart.localhost";
 
-  // Root marketplace hosts
+  // Root platform hosts
   for (const h of [
     "nexusmart.localhost",
     "NEXUSMART.LOCALHOST:3300",
@@ -107,16 +105,21 @@ test("classifyHost identifies root hosts, valid single-label site hosts, and rej
   assert.equal(isReservedSubdomain("bach-dang"), false);
 });
 
-test("blocked site paths and direct /s internal paths are strictly enforced", () => {
+test("site vs root API routing, blocked paths, protected pages, and direct /s internal paths are strictly enforced", () => {
+  // Direct /s/... is ALWAYS blocked on every host.
   for (const p of ["/s", "/s/", "/s/bach-dang.nexusmart.localhost", "/s/foo/san-pham"]) {
     assert.equal(isDirectInternalSitePath(p), true, `expected direct /s blocked: ${p}`);
     assert.equal(isBlockedSitePath(p), true, `expected site blocked: ${p}`);
   }
   assert.equal(isDirectInternalSitePath("/san-pham"), false);
 
+  // Blocked on site hosts: seller/admin pages & APIs, internal /s, and non-allowlisted /api paths.
   for (const blocked of [
     "/api",
-    "/api/checkout",
+    "/api/seller",
+    "/api/seller/site",
+    "/api/admin",
+    "/api/admin/sites",
     "/api/v1/sites",
     "/seller",
     "/seller/site",
@@ -124,12 +127,65 @@ test("blocked site paths and direct /s internal paths are strictly enforced", ()
     "/admin/sites",
   ]) {
     assert.equal(isBlockedSitePath(blocked), true, `expected blocked on site host: ${blocked}`);
+    assert.equal(isSiteApiPath(blocked), false, `expected not a site API: ${blocked}`);
   }
 
+  // Allowed buyer + auth BFF APIs on PUBLISHED site hosts.
+  for (const apiPath of [
+    "/api/auth/login",
+    "/api/auth/register",
+    "/api/auth/me",
+    "/api/auth/refresh",
+    "/api/auth/logout",
+    "/api/auth/addresses",
+    "/api/cart",
+    "/api/cart/items",
+    "/api/cart/items/sku-1",
+    "/api/checkout",
+    "/api/checkout/shipping-quote",
+    "/api/checkout/locations",
+    "/api/orders",
+    "/api/orders/ord-1",
+    "/api/orders/ord-1/cancel",
+    "/api/payments/pay-1",
+    "/api/payments/pay-1/retry",
+    "/api/vouchers",
+    "/api/vouchers/preview",
+    "/api/vouchers/validate",
+    "/api/vouchers/v-1/save",
+  ]) {
+    assert.equal(isBlockedSitePath(apiPath), false, `expected allowed on site host: ${apiPath}`);
+    assert.equal(isSiteApiPath(apiPath), true, `expected site API path: ${apiPath}`);
+  }
+
+  // Buyer commerce APIs are 404 on the root host, while auth/seller/admin remain available there.
+  for (const buyerApi of [
+    "/api/cart",
+    "/api/cart/items",
+    "/api/checkout",
+    "/api/checkout/addresses",
+    "/api/orders",
+    "/api/orders/ord-1",
+    "/api/payments/pay-1",
+    "/api/vouchers",
+    "/api/vouchers/validate",
+  ]) {
+    assert.equal(isBuyerApiPath(buyerApi), true, `expected buyer API blocked on root: ${buyerApi}`);
+  }
+  for (const rootApi of ["/api/auth/login", "/api/auth/me", "/api/seller/site", "/api/admin/sites"]) {
+    assert.equal(isBuyerApiPath(rootApi), false, `expected root API allowed: ${rootApi}`);
+  }
+
+  // Site pages allowed (rewritten to /s/[host]/...)
   for (const allowed of [
     "/",
     "/san-pham",
     "/san-pham/ao-thun-cotton-compact-trang",
+    "/gio-hang",
+    "/thanh-toan",
+    "/thanh-toan/cho/pay-1",
+    "/don-hang",
+    "/tai-khoan",
     "/chinh-sach",
     "/gioi-thieu",
     "/robots.txt",
@@ -137,9 +193,20 @@ test("blocked site paths and direct /s internal paths are strictly enforced", ()
   ]) {
     assert.equal(isBlockedSitePath(allowed), false, `expected allowed on site host: ${allowed}`);
   }
+
+  // Protected pages differ by host kind.
+  for (const p of ["/tai-khoan", "/tai-khoan/dia-chi", "/don-hang", "/don-hang/o1", "/thanh-toan/cho/p1"]) {
+    assert.equal(isProtectedPagePath(p, "site"), true, `expected protected on site: ${p}`);
+    assert.equal(isProtectedPagePath(p, "root"), false, `expected NOT protected-redirected on root: ${p}`);
+  }
+  assert.equal(isProtectedPagePath("/thanh-toan", "site"), false);
+  for (const p of ["/seller", "/seller/site", "/admin", "/admin/sites"]) {
+    assert.equal(isProtectedPagePath(p, "root"), true, `expected protected on root: ${p}`);
+    assert.equal(isProtectedPagePath(p, "site"), false);
+  }
 });
 
-test("deriveMarketplaceOrigin, deriveSiteOrigin, and buildStorefrontCartUrl preserve proto/port cleanly", () => {
+test("deriveMarketplaceOrigin and deriveSiteOrigin preserve proto/port cleanly", () => {
   assert.equal(
     deriveMarketplaceOrigin({
       rawHost: "bach-dang.nexusmart.localhost:3300",
@@ -165,22 +232,6 @@ test("deriveMarketplaceOrigin, deriveSiteOrigin, and buildStorefrontCartUrl pres
     }),
     "http://bach-dang.nexusmart.localhost:3300"
   );
-
-  const handoff = buildStorefrontCartUrl({
-    marketplaceOrigin: "http://nexusmart.localhost:3300",
-    shopId: "shop-uuid-1",
-    siteHost: "bach-dang.nexusmart.localhost",
-    skuId: "sku-uuid-9",
-    qty: 2,
-  });
-  const parsed = new URL(handoff);
-  assert.equal(parsed.origin, "http://nexusmart.localhost:3300");
-  assert.equal(parsed.pathname, "/gio-hang");
-  assert.equal(parsed.searchParams.get("shop"), "shop-uuid-1");
-  assert.equal(parsed.searchParams.get("channel"), "storefront");
-  assert.equal(parsed.searchParams.get("sku"), "sku-uuid-9");
-  assert.equal(parsed.searchParams.get("qty"), "2");
-  assert.equal(parsed.searchParams.get("site"), "bach-dang.nexusmart.localhost");
 });
 
 test("createSiteHostCache handles positive TTL, negative TTL, error non-caching, inflight dedupe, and eviction", async () => {
@@ -363,7 +414,7 @@ test("WCAG contrast, safe URL sanitization, and CSS theme vars enforce security 
   }
 });
 
-test("SEO helpers enforce noindex for empty/hidden sites and marketplace canonical on site PDP", () => {
+test("SEO helpers enforce noindex for empty/hidden sites and site-own canonical on site PDP", () => {
   const richConfig = createDefaultSiteConfig("Xưởng Dệt Bạch Đằng");
   assert.equal(hasSubstantiveSiteContent(richConfig), true);
   assert.deepEqual(buildSiteRobotsMeta(richConfig), { index: true, follow: true });
@@ -388,117 +439,30 @@ test("SEO helpers enforce noindex for empty/hidden sites and marketplace canonic
   assert.deepEqual(homeMeta.robots, { index: true, follow: true });
   assert.equal(homeMeta.openGraph?.siteName, "Xưởng Dệt Bạch Đằng");
 
+  // Site PDP canonical MUST point to the site's OWN URL, never the root host.
   const pdpMeta = buildSiteProductMetadata({
     config: richConfig,
     productName: "Áo thun Cotton Compact",
     productSlug: "ao-thun-cotton-compact-trang",
-    marketplaceOrigin: "http://nexusmart.localhost:3300",
-    siteOrigin: "http://bach-dang.nexusmart.localhost:3300",
+    siteOrigin: "http://bach-dang.nexusmart.localhost:3300/",
   });
   assert.equal(
     pdpMeta.alternates?.canonical,
-    "http://nexusmart.localhost:3300/san-pham/ao-thun-cotton-compact-trang"
+    "http://bach-dang.nexusmart.localhost:3300/san-pham/ao-thun-cotton-compact-trang"
   );
   assert.equal(pdpMeta.title, "Áo thun Cotton Compact · Xưởng Dệt Bạch Đằng");
   assert.deepEqual(pdpMeta.robots, { index: true, follow: true });
-});
 
-test("BFF checkout payload resolver keeps Phase 1 marketplace lock and verifies published sites for storefront mode", async () => {
-  // 1. Phase 1 backward compatibility: raw sales_channel="STOREFRONT" WITHOUT hint is stripped to MARKETPLACE
-  let verifyCalls = 0;
-  const rawSpoof = await resolveCheckoutPayload(
-    {
-      address_id: "addr-1",
-      from_cart: true,
-      payment_method: "COD",
-      sales_channel: "STOREFRONT",
-      storefront_shop_id: "shop-1",
-      platform_voucher_id: "v-plat",
-      coins_to_use: 5000,
-    },
-    async () => {
-      verifyCalls++;
-      return { shopId: "shop-1", primaryHost: "bach-dang.nexusmart.localhost" };
-    }
-  );
-  assert.equal(verifyCalls, 0, "raw sales_channel without storefront hint must NOT invoke site lookup");
-  assert.equal(rawSpoof.ok, true);
-  if (rawSpoof.ok) {
-    assert.equal(rawSpoof.payload.sales_channel, "MARKETPLACE");
-    assert.equal("storefront_shop_id" in rawSpoof.payload, false);
-  }
-
-  // Also confirm buildMarketplaceCheckoutPayload remains unchanged
-  const mkt = buildMarketplaceCheckoutPayload({
-    address_id: "addr-1",
-    payment_method: "VIETQR",
-    sales_channel: "STOREFRONT",
-    storefront_shop_id: "shop-1",
+  // Empty-section site PDP still emits noindex while keeping site-own canonical.
+  const emptyPdpMeta = buildSiteProductMetadata({
+    config: emptyConfig,
+    productName: "Áo thun Cotton Compact",
+    productSlug: "ao-thun-cotton-compact-trang",
+    siteOrigin: "http://bach-dang.nexusmart.localhost:3300",
   });
-  assert.equal(mkt.ok, true);
-  if (mkt.ok) {
-    assert.equal(mkt.payload.sales_channel, "MARKETPLACE");
-  }
-
-  // 2. Storefront checkout hint with verified PUBLISHED site -> STOREFRONT + platform promos stripped
-  const sfOk = await resolveCheckoutPayload(
-    {
-      address_id: "addr-1",
-      from_cart: true,
-      payment_method: "VIETQR",
-      checkout_channel_hint: "storefront",
-      storefront_shop_id: "shop-1",
-      storefront_host: "bach-dang.nexusmart.localhost",
-      shop_voucher_ids: { "shop-1": "v-shop-1", "shop-2": "v-shop-2" },
-      platform_voucher_id: "v-plat",
-      freeship_voucher_id: "v-ship",
-      coins_to_use: 10000,
-      shipping_choices: [
-        { shop_id: "shop-1", carrier_code: "GHN", service_code: "STD" },
-        { shop_id: "shop-2", carrier_code: "SPX", service_code: "STD" },
-      ],
-    },
-    async (shopId, host) => {
-      assert.equal(shopId, "shop-1");
-      assert.equal(host, "bach-dang.nexusmart.localhost");
-      return { shopId: "shop-1", primaryHost: "bach-dang.nexusmart.localhost" };
-    }
+  assert.deepEqual(emptyPdpMeta.robots, { index: false, follow: true });
+  assert.equal(
+    emptyPdpMeta.alternates?.canonical,
+    "http://bach-dang.nexusmart.localhost:3300/san-pham/ao-thun-cotton-compact-trang"
   );
-  assert.equal(sfOk.ok, true);
-  if (sfOk.ok) {
-    assert.equal(sfOk.payload.sales_channel, "STOREFRONT");
-    assert.equal(sfOk.payload.storefront_shop_id, "shop-1");
-    assert.deepEqual(sfOk.payload.shop_voucher_ids, { "shop-1": "v-shop-1" });
-    assert.equal(sfOk.payload.platform_voucher_id, "");
-    assert.equal(sfOk.payload.freeship_voucher_id, "");
-    assert.equal(sfOk.payload.coins_to_use, 0);
-    assert.deepEqual(sfOk.payload.shipping_choices, [
-      { shop_id: "shop-1", carrier_code: "GHN", service_code: "STD" },
-    ]);
-  }
-
-  // 3. Storefront checkout hint for unpublished/suspended/unknown shop -> rejected with SITE_NOT_PUBLISHED
-  const sfRejected = await resolveCheckoutPayload(
-    {
-      address_id: "addr-1",
-      payment_method: "COD",
-      checkout_channel_hint: "storefront",
-      storefront_shop_id: "shop-draft",
-    },
-    async () => null
-  );
-  assert.deepEqual(sfRejected, { ok: false, code: "SITE_NOT_PUBLISHED" });
-
-  // 4. Storefront checkout hint with missing shop ID -> rejected with SITE_NOT_PUBLISHED
-  const sfMissing = await resolveCheckoutPayload(
-    {
-      address_id: "addr-1",
-      payment_method: "COD",
-      checkout_channel_hint: "storefront",
-    },
-    async () => {
-      throw new Error("should not be called when shopId is empty");
-    }
-  );
-  assert.deepEqual(sfMissing, { ok: false, code: "SITE_NOT_PUBLISHED" });
 });

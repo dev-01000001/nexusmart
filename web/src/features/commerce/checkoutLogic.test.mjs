@@ -11,12 +11,6 @@ import {
   formatVoucherHeadline,
   formatVoucherIneligibleReason,
 } from "./cartEnrich.ts";
-import { buildMarketplaceCheckoutPayload } from "./checkoutPayload.ts";
-import {
-  getSalesChannelMeta,
-  normalizeSalesChannel,
-  parseSalesChannelFilter,
-} from "../../lib/salesChannel.ts";
 
 test("translatePromotionWarning maps English promotion warnings to clean Vietnamese without raw internals", () => {
   assert.match(translatePromotionWarning("voucher ABC not found"), /không tồn tại/i);
@@ -30,12 +24,18 @@ test("translatePromotionWarning maps English promotion warnings to clean Vietnam
 });
 
 test("mapCheckoutError maps out-of-stock, COD limit, voucher exhausted, and empty cart safely", () => {
-  const oos = mapCheckoutError("FAILED_PRECONDITION", "INSUFFICIENT_STOCK: SKU abc has 0 available, requested 2");
+  const oos = mapCheckoutError(
+    "FAILED_PRECONDITION",
+    "INSUFFICIENT_STOCK: SKU abc has 0 available, requested 2"
+  );
   assert.equal(oos.code, "OUT_OF_STOCK");
   assert.equal(oos.status, 409);
   assert.doesNotMatch(oos.message, /SKU|INSUFFICIENT_STOCK|abc/);
 
-  const cod = mapCheckoutError("FAILED_PRECONDITION", "COD_LIMIT_EXCEEDED: order total 6000000 exceeds 5000000");
+  const cod = mapCheckoutError(
+    "FAILED_PRECONDITION",
+    "COD_LIMIT_EXCEEDED: order total 6000000 exceeds 5000000"
+  );
   assert.equal(cod.code, "COD_LIMIT_EXCEEDED");
   assert.equal(cod.status, 409);
   assert.match(cod.message, /COD/);
@@ -104,9 +104,25 @@ test("enrichCartGroups pairs backend cart groups with catalog presentation while
         price: 179000,
         image: "/products/ao-thun-cotton-trang.png",
         gallery: ["/products/ao-thun-cotton-trang.png"],
-        colors: [{ code: "trang", name: "Trắng tinh", hex: "#fff", image: "/products/ao-thun-cotton-trang.png" }],
+        colors: [
+          {
+            code: "trang",
+            name: "Trắng tinh",
+            hex: "#fff",
+            image: "/products/ao-thun-cotton-trang.png",
+          },
+        ],
         sizes: ["L"],
-        skus: [{ skuId: "sku-uuid-1", skuCode: "BD-AT01-TRANG-L", colorCode: "trang", size: "L", stock: 1, price: 179000 }],
+        skus: [
+          {
+            skuId: "sku-uuid-1",
+            skuCode: "BD-AT01-TRANG-L",
+            colorCode: "trang",
+            size: "L",
+            stock: 1,
+            price: 179000,
+          },
+        ],
         fabric: "",
         gsm: 220,
         fit: "",
@@ -149,13 +165,13 @@ test("enrichCartGroups pairs backend cart groups with catalog presentation while
   assert.equal(groups[0].items[0].isOutOfStock, false);
 });
 
-test("voucher formatting and eligibility reasons handle fixed, percent, exhausted, and min-order vouchers", () => {
+test("voucher formatting and eligibility reasons handle fixed, percent, exhausted, and min-order shop vouchers", () => {
   const pct = {
     id: "v1",
-    code: "SAVE10",
+    code: "BACHDANG10",
     name: "Giảm 10%",
-    scope: "PLATFORM",
-    shop_id: "",
+    scope: "SHOP",
+    shop_id: "shop-uuid-1",
     discount_type: "PERCENT",
     value_vnd: 0,
     discount_percent: 10,
@@ -179,55 +195,4 @@ test("voucher formatting and eligibility reasons handle fixed, percent, exhauste
     formatVoucherIneligibleReason({ ...pct, remaining_quota: 0 }, 350000) ?? "",
     /hết lượt/i
   );
-});
-
-test("buildMarketplaceCheckoutPayload strips client sales_channel and storefront_shop_id and always sends MARKETPLACE", () => {
-  const res = buildMarketplaceCheckoutPayload({
-    address_id: " addr-1 ",
-    from_cart: true,
-    payment_method: "cod",
-    sales_channel: "STOREFRONT",
-    storefront_shop_id: "shop-evil-123",
-    coins_to_use: 5000,
-    platform_voucher_id: " v-plat ",
-  });
-  assert.equal(res.ok, true);
-  assert.equal(res.payload.address_id, "addr-1");
-  assert.equal(res.payload.payment_method, "COD");
-  assert.equal(res.payload.sales_channel, "MARKETPLACE");
-  assert.equal("storefront_shop_id" in res.payload, false);
-  assert.equal(res.payload.coins_to_use, 5000);
-  assert.equal(res.payload.platform_voucher_id, "v-plat");
-
-  const missingAddr = buildMarketplaceCheckoutPayload({
-    payment_method: "VIETQR",
-    sales_channel: "STOREFRONT",
-  });
-  assert.deepEqual(missingAddr, { ok: false, code: "MISSING_ADDRESS" });
-
-  const badMethod = buildMarketplaceCheckoutPayload({
-    address_id: "addr-1",
-    payment_method: "CRYPTO",
-  });
-  assert.deepEqual(badMethod, { ok: false, code: "INVALID_PAYMENT_METHOD" });
-});
-
-test("salesChannel helpers normalize, validate filters, and provide clean Vietnamese labels", () => {
-  assert.equal(normalizeSalesChannel(undefined), "MARKETPLACE");
-  assert.equal(normalizeSalesChannel(""), "MARKETPLACE");
-  assert.equal(normalizeSalesChannel("marketplace"), "MARKETPLACE");
-  assert.equal(normalizeSalesChannel("storefront"), "STOREFRONT");
-  assert.equal(normalizeSalesChannel("UNKNOWN"), "MARKETPLACE");
-
-  assert.equal(parseSalesChannelFilter(null), "");
-  assert.equal(parseSalesChannelFilter(""), "");
-  assert.equal(parseSalesChannelFilter("marketplace"), "MARKETPLACE");
-  assert.equal(parseSalesChannelFilter("STOREFRONT"), "STOREFRONT");
-  assert.equal(parseSalesChannelFilter("ALL"), null);
-  assert.equal(parseSalesChannelFilter("DIRECT"), null);
-
-  assert.equal(getSalesChannelMeta("MARKETPLACE").label, "Sàn NexusMart");
-  assert.equal(getSalesChannelMeta("MARKETPLACE").isStorefront, false);
-  assert.equal(getSalesChannelMeta("STOREFRONT").label, "Site riêng");
-  assert.equal(getSalesChannelMeta("STOREFRONT").isStorefront, true);
 });

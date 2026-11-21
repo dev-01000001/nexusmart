@@ -1,51 +1,32 @@
 import React from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { headers } from "next/headers";
 import { notFound } from "next/navigation";
-import { APP_ORIGINS, getSiteRootDomain } from "@/lib/server/config";
-import { resolveRequestHost, resolveRequestProto } from "@/lib/server/http";
-import { fetchPublishedSiteByHost, loadPublicSitePageBundle } from "@/lib/server/sites";
-import { deriveMarketplaceOrigin, deriveSiteOrigin } from "@/lib/site/host";
+import { loadPublicSitePageBundle } from "@/lib/server/sites";
 import { buildSiteMetadata } from "@/lib/site/seo";
 import type { PolicyItem } from "@/lib/site/types";
-import { SiteProductCard, SiteShell } from "@/features/site";
+import { SiteProductCard } from "@/features/site";
+import { loadSiteContext } from "@/features/site/siteContext.server";
 import styles from "@/features/site/site.module.css";
 
 interface PageProps {
   params: Promise<{ host: string }>;
 }
 
-async function resolveOrigins(siteHost: string) {
-  const h = await headers();
-  const rawHost = resolveRequestHost(h, siteHost);
-  const proto = resolveRequestProto(h, "http://localhost");
-  const marketplaceOrigin = deriveMarketplaceOrigin({
-    rawHost,
-    proto,
-    rootDomain: getSiteRootDomain(),
-    appOrigin: APP_ORIGINS[0],
-  });
-  const siteOrigin = deriveSiteOrigin({ siteHost, rawHost, proto });
-  return { marketplaceOrigin, siteOrigin };
-}
-
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { host } = await params;
-  const decodedHost = decodeURIComponent(host);
-  const payload = await fetchPublishedSiteByHost(decodedHost);
-  if (!payload) {
+  const ctx = await loadSiteContext(host);
+  if (!ctx) {
     return {
       title: "Không tìm thấy cửa hàng",
       robots: { index: false, follow: false },
     };
   }
-  const { siteOrigin } = await resolveOrigins(payload.site.primary_host || decodedHost);
   return buildSiteMetadata({
-    config: payload.config,
+    config: ctx.payload.config,
     pageTitle: "Chính sách bán hàng",
-    description: `Chính sách giao hàng, đổi trả và bảo hành của ${payload.config.theme.brand_name || payload.shop.name}.`,
-    siteOrigin,
+    description: `Chính sách giao hàng, đổi trả và bảo hành của ${ctx.brandName}.`,
+    siteOrigin: ctx.siteOrigin,
     pathname: "/chinh-sach",
   });
 }
@@ -57,8 +38,6 @@ export default async function SubdomainSitePoliciesPage({ params }: PageProps) {
   if (!bundle) notFound();
 
   const { payload, shopProfile, products } = bundle;
-  const effectiveHost = payload.site.primary_host || decodedHost;
-  const { marketplaceOrigin } = await resolveOrigins(effectiveHost);
   const brandName = payload.config.theme.brand_name?.trim() || payload.shop.name;
 
   const configuredPolicies: PolicyItem[] = payload.config.sections
@@ -81,7 +60,7 @@ export default async function SubdomainSitePoliciesPage({ params }: PageProps) {
     {
       heading: "Thanh toán an toàn",
       detail:
-        "Đơn hàng hỗ trợ thanh toán khi nhận hàng (COD) hoặc chuyển khoản VietQR xác nhận tự động qua NexusMart.",
+        "Đơn hàng hỗ trợ thanh toán khi nhận hàng (COD) hoặc chuyển khoản VietQR xác nhận tự động.",
     },
     {
       heading: "Kho xuất hàng",
@@ -95,14 +74,7 @@ export default async function SubdomainSitePoliciesPage({ params }: PageProps) {
   const showcaseProducts = products.slice(0, 4);
 
   return (
-    <SiteShell
-      config={payload.config}
-      shopName={payload.shop.name}
-      shopId={payload.shop.id}
-      siteHost={effectiveHost}
-      activeNav="policies"
-      marketplaceOrigin={marketplaceOrigin}
-    >
+    <>
       <section className={styles.pageHeadBand}>
         <h1 className={styles.pageTitle} data-rise="" style={{ "--i": 0 } as React.CSSProperties}>
           Chính sách của {brandName}
@@ -141,6 +113,6 @@ export default async function SubdomainSitePoliciesPage({ params }: PageProps) {
           </div>
         </section>
       )}
-    </SiteShell>
+    </>
   );
 }

@@ -817,6 +817,24 @@ type AdminSitesListResponse struct {
 	Total    int64     `json:"total"`
 }
 
+type PublishedSiteSummaryDTO struct {
+	SiteID      string `json:"site_id"`
+	ShopID      string `json:"shop_id"`
+	ShopName    string `json:"shop_name"`
+	Subdomain   string `json:"subdomain"`
+	PrimaryHost string `json:"primary_host"`
+	LogoURL     string `json:"logo_url"`
+	CoverURL    string `json:"cover_url"`
+	Tagline     string `json:"tagline"`
+}
+
+type PublishedSitesDirectoryResponse struct {
+	Sites    []PublishedSiteSummaryDTO `json:"sites"`
+	Total    int64                     `json:"total"`
+	Page     int32                     `json:"page"`
+	PageSize int32                     `json:"page_size"`
+}
+
 type AuditLogDTO struct {
 	ID         string `json:"id"`
 	ActorID    string `json:"actor_id"`

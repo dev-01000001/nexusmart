@@ -411,6 +411,9 @@ func TestSalesChannelGatewayContractAndValidation(t *testing.T) {
 		if resp["order"]["sales_channel"] != wantCh {
 			t.Fatalf("GET %s sales_channel=%v, want %s", tc.path, resp["order"]["sales_channel"], wantCh)
 		}
+		if wantCh == "STOREFRONT" && resp["order"]["storefront_shop_id"] != "shop-a" {
+			t.Fatalf("GET %s storefront_shop_id=%v, want shop-a", tc.path, resp["order"]["storefront_shop_id"])
+		}
 	}
 
 	for _, tc := range []struct {
@@ -425,6 +428,16 @@ func TestSalesChannelGatewayContractAndValidation(t *testing.T) {
 		if rec.Code != http.StatusOK || orderMock.lastList.GetSalesChannel() != "STOREFRONT" {
 			t.Fatalf("GET %s failed: code=%d lastList=%+v", tc.path, rec.Code, orderMock.lastList)
 		}
+	}
+	const sfShopUUID = "11111111-1111-4111-8111-111111111111"
+	rec = call(http.MethodGet, "/api/v1/orders?storefront_shop_id="+sfShopUUID+"&page=2&page_size=5", "", buyerTok, nil)
+	if rec.Code != http.StatusOK || orderMock.lastList.GetStorefrontShopId() != sfShopUUID ||
+		orderMock.lastList.GetPage() != 2 || orderMock.lastList.GetPageSize() != 5 {
+		t.Fatalf("buyer storefront_shop_id filter forward failed: code=%d req=%+v", rec.Code, orderMock.lastList)
+	}
+	orderMock.lastList = nil
+	if rec = call(http.MethodGet, "/api/v1/orders?storefront_shop_id=not-a-uuid", "", buyerTok, nil); rec.Code != http.StatusBadRequest || orderMock.lastList != nil {
+		t.Fatalf("invalid buyer storefront_shop_id must return 400 without RPC call, got %d req=%+v", rec.Code, orderMock.lastList)
 	}
 	if rec = call(http.MethodGet, "/api/v1/admin/orders?sales_channel=BAD", "", adminTok, nil); rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 on invalid admin orders sales_channel filter, got %d", rec.Code)

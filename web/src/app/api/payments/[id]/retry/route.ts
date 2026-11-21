@@ -3,13 +3,16 @@ import { GatewayError } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { apiRoute } from "@/lib/server/http";
 import { assertSession } from "@/lib/server/session";
+import { requireRequestSite } from "@/lib/server/sites";
+import { assertPaymentInStorefront } from "@/lib/server/storefront";
 import type { GwPayment } from "@/features/commerce/types";
 
 type RouteCtx = { params: Promise<{ id: string }> };
 
 export const POST = apiRoute<RouteCtx>(
   async (req, { params }) => {
-    await assertSession();
+    const site = await requireRequestSite(req, { fresh: true });
+    const session = await assertSession();
     const { id } = await params;
     const cleanId = id.trim();
     if (!cleanId) {
@@ -35,6 +38,12 @@ export const POST = apiRoute<RouteCtx>(
       throw new GatewayError("conflict", "INVALID_RETRY_METHOD");
     }
 
+    // Verify the payment belongs to THIS site's shop and the current buyer before retrying.
+    const existing = await gw<{ payment?: GwPayment | null }>(
+      `/api/v1/payments/${encodeURIComponent(cleanId)}`
+    );
+    assertPaymentInStorefront(existing.payment, site.shopId, session.user.id);
+
     const headerKey = (req.headers.get("idempotency-key") ?? "").trim();
     const idempotencyKey = headerKey || `retry-${cleanId}-${randomUUID()}`;
 
@@ -54,6 +63,7 @@ export const POST = apiRoute<RouteCtx>(
       INVALID_RETRY_METHOD:
         "Thanh toán lại chỉ áp dụng cho mã VietQR mới. Để đổi sang COD, vui lòng tạo đơn mới.",
       FAILED_PRECONDITION: "Giao dịch này hiện không thể tạo lại mã thanh toán.",
+      not_found: "Không tìm thấy giao dịch thanh toán cần tạo lại.",
       NOT_FOUND: "Không tìm thấy giao dịch thanh toán cần tạo lại.",
       PERMISSION_DENIED: "Bạn không có quyền thao tác trên giao dịch thanh toán này.",
     },

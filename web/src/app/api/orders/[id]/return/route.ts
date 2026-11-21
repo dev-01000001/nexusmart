@@ -3,6 +3,8 @@ import { GatewayError } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { apiRoute, readJson } from "@/lib/server/http";
 import { assertSession } from "@/lib/server/session";
+import { requireRequestSite } from "@/lib/server/sites";
+import { assertInStorefront } from "@/lib/server/storefront";
 import { assertBuyerOrderOwnership } from "@/features/account/orders.server";
 import { mapGatewayOrder, type GwOrder } from "@/features/account/orderView";
 
@@ -10,6 +12,7 @@ type Params = { params: Promise<{ id: string }> };
 
 export const POST = apiRoute<Params>(
   async (req, ctx) => {
+    const site = await requireRequestSite(req, { fresh: true });
     const session = await assertSession();
     const { id } = await ctx.params;
     const cleanId = id.trim();
@@ -27,7 +30,8 @@ export const POST = apiRoute<Params>(
     const existing = await gw<{ order?: GwOrder | null }>(
       `/api/v1/orders/${encodeURIComponent(cleanId)}`
     );
-    assertBuyerOrderOwnership(existing.order, session);
+    const scoped = assertInStorefront(existing.order, site.shopId);
+    assertBuyerOrderOwnership(scoped, session);
 
     const res = await gw<{ order: GwOrder; return_request_id: string }>(
       `/api/v1/orders/${encodeURIComponent(cleanId)}/return`,

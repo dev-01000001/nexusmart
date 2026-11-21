@@ -4,19 +4,11 @@ import React, { useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import {
-  BADGE_LABELS,
-  computeReviewSummary,
-  getShopById,
-  getSku,
-  type Product,
-  type Shop,
-  type SizeCode,
-} from "@/data";
+import { BADGE_LABELS, getSku, type Product, type SizeCode } from "@/data/products";
+import type { Shop } from "@/data/shops";
 import { formatDiscountPercent } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
-import { useMockStore } from "@/mock/MockStoreContext";
-import { IconHeart, IconStar } from "./Icons";
+import { IconHeart } from "./Icons";
 import { Price } from "./Price";
 import styles from "./ProductCard.module.css";
 
@@ -28,13 +20,11 @@ export interface ProductCardProps {
   quotaLabel?: string;
   showSpec?: boolean;
   priority?: boolean;
-  // Interactive options (backward compatible defaults)
   enableQuickAdd?: boolean;
   enableInteractiveSwatches?: boolean;
   showWishlist?: boolean;
   showBadges?: boolean;
   showSla?: boolean;
-  showRating?: boolean;
   maxVisibleSwatches?: number;
   isFlashSaleItem?: boolean;
   isShockDeal?: boolean;
@@ -45,25 +35,15 @@ type ProductWithOnModel = Product & {
   onModelImage?: string;
 };
 
-/**
- * Deterministic sample rating fallback for products that do not yet have
- * explicit rows in SAMPLE_REVIEWS (listed as sample UI data in DESIGN_REPORT.md).
- */
-function getFallbackSampleRating(product: Product): { average: number; count: number } {
-  let hash = 0;
-  for (let i = 0; i < product.id.length; i++) {
-    hash = (hash * 31 + product.id.charCodeAt(i)) % 997;
-  }
-  const averages = [4.7, 4.8, 4.9, 4.8, 4.7, 4.9];
-  const average = averages[hash % averages.length];
-  const rankBoost = product.salesRank ? Math.max(0, 18 - product.salesRank) : 4;
-  const count = 12 + (hash % 19) + rankBoost;
-  return { average, count };
+function stripInternalSitePrefix(rawPath: string | null): string {
+  const path = rawPath || "/";
+  const m = path.match(/^\/s\/[^/]+(\/.*)?$/);
+  return m ? m[1] || "/" : path;
 }
 
 export function ProductCard({
   product,
-  shop: shopProp,
+  shop,
   overridePrice,
   overrideOriginalPrice,
   quotaLabel,
@@ -74,16 +54,14 @@ export function ProductCard({
   showWishlist = true,
   showBadges = true,
   showSla = false,
-  showRating = true,
   maxVisibleSwatches = 4,
   isFlashSaleItem = false,
   isShockDeal = false,
   flashSaleItemIdBySku,
 }: ProductCardProps) {
   const router = useRouter();
-  const pathname = usePathname();
+  const rawPathname = usePathname();
   const { addToCart, toggleWishlist, isWishlisted } = useStore();
-  const { reviews } = useMockStore();
   const [selectedColorCode, setSelectedColorCode] = useState<string>(product.colors[0]?.code ?? "");
   const [addedSize, setAddedSize] = useState<SizeCode | null>(null);
   const [addingSize, setAddingSize] = useState<SizeCode | null>(null);
@@ -93,7 +71,6 @@ export function ProductCard({
 
   const showQuickOverlay = hoverQuickOpen || focusQuickOpen || touchQuickOpen || addedSize !== null;
 
-  const shop = shopProp ?? getShopById(product.shopId);
   const activeColor = useMemo(
     () => product.colors.find((c) => c.code === selectedColorCode) ?? product.colors[0],
     [product.colors, selectedColorCode]
@@ -122,14 +99,6 @@ export function ProductCard({
     return Boolean(sku && sku.stock > 0 && sku.skuId);
   });
 
-  const ratingInfo = useMemo(() => {
-    const summary = computeReviewSummary(reviews, product.id);
-    if (summary.count > 0) {
-      return { average: summary.average, count: summary.count };
-    }
-    return getFallbackSampleRating(product);
-  }, [reviews, product]);
-
   const productHref =
     activeColor && activeColor.code !== product.colors[0]?.code
       ? `/san-pham/${product.slug}?color=${encodeURIComponent(activeColor.code)}`
@@ -152,7 +121,7 @@ export function ProductCard({
         size,
       });
       if (res.unauthenticated) {
-        const nextUrl = pathname || "/";
+        const nextUrl = stripInternalSitePrefix(rawPathname);
         router.push(`/dang-nhap?next=${encodeURIComponent(nextUrl)}`);
         return;
       }
@@ -166,6 +135,13 @@ export function ProductCard({
       setAddingSize(null);
     }
   };
+
+  const specParts = [
+    shop?.shortName,
+    product.fabric || undefined,
+    product.gsm > 0 ? `${product.gsm}gsm` : undefined,
+    showSpec ? product.fit || undefined : undefined,
+  ].filter(Boolean);
 
   return (
     <article
@@ -300,8 +276,8 @@ export function ProductCard({
       </div>
 
       <div className={styles.body}>
-        <div className={styles.metaRow}>
-          {product.colors.length > 0 && (
+        {product.colors.length > 0 && (
+          <div className={styles.metaRow}>
             <div
               className={styles.swatches}
               role="group"
@@ -343,33 +319,15 @@ export function ProductCard({
                 </Link>
               )}
             </div>
-          )}
-
-          {showRating && (
-            <span
-              className={`${styles.ratingText} num`}
-              title="Điểm đánh giá mẫu minh họa giao diện"
-              aria-label={`Đánh giá ${ratingInfo.average.toFixed(1)} trên 5 từ ${ratingInfo.count} nhận xét mẫu`}
-            >
-              <IconStar size={13} filled className={styles.ratingStar} />
-              <span>{ratingInfo.average.toFixed(1).replace(".", ",")}</span>
-              <span className={styles.ratingCount}>({ratingInfo.count})</span>
-            </span>
-          )}
-        </div>
+          </div>
+        )}
 
         <Link href={productHref} className={styles.titleLink}>
           {product.name}
         </Link>
 
-        {showSpec ? (
-          <p className={styles.specLine}>
-            {shop?.shortName ?? "NexusMart"}
-            {product.gsm > 0 ? ` · ${product.gsm}gsm` : ""}
-            {product.fit ? ` · ${product.fit}` : ""}
-          </p>
-        ) : (
-          <p className={styles.shopName}>{shop?.shortName ?? shop?.name ?? "NexusMart"}</p>
+        {specParts.length > 0 && (
+          <p className={showSpec ? styles.specLine : styles.shopName}>{specParts.join(" · ")}</p>
         )}
 
         {(showSla || showSpec) && product.slaText && (

@@ -1,0 +1,2179 @@
+{
+ "url": "http://bach-dang.nexusmart.localhost:3300/",
+ "at": "2026-11-21T03:21:43.455Z",
+ "allow": [],
+ "viewports": [
+  {
+   "width": 1440,
+   "height": 900,
+   "load": "load",
+   "screens": 6,
+   "filled": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+   ],
+   "motion": {
+    "elements": 28,
+    "css": 4,
+    "transitions": 24,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "page": {
+     "height": 4998,
+     "screens": 5.6,
+     "words": 620,
+     "img": 11,
+     "video": 0,
+     "canvas": 0,
+     "svg": 0,
+     "sections": 7,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 10,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "campaign-everyday.jpg",
+      "model-ao-thun-trang.jpg",
+      "model-ao-thun-xam-da.jpg",
+      "model-ao-thun-xanh-than.jpg",
+      "model-mac-nha-modal.jpg",
+      "fabric-closeup.jpg",
+      "model-ao-thun-xanh-than.jpg",
+      "model-ao-thun-xam-da.jpg"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Cotton Compact 220gsm từ xưởng Hải Phòng",
+     "words": 7,
+     "chars": 40,
+     "lines": 2,
+     "size": 43.9,
+     "vw": 3,
+     "font": "Work Sans",
+     "weight": 500,
+     "tracking": -0.03,
+     "leading": 1.08,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "left",
+     "widthRatio": 0.4,
+     "top": 259,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Cotton Compact 220gsm từ xưởng Hải Phòng",
+     "words": 7,
+     "lines": 2,
+     "size": 43.9,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Cotton Compact 220gsm từ xưởng Hải Phòng",
+      "words": 7,
+      "chars": 40,
+      "lines": 2,
+      "size": 43.9,
+      "vw": 3,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.03,
+      "leading": 1.08,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.4,
+      "top": 259,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "Sản phẩm chủ lực tại xưởng",
+      "words": 6,
+      "chars": 26,
+      "lines": 1,
+      "size": 34,
+      "vw": 2.4,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.4,
+      "top": 819,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Ưu đãi riêng của Xưởng Dệt Bạch Đằng",
+      "words": 8,
+      "chars": 36,
+      "lines": 1,
+      "size": 34,
+      "vw": 2.4,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.42,
+      "top": 1694,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Dòng áo thun Cotton Compact 220gsm",
+      "words": 6,
+      "chars": 34,
+      "lines": 2,
+      "size": 34,
+      "vw": 2.4,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "right",
+      "widthRatio": 0.42,
+      "top": 2213,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Kiểm định 3 bước tại nhà máy Hải Phòng",
+      "words": 9,
+      "chars": 38,
+      "lines": 1,
+      "size": 34,
+      "vw": 2.4,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.46,
+      "top": 3496,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Triết lý dệt may bền bỉ từ năm 2019",
+      "words": 9,
+      "chars": 35,
+      "lines": 2,
+      "size": 34,
+      "vw": 2.4,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.3,
+      "top": 3919,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Cam kết bán hàng và hậu mãi",
+      "words": 7,
+      "chars": 27,
+      "lines": 1,
+      "size": 34,
+      "vw": 2.4,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.33,
+      "top": 4221,
+      "tag": "h2",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 7,
+     "maxLines": 2,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 8,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      14,
+      15,
+      16,
+      18,
+      22,
+      34,
+      44
+     ],
+     "sizeCount": 7,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 16,
+      "leading": 1.55,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 8.2
+     },
+     "measureChars": 77,
+     "max": {
+      "size": 43.9,
+      "vw": 3,
+      "font": "Work Sans",
+      "text": "Cotton Compact 220gsm từ xưởng Hải Phòng"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0,
+     "centerShare": 0.01,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f8f6f1",
+       "top": 0,
+       "hsl": {
+        "h": 43,
+        "s": 0.33,
+        "l": 0.96
+       }
+      },
+      {
+       "color": "#ffffff",
+       "top": 108,
+       "hsl": {
+        "h": 0,
+        "s": 0,
+        "l": 1
+       }
+      },
+      {
+       "color": "#182026",
+       "top": 3327,
+       "hsl": {
+        "h": 206,
+        "s": 0.23,
+        "l": 0.12
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#182026",
+       "share": 0.57
+      },
+      {
+       "color": "#454b4f",
+       "share": 0.23
+      },
+      {
+       "color": "#f8f6f1",
+       "share": 0.14
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.04
+      },
+      {
+       "color": "#1d4ed8",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#1d4ed8",
+      "hsl": {
+       "h": 224,
+       "s": 0.76,
+       "l": 0.48
+      },
+      "fg": "#ffffff"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 4,
+     "inHero": 2,
+     "radius": 0,
+     "height": 49,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Giỏ hàng",
+      "Xem sản phẩm xưởng"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 10,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 951
+      },
+      {
+       "count": 3,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 2542
+      },
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 4296
+      }
+     ]
+    },
+    "heroMedia": [
+     {
+      "type": "img",
+      "ratio": 0.33
+     }
+    ],
+    "nav": {
+     "links": 7,
+     "fixed": true,
+     "height": 70,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "pageH": 4998,
+    "margins": {
+     "left": 32,
+     "right": 32
+    },
+    "sections": [
+     {
+      "sel": "section.site_heroSection___NAV9",
+      "tag": "section",
+      "top": 70,
+      "height": 677,
+      "words": 37,
+      "media": 1,
+      "middle": 55,
+      "heading": {
+       "text": "Cotton Compact 220gsm từ xưởng Hải Phòng",
+       "size": 44,
+       "tag": "h1"
+      },
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 843,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 747,
+      "height": 875,
+      "words": 109,
+      "media": 4,
+      "middle": 24,
+      "heading": {
+       "text": "Sản phẩm chủ lực tại xưởng",
+       "size": 34,
+       "tag": "h2"
+      },
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 32,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionSurface__3cC",
+      "tag": "section",
+      "top": 1622,
+      "height": 435,
+      "words": 49,
+      "media": 0,
+      "middle": 584,
+      "heading": {
+       "text": "Ưu đãi riêng của Xưởng Dệt Bạch Đằng",
+       "size": 34,
+       "tag": "h2"
+      },
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 32,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionSurface__3cC",
+      "tag": "section",
+      "top": 2057,
+      "height": 1269,
+      "words": 85,
+      "media": 4,
+      "middle": 0,
+      "heading": {
+       "text": "Dòng áo thun Cotton Compact 220gsm",
+       "size": 34,
+       "tag": "h2"
+      },
+      "left": 32,
+      "right": 32,
+      "textLeft": 48,
+      "textRight": 48,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionBand__gVP1C",
+      "tag": "section",
+      "top": 3327,
+      "height": 520,
+      "words": 37,
+      "media": 1,
+      "middle": 67,
+      "heading": {
+       "text": "Kiểm định 3 bước tại nhà máy Hải Phòng",
+       "size": 34,
+       "tag": "h2"
+      },
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 767,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 3847,
+      "height": 302,
+      "words": 78,
+      "media": 0,
+      "middle": 167,
+      "heading": {
+       "text": "Triết lý dệt may bền bỉ từ năm 2019",
+       "size": 34,
+       "tag": "h2"
+      },
+      "left": 32,
+      "right": 323,
+      "textLeft": 32,
+      "textRight": 323,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 4149,
+      "height": 498,
+      "words": 110,
+      "media": 0,
+      "middle": 148,
+      "heading": {
+       "text": "Cam kết bán hàng và hậu mãi",
+       "size": 34,
+       "tag": "h2"
+      },
+      "left": 32,
+      "right": 115,
+      "textLeft": 32,
+      "textRight": 115,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "footer.site_siteFooter__9HNzV",
+      "tag": "footer",
+      "top": 4647,
+      "height": 350,
+      "words": 53,
+      "media": 0,
+      "middle": 189,
+      "heading": {
+       "text": "Xưởng Dệt Bạch Đằng",
+       "size": 22,
+       "tag": "p"
+      },
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 32,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Cotton Compact 220gsm từ xưởng Hải Phòng",
+      "size": 44,
+      "top": 259,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 32,
+      "n": 10
+     },
+     {
+      "x": 56,
+      "n": 5
+     },
+     {
+      "x": 754,
+      "n": 4
+     },
+     {
+      "x": 774,
+      "n": 2
+     },
+     {
+      "x": 504,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 22,
+    "bodySize": 16,
+    "stage": false,
+    "explains": true,
+    "slivers": [],
+    "voidShare": 0.11,
+    "voidBox": {
+     "x": 0,
+     "y": 540,
+     "w": 600,
+     "h": 240
+    }
+   },
+   "app": null,
+   "consoleErrors": []
+  },
+  {
+   "width": 768,
+   "height": 1024,
+   "load": "load",
+   "screens": 7,
+   "filled": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+   ],
+   "motion": {
+    "elements": 28,
+    "css": 4,
+    "transitions": 24,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "page": {
+     "height": 6931,
+     "screens": 6.8,
+     "words": 620,
+     "img": 11,
+     "video": 0,
+     "canvas": 0,
+     "svg": 0,
+     "sections": 7,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 10,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "campaign-everyday.jpg",
+      "model-ao-thun-trang.jpg",
+      "model-ao-thun-xam-da.jpg",
+      "model-ao-thun-xanh-than.jpg",
+      "model-mac-nha-modal.jpg",
+      "fabric-closeup.jpg",
+      "model-ao-thun-xanh-than.jpg",
+      "model-ao-thun-xam-da.jpg"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Cotton Compact 220gsm từ xưởng Hải Phòng",
+     "words": 7,
+     "chars": 40,
+     "lines": 2,
+     "size": 36,
+     "vw": 4.7,
+     "font": "Work Sans",
+     "weight": 500,
+     "tracking": -0.03,
+     "leading": 1.08,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "center",
+     "widthRatio": 0.96,
+     "top": 148,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Cotton Compact 220gsm từ xưởng Hải Phòng",
+     "words": 7,
+     "lines": 2,
+     "size": 36,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Cotton Compact 220gsm từ xưởng Hải Phòng",
+      "words": 7,
+      "chars": 40,
+      "lines": 2,
+      "size": 36,
+      "vw": 4.7,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.03,
+      "leading": 1.08,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.96,
+      "top": 148,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "Sản phẩm chủ lực tại xưởng",
+      "words": 6,
+      "chars": 26,
+      "lines": 1,
+      "size": 26,
+      "vw": 3.4,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.75,
+      "top": 931,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Ưu đãi riêng của Xưởng Dệt Bạch Đằng",
+      "words": 8,
+      "chars": 36,
+      "lines": 1,
+      "size": 26,
+      "vw": 3.4,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.74,
+      "top": 2446,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Dòng áo thun Cotton Compact 220gsm",
+      "words": 6,
+      "chars": 34,
+      "lines": 1,
+      "size": 26,
+      "vw": 3.4,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.9,
+      "top": 3300,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Kiểm định 3 bước tại nhà máy Hải Phòng",
+      "words": 9,
+      "chars": 38,
+      "lines": 1,
+      "size": 26,
+      "vw": 3.4,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.96,
+      "top": 4869,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Triết lý dệt may bền bỉ từ năm 2019",
+      "words": 9,
+      "chars": 35,
+      "lines": 1,
+      "size": 26,
+      "vw": 3.4,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.96,
+      "top": 5558,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Cam kết bán hàng và hậu mãi",
+      "words": 7,
+      "chars": 27,
+      "lines": 1,
+      "size": 26,
+      "vw": 3.4,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.47,
+      "top": 5849,
+      "tag": "h2",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 7,
+     "maxLines": 2,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 8,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      14,
+      15,
+      16,
+      18,
+      22,
+      26,
+      36
+     ],
+     "sizeCount": 7,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 16,
+      "leading": 1.55,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 8.2
+     },
+     "measureChars": 77,
+     "max": {
+      "size": 36,
+      "vw": 4.7,
+      "font": "Work Sans",
+      "text": "Cotton Compact 220gsm từ xưởng Hải Phòng"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0,
+     "centerShare": 0.01,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f8f6f1",
+       "top": 0,
+       "hsl": {
+        "h": 43,
+        "s": 0.33,
+        "l": 0.96
+       }
+      },
+      {
+       "color": "#ffffff",
+       "top": 392,
+       "hsl": {
+        "h": 0,
+        "s": 0,
+        "l": 1
+       }
+      },
+      {
+       "color": "#f3f4f4",
+       "top": 2841,
+       "hsl": {
+        "h": 180,
+        "s": 0.04,
+        "l": 0.95
+       }
+      },
+      {
+       "color": "#182026",
+       "top": 4829,
+       "hsl": {
+        "h": 206,
+        "s": 0.23,
+        "l": 0.12
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#182026",
+       "share": 0.57
+      },
+      {
+       "color": "#454b4f",
+       "share": 0.23
+      },
+      {
+       "color": "#f8f6f1",
+       "share": 0.14
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.04
+      },
+      {
+       "color": "#1d4ed8",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#1d4ed8",
+      "hsl": {
+       "h": 224,
+       "s": 0.76,
+       "l": 0.48
+      },
+      "fg": "#ffffff"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 4,
+     "inHero": 2,
+     "radius": 0,
+     "height": 49,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Giỏ hàng",
+      "Xem sản phẩm xưởng"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 10,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 1087
+      },
+      {
+       "count": 3,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 3510
+      },
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 5903
+      }
+     ]
+    },
+    "heroMedia": [
+     {
+      "type": "img",
+      "ratio": 0.43
+     }
+    ],
+    "nav": {
+     "links": 7,
+     "fixed": true,
+     "height": 126,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "pageH": 6931,
+    "margins": {
+     "left": 17,
+     "right": 17
+    },
+    "sections": [
+     {
+      "sel": "header.site_siteHeader__igtvc",
+      "tag": "header",
+      "top": 0,
+      "height": 126,
+      "words": 17,
+      "media": 0,
+      "middle": 32,
+      "heading": null,
+      "left": 17,
+      "right": 17,
+      "textLeft": 69,
+      "textRight": 17,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": true
+     },
+     {
+      "sel": "section.site_heroSection___NAV9",
+      "tag": "section",
+      "top": 126,
+      "height": 765,
+      "words": 37,
+      "media": 1,
+      "middle": 0,
+      "heading": {
+       "text": "Cotton Compact 220gsm từ xưởng Hải Phòng",
+       "size": 36,
+       "tag": "h1"
+      },
+      "left": 17,
+      "right": 17,
+      "textLeft": 17,
+      "textRight": 155,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 891,
+      "height": 1516,
+      "words": 109,
+      "media": 4,
+      "middle": 0,
+      "heading": {
+       "text": "Sản phẩm chủ lực tại xưởng",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 17,
+      "right": 17,
+      "textLeft": 17,
+      "textRight": 33,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionSurface__3cC",
+      "tag": "section",
+      "top": 2406,
+      "height": 395,
+      "words": 49,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Ưu đãi riêng của Xưởng Dệt Bạch Đằng",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 17,
+      "right": 179,
+      "textLeft": 17,
+      "textRight": 179,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "div.site_collectionSplit__3JVrU",
+      "tag": "div",
+      "top": 2841,
+      "height": 644,
+      "words": 28,
+      "media": 1,
+      "middle": 0,
+      "heading": {
+       "text": "Dòng áo thun Cotton Compact 220gsm",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 17,
+      "right": 17,
+      "textLeft": 40,
+      "textRight": 175,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "div.site_productGrid__Jc6Ph.site_productGridThree__d_3_B",
+      "tag": "div",
+      "top": 3510,
+      "height": 1279,
+      "words": 57,
+      "media": 3,
+      "middle": 16,
+      "heading": null,
+      "left": 17,
+      "right": 17,
+      "textLeft": 33,
+      "textRight": 33,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionBand__gVP1C",
+      "tag": "section",
+      "top": 4829,
+      "height": 688,
+      "words": 37,
+      "media": 1,
+      "middle": 0,
+      "heading": {
+       "text": "Kiểm định 3 bước tại nhà máy Hải Phòng",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 17,
+      "right": 17,
+      "textLeft": 17,
+      "textRight": 124,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 5518,
+      "height": 291,
+      "words": 78,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Triết lý dệt may bền bỉ từ năm 2019",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 17,
+      "right": 138,
+      "textLeft": 17,
+      "textRight": 138,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 5809,
+      "height": 487,
+      "words": 110,
+      "media": 0,
+      "middle": 40,
+      "heading": {
+       "text": "Cam kết bán hàng và hậu mãi",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 17,
+      "right": 41,
+      "textLeft": 17,
+      "textRight": 41,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "footer.site_siteFooter__9HNzV",
+      "tag": "footer",
+      "top": 6296,
+      "height": 635,
+      "words": 53,
+      "media": 0,
+      "middle": 162,
+      "heading": {
+       "text": "Xưởng Dệt Bạch Đằng",
+       "size": 22,
+       "tag": "p"
+      },
+      "left": 17,
+      "right": 17,
+      "textLeft": 17,
+      "textRight": 17,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Cotton Compact 220gsm từ xưởng Hải Phòng",
+      "size": 36,
+      "top": 148,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 17,
+      "n": 11
+     },
+     {
+      "x": 40,
+      "n": 7
+     },
+     {
+      "x": 418,
+      "n": 4
+     }
+    ],
+    "leftBlocks": 22,
+    "bodySize": 16,
+    "stage": false,
+    "explains": true,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": null,
+   "consoleErrors": []
+  },
+  {
+   "width": 390,
+   "height": 844,
+   "load": "load",
+   "screens": 8,
+   "filled": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+   ],
+   "motion": {
+    "elements": 28,
+    "css": 4,
+    "transitions": 24,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "page": {
+     "height": 6449,
+     "screens": 7.6,
+     "words": 620,
+     "img": 11,
+     "video": 0,
+     "canvas": 0,
+     "svg": 0,
+     "sections": 7,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 10,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "campaign-everyday.jpg",
+      "model-ao-thun-trang.jpg",
+      "model-ao-thun-xam-da.jpg",
+      "model-ao-thun-xanh-than.jpg",
+      "model-mac-nha-modal.jpg",
+      "fabric-closeup.jpg",
+      "model-ao-thun-xanh-than.jpg",
+      "model-ao-thun-xam-da.jpg"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Cotton Compact 220gsm từ xưởng Hải Phòng",
+     "words": 7,
+     "chars": 40,
+     "lines": 2,
+     "size": 26,
+     "vw": 6.7,
+     "font": "Work Sans",
+     "weight": 500,
+     "tracking": -0.03,
+     "leading": 1.08,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "center",
+     "widthRatio": 0.92,
+     "top": 238,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Cotton Compact 220gsm từ xưởng Hải Phòng",
+     "words": 7,
+     "lines": 2,
+     "size": 26,
+     "font": "Work Sans"
+    },
+    "headings": [
+     {
+      "text": "Cotton Compact 220gsm từ xưởng Hải Phòng",
+      "words": 7,
+      "chars": 40,
+      "lines": 2,
+      "size": 26,
+      "vw": 6.7,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.03,
+      "leading": 1.08,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 238,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "Sản phẩm chủ lực tại xưởng",
+      "words": 6,
+      "chars": 26,
+      "lines": 1,
+      "size": 26,
+      "vw": 6.7,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 820,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Ưu đãi riêng của Xưởng Dệt Bạch Đằng",
+      "words": 8,
+      "chars": 36,
+      "lines": 2,
+      "size": 26,
+      "vw": 6.7,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 2023,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Dòng áo thun Cotton Compact 220gsm",
+      "words": 6,
+      "chars": 34,
+      "lines": 2,
+      "size": 26,
+      "vw": 6.7,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.81,
+      "top": 2717,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Kiểm định 3 bước tại nhà máy Hải Phòng",
+      "words": 9,
+      "chars": 38,
+      "lines": 2,
+      "size": 26,
+      "vw": 6.7,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 4002,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Triết lý dệt may bền bỉ từ năm 2019",
+      "words": 9,
+      "chars": 35,
+      "lines": 2,
+      "size": 26,
+      "vw": 6.7,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 4534,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Cam kết bán hàng và hậu mãi",
+      "words": 7,
+      "chars": 27,
+      "lines": 2,
+      "size": 26,
+      "vw": 6.7,
+      "font": "Work Sans",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 4957,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Xưởng Dệt Bạch Đằng",
+      "words": 4,
+      "chars": 19,
+      "lines": 1,
+      "size": 22,
+      "vw": 5.6,
+      "font": "Work Sans",
+      "weight": 600,
+      "tracking": 0,
+      "leading": 1.55,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 5819,
+      "tag": "p",
+      "kind": "statement"
+     }
+    ],
+    "headingSummary": {
+     "count": 8,
+     "maxLines": 2,
+     "over2Lines": 0,
+     "statements": 1,
+     "centered": 0,
+     "medianWords": 7,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Work Sans",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      14,
+      15,
+      16,
+      18,
+      22,
+      26
+     ],
+     "sizeCount": 6,
+     "notLoaded": [],
+     "body": {
+      "font": "Work Sans",
+      "size": 16,
+      "leading": 1.55,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 8.2
+     },
+     "measureChars": 45,
+     "max": {
+      "size": 26,
+      "vw": 6.7,
+      "font": "Work Sans",
+      "text": "Cotton Compact 220gsm từ xưởng Hải Phòng"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0,
+     "centerShare": 0.01,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#f8f6f1",
+       "top": 0,
+       "hsl": {
+        "h": 43,
+        "s": 0.33,
+        "l": 0.96
+       }
+      },
+      {
+       "color": "#ffffff",
+       "top": 1983,
+       "hsl": {
+        "h": 0,
+        "s": 0,
+        "l": 1
+       }
+      },
+      {
+       "color": "#182026",
+       "top": 3962,
+       "hsl": {
+        "h": 206,
+        "s": 0.23,
+        "l": 0.12
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#182026",
+       "share": 0.57
+      },
+      {
+       "color": "#454b4f",
+       "share": 0.23
+      },
+      {
+       "color": "#f8f6f1",
+       "share": 0.14
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.04
+      },
+      {
+       "color": "#1d4ed8",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#1d4ed8",
+      "hsl": {
+       "h": 224,
+       "s": 0.76,
+       "l": 0.48
+      },
+      "fg": "#ffffff"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 4,
+     "inHero": 2,
+     "radius": 0,
+     "height": 49,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Giỏ hàng",
+      "Xem sản phẩm xưởng"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 3,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 1001
+      },
+      {
+       "count": 3,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 2980
+      }
+     ]
+    },
+    "heroMedia": [
+     {
+      "type": "img",
+      "ratio": 0.24
+     }
+    ],
+    "nav": {
+     "links": 5,
+     "fixed": true,
+     "height": 218,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "pageH": 6449,
+    "margins": {
+     "left": 16,
+     "right": 16
+    },
+    "sections": [
+     {
+      "sel": "header.site_siteHeader__igtvc",
+      "tag": "header",
+      "top": 0,
+      "height": 218,
+      "words": 17,
+      "media": 0,
+      "middle": 0,
+      "heading": null,
+      "left": 16,
+      "right": 38,
+      "textLeft": 16,
+      "textRight": 38,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": true
+     },
+     {
+      "sel": "section.site_heroSection___NAV9",
+      "tag": "section",
+      "top": 218,
+      "height": 562,
+      "words": 37,
+      "media": 1,
+      "middle": 0,
+      "heading": {
+       "text": "Cotton Compact 220gsm từ xưởng Hải Phòng",
+       "size": 26,
+       "tag": "h1"
+      },
+      "left": 16,
+      "right": 16,
+      "textLeft": 16,
+      "textRight": 25,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 780,
+      "height": 1204,
+      "words": 109,
+      "media": 4,
+      "middle": 0,
+      "heading": {
+       "text": "Sản phẩm chủ lực tại xưởng",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 16,
+      "right": 16,
+      "textLeft": 16,
+      "textRight": 17,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionSurface__3cC",
+      "tag": "section",
+      "top": 1983,
+      "height": 450,
+      "words": 49,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Ưu đãi riêng của Xưởng Dệt Bạch Đằng",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 16,
+      "right": 36,
+      "textLeft": 16,
+      "textRight": 36,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "div.site_collectionSplit__3JVrU",
+      "tag": "div",
+      "top": 2473,
+      "height": 482,
+      "words": 28,
+      "media": 1,
+      "middle": 0,
+      "heading": {
+       "text": "Dòng áo thun Cotton Compact 220gsm",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 16,
+      "right": 16,
+      "textLeft": 38,
+      "textRight": 45,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "div.site_productGrid__Jc6Ph.site_productGridThree__d_3_B",
+      "tag": "div",
+      "top": 2980,
+      "height": 943,
+      "words": 57,
+      "media": 3,
+      "middle": 16,
+      "heading": null,
+      "left": 16,
+      "right": 16,
+      "textLeft": 32,
+      "textRight": 34,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionBand__gVP1C",
+      "tag": "section",
+      "top": 3962,
+      "height": 532,
+      "words": 37,
+      "media": 1,
+      "middle": 0,
+      "heading": {
+       "text": "Kiểm định 3 bước tại nhà máy Hải Phòng",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 16,
+      "right": 16,
+      "textLeft": 16,
+      "textRight": 36,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 4494,
+      "height": 424,
+      "words": 78,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Triết lý dệt may bền bỉ từ năm 2019",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 16,
+      "right": 19,
+      "textLeft": 16,
+      "textRight": 19,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 4917,
+      "height": 866,
+      "words": 110,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Cam kết bán hàng và hậu mãi",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 16,
+      "right": 41,
+      "textLeft": 16,
+      "textRight": 41,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "footer.site_siteFooter__9HNzV",
+      "tag": "footer",
+      "top": 5783,
+      "height": 666,
+      "words": 53,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Xưởng Dệt Bạch Đằng",
+       "size": 22,
+       "tag": "p"
+      },
+      "left": 16,
+      "right": 38,
+      "textLeft": 16,
+      "textRight": 38,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Cotton Compact 220gsm từ xưởng Hải Phòng",
+      "size": 26,
+      "top": 238,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 16,
+      "n": 11
+     },
+     {
+      "x": 38,
+      "n": 11
+     }
+    ],
+    "leftBlocks": 22,
+    "bodySize": 16,
+    "stage": false,
+    "explains": true,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": null,
+   "consoleErrors": []
+  }
+ ],
+ "findings": [
+  {
+   "level": "WARN",
+   "id": "card-rows",
+   "width": 1440,
+   "message": "3 rows of identical boxed cards.",
+   "fix": "Vary the composition; not every section is a card grid.",
+   "alsoAt": [
+    768,
+    390
+   ]
+  },
+  {
+   "level": "WARN",
+   "id": "palette-cream",
+   "width": 1440,
+   "message": "Yellow-cream background (section #f8f6f1, text #f8f6f1).",
+   "fix": "Use the drawn palette. If you want warmth, take a low-chroma stone or bone, not a yellow cream.",
+   "alsoAt": [
+    768,
+    390
+   ]
+  },
+  {
+   "level": "WARN",
+   "id": "no-footage",
+   "width": 1440,
+   "message": "No video anywhere on the page.",
+   "fix": "Look for one honest clip with scripts/assets.mjs --video (the place, the material, the process) and use it as a muted loop with a poster frame. Defend its absence only if no clip fits the subject."
+  },
+  {
+   "level": "FAIL",
+   "id": "covered-text",
+   "width": 390,
+   "message": "Large text lies under another element at some scroll position: \"Dòng áo thun Cotton Compact 220gsm\" (screen 4, 50% hidden)",
+   "fix": "Nothing may sit on top of a headline or statement. Move the picture, shorten the pinned run, or raise the text above it (z-index) and give it a ground."
+  }
+ ],
+ "images": [
+  {
+   "viewport": "desktop",
+   "width": 1440,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run1/02-bd-home/desktop-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run1/02-bd-home/desktop-page-01.jpg",
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run1/02-bd-home/desktop-page-02.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "tablet",
+   "width": 768,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run1/02-bd-home/tablet-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run1/02-bd-home/tablet-page-01.jpg",
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run1/02-bd-home/tablet-page-02.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "mobile",
+   "width": 390,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run1/02-bd-home/mobile-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run1/02-bd-home/mobile-page-01.jpg"
+   ],
+   "film": []
+  }
+ ]
+}

@@ -10,7 +10,9 @@ import (
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/telemetry"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 // Resolver looks up user contact information (email + display name) via UserService.
@@ -81,4 +83,33 @@ func (c *Client) GetUserContact(ctx context.Context, userID string) (string, str
 		return "", "", nil
 	}
 	return strings.TrimSpace(resp.GetUser().GetEmail()), strings.TrimSpace(resp.GetUser().GetFullName()), nil
+}
+
+// SiteResolver resolves the public host of a shop's PUBLISHED site.
+type SiteResolver interface {
+	// GetSitePrimaryHost returns the primary host (e.g. "bach-dang.nexusmart.vn") of the shop's
+	// PUBLISHED site, or "" with a nil error when the shop has no published site.
+	GetSitePrimaryHost(ctx context.Context, shopID string) (string, error)
+}
+
+// GetSitePrimaryHost calls the public UserService.GetSiteByShop RPC (no JWT required).
+func (c *Client) GetSitePrimaryHost(ctx context.Context, shopID string) (string, error) {
+	if c == nil || c.client == nil || strings.TrimSpace(shopID) == "" {
+		return "", nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	resp, err := c.client.GetSiteByShop(callCtx, &userv1.GetSiteByShopRequest{ShopId: strings.TrimSpace(shopID)})
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return "", nil
+		}
+		return "", err
+	}
+	site := resp.GetSite()
+	if site == nil || site.GetStatus() != userv1.SiteStatus_SITE_STATUS_PUBLISHED {
+		return "", nil
+	}
+	return strings.TrimSpace(site.GetPrimaryHost()), nil
 }

@@ -21,6 +21,8 @@ type Config struct {
 	SMTPPort         int
 	SMTPFrom         string
 	UserGRPCAddr     string
+	SiteURLScheme    string // scheme of absolute order links to shop sites (https; dev http)
+	SiteURLPort      string // optional port appended to site hosts (dev only, e.g. 3300)
 	JWTSecret        string
 	OTLPEndpoint     string
 	OTLPInsecure     bool
@@ -46,6 +48,8 @@ func Load() Config {
 		SMTPPort:         env.EnvInt("SMTP_PORT", 1025),
 		SMTPFrom:         env.EnvString("SMTP_FROM", "no-reply@nexusmart.local"),
 		UserGRPCAddr:     env.EnvString("USER_GRPC_ADDR", "user:50051"),
+		SiteURLScheme:    env.EnvString("SITE_URL_SCHEME", "https"),
+		SiteURLPort:      env.EnvString("SITE_URL_PORT", ""),
 		JWTSecret:        env.EnvString("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me"),
 		OTLPEndpoint:     env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		OTLPInsecure:     env.EnvBool("OTEL_EXPORTER_OTLP_INSECURE", true),

@@ -2,12 +2,9 @@
 
 import React, { useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { getProductsByShop } from "@/data";
 import { Button, IconPlus, ProgressBar, StateView } from "@/components";
 import { api, ApiError } from "@/lib/api";
 import { formatDateVi, formatDiscountPercent, formatInt, formatVnd } from "@/lib/format";
-import { PromotionsBundleTab } from "./PromotionsBundleTab";
-import { PromotionsCampaignTab } from "./PromotionsCampaignTab";
 import { useSellerContext } from "./SellerShell";
 import type {
   GwFlashSale,
@@ -16,11 +13,11 @@ import type {
   GwSellerSku,
   GwSellerVoucher,
 } from "./sellerApiTypes";
-import { parseUiState, useSellerSession } from "./sellerStore";
+import { parseUiState } from "./sellerStore";
 import common from "./SellerCommon.module.css";
 import styles from "@/app/(seller)/seller/khuyen-mai/page.module.css";
 
-type PromoTab = "vouchers" | "flash" | "combo" | "campaign";
+type PromoTab = "vouchers" | "flash";
 
 function flashStatusOf(fs: GwFlashSale, nowMs: number): "ended" | "live" | "upcoming" {
   const start = fs.starts_at ? Date.parse(fs.starts_at) : 0;
@@ -58,21 +55,14 @@ export function SellerPromotionsClient({
   const searchParams = useSearchParams();
   const uiState = parseUiState(searchParams.get("state"));
   const initialTab = searchParams.get("tab") as PromoTab | null;
-  const { user, shop, presentationShopKey, showToast } = useSellerContext();
-  const mockSession = useSellerSession();
+  const { user, shop, showToast } = useSellerContext();
 
   const [vouchers, setVouchers] = useState<GwSellerVoucher[]>(initialVouchers);
   const [flashSales, setFlashSales] = useState<GwFlashSale[]>(initialFlashSales);
 
-  const [tab, setTab] = useState<PromoTab>(
-    initialTab && ["vouchers", "flash", "combo", "campaign"].includes(initialTab)
-      ? initialTab
-      : "vouchers"
-  );
+  const [tab, setTab] = useState<PromoTab>(initialTab === "flash" ? "flash" : "vouchers");
   const [showVoucherForm, setShowVoucherForm] = useState(false);
   const [showFlashForm, setShowFlashForm] = useState(false);
-  const [showBundleForm, setShowBundleForm] = useState(false);
-  const [showCampaignForm, setShowCampaignForm] = useState(false);
   const [selectedSlotId, setSelectedSlotId] = useState<string>("all");
 
   // Real voucher creation form
@@ -153,11 +143,6 @@ export function SellerPromotionsClient({
   const voucherQuotaTotal = vouchers.reduce((s, v) => s + v.quota, 0);
   const liveFlashCount = shopFlashRegs.filter((r) => r.slotStatus === "live").length;
 
-  const mockProductsForTab = useMemo(
-    () => getProductsByShop(presentationShopKey),
-    [presentationShopKey]
-  );
-
   const handleCreateVoucher = async (e: React.FormEvent) => {
     e.preventDefault();
     const code = vCode.trim().toUpperCase().replace(/\s+/g, "");
@@ -205,7 +190,7 @@ export function SellerPromotionsClient({
       setVCode("");
       setVName("");
       setShowVoucherForm(false);
-      showToast(`Đã phát hành mã voucher ${res.voucher.code} thành công.`);
+      showToast(`Đã phát hành mã voucher ${res.voucher.code} cho site gian hàng.`);
       router.refresh();
     } catch (err) {
       setVError(err instanceof ApiError ? err.message : "Không thể tạo voucher lúc này.");
@@ -281,7 +266,7 @@ export function SellerPromotionsClient({
           <h1 className={common.title}>Khuyến mãi gian hàng</h1>
           <p className={common.finding}>
             {shopShortName} · {formatInt(activeVoucherCount)} mã giảm giá đang hoạt động,{" "}
-            {formatInt(liveFlashCount)} biến thể đang mở bán Flash sale
+            {formatInt(liveFlashCount)} biến thể đang mở bán Flash sale trên site gian hàng
           </p>
         </div>
         <div className={common.headerActions}>
@@ -306,28 +291,6 @@ export function SellerPromotionsClient({
             >
               <IconPlus size={14} />
               <span>{showFlashForm ? "Đóng biểu mẫu" : "Đăng ký suất Flash sale"}</span>
-            </Button>
-          )}
-          {tab === "combo" && (
-            <Button
-              variant="ink"
-              size="sm"
-              shape="app"
-              onClick={() => setShowBundleForm((prev) => !prev)}
-            >
-              <IconPlus size={14} />
-              <span>{showBundleForm ? "Đóng biểu mẫu" : "Tạo gói Bundle mới"}</span>
-            </Button>
-          )}
-          {tab === "campaign" && (
-            <Button
-              variant="ink"
-              size="sm"
-              shape="app"
-              onClick={() => setShowCampaignForm((prev) => !prev)}
-            >
-              <IconPlus size={14} />
-              <span>{showCampaignForm ? "Đóng biểu mẫu" : "Đăng ký chiến dịch sàn"}</span>
             </Button>
           )}
         </div>
@@ -374,30 +337,6 @@ export function SellerPromotionsClient({
             >
               Đăng ký Flash sale ({formatInt(shopFlashRegs.length)})
             </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "combo"}
-              className={`${common.underlineTab} ${tab === "combo" ? common.underlineTabActive : ""}`}
-              onClick={() => setTab("combo")}
-            >
-              Combo & Mua kèm (
-              {formatInt(mockSession.combos.filter((c) => c.shopId === presentationShopKey).length)}
-              )
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "campaign"}
-              className={`${common.underlineTab} ${tab === "campaign" ? common.underlineTabActive : ""}`}
-              onClick={() => setTab("campaign")}
-            >
-              Chiến dịch & BST sàn (
-              {formatInt(
-                mockSession.campaignRegs.filter((r) => r.shopId === presentationShopKey).length
-              )}
-              )
-            </button>
           </div>
 
           {tab === "vouchers" && (
@@ -426,7 +365,9 @@ export function SellerPromotionsClient({
                   <span className={common.balanceValue}>
                     {formatInt(vouchers.reduce((s, v) => s + Math.max(0, v.remaining_quota), 0))}
                   </span>
-                  <span className={common.balanceCaption}>Đồng bộ thời gian thực từ máy chủ</span>
+                  <span className={common.balanceCaption}>
+                    Áp dụng trực tiếp trên site riêng của gian hàng
+                  </span>
                 </div>
               </section>
 
@@ -438,7 +379,9 @@ export function SellerPromotionsClient({
                 >
                   <div className={common.cardHeader}>
                     <h2 className={common.cardTitle}>Tạo mã giảm giá gian hàng mới</h2>
-                    <span className={common.cardMeta}>Áp dụng riêng cho gian hàng của bạn</span>
+                    <span className={common.cardMeta}>
+                      Chỉ áp dụng cho đơn đặt trên site riêng của bạn
+                    </span>
                   </div>
 
                   {vError && (
@@ -565,7 +508,7 @@ export function SellerPromotionsClient({
               <section className={common.card} aria-label="Danh sách voucher gian hàng">
                 <div className={common.cardHeader}>
                   <h2 className={common.cardTitle}>Danh sách voucher của {shopShortName}</h2>
-                  <span className={common.cardMeta}>Dữ liệu thật từ dịch vụ khuyến mãi</span>
+                  <span className={common.cardMeta}>Hiển thị tại mục Ưu đãi trên site riêng</span>
                 </div>
 
                 {vouchers.length === 0 ? (
@@ -715,7 +658,7 @@ export function SellerPromotionsClient({
                       Đăng ký biến thể SKU vào khung giờ Flash sale
                     </h2>
                     <span className={common.cardMeta}>
-                      Suất đăng ký sẽ chuyển quản trị phê duyệt
+                      Sau khi duyệt, suất Flash sale sẽ mở bán trực tiếp trên site gian hàng
                     </span>
                   </div>
 
@@ -846,7 +789,7 @@ export function SellerPromotionsClient({
                       <thead>
                         <tr>
                           <th>Khung giờ</th>
-                          <th>Sản phẩm & SKU</th>
+                          <th>Sản phẩm &amp; SKU</th>
                           <th className={common.numCol}>Giá Flash sale</th>
                           <th>Suất còn lại</th>
                           <th>Trạng thái</th>
@@ -895,38 +838,6 @@ export function SellerPromotionsClient({
                   </div>
                 )}
               </section>
-            </>
-          )}
-
-          {tab === "combo" && (
-            <>
-              <p className={common.cardMeta} style={{ padding: "0 var(--card-pad)" }}>
-                Dữ liệu mẫu cục bộ: cấu hình Combo & Mua kèm chưa nối dịch vụ khuyến mãi nâng cao.
-              </p>
-              <PromotionsBundleTab
-                shopId={presentationShopKey}
-                shopShortName={shopShortName}
-                shopProducts={mockProductsForTab}
-                showBundleForm={showBundleForm}
-                onCloseBundleForm={() => setShowBundleForm(false)}
-                onNotify={showToast}
-              />
-            </>
-          )}
-
-          {tab === "campaign" && (
-            <>
-              <p className={common.cardMeta} style={{ padding: "0 var(--card-pad)" }}>
-                Dữ liệu mẫu cục bộ: đăng ký chiến dịch cộng đồng và BST sàn chưa nối dịch vụ CMS.
-              </p>
-              <PromotionsCampaignTab
-                shopId={presentationShopKey}
-                shopShortName={shopShortName}
-                shopProducts={mockProductsForTab}
-                showCampaignForm={showCampaignForm}
-                onCloseCampaignForm={() => setShowCampaignForm(false)}
-                onNotify={showToast}
-              />
             </>
           )}
         </>

@@ -169,6 +169,8 @@ message ListOrdersRequest {
   int32 page_size = 6;
   // Optional sales channel filter: "" (all), "MARKETPLACE", or "STOREFRONT".
   string sales_channel = 7;
+  // Optional storefront filter: only orders placed on this shop's own site (STOREFRONT channel).
+  string storefront_shop_id = 8;
 }
 
 message ListOrdersResponse {

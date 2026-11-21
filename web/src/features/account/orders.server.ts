@@ -1,9 +1,12 @@
-// Server-only helpers for buyer orders & catalog enrichment.
-import type { Product, Shop } from "@/data";
+// Server-only helpers for buyer orders & catalog enrichment scoped to a shop's site host.
+import type { Product } from "@/data/products";
+import type { Shop } from "@/data/shops";
+import { buildCatalogLookups } from "@/lib/catalog-map";
 import { loadCatalogLookups } from "@/lib/catalog";
 import { GatewayError } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { ADMIN_ROLES, type Session } from "@/lib/server/session";
+import { assertInStorefront, belongsToStorefront } from "@/lib/server/storefront";
 import { mapGatewayOrder, type GwOrder, type OrderView } from "./orderView";
 
 export interface BuyerOrdersResult {
@@ -15,15 +18,20 @@ export interface BuyerOrdersResult {
   suggestedProducts: Product[];
 }
 
-export async function fetchBuyerOrders(
-  opts: {
-    status?: string;
-    salesChannel?: string;
-    page?: number;
-    pageSize?: number;
-    includeExtras?: boolean;
-  } = {}
-): Promise<BuyerOrdersResult> {
+export async function fetchBuyerOrders(opts: {
+  storefrontShopId: string;
+  status?: string;
+  page?: number;
+  pageSize?: number;
+  includeExtras?: boolean;
+  siteProducts?: Product[];
+  siteShop?: Shop | null;
+}): Promise<BuyerOrdersResult> {
+  const shopId = opts.storefrontShopId.trim();
+  if (!shopId) {
+    throw new GatewayError("not_found");
+  }
+
   const page = Math.max(1, Math.trunc(opts.page ?? 1));
   const pageSize = Math.max(1, Math.min(100, Math.trunc(opts.pageSize ?? 50)));
   const res = await gw<{
@@ -33,34 +41,45 @@ export async function fetchBuyerOrders(
     total?: number;
   }>("/api/v1/orders", {
     query: {
+      storefront_shop_id: shopId,
       status: opts.status || undefined,
-      sales_channel: opts.salesChannel || undefined,
       page,
       page_size: pageSize,
     },
   });
 
-  const rawItems = res.items ?? [];
+  // Defense in depth: strictly keep orders belonging to THIS site's storefront_shop_id.
+  const rawItems = (res.items ?? []).filter((o) => belongsToStorefront(o, shopId));
   if (rawItems.length === 0 && opts.includeExtras === false) {
     return {
       items: [],
       page: res.page ?? page,
       pageSize: res.page_size ?? pageSize,
-      total: res.total ?? 0,
-      shops: [],
-      suggestedProducts: [],
+      total: 0,
+      shops: opts.siteShop ? [opts.siteShop] : [],
+      suggestedProducts: (opts.siteProducts ?? []).slice(0, 4),
     };
   }
 
-  const catalog = await loadCatalogLookups();
-  const items = rawItems.map((o) => mapGatewayOrder(o, catalog.lookups));
+  const shops = opts.siteShop ? [opts.siteShop] : [];
+  const lookups =
+    opts.siteProducts && opts.siteProducts.length > 0
+      ? buildCatalogLookups(opts.siteProducts, shops)
+      : (await loadCatalogLookups()).lookups;
+
+  const items = rawItems.map((o) => mapGatewayOrder(o, lookups));
+  const total =
+    typeof res.total === "number" && rawItems.length === (res.items ?? []).length
+      ? res.total
+      : items.length;
+
   return {
     items,
     page: res.page ?? page,
     pageSize: res.page_size ?? pageSize,
-    total: res.total ?? items.length,
-    shops: catalog.shops,
-    suggestedProducts: catalog.products.slice(0, 4),
+    total,
+    shops,
+    suggestedProducts: (opts.siteProducts ?? []).slice(0, 4),
   };
 }
 
@@ -86,22 +105,29 @@ export interface BuyerOrderDetailResult {
 
 export async function fetchBuyerOrder(
   orderId: string,
-  session: Session
+  session: Session,
+  storefrontShopId: string,
+  opts: { siteProducts?: Product[]; siteShop?: Shop | null } = {}
 ): Promise<BuyerOrderDetailResult> {
   const cleanId = orderId.trim();
-  if (!cleanId) {
+  const shopId = storefrontShopId.trim();
+  if (!cleanId || !shopId) {
     throw new GatewayError("not_found");
   }
-  // Verify order existence and buyer ownership before loading catalog lookups
-  // so rejected 403/404 requests never trigger extra gateway fanout.
-  const res = await gw<{ order?: GwOrder | null }>(`/api/v1/orders/${encodeURIComponent(cleanId)}`);
-  const raw = assertBuyerOrderOwnership(res.order, session);
-  const catalog = await loadCatalogLookups();
-  const order = mapGatewayOrder(raw, catalog.lookups);
-  const shop = catalog.shops.find((s) => (s.backendId ?? s.id) === raw.shop_id);
-  const sameShop = shop ? catalog.products.filter((p) => p.shopId === shop.id) : [];
-  const others = catalog.products.filter((p) => !shop || p.shopId !== shop.id);
-  const suggestedProducts = [...sameShop, ...others].slice(0, 4);
 
-  return { order, suggestedProducts, shop };
+  // Verify order existence, buyer ownership AND storefront tenant match before extra work.
+  const res = await gw<{ order?: GwOrder | null }>(`/api/v1/orders/${encodeURIComponent(cleanId)}`);
+  const owned = assertBuyerOrderOwnership(res.order, session);
+  const raw = assertInStorefront(owned, shopId);
+
+  const shops = opts.siteShop ? [opts.siteShop] : [];
+  const lookups =
+    opts.siteProducts && opts.siteProducts.length > 0
+      ? buildCatalogLookups(opts.siteProducts, shops)
+      : (await loadCatalogLookups()).lookups;
+
+  const order = mapGatewayOrder(raw, lookups);
+  const suggestedProducts = (opts.siteProducts ?? []).slice(0, 4);
+
+  return { order, suggestedProducts, shop: opts.siteShop ?? undefined };
 }

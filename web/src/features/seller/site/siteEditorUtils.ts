@@ -17,7 +17,7 @@ export const ALLOWED_FONTS: ReadonlyArray<{
   label: string;
   hint: string;
 }> = [
-  { value: "work-sans", label: "Work Sans", hint: "Gọn nét, đồng bộ sàn NexusMart" },
+  { value: "work-sans", label: "Work Sans", hint: "Gọn nét, đồng bộ NexusMart" },
   { value: "be-vietnam-pro", label: "Be Vietnam Pro", hint: "Hỗ trợ dấu tiếng Việt sắc nét" },
   { value: "inter", label: "Inter", hint: "Hiện đại, dễ đọc cho mô tả sản phẩm" },
   { value: "ibm-plex-sans", label: "IBM Plex Sans", hint: "Chính xác, phong cách xưởng kỹ thuật" },

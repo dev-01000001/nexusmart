@@ -425,6 +425,33 @@ func TestE2E_SitesBackend_ValidationLifecycleRBACAndAudit(t *testing.T) {
 			t.Fatalf("draft v2 leaked to public by-host before publish! config=%s", string(pubStillV1.Site.Config))
 		}
 
+		// Public site directory (GET /api/v1/sites, no JWT): lists siteA with contract schema,
+		// caps page_size at 48, and never leaks unpublished drafts.
+		dirResp := env.mustDoJSON(t, http.MethodGet, "/api/v1/sites?page=1&page_size=500", "", nil, nil, http.StatusOK)
+		var dirOut PublishedSitesDirectoryResponse
+		if err := DecodeJSON(dirResp, &dirOut); err != nil {
+			t.Fatalf("decode public sites directory: %v", err)
+		}
+		if dirOut.Page != 1 || dirOut.PageSize != 48 || dirOut.Total < 1 {
+			t.Fatalf("unexpected directory pagination: page=%d size=%d total=%d", dirOut.Page, dirOut.PageSize, dirOut.Total)
+		}
+		var foundCard *PublishedSiteSummaryDTO
+		for i := range dirOut.Sites {
+			if dirOut.Sites[i].SiteID == siteA.ID {
+				foundCard = &dirOut.Sites[i]
+				break
+			}
+		}
+		if foundCard == nil {
+			t.Fatalf("published site %s (%s) missing from GET /api/v1/sites", siteA.ID, subA)
+		}
+		if foundCard.ShopID != seller1.ShopID || foundCard.Subdomain != subA || foundCard.PrimaryHost != hostA ||
+			foundCard.ShopName == "" || foundCard.LogoURL != "/banners/vietnam-workshop.jpg" ||
+			foundCard.CoverURL != "https://sandbox.nexusmart.local/banners/site-hero.jpg" ||
+			foundCard.Tagline != "Cửa hàng chính hãng vận hành trên NexusMart" {
+			t.Fatalf("unexpected public directory card: %+v", *foundCard)
+		}
+
 		// Publish v2 -> public by-host now returns v2.
 		pub2Resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/publish", seller1.AccessToken, nil, map[string]any{
 			"note": "E2E publish v2",
@@ -610,6 +637,17 @@ func TestE2E_SitesBackend_ValidationLifecycleRBACAndAudit(t *testing.T) {
 
 		env.mustDoJSON(t, http.MethodGet, "/api/v1/sites/by-host?host="+url.QueryEscape(hostA), "", nil, nil, http.StatusNotFound)
 		env.mustDoJSON(t, http.MethodGet, "/api/v1/sites/by-shop/"+url.PathEscape(seller1.ShopID), "", nil, nil, http.StatusNotFound)
+		// Suspended site must NOT appear in the public directory GET /api/v1/sites.
+		dirSuspResp := env.mustDoJSON(t, http.MethodGet, "/api/v1/sites?page=1&page_size=48", "", nil, nil, http.StatusOK)
+		var dirSusp PublishedSitesDirectoryResponse
+		if err := DecodeJSON(dirSuspResp, &dirSusp); err != nil {
+			t.Fatalf("decode directory while suspended: %v", err)
+		}
+		for _, card := range dirSusp.Sites {
+			if card.SiteID == siteA.ID {
+				t.Fatalf("suspended site %s must not appear in GET /api/v1/sites", siteA.ID)
+			}
+		}
 		env.mustDoJSON(t, http.MethodPost, "/api/v1/seller/site/publish", seller1.AccessToken, nil, map[string]any{
 			"note": "publish while suspended",
 		}, http.StatusConflict)
@@ -665,5 +703,14 @@ func TestE2E_SitesBackend_ValidationLifecycleRBACAndAudit(t *testing.T) {
 			}
 		}
 		t.Logf("Site %s audit trail verified: %v", siteA.ID, seenActions)
+
+		// Suspend throwaway E2E site after all assertions so repeated E2E runs do not accumulate
+		// synthetic entries in the public platform directory.
+		t.Cleanup(func() {
+			_, _ = env.client.DoJSON(context.Background(), http.MethodPost, "/api/v1/admin/sites/"+url.PathEscape(siteA.ID)+"/suspend", adminTok, nil, map[string]any{
+				"suspend": true,
+				"reason":  "e2e cleanup",
+			})
+		})
 	})
 }

@@ -2,6 +2,7 @@ import { GatewayError } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { apiRoute, readJson } from "@/lib/server/http";
 import { assertSession } from "@/lib/server/session";
+import { requireRequestSite } from "@/lib/server/sites";
 import type { GwAddress } from "@/features/commerce/types";
 
 interface CreateAddressBody {
@@ -15,7 +16,8 @@ interface CreateAddressBody {
   is_default?: boolean;
 }
 
-export const GET = apiRoute(async () => {
+export const GET = apiRoute(async (req) => {
+  await requireRequestSite(req);
   await assertSession();
   const data = await gw<{ addresses: GwAddress[] }>("/api/v1/users/me/addresses");
   return Response.json(
@@ -26,6 +28,7 @@ export const GET = apiRoute(async () => {
 
 export const POST = apiRoute(
   async (req) => {
+    await requireRequestSite(req);
     await assertSession();
     const body = await readJson<CreateAddressBody>(req);
     const recipientName = (body.recipient_name ?? "").trim();

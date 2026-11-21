@@ -1,41 +1,43 @@
 import React from "react";
 import Link from "next/link";
-import { buildStorefrontCartUrl } from "@/lib/site/host";
 import { buildSiteThemeVars, isDarkHex, sanitizeSafeUrl } from "@/lib/site/theme";
 import type { SiteConfig } from "@/lib/site/types";
-import { SiteMotion } from "./SiteMotion";
+import { SiteHeaderActions, SiteMotion, SiteNav, SiteToast } from "./SiteChrome";
+import { SITE_NAV_ITEMS } from "./siteNav";
 import styles from "./site.module.css";
 
 export interface SiteShellProps {
   config: SiteConfig;
   shopName: string;
-  shopId?: string;
-  siteHost?: string;
-  activeNav?: "home" | "products" | "policies" | "about";
-  marketplaceOrigin: string;
-  /** Set true inside Seller draft preview (`/seller/site/xem-truoc`). */
+  /** Origin of the NexusMart root host (footer "Vận hành trên NexusMart" link). */
+  platformOrigin: string;
+  /** Set true inside Seller draft preview (`/seller/site/xem-truoc`): no live links or actions. */
   previewMode?: boolean;
   children: React.ReactNode;
 }
 
-const NAV_ITEMS: ReadonlyArray<{
-  key: "home" | "products" | "policies" | "about";
-  label: string;
-  href: string;
-}> = [
-  { key: "home", label: "Trang chủ", href: "/" },
-  { key: "products", label: "Sản phẩm", href: "/san-pham" },
-  { key: "policies", label: "Chính sách", href: "/chinh-sach" },
-  { key: "about", label: "Giới thiệu", href: "/gioi-thieu" },
+const FOOTER_LINKS: ReadonlyArray<{ label: string; href: string }> = [
+  ...SITE_NAV_ITEMS.map(({ label, href }) => ({ label, href })),
+  { label: "Chính sách mua hàng", href: "/chinh-sach" },
 ];
 
+const BUYER_LINKS: ReadonlyArray<{ label: string; href: string }> = [
+  { label: "Giỏ hàng", href: "/gio-hang" },
+  { label: "Đơn hàng của tôi", href: "/don-hang" },
+  { label: "Tra cứu đơn hàng", href: "/tra-cuu-don-hang" },
+  { label: "Tài khoản", href: "/tai-khoan" },
+];
+
+/**
+ * Layout chrome of one shop's site: themed header (nav, search, account, cart), main, footer.
+ * The shop theme is applied as `--site-*` custom properties; `.siteRoot` also remaps the global
+ * tokens (`--ink`, `--accent`, `--surface-white`…) to them so shared cart/checkout/account
+ * components rendered inside follow the shop's palette and typeface.
+ */
 export function SiteShell({
   config,
   shopName,
-  shopId,
-  siteHost,
-  activeNav = "home",
-  marketplaceOrigin,
+  platformOrigin,
   previewMode = false,
   children,
 }: SiteShellProps) {
@@ -47,14 +49,39 @@ export function SiteShell({
   const isDark = isDarkHex(themeVars["--site-bg"]);
   const monogram = brandName.slice(0, 1).toUpperCase();
 
-  const cartHandoffHref =
-    !previewMode && shopId
-      ? buildStorefrontCartUrl({
-          marketplaceOrigin,
-          shopId,
-          siteHost: siteHost || "",
-        })
-      : `${marketplaceOrigin.replace(/\/+$/, "")}/gio-hang`;
+  const brandInner = (
+    <>
+      {logoUrl ? (
+        <span className={styles.brandLogoWrap}>
+          <img
+            src={logoUrl}
+            alt={`Logo ${brandName}`}
+            width={40}
+            height={40}
+            className={styles.brandLogoImg}
+          />
+        </span>
+      ) : (
+        <span className={styles.brandMonogram} aria-hidden="true">
+          {monogram}
+        </span>
+      )}
+      <span className={styles.brandText}>
+        <span className={styles.brandName}>{brandName}</span>
+      </span>
+    </>
+  );
+
+  const footerLink = (item: { label: string; href: string }) =>
+    previewMode ? (
+      <span key={item.href} className={styles.footerLink}>
+        {item.label}
+      </span>
+    ) : (
+      <Link key={item.href} href={item.href} className={styles.footerLink}>
+        {item.label}
+      </Link>
+    );
 
   return (
     <div
@@ -64,84 +91,19 @@ export function SiteShell({
       data-site-preview={previewMode ? "true" : "false"}
       style={themeVars as unknown as React.CSSProperties}
     >
-      <SiteMotion depKey={`${activeNav}-${config.sections.length}`} />
+      <SiteMotion depKey={config.sections.length} />
 
       <header className={styles.siteHeader}>
         <div className={styles.headerInner}>
           {previewMode ? (
-            <span className={styles.brandLink}>
-              {logoUrl ? (
-                <span className={styles.brandLogoWrap}>
-                  <img
-                    src={logoUrl}
-                    alt={`Logo ${brandName}`}
-                    width={40}
-                    height={40}
-                    className={styles.brandLogoImg}
-                  />
-                </span>
-              ) : (
-                <span className={styles.brandMonogram} aria-hidden="true">
-                  {monogram}
-                </span>
-              )}
-              <span className={styles.brandText}>
-                <span className={styles.brandName}>{brandName}</span>
-              </span>
-            </span>
+            <span className={styles.brandLink}>{brandInner}</span>
           ) : (
             <Link href="/" className={styles.brandLink}>
-              {logoUrl ? (
-                <span className={styles.brandLogoWrap}>
-                  <img
-                    src={logoUrl}
-                    alt={`Logo ${brandName}`}
-                    width={40}
-                    height={40}
-                    className={styles.brandLogoImg}
-                  />
-                </span>
-              ) : (
-                <span className={styles.brandMonogram} aria-hidden="true">
-                  {monogram}
-                </span>
-              )}
-              <span className={styles.brandText}>
-                <span className={styles.brandName}>{brandName}</span>
-              </span>
+              {brandInner}
             </Link>
           )}
-
-          <nav className={styles.headerNav} aria-label="Điều hướng cửa hàng">
-            {NAV_ITEMS.map((item) => {
-              const active = activeNav === item.key;
-              if (previewMode) {
-                return (
-                  <span
-                    key={item.key}
-                    className={`${styles.navLink} ${active ? styles.navLinkActive : ""}`}
-                  >
-                    {item.label}
-                  </span>
-                );
-              }
-              return (
-                <Link
-                  key={item.key}
-                  href={item.href}
-                  className={`${styles.navLink} ${active ? styles.navLinkActive : ""}`}
-                >
-                  {item.label}
-                </Link>
-              );
-            })}
-
-            {!previewMode && (
-              <a href={cartHandoffHref} className={styles.headerAction}>
-                Giỏ hàng
-              </a>
-            )}
-          </nav>
+          <SiteNav previewMode={previewMode} />
+          {!previewMode && <SiteHeaderActions />}
         </div>
       </header>
 
@@ -157,30 +119,13 @@ export function SiteShell({
           </div>
 
           <div className={styles.footerNavCol} data-reveal="">
-            <p className={styles.footerColTitle}>Khám phá cửa hàng</p>
-            {NAV_ITEMS.map((item) =>
-              previewMode ? (
-                <span key={item.key} className={styles.footerLink}>
-                  {item.label}
-                </span>
-              ) : (
-                <Link key={item.key} href={item.href} className={styles.footerLink}>
-                  {item.label}
-                </Link>
-              )
-            )}
+            <p className={styles.footerColTitle}>Cửa hàng</p>
+            {FOOTER_LINKS.map(footerLink)}
           </div>
 
           <div className={styles.footerMetaCol} data-reveal="">
-            <p className={styles.footerColTitle}>Mua sắm an tâm</p>
-            <p className={styles.footerTagline}>
-              Đơn hàng và thanh toán được bảo vệ tập trung trên nền tảng NexusMart.
-            </p>
-            {!previewMode && (
-              <a href={cartHandoffHref} className={styles.footerLink}>
-                Mở giỏ hàng của {brandName}
-              </a>
-            )}
+            <p className={styles.footerColTitle}>Mua hàng</p>
+            {BUYER_LINKS.map(footerLink)}
           </div>
         </div>
 
@@ -188,12 +133,18 @@ export function SiteShell({
           <span>© {brandName}</span>
           <span>
             Vận hành trên{" "}
-            <a href={marketplaceOrigin} className={styles.poweredByLink}>
-              NexusMart
-            </a>
+            {previewMode ? (
+              "NexusMart"
+            ) : (
+              <a href={platformOrigin} className={styles.poweredByLink}>
+                NexusMart
+              </a>
+            )}
           </span>
         </div>
       </footer>
+
+      {!previewMode && <SiteToast />}
     </div>
   );
 }

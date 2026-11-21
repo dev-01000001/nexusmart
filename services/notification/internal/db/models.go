@@ -45,11 +45,12 @@ type NotificationPreference struct {
 }
 
 type OrderParticipant struct {
-	OrderID   string
-	BuyerID   string
-	ShopID    string
-	OrderCode string
-	UpdatedAt pgtype.Timestamptz
+	OrderID          string
+	BuyerID          string
+	ShopID           string
+	OrderCode        string
+	UpdatedAt        pgtype.Timestamptz
+	StorefrontShopID string
 }
 
 type ProcessedEvent struct {

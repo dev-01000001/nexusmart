@@ -23,6 +23,17 @@ Ngoại lệ Claude Code được tự sửa: tài liệu điều phối (`CLAUD
 - Nhiều việc song song: nhiều tiến trình agy, hoặc `/swarm <task>` của agy.
 - Agent agy hiện có: `coolmate-researcher` (nghiên cứu tính năng Coolmate, ghi vào `.taste-skill/research/`).
 
+## Chạy nhiều swarm song song
+
+Chủ dự án yêu cầu (2026-11-21): tối ưu swarm, chạy nhiều swarm cùng lúc để tiết kiệm thời gian.
+- Mỗi giai đoạn chia thành 2–4 swarm agy chạy cùng lúc, mỗi swarm một tiến trình nền riêng và một brief riêng trong `.agents/briefs/`.
+- Mỗi swarm sở hữu một tập thư mục không giao nhau (ví dụ: `services/` + `proto/`; `web/src/app/(site)` + BFF; seller + admin; `tests/` + `tools/seed`). Brief ghi rõ thư mục được sửa và thư mục cấm.
+- Hợp đồng dùng chung (proto, REST, kiểu dữ liệu) do Claude Code chốt trong brief trước khi khởi chạy, để các swarm không chờ nhau.
+- Chỉ một swarm (QA) được chạy `make e2e`, `make seed`, `make e2e-web` và rebuild container: stack compose và giới hạn tần suất là tài nguyên dùng chung. Các swarm khác chỉ chạy lint, unit test và build với `NEXT_DIST_DIR` riêng.
+- Không chèn swarm mới vào các file mà một swarm đang chạy sở hữu. Không kill swarm đang chạy dở để chia lại.
+- Claude Code chạy lại gate và review song song với swarm sửa lỗi, không chờ tuần tự.
+- Làm đến đâu commit và push đến đó (chủ dự án yêu cầu 2026-11-21): Claude Code commit checkpoint `wip(<giai đoạn>):` định kỳ khi swarm đang chạy, và commit sạch sau khi nghiệm thu. Push lên nhánh làm việc, không push `main` khi chưa hỏi. Worker agy không commit.
+
 ## Model của agy
 
 - Luôn dùng model mạnh nhất với mức suy nghĩ cao nhất, không cần tiết kiệm credit.

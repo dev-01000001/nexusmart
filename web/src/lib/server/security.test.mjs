@@ -23,6 +23,17 @@ import {
   setAuthCookies,
 } from "./tokens.ts";
 import { toAddressItem, toGatewayAddressBody } from "./address.ts";
+import { parsePublishedSiteHost } from "./siteLookup.ts";
+import {
+  assertInStorefront,
+  assertPaymentInStorefront,
+  belongsToStorefront,
+  cartHasSku,
+  hasPlatformPromoInput,
+  isSiteShopVoucher,
+  resolveSiteShopVoucherMap,
+  scopeCartToShop,
+} from "./storefront.ts";
 
 function makeReq(url, headers = {}, method = "POST") {
   return new Request(url, { method, headers });
@@ -35,17 +46,63 @@ test("assertSameOrigin accepts matching same-origin Origin header", () => {
     "sec-fetch-site": "same-origin",
   });
   assert.doesNotThrow(() => assertSameOrigin(req));
+
+  const siteReq = makeReq("http://bach-dang.nexusmart.localhost:3300/api/cart/items", {
+    host: "bach-dang.nexusmart.localhost:3300",
+    origin: "http://bach-dang.nexusmart.localhost:3300",
+    "sec-fetch-site": "same-origin",
+  });
+  assert.doesNotThrow(() => assertSameOrigin(siteReq));
+
+  // Explicit default port (:80 on http) matches normalized Origin without port.
+  const defaultPortReq = makeReq("http://bach-dang.nexusmart.localhost/api/checkout", {
+    host: "bach-dang.nexusmart.localhost:80",
+    origin: "http://bach-dang.nexusmart.localhost",
+  });
+  assert.doesNotThrow(() => assertSameOrigin(defaultPortReq));
 });
 
-test("assertSameOrigin rejects foreign Origin with 403 BAD_ORIGIN", () => {
-  const req = makeReq("http://127.0.0.1:3201/api/auth/login", {
-    host: "127.0.0.1:3201",
-    origin: "https://evil.example",
-  });
-  assert.throws(
-    () => assertSameOrigin(req),
-    (err) => err instanceof GatewayError && err.status === 403 && err.code === "BAD_ORIGIN"
-  );
+test("assertSameOrigin rejects cross-site, root-to-site, site-to-root, and foreign Origin with 403 BAD_ORIGIN", () => {
+  const cases = [
+    // Foreign origin
+    {
+      url: "http://127.0.0.1:3201/api/auth/login",
+      host: "127.0.0.1:3201",
+      origin: "https://evil.example",
+    },
+    // Site B calling Site A
+    {
+      url: "http://bach-dang.nexusmart.localhost:3300/api/cart/items",
+      host: "bach-dang.nexusmart.localhost:3300",
+      origin: "http://sai-gon.nexusmart.localhost:3300",
+    },
+    // Root host calling Site A
+    {
+      url: "http://bach-dang.nexusmart.localhost:3300/api/checkout",
+      host: "bach-dang.nexusmart.localhost:3300",
+      origin: "http://nexusmart.localhost:3300",
+    },
+    // Site A calling Root host
+    {
+      url: "http://nexusmart.localhost:3300/api/seller/site/publish",
+      host: "nexusmart.localhost:3300",
+      origin: "http://bach-dang.nexusmart.localhost:3300",
+    },
+    // Port mismatch on same hostname
+    {
+      url: "http://bach-dang.nexusmart.localhost:3300/api/checkout",
+      host: "bach-dang.nexusmart.localhost:3300",
+      origin: "http://bach-dang.nexusmart.localhost:3400",
+    },
+  ];
+  for (const c of cases) {
+    const req = makeReq(c.url, { host: c.host, origin: c.origin });
+    assert.throws(
+      () => assertSameOrigin(req),
+      (err) => err instanceof GatewayError && err.status === 403 && err.code === "BAD_ORIGIN",
+      `expected 403 BAD_ORIGIN for origin=${c.origin} -> host=${c.host}`
+    );
+  }
 });
 
 test("assertSameOrigin rejects Origin: null", () => {
@@ -95,15 +152,15 @@ test("assertSameOrigin rejects protocol mismatch between Origin and request", ()
 });
 
 test("assertSameOrigin accepts same-origin Referer only when Origin header is absent", () => {
-  const okReq = makeReq("http://127.0.0.1:3201/api/auth/logout", {
-    host: "127.0.0.1:3201",
-    referer: "http://127.0.0.1:3201/tai-khoan",
+  const okReq = makeReq("http://bach-dang.nexusmart.localhost:3300/api/auth/logout", {
+    host: "bach-dang.nexusmart.localhost:3300",
+    referer: "http://bach-dang.nexusmart.localhost:3300/tai-khoan",
   });
   assert.doesNotThrow(() => assertSameOrigin(okReq));
 
-  const badReq = makeReq("http://127.0.0.1:3201/api/auth/logout", {
-    host: "127.0.0.1:3201",
-    referer: "https://evil.example/phish",
+  const badReq = makeReq("http://bach-dang.nexusmart.localhost:3300/api/auth/logout", {
+    host: "bach-dang.nexusmart.localhost:3300",
+    referer: "http://sai-gon.nexusmart.localhost:3300/tai-khoan",
   });
   assert.throws(
     () => assertSameOrigin(badReq),
@@ -154,11 +211,13 @@ test("cookie configuration is HttpOnly, SameSite=Lax, host-only (no Domain)", ()
   assert.equal("domain" in written[0].options, false);
   assert.equal(written[1].name, REFRESH_COOKIE);
   assert.equal(written[1].options.httpOnly, true);
+  assert.equal("domain" in written[1].options, false);
 
   written.length = 0;
   clearAuthCookies(jar);
   assert.equal(written[0].options.maxAge, 0);
   assert.equal(written[1].options.maxAge, 0);
+  assert.equal("domain" in written[0].options, false);
 });
 
 test("accessExpiresSoon detects missing, malformed, expired, and valid JWTs", () => {
@@ -263,16 +322,16 @@ test("assertSameOrigin honors x-forwarded-host/proto ONLY when TRUST_PROXY_HEADE
 
     const proxiedReq = makeReq("http://web:3000/api/checkout", {
       host: "web:3000",
-      "x-forwarded-host": "nexusmart.vn, internal-lb",
+      "x-forwarded-host": "bach-dang.nexusmart.vn, internal-lb",
       "x-forwarded-proto": "https, http",
-      origin: "https://nexusmart.vn",
+      origin: "https://bach-dang.nexusmart.vn",
     });
     assert.doesNotThrow(() => assertSameOrigin(proxiedReq));
 
     // When proxy headers are trusted, the internal container origin no longer matches.
     const internalOriginReq = makeReq("http://web:3000/api/checkout", {
       host: "web:3000",
-      "x-forwarded-host": "nexusmart.vn",
+      "x-forwarded-host": "bach-dang.nexusmart.vn",
       "x-forwarded-proto": "https",
       origin: "http://web:3000",
     });
@@ -286,14 +345,14 @@ test("assertSameOrigin honors x-forwarded-host/proto ONLY when TRUST_PROXY_HEADE
   }
 });
 
-test("buildLoginRedirectUrl and proxy helpers ignore x-forwarded-* by default and honor when TRUST_PROXY_HEADERS=true", () => {
+test("buildLoginRedirectUrl keeps site host and honors TRUST_PROXY_HEADERS only when enabled", () => {
   const prev = process.env.TRUST_PROXY_HEADERS;
   try {
     delete process.env.TRUST_PROXY_HEADERS;
     const req = makeReq(
-      "http://localhost:3300/seller/don-hang?status=CONFIRMED",
+      "http://bach-dang.nexusmart.localhost:3300/thanh-toan/cho/pay-1?tab=qr",
       {
-        host: "localhost:3300",
+        host: "bach-dang.nexusmart.localhost:3300",
         "x-forwarded-host": "evil.example",
         "x-forwarded-proto": "https",
         "x-forwarded-for": "203.0.113.9, 10.0.0.1",
@@ -302,12 +361,12 @@ test("buildLoginRedirectUrl and proxy helpers ignore x-forwarded-* by default an
       "GET"
     );
 
-    assert.equal(resolveRequestHost(req.headers, "fallback"), "localhost:3300");
+    assert.equal(resolveRequestHost(req.headers, "fallback"), "bach-dang.nexusmart.localhost:3300");
     assert.equal(resolveRequestProto(req.headers, req.url), "http");
     assert.equal(resolveForwardedClientIp(req.headers), null);
     assert.equal(
       buildLoginRedirectUrl(req).toString(),
-      "http://localhost:3300/dang-nhap?next=%2Fseller%2Fdon-hang%3Fstatus%3DCONFIRMED"
+      "http://bach-dang.nexusmart.localhost:3300/dang-nhap?next=%2Fthanh-toan%2Fcho%2Fpay-1%3Ftab%3Dqr"
     );
 
     process.env.TRUST_PROXY_HEADERS = "true";
@@ -316,7 +375,7 @@ test("buildLoginRedirectUrl and proxy helpers ignore x-forwarded-* by default an
     assert.equal(resolveForwardedClientIp(req.headers), "203.0.113.9");
     assert.equal(
       buildLoginRedirectUrl(req).toString(),
-      "https://evil.example/dang-nhap?next=%2Fseller%2Fdon-hang%3Fstatus%3DCONFIRMED"
+      "https://evil.example/dang-nhap?next=%2Fthanh-toan%2Fcho%2Fpay-1%3Ftab%3Dqr"
     );
 
     // Invalid x-forwarded-proto is rejected even when TRUST_PROXY_HEADERS=true.
@@ -329,4 +388,142 @@ test("buildLoginRedirectUrl and proxy helpers ignore x-forwarded-* by default an
     if (prev === undefined) delete process.env.TRUST_PROXY_HEADERS;
     else process.env.TRUST_PROXY_HEADERS = prev;
   }
+});
+
+test("parsePublishedSiteHost accepts PUBLISHED + ACTIVE sites and rejects DRAFT/SUSPENDED/inactive", () => {
+  const ok = parsePublishedSiteHost(
+    {
+      site: {
+        id: "site-1",
+        shop_id: "shop-a",
+        status: "PUBLISHED",
+        primary_host: "Bach-Dang.NexusMart.Localhost",
+      },
+      shop: { status: "ACTIVE" },
+    },
+    "bach-dang.nexusmart.localhost"
+  );
+  assert.deepEqual(ok, {
+    status: "found",
+    siteId: "site-1",
+    shopId: "shop-a",
+    primaryHost: "bach-dang.nexusmart.localhost",
+  });
+
+  for (const bad of [
+    null,
+    { site: { id: "s1", shop_id: "shop-a", status: "DRAFT" }, shop: { status: "ACTIVE" } },
+    { site: { id: "s1", shop_id: "shop-a", status: "SUSPENDED" }, shop: { status: "ACTIVE" } },
+    { site: { id: "s1", shop_id: "shop-a", status: "PUBLISHED" }, shop: { status: "SUSPENDED" } },
+    { site: { id: "", shop_id: "shop-a", status: "PUBLISHED" }, shop: { status: "ACTIVE" } },
+  ]) {
+    assert.deepEqual(parsePublishedSiteHost(bad, "bach-dang.nexusmart.localhost"), {
+      status: "not_found",
+    });
+  }
+});
+
+test("storefront tenant scoping isolates cart, orders, payments, and vouchers to the site's shop", () => {
+  const cart = {
+    user_id: "u-1",
+    shop_groups: [
+      {
+        shop_id: "shop-a",
+        shop_name: "Shop A",
+        subtotal_vnd: 200000,
+        total_weight_grams: 400,
+        items: [
+          { sku_id: "sku-a1", shop_id: "shop-a", price_vnd: 100000, quantity: 2, weight_grams: 200 },
+        ],
+      },
+      {
+        shop_id: "shop-b",
+        shop_name: "Shop B",
+        subtotal_vnd: 350000,
+        total_weight_grams: 500,
+        items: [
+          { sku_id: "sku-b1", shop_id: "shop-b", price_vnd: 350000, quantity: 1, weight_grams: 500 },
+        ],
+      },
+    ],
+    total_items: 3,
+    total_vnd: 550000,
+  };
+  const scoped = scopeCartToShop(cart, "shop-a");
+  assert.equal(scoped.shop_groups.length, 1);
+  assert.equal(scoped.total_items, 2);
+  assert.equal(scoped.total_vnd, 200000);
+  assert.equal(cartHasSku(scoped, "sku-a1"), true);
+  assert.equal(cartHasSku(scoped, "sku-b1"), false);
+
+  assert.equal(
+    belongsToStorefront({ sales_channel: "STOREFRONT", storefront_shop_id: "shop-a" }, "shop-a"),
+    true
+  );
+  assert.equal(
+    belongsToStorefront({ sales_channel: "STOREFRONT", storefront_shop_id: "shop-b" }, "shop-a"),
+    false
+  );
+  assert.equal(
+    belongsToStorefront({ sales_channel: "OTHER", storefront_shop_id: "shop-a" }, "shop-a"),
+    false
+  );
+
+  // Cross-site order/payment throws 404 (not 403)
+  assert.throws(
+    () => assertInStorefront({ sales_channel: "STOREFRONT", storefront_shop_id: "shop-b" }, "shop-a"),
+    (err) => err instanceof GatewayError && err.status === 404
+  );
+  assert.throws(
+    () =>
+      assertPaymentInStorefront(
+        {
+          payment_id: "p1",
+          user_id: "u-other",
+          sales_channel: "STOREFRONT",
+          storefront_shop_id: "shop-a",
+        },
+        "shop-a",
+        "u-1"
+      ),
+    (err) => err instanceof GatewayError && err.status === 404
+  );
+  assert.equal(
+    assertPaymentInStorefront(
+      {
+        payment_id: "p1",
+        user_id: "u-1",
+        sales_channel: "STOREFRONT",
+        storefront_shop_id: "shop-a",
+      },
+      "shop-a",
+      "u-1"
+    ).payment_id,
+    "p1"
+  );
+
+  assert.equal(isSiteShopVoucher({ scope: "SHOP", shop_id: "shop-a" }, "shop-a"), true);
+  assert.equal(isSiteShopVoucher({ scope: "SHOP", shop_id: "shop-b" }, "shop-a"), false);
+  assert.equal(isSiteShopVoucher({ scope: "PLATFORM", shop_id: "" }, "shop-a"), false);
+  assert.equal(isSiteShopVoucher({ scope: "FREESHIP", shop_id: "" }, "shop-a"), false);
+
+  assert.equal(hasPlatformPromoInput({ platform_voucher_id: "v-plat" }), true);
+  assert.equal(hasPlatformPromoInput({ freeship_voucher_id: "v-free" }), true);
+  assert.equal(hasPlatformPromoInput({ coins_to_use: 1000 }), true);
+  assert.equal(
+    hasPlatformPromoInput({ platform_voucher_id: "", freeship_voucher_id: "", coins_to_use: 0 }),
+    false
+  );
+
+  assert.deepEqual(resolveSiteShopVoucherMap({ shop_voucher_id: "v-a" }, "shop-a"), {
+    "shop-a": "v-a",
+  });
+  assert.deepEqual(
+    resolveSiteShopVoucherMap({ shop_voucher_ids: { "shop-a": "v-a" } }, "shop-a"),
+    { "shop-a": "v-a" }
+  );
+  assert.throws(
+    () => resolveSiteShopVoucherMap({ shop_voucher_ids: { "shop-b": "v-b" } }, "shop-a"),
+    (err) => err instanceof GatewayError && err.status === 400 && err.code === "FOREIGN_SHOP_VOUCHER"
+  );
 });

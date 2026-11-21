@@ -253,3 +253,33 @@ DO UPDATE SET
     verified_at = NOW(),
     updated_at = NOW()
 RETURNING *;
+
+-- name: ListPublishedSites :many
+-- Public directory: only PUBLISHED sites of ACTIVE shops, fields from the published snapshot only.
+SELECT
+    s.id,
+    s.shop_id,
+    sh.name AS shop_name,
+    s.subdomain,
+    COALESCE(pd.host, '') AS primary_host,
+    COALESCE(v.config->'theme'->>'logo_url', '')::text AS logo_url,
+    COALESCE(v.config->'theme'->>'banner_url', '')::text AS cover_url,
+    COALESCE(NULLIF(v.config->'theme'->>'tagline', ''), sh.description, '')::text AS tagline,
+    s.published_at
+FROM sites s
+JOIN site_versions v ON v.id = s.published_version_id
+JOIN shops sh ON sh.id = s.shop_id
+LEFT JOIN domains pd ON pd.site_id = s.id AND pd.is_primary = TRUE
+WHERE s.status = 'PUBLISHED'
+  AND s.published_version_id IS NOT NULL
+  AND sh.status = 'ACTIVE'
+ORDER BY s.published_at DESC NULLS LAST, s.id
+LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
+
+-- name: CountPublishedSites :one
+SELECT COUNT(*)::bigint
+FROM sites s
+JOIN shops sh ON sh.id = s.shop_id
+WHERE s.status = 'PUBLISHED'
+  AND s.published_version_id IS NOT NULL
+  AND sh.status = 'ACTIVE';

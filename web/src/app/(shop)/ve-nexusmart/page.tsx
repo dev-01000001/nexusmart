@@ -1,12 +1,19 @@
+import type { Metadata } from "next";
 import React, { Suspense } from "react";
-import { loadCatalog } from "@/lib/catalog";
-import { StateView } from "@/components";
+import { StateView } from "@/components/StateView";
+import { loadSiteDirectory } from "@/features/platform/directory.server";
 import { AboutClient } from "./AboutClient";
 
 export const dynamic = "force-dynamic";
 
+export const metadata: Metadata = {
+  title: "Về NexusMart",
+  description:
+    "Tìm hiểu cách nền tảng NexusMart trao cho mỗi thương hiệu và xưởng sản xuất một cửa hàng độc lập trên tên miền phụ riêng.",
+};
+
 export default async function AboutNexusMartPage() {
-  const catalog = await loadCatalog();
+  const directory = await loadSiteDirectory(1, 24);
 
   return (
     <Suspense
@@ -16,7 +23,7 @@ export default async function AboutNexusMartPage() {
         </div>
       }
     >
-      <AboutClient shops={catalog.shops} products={catalog.products} loadError={catalog.error} />
+      <AboutClient directory={directory} />
     </Suspense>
   );
 }

@@ -9,7 +9,7 @@ import type {
   OrderTimelineEvent,
   PaymentMethod,
   PaymentStatus,
-} from "@/data";
+} from "../../data/orders";
 import {
   normalizeSalesChannel,
   normalizeStorefrontShopId,

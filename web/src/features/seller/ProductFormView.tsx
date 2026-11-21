@@ -407,7 +407,7 @@ export function ProductFormView({
             <h2 id="basic-info-heading" className={common.cardTitle}>
               Thông tin sản phẩm & danh mục
             </h2>
-            <span className={common.cardMeta}>Đồng bộ trực tiếp với danh mục sàn</span>
+            <span className={common.cardMeta}>Phân loại sản phẩm trên site gian hàng</span>
           </div>
 
           <div className={styles.fieldStack}>

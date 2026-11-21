@@ -127,6 +127,7 @@ func TestGRPCInterceptorInternalRPCMatrix(t *testing.T) {
 	for _, pubMethod := range []string{
 		"/nexusmart.user.v1.UserService/GetSiteByHost",
 		"/nexusmart.user.v1.UserService/GetSiteByShop",
+		"/nexusmart.user.v1.UserService/ListPublishedSites",
 	} {
 		claims, err := callInterceptor(t, users, svc, pubMethod)
 		if err != nil || claims != nil {

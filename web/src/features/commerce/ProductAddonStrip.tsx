@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import type { Product } from "@/data";
+import type { Product } from "@/data/products";
 import { ProductCard } from "@/components/ProductCard";
 import styles from "./commerce.module.css";
 

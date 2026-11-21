@@ -2,7 +2,6 @@
 
 import React, { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { SHOPS, getShopById } from "@/data";
 import { Button, IconSearch, StateView } from "@/components";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
@@ -44,8 +43,7 @@ function SellerChatContent() {
   const uiState = parseUiState(searchParams.get("state"));
   const { shop, presentationShopKey, showToast } = useSellerContext();
   const session = useSellerSession();
-  const activeShop = getShopById(presentationShopKey) ?? SHOPS[0];
-  const shopDisplayName = shop?.name ?? activeShop.name;
+  const shopDisplayName = shop?.name ?? "Gian hàng của bạn";
 
   const [query, setQuery] = useState("");
   const [selectedThreadId, setSelectedThreadId] = useState<string>("");

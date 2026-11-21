@@ -1,8 +1,10 @@
 import { gw } from "@/lib/server/gateway";
 import { apiRoute } from "@/lib/server/http";
+import { requireRequestSite } from "@/lib/server/sites";
 import type { GwProvince, GwWard } from "@/features/commerce/types";
 
 export const GET = apiRoute(async (req) => {
+  await requireRequestSite(req);
   const { searchParams } = new URL(req.url);
   const provinceCode = (searchParams.get("province_code") ?? "").trim();
   const query = (searchParams.get("query") ?? "").trim() || undefined;

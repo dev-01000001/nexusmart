@@ -3,7 +3,6 @@ import Link from "next/link";
 import type { CategoryInfo, Product } from "@/data/products";
 import type { Voucher } from "@/data/vouchers";
 import { formatInt, formatVnd } from "@/lib/format";
-import { buildStorefrontCartUrl } from "@/lib/site/host";
 import { sanitizeSafeHref, sanitizeSafeUrl } from "@/lib/site/theme";
 import type {
   BannerSection,
@@ -26,8 +25,6 @@ export interface SiteRendererProps {
   products: Product[];
   vouchers: Voucher[];
   categories?: CategoryInfo[];
-  marketplaceOrigin: string;
-  siteHost: string;
   previewMode?: boolean;
 }
 
@@ -425,9 +422,6 @@ function renderBannerSection(section: BannerSection, config: SiteConfig, preview
 function renderVoucherStripSection(
   section: VoucherStripSection,
   vouchers: Voucher[],
-  shopId: string,
-  siteHost: string,
-  marketplaceOrigin: string,
   previewMode: boolean
 ) {
   const { props } = section;
@@ -446,44 +440,38 @@ function renderVoucherStripSection(
           <h2 className={styles.sectionTitle}>{props.title || "Ưu đãi riêng của cửa hàng"}</h2>
           {props.subtitle?.trim() && <p className={styles.sectionSubtitle}>{props.subtitle}</p>}
         </div>
+        {!previewMode && shopOnlyVouchers.length > 0 && (
+          <Link href="/voucher" className={styles.sectionLink}>
+            Xem tất cả mã giảm giá
+          </Link>
+        )}
       </div>
 
       {shopOnlyVouchers.length > 0 ? (
         <div className={styles.voucherGrid}>
-          {shopOnlyVouchers.map((voucher) => {
-            const cartUrl = buildStorefrontCartUrl({
-              marketplaceOrigin,
-              shopId,
-              siteHost,
-            });
-            return (
-              <article
-                key={voucher.id || voucher.code}
-                className={styles.voucherCard}
-                data-reveal=""
-              >
-                <p className={styles.voucherCode}>{voucher.code}</p>
-                <h3 className={styles.voucherHeadline}>{formatVoucherBenefit(voucher)}</h3>
-                <p className={styles.voucherDetail}>
-                  {voucher.minOrderValue > 0
-                    ? `Áp dụng cho đơn từ ${formatVnd(voucher.minOrderValue)} tại cửa hàng.`
-                    : "Áp dụng trực tiếp cho sản phẩm của cửa hàng."}
-                </p>
-                <div className={styles.voucherFoot}>
-                  <span className={`${styles.voucherQuota} num`}>
-                    Còn {formatInt(voucher.remainingUses)} lượt
-                  </span>
-                  {previewMode ? (
-                    <span className={styles.sectionLink}>Dùng tại giỏ hàng</span>
-                  ) : (
-                    <a href={cartUrl} className={styles.sectionLink}>
-                      Dùng tại giỏ hàng
-                    </a>
-                  )}
-                </div>
-              </article>
-            );
-          })}
+          {shopOnlyVouchers.map((voucher) => (
+            <article key={voucher.id || voucher.code} className={styles.voucherCard} data-reveal="">
+              <p className={styles.voucherCode}>{voucher.code}</p>
+              <h3 className={styles.voucherHeadline}>{formatVoucherBenefit(voucher)}</h3>
+              <p className={styles.voucherDetail}>
+                {voucher.minOrderValue > 0
+                  ? `Áp dụng cho đơn từ ${formatVnd(voucher.minOrderValue)} tại cửa hàng.`
+                  : "Áp dụng trực tiếp cho sản phẩm của cửa hàng."}
+              </p>
+              <div className={styles.voucherFoot}>
+                <span className={`${styles.voucherQuota} num`}>
+                  Còn {formatInt(voucher.remainingUses)} lượt
+                </span>
+                {previewMode ? (
+                  <span className={styles.sectionLink}>Lưu và dùng mã</span>
+                ) : (
+                  <Link href="/voucher" className={styles.sectionLink}>
+                    Lưu và dùng mã
+                  </Link>
+                )}
+              </div>
+            </article>
+          ))}
         </div>
       ) : (
         <div className={styles.emptyPanel} data-reveal="">
@@ -528,8 +516,6 @@ export function SiteRenderer({
   shop,
   products,
   vouchers,
-  marketplaceOrigin,
-  siteHost,
   previewMode = false,
 }: SiteRendererProps) {
   const visibleSections = (config.sections ?? []).filter((s) => s.visible !== false);
@@ -593,14 +579,7 @@ export function SiteRenderer({
           case "banner":
             return renderBannerSection(section, config, previewMode);
           case "voucher_strip":
-            return renderVoucherStripSection(
-              section,
-              vouchers,
-              shop.id,
-              siteHost,
-              marketplaceOrigin,
-              previewMode
-            );
+            return renderVoucherStripSection(section, vouchers, previewMode);
           case "policies":
             return renderPoliciesSection(section);
         }

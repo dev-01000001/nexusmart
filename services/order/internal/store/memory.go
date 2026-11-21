@@ -296,12 +296,13 @@ func (m *MemoryStore) CancelCheckoutGroupOrders(_ context.Context, params Cancel
 		})
 
 		payloadBytes, _ := json.Marshal(events.OrderCancelledPayload{
-			OrderID:   ord.ID,
-			OrderCode: ord.OrderCode,
-			BuyerID:   ord.BuyerID,
-			ShopID:    ord.ShopID,
-			Reason:    params.Reason,
-			WasPaid:   false,
+			OrderID:          ord.ID,
+			OrderCode:        ord.OrderCode,
+			BuyerID:          ord.BuyerID,
+			ShopID:           ord.ShopID,
+			StorefrontShopID: ord.StorefrontShopID,
+			Reason:           params.Reason,
+			WasPaid:          false,
 		})
 		m.outbox = append(m.outbox, db.OutboxEvent{
 			ID:          uuid.NewString(),
@@ -355,7 +356,7 @@ func (m *MemoryStore) ListOrdersByCheckoutGroup(_ context.Context, checkoutGroup
 	return aggs, nil
 }
 
-func (m *MemoryStore) ListOrdersFiltered(_ context.Context, buyerID, shopID, status, salesChannel string, limit, offset int32) ([]OrderAggregate, int64, error) {
+func (m *MemoryStore) ListOrdersFiltered(_ context.Context, buyerID, shopID, status, salesChannel, storefrontShopID string, limit, offset int32) ([]OrderAggregate, int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var matched []OrderAggregate
@@ -367,6 +368,9 @@ func (m *MemoryStore) ListOrdersFiltered(_ context.Context, buyerID, shopID, sta
 			continue
 		}
 		if status != "" && ord.Status != status {
+			continue
+		}
+		if storefrontShopID != "" && ord.StorefrontShopID != storefrontShopID {
 			continue
 		}
 		if salesChannel != "" {
@@ -510,22 +514,24 @@ func (m *MemoryStore) TransitionOrdersPaymentResult(_ context.Context, params Pa
 		if targetStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
 			eventType = events.SubjectOrderConfirmed
 			payloadBytes, _ = json.Marshal(events.OrderConfirmedPayload{
-				OrderID:         ord.ID,
-				OrderCode:       ord.OrderCode,
-				BuyerID:         ord.BuyerID,
-				ShopID:          ord.ShopID,
-				PaymentMethod:   ord.PaymentMethod,
-				TotalPayableVND: ord.TotalPayableVND,
+				OrderID:          ord.ID,
+				OrderCode:        ord.OrderCode,
+				BuyerID:          ord.BuyerID,
+				ShopID:           ord.ShopID,
+				StorefrontShopID: ord.StorefrontShopID,
+				PaymentMethod:    ord.PaymentMethod,
+				TotalPayableVND:  ord.TotalPayableVND,
 			})
 		} else {
 			eventType = events.SubjectOrderCancelled
 			payloadBytes, _ = json.Marshal(events.OrderCancelledPayload{
-				OrderID:   ord.ID,
-				OrderCode: ord.OrderCode,
-				BuyerID:   ord.BuyerID,
-				ShopID:    ord.ShopID,
-				Reason:    note,
-				WasPaid:   false,
+				OrderID:          ord.ID,
+				OrderCode:        ord.OrderCode,
+				BuyerID:          ord.BuyerID,
+				ShopID:           ord.ShopID,
+				StorefrontShopID: ord.StorefrontShopID,
+				Reason:           note,
+				WasPaid:          false,
 			})
 		}
 		m.outbox = append(m.outbox, db.OutboxEvent{
@@ -801,11 +807,12 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 				CreatedAt:  now,
 			})
 			payloadBytes, _ := json.Marshal(events.OrderDeliveredPayload{
-				OrderID:      ord.ID,
-				OrderCode:    ord.OrderCode,
-				BuyerID:      ord.BuyerID,
-				ShopID:       ord.ShopID,
-				TrackingCode: ord.TrackingCode,
+				OrderID:          ord.ID,
+				OrderCode:        ord.OrderCode,
+				BuyerID:          ord.BuyerID,
+				ShopID:           ord.ShopID,
+				StorefrontShopID: ord.StorefrontShopID,
+				TrackingCode:     ord.TrackingCode,
 			})
 			m.outbox = append(m.outbox, db.OutboxEvent{
 				ID:          uuid.NewString(),

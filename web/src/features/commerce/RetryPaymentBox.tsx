@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
-import type { Order } from "@/data";
+import type { Order } from "@/data/orders";
 import { ApiError, api } from "@/lib/api";
 import { formatDateTimeVi, formatVnd } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";

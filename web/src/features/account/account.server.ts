@@ -1,8 +1,11 @@
-// Server-only loader for the buyer account overview, profile, addresses and recent orders.
-import type { Product, Shop, Voucher } from "@/data";
-import { loadCatalogLookups, loadVouchers } from "@/lib/catalog";
+// Server-only loader for the buyer account overview, profile, addresses, and recent orders on a shop site.
+import type { Product } from "@/data/products";
+import type { Shop } from "@/data/shops";
+import { VOUCHERS, type Voucher } from "@/data/vouchers";
+import { buildCatalogLookups, mergeVouchers, type GwVoucher } from "@/lib/catalog-map";
 import { gw } from "@/lib/server/gateway";
 import type { GatewayUser, Session } from "@/lib/server/session";
+import { belongsToStorefront } from "@/lib/server/storefront";
 import {
   mapGatewayAddress,
   type AccountProfile,
@@ -26,25 +29,33 @@ export interface AccountPageData {
   provinces: GwProvince[];
   initialWards: GwWard[];
   initialProvinceCode: string;
-  shops: Shop[];
   catalogProducts: Product[];
   suggestedProducts: Product[];
 }
 
-export async function fetchAccountPageData(session: Session): Promise<AccountPageData> {
-  const [meRes, addrRes, ordersRes, coinsRes, provRes, catalog, voucherData] = await Promise.all([
+export async function fetchAccountPageData(
+  session: Session,
+  opts: {
+    shopId: string;
+    siteProducts: Product[];
+    siteShop: Shop | null;
+  }
+): Promise<AccountPageData> {
+  const { shopId, siteProducts, siteShop } = opts;
+
+  const [meRes, addrRes, ordersRes, provRes, vouchersRes] = await Promise.all([
     gw<{ user?: FullGatewayUser | null }>("/api/v1/users/me").catch(() => ({ user: null })),
     gw<{ addresses?: GwAddress[] | null }>("/api/v1/users/me/addresses"),
     gw<{ items?: GwOrder[] | null; total?: number }>("/api/v1/orders", {
-      query: { page: 1, page_size: 20 },
+      query: { storefront_shop_id: shopId, page: 1, page_size: 20 },
     }),
-    gw<{ balance?: number }>("/api/v1/coins/balance").catch(() => ({ balance: 0 })),
     gw<{ provinces?: GwProvince[] | null }>("/api/v1/shipping/provinces", {
       auth: "none",
       revalidate: 3600,
     }).catch(() => ({ provinces: [] })),
-    loadCatalogLookups(),
-    loadVouchers(),
+    gw<{ vouchers?: GwVoucher[] | null }>("/api/v1/vouchers", {
+      query: { shop_id: shopId, scope: "SHOP" },
+    }).catch(() => ({ vouchers: [] })),
   ]);
 
   const u = meRes.user;
@@ -58,12 +69,31 @@ export async function fetchAccountPageData(session: Session): Promise<AccountPag
     avatarUrl: u?.avatar_url ?? session.user.avatarUrl,
     phoneVerified: u?.phone_verified ?? session.user.phoneVerified,
     memberSince: u?.created_at ?? "",
-    coins: typeof coinsRes.balance === "number" ? coinsRes.balance : 0,
+    coins: 0,
   };
 
+  const shops = siteShop ? [siteShop] : [];
+  const lookups = buildCatalogLookups(siteProducts, shops);
+
   const addresses = (addrRes.addresses ?? []).map(mapGatewayAddress);
-  const orders = (ordersRes.items ?? []).map((o) => mapGatewayOrder(o, catalog.lookups));
+  const rawOrders = (ordersRes.items ?? []).filter((o) => belongsToStorefront(o, shopId));
+  const orders = rawOrders.map((o) => mapGatewayOrder(o, lookups));
   const provinces = provRes.provinces ?? [];
+
+  const catalogShopId = siteShop?.id ?? shopId;
+  const shopIdByBackend = new Map<string, string>([[shopId, catalogShopId]]);
+  const rawShopVouchers = (vouchersRes.vouchers ?? []).filter(
+    (v) =>
+      String(v.scope ?? "").toUpperCase() === "SHOP" &&
+      v.shop_id === shopId &&
+      v.is_active !== false
+  );
+  const vouchers = mergeVouchers(
+    rawShopVouchers,
+    VOUCHERS,
+    shopIdByBackend,
+    new Set([catalogShopId])
+  ).filter((v) => v.scope === "shop" && v.shopId === catalogShopId);
 
   const defaultProv = provinces.find((p) => p.code === "79") ??
     provinces[0] ?? { code: "79", name: "Thành phố Hồ Chí Minh" };
@@ -80,13 +110,15 @@ export async function fetchAccountPageData(session: Session): Promise<AccountPag
     profile,
     addresses,
     orders,
-    totalOrders: ordersRes.total ?? orders.length,
-    vouchers: voucherData.vouchers,
+    totalOrders:
+      typeof ordersRes.total === "number" && rawOrders.length === (ordersRes.items ?? []).length
+        ? ordersRes.total
+        : orders.length,
+    vouchers,
     provinces,
     initialWards,
     initialProvinceCode: defaultProv.code,
-    shops: catalog.shops,
-    catalogProducts: catalog.products,
-    suggestedProducts: catalog.products.slice(0, 4),
+    catalogProducts: siteProducts,
+    suggestedProducts: siteProducts.slice(0, 4),
   };
 }

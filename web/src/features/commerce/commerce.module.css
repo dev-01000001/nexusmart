@@ -321,7 +321,7 @@ a.wrapBtn {
 .qrBox {
   width: 168px;
   height: 168px;
-  background: var(--bg);
+  background: #ffffff;
   padding: 10px;
 }
 

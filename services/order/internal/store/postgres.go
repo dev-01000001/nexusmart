@@ -212,12 +212,13 @@ func (s *PostgresStore) CancelCheckoutGroupOrders(ctx context.Context, params Ca
 		}
 
 		payloadBytes, err := json.Marshal(events.OrderCancelledPayload{
-			OrderID:   updated.ID,
-			OrderCode: updated.OrderCode,
-			BuyerID:   updated.BuyerID,
-			ShopID:    updated.ShopID,
-			Reason:    params.Reason,
-			WasPaid:   false,
+			OrderID:          updated.ID,
+			OrderCode:        updated.OrderCode,
+			BuyerID:          updated.BuyerID,
+			ShopID:           updated.ShopID,
+			StorefrontShopID: updated.StorefrontShopID,
+			Reason:           params.Reason,
+			WasPaid:          false,
 		})
 		if err != nil {
 			return nil, err
@@ -273,24 +274,26 @@ func (s *PostgresStore) ListOrdersByCheckoutGroup(ctx context.Context, checkoutG
 	return aggs, nil
 }
 
-func (s *PostgresStore) ListOrdersFiltered(ctx context.Context, buyerID, shopID, status, salesChannel string, limit, offset int32) ([]OrderAggregate, int64, error) {
+func (s *PostgresStore) ListOrdersFiltered(ctx context.Context, buyerID, shopID, status, salesChannel, storefrontShopID string, limit, offset int32) ([]OrderAggregate, int64, error) {
 	total, err := s.queries.CountOrdersFiltered(ctx, db.CountOrdersFilteredParams{
-		BuyerID:      buyerID,
-		ShopID:       shopID,
-		Status:       status,
-		SalesChannel: salesChannel,
+		BuyerID:          buyerID,
+		ShopID:           shopID,
+		Status:           status,
+		SalesChannel:     salesChannel,
+		StorefrontShopID: storefrontShopID,
 	})
 	if err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := s.queries.ListOrdersFiltered(ctx, db.ListOrdersFilteredParams{
-		BuyerID:      buyerID,
-		ShopID:       shopID,
-		Status:       status,
-		SalesChannel: salesChannel,
-		PageLimit:    limit,
-		PageOffset:   offset,
+		BuyerID:          buyerID,
+		ShopID:           shopID,
+		Status:           status,
+		SalesChannel:     salesChannel,
+		StorefrontShopID: storefrontShopID,
+		PageLimit:        limit,
+		PageOffset:       offset,
 	})
 	if err != nil {
 		return nil, 0, err
@@ -459,22 +462,24 @@ func (s *PostgresStore) TransitionOrdersPaymentResult(ctx context.Context, param
 		if targetStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
 			eventType = events.SubjectOrderConfirmed
 			payloadBytes, err = json.Marshal(events.OrderConfirmedPayload{
-				OrderID:         updated.ID,
-				OrderCode:       updated.OrderCode,
-				BuyerID:         updated.BuyerID,
-				ShopID:          updated.ShopID,
-				PaymentMethod:   updated.PaymentMethod,
-				TotalPayableVND: updated.TotalPayableVND,
+				OrderID:          updated.ID,
+				OrderCode:        updated.OrderCode,
+				BuyerID:          updated.BuyerID,
+				ShopID:           updated.ShopID,
+				StorefrontShopID: updated.StorefrontShopID,
+				PaymentMethod:    updated.PaymentMethod,
+				TotalPayableVND:  updated.TotalPayableVND,
 			})
 		} else {
 			eventType = events.SubjectOrderCancelled
 			payloadBytes, err = json.Marshal(events.OrderCancelledPayload{
-				OrderID:   updated.ID,
-				OrderCode: updated.OrderCode,
-				BuyerID:   updated.BuyerID,
-				ShopID:    updated.ShopID,
-				Reason:    note,
-				WasPaid:   false,
+				OrderID:          updated.ID,
+				OrderCode:        updated.OrderCode,
+				BuyerID:          updated.BuyerID,
+				ShopID:           updated.ShopID,
+				StorefrontShopID: updated.StorefrontShopID,
+				Reason:           note,
+				WasPaid:          false,
 			})
 		}
 		if err != nil {
@@ -861,11 +866,12 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 				return nil, err
 			}
 			payloadBytes, err := json.Marshal(events.OrderDeliveredPayload{
-				OrderID:      updated.ID,
-				OrderCode:    updated.OrderCode,
-				BuyerID:      updated.BuyerID,
-				ShopID:       updated.ShopID,
-				TrackingCode: updated.TrackingCode,
+				OrderID:          updated.ID,
+				OrderCode:        updated.OrderCode,
+				BuyerID:          updated.BuyerID,
+				ShopID:           updated.ShopID,
+				StorefrontShopID: updated.StorefrontShopID,
+				TrackingCode:     updated.TrackingCode,
 			})
 			if err != nil {
 				return nil, err

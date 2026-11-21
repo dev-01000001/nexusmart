@@ -52,6 +52,7 @@ const (
 	UserService_ListSiteVersions_FullMethodName      = "/nexusmart.user.v1.UserService/ListSiteVersions"
 	UserService_ListSites_FullMethodName             = "/nexusmart.user.v1.UserService/ListSites"
 	UserService_SuspendSite_FullMethodName           = "/nexusmart.user.v1.UserService/SuspendSite"
+	UserService_ListPublishedSites_FullMethodName    = "/nexusmart.user.v1.UserService/ListPublishedSites"
 )
 
 // UserServiceClient is the client API for UserService service.
@@ -91,6 +92,7 @@ type UserServiceClient interface {
 	ListSiteVersions(ctx context.Context, in *ListSiteVersionsRequest, opts ...grpc.CallOption) (*ListSiteVersionsResponse, error)
 	ListSites(ctx context.Context, in *ListSitesRequest, opts ...grpc.CallOption) (*ListSitesResponse, error)
 	SuspendSite(ctx context.Context, in *SuspendSiteRequest, opts ...grpc.CallOption) (*SuspendSiteResponse, error)
+	ListPublishedSites(ctx context.Context, in *ListPublishedSitesRequest, opts ...grpc.CallOption) (*ListPublishedSitesResponse, error)
 }
 
 type userServiceClient struct {
@@ -431,6 +433,16 @@ func (c *userServiceClient) SuspendSite(ctx context.Context, in *SuspendSiteRequ
 	return out, nil
 }
 
+func (c *userServiceClient) ListPublishedSites(ctx context.Context, in *ListPublishedSitesRequest, opts ...grpc.CallOption) (*ListPublishedSitesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPublishedSitesResponse)
+	err := c.cc.Invoke(ctx, UserService_ListPublishedSites_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UserServiceServer is the server API for UserService service.
 // All implementations must embed UnimplementedUserServiceServer
 // for forward compatibility.
@@ -468,6 +480,7 @@ type UserServiceServer interface {
 	ListSiteVersions(context.Context, *ListSiteVersionsRequest) (*ListSiteVersionsResponse, error)
 	ListSites(context.Context, *ListSitesRequest) (*ListSitesResponse, error)
 	SuspendSite(context.Context, *SuspendSiteRequest) (*SuspendSiteResponse, error)
+	ListPublishedSites(context.Context, *ListPublishedSitesRequest) (*ListPublishedSitesResponse, error)
 	mustEmbedUnimplementedUserServiceServer()
 }
 
@@ -576,6 +589,9 @@ func (UnimplementedUserServiceServer) ListSites(context.Context, *ListSitesReque
 }
 func (UnimplementedUserServiceServer) SuspendSite(context.Context, *SuspendSiteRequest) (*SuspendSiteResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SuspendSite not implemented")
+}
+func (UnimplementedUserServiceServer) ListPublishedSites(context.Context, *ListPublishedSitesRequest) (*ListPublishedSitesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListPublishedSites not implemented")
 }
 func (UnimplementedUserServiceServer) mustEmbedUnimplementedUserServiceServer() {}
 func (UnimplementedUserServiceServer) testEmbeddedByValue()                     {}
@@ -1192,6 +1208,24 @@ func _UserService_SuspendSite_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserService_ListPublishedSites_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPublishedSitesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).ListPublishedSites(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_ListPublishedSites_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).ListPublishedSites(ctx, req.(*ListPublishedSitesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UserService_ServiceDesc is the grpc.ServiceDesc for UserService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1330,6 +1364,10 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SuspendSite",
 			Handler:    _UserService_SuspendSite_Handler,
+		},
+		{
+			MethodName: "ListPublishedSites",
+			Handler:    _UserService_ListPublishedSites_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

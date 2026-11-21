@@ -1,4 +1,6 @@
 import React from "react";
+import { headers } from "next/headers";
+import { resolveRequestHost, resolveRequestProto } from "@/lib/server/http";
 import {
   loadCategories,
   loadSellerProducts,
@@ -15,12 +17,16 @@ export const dynamic = "force-dynamic";
 export default async function SellerSitePage() {
   await requireSellerPage();
 
-  const [siteRes, versionsRes, productsRes, categoriesRes] = await Promise.all([
+  const [siteRes, versionsRes, productsRes, categoriesRes, h] = await Promise.all([
     loadSellerSiteServer(),
     loadSellerSiteVersionsServer(50),
     loadSellerProducts(100),
     loadCategories(),
+    headers(),
   ]);
+
+  const requestHost = resolveRequestHost(h, "");
+  const requestProto = resolveRequestProto(h, `http://${requestHost || "localhost"}`);
 
   return (
     <SellerSiteEditorClient
@@ -30,6 +36,8 @@ export default async function SellerSitePage() {
       products={productsRes.data?.items ?? []}
       categories={categoriesRes.data ?? []}
       rootDomain={siteRes.rootDomain}
+      requestHost={requestHost}
+      requestProto={requestProto}
       loadError={siteRes.error}
     />
   );

@@ -30,7 +30,7 @@ import styles from "@/app/(admin)/admin/page.module.css";
 type OverviewScope = "toan_san" | "thanh_toan" | "van_hanh";
 
 const SCOPE_TABS: Array<{ id: OverviewScope; label: string }> = [
-  { id: "toan_san", label: "Toàn sàn" },
+  { id: "toan_san", label: "Tổng hợp" },
   { id: "thanh_toan", label: "Thanh toán" },
   { id: "van_hanh", label: "Vận hành" },
 ];
@@ -176,7 +176,7 @@ function AdminOverviewContent({
     <div className={shared.page}>
       <header className={shared.titleRow}>
         <div className={shared.titleBlock}>
-          <h1 className={shared.pageTitle}>Tổng quan sàn</h1>
+          <h1 className={shared.pageTitle}>Tổng quan quản trị</h1>
           <p className={shared.pageSubtitle}>{findingLine}</p>
         </div>
         <div className={shared.titleActions}>
@@ -228,7 +228,7 @@ function AdminOverviewContent({
             </div>
 
             <div className={shared.kpiCell}>
-              <span className={shared.kpiLabel}>Hoa hồng sàn ghi nhận</span>
+              <span className={shared.kpiLabel}>Phí nền tảng ghi nhận</span>
               <span className={shared.kpiValue}>{formatVnd(totalCommission)}</span>
               <span className={shared.kpiCaption}>Tính trên đơn hàng không bị hủy</span>
             </div>
@@ -313,7 +313,7 @@ function AdminOverviewContent({
             <div className={shared.panelHeader}>
               <div>
                 <h2 id="admin-orders-heading" className={shared.panelTitle}>
-                  Đơn hàng toàn sàn gần đây
+                  Đơn hàng gần đây
                 </h2>
                 <p className={shared.cellSub}>
                   {formatInt(channelCounts.marketplace)} đơn Sàn NexusMart ·{" "}
@@ -577,9 +577,9 @@ function AdminOverviewContent({
 
 export function AdminOverviewClient(props: AdminOverviewClientProps) {
   return (
-    <Suspense fallback={<AdminSuspenseFallback title="Tổng quan sàn" />}>
+    <Suspense fallback={<AdminSuspenseFallback title="Tổng quan quản trị" />}>
       <AdminStateGate
-        title="Tổng quan sàn"
+        title="Tổng quan quản trị"
         subtitle="Theo dõi GMV, đối soát sổ cái ghi kép, hàng đợi duyệt gian hàng và nhật ký kiểm toán."
         emptyTitle="Chưa có dữ liệu tổng quan"
         emptyMessage="Không có giao dịch hoặc gian hàng nào được ghi nhận trong hệ thống."

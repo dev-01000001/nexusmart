@@ -12,6 +12,7 @@ import { StatusPill } from "@/features/admin/StatusPill";
 import shared from "@/features/admin/adminShared.module.css";
 import type { AdminSitesListResponse, GwSite } from "@/features/seller/site/siteEditorTypes";
 import { getSiteStatusMeta } from "@/features/seller/site/siteEditorUtils";
+import { buildPublicSiteUrl } from "@/features/seller/site/siteSummary";
 import styles from "./AdminSitesClient.module.css";
 
 type SiteFilterTab = "all" | "PUBLISHED" | "DRAFT" | "SUSPENDED";
@@ -19,21 +20,17 @@ type SiteFilterTab = "all" | "PUBLISHED" | "DRAFT" | "SUSPENDED";
 export interface AdminSitesClientProps {
   initialSites: GwSite[];
   rootDomain: string;
+  requestHost: string;
+  requestProto: string;
   shopNameById: Record<string, string>;
   loadError: string | null;
-}
-
-function buildPublicSiteHref(host: string): string {
-  if (!host) return "#";
-  if (typeof window === "undefined") return `http://${host}`;
-  const proto = window.location.protocol || "http:";
-  const port = window.location.port ? `:${window.location.port}` : "";
-  return `${proto}//${host}${port}`;
 }
 
 function AdminSitesContent({
   initialSites,
   rootDomain,
+  requestHost,
+  requestProto,
   shopNameById,
   loadError,
   initialQuery,
@@ -216,7 +213,7 @@ function AdminSitesContent({
             <span className={shared.detailKey}>Địa chỉ đầy đủ</span>
             {isPublished ? (
               <a
-                href={buildPublicSiteHref(fullHost)}
+                href={buildPublicSiteUrl(fullHost, requestHost, requestProto) || "#"}
                 target="_blank"
                 rel="noopener noreferrer"
                 className={styles.hostLink}
@@ -516,7 +513,7 @@ export function AdminSitesClient(props: AdminSitesClientProps) {
     <Suspense fallback={<AdminSuspenseFallback title="Site gian hàng" />}>
       <AdminStateGate
         title="Site gian hàng"
-        subtitle="Theo dõi danh sách tên miền phụ và tạm khóa các site vi phạm chính sách sàn."
+        subtitle="Theo dõi danh sách tên miền phụ và tạm khóa các site vi phạm chính sách nền tảng."
         emptyTitle="Chưa có site gian hàng nào"
         emptyMessage="Khi các gian hàng tạo và lưu cấu hình site riêng, danh sách sẽ hiển thị tại đây."
         errorTitle="Không thể tải danh sách site gian hàng"
@@ -527,6 +524,8 @@ export function AdminSitesClient(props: AdminSitesClientProps) {
           <AdminSitesContent
             initialSites={props.initialSites}
             rootDomain={props.rootDomain}
+            requestHost={props.requestHost}
+            requestProto={props.requestProto}
             shopNameById={props.shopNameById}
             loadError={props.loadError}
             initialQuery={initialQuery}

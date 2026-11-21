@@ -40,6 +40,7 @@ import {
   validateSubdomainClient,
 } from "./siteEditorUtils";
 import { SectionEditorPanel } from "./SectionEditorPanel";
+import { buildPublicSiteUrl } from "./siteSummary";
 import styles from "./SellerSiteEditor.module.css";
 
 type EditorTab = "theme" | "sections" | "versions";
@@ -51,15 +52,9 @@ export interface SellerSiteEditorClientProps {
   products: GwSellerProduct[];
   categories: GwCategory[];
   rootDomain: string;
+  requestHost: string;
+  requestProto: string;
   loadError: string | null;
-}
-
-function buildPublicSiteUrl(host: string): string {
-  if (!host) return "#";
-  if (typeof window === "undefined") return `http://${host}`;
-  const proto = window.location.protocol || "http:";
-  const port = window.location.port ? `:${window.location.port}` : "";
-  return `${proto}//${host}${port}`;
 }
 
 export function SellerSiteEditorClient({
@@ -69,6 +64,8 @@ export function SellerSiteEditorClient({
   products,
   categories,
   rootDomain,
+  requestHost,
+  requestProto,
   loadError,
 }: SellerSiteEditorClientProps) {
   const router = useRouter();
@@ -414,12 +411,12 @@ export function SellerSiteEditorClient({
           <span className={styles.hostPreviewUrl}>{site?.primary_host || previewHost}</span>
           {isPublished && site?.primary_host ? (
             <a
-              href={buildPublicSiteUrl(site.primary_host)}
+              href={buildPublicSiteUrl(site.primary_host, requestHost, requestProto) || "#"}
               target="_blank"
               rel="noopener noreferrer"
               className={styles.publicLink}
             >
-              <span>Mở site công khai</span>
+              <span>Xem site công khai</span>
               <IconArrowUpRight size={13} />
             </a>
           ) : (
@@ -455,7 +452,7 @@ export function SellerSiteEditorClient({
       {isSuspended && (
         <div className={styles.statusAlert} role="alert">
           <div>
-            <strong>Site riêng đang bị tạm khóa bởi quản trị sàn.</strong>{" "}
+            <strong>Site riêng đang bị tạm khóa bởi quản trị NexusMart.</strong>{" "}
             {site?.suspended_reason ? `Lý do: ${site.suspended_reason}. ` : ""}
             Bạn vẫn có thể chỉnh sửa và lưu bản nháp, nhưng cần quản trị mở khóa trước khi xuất bản
             lại.

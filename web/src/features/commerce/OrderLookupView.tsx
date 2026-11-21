@@ -2,20 +2,30 @@
 
 import React, { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ORDER_STATUS_META, PAYMENT_METHOD_LABELS, PAYMENT_STATUS_META, PRODUCTS } from "@/data";
+import {
+  ORDER_STATUS_META,
+  PAYMENT_METHOD_LABELS,
+  PAYMENT_STATUS_META,
+  type StatusTone,
+} from "@/data/orders";
 import { MEDIA_BANNERS } from "@/data/media";
-import type { StatusTone } from "@/data";
+import type { Product } from "@/data/products";
 import { ApiError, api } from "@/lib/api";
 import { formatDateTimeVi, formatVnd } from "@/lib/format";
 import type { OrderView } from "@/features/account/orderView";
 import { useStore } from "@/context/StoreContext";
 import { useSession } from "@/components/SessionProvider";
-import { Button, IconChat, StateView } from "@/components";
+import { Button, StateView } from "@/components";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
 import { RetryPaymentBox } from "@/features/commerce/RetryPaymentBox";
 import { useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./OrderLookupView.module.css";
+
+export interface OrderLookupViewProps {
+  brandName?: string;
+  suggestedProducts?: Product[];
+}
 
 function toneClass(tone: StatusTone): string {
   if (tone === "pos") return shared.tonePos;
@@ -28,8 +38,8 @@ function digitsOnly(phone: string): string {
   return phone.replace(/\D/g, "");
 }
 
-function OrderLookupContent() {
-  const { openChat, showToast } = useStore();
+function OrderLookupContent({ brandName, suggestedProducts = [] }: OrderLookupViewProps) {
+  const { showToast } = useStore();
   const { isAuthenticated, loading: sessionLoading, user } = useSession();
 
   const [orders, setOrders] = useState<OrderView[]>([]);
@@ -41,6 +51,8 @@ function OrderLookupContent() {
   const [searchedKey, setSearchedKey] = useState<{ code: string; phone: string } | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
+
+  const storeLabel = brandName || "cửa hàng";
 
   useEffect(() => {
     if (user?.phone && !phone) setPhone(user.phone);
@@ -93,8 +105,6 @@ function OrderLookupContent() {
       return digitsOnly(o.buyerPhone).endsWith(cleanPhone.slice(-8));
     });
   }, [orders, searchedKey]);
-
-  const suggestedProducts = useMemo(() => PRODUCTS.slice(2, 6), []);
 
   useRevealOnScroll(
     `lookup-${isAuthenticated ? "auth" : "guest"}-${foundOrder?.id ?? "none"}-${foundOrder?.status ?? ""}`
@@ -149,8 +159,8 @@ function OrderLookupContent() {
         <Button variant="secondary" size="md" href="/don-hang">
           Đơn hàng của tôi
         </Button>
-        <Button variant="secondary" size="md" href="/tro-giup">
-          Trung tâm trợ giúp
+        <Button variant="secondary" size="md" href="/chinh-sach">
+          Chính sách cửa hàng
         </Button>
       </div>
     </section>
@@ -159,7 +169,7 @@ function OrderLookupContent() {
   if (sessionLoading || loadingOrders) {
     return (
       <div className={shared.page}>
-        {renderHeader("Đang kiểm tra hành trình giao hàng và trạng thái thanh toán.")}
+        {renderHeader(`Đang kiểm tra hành trình đơn hàng của bạn tại ${storeLabel}.`)}
         <section className={shared.section}>
           <h2 className={shared.sectionTitle}>Kết quả tra cứu</h2>
           <StateView kind="loading" title="Đang tìm thông tin đơn hàng..." rows={4} />
@@ -171,18 +181,25 @@ function OrderLookupContent() {
   if (!isAuthenticated) {
     return (
       <div className={shared.page}>
-        {renderHeader("Đăng nhập tài khoản để bảo mật thông tin và theo dõi hành trình đơn hàng.")}
+        {renderHeader(
+          `Đăng nhập tài khoản tại ${storeLabel} để bảo mật thông tin và theo dõi hành trình đơn hàng.`
+        )}
         <section className={shared.section}>
           <h2 className={shared.sectionTitle}>Tra cứu đơn thuộc tài khoản của bạn</h2>
           <StateView
             kind="empty"
             title="Đăng nhập để xem trạng thái đơn hàng"
-            message="Vì lý do bảo mật thông tin người nhận và vận đơn, vui lòng đăng nhập để tra cứu đơn hàng của bạn hoặc gọi Hotline 1900 6845 (8:30 - 22:00)."
+            message={`Để bảo mật thông tin người nhận và mã vận đơn, vui lòng đăng nhập tài khoản đã đặt hàng tại ${storeLabel}.`}
             actionLabel="Đăng nhập ngay"
             actionHref="/dang-nhap?next=%2Ftra-cuu-don-hang"
           />
         </section>
-        <ProductAddonStrip title="Đồ cơ bản bán chạy tại NexusMart" products={suggestedProducts} />
+        {suggestedProducts.length > 0 && (
+          <ProductAddonStrip
+            title={`Sản phẩm nổi bật tại ${storeLabel}`}
+            products={suggestedProducts}
+          />
+        )}
       </div>
     );
   }
@@ -215,7 +232,9 @@ function OrderLookupContent() {
 
   return (
     <div className={shared.page}>
-      {renderHeader("Nhập mã đơn hàng thuộc tài khoản của bạn để xem hành trình và thanh toán.")}
+      {renderHeader(
+        `Nhập mã đơn hàng bạn đã đặt tại ${storeLabel} để xem hành trình và thanh toán.`
+      )}
 
       <section className={shared.section}>
         <div className={styles.lookupLayout}>
@@ -272,7 +291,7 @@ function OrderLookupContent() {
 
               {orders.length > 0 && (
                 <div className={styles.sampleWrap}>
-                  <p className={shared.fieldLabel}>Đơn hàng gần đây của bạn</p>
+                  <p className={shared.fieldLabel}>Đơn hàng gần đây tại {storeLabel}</p>
                   <div className={styles.sampleList}>
                     {orders.slice(0, 4).map((o, idx) => {
                       const isActive = foundOrder?.id === o.id;
@@ -312,12 +331,15 @@ function OrderLookupContent() {
               />
               <div className={styles.guideList}>
                 <p className={styles.bodyCopy}>
-                  Mọi đơn hàng đều được bảo vệ theo tài khoản người mua và cập nhật trạng thái trực
-                  tiếp từ xưởng.
+                  Mọi đơn hàng tại {storeLabel} đều được bảo vệ theo tài khoản người mua và cập nhật
+                  trạng thái giao nhận theo thời gian thực.
                 </p>
                 <p className={styles.bodyCopy}>
-                  Cần hỗ trợ nhanh về đơn hàng? Gọi Hotline{" "}
-                  <strong className="num">1900 6845</strong> (8:30 - 22:00 T2 - CN).
+                  Xem thêm quy định đổi size và giao nhận tại trang{" "}
+                  <Link href="/chinh-sach" className={shared.breadcrumbLink}>
+                    Chính sách cửa hàng
+                  </Link>
+                  .
                 </p>
               </div>
             </div>
@@ -333,16 +355,16 @@ function OrderLookupContent() {
                 kind="empty"
                 title={
                   orders.length === 0
-                    ? "Tài khoản chưa có đơn hàng nào"
+                    ? `Tài khoản chưa có đơn hàng nào tại ${storeLabel}`
                     : "Không tìm thấy mã đơn phù hợp"
                 }
                 message={
                   orders.length === 0
-                    ? "Hãy chọn sản phẩm yêu thích và hoàn tất đặt hàng để theo dõi hành trình tại đây."
+                    ? `Chọn sản phẩm tại ${storeLabel} và hoàn tất đặt hàng để theo dõi hành trình tại đây.`
                     : "Kiểm tra lại mã đơn hoặc chọn một đơn gần đây ở cột bên trái."
                 }
-                actionLabel={orders.length === 0 ? "Khám phá sản phẩm" : "Mở danh sách đơn"}
-                actionHref={orders.length === 0 ? "/danh-muc" : "/don-hang"}
+                actionLabel={orders.length === 0 ? "Xem sản phẩm" : "Mở danh sách đơn"}
+                actionHref={orders.length === 0 ? "/san-pham" : "/don-hang"}
               />
             ) : (
               <div className={styles.resultCard}>
@@ -424,7 +446,7 @@ function OrderLookupContent() {
                           <div className={styles.itemInfo}>
                             <Link
                               href={
-                                item.productSlug ? `/san-pham/${item.productSlug}` : "/danh-muc"
+                                item.productSlug ? `/san-pham/${item.productSlug}` : "/san-pham"
                               }
                               className={styles.itemName}
                             >
@@ -482,15 +504,6 @@ function OrderLookupContent() {
                         {cancelling ? "Đang hủy..." : `Hủy đơn ${foundOrder.orderCode}`}
                       </Button>
                     )}
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => openChat(foundOrder.shopId)}
-                    >
-                      <IconChat size={14} />
-                      <span>Nhắn tin cho xưởng</span>
-                    </Button>
                     <Button variant="secondary" size="sm" href={`/don-hang/${foundOrder.id}`}>
                       Xem chi tiết đầy đủ
                     </Button>
@@ -505,7 +518,7 @@ function OrderLookupContent() {
   );
 }
 
-export function OrderLookupView() {
+export function OrderLookupView(props: OrderLookupViewProps) {
   return (
     <Suspense
       fallback={
@@ -514,7 +527,7 @@ export function OrderLookupView() {
         </div>
       }
     >
-      <OrderLookupContent />
+      <OrderLookupContent {...props} />
     </Suspense>
   );
 }

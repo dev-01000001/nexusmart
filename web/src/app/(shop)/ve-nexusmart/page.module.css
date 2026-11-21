@@ -5,22 +5,6 @@
   color: var(--ink);
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .page [data-cat-reveal][data-pending="1"] {
-    opacity: 0;
-    transform: translateY(18px);
-    transition:
-      opacity 560ms var(--ease-out),
-      transform 720ms var(--ease-expo);
-    transition-delay: calc(var(--stagger, 0) * 70ms);
-  }
-
-  .page [data-cat-reveal][data-in="1"] {
-    opacity: 1;
-    transform: none;
-  }
-}
-
 .heroGrid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -46,10 +30,10 @@
 }
 
 .lead {
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1.55;
   color: var(--ink);
-  max-width: 50ch;
+  max-width: 54ch;
 }
 
 .heroActions {
@@ -77,7 +61,7 @@
   width: 100%;
   aspect-ratio: 16 / 9;
   background: var(--surface-subtle);
-  overflow: clip;
+  overflow: hidden;
 }
 
 .heroSubPair {
@@ -91,7 +75,7 @@
   width: 100%;
   aspect-ratio: 16 / 10;
   background: var(--surface-subtle);
-  overflow: clip;
+  overflow: hidden;
 }
 
 .heroPhotoImg {
@@ -118,9 +102,9 @@
 }
 
 .sectionTitle {
-  font-size: 28px;
-  font-weight: 500;
-  letter-spacing: -0.02em;
+  font-size: clamp(26px, 2.4vw, 34px);
+  font-weight: 400;
+  letter-spacing: -0.025em;
   line-height: 1.15;
   color: var(--ink);
 }
@@ -148,7 +132,7 @@
 
 .tabBtnActive {
   background: var(--band-dark);
-  color: var(--accent-ink);
+  color: var(--band-dark-ink);
   font-weight: 500;
 }
 
@@ -162,7 +146,6 @@
   gap: 24px;
 }
 
-/* Story tab — unboxed pillars left, video + dark slate standards right */
 .storyLeadGrid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -178,8 +161,6 @@
 }
 
 .pillarEntry {
-  background: transparent;
-  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -189,14 +170,14 @@
   font-size: 20px;
   font-weight: 500;
   line-height: 1.3;
-  color: var(--ink);
+  color: var(--ink-strong);
 }
 
 .pillarDetail {
   font-size: 16px;
   line-height: 1.55;
   color: var(--ink);
-  max-width: 56ch;
+  max-width: 58ch;
 }
 
 .videoCol {
@@ -210,7 +191,7 @@
   width: 100%;
   aspect-ratio: 16 / 9;
   background: var(--band-dark);
-  overflow: clip;
+  overflow: hidden;
 }
 
 .loomVideo {
@@ -235,15 +216,10 @@
   gap: 16px;
 }
 
-.specRow,
-.specRowFull {
+.specRow {
   display: flex;
   flex-direction: column;
   gap: 2px;
-}
-
-.specRowFull {
-  grid-column: span 2;
 }
 
 .specKey {
@@ -258,177 +234,70 @@
   color: var(--band-dark-ink);
 }
 
-/* Single white surface for Timeline & Changelog */
-.timelineSurface {
-  background: var(--surface-white);
-  padding: clamp(22px, 3vw, 36px);
-  display: flex;
-  flex-direction: column;
-  gap: 28px;
-}
-
-.timelineRow,
-.changelogRow {
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  gap: 24px;
-  align-items: start;
-}
-
-.timelinePeriod {
-  font-size: 20px;
-  font-weight: 500;
-  color: var(--accent-tint-ink);
-  font-variant-numeric: tabular-nums;
-}
-
-.timelineBody,
-.changelogBody {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-/* 4 Factories tab — single primary white cards (zero grey-in-grey) */
-.factoriesGrid {
+.infraGrid,
+.storesGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
 }
 
-.factoryCard {
+.infraCard,
+.storeCard {
   background: var(--surface-white);
   padding: 26px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-}
-
-.factoryHead {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
   gap: 12px;
-  flex-wrap: wrap;
+  transition: background-color var(--t-hover) ease;
 }
 
-.factoryName {
-  font-size: 20px;
-  font-weight: 500;
-  color: var(--ink);
-}
-
-.factoryCity {
-  font-size: 14px;
-  color: var(--ink-secondary);
-  margin-top: 2px;
-}
-
-.verifiedTag {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--accent-tint-ink);
-}
-
-.factoryMetaGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px 16px;
-}
-
-.factoryMetaKey {
-  font-size: 14px;
-  color: var(--ink-secondary);
-}
-
-.factoryMetaVal {
-  font-size: 16px;
-  font-weight: 500;
-  line-height: 1.45;
-  color: var(--ink);
-}
-
-.qcBox {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.qcLabel {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--ink-secondary);
-}
-
-.qcList {
-  padding-left: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.qcItem {
-  font-size: 16px;
-  line-height: 1.5;
-  color: var(--ink);
-  max-width: 56ch;
-}
-
-.factoryProductsStrip {
-  margin-top: auto;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.factoryProdThumb {
-  position: relative;
-  width: 56px;
-  height: 74px;
+.storeCard:hover {
   background: var(--surface-subtle);
-  overflow: clip;
-  display: block;
 }
 
-.factoryProdImg {
-  object-fit: cover;
-  object-position: center;
-}
-
-.factoryProdModel {
-  object-fit: cover;
-  object-position: top center;
-}
-
-.factoryLinkBox {
-  margin-left: auto;
-}
-
-/* Changelog tab */
-.changelogMeta {
+.storeHead {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.versionText {
+.storeName {
   font-size: 20px;
   font-weight: 500;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
+  color: var(--ink-strong);
 }
 
-.dateText {
+.storeHost {
   font-size: 14px;
   color: var(--ink-secondary);
-  font-variant-numeric: tabular-nums;
 }
 
-/* Bottom CTA Band — accent-tint field */
+.storeLink {
+  margin-top: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.timelineSurface {
+  background: var(--surface-white);
+  padding: clamp(24px, 3vw, 36px);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.stepRow {
+  padding-left: 18px;
+  border-left: 3px solid var(--accent);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .ctaBand {
   margin-top: clamp(56px, 7vw, 96px);
   background: var(--accent-tint);
@@ -447,9 +316,9 @@
 }
 
 .ctaHeading {
-  font-size: 24px;
+  font-size: 20px;
   font-weight: 500;
-  line-height: 1.2;
+  line-height: 1.25;
   color: var(--ink-strong);
 }
 
@@ -469,7 +338,8 @@
 @media (max-width: 1080px) {
   .heroGrid,
   .storyLeadGrid,
-  .factoriesGrid {
+  .infraGrid,
+  .storesGrid {
     grid-template-columns: 1fr;
     gap: 24px;
   }
@@ -480,12 +350,6 @@
   .videoCol {
     grid-column: auto;
   }
-
-  .timelineRow,
-  .changelogRow {
-    grid-template-columns: 1fr;
-    gap: 10px;
-  }
 }
 
 @media (max-width: 768px) {
@@ -495,23 +359,6 @@
 
   .lead {
     font-size: 16px;
-  }
-
-  .sectionTitle {
-    font-size: 24px;
-  }
-
-  .factoryMetaGrid {
-    grid-template-columns: 1fr;
-  }
-
-  .specRowFull {
-    grid-column: auto;
-  }
-
-  .factoryLinkBox {
-    margin-left: 0;
-    width: 100%;
   }
 
   .tabBtn {

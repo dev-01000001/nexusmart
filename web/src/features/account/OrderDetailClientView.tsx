@@ -3,16 +3,22 @@
 import React, { Suspense, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ORDER_STATUS_META, PAYMENT_METHOD_LABELS, PAYMENT_STATUS_META, PRODUCTS } from "@/data";
-import type { OrderStatus, Product, Shop, StatusTone } from "@/data";
+import {
+  ORDER_STATUS_META,
+  PAYMENT_METHOD_LABELS,
+  PAYMENT_STATUS_META,
+  type OrderStatus,
+  type StatusTone,
+} from "@/data/orders";
+import type { Product } from "@/data/products";
 import { ApiError, api } from "@/lib/api";
 import { formatDateTimeVi, formatSignedVnd, formatVnd } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
-import { Button, IconChat, StateView } from "@/components";
+import { Button, StateView } from "@/components";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import shared from "@/features/commerce/commerce.module.css";
-import styles from "@/app/(shop)/don-hang/[id]/page.module.css";
+import styles from "./OrderDetailClientView.module.css";
 import type { OrderView } from "./orderView";
 
 const STANDARD_STEPS: Array<{ status: OrderStatus; label: string }> = [
@@ -25,7 +31,7 @@ const STANDARD_STEPS: Array<{ status: OrderStatus; label: string }> = [
 const CANCEL_REASONS = [
   "Thay đổi địa chỉ nhận hàng sang tỉnh/phường khác",
   "Muốn đổi size hoặc chọn thêm màu khác",
-  "Quên áp mã giảm giá gian hàng hoặc mã freeship",
+  "Quên áp mã giảm giá của cửa hàng",
   "Đặt trùng đơn hàng, không còn nhu cầu",
 ];
 
@@ -44,23 +50,23 @@ function toneClass(tone: StatusTone): string {
 }
 
 export interface OrderDetailClientViewProps {
+  brandName: string;
   orderId: string;
   initialOrder: OrderView | null;
-  shop?: Shop;
   suggestedProducts: Product[];
   initialError?: string | null;
 }
 
 function OrderDetailInner({
+  brandName,
   orderId,
   initialOrder,
-  shop,
   suggestedProducts,
   initialError = null,
 }: OrderDetailClientViewProps) {
   const router = useRouter();
   const viewState = usePageStateParam();
-  const { openChat, addToCart, showToast } = useStore();
+  const { addToCart, showToast } = useStore();
 
   const [order, setOrder] = useState<OrderView | null>(initialOrder);
   const [cancelReason, setCancelReason] = useState(CANCEL_REASONS[0]);
@@ -82,8 +88,6 @@ function OrderDetailInner({
   useRevealOnScroll(
     `${viewState ?? "live"}-${order?.id ?? "none"}-${order?.status ?? ""}-${order?.paymentStatus ?? ""}`
   );
-
-  const addonProducts = suggestedProducts.length > 0 ? suggestedProducts : PRODUCTS.slice(0, 4);
 
   const handleReorder = async () => {
     if (!order) return;
@@ -176,7 +180,7 @@ function OrderDetailInner({
         { method: "POST" }
       );
       setOrder(res.order);
-      showToast("Đã xác nhận nhận hàng. Cảm ơn bạn đã mua sắm tại NexusMart.");
+      showToast(`Đã xác nhận nhận hàng. Cảm ơn bạn đã mua sắm tại ${brandName}.`);
       router.refresh();
     } catch (err) {
       setConfirmError(
@@ -209,7 +213,7 @@ function OrderDetailInner({
       );
       setOrder(res.order);
       setReturnDetail("");
-      showToast("Đã gửi yêu cầu đổi trả tới gian hàng.");
+      showToast(`Đã gửi yêu cầu đổi trả tới ${brandName}.`);
       router.refresh();
     } catch (err) {
       setReturnError(
@@ -248,7 +252,6 @@ function OrderDetailInner({
           <h2 className={shared.sectionTitle}>Thông tin đơn</h2>
           <StateView kind="loading" title="Đang tải chi tiết đơn hàng..." rows={5} />
         </section>
-        <ProductAddonStrip title="Sản phẩm cơ bản từ NexusMart" products={addonProducts} />
       </div>
     );
   }
@@ -277,7 +280,6 @@ function OrderDetailInner({
             actionHref="/don-hang"
           />
         </section>
-        <ProductAddonStrip title="Sản phẩm gợi ý" products={addonProducts} />
       </div>
     );
   }
@@ -290,7 +292,7 @@ function OrderDetailInner({
           <div className={shared.headerLeadGroup}>
             <h1 className={shared.pageTitle}>Không tìm thấy đơn</h1>
             <p className={styles.detailLead}>
-              Mã đơn hàng bạn mở không thuộc tài khoản hiện tại hoặc không còn tồn tại.
+              Mã đơn hàng bạn mở không thuộc tài khoản hiện tại tại {brandName}.
             </p>
           </div>
         </section>
@@ -304,7 +306,6 @@ function OrderDetailInner({
             actionHref="/don-hang"
           />
         </section>
-        <ProductAddonStrip title="Gợi ý sản phẩm cơ bản" products={addonProducts} />
       </div>
     );
   }
@@ -318,7 +319,6 @@ function OrderDetailInner({
     Boolean(order.paymentId);
   const currentStepIdx = STANDARD_STEPS.findIndex((s) => s.status === order.status);
   const isTerminalSpecial = order.status === "da_huy" || order.status === "yeu_cau_tra_hang";
-  const shopSlug = order.shopSlug ?? shop?.slug;
 
   return (
     <div className={shared.page}>
@@ -334,7 +334,7 @@ function OrderDetailInner({
             </span>
           </h1>
           <p className={styles.detailLead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
-            Đơn hàng tại <strong>{order.shopName}</strong>
+            Đơn hàng tại <strong>{brandName}</strong>
             {order.createdAt ? (
               <>
                 , đặt lúc <span className="num">{formatDateTimeVi(order.createdAt)}</span>
@@ -357,10 +357,6 @@ function OrderDetailInner({
           <span className={`${shared.statusTag} ${toneClass(statusMeta.tone)}`}>
             {statusMeta.label}
           </span>
-          <Button variant="secondary" size="md" onClick={() => openChat(order.shopId)}>
-            <IconChat size={15} />
-            <span>Chat xưởng</span>
-          </Button>
           <Button
             variant="ink"
             size="md"
@@ -374,7 +370,6 @@ function OrderDetailInner({
 
       <section className={shared.section}>
         <div className={styles.detailGrid}>
-          {/* Left column: VietQR pending notice + ONE white order sheet + real post-purchase actions */}
           <div className={styles.mainCol}>
             {isUnpaidQr && (
               <div
@@ -423,7 +418,6 @@ function OrderDetailInner({
             )}
 
             <div className={styles.orderSheet}>
-              {/* Timeline section */}
               <div data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
                 <div className={shared.sectionHead}>
                   <h2 className={shared.sectionTitle}>Tiến trình đơn hàng</h2>
@@ -487,7 +481,6 @@ function OrderDetailInner({
                 )}
               </div>
 
-              {/* Ordered products */}
               <div
                 className={styles.sheetDivider}
                 data-rise=""
@@ -495,11 +488,9 @@ function OrderDetailInner({
               >
                 <div className={shared.sectionHead}>
                   <h2 className={shared.sectionTitle}>Sản phẩm đã đặt</h2>
-                  {shopSlug && (
-                    <Link href={`/gian-hang/${shopSlug}`} className={shared.breadcrumbLink}>
-                      Xem gian hàng {shop?.shortName ?? order.shopName}
-                    </Link>
-                  )}
+                  <Link href="/san-pham" className={shared.breadcrumbLink}>
+                    Xem thêm tại {brandName}
+                  </Link>
                 </div>
 
                 <div className={styles.itemStack}>
@@ -538,13 +529,12 @@ function OrderDetailInner({
               </div>
             </div>
 
-            {/* Confirm received when DELIVERED */}
             {order.canConfirmReceived && (
               <div className={styles.unboxedSection} data-reveal="">
                 <h2 className={shared.sectionTitle}>Xác nhận đã nhận hàng</h2>
                 <p className={styles.actionPanelDesc}>
                   Nếu bạn đã kiểm tra đủ sản phẩm và hài lòng với kiện hàng, hãy xác nhận để hoàn
-                  tất đơn hàng và nhận Xu thưởng.
+                  tất đơn hàng.
                 </p>
                 {confirmError && (
                   <p className={shared.fieldError} role="alert">
@@ -565,7 +555,6 @@ function OrderDetailInner({
               </div>
             )}
 
-            {/* Cancel order form when backend allows cancellation */}
             {order.canCancel && (
               <form className={styles.unboxedSection} onSubmit={handleCancelSubmit} data-reveal="">
                 <h2 className={shared.sectionTitle}>Hủy đơn trước khi bàn giao vận chuyển</h2>
@@ -608,7 +597,6 @@ function OrderDetailInner({
               </form>
             )}
 
-            {/* Return request form when DELIVERED */}
             {order.canRequestReturn && (
               <form
                 className={styles.unboxedSection}
@@ -621,8 +609,8 @@ function OrderDetailInner({
                   <span className={`${shared.statusTag} ${shared.tonePos}`}>Hỗ trợ sau mua</span>
                 </div>
                 <p className={styles.actionPanelDesc}>
-                  Nếu sản phẩm chưa vừa size hoặc có lỗi từ xưởng, hãy gửi yêu cầu để gian hàng tiếp
-                  nhận đổi trả hoặc hoàn tiền.
+                  Nếu sản phẩm chưa vừa size hoặc có lỗi sản xuất, hãy gửi yêu cầu để {brandName}{" "}
+                  tiếp nhận đổi trả hoặc hoàn tiền.
                 </p>
 
                 <div className={shared.field}>
@@ -673,14 +661,12 @@ function OrderDetailInner({
             )}
           </div>
 
-          {/* Right column: ONE unified white summary sheet with dark total footer */}
           <aside className={styles.sideCol}>
             <div
               className={styles.summarySheet}
               data-rise=""
               style={{ "--i": 3 } as React.CSSProperties}
             >
-              {/* Delivery & Recipient */}
               <div className={styles.sideBlock}>
                 <h2 className={styles.sideTitle}>Địa chỉ & Giao hàng</h2>
                 <p className={styles.sideLine}>
@@ -698,7 +684,6 @@ function OrderDetailInner({
                 )}
               </div>
 
-              {/* Payment summary */}
               <div className={styles.sideBlock}>
                 <h2 className={styles.sideTitle}>Chi tiết thanh toán</h2>
                 <p className={styles.sideLine}>{PAYMENT_METHOD_LABELS[order.paymentMethod]}</p>
@@ -715,7 +700,7 @@ function OrderDetailInner({
                     <dd className="num">{formatVnd(order.subtotal)}</dd>
                   </div>
                   <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Voucher gian hàng</dt>
+                    <dt className={styles.ledgerLabel}>Mã giảm giá cửa hàng</dt>
                     <dd className={`${styles.ledgerDiscount} num`}>
                       {order.shopVoucherDiscount > 0
                         ? formatSignedVnd(-order.shopVoucherDiscount)
@@ -723,28 +708,8 @@ function OrderDetailInner({
                     </dd>
                   </div>
                   <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Voucher toàn sàn</dt>
-                    <dd className={`${styles.ledgerDiscount} num`}>
-                      {order.platformVoucherDiscount > 0
-                        ? formatSignedVnd(-order.platformVoucherDiscount)
-                        : "0₫"}
-                    </dd>
-                  </div>
-                  <div className={styles.ledgerRow}>
                     <dt className={styles.ledgerLabel}>Phí vận chuyển</dt>
                     <dd className="num">{formatVnd(order.shippingFee)}</dd>
-                  </div>
-                  <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Giảm phí vận chuyển</dt>
-                    <dd className={`${styles.ledgerDiscount} num`}>
-                      {order.freeshipDiscount > 0 ? formatSignedVnd(-order.freeshipDiscount) : "0₫"}
-                    </dd>
-                  </div>
-                  <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Trừ Xu NexusMart</dt>
-                    <dd className={`${styles.ledgerDiscount} num`}>
-                      {order.coinDiscount > 0 ? formatSignedVnd(-order.coinDiscount) : "0₫"}
-                    </dd>
                   </div>
                 </dl>
               </div>
@@ -758,11 +723,13 @@ function OrderDetailInner({
         </div>
       </section>
 
-      <ProductAddonStrip
-        title={`Gợi ý thêm từ ${order.shopName}`}
-        subtitle="Đồ cơ bản cùng xưởng dệt, tiện gộp voucher cho đơn kế tiếp"
-        products={addonProducts}
-      />
+      {suggestedProducts.length > 0 && (
+        <ProductAddonStrip
+          title={`Gợi ý thêm từ ${brandName}`}
+          subtitle="Sản phẩm đang sẵn hàng tại kho của cửa hàng"
+          products={suggestedProducts}
+        />
+      )}
     </div>
   );
 }

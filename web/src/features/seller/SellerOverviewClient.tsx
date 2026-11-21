@@ -15,6 +15,7 @@ import {
 import { SellerTrendChart } from "./SellerTrendChart";
 import { getSalesChannelMeta } from "@/lib/salesChannel";
 import { useSellerContext } from "./SellerShell";
+import { SellerSiteStatus } from "./SellerSiteStatus";
 import {
   computeSellerNetReceivable,
   getNextBackendOrderAction,
@@ -299,6 +300,8 @@ export function SellerOverviewClient({
         </div>
       </header>
 
+      <SellerSiteStatus />
+
       {uiState === "loading" && (
         <StateView
           kind="loading"
@@ -324,7 +327,7 @@ export function SellerOverviewClient({
           kind="empty"
           surface="app"
           title="Gian hàng chưa phát sinh đơn hàng trong 7 ngày qua"
-          message="Đăng sản phẩm có đủ biến thể size và đăng ký suất Flash sale để bắt đầu ghi nhận doanh thu."
+          message="Đăng sản phẩm có đủ biến thể size và xuất bản site để bắt đầu nhận đơn."
           actionLabel="Thêm sản phẩm đầu tiên"
           actionHref="/seller/san-pham/moi"
         />
@@ -482,7 +485,7 @@ export function SellerOverviewClient({
                       </td>
                     </tr>
                     <tr>
-                      <td>Doanh thu thuần sau phí sàn</td>
+                      <td>Doanh thu thuần sau phí</td>
                       <td className={`${common.numCol} ${styles.comparePrior}`}>
                         {formatVnd(stats.prior7dNet)}
                       </td>
@@ -519,7 +522,7 @@ export function SellerOverviewClient({
                     </div>
                   </div>
                   <div className={styles.compareMobileRow}>
-                    <span className={styles.compareMobileLabel}>Doanh thu thuần sau phí sàn</span>
+                    <span className={styles.compareMobileLabel}>Doanh thu thuần sau phí</span>
                     <div className={styles.compareMobileFigs}>
                       <span className={styles.compareMobileVal}>{formatVnd(stats.total7dNet)}</span>
                       <span className={deltaClass(netPct.direction)}>

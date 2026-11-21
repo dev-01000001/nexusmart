@@ -143,25 +143,6 @@ export interface GwAdminProduct {
   created_at?: string;
 }
 
-export interface GwAdminVoucher {
-  id: string;
-  code: string;
-  name: string;
-  scope: string;
-  shop_id: string;
-  discount_type: string;
-  value_vnd: number;
-  discount_percent: number;
-  max_discount_vnd: number;
-  min_order_vnd: number;
-  quota: number;
-  used_count: number;
-  remaining_quota: number;
-  starts_at?: string;
-  ends_at?: string;
-  is_active: boolean;
-}
-
 export interface GwAdminFlashSaleItem {
   id: string;
   flash_sale_id: string;
@@ -232,6 +213,8 @@ export function getAuditTargetLabelVi(targetType: string): string {
   switch (targetType.toLowerCase()) {
     case "shop":
       return "Gian hàng";
+    case "site":
+      return "Site gian hàng";
     case "user":
       return "Tài khoản";
     case "product":
@@ -253,6 +236,16 @@ export function getAuditActionLabelVi(action: string): string {
       return "Cập nhật trạng thái tài khoản";
     case "admin.user.role":
       return "Thay đổi phân quyền tài khoản";
+    case "admin.site.suspend":
+      return "Tạm khóa site gian hàng";
+    case "admin.site.unsuspend":
+      return "Mở khóa site gian hàng";
+    case "site.save_draft":
+      return "Lưu bản nháp site";
+    case "site.publish":
+      return "Xuất bản site gian hàng";
+    case "site.rollback":
+      return "Khôi phục phiên bản site";
     default:
       return action || "Thao tác quản trị";
   }

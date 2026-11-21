@@ -129,6 +129,7 @@ func New(deps Dependencies) http.Handler {
 
 			api.Get("/shops", h.handleListShops)
 			api.Get("/categories", h.handleListCategories)
+			api.Get("/sites", h.handleListPublishedSites)
 			api.Get("/sites/by-host", h.handleGetSiteByHost)
 			api.Get("/sites/by-shop/{shop_id}", h.handleGetSiteByShop)
 

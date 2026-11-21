@@ -2,57 +2,53 @@
 
 /**
  * In-memory mock state for Seller Center tabs/screens that do NOT have backend RPCs yet:
- * - /seller/tuong-tac (reviews, Q&A, FAQs, lookbooks)
+ * - /seller/tuong-tac (reviews, Q&A, FAQs)
  * - /seller/ho-so (factory QC profile, custom size charts, local ops config)
- * - /seller/khuyen-mai mock-only tabs (Combo & Mua kèm, Chiến dịch & BST sàn)
  * - /seller/chat (1-1 mock chat threads)
  *
  * Real backend entities (products, SKU stock, orders, shop vouchers, flash sale registrations,
- * shop profile, seller balances) are NEVER stored here and NEVER stored in localStorage.
+ * shop profile, site config, seller balances) are NEVER stored here and NEVER stored in localStorage.
  */
 import { useSyncExternalStore } from "react";
 import {
-  INITIAL_BIRTHDAY_COFUND,
-  INITIAL_CAMPAIGN_REGISTRATIONS,
-  INITIAL_CHAT_THREADS,
   INITIAL_FACTORY_PROFILES,
   INITIAL_OPERATIONS_CONFIG,
-  INITIAL_SELLER_ADDON_DEALS,
-  INITIAL_SELLER_COMBOS,
   INITIAL_SELLER_FAQS,
-  INITIAL_SELLER_LOOKBOOKS,
   INITIAL_SELLER_QUESTIONS,
   INITIAL_SELLER_REVIEWS,
-  INITIAL_SELLER_TIER_RULES,
   INITIAL_SHOP_SIZE_CHARTS,
-  ORDER_STATUS_META,
-} from "@/data";
+} from "@/data/seller";
 import type {
-  ChatThread,
-  OrderStatusMeta,
-  SellerAddonDeal,
-  SellerBirthdayCofundConfig,
-  SellerBundleCombo,
-  SellerCampaignRegistration,
   SellerFactoryProfile,
-  SellerLookbookPost,
   SellerOperationsConfig,
   SellerProductQuestion,
   SellerSampleReview,
-  SellerShopCollection,
   SellerShopFaqItem,
   SellerShopSizeCharts,
-  SellerTierDiscountRule,
-} from "@/data";
+} from "@/data/seller";
 
-export function getSafeOrderStatusMeta(status: string): OrderStatusMeta {
-  const known = (ORDER_STATUS_META as Record<string, OrderStatusMeta | undefined>)[status];
-  if (known) return known;
-  return {
-    label: "Chờ thanh toán",
-    tone: "warn",
-    description: "Đơn đang chờ người mua hoàn tất thanh toán trực tuyến.",
+export interface ChatMessage {
+  id: string;
+  sender: "buyer" | "seller";
+  senderName: string;
+  text: string;
+  timestamp: string;
+}
+
+export interface ChatThread {
+  id: string;
+  shopId: string;
+  shopName: string;
+  buyerName: string;
+  productRef?: {
+    slug: string;
+    name: string;
+    price: number;
+    image: string;
   };
+  unreadByBuyer: number;
+  unreadBySeller: number;
+  messages: ChatMessage[];
 }
 
 export const EMPTY_DASH = "\u2014";
@@ -90,18 +86,9 @@ export function formatDeltaPct(
 
 interface SellerMockState {
   chatThreads: ChatThread[];
-  // Wave 2 mock-only promotions
-  combos: SellerBundleCombo[];
-  tierRules: SellerTierDiscountRule[];
-  addonDeals: SellerAddonDeal[];
-  birthdayConfigs: Record<string, SellerBirthdayCofundConfig>;
-  campaignRegs: SellerCampaignRegistration[];
-  // Wave 2 mock-only interaction & content
   reviews: SellerSampleReview[];
   questions: SellerProductQuestion[];
   faqs: SellerShopFaqItem[];
-  lookbooks: SellerLookbookPost[];
-  // Wave 2 mock-only factory profile, size charts & operations
   factoryProfiles: Record<string, SellerFactoryProfile>;
   sizeCharts: Record<string, SellerShopSizeCharts>;
   opsConfigs: Record<string, SellerOperationsConfig>;
@@ -109,7 +96,89 @@ interface SellerMockState {
 
 function buildInitialMockChatThreads(): ChatThread[] {
   return [
-    ...INITIAL_CHAT_THREADS,
+    {
+      id: "thr-bach-dang",
+      shopId: "shop-bach-dang",
+      shopName: "Xưởng Dệt Bạch Đằng",
+      buyerName: "Nguyễn Minh Quân",
+      productRef: {
+        slug: "ao-thun-cotton-compact-trang",
+        name: "Áo thun Cotton Compact 220gsm Trắng",
+        price: 179000,
+        image: "/products/ao-thun-cotton-trang.png",
+      },
+      unreadByBuyer: 1,
+      unreadBySeller: 0,
+      messages: [
+        {
+          id: "msg-1",
+          sender: "buyer",
+          senderName: "Nguyễn Minh Quân",
+          text: "Chào shop, mình cao 1m74 nặng 71 kg thì mặc áo thun Cotton 220gsm size L có bị rộng vai không?",
+          timestamp: "2026-11-20T01:12:00+07:00",
+        },
+        {
+          id: "msg-2",
+          sender: "seller",
+          senderName: "Xưởng Dệt Bạch Đằng",
+          text: "Chào anh Quân, thông số 1m74 và 71 kg mặc size L vừa gọn vai, chiều dài áo 71 cm. Nếu thích mặc ôm sát hơn thì mới cần xuống size M ạ.",
+          timestamp: "2026-11-20T01:18:00+07:00",
+        },
+      ],
+    },
+    {
+      id: "thr-da-nang",
+      shopId: "shop-da-nang",
+      shopName: "Sợi Tự Nhiên Đà Nẵng",
+      buyerName: "Nguyễn Minh Quân",
+      productRef: {
+        slug: "ao-polo-pique-cotton-kem-nhat",
+        name: "Áo Polo Pique Cotton Kem nhạt",
+        price: 289000,
+        image: "/products/ao-polo-pique-kem.png",
+      },
+      unreadByBuyer: 0,
+      unreadBySeller: 1,
+      messages: [
+        {
+          id: "msg-3",
+          sender: "buyer",
+          senderName: "Nguyễn Minh Quân",
+          text: "Đơn NM-261119-098 của mình dự kiến khi nào bàn giao đơn vị vận chuyển vậy shop?",
+          timestamp: "2026-11-19T19:40:00+07:00",
+        },
+      ],
+    },
+    {
+      id: "thr-sai-gon",
+      shopId: "shop-sai-gon",
+      shopName: "Kho Basic Sài Gòn",
+      buyerName: "Trần Hải Đăng",
+      productRef: {
+        slug: "ao-thun-the-thao-dryfit-xanh-co-vit",
+        name: "Áo thun Thể thao Dry-Fit Xanh cổ vịt",
+        price: 159000,
+        image: "/products/ao-thun-dryfit-co-vit.png",
+      },
+      unreadByBuyer: 0,
+      unreadBySeller: 1,
+      messages: [
+        {
+          id: "msg-4",
+          sender: "buyer",
+          senderName: "Trần Hải Đăng",
+          text: "Áo Dry-Fit xanh cổ vịt giao về Phường Đống Đa, Hà Nội mất mấy ngày ạ?",
+          timestamp: "2026-11-19T21:05:00+07:00",
+        },
+        {
+          id: "msg-5",
+          sender: "seller",
+          senderName: "Kho Basic Sài Gòn",
+          text: "Đơn đi Thành phố Hà Nội giao tiêu chuẩn trong 1-2 ngày, phí vận chuyển 22.000₫ hoặc miễn phí khi đạt từ 199.000₫ tại cửa hàng ạ.",
+          timestamp: "2026-11-19T21:14:00+07:00",
+        },
+      ],
+    },
     {
       id: "thr-bd-extra-1",
       shopId: "shop-bach-dang",
@@ -235,15 +304,9 @@ function buildInitialMockChatThreads(): ChatThread[] {
 
 let sessionState: SellerMockState = {
   chatThreads: buildInitialMockChatThreads(),
-  combos: INITIAL_SELLER_COMBOS,
-  tierRules: INITIAL_SELLER_TIER_RULES,
-  addonDeals: INITIAL_SELLER_ADDON_DEALS,
-  birthdayConfigs: INITIAL_BIRTHDAY_COFUND,
-  campaignRegs: INITIAL_CAMPAIGN_REGISTRATIONS,
   reviews: INITIAL_SELLER_REVIEWS,
   questions: INITIAL_SELLER_QUESTIONS,
   faqs: INITIAL_SELLER_FAQS,
-  lookbooks: INITIAL_SELLER_LOOKBOOKS,
   factoryProfiles: INITIAL_FACTORY_PROFILES,
   sizeCharts: INITIAL_SHOP_SIZE_CHARTS,
   opsConfigs: INITIAL_OPERATIONS_CONFIG,
@@ -306,80 +369,7 @@ export function getShopMockChatThreads(shopKey: string, session: SellerMockState
   return session.chatThreads.filter((t) => t.shopId === shopKey);
 }
 
-/* ---------- Wave 2 Mock-Only Promotions Actions ---------- */
-
-export function createSellerCombo(combo: SellerBundleCombo) {
-  sessionState = {
-    ...sessionState,
-    combos: [combo, ...sessionState.combos],
-  };
-  emitChange();
-}
-
-export function toggleSellerComboActive(comboId: string, active: boolean) {
-  sessionState = {
-    ...sessionState,
-    combos: sessionState.combos.map((c) => (c.id === comboId ? { ...c, active } : c)),
-  };
-  emitChange();
-}
-
-export function createSellerTierRule(rule: SellerTierDiscountRule) {
-  sessionState = {
-    ...sessionState,
-    tierRules: [rule, ...sessionState.tierRules],
-  };
-  emitChange();
-}
-
-export function toggleSellerTierRuleActive(ruleId: string, active: boolean) {
-  sessionState = {
-    ...sessionState,
-    tierRules: sessionState.tierRules.map((r) => (r.id === ruleId ? { ...r, active } : r)),
-  };
-  emitChange();
-}
-
-export function createSellerAddonDeal(deal: SellerAddonDeal) {
-  sessionState = {
-    ...sessionState,
-    addonDeals: [deal, ...sessionState.addonDeals],
-  };
-  emitChange();
-}
-
-export function toggleSellerAddonDealActive(dealId: string, active: boolean) {
-  sessionState = {
-    ...sessionState,
-    addonDeals: sessionState.addonDeals.map((d) => (d.id === dealId ? { ...d, active } : d)),
-  };
-  emitChange();
-}
-
-export function updateSellerBirthdayConfig(
-  shopKey: string,
-  patch: Partial<SellerBirthdayCofundConfig>
-) {
-  const prev = sessionState.birthdayConfigs[shopKey] ?? INITIAL_BIRTHDAY_COFUND["shop-bach-dang"];
-  sessionState = {
-    ...sessionState,
-    birthdayConfigs: {
-      ...sessionState.birthdayConfigs,
-      [shopKey]: { ...prev, ...patch },
-    },
-  };
-  emitChange();
-}
-
-export function registerSellerCampaignSlot(reg: SellerCampaignRegistration) {
-  sessionState = {
-    ...sessionState,
-    campaignRegs: [reg, ...sessionState.campaignRegs],
-  };
-  emitChange();
-}
-
-/* ---------- Wave 2 Mock-Only Interaction & Content Actions (/seller/tuong-tac) ---------- */
+/* ---------- Interaction Actions (/seller/tuong-tac) ---------- */
 
 export function replyToSellerReview(reviewId: string, replyText: string) {
   const clean = replyText.trim();
@@ -423,30 +413,6 @@ export function toggleSellerFaqActive(faqId: string, active: boolean) {
   emitChange();
 }
 
-export function createSellerLookbookPost(post: SellerLookbookPost) {
-  sessionState = {
-    ...sessionState,
-    lookbooks: [post, ...sessionState.lookbooks],
-  };
-  emitChange();
-}
-
-export function submitSellerLookbookForReview(postId: string) {
-  sessionState = {
-    ...sessionState,
-    lookbooks: sessionState.lookbooks.map((lb) =>
-      lb.id === postId
-        ? {
-            ...lb,
-            status: "cho_duyet",
-            adminNote: "Đã gửi hàng đợi kiểm duyệt nội dung sàn NexusMart.",
-          }
-        : lb
-    ),
-  };
-  emitChange();
-}
-
 export function getPendingInteractionCount(shopKey: string, session: SellerMockState): number {
   const unansweredReviews = session.reviews.filter((r) => r.shopId === shopKey && !r.reply).length;
   const unansweredQuestions = session.questions.filter(
@@ -455,7 +421,7 @@ export function getPendingInteractionCount(shopKey: string, session: SellerMockS
   return unansweredReviews + unansweredQuestions;
 }
 
-/* ---------- Wave 2 Mock-Only Factory Profile, Size Charts & Operations (/seller/ho-so) ---------- */
+/* ---------- Factory Profile, Size Charts & Operations (/seller/ho-so) ---------- */
 
 export function getShopFactoryProfileWithSession(
   shopKey: string,
@@ -471,36 +437,6 @@ export function updateShopFactoryProfile(shopKey: string, patch: Partial<SellerF
     factoryProfiles: {
       ...sessionState.factoryProfiles,
       [shopKey]: { ...prev, ...patch },
-    },
-  };
-  emitChange();
-}
-
-export function addShopCollectionItem(shopKey: string, collection: SellerShopCollection) {
-  const prev = getShopFactoryProfileWithSession(shopKey, sessionState);
-  sessionState = {
-    ...sessionState,
-    factoryProfiles: {
-      ...sessionState.factoryProfiles,
-      [shopKey]: {
-        ...prev,
-        collections: [collection, ...prev.collections],
-      },
-    },
-  };
-  emitChange();
-}
-
-export function toggleShopMenuLinkVisibility(shopKey: string, menuId: string, visible: boolean) {
-  const prev = getShopFactoryProfileWithSession(shopKey, sessionState);
-  sessionState = {
-    ...sessionState,
-    factoryProfiles: {
-      ...sessionState.factoryProfiles,
-      [shopKey]: {
-        ...prev,
-        shopMenu: prev.shopMenu.map((m) => (m.id === menuId ? { ...m, visible } : m)),
-      },
     },
   };
   emitChange();

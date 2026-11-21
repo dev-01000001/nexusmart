@@ -1,11 +1,14 @@
 // Server-only helpers for Seller Site Editor, Draft Preview, and BFF Site routes.
 import { revalidatePath, revalidateTag } from "next/cache";
+import { headers } from "next/headers";
 import { getSiteRootDomain as readConfiguredRootDomain } from "@/lib/server/config";
 import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
+import { resolveRequestHost, resolveRequestProto } from "@/lib/server/http";
 import { parseSiteConfig } from "@/lib/site/types";
 import type { GwSellerShop } from "@/features/seller/sellerApiTypes";
 import type { GwSite, GwSiteVersion } from "./siteEditorTypes";
+import { summarizeSellerSite, type SellerSiteSummary } from "./siteSummary";
 
 export function getSiteRootDomain(): string {
   return readConfiguredRootDomain();
@@ -212,7 +215,8 @@ export function resolveSiteErrorMessage(err: unknown): {
     return {
       status: 409,
       code: "SITE_SUSPENDED",
-      message: "Site riêng đang bị tạm khóa bởi quản trị sàn, chưa thể xuất bản hoặc khôi phục.",
+      message:
+        "Site riêng đang bị tạm khóa bởi quản trị NexusMart, chưa thể xuất bản hoặc khôi phục.",
     };
   }
   if (detail.includes("shop") && detail.includes("active")) {
@@ -314,4 +318,18 @@ export async function loadSellerSiteVersionsServer(
       error: err instanceof GatewayError ? SAFE_MESSAGES[err.kind] : SAFE_MESSAGES.unavailable,
     };
   }
+}
+
+/**
+ * Site status for Seller Center chrome (shell + overview). Never throws: a gateway failure is
+ * reported as "none" so the shell still renders; the site editor shows the real error.
+ */
+export async function loadSellerSiteSummaryServer(): Promise<SellerSiteSummary> {
+  const site = await gw<{ site?: RawGwSite | null }>("/api/v1/seller/site")
+    .then((res) => normalizeGwSite(res.site))
+    .catch(() => null);
+  const h = await headers();
+  const rawHost = resolveRequestHost(h, "");
+  const proto = resolveRequestProto(h, `http://${rawHost || "localhost"}`);
+  return summarizeSellerSite(site, rawHost, proto);
 }

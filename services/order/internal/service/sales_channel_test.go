@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
 	promotionv1 "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
@@ -521,6 +523,87 @@ func TestSalesChannel_ImmutabilityAndLegacyBackwardCompat(t *testing.T) {
 	legacyList, err := h.svc.ListOrders(adminCtx, &orderv1.ListOrdersRequest{RoleScope: "admin", SalesChannel: "MARKETPLACE"})
 	if err != nil || legacyList.GetTotal() != 1 || legacyList.GetOrders()[0].GetId() != "legacy-ord-1" || legacyList.GetOrders()[0].GetSalesChannel() != SalesChannelMarketplace {
 		t.Fatalf("legacy order must appear under MARKETPLACE filter: total=%d orders=%+v err=%v", legacyList.GetTotal(), legacyList.GetOrders(), err)
+	}
+}
+
+func TestListOrders_StorefrontShopIDFilterAndOutboxStorefront(t *testing.T) {
+	h := newTestHarness()
+	buyer1Ctx := ctxWithUser("buyer-1", "buyer", "")
+	buyer2Ctx := ctxWithUser("buyer-2", "buyer", "")
+
+	shopA := uuid.NewString()
+	shopB := uuid.NewString()
+	now := time.Now().UTC()
+
+	// Seed 2 orders on shopA, 1 order on shopB, and 1 legacy MARKETPLACE order for buyer-1.
+	seedOrder := func(id, buyerID, shopID, ch, sfShop string, offset time.Duration) {
+		ts := now.Add(offset)
+		h.store.SeedLegacyOrder(
+			db.CheckoutGroup{ID: "grp-" + id, BuyerID: buyerID, Status: "COMPLETED", SalesChannel: ch, StorefrontShopID: sfShop, CreatedAt: ts, UpdatedAt: ts},
+			db.Order{ID: id, OrderCode: "NM-" + id, CheckoutGroupID: "grp-" + id, BuyerID: buyerID, ShopID: shopID, Status: "CONFIRMED", PaymentMethod: "COD", SalesChannel: ch, StorefrontShopID: sfShop, CreatedAt: ts, UpdatedAt: ts},
+			nil,
+		)
+	}
+	seedOrder("ord-a1", "buyer-1", shopA, SalesChannelStorefront, shopA, 1*time.Second)
+	seedOrder("ord-a2", "buyer-1", shopA, SalesChannelStorefront, shopA, 2*time.Second)
+	seedOrder("ord-b1", "buyer-1", shopB, SalesChannelStorefront, shopB, 3*time.Second)
+	seedOrder("ord-mp", "buyer-1", shopA, SalesChannelMarketplace, "", 4*time.Second)
+
+	// Filtering by shopA returns only the 2 STOREFRONT orders on shopA with exact pagination.
+	p1, err := h.svc.ListOrders(buyer1Ctx, &orderv1.ListOrdersRequest{RoleScope: "buyer", StorefrontShopId: shopA, Page: 1, PageSize: 1})
+	if err != nil || p1.GetTotal() != 2 || len(p1.GetOrders()) != 1 || p1.GetOrders()[0].GetId() != "ord-a2" {
+		t.Fatalf("shopA page 1: total=%d orders=%+v err=%v", p1.GetTotal(), p1.GetOrders(), err)
+	}
+	p2, err := h.svc.ListOrders(buyer1Ctx, &orderv1.ListOrdersRequest{RoleScope: "buyer", StorefrontShopId: shopA, Page: 2, PageSize: 1})
+	if err != nil || p2.GetTotal() != 2 || len(p2.GetOrders()) != 1 || p2.GetOrders()[0].GetId() != "ord-a1" {
+		t.Fatalf("shopA page 2: total=%d orders=%+v err=%v", p2.GetTotal(), p2.GetOrders(), err)
+	}
+	// Filtering by shopB returns only shopB order.
+	listB, err := h.svc.ListOrders(buyer1Ctx, &orderv1.ListOrdersRequest{RoleScope: "buyer", StorefrontShopId: shopB, Page: 1, PageSize: 20})
+	if err != nil || listB.GetTotal() != 1 || len(listB.GetOrders()) != 1 || listB.GetOrders()[0].GetId() != "ord-b1" {
+		t.Fatalf("shopB list: total=%d orders=%+v err=%v", listB.GetTotal(), listB.GetOrders(), err)
+	}
+	// Cross-buyer isolation: buyer-2 sees 0 orders even when filtering by shopA.
+	otherBuyer, err := h.svc.ListOrders(buyer2Ctx, &orderv1.ListOrdersRequest{RoleScope: "buyer", StorefrontShopId: shopA, Page: 1, PageSize: 20})
+	if err != nil || otherBuyer.GetTotal() != 0 || len(otherBuyer.GetOrders()) != 0 {
+		t.Fatalf("buyer-2 must not see buyer-1 orders: total=%d err=%v", otherBuyer.GetTotal(), err)
+	}
+	// Invalid UUID rejected cleanly.
+	if _, err := h.svc.ListOrders(buyer1Ctx, &orderv1.ListOrdersRequest{RoleScope: "buyer", StorefrontShopId: "not-a-uuid"}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("invalid storefront_shop_id must return InvalidArgument, got %v", err)
+	}
+
+	// Outbox events emitted on STOREFRONT checkout must include storefront_shop_id for site-scoped notifications.
+	resp, err := h.svc.CreateCheckout(buyer1Ctx, &orderv1.CreateCheckoutRequest{
+		IdempotencyKey:   "sf-outbox-check",
+		AddressId:        "addr-buyer-1",
+		Items:            []*orderv1.CheckoutItemInput{{SkuId: "sku-1", Quantity: 1}},
+		PaymentMethod:    orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD,
+		SalesChannel:     SalesChannelStorefront,
+		StorefrontShopId: "shop-1",
+	})
+	if err != nil || len(resp.GetOrders()) != 1 {
+		t.Fatalf("storefront checkout for outbox test: resp=%+v err=%v", resp, err)
+	}
+	var sawCreated, sawConfirmed bool
+	for _, ev := range h.store.OutboxEvents() {
+		switch ev.EventType {
+		case events.SubjectOrderCreated:
+			var p events.OrderCreatedPayload
+			if err := json.Unmarshal(ev.PayloadJSON, &p); err != nil || p.StorefrontShopID != "shop-1" {
+				t.Fatalf("order.created payload missing storefront_shop_id: %s err=%v", string(ev.PayloadJSON), err)
+			}
+			sawCreated = true
+		case events.SubjectOrderConfirmed:
+			var p events.OrderConfirmedPayload
+			if err := json.Unmarshal(ev.PayloadJSON, &p); err != nil || p.StorefrontShopID != "shop-1" {
+				t.Fatalf("order.confirmed payload missing storefront_shop_id: %s err=%v", string(ev.PayloadJSON), err)
+			}
+			sawConfirmed = true
+		}
+	}
+	if !sawCreated || !sawConfirmed {
+		t.Fatalf("expected order.created and order.confirmed outbox events, saw created=%v confirmed=%v", sawCreated, sawConfirmed)
 	}
 }
 

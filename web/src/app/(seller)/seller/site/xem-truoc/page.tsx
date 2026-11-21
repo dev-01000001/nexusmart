@@ -101,7 +101,7 @@ export default async function SellerSiteDraftPreviewPage() {
   const hdrs = await headers();
   const rawHost = resolveRequestHost(hdrs, `${rootDomain}`);
   const proto = resolveRequestProto(hdrs, `http://${rawHost}`);
-  const marketplaceOrigin = deriveMarketplaceOrigin({
+  const platformOrigin = deriveMarketplaceOrigin({
     rawHost,
     proto,
     rootDomain,
@@ -132,10 +132,7 @@ export default async function SellerSiteDraftPreviewPage() {
         <SiteShell
           config={draftConfig}
           shopName={shopName}
-          shopId={publicShop.id}
-          siteHost={hostDisplay}
-          activeNav="home"
-          marketplaceOrigin={marketplaceOrigin}
+          platformOrigin={platformOrigin}
           previewMode={true}
         >
           <SiteRenderer
@@ -144,8 +141,6 @@ export default async function SellerSiteDraftPreviewPage() {
             products={renderData.products}
             vouchers={renderData.vouchers}
             categories={renderData.categories}
-            marketplaceOrigin={marketplaceOrigin}
-            siteHost={hostDisplay}
             previewMode={true}
           />
         </SiteShell>

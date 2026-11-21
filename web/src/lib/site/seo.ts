@@ -1,5 +1,5 @@
 // Pure SEO helpers for multi-tenant subdomain sites (noindex thin-content rule,
-// marketplace canonical URL on site PDPs, and shop-branded OpenGraph metadata).
+// site-own canonical URL on site PDPs, and shop-branded OpenGraph metadata).
 import type { Metadata } from "next";
 import type { SiteConfig, SiteSection } from "./types";
 
@@ -28,7 +28,7 @@ function sectionHasSubstantiveContent(section: SiteSection): boolean {
 }
 
 /**
- * Thin/empty content rule (review-opus.md §4):
+ * Thin/empty content rule:
  * A site with zero visible content sections must emit `noindex` so search engines do not
  * index empty/boilerplate storefronts.
  */
@@ -87,27 +87,26 @@ export function buildSiteMetadata(opts: {
 }
 
 /**
- * Site PDP metadata: ALWAYS points `alternates.canonical` to the main marketplace PDP
- * (`<marketplaceOrigin>/san-pham/<slug>`) per review-opus.md §4.
+ * Site PDP metadata: `alternates.canonical` is ALWAYS the product's own URL on this site
+ * (`<siteOrigin>/san-pham/<slug>`), since there is no marketplace PDP.
  */
 export function buildSiteProductMetadata(opts: {
   config: SiteConfig;
   productName: string;
   productSlug: string;
   productDescription?: string;
-  marketplaceOrigin: string;
-  siteOrigin?: string;
+  siteOrigin: string;
 }): Metadata {
-  const canonicalUrl = `${opts.marketplaceOrigin.replace(/\/+$/, "")}/san-pham/${encodeURIComponent(
-    opts.productSlug
-  )}`;
+  const pathname = `/san-pham/${encodeURIComponent(opts.productSlug)}`;
+  const cleanOrigin = opts.siteOrigin.trim().replace(/\/+$/, "");
+  const canonicalUrl = cleanOrigin ? `${cleanOrigin}${pathname}` : pathname;
 
   return buildSiteMetadata({
     config: opts.config,
     pageTitle: opts.productName,
     description: opts.productDescription,
     canonicalUrl,
-    siteOrigin: opts.siteOrigin,
-    pathname: `/san-pham/${encodeURIComponent(opts.productSlug)}`,
+    siteOrigin: cleanOrigin || undefined,
+    pathname,
   });
 }

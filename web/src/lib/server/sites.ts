@@ -26,12 +26,91 @@ import {
   type SiteDTO,
   type SitePublicShopDTO,
 } from "@/lib/site/types";
-import { normalizeHostHeader } from "@/lib/site/host";
-import { GATEWAY_TIMEOUT_MS, GATEWAY_URL } from "./config";
+import { classifyHost, normalizeHostHeader } from "@/lib/site/host";
+import { GATEWAY_TIMEOUT_MS, GATEWAY_URL, getSiteRootDomain } from "./config";
 import { GatewayError, logServer } from "./errors";
 import { gw } from "./gateway";
+import { resolveRequestHost } from "./http";
+import { lookupPublishedSiteHost, publishedSiteHostCache } from "./siteLookup";
 
 const SITE_REVALIDATE_SECONDS = 30;
+
+/** The PUBLISHED site serving the current request, derived ONLY from the Host header. */
+export interface RequestSite {
+  siteId: string;
+  shopId: string;
+  /** Normalized site hostname (lowercase, no port). */
+  host: string;
+}
+
+/**
+ * Resolve the PUBLISHED site for a request from its `Host` (or `X-Forwarded-Host` only when
+ * `TRUST_PROXY_HEADERS=true`). Returns null for the root host, unknown/reserved hosts and
+ * draft/suspended sites. Never reads `shop_id`, channel or any other client-supplied hint.
+ * `fresh: true` bypasses the short host cache (checkout: a just-suspended site is rejected).
+ */
+export async function resolveSiteFromRequest(
+  source: Request | Pick<Headers, "get">,
+  opts: { fresh?: boolean } = {}
+): Promise<RequestSite | null> {
+  const headers = "headers" in source ? source.headers : source;
+  const cls = classifyHost(resolveRequestHost(headers), getSiteRootDomain());
+  if (cls.kind !== "site") return null;
+  const lookup = opts.fresh
+    ? await lookupPublishedSiteHost(cls.hostname)
+    : await publishedSiteHostCache.resolve(cls.hostname, lookupPublishedSiteHost);
+  if (lookup.status === "error") throw new GatewayError("unavailable");
+  if (lookup.status !== "found") return null;
+  return { siteId: lookup.siteId, shopId: lookup.shopId, host: cls.hostname };
+}
+
+/** Route handlers for buyer APIs: the request's site, or 404 on the root host / unknown site. */
+export async function requireRequestSite(
+  req: Request,
+  opts: { fresh?: boolean } = {}
+): Promise<RequestSite> {
+  const site = await resolveSiteFromRequest(req, opts);
+  if (!site) throw new GatewayError("not_found");
+  return site;
+}
+
+function productHasSku(p: GwProduct | null | undefined, shopId: string, skuId: string): boolean {
+  return Boolean(p && p.shop_id === shopId && (p.skus ?? []).some((s) => s.id === skuId));
+}
+
+/**
+ * 404 unless `skuId` is a SKU of a product owned by `shopId`. `productIdHint` (from the client)
+ * only speeds up the lookup: the backend product's `shop_id` and SKU list decide.
+ */
+export async function assertSkuOfShop(
+  shopId: string,
+  skuId: string,
+  productIdHint?: unknown
+): Promise<void> {
+  const hint = typeof productIdHint === "string" ? productIdHint.trim() : "";
+  if (hint) {
+    try {
+      const res = await gw<{ product?: GwProduct | null }>(
+        `/api/v1/products/${encodeURIComponent(hint)}`,
+        { auth: "none" }
+      );
+      if (productHasSku(res.product, shopId, skuId)) return;
+    } catch (err) {
+      if (!(err instanceof GatewayError && (err.kind === "not_found" || err.kind === "invalid"))) {
+        throw err;
+      }
+    }
+  }
+  const products = await fetchShopProductsRaw(shopId, {
+    revalidate: SITE_REVALIDATE_SECONDS,
+    tags: [`site-shop:${shopId}`],
+  });
+  if (products.some((p) => productHasSku(p, shopId, skuId))) return;
+  // Retry once uncached so newly created SKUs of this shop are never falsely 404'd by TTL cache.
+  const freshProducts = await fetchShopProductsRaw(shopId, {});
+  if (freshProducts.some((p) => productHasSku(p, shopId, skuId))) return;
+  throw new GatewayError("not_found");
+}
 
 interface RawPublicSiteResponse {
   site?: Partial<SiteDTO> & {
