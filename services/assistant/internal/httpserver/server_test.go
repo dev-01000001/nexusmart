@@ -13,6 +13,9 @@ import (
 
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/metrics"
+	"github.com/nexusmart/core/services/assistant/internal/guardrail"
+	"github.com/nexusmart/core/services/assistant/internal/llm"
+	"github.com/nexusmart/core/services/assistant/internal/quota"
 	"github.com/nexusmart/core/services/assistant/internal/service"
 	"github.com/nexusmart/core/services/assistant/internal/tools"
 	"github.com/prometheus/client_golang/prometheus"
@@ -155,5 +158,49 @@ func TestHTTPServerPreStreamRateLimitEnvelope(t *testing.T) {
 	var env errorEnvelope
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil || env.Error.Code != "RATE_LIMITED" {
 		t.Fatalf("expected RATE_LIMITED JSON envelope, got %+v err=%v", env, err)
+	}
+}
+
+func TestHTTPServerAnonymousQuotaIsolatedByForwardedClientIP(t *testing.T) {
+	q := quota.NewMemoryManager(quota.Config{
+		DailyUserTokenLimit: 1000,
+		DailyCostLimitVND:   500000,
+	})
+	svc := service.New(service.Deps{
+		LLM:       llm.NewMockProvider(100, 200),
+		Guardrail: guardrail.New(),
+		Quota:     q,
+	})
+	srv := httptest.NewServer(New(Config{
+		ServiceName: "assistant",
+		Service:     svc,
+	}))
+	defer srv.Close()
+
+	// Exhaust quota bucket for client IP A; client IP B must still succeed in its own bucket.
+	if dec, err := q.CheckAndReserveTokens(context.Background(), "ip:203.0.113.10", 1000); err != nil || !dec.Allowed {
+		t.Fatalf("seed IP A quota: dec=%+v err=%v", dec, err)
+	}
+
+	reqA, _ := http.NewRequest(http.MethodPost, srv.URL+"/assistant/chat", bytes.NewBufferString(`{"messages":[{"role":"user","content":"Xin chào"}]}`))
+	reqA.Header.Set("X-Forwarded-For", "203.0.113.10")
+	respA, err := http.DefaultClient.Do(reqA)
+	if err != nil {
+		t.Fatalf("reqA: %v", err)
+	}
+	_ = respA.Body.Close()
+	if respA.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 for exhausted IP A, got %d", respA.StatusCode)
+	}
+
+	reqB, _ := http.NewRequest(http.MethodPost, srv.URL+"/assistant/chat", bytes.NewBufferString(`{"messages":[{"role":"user","content":"Xin chào"}]}`))
+	reqB.Header.Set("X-Forwarded-For", "203.0.113.20")
+	respB, err := http.DefaultClient.Do(reqB)
+	if err != nil {
+		t.Fatalf("reqB: %v", err)
+	}
+	_ = respB.Body.Close()
+	if respB.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for independent IP B, got %d", respB.StatusCode)
 	}
 }
