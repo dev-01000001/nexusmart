@@ -1,30 +1,43 @@
 #!/usr/bin/env node
 /**
- * Idempotent backend seed tool for NexusMart (Phase 0b + Phase 2/2b).
+ * Idempotent backend seed tool for NexusMart (Phase 0b + Phase 2/2b + Swarm A/B/D/T).
  *
  * Reads the canonical storefront catalog from web/src/data/* and seeds via the
- * real gateway REST API + Mailpit OTP verification:
+ * real gateway REST API + Mailpit OTP verification (+ catalog-gen gRPC for 20k scale):
  *   - 1 demo admin (bootstrapped), 1 demo buyer (+ default address & welcome coins),
- *     4 demo seller accounts (primary demo seller owns Xưởng Dệt Bạch Đằng)
- *   - 4 verified ACTIVE shops matching web/src/data/shops.ts
+ *     4 demo showcase seller accounts (primary demo seller owns Xưởng Dệt Bạch Đằng)
+ *     + 1 dedicated 5th catalog seller (seller-catalog@nexusmart.local, NO published site)
+ *   - 4 verified ACTIVE showcase shops matching web/src/data/shops.ts + 1 catalog shop
  *   - 6 categories matching web/src/data/products.ts CATEGORIES
- *   - 18 APPROVED products with all 159 SKUs, integer VND prices, stock (with
+ *   - 18 APPROVED showcase products with all 159 SKUs, integer VND prices, stock (with
  *     Phase 2b flash-sale reservation headroom + >= 25 regular available units
  *     while keeping the 6 intentional out-of-stock SKUs at 0), and image paths
  *     matching web/public/products and web/public/models
  *   - 11 vouchers matching web/src/data/vouchers.ts (platform, freeship, shop)
  *   - 3 active/upcoming flash sale slots (12:00 live, 18:00 & 21:00 upcoming)
- *     matching web/src/data/flash-sale.ts
+ *     matching web/src/data/flash-sale.ts, retiring stale pre-Phase-2b windows
+ *     missing product_db flash_sale_stock_reservations (PLT-01)
  *   - 4 clearly distinct PUBLISHED subdomain storefront sites (bach-dang, sai-gon,
- *     da-nang, ha-noi), one per shop, each with its own colors, font and imagery
+ *     da-nang, ha-noi), upgraded to schema_version: 2 templates when available
  *     (plus custom domains on ha-noi [ACTIVE] and da-nang [PENDING])
+ *   - Chat sample data (auto-reply + realistic 3-message Vietnamese threads on
+ *     bach-dang and sai-gon) when Chat service is enabled
+ *   - Returns & Complaint sample data (1 pending return on bach-dang + 1 open
+ *     admin complaint on sai-gon for demo buyer) when Order depth routes are enabled
+ *   - Large catalog (default 20,000 approved products via tools/catalog-gen on
+ *     seller-catalog@nexusmart.local; set SEED_CATALOG_COUNT=0 to disable)
  *
  * Safe to run repeatedly: existing entities are detected and reused with zero
  * duplicates. A site is only re-published when its currently published config
  * differs from the spec, so repeated runs never create extra site versions.
  * Exits 0 on success.
  */
+import { spawnSync } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { register } from "node:module";
+import { homedir } from "node:os";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 register(new URL("./ts-resolve.mjs", import.meta.url));
 
@@ -34,6 +47,7 @@ const { VOUCHERS, INITIAL_USER_COINS } = await import("../../web/src/data/vouche
 const { FLASH_SALE_SLOTS } = await import("../../web/src/data/flash-sale.ts");
 
 const env = (key, fallback) => (process.env[key] ?? "").trim() || fallback;
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const GATEWAY_URL = (
   env("GATEWAY_URL", "") ||
@@ -48,7 +62,21 @@ const MAILPIT_URL = (
 const HTTP_TIMEOUT_MS = Number(env("SEED_HTTP_TIMEOUT_MS", "20000"));
 const OTP_TIMEOUT_MS = Number(env("SEED_OTP_TIMEOUT_MS", "30000"));
 const SITE_ROOT_DOMAIN = env("SITE_ROOT_DOMAIN", "nexusmart.localhost").toLowerCase();
+const SHIPPING_WEBHOOK_SECRET = env(
+  "SHIPPING_WEBHOOK_SECRET",
+  "dev-only-shipping-webhook-hmac-secret"
+);
 const FLASH_SALE_REGULAR_STOCK_BUFFER = 25;
+
+const rawSeedCatalogCount = process.env.SEED_CATALOG_COUNT;
+const parsedSeedCatalogCount =
+  rawSeedCatalogCount !== undefined && rawSeedCatalogCount.trim() !== ""
+    ? Number.parseInt(rawSeedCatalogCount.trim(), 10)
+    : 20000;
+const SEED_CATALOG_COUNT =
+  Number.isFinite(parsedSeedCatalogCount) && parsedSeedCatalogCount >= 0
+    ? parsedSeedCatalogCount
+    : 20000;
 
 const ADMIN_CREDS = {
   email: env("ADMIN_EMAIL", env("ADMIN_BOOTSTRAP_EMAIL", "admin@nexusmart.local")),
@@ -91,6 +119,29 @@ const SHOP_SELLERS = {
   },
 };
 
+const CATALOG_SELLER = {
+  fullName: "Phạm Minh Tuấn",
+  email: env("SEED_SELLER_CATALOG_EMAIL", "seller-catalog@nexusmart.local"),
+  phone: env("SEED_SELLER_CATALOG_PHONE", "0901234515"),
+  password: SELLER_PASSWORD,
+};
+
+const CATALOG_SHOP_SPEC = {
+  name: "Kho Đại Lý NexusMart",
+  slug: "kho-dai-ly-nexusmart",
+  city: "Thành phố Hồ Chí Minh",
+  warehouseAddress: "Số 88 Đường Nguyễn Hữu Cảnh, Phường Thạnh Mỹ Tây, Thành phố Hồ Chí Minh",
+  description:
+    "Kho tổng đại lý đa ngành hàng cung cấp danh mục quy mô lớn phục vụ tìm kiếm và kiểm thử trên NexusMart.",
+};
+
+const SHOWCASE_SITE_TEMPLATES = {
+  "shop-bach-dang": "craft-atelier",
+  "shop-sai-gon": "sport-active",
+  "shop-da-nang": "minimal-fashion",
+  "shop-ha-noi": "luxury-maison",
+};
+
 const CATEGORY_WEIGHT_GRAMS = {
   "ao-thun": 240,
   "ao-polo": 280,
@@ -115,8 +166,12 @@ function normalizeVi(str) {
     .trim();
 }
 
-async function gwRequest(method, path, { token, body, allowedStatuses = [200, 201], maxRetries = 4 } = {}) {
-  const headers = { accept: "application/json" };
+async function gwRequest(
+  method,
+  path,
+  { token, body, headers: extraHeaders, allowedStatuses = [200, 201], maxRetries = 4 } = {}
+) {
+  const headers = { accept: "application/json", ...(extraHeaders ?? {}) };
   if (token) headers.authorization = `Bearer ${token}`;
   let payload;
   if (body !== undefined) {
@@ -1167,6 +1222,872 @@ async function ensureCustomDomain(sellerToken, { hostname, expectStatus }) {
   return { created, domain, primaryHost: null };
 }
 
+/**
+ * Upgrades the 4 showcase site specs to Declarative Theme JSON v2 using fetched
+ * platform templates, inheriting each template's `layout`, `pages`, and theme
+ * `radius`/`density` while preserving each shop's exact `theme` colors,
+ * `font_family`, `logo_url`, `banner_url`, `brand_name`, `tagline`, and `sections`.
+ */
+function applyTemplatesToShowcaseSpecs(specs, templatesByKey) {
+  if (!templatesByKey || templatesByKey.size === 0) return 0;
+  let applied = 0;
+
+  for (const spec of specs) {
+    const desiredSlug = SHOWCASE_SITE_TEMPLATES[spec.mockShopId];
+    if (!desiredSlug) continue;
+    const tpl = templatesByKey.get(desiredSlug.toLowerCase());
+    const tplConfig = parseMaybeJson(tpl?.config);
+    if (!tpl || !tplConfig || tplConfig.schema_version !== 2 || !tplConfig.layout || !tplConfig.pages) {
+      continue;
+    }
+
+    const templateId = String(tpl.id || tpl.slug || tplConfig.template_id || desiredSlug).trim();
+    const v2Theme = {
+      ...spec.config.theme,
+      ...(tplConfig.theme?.radius ? { radius: tplConfig.theme.radius } : {}),
+      ...(tplConfig.theme?.density ? { density: tplConfig.theme.density } : {}),
+    };
+
+    spec.templateId = templateId;
+    spec.archetype = String(tplConfig.layout.archetype || tpl.archetype || "").trim();
+    spec.config = {
+      schema_version: 2,
+      template_id: templateId,
+      theme: v2Theme,
+      layout: structuredClone(tplConfig.layout),
+      sections: spec.config.sections,
+      pages: structuredClone(tplConfig.pages),
+    };
+    applied += 1;
+  }
+
+  return applied;
+}
+
+/**
+ * Seeds Chat auto-reply configs and realistic 3-message Vietnamese threads on
+ * `shop-bach-dang` and `shop-sai-gon` for the demo buyer (Swarm B).
+ * Gracefully skips when the Chat service/routes are unavailable (404/502/503).
+ */
+async function seedChatSampleData({ buyer, seededShops, seededProducts }) {
+  const probe = await gwRequest("GET", "/api/v1/chat/conversations?page=1&page_size=1", {
+    token: buyer.accessToken,
+    allowedStatuses: [200, 404, 502, 503],
+  });
+  if (probe.status !== 200) {
+    return { skipped: true, status: probe.status };
+  }
+
+  const result = {
+    skipped: false,
+    autoRepliesConfigured: 0,
+    autoRepliesReused: 0,
+    conversationsCreated: 0,
+    conversationsReused: 0,
+    messagesSent: 0,
+    threadsReused: 0,
+    shops: {},
+  };
+
+  const chatSeeds = [
+    {
+      mockShopId: "shop-bach-dang",
+      subSlug: "bach-dang",
+      mockProductId: "prod-at-trang",
+      autoReply: {
+        enabled: true,
+        greeting_message:
+          "Xin chào bạn đã ghé Xưởng Dệt Bạch Đằng! Xưởng may trực tiếp tại Hải Phòng sẽ hỗ trợ bạn ngay trong ít phút.",
+        offline_enabled: true,
+        offline_message:
+          "Hiện đang ngoài giờ làm việc (8:00–22:00). Bạn để lại chiều cao, cân nặng hoặc mẫu áo quan tâm, xưởng sẽ phản hồi đầu giờ sáng mai nhé!",
+        work_start_hour: 8,
+        work_end_hour: 22,
+        timezone: "Asia/Ho_Chi_Minh",
+        cooldown_minutes: 30,
+        keyword_rules: [
+          {
+            keywords: ["size", "kích cỡ", "chọn cỡ", "cân nặng", "chiều cao"],
+            reply:
+              "Áo thun Cotton Compact 220gsm chuẩn phom Regular Fit: size M (55–64kg), size L (65–74kg), size XL (75–84kg). Nếu thích mặc rộng vai bạn tăng thêm 1 size nhé!",
+          },
+          {
+            keywords: ["đổi trả", "đổi size", "bảo hành", "hoàn tiền"],
+            reply:
+              "Xưởng hỗ trợ đổi size miễn phí hai chiều tận nhà trong 45 ngày khi sản phẩm còn nguyên tem mác và chưa qua giặt tẩy.",
+          },
+          {
+            keywords: ["giao hàng", "ship", "vận chuyển", "bao lâu"],
+            reply:
+              "Đơn hàng xuất từ kho Hải Phòng trong ngày, giao tiêu chuẩn liên tỉnh toàn quốc 1–3 ngày và hỗ trợ đồng kiểm khi nhận hàng.",
+          },
+        ],
+      },
+      buyerQuestion:
+        "Chào xưởng, mình cao 1m72 nặng 68kg mặc áo thun Cotton Compact 220gsm size nào vừa vặn ạ? Vải có bị co rút sau khi giặt máy không?",
+      sellerReply:
+        "Chào bạn Quân! Với chiều cao 1m72 nặng 68kg bạn mặc size L là đứng vai gọn đẹp nhất ạ. Vải Cotton Compact 220gsm đã qua 3 chu kỳ xử lý chống co rút trước khi cắt rập nên độ co dưới 2%, bạn yên tâm giặt máy nhé.",
+    },
+    {
+      mockShopId: "shop-sai-gon",
+      subSlug: "sai-gon",
+      mockProductId: "prod-at-dryfit",
+      autoReply: {
+        enabled: true,
+        greeting_message:
+          "Chào bạn đến với Kho Basic Sài Gòn! Cần tư vấn đồ chạy bộ Dry-Fit hay giao nhanh nội thành TP.HCM bạn cứ nhắn nhé.",
+        offline_enabled: true,
+        offline_message:
+          "Kho Basic Sài Gòn làm việc từ 8:00–22:00 hằng ngày. Bạn để lại thông tin mẫu đồ tập và cỡ mong muốn, đội ngũ sẽ phản hồi sớm nhất!",
+        work_start_hour: 8,
+        work_end_hour: 22,
+        timezone: "Asia/Ho_Chi_Minh",
+        cooldown_minutes: 30,
+        keyword_rules: [
+          {
+            keywords: ["size", "kích cỡ", "chọn cỡ", "cân nặng"],
+            reply:
+              "Đồ chạy bộ Dry-Fit 145gsm co giãn 4 chiều: size M (55–64kg), size L (65–74kg), size XL (75–85kg). Nhắn chiều cao và cân nặng để shop gợi ý cỡ chuẩn nhé!",
+          },
+          {
+            keywords: ["đổi trả", "đổi size", "hoàn hàng"],
+            reply:
+              "Shop hỗ trợ đổi size tận nhà trong 45 ngày nếu mặc chưa vừa vai hoặc chiều dài ống quần, xử lý nhanh trong 24 giờ.",
+          },
+          {
+            keywords: ["giao hàng", "ship", "vận chuyển", "hỏa tốc"],
+            reply:
+              "Đơn nội thành TP.HCM đặt trước 17:00 hỗ trợ giao nhanh 2–4 giờ từ kho Thảo Điền; giao liên tỉnh toàn quốc 2–3 ngày.",
+          },
+        ],
+      },
+      buyerQuestion:
+        "Shop ơi áo thun thể thao Dry-Fit này chạy bộ buổi sáng trời nắng có nhanh khô không ạ? Giao ra Hà Nội mất khoảng mấy ngày?",
+      sellerReply:
+        "Chào bạn! Áo dùng sợi Micro-mesh 145gsm thoát ẩm rất nhanh, phơi gió khoảng 45 phút là khô ráo và đường may phẳng giảm ma sát khi chạy dài. Giao từ TP.HCM ra Hà Nội mất khoảng 2–3 ngày ạ.",
+    },
+  ];
+
+  for (const cfg of chatSeeds) {
+    const shopEntry = seededShops.get(cfg.mockShopId);
+    const prodEntry = seededProducts.get(cfg.mockProductId);
+    if (!shopEntry || !prodEntry) continue;
+
+    // 1. Idempotently configure seller auto-reply if not already enabled.
+    const arGet = await gwRequest("GET", "/api/v1/seller/chat/auto-reply", {
+      token: shopEntry.sellerToken,
+      allowedStatuses: [200],
+    });
+    const alreadyEnabled = Boolean(arGet.data?.config?.enabled);
+    if (!alreadyEnabled) {
+      await gwRequest("PUT", "/api/v1/seller/chat/auto-reply", {
+        token: shopEntry.sellerToken,
+        body: cfg.autoReply,
+        allowedStatuses: [200],
+      });
+      result.autoRepliesConfigured += 1;
+    } else {
+      result.autoRepliesReused += 1;
+    }
+
+    // 2. Create or get demo buyer <-> shop conversation.
+    const siteHost = `${cfg.subSlug}.${SITE_ROOT_DOMAIN}`;
+    const convRes = await gwRequest("POST", "/api/v1/chat/conversations", {
+      token: buyer.accessToken,
+      body: {
+        shop_id: shopEntry.shop.id,
+        site_host: siteHost,
+      },
+      allowedStatuses: [200, 201],
+    });
+    const conv = convRes.data?.conversation;
+    if (!conv?.id) {
+      throw new Error(`POST /api/v1/chat/conversations for ${cfg.subSlug} returned no conversation`);
+    }
+    if (convRes.data?.created) {
+      result.conversationsCreated += 1;
+    } else {
+      result.conversationsReused += 1;
+    }
+
+    // 3. Seed 3-message Vietnamese thread ONLY when conversation currently has 0 messages.
+    const msgListRes = await gwRequest(
+      "GET",
+      `/api/v1/chat/conversations/${encodeURIComponent(conv.id)}/messages?limit=20`,
+      {
+        token: buyer.accessToken,
+        allowedStatuses: [200],
+      }
+    );
+    const existingItems = msgListRes.data?.items ?? [];
+    let threadAction = "reused";
+    if (existingItems.length === 0) {
+      const prod = prodEntry.product;
+      const messagesToSend = [
+        {
+          token: buyer.accessToken,
+          body: {
+            kind: "text",
+            body: cfg.buyerQuestion,
+            client_msg_id: `seed-chat-${cfg.subSlug}-1`,
+          },
+        },
+        {
+          token: buyer.accessToken,
+          body: {
+            kind: "product",
+            ref_id: prod.id,
+            body: prod.name,
+            metadata: {
+              product_id: prod.id,
+              name: prod.name,
+              price_vnd: Math.trunc(prod.min_price_vnd ?? prod.skus?.[0]?.price_vnd ?? 0),
+              image_url: prod.images?.[0] ?? "",
+            },
+            client_msg_id: `seed-chat-${cfg.subSlug}-2`,
+          },
+        },
+        {
+          token: shopEntry.sellerToken,
+          body: {
+            kind: "text",
+            body: cfg.sellerReply,
+            client_msg_id: `seed-chat-${cfg.subSlug}-3`,
+          },
+        },
+      ];
+      for (const msg of messagesToSend) {
+        await gwRequest(
+          "POST",
+          `/api/v1/chat/conversations/${encodeURIComponent(conv.id)}/messages`,
+          {
+            token: msg.token,
+            body: msg.body,
+            allowedStatuses: [200, 201],
+          }
+        );
+        result.messagesSent += 1;
+      }
+      threadAction = "seeded";
+    } else {
+      result.threadsReused += 1;
+    }
+
+    result.shops[cfg.subSlug] = {
+      conversation_id: conv.id,
+      auto_reply: alreadyEnabled ? "reused" : "configured",
+      thread: threadAction,
+    };
+  }
+
+  return result;
+}
+
+/**
+ * Signs and sends delivering + delivered carrier webhooks to transition a shipped
+ * order from SHIPPING -> DELIVERED via NATS shipment.updated, then polls until DELIVERED.
+ */
+async function deliverOrderViaShippingWebhook(buyerToken, order) {
+  const carrierCode = String(order.carrier_code || "ghn").trim().toLowerCase() || "ghn";
+  const trackingCode = String(order.tracking_code || "").trim();
+  if (!trackingCode) {
+    throw new Error(`Order ${order.id} is missing tracking_code after seller ship`);
+  }
+
+  const nowMs = Date.now();
+  const steps = [
+    {
+      eventId: `seed-ship-${order.id}-delivering`,
+      rawStatus: "delivering",
+      description: "Bưu tá đang giao hàng tới địa chỉ người nhận",
+      atMs: nowMs - 2000,
+    },
+    {
+      eventId: `seed-ship-${order.id}-delivered`,
+      rawStatus: "delivered",
+      description: "Giao hàng thành công cho người nhận",
+      atMs: nowMs,
+    },
+  ];
+
+  for (const step of steps) {
+    const rawBody = JSON.stringify({
+      event_id: step.eventId,
+      tracking_code: trackingCode,
+      order_id: order.id,
+      raw_status: step.rawStatus,
+      description: step.description,
+      occurred_at: new Date(step.atMs).toISOString().replace(/\.\d{3}Z$/, "Z"),
+    });
+    const sig = createHmac("sha256", SHIPPING_WEBHOOK_SECRET).update(rawBody).digest("hex");
+    const res = await fetch(`${GATEWAY_URL}/webhooks/shipping/${encodeURIComponent(carrierCode)}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        "x-signature": sig,
+        "x-timestamp": String(Math.floor(Date.now() / 1000)),
+      },
+      body: rawBody,
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    if (res.status !== 200) {
+      throw new Error(
+        `POST /webhooks/shipping/${carrierCode} (${step.rawStatus}) failed: HTTP ${res.status}: ${text.slice(0, 400)}`
+      );
+    }
+  }
+
+  const deadline = Date.now() + 15000;
+  let latest = order;
+  while (Date.now() < deadline) {
+    const res = await gwRequest("GET", `/api/v1/orders/${encodeURIComponent(order.id)}`, {
+      token: buyerToken,
+      allowedStatuses: [200],
+    });
+    latest = res.data?.order ?? latest;
+    const st = String(latest.status ?? "").toUpperCase();
+    if (st !== "SHIPPING" && st !== "PREPARING" && st !== "CONFIRMED") {
+      return latest;
+    }
+    await sleep(300);
+  }
+  throw new Error(
+    `Timed out waiting for order ${order.id} to reach DELIVERED after shipping webhook (last status: ${latest.status})`
+  );
+}
+
+/**
+ * Places (idempotently via Idempotency-Key) a small COD STOREFRONT order and
+ * advances it cleanly through CONFIRMED -> PREPARING -> SHIPPING -> DELIVERED.
+ * Does NOT call confirm-received (which moves to terminal COMPLETED), so the
+ * delivered order remains eligible for RequestReturn (DELIVERED -> RETURN_REQUESTED).
+ */
+async function ensureDeliveredDemoOrder({
+  buyerToken,
+  buyerAddressId,
+  shopEntry,
+  sku,
+  idempotencyKey,
+}) {
+  const chkRes = await gwRequest("POST", "/api/v1/checkout", {
+    token: buyerToken,
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: {
+      address_id: buyerAddressId,
+      from_cart: false,
+      items: [{ sku_id: sku.id, quantity: 1 }],
+      payment_method: "COD",
+      sales_channel: "STOREFRONT",
+      storefront_shop_id: shopEntry.shop.id,
+    },
+    allowedStatuses: [200, 201],
+  });
+  const createdOrder = chkRes.data?.orders?.[0];
+  if (!createdOrder?.id) {
+    throw new Error(`POST /api/v1/checkout (${idempotencyKey}) returned no order`);
+  }
+
+  // Always fetch live state (idempotent replay snapshots reflect initial creation state).
+  const liveRes = await gwRequest("GET", `/api/v1/orders/${encodeURIComponent(createdOrder.id)}`, {
+    token: buyerToken,
+    allowedStatuses: [200],
+  });
+  let order = liveRes.data?.order ?? createdOrder;
+
+  if (String(order.status ?? "").toUpperCase() === "CONFIRMED") {
+    const confRes = await gwRequest(
+      "POST",
+      `/api/v1/seller/orders/${encodeURIComponent(order.id)}/confirm`,
+      {
+        token: shopEntry.sellerToken,
+        allowedStatuses: [200],
+      }
+    );
+    order = confRes.data?.order ?? order;
+  }
+
+  if (["CONFIRMED", "PREPARING"].includes(String(order.status ?? "").toUpperCase())) {
+    const shipRes = await gwRequest(
+      "POST",
+      `/api/v1/seller/orders/${encodeURIComponent(order.id)}/ship`,
+      {
+        token: shopEntry.sellerToken,
+        body: {
+          carrier_code: order.carrier_code || "ghn",
+          service_code: order.service_code || "",
+        },
+        allowedStatuses: [200],
+      }
+    );
+    order = shipRes.data?.order ?? order;
+    if (shipRes.data?.tracking_code && !order.tracking_code) {
+      order = { ...order, tracking_code: shipRes.data.tracking_code };
+    }
+  }
+
+  if (String(order.status ?? "").toUpperCase() === "SHIPPING") {
+    order = await deliverOrderViaShippingWebhook(buyerToken, order);
+  }
+
+  return order;
+}
+
+/**
+ * Seeds 1 pending return request on `shop-bach-dang` and 1 open admin complaint
+ * on `shop-sai-gon` for the demo buyer (Swarm D). Gracefully skips if return routes
+ * are unavailable (404/502/503).
+ */
+async function seedReturnsAndComplaints({
+  adminToken,
+  buyer,
+  buyerDefaultAddress,
+  seededShops,
+  seededProducts,
+  skuById,
+  summary,
+}) {
+  const bachDangShop = seededShops.get("shop-bach-dang");
+  const saiGonShop = seededShops.get("shop-sai-gon");
+  if (!bachDangShop || !saiGonShop || !buyerDefaultAddress?.id) {
+    return { skipped: true, reason: "missing prerequisite shop or buyer default address" };
+  }
+
+  const probe = await gwRequest("GET", "/api/v1/seller/returns?page=1&page_size=50", {
+    token: bachDangShop.sellerToken,
+    allowedStatuses: [200, 404, 502, 503],
+  });
+  if (probe.status !== 200) {
+    return { skipped: true, status: probe.status };
+  }
+
+  const ensureDemoOrderSku = async (mockProductId) => {
+    const seededProd = seededProducts.get(mockProductId);
+    if (!seededProd) {
+      throw new Error(`Missing seeded product ${mockProductId} for demo return/complaint order`);
+    }
+    // Never touch the 6 intentional 0-stock SKUs.
+    const mockSku = seededProd.mockProduct.skus.find(
+      (s) => Math.trunc(s.stock) > 0 && seededProd.skuIdByCode.has(s.skuCode)
+    );
+    if (!mockSku) {
+      throw new Error(`No positive-stock SKU found for ${mockProductId}`);
+    }
+
+    const prodRes = await gwRequest("GET", `/api/v1/products/${encodeURIComponent(seededProd.product.id)}`, {
+      token: seededProd.shopEntry.sellerToken,
+      allowedStatuses: [200],
+    });
+    let liveSku = (prodRes.data?.product?.skus ?? []).find((s) => s.sku_code === mockSku.skuCode);
+    if (!liveSku) {
+      throw new Error(`SKU ${mockSku.skuCode} disappeared on product ${seededProd.product.id}`);
+    }
+
+    const curStock = Math.trunc(liveSku.stock ?? 0);
+    const curAvailable = Math.trunc(
+      liveSku.available_stock ??
+        Math.max(
+          0,
+          curStock - Math.trunc(liveSku.reserved_stock ?? 0) - Math.trunc(liveSku.flash_sale_reserved_stock ?? 0)
+        )
+    );
+    if (curAvailable < 15) {
+      const targetStock = curStock + (15 - curAvailable) + 10;
+      liveSku = await topUpSkuStock(
+        seededProd.shopEntry.sellerToken,
+        seededProd.product.id,
+        liveSku,
+        targetStock
+      );
+      seededProd.skuByCode.set(mockSku.skuCode, liveSku);
+      if (skuById.has(liveSku.id)) {
+        skuById.get(liveSku.id).sku = liveSku;
+      }
+      summary.products.skusToppedUp += 1;
+    }
+
+    return { product: seededProd.product, sku: liveSku, shopEntry: seededProd.shopEntry };
+  };
+
+  const result = {
+    skipped: false,
+    pendingReturn: null,
+    openComplaint: null,
+  };
+
+  // (a) 1 pending return request on bach-dang for demo buyer
+  const DEMO_RETURN_REASON =
+    "Áo mặc hơi chật vai so với bảng cỡ, mong xưởng hỗ trợ đổi sang size lớn hơn hoặc hoàn tiền.";
+  const existingBachDangReturns = probe.data?.items ?? [];
+  const existingPendingReturn = existingBachDangReturns.find(
+    (r) =>
+      r.buyer_id === buyer.user.id &&
+      (String(r.status ?? "").toUpperCase() === "PENDING" ||
+        String(r.reason ?? "").includes("Áo mặc hơi chật vai"))
+  );
+
+  if (existingPendingReturn) {
+    result.pendingReturn = {
+      action: "reused",
+      id: existingPendingReturn.id,
+      order_id: existingPendingReturn.order_id,
+      status: existingPendingReturn.status,
+    };
+  } else {
+    const { sku } = await ensureDemoOrderSku("prod-at-trang");
+    const order = await ensureDeliveredDemoOrder({
+      buyerToken: buyer.accessToken,
+      buyerAddressId: buyerDefaultAddress.id,
+      shopEntry: bachDangShop,
+      sku,
+      idempotencyKey: "seed-demo-return-order-v1",
+    });
+    const orderStatus = String(order.status ?? "").toUpperCase();
+    if (orderStatus === "DELIVERED") {
+      const orderItem = order.items?.[0];
+      const retRes = await gwRequest("POST", `/api/v1/orders/${encodeURIComponent(order.id)}/returns`, {
+        token: buyer.accessToken,
+        body: {
+          items: [
+            {
+              ...(orderItem?.id ? { order_item_id: orderItem.id } : {}),
+              sku_id: sku.id,
+              quantity: 1,
+            },
+          ],
+          reason: DEMO_RETURN_REASON,
+          photos: ["/products/ao-thun-cotton-trang.png"],
+        },
+        allowedStatuses: [200, 201],
+      });
+      const rr = retRes.data?.return_request;
+      result.pendingReturn = {
+        action: "created",
+        id: rr?.id || retRes.data?.return_request_id || "",
+        order_id: order.id,
+        status: rr?.status || "PENDING",
+      };
+    } else {
+      const listRes = await gwRequest("GET", `/api/v1/orders/${encodeURIComponent(order.id)}/returns`, {
+        token: buyer.accessToken,
+        allowedStatuses: [200],
+      });
+      const existing = (listRes.data?.items ?? [])[0];
+      result.pendingReturn = {
+        action: "reused",
+        id: existing?.id || "",
+        order_id: order.id,
+        status: existing?.status || orderStatus,
+      };
+    }
+  }
+
+  // (b) 1 open admin complaint on sai-gon for demo buyer
+  const openComplaintsRes = await gwRequest(
+    "GET",
+    "/api/v1/admin/complaints?status=OPEN&page=1&page_size=50",
+    {
+      token: adminToken,
+      allowedStatuses: [200],
+    }
+  );
+  const existingOpenComplaint = (openComplaintsRes.data?.items ?? []).find(
+    (c) =>
+      c.buyer_id === buyer.user.id &&
+      c.shop_id === saiGonShop.shop.id &&
+      String(c.status ?? "").toUpperCase() === "OPEN"
+  );
+
+  if (existingOpenComplaint) {
+    result.openComplaint = {
+      action: "reused",
+      id: existingOpenComplaint.id,
+      order_id: existingOpenComplaint.order_id,
+      status: existingOpenComplaint.status,
+    };
+  } else {
+    const { product, sku } = await ensureDemoOrderSku("prod-at-dryfit");
+    const photoUrl = product.images?.[0] || "/products/ao-thun-cotton-trang.png";
+    const order = await ensureDeliveredDemoOrder({
+      buyerToken: buyer.accessToken,
+      buyerAddressId: buyerDefaultAddress.id,
+      shopEntry: saiGonShop,
+      sku,
+      idempotencyKey: "seed-demo-complaint-order-v1",
+    });
+
+    let orderStatus = String(order.status ?? "").toUpperCase();
+    let returnReq = null;
+
+    if (orderStatus === "DELIVERED") {
+      const orderItem = order.items?.[0];
+      const retRes = await gwRequest("POST", `/api/v1/orders/${encodeURIComponent(order.id)}/returns`, {
+        token: buyer.accessToken,
+        body: {
+          items: [
+            {
+              ...(orderItem?.id ? { order_item_id: orderItem.id } : {}),
+              sku_id: sku.id,
+              quantity: 1,
+            },
+          ],
+          reason:
+            "Đường may ở gấu áo bị bung chỉ nhẹ khi mở hộp đồng kiểm, đề nghị gian hàng hỗ trợ đổi trả.",
+          photos: [photoUrl],
+        },
+        allowedStatuses: [200, 201],
+      });
+      returnReq = retRes.data?.return_request ?? {
+        id: retRes.data?.return_request_id,
+        status: "PENDING",
+      };
+      orderStatus = String(retRes.data?.order?.status ?? "RETURN_REQUESTED").toUpperCase();
+    } else {
+      const retList = await gwRequest("GET", `/api/v1/orders/${encodeURIComponent(order.id)}/returns`, {
+        token: buyer.accessToken,
+        allowedStatuses: [200],
+      });
+      returnReq = (retList.data?.items ?? [])[0] ?? null;
+    }
+
+    let complaint = null;
+    let complaintAction = "reused";
+
+    if (returnReq?.id && String(returnReq.status ?? "").toUpperCase() === "PENDING") {
+      const rejRes = await gwRequest(
+        "POST",
+        `/api/v1/seller/returns/${encodeURIComponent(returnReq.id)}/reject`,
+        {
+          token: saiGonShop.sellerToken,
+          body: {
+            reason:
+              "Kho kiểm tra ảnh đóng gói trước khi xuất hàng không ghi nhận lỗi chỉ may; sản phẩm đã có dấu hiệu tháo tem.",
+          },
+          allowedStatuses: [200],
+        }
+      );
+      returnReq = rejRes.data?.return_request ?? returnReq;
+      complaint = rejRes.data?.complaint ?? null;
+      if (complaint?.id) {
+        complaintAction = "created";
+      }
+    }
+
+    if (!complaint?.id) {
+      const byOrderRes = await gwRequest(
+        "GET",
+        `/api/v1/admin/complaints?order_id=${encodeURIComponent(order.id)}&page=1&page_size=20`,
+        {
+          token: adminToken,
+          allowedStatuses: [200],
+        }
+      );
+      complaint = (byOrderRes.data?.items ?? [])[0] ?? null;
+    }
+
+    if (
+      !complaint?.id &&
+      returnReq?.id &&
+      (String(returnReq.status ?? "").toUpperCase() === "REJECTED" || orderStatus === "RETURN_REJECTED")
+    ) {
+      const cpRes = await gwRequest("POST", `/api/v1/orders/${encodeURIComponent(order.id)}/complaints`, {
+        token: buyer.accessToken,
+        body: {
+          return_request_id: returnReq.id,
+          reason:
+            "Khiếu nại quyết định từ chối đổi trả của gian hàng, đề nghị quản trị viên xem xét hình ảnh kiểm hàng.",
+          evidence_urls: [photoUrl],
+        },
+        allowedStatuses: [200, 201],
+      });
+      complaint = cpRes.data?.complaint ?? null;
+      if (complaint?.id) {
+        complaintAction = "created";
+      }
+    }
+
+    result.openComplaint = {
+      action: complaintAction,
+      id: complaint?.id || "",
+      order_id: order.id,
+      status: complaint?.status || orderStatus,
+    };
+  }
+
+  return result;
+}
+
+function resolveGoModCache() {
+  if (process.env.GOMODCACHE?.trim()) return process.env.GOMODCACHE.trim();
+  const res = spawnSync("go", ["env", "GOMODCACHE"], { encoding: "utf8" });
+  if (res.status === 0 && res.stdout?.trim()) {
+    return res.stdout.trim();
+  }
+  return resolve(homedir(), "go/pkg/mod");
+}
+
+function hasDockerCompose() {
+  const res = spawnSync("docker", ["compose", "version"], { stdio: "ignore" });
+  return res.status === 0;
+}
+
+/**
+ * Ensures at least `targetCount` approved products exist in the catalog by
+ * invoking Swarm A's `tools/catalog-gen` in gRPC mode targeting the dedicated
+ * 5th seller (`seller-catalog@nexusmart.local`, NO published site).
+ */
+async function seedLargeCatalog({ catalogSeller, targetCount }) {
+  const beforeRes = await gwRequest("GET", "/api/v1/products?page=1&page_size=1", {
+    allowedStatuses: [200],
+  });
+  const existingTotal = Math.trunc(beforeRes.data?.total ?? 0);
+
+  if (targetCount <= 0) {
+    console.log(`  [catalog] disabled (SEED_CATALOG_COUNT=0; current approved products: ${existingTotal})`);
+    return {
+      action: "disabled",
+      target: 0,
+      existing: existingTotal,
+      generated: 0,
+      total_after: existingTotal,
+    };
+  }
+
+  if (existingTotal >= targetCount) {
+    console.log(
+      `  [catalog] reused (${existingTotal} >= ${targetCount} approved products; skipping catalog-gen)`
+    );
+    return {
+      action: "reused",
+      target: targetCount,
+      existing: existingTotal,
+      generated: 0,
+      total_after: existingTotal,
+    };
+  }
+
+  const remaining = targetCount - existingTotal;
+  const catalogSeed = existingTotal > 18 ? 20261121 + existingTotal : 20261121;
+  const explicitHostGRPC = (process.env.PRODUCT_GRPC_ADDR ?? "").trim();
+  const useDockerCompose = !explicitHostGRPC && hasDockerCompose();
+
+  const commonFlags = [
+    "--mode=grpc",
+    `--seller-emails=${catalogSeller.email}`,
+    `--seller-password=${catalogSeller.password}`,
+    `--admin-email=${ADMIN_CREDS.email}`,
+    `--admin-password=${ADMIN_CREDS.password}`,
+    `--count=${remaining}`,
+    "--concurrency=24",
+    "--approve=true",
+    `--seed=${catalogSeed}`,
+  ];
+
+  let proc;
+  let runnerMode;
+  if (useDockerCompose) {
+    runnerMode = "docker-compose-e2e";
+    const uid = typeof process.getuid === "function" ? process.getuid() : 1000;
+    const gid = typeof process.getgid === "function" ? process.getgid() : 1000;
+    const goModCache = resolveGoModCache();
+    const composeGateway = env("SEED_CATALOG_GATEWAY_URL", "http://gateway:8080");
+    const composeGRPC = env("SEED_CATALOG_GRPC_ADDR", "product:50052");
+
+    console.log(
+      `==> Seeding ${remaining} catalog products via docker compose e2e (seller=${catalogSeller.email}, grpc=${composeGRPC})`
+    );
+    proc = spawnSync(
+      "docker",
+      [
+        "compose",
+        "--profile",
+        "e2e",
+        "run",
+        "--rm",
+        "-T",
+        "--no-deps",
+        "--user",
+        `${uid}:${gid}`,
+        "-w",
+        "/src/tools/catalog-gen",
+        "-e",
+        "CGO_ENABLED=0",
+        "-e",
+        "HOME=/tmp",
+        "-e",
+        "GOCACHE=/tmp/go-build",
+        "e2e",
+        "go",
+        "run",
+        "./cmd/catalog-gen",
+        `--product-grpc-addr=${composeGRPC}`,
+        `--gateway-url=${composeGateway}`,
+        ...commonFlags,
+      ],
+      {
+        cwd: REPO_ROOT,
+        env: { ...process.env, GOMODCACHE: goModCache },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "inherit"],
+        maxBuffer: 16 * 1024 * 1024,
+      }
+    );
+  } else {
+    runnerMode = "direct-go-run";
+    const directGRPC = explicitHostGRPC || "localhost:50052";
+    console.log(
+      `==> Seeding ${remaining} catalog products via direct go run (seller=${catalogSeller.email}, grpc=${directGRPC})`
+    );
+    proc = spawnSync(
+      "go",
+      [
+        "run",
+        "./cmd/catalog-gen",
+        `--product-grpc-addr=${directGRPC}`,
+        `--gateway-url=${GATEWAY_URL}`,
+        ...commonFlags,
+      ],
+      {
+        cwd: resolve(REPO_ROOT, "tools/catalog-gen"),
+        env: process.env,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "inherit"],
+        maxBuffer: 16 * 1024 * 1024,
+      }
+    );
+  }
+
+  if (proc.error) {
+    throw new Error(`Failed to invoke catalog-gen (${runnerMode}): ${proc.error.message}`);
+  }
+  if (proc.status !== 0) {
+    throw new Error(
+      `catalog-gen (${runnerMode}) exited with code ${proc.status}: ${(proc.stdout || "").slice(-500)}`
+    );
+  }
+
+  const parsedSummary = parseMaybeJson(proc.stdout);
+  const afterRes = await gwRequest("GET", "/api/v1/products?page=1&page_size=1", {
+    allowedStatuses: [200],
+  });
+  const totalAfter = Math.trunc(afterRes.data?.total ?? existingTotal + remaining);
+
+  return {
+    action: "generated",
+    runner: runnerMode,
+    target: targetCount,
+    existing: existingTotal,
+    requested: remaining,
+    created: parsedSummary?.created ?? remaining,
+    approved: parsedSummary?.approved ?? remaining,
+    failed: parsedSummary?.failed ?? 0,
+    rate_per_sec: parsedSummary?.rate_per_sec ?? null,
+    elapsed_ms: parsedSummary?.elapsed_ms ?? null,
+    total_after: totalAfter,
+  };
+}
+
 async function main() {
   console.log(`==> Seeding NexusMart backend via ${GATEWAY_URL} (Mailpit: ${MAILPIT_URL})`);
 
@@ -1186,14 +2107,24 @@ async function main() {
     categories: { created: 0, reused: 0, map: {} },
     products: { created: 0, reused: 0, totalSkus: 0, skusToppedUp: 0 },
     vouchers: { created: 0, reused: 0 },
-    flashSales: { windowsCreated: 0, windowsReused: 0, itemsCreated: 0, itemsReused: 0 },
+    flashSales: {
+      windowsCreated: 0,
+      windowsReused: 0,
+      windowsRetired: 0,
+      itemsCreated: 0,
+      itemsReused: 0,
+    },
+    templates: { skipped: true, available: 0, applied: 0 },
     sites: { created: 0, reused: 0, map: {} },
+    chat: { skipped: true },
+    returnsAndComplaints: { skipped: true },
+    catalog: { action: "pending", target: SEED_CATALOG_COUNT },
   };
 
   // 1. Demo buyer (+ default address + welcome coins)
   const buyer = await ensureVerifiedUser(adminToken, DEMO_BUYER);
   summary.users[buyer.created ? "created" : "reused"] += 1;
-  await ensureDefaultAddress(
+  const { address: buyerDefaultAddress } = await ensureDefaultAddress(
     buyer.accessToken,
     {
       recipientName: DEMO_BUYER.fullName,
@@ -1286,6 +2217,69 @@ async function main() {
     summary.shops.map[mockShop.id] = { id: backendShop.id, name: backendShop.name };
   }
 
+  // 2b. Dedicated 5th demo seller & ACTIVE catalog shop (NO published site so GET /api/v1/sites
+  // stays clean with the 4 showcase sites and showcase shops keep their curated 18 products).
+  let catalogSellerSession = await ensureVerifiedUser(adminToken, CATALOG_SELLER);
+  summary.users[catalogSellerSession.created ? "created" : "reused"] += 1;
+  const { address: catalogPickupAddr } = await ensureDefaultAddress(
+    catalogSellerSession.accessToken,
+    {
+      recipientName: CATALOG_SELLER.fullName,
+      recipientPhone: CATALOG_SELLER.phone,
+      city: CATALOG_SHOP_SPEC.city,
+      streetAddress: CATALOG_SHOP_SPEC.warehouseAddress,
+    },
+    resolveProvinceAndWard
+  );
+  let catalogShop = shopByNormName.get(CATALOG_SHOP_SPEC.name.trim().toLowerCase());
+  if (!catalogShop) {
+    const regRes = await gwRequest("POST", "/api/v1/shops/register", {
+      token: catalogSellerSession.accessToken,
+      body: {
+        name: CATALOG_SHOP_SPEC.name,
+        description: CATALOG_SHOP_SPEC.description,
+        pickup_address_id: catalogPickupAddr.id,
+        contact_phone: CATALOG_SELLER.phone,
+        business_license_doc: `https://sandbox.nexusmart.local/licenses/${CATALOG_SHOP_SPEC.slug}.pdf`,
+      },
+      allowedStatuses: [200, 201],
+    });
+    catalogShop = regRes.data.shop;
+    shopByNormName.set(CATALOG_SHOP_SPEC.name.trim().toLowerCase(), catalogShop);
+    summary.shops.created += 1;
+  } else {
+    summary.shops.reused += 1;
+  }
+  if (catalogShop.status !== "ACTIVE") {
+    const revRes = await gwRequest(
+      "POST",
+      `/api/v1/admin/shops/${encodeURIComponent(catalogShop.id)}/review`,
+      {
+        token: adminToken,
+        body: { decision: "APPROVE", reason: "Seed catalog warehouse approval" },
+        allowedStatuses: [200],
+      }
+    );
+    catalogShop = revRes.data.shop;
+  }
+  if (
+    catalogSellerSession.user.role !== "seller" ||
+    catalogSellerSession.user.shop_id !== catalogShop.id
+  ) {
+    const fresh = await login(CATALOG_SELLER.email, CATALOG_SELLER.password);
+    catalogSellerSession = {
+      ...catalogSellerSession,
+      accessToken: fresh.access_token,
+      user: fresh.user,
+    };
+  }
+  if (catalogSellerSession.user.shop_id !== catalogShop.id) {
+    throw new Error(
+      `Catalog seller ${CATALOG_SELLER.email} has shop_id=${catalogSellerSession.user.shop_id}, expected ${catalogShop.id}`
+    );
+  }
+  summary.shops.map["shop-catalog"] = { id: catalogShop.id, name: catalogShop.name };
+
   // 3. 6 Categories matching CATEGORIES
   const catListRes = await gwRequest("GET", "/api/v1/categories", { allowedStatuses: [200] });
   const catBySlug = new Map((catListRes.data?.categories ?? []).map((c) => [c.slug, c]));
@@ -1330,6 +2324,7 @@ async function main() {
 
   const seededProducts = new Map(); // mockProductId -> { product, mockProduct, shopEntry, skuIdByCode, skuByCode }
   const skuCatalogByCode = new Map(); // skuCode -> { mockSku, productId, shopEntry, skuByCode }
+  const skuById = new Map(); // skuId -> { sku, productId, skuCode, shopEntry, skuByCode }
 
   for (const prod of PRODUCTS) {
     const shopEntry = seededShops.get(prod.shopId);
@@ -1397,10 +2392,18 @@ async function main() {
     summary.products.totalSkus += backendProd.skus?.length ?? 0;
     seededProducts.set(prod.id, { product: backendProd, mockProduct: prod, shopEntry, skuIdByCode, skuByCode });
     for (const mockSku of prod.skus) {
-      if (skuByCode.has(mockSku.skuCode)) {
+      const backendSku = skuByCode.get(mockSku.skuCode);
+      if (backendSku) {
         skuCatalogByCode.set(mockSku.skuCode, {
           mockSku,
           productId: backendProd.id,
+          shopEntry,
+          skuByCode,
+        });
+        skuById.set(backendSku.id, {
+          sku: backendSku,
+          productId: backendProd.id,
+          skuCode: mockSku.skuCode,
           shopEntry,
           skuByCode,
         });
@@ -1480,8 +2483,83 @@ async function main() {
   const fsListRes = await gwRequest("GET", "/api/v1/flash-sales?include_upcoming=true", {
     allowedStatuses: [200],
   });
+  const allActiveFlashSales = fsListRes.data?.flash_sales ?? [];
+  const seedWindowSpecByName = new Map(Object.values(windowSpecs).map((w) => [w.name, w]));
+
+  // PLT-01 fix: detect stale pre-Phase-2b flash-sale windows whose APPROVED items
+  // with remaining_slots > 0 point to SKUs with flash_sale_reserved_stock === 0
+  // (missing product_db.flash_sale_stock_reservations). Retire them cleanly via
+  // POST /api/v1/admin/flash-sales/{id}/end before topping up SKU stock and re-seeding.
+  const windowsToRetire = new Map(); // windowId -> { fs, reason }
+  for (const fs of allActiveFlashSales) {
+    if (!seedWindowSpecByName.has(fs.name)) continue;
+    const staleItem = (fs.items ?? []).find((it) => {
+      if (String(it.status ?? "").toUpperCase() !== "APPROVED") return false;
+      if (Math.trunc(it.remaining_slots ?? 0) <= 0) return false;
+      const skuEntry = skuById.get(it.sku_id);
+      if (!skuEntry) return false;
+      return Math.trunc(skuEntry.sku.flash_sale_reserved_stock ?? 0) <= 0;
+    });
+    if (staleItem) {
+      windowsToRetire.set(fs.id, {
+        fs,
+        reason: `approved item ${staleItem.id} (remaining=${staleItem.remaining_slots}) has SKU ${staleItem.sku_id} with flash_sale_reserved_stock=0`,
+      });
+    }
+  }
+
+  // If retiring any stale window, also retire any remaining seed window whose time range
+  // overlaps the freshly computed window range so re-registration never hits 409 overlap.
+  if (windowsToRetire.size > 0) {
+    const recreatingRanges = [...windowsToRetire.values()]
+      .map(({ fs }) => seedWindowSpecByName.get(fs.name))
+      .filter(Boolean)
+      .map((w) => ({ startMs: Date.parse(w.startsAt), endMs: Date.parse(w.endsAt) }));
+
+    for (const fs of allActiveFlashSales) {
+      if (windowsToRetire.has(fs.id) || !seedWindowSpecByName.has(fs.name)) continue;
+      const fsStart = Date.parse(fs.starts_at || "");
+      const fsEnd = Date.parse(fs.ends_at || "");
+      if (Number.isNaN(fsStart) || Number.isNaN(fsEnd)) continue;
+      if (recreatingRanges.some((r) => fsStart < r.endMs && fsEnd > r.startMs)) {
+        windowsToRetire.set(fs.id, { fs, reason: "overlaps re-created flash sale window" });
+      }
+    }
+
+    const affectedProducts = new Map(); // productId -> shopEntry
+    for (const [winId, { fs, reason }] of windowsToRetire.entries()) {
+      console.log(`  [flash-sale] retiring stale window "${fs.name}" (${winId}): ${reason}`);
+      await gwRequest("POST", `/api/v1/admin/flash-sales/${encodeURIComponent(winId)}/end`, {
+        token: adminToken,
+        allowedStatuses: [200, 404, 409],
+      });
+      summary.flashSales.windowsRetired += 1;
+      for (const it of fs.items ?? []) {
+        const skuEntry = skuById.get(it.sku_id);
+        if (skuEntry) affectedProducts.set(skuEntry.productId, skuEntry.shopEntry);
+      }
+    }
+
+    // Refresh SKU stock/version/reservations for affected products before stock top-up.
+    for (const [productId, shopEntry] of affectedProducts.entries()) {
+      const prodRes = await gwRequest("GET", `/api/v1/products/${encodeURIComponent(productId)}`, {
+        token: shopEntry.sellerToken,
+        allowedStatuses: [200],
+      });
+      for (const refreshedSku of prodRes.data?.product?.skus ?? []) {
+        const entry = skuById.get(refreshedSku.id);
+        if (entry) {
+          entry.sku = refreshedSku;
+          entry.skuByCode.set(refreshedSku.sku_code, refreshedSku);
+        }
+      }
+    }
+  }
+
   const existingFlashByName = new Map(
-    (fsListRes.data?.flash_sales ?? []).map((fs) => [fs.name, fs])
+    allActiveFlashSales
+      .filter((fs) => !windowsToRetire.has(fs.id))
+      .map((fs) => [fs.name, fs])
   );
 
   // Under Phase 2b, approving flash-sale items reserves total_slots from SKU stock across all
@@ -1493,7 +2571,11 @@ async function main() {
     const win = windowSpecs[slot.id];
     if (!win) continue;
     const existingFlash = existingFlashByName.get(win.name);
-    const existingSkuIds = new Set((existingFlash?.items ?? []).map((it) => it.sku_id));
+    const existingApprovedSkuIds = new Set(
+      (existingFlash?.items ?? [])
+        .filter((it) => String(it.status ?? "").toUpperCase() === "APPROVED")
+        .map((it) => it.sku_id)
+    );
 
     for (const item of slot.items) {
       const seededProd = seededProducts.get(item.productId);
@@ -1503,7 +2585,7 @@ async function main() {
       for (let idx = 0; idx < targetSkus.length; idx++) {
         const sku = targetSkus[idx];
         const skuId = seededProd.skuIdByCode.get(sku.skuCode);
-        if (!existingSkuIds.has(skuId)) {
+        if (!existingApprovedSkuIds.has(skuId)) {
           pendingFlashDemandBySkuCode.set(
             sku.skuCode,
             (pendingFlashDemandBySkuCode.get(sku.skuCode) ?? 0) + slotsPerSku[idx]
@@ -1523,7 +2605,13 @@ async function main() {
     const minTotalStock = computeDesiredSkuStock(entry.mockSku, totalFlashDemand);
     const curStock = Math.trunc(backendSku.stock ?? 0);
     const curAvailable = Math.trunc(
-      backendSku.available_stock ?? Math.max(0, curStock - Math.trunc(backendSku.reserved_stock ?? 0))
+      backendSku.available_stock ??
+        Math.max(
+          0,
+          curStock -
+            Math.trunc(backendSku.reserved_stock ?? 0) -
+            Math.trunc(backendSku.flash_sale_reserved_stock ?? 0)
+        )
     );
     const requiredAvailableNow = pendingFlash + FLASH_SALE_REGULAR_STOCK_BUFFER;
     const neededStockForAvailable = curStock + Math.max(0, requiredAvailableNow - curAvailable);
@@ -1537,6 +2625,9 @@ async function main() {
         targetStock
       );
       entry.skuByCode.set(skuCode, updatedSku);
+      if (skuById.has(updatedSku.id)) {
+        skuById.get(updatedSku.id).sku = updatedSku;
+      }
       summary.products.skusToppedUp += 1;
     }
   }
@@ -1564,7 +2655,7 @@ async function main() {
       summary.flashSales.windowsReused += 1;
     }
 
-    const existingSkuIds = new Set((flashSale.items ?? []).map((it) => it.sku_id));
+    const existingItemBySkuId = new Map((flashSale.items ?? []).map((it) => [it.sku_id, it]));
 
     for (const item of slot.items) {
       const seededProd = seededProducts.get(item.productId);
@@ -1578,49 +2669,77 @@ async function main() {
       for (let idx = 0; idx < targetSkus.length; idx++) {
         const sku = targetSkus[idx];
         const skuId = seededProd.skuIdByCode.get(sku.skuCode);
-        if (existingSkuIds.has(skuId)) {
+        const existingItem = existingItemBySkuId.get(skuId);
+        if (existingItem && String(existingItem.status ?? "").toUpperCase() === "APPROVED") {
           summary.flashSales.itemsReused += 1;
           continue;
         }
 
-        const regRes = await gwRequest(
-          "POST",
-          `/api/v1/seller/flash-sales/${encodeURIComponent(flashSale.id)}/items`,
-          {
-            token: seededProd.shopEntry.sellerToken,
-            body: {
-              sku_id: skuId,
-              flash_price_vnd: Math.trunc(item.flashPrice),
-              total_slots: slotsPerSku[idx],
-              per_user_limit: Math.max(1, Math.trunc(item.limitPerBuyer)),
-            },
-            allowedStatuses: [200, 201, 409],
+        let itemToApprove = existingItem ?? null;
+        if (!itemToApprove) {
+          const regRes = await gwRequest(
+            "POST",
+            `/api/v1/seller/flash-sales/${encodeURIComponent(flashSale.id)}/items`,
+            {
+              token: seededProd.shopEntry.sellerToken,
+              body: {
+                sku_id: skuId,
+                flash_price_vnd: Math.trunc(item.flashPrice),
+                total_slots: slotsPerSku[idx],
+                per_user_limit: Math.max(1, Math.trunc(item.limitPerBuyer)),
+              },
+              allowedStatuses: [200, 201, 409],
+            }
+          );
+
+          if (regRes.status === 409) {
+            summary.flashSales.itemsReused += 1;
+            continue;
           }
-        );
-
-        if (regRes.status === 409) {
-          summary.flashSales.itemsReused += 1;
-          continue;
+          itemToApprove = regRes.data.item;
         }
 
-        const createdItem = regRes.data.item;
         await gwRequest(
           "POST",
-          `/api/v1/admin/flash-sale-items/${encodeURIComponent(createdItem.id)}/approve`,
+          `/api/v1/admin/flash-sale-items/${encodeURIComponent(itemToApprove.id)}/approve`,
           {
             token: adminToken,
             body: { approve: true, reason: "Seed flash sale item approval" },
             allowedStatuses: [200],
           }
         );
-        existingSkuIds.add(skuId);
+        existingItemBySkuId.set(skuId, { ...itemToApprove, status: "APPROVED" });
         summary.flashSales.itemsCreated += 1;
       }
     }
   }
 
-  // 7. 4 Showcase Published Subdomain Sites (one per demo shop, distinct themes) + custom domains
+  // 7. 4 Showcase Published Subdomain Sites (one per demo shop, distinct themes & v2 templates) + custom domains
   const showcaseSiteSpecs = buildShowcaseSiteSpecs(seededProducts);
+  const tplRes = await gwRequest("GET", "/api/v1/site-templates", {
+    allowedStatuses: [200, 404, 502, 503],
+  });
+  if (tplRes.status === 200 && Array.isArray(tplRes.data?.templates) && tplRes.data.templates.length > 0) {
+    const templatesByKey = new Map();
+    for (const tpl of tplRes.data.templates) {
+      if (tpl?.slug) templatesByKey.set(String(tpl.slug).trim().toLowerCase(), tpl);
+      if (tpl?.id) templatesByKey.set(String(tpl.id).trim().toLowerCase(), tpl);
+    }
+    const applied = applyTemplatesToShowcaseSpecs(showcaseSiteSpecs, templatesByKey);
+    summary.templates = {
+      skipped: false,
+      available: tplRes.data.templates.length,
+      applied,
+    };
+  } else {
+    summary.templates = {
+      skipped: true,
+      status: tplRes.status,
+      available: 0,
+      applied: 0,
+    };
+  }
+
   for (const spec of showcaseSiteSpecs) {
     const shopEntry = seededShops.get(spec.mockShopId);
     if (!shopEntry) throw new Error(`Missing seeded shop for site ${spec.subdomain} (${spec.mockShopId})`);
@@ -1634,6 +2753,9 @@ async function main() {
       primary_host: site.primary_host || subdomainHost,
       status: site.status || "PUBLISHED",
       action: created ? "published" : "reused",
+      schema_version: spec.config.schema_version ?? 1,
+      ...(spec.templateId ? { template_id: spec.templateId } : {}),
+      ...(spec.archetype ? { archetype: spec.archetype } : {}),
       font_family: spec.config.theme.font_family,
       bg_color: spec.config.theme.bg_color,
       accent_color: spec.config.theme.accent_color,
@@ -1652,9 +2774,29 @@ async function main() {
     summary.sites.map[spec.subdomain] = siteSummary;
   }
 
+  // 8. Chat sample data (Swarm B: auto-reply + 3-message Vietnamese threads on bach-dang & sai-gon)
+  summary.chat = await seedChatSampleData({ buyer, seededShops, seededProducts });
+
+  // 9. Returns & Complaint sample data (Swarm D: 1 pending return on bach-dang + 1 open admin complaint on sai-gon)
+  summary.returnsAndComplaints = await seedReturnsAndComplaints({
+    adminToken,
+    buyer,
+    buyerDefaultAddress,
+    seededShops,
+    seededProducts,
+    skuById,
+    summary,
+  });
+
+  // 10. Catalog 20,000 products via Swarm A's tools/catalog-gen on dedicated 5th shop (no site)
+  summary.catalog = await seedLargeCatalog({
+    catalogSeller: CATALOG_SELLER,
+    targetCount: SEED_CATALOG_COUNT,
+  });
+
   console.log("==> Seed complete:");
   console.log(
-    `  sites: created=${summary.sites.created}, reused=${summary.sites.reused} (root_domain=${SITE_ROOT_DOMAIN})`
+    `  sites: created=${summary.sites.created}, reused=${summary.sites.reused} (root_domain=${SITE_ROOT_DOMAIN}, templates_applied=${summary.templates.applied})`
   );
   console.log(
     JSON.stringify(
@@ -1677,6 +2819,14 @@ async function main() {
             id: seededShops.get("shop-bach-dang").sellerUser.id,
             shop_id: seededShops.get("shop-bach-dang").shop.id,
             shop_name: seededShops.get("shop-bach-dang").shop.name,
+          },
+          catalogSeller: {
+            email: CATALOG_SELLER.email,
+            password: CATALOG_SELLER.password,
+            role: catalogSellerSession.user.role,
+            id: catalogSellerSession.user.id,
+            shop_id: catalogShop.id,
+            shop_name: catalogShop.name,
           },
         },
         summary,
