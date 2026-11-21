@@ -58,11 +58,7 @@ export function SitePreviewContent({
           </span>
         </div>
 
-        <div
-          className={
-            isSingle ? styles.cartPreviewStack : styles.cartPreviewGrid
-          }
-        >
+        <div className={isSingle ? styles.cartPreviewStack : styles.cartPreviewGrid}>
           <div className={styles.cartPreviewItems}>
             {sampleItems.map((item, idx) => {
               const qty = idx === 0 ? 2 : 1;
@@ -85,9 +81,7 @@ export function SitePreviewContent({
                       {item.colors[0]?.name || "Mặc định"} · Size {item.sizes[0] || "M"} · SL: {qty}
                     </div>
                   </div>
-                  <div className={styles.cartPreviewItemPrice}>
-                    {formatVnd(item.price * qty)}
-                  </div>
+                  <div className={styles.cartPreviewItemPrice}>{formatVnd(item.price * qty)}</div>
                 </div>
               );
             })}
@@ -229,7 +223,9 @@ export function SitePreviewContent({
                     return (
                       <div key={p.id} className={styles.infoPreviewShowcaseItem}>
                         <img src={img} alt={p.name} width={180} height={220} />
-                        <div className={styles.infoPreviewShowcaseName}>{p.shortName || p.name}</div>
+                        <div className={styles.infoPreviewShowcaseName}>
+                          {p.shortName || p.name}
+                        </div>
                         <div className={styles.infoPreviewShowcasePrice}>{formatVnd(p.price)}</div>
                       </div>
                     );

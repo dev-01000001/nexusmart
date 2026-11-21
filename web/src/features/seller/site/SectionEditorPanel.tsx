@@ -1757,8 +1757,12 @@ export function SectionEditorPanel({
                 <div key={blk.id} className={styles.blockCard}>
                   <div className={styles.blockCardHead}>
                     <div className={styles.blockCardTitleGroup}>
-                      <span className={styles.blockTypePill}>{BLOCK_TYPE_META[blk.type].label}</span>
-                      <span className={styles.blockIdMeta}>#{idx + 1} · {blk.id}</span>
+                      <span className={styles.blockTypePill}>
+                        {BLOCK_TYPE_META[blk.type].label}
+                      </span>
+                      <span className={styles.blockIdMeta}>
+                        #{idx + 1} · {blk.id}
+                      </span>
                     </div>
                     <div className={styles.sectionMoveGroup}>
                       <button

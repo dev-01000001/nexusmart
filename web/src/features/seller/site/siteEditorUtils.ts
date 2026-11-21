@@ -266,10 +266,20 @@ export const TEMPLATE_PAGE_TABS: ReadonlyArray<{
   maxSections: number;
 }> = [
   { key: "home", label: "Trang chủ", shortLabel: "Trang chủ", maxSections: MAX_HOME_SECTIONS },
-  { key: "catalog", label: "Danh sách SP", shortLabel: "Danh sách", maxSections: MAX_PAGE_SECTIONS },
+  {
+    key: "catalog",
+    label: "Danh sách SP",
+    shortLabel: "Danh sách",
+    maxSections: MAX_PAGE_SECTIONS,
+  },
   { key: "pdp", label: "Chi tiết SP", shortLabel: "Chi tiết SP", maxSections: MAX_PAGE_SECTIONS },
   { key: "cart", label: "Giỏ hàng", shortLabel: "Giỏ hàng", maxSections: MAX_PAGE_SECTIONS },
-  { key: "info", label: "Trang thông tin", shortLabel: "Thông tin", maxSections: MAX_PAGE_SECTIONS },
+  {
+    key: "info",
+    label: "Trang thông tin",
+    shortLabel: "Thông tin",
+    maxSections: MAX_PAGE_SECTIONS,
+  },
 ];
 
 export const ARCHETYPE_OPTIONS: ReadonlyArray<{ value: SiteArchetype; label: string }> = [
@@ -304,12 +314,13 @@ export const FOOTER_STYLE_OPTIONS: ReadonlyArray<{ value: SiteFooterStyle; label
   { value: "maison-minimal", label: "Boutique thanh lịch" },
 ];
 
-export const CONTAINER_WIDTH_OPTIONS: ReadonlyArray<{ value: SiteContainerWidth; label: string }> = [
-  { value: "narrow", label: "Hẹp (Boutique · 1080px)" },
-  { value: "standard", label: "Tiêu chuẩn (1240px)" },
-  { value: "wide", label: "Rộng (1400px)" },
-  { value: "full", label: "Toàn chiều ngang (Kho/Lưới dày)" },
-];
+export const CONTAINER_WIDTH_OPTIONS: ReadonlyArray<{ value: SiteContainerWidth; label: string }> =
+  [
+    { value: "narrow", label: "Hẹp (Boutique · 1080px)" },
+    { value: "standard", label: "Tiêu chuẩn (1240px)" },
+    { value: "wide", label: "Rộng (1400px)" },
+    { value: "full", label: "Toàn chiều ngang (Kho/Lưới dày)" },
+  ];
 
 export const CARD_STYLE_OPTIONS: ReadonlyArray<{ value: SiteCardStyle; label: string }> = [
   { value: "minimal", label: "Tối giản không viền nặng" },
@@ -864,10 +875,7 @@ export function createSectionTemplate(type: SiteSectionType, existingCount: numb
   }
 }
 
-export function createBlockTemplate(
-  type: SiteBlockType,
-  existingCount: number
-): SiteSectionBlock {
+export function createBlockTemplate(type: SiteBlockType, existingCount: number): SiteSectionBlock {
   const id = `blk-${type}-${Date.now().toString(36).slice(-4)}-${existingCount + 1}`;
   switch (type) {
     case "heading":
@@ -1182,9 +1190,7 @@ function cleanBlockPayload(blk: SiteSectionBlock): SiteSectionBlock {
         props: {
           label: blk.props.label.trim(),
           tone:
-            blk.props.tone === "accent" ||
-            blk.props.tone === "band" ||
-            blk.props.tone === "neutral"
+            blk.props.tone === "accent" || blk.props.tone === "band" || blk.props.tone === "neutral"
               ? blk.props.tone
               : "neutral",
         },
@@ -1337,8 +1343,7 @@ function cleanSectionV2Payload(sec: SiteSectionV2): SiteSectionV2 {
         props: {
           title: sec.props.title.trim(),
           body: sec.props.body.trim(),
-          align:
-            sec.props.align === "center" ? "center" : sec.props.align === "left" ? "left" : "",
+          align: sec.props.align === "center" ? "center" : sec.props.align === "left" ? "left" : "",
         },
       };
     case "banner":

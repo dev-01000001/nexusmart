@@ -59,13 +59,9 @@ function mapSellerProductToStorefront(
     : "ao-thun";
   const categoryName = cat?.name ?? "Trang phục cơ bản";
 
-  const safeImages = (prod.images ?? [])
-    .map((u) => sanitizeSafeImageUrl(u))
-    .filter(Boolean);
+  const safeImages = (prod.images ?? []).map((u) => sanitizeSafeImageUrl(u)).filter(Boolean);
   const fallbackImg =
-    safeImages[0] ||
-    PRODUCTS[idx % PRODUCTS.length]?.image ||
-    "/banners/campaign-everyday.jpg";
+    safeImages[0] || PRODUCTS[idx % PRODUCTS.length]?.image || "/banners/campaign-everyday.jpg";
 
   const colorLookup = new Map<string, ProductColor>();
   const skus: ProductSku[] = [];
@@ -74,7 +70,10 @@ function mapSellerProductToStorefront(
     const sku = prod.skus[sIdx];
     const attrs = sku.attributes ?? {};
     const colorName =
-      attrs.color || attrs.mau || attrs["màu"] || COLOR_HEX_FALLBACK[sIdx % COLOR_HEX_FALLBACK.length].name;
+      attrs.color ||
+      attrs.mau ||
+      attrs["màu"] ||
+      COLOR_HEX_FALLBACK[sIdx % COLOR_HEX_FALLBACK.length].name;
     const colorCode = slugifyAscii(colorName);
     const size = normalizeSizeCode(attrs.size || attrs.co || attrs["cỡ"] || sku.name);
     const skuImg = sanitizeSafeImageUrl(sku.image_url) || fallbackImg;

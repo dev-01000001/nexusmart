@@ -4,11 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Button, IconClose } from "@/components";
 import { cloneTemplateConfigForShop } from "@/features/site/templateCatalog";
 import common from "@/features/seller/SellerCommon.module.css";
-import type {
-  PlatformTemplateDTO,
-  SiteTemplateConfig,
-  TemplatePageKey,
-} from "./siteEditorTypes";
+import type { PlatformTemplateDTO, SiteTemplateConfig, TemplatePageKey } from "./siteEditorTypes";
 import {
   ARCHETYPE_OPTIONS,
   CART_LAYOUT_OPTIONS,
@@ -152,10 +148,7 @@ export function TemplateGalleryTab({
                   }}
                 >
                   <div className={styles.templateStripTop}>
-                    <span
-                      className={styles.templateStripBrand}
-                      style={{ color: theme.text_color }}
-                    >
+                    <span className={styles.templateStripBrand} style={{ color: theme.text_color }}>
                       {tpl.name}
                     </span>
                     <span
@@ -360,7 +353,11 @@ export function TemplateGalleryTab({
             </div>
 
             <div className={styles.previewToolbar}>
-              <div className={styles.pageSwitcherGroup} role="tablist" aria-label="Chọn trang xem trước">
+              <div
+                className={styles.pageSwitcherGroup}
+                role="tablist"
+                aria-label="Chọn trang xem trước"
+              >
                 {TEMPLATE_PAGE_TABS.map((tab) => (
                   <button
                     key={tab.key}

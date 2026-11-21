@@ -37,7 +37,11 @@ function serializePretty(cfg: SiteTemplateConfig): string {
   return JSON.stringify(buildCleanTemplateConfigPayload(cfg), null, 2);
 }
 
-function computeOffsetForLineCol(text: string, targetLine: number, targetCol: number): {
+function computeOffsetForLineCol(
+  text: string,
+  targetLine: number,
+  targetCol: number
+): {
   start: number;
   end: number;
 } {
@@ -223,11 +227,7 @@ export function TemplateCodeEditorTab({
         </div>
 
         <div className={styles.codeEditorShell}>
-          <div
-            ref={gutterRef}
-            className={styles.codeGutter}
-            aria-hidden="true"
-          >
+          <div ref={gutterRef} className={styles.codeGutter} aria-hidden="true">
             {Array.from({ length: lineCount }, (_, i) => {
               const ln = i + 1;
               const isErr = errorLines.has(ln);
@@ -236,11 +236,7 @@ export function TemplateCodeEditorTab({
                 <div
                   key={ln}
                   className={`${styles.codeGutterLine} ${
-                    isFocused
-                      ? styles.codeGutterLineFocus
-                      : isErr
-                        ? styles.codeGutterLineErr
-                        : ""
+                    isFocused ? styles.codeGutterLineFocus : isErr ? styles.codeGutterLineErr : ""
                   }`}
                 >
                   {ln}
@@ -275,7 +271,11 @@ export function TemplateCodeEditorTab({
         </div>
 
         {!validation.ok && validation.issues.length > 0 && (
-          <div className={styles.diagnosticsBox} role="alert" aria-label="Danh sách lỗi mã template">
+          <div
+            className={styles.diagnosticsBox}
+            role="alert"
+            aria-label="Danh sách lỗi mã template"
+          >
             <div className={styles.diagnosticsHead}>
               Chi tiết lỗi (nhấn vào từng dòng để nhảy tới vị trí chính xác)
             </div>

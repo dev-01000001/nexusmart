@@ -120,9 +120,7 @@ export function normalizeGwSiteVersion(raw: RawGwSiteVersion): GwSiteVersion {
  */
 export function revalidateSiteCache(
   site:
-    | (Pick<GwSite, "id" | "shop_id" | "primary_host"> & { subdomain?: string })
-    | null
-    | undefined
+    (Pick<GwSite, "id" | "shop_id" | "primary_host"> & { subdomain?: string }) | null | undefined
 ): void {
   if (!site) return;
   const hosts: string[] = [];
@@ -262,7 +260,8 @@ export function resolveSiteErrorMessage(err: unknown): {
   }
   if (
     code === "TOO_MANY_BLOCKS" ||
-    (detail.includes("block") && (detail.includes("12") || detail.includes("max") || detail.includes("too many")))
+    (detail.includes("block") &&
+      (detail.includes("12") || detail.includes("max") || detail.includes("too many")))
   ) {
     return {
       status: 400,
@@ -312,7 +311,10 @@ export function resolveSiteErrorMessage(err: unknown): {
         "Đường dẫn ảnh hoặc liên kết không hợp lệ. Chỉ chấp nhận đường dẫn nội bộ (/) hoặc https:// công khai.",
     };
   }
-  if (detail.includes("section") && (detail.includes("20") || detail.includes("32") || detail.includes("max"))) {
+  if (
+    detail.includes("section") &&
+    (detail.includes("20") || detail.includes("32") || detail.includes("max"))
+  ) {
     return {
       status: 400,
       code: "TOO_MANY_SECTIONS",
