@@ -293,6 +293,13 @@ func TestChatRESTEndpointsAndObjectPermissions(t *testing.T) {
 				CreatedAt:             now,
 				UpdatedAt:             now,
 			},
+			"conv-other": {
+				Id:        "conv-other",
+				BuyerId:   "buyer-2",
+				ShopId:    "shop-99",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
 		},
 		messages: map[string][]*chatv1.ChatMessage{
 			"conv-1": {
@@ -415,6 +422,42 @@ func TestChatRESTEndpointsAndObjectPermissions(t *testing.T) {
 	}
 	if vals := chatMock.lastMD.Get(auth.MDAuthorization); len(vals) == 0 || vals[0] != "Bearer "+buyerTok {
 		t.Fatalf("expected Bearer JWT forwarded to chat gRPC, got %+v", chatMock.lastMD)
+	}
+
+	// 2b. ListConversations defense-in-depth:
+	// - unfiltered query strips unauthorized conversations (`conv-other`) returned by backend mock.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/chat/conversations", nil)
+	req.Header.Set("Authorization", "Bearer "+buyerTok)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on unfiltered list conversations, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var filteredResp struct {
+		Items []chatConversationDTO `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &filteredResp); err != nil {
+		t.Fatalf("unmarshal filtered list conversations: %v", err)
+	}
+	if len(filteredResp.Items) != 1 || filteredResp.Items[0].ID != "conv-1" {
+		t.Fatalf("expected gateway to filter out unauthorized conv-other, got %+v", filteredResp.Items)
+	}
+
+	// - scope=seller blocked with 403 for buyer (no shop_id) and for seller requesting another shop_id.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/chat/conversations?scope=seller", nil)
+	req.Header.Set("Authorization", "Bearer "+buyerTok)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"PERMISSION_DENIED"`) {
+		t.Fatalf("expected 403 for buyer requesting scope=seller, got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/chat/conversations?scope=seller&shop_id=shop-99", nil)
+	req.Header.Set("Authorization", "Bearer "+sellerTok)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"PERMISSION_DENIED"`) {
+		t.Fatalf("expected 403 for seller requesting another shop_id with scope=seller, got %d (%s)", rec.Code, rec.Body.String())
 	}
 
 	// 3. POST /api/v1/chat/conversations validates shop_id and returns 201 vs 200.
@@ -706,6 +749,7 @@ type capturedWSUpgrade struct {
 	Path        string
 	RawQuery    string
 	AuthHeader  string
+	Cookie      string
 	Upgrade     string
 	Connection  string
 	WSKey       string
@@ -763,6 +807,7 @@ func TestChatWebSocketAuthAnd101Tunnel(t *testing.T) {
 			Path:        r.URL.Path,
 			RawQuery:    r.URL.RawQuery,
 			AuthHeader:  r.Header.Get("Authorization"),
+			Cookie:      r.Header.Get("Cookie"),
 			Upgrade:     r.Header.Get("Upgrade"),
 			Connection:  r.Header.Get("Connection"),
 			WSKey:       r.Header.Get("Sec-WebSocket-Key"),
@@ -911,11 +956,11 @@ func TestChatWebSocketAuthAnd101Tunnel(t *testing.T) {
 	capMu.Lock()
 	c1 := captured[len(captured)-1]
 	capMu.Unlock()
-	if c1.AuthHeader != "Bearer "+buyerTok {
-		t.Fatalf("expected nm_at forwarded as Bearer Authorization, got %+v", c1)
+	if c1.AuthHeader != "Bearer "+buyerTok || c1.Cookie != "" {
+		t.Fatalf("expected nm_at forwarded as Bearer Authorization and Cookie stripped, got %+v", c1)
 	}
 
-	// 3. BFF cookie `__Host-nm_at` -> 101 + Authorization forwarded + bidirectional echo.
+	// 3. BFF cookie `__Host-nm_at` -> 101 + Authorization forwarded + Cookie stripped + bidirectional echo.
 	resp, conn, br = dialUpgrade(t, "/api/v1/chat/ws", map[string]string{
 		"Cookie": "__Host-nm_at=" + sellerTok,
 	})
@@ -931,8 +976,8 @@ func TestChatWebSocketAuthAnd101Tunnel(t *testing.T) {
 	capMu.Lock()
 	c2 := captured[len(captured)-1]
 	capMu.Unlock()
-	if c2.AuthHeader != "Bearer "+sellerTok {
-		t.Fatalf("expected __Host-nm_at forwarded as Bearer Authorization, got %+v", c2)
+	if c2.AuthHeader != "Bearer "+sellerTok || c2.Cookie != "" {
+		t.Fatalf("expected __Host-nm_at forwarded as Bearer Authorization and Cookie stripped, got %+v", c2)
 	}
 
 	// 4. `?ticket=valid-ticket&after=99` -> calls ExchangeWSTicket, strips `ticket` from upstream query, forwards ws_token!

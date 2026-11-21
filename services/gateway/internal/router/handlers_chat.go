@@ -262,6 +262,9 @@ func (h *chatHandler) wsReverseProxy() (http.Handler, error) {
 				if rawAuth := auth.RawTokenFromContext(pr.In.Context()); rawAuth != "" {
 					pr.Out.Header.Set("Authorization", ensureBearerPrefix(rawAuth))
 				}
+				// Strip Cookie after injecting the gateway-verified Bearer token so upstream
+				// always authenticates strictly from Authorization and never a stale cookie.
+				pr.Out.Header.Del("Cookie")
 				if tp := pr.In.Header.Get("traceparent"); tp != "" {
 					pr.Out.Header.Set("traceparent", tp)
 				}
@@ -464,20 +467,34 @@ func (h *chatHandler) handleChatWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *chatHandler) handleListConversations(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	q := r.URL.Query()
+	scope := strings.TrimSpace(q.Get("scope"))
+	reqShopID := strings.TrimSpace(q.Get("shop_id"))
+	if strings.EqualFold(scope, "seller") {
+		callerShopID := ""
+		if claims != nil {
+			callerShopID = strings.TrimSpace(claims.ShopID)
+		}
+		if callerShopID == "" || (reqShopID != "" && reqShopID != callerShopID) {
+			httpx.WriteError(w, r, http.StatusForbidden, "PERMISSION_DENIED", "cannot list seller conversations for this shop")
+			return
+		}
+	}
+
 	cli, err := h.client()
 	if err != nil {
 		httpx.WriteError(w, r, http.StatusServiceUnavailable, "UNAVAILABLE", "chat service unavailable")
 		return
 	}
 	page, pageSize := httpx.ParsePagination(r)
-	q := r.URL.Query()
 
 	ctx, cancel := h.outgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := cli.ListConversations(ctx, &chatv1.ListConversationsRequest{
-		Scope:         strings.TrimSpace(q.Get("scope")),
-		ShopId:        strings.TrimSpace(q.Get("shop_id")),
+		Scope:         scope,
+		ShopId:        reqShopID,
 		UnrepliedOnly: httpx.ParseBoolQuery(r, "unreplied_only"),
 		Page:          page,
 		PageSize:      pageSize,
@@ -489,6 +506,9 @@ func (h *chatHandler) handleListConversations(w http.ResponseWriter, r *http.Req
 
 	items := make([]*chatConversationDTO, 0, len(resp.GetConversations()))
 	for _, c := range resp.GetConversations() {
+		if !canAccessChatConversation(claims, c) {
+			continue
+		}
 		items = append(items, mapChatConversation(c))
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -788,8 +808,12 @@ func (h *chatHandler) handleSellerListConversations(w http.ResponseWriter, r *ht
 		return
 	}
 
+	claims, _ := auth.ClaimsFromContext(r.Context())
 	items := make([]*chatConversationDTO, 0, len(resp.GetConversations()))
 	for _, c := range resp.GetConversations() {
+		if !canAccessChatConversation(claims, c) {
+			continue
+		}
 		items = append(items, mapChatConversation(c))
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{

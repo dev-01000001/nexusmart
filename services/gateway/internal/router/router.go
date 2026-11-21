@@ -99,6 +99,7 @@ func New(deps Dependencies) http.Handler {
 	})
 
 	mountChatRoutes(r, deps)
+	mountAssistantRoutes(r, deps)
 
 	// All standard REST & webhook routes share OTel trace + RED metrics + structured JSON logger.
 	r.Group(func(main chi.Router) {
@@ -135,6 +136,7 @@ func New(deps Dependencies) http.Handler {
 			api.Get("/sites", h.handleListPublishedSites)
 			api.Get("/sites/by-host", h.handleGetSiteByHost)
 			api.Get("/sites/by-shop/{shop_id}", h.handleGetSiteByShop)
+			h.mountSiteTemplatePublicRoutes(api)
 
 			api.Get("/shipping/provinces", h.handleListProvinces)
 			api.Get("/shipping/provinces/{code}/wards", h.handleListWards)
@@ -230,6 +232,7 @@ func New(deps Dependencies) http.Handler {
 					seller.Post("/site/domains", h.handleSellerAddCustomDomain)
 					seller.Post("/site/domains/{id}/check", h.handleSellerCheckCustomDomain)
 					seller.Delete("/site/domains/{id}", h.handleSellerRemoveCustomDomain)
+					h.mountSiteTemplateSellerRoutes(seller)
 
 					// Section 4.2 Seller Products & Stock
 					seller.Get("/products", h.handleSellerListProducts)
