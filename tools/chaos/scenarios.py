@@ -183,17 +183,16 @@ class SlowPaymentScenario(ChaosScenario):
         self.runtime.target_mode = "live_container"
 
     def traffic_targets(self) -> list[TrafficTarget]:
-        base = self.endpoints.payment_url.rstrip("/")
-        return [
-            TrafficTarget(url=f"{base}/readyz", interval_secs=0.35, workers=2, timeout_secs=5.0),
-            TrafficTarget(url=f"{base}/healthz", interval_secs=0.75, workers=1, timeout_secs=5.0),
-        ]
+        # In pause/unpause fallback mode, unpaced requests during unpause windows would dilute
+        # the slow-request fraction below 5% (hiding the p95 spike). SlowPaymentScenario manages
+        # paced /readyz waves inside inject() for both tc_netem and docker_pause_pulse modes.
+        return []
 
     def recovery_probe_urls(self) -> list[str]:
         base = self.endpoints.payment_url.rstrip("/")
         return [f"{base}/readyz", f"{base}/healthz"]
 
-    def _fire_readyz_wave(self, count: int = 8) -> None:
+    def _fire_readyz_wave(self, count: int = 12) -> None:
         """Fire a tight staggered wave of /readyz requests right across the pause boundary."""
         url = f"{self.endpoints.payment_url.rstrip('/')}/readyz"
 
@@ -201,26 +200,26 @@ class SlowPaymentScenario(ChaosScenario):
             if delay_s > 0:
                 time.sleep(delay_s)
             if not self._pulse_stop.is_set():
-                http_request_status(url, timeout=max(4.0, self.pause_secs + 2.5))
+                http_request_status(url, timeout=max(4.0, self.pause_secs + 3.0))
 
         for i in range(count):
-            th = threading.Thread(target=_hit, args=(i * 0.001,), daemon=True)
+            th = threading.Thread(target=_hit, args=(i * 0.002,), daemon=True)
             th.start()
 
     def _pulse_loop(self) -> None:
         container = self.runtime.target_container
         while not self._pulse_stop.is_set():
-            # Unpause window so Prometheus scrape + health probes complete cleanly.
+            # Brief unpause window so Prometheus scrapes /metrics and paused /readyz calls finish.
             self.docker.unpause_container(container)
-            lead_unpause = max(0.05, self.unpause_secs - 0.02)
+            lead_unpause = max(0.10, self.unpause_secs)
             if self._pulse_stop.wait(lead_unpause):
                 break
 
-            # Launch a staggered burst of /readyz calls (SELECT 1 to Postgres) right as we freeze
-            # the container so multiple in-flight requests record >= pause_secs inside Axum.
+            # Launch a staggered wave of /readyz calls (SELECT 1 to Postgres) and freeze right
+            # while requests are mid-flight inside Axum so >50% record >= pause_secs latency.
             if not self.docker.dry_run:
-                self._fire_readyz_wave(count=8)
-                time.sleep(0.002)
+                self._fire_readyz_wave(count=12)
+                time.sleep(0.012)
 
             if self._pulse_stop.is_set():
                 break
@@ -231,6 +230,13 @@ class SlowPaymentScenario(ChaosScenario):
 
         # Guarantee unpaused before exiting the loop.
         self.docker.unpause_container(container)
+
+    def _netem_load_loop(self) -> None:
+        url = f"{self.endpoints.payment_url.rstrip('/')}/readyz"
+        while not self._pulse_stop.is_set():
+            http_request_status(url, timeout=max(4.0, (self.netem_delay_ms / 1000.0) + 3.0))
+            if self._pulse_stop.wait(0.25):
+                break
 
     def inject(self) -> None:
         container = self.runtime.target_container
@@ -245,6 +251,14 @@ class SlowPaymentScenario(ChaosScenario):
             self.runtime.injection_method = "tc_netem"
             self.runtime.details["netem_image"] = netem_img
             self.runtime.details["delay_ms"] = self.netem_delay_ms
+            self._pulse_stop.clear()
+            if not self.docker.dry_run:
+                self._pulse_thread = threading.Thread(
+                    target=self._netem_load_loop,
+                    daemon=True,
+                    name="chaos-payment-netem-load",
+                )
+                self._pulse_thread.start()
             return
 
         self.runtime.injection_method = "docker_pause_pulse"

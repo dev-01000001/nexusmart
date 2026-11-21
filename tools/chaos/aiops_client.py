@@ -237,15 +237,10 @@ def select_new_incident(
             elif updated_epoch is not None and updated_epoch >= (fault_started_epoch - 2.0):
                 is_new = True
         else:
-            prev_status, prev_updated = prev
-            # Re-opened from resolved, or freshly updated after fault start.
+            prev_status, _prev_updated = prev
+            # Only treat a baseline incident as newly triggered if it was previously resolved
+            # and re-opened; an incident already open before fault injection is stale carry-over.
             if not is_incident_open(prev_status):
-                is_new = True
-            elif (
-                norm["updated_at"] != prev_updated
-                and updated_epoch is not None
-                and updated_epoch >= (fault_started_epoch - 1.0)
-            ):
                 is_new = True
 
         if is_new:

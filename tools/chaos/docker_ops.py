@@ -218,9 +218,13 @@ class DockerOps:
         )
         return res.returncode == 0 and "ok" in res.stdout
 
-    def stop_container(self, container: str, *, timeout_secs: int = 10) -> None:
+    def stop_container(self, container: str, *, timeout_secs: int = 2) -> None:
         self._log(f"stopping container {container}")
-        self.run_cli(["stop", "-t", str(timeout_secs), container], check=True, timeout=timeout_secs + 50.0)
+        try:
+            self.run_cli(["stop", "-t", str(timeout_secs), container], check=True, timeout=timeout_secs + 45.0)
+        except subprocess.TimeoutExpired:
+            self._log(f"docker stop timed out on {container}; falling back to docker kill")
+            self.run_cli(["kill", container], check=True, timeout=45.0)
 
     def start_container(self, container: str) -> None:
         self._log(f"starting container {container}")

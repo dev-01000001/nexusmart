@@ -211,7 +211,7 @@ class RcaEvaluationTests(unittest.TestCase):
                 "service": "cart",
                 "status": "open",
                 "opened_at": "2026-11-20T00:00:00+00:00",
-                "updated_at": "2026-11-20T00:00:00+00:00",
+                "updated_at": now_iso,
                 "rca": {"root_cause_service": "cart", "category": "high_error_rate", "confidence": 0.99},
             },
             {
