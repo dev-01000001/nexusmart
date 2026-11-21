@@ -2,13 +2,7 @@
 // Zero Next.js or DOM imports so Node 22 runs unit tests directly.
 
 export type ReturnStatus =
-  | "PENDING"
-  | "APPROVED"
-  | "REJECTED"
-  | "RETURNING"
-  | "RETURNED"
-  | "REFUNDED"
-  | "ESCALATED";
+  "PENDING" | "APPROVED" | "REJECTED" | "RETURNING" | "RETURNED" | "REFUNDED" | "ESCALATED";
 
 export type ReturnStatusTone = "neutral" | "warn" | "pos" | "neg";
 
@@ -86,8 +80,7 @@ export interface ValidatedReturnPayload {
 }
 
 export type ReturnValidationResult =
-  | { ok: true; data: ValidatedReturnPayload }
-  | { ok: false; code: string; message: string };
+  { ok: true; data: ValidatedReturnPayload } | { ok: false; code: string; message: string };
 
 export const MIN_RETURN_REASON_LEN = 5;
 export const MAX_RETURN_REASON_LEN = 500;
@@ -214,12 +207,7 @@ export function validateReturnPayload(raw: unknown): ReturnValidationResult {
       };
     }
     const qty = rec.quantity;
-    if (
-      typeof qty !== "number" ||
-      !Number.isInteger(qty) ||
-      qty < 1 ||
-      qty > MAX_RETURN_ITEM_QTY
-    ) {
+    if (typeof qty !== "number" || !Number.isInteger(qty) || qty < 1 || qty > MAX_RETURN_ITEM_QTY) {
       return {
         ok: false,
         code: "INVALID_RETURN_QTY",
@@ -284,8 +272,7 @@ export function validateReturnPayload(raw: unknown): ReturnValidationResult {
 function normalizeReturnItem(raw: unknown): ReturnRequestItem | null {
   const rec = asRecord(raw);
   if (!rec) return null;
-  const orderItemId =
-    typeof rec.order_item_id === "string" ? rec.order_item_id.trim() : "";
+  const orderItemId = typeof rec.order_item_id === "string" ? rec.order_item_id.trim() : "";
   const skuId = typeof rec.sku_id === "string" ? rec.sku_id.trim() : "";
   const qty = Math.trunc(Number(rec.quantity ?? 0) || 0);
   if ((!orderItemId && !skuId) || qty < 1) return null;
@@ -312,13 +299,13 @@ export function normalizeReturnRequest(raw: unknown): ReturnRequestView | null {
     : Array.isArray(rec.evidence_urls)
       ? rec.evidence_urls
       : [];
-  const photos = Array.from(
-    new Set(rawPhotos.map(sanitizeReturnPhotoUrl).filter(Boolean))
-  ).slice(0, MAX_RETURN_PHOTOS);
+  const photos = Array.from(new Set(rawPhotos.map(sanitizeReturnPhotoUrl).filter(Boolean))).slice(
+    0,
+    MAX_RETURN_PHOTOS
+  );
 
   const rawRefund = Number(rec.refund_amount_vnd ?? rec.refundAmountVnd ?? 0);
-  const refundAmountVnd =
-    Number.isFinite(rawRefund) && rawRefund > 0 ? Math.trunc(rawRefund) : 0;
+  const refundAmountVnd = Number.isFinite(rawRefund) && rawRefund > 0 ? Math.trunc(rawRefund) : 0;
 
   return {
     id,
@@ -340,9 +327,7 @@ export function normalizeReturnRequest(raw: unknown): ReturnRequestView | null {
         : typeof rec.reverseTrackingCode === "string"
           ? rec.reverseTrackingCode.trim()
           : "",
-    reverseLabelUrl: sanitizeReturnPhotoUrl(
-      rec.reverse_label_url ?? rec.reverseLabelUrl ?? ""
-    ),
+    reverseLabelUrl: sanitizeReturnPhotoUrl(rec.reverse_label_url ?? rec.reverseLabelUrl ?? ""),
     refundAmountVnd,
     refundId:
       typeof rec.refund_id === "string"

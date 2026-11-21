@@ -1,12 +1,13 @@
 "use client";
 
-import React, { Suspense, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ORDER_STATUS_META,
   PAYMENT_METHOD_LABELS,
   PAYMENT_STATUS_META,
+  type OrderLineItem,
   type OrderStatus,
   type StatusTone,
 } from "@/data/orders";
@@ -14,12 +15,22 @@ import type { Product } from "@/data/products";
 import { ApiError, api } from "@/lib/api";
 import { formatDateTimeVi, formatSignedVnd, formatVnd } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
-import { Button, StateView } from "@/components";
+import { Button, IconMinus, IconPlus, IconTrash, StateView } from "@/components";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./OrderDetailClientView.module.css";
 import type { OrderView } from "./orderView";
+import {
+  MAX_RETURN_PHOTOS,
+  RETURN_STATUS_META,
+  normalizeReturnRequest,
+  normalizeReturnRequests,
+  sanitizeReturnPhotoUrl,
+  validateReturnPayload,
+  type ReturnRequestItem,
+  type ReturnRequestView,
+} from "./returnsTypes";
 
 const STANDARD_STEPS: Array<{ status: OrderStatus; label: string }> = [
   { status: "cho_xac_nhan", label: "Chờ xác nhận" },
@@ -49,6 +60,19 @@ function toneClass(tone: StatusTone): string {
   return shared.toneNeutral;
 }
 
+interface ReturnItemSelection {
+  selected: boolean;
+  quantity: number;
+}
+
+function buildInitialSelections(items: OrderLineItem[]): Record<string, ReturnItemSelection> {
+  const next: Record<string, ReturnItemSelection> = {};
+  for (const item of items) {
+    next[item.skuCode] = { selected: true, quantity: Math.max(1, item.quantity) };
+  }
+  return next;
+}
+
 export interface OrderDetailClientViewProps {
   brandName: string;
   orderId: string;
@@ -76,8 +100,15 @@ function OrderDetailInner({
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
 
+  const [returns, setReturns] = useState<ReturnRequestView[]>([]);
+  const [returnSelections, setReturnSelections] = useState<Record<string, ReturnItemSelection>>(
+    () => buildInitialSelections(initialOrder?.items ?? [])
+  );
   const [returnReason, setReturnReason] = useState(RETURN_REASONS[0]);
   const [returnDetail, setReturnDetail] = useState("");
+  const [returnPhotos, setReturnPhotos] = useState<string[]>([]);
+  const [photoInput, setPhotoInput] = useState("");
+  const [photoError, setPhotoError] = useState<string | null>(null);
   const [submittingReturn, setSubmittingReturn] = useState(false);
   const [returnError, setReturnError] = useState<string | null>(null);
 
@@ -85,8 +116,65 @@ function OrderDetailInner({
   const [retryError, setRetryError] = useState<string | null>(null);
   const [reordering, setReordering] = useState(false);
 
+  useEffect(() => {
+    setReturnSelections(buildInitialSelections(order?.items ?? []));
+  }, [order?.id, order?.items]);
+
+  // Fetch existing return requests for this order; silently ignore 404/503 if not deployed yet.
+  useEffect(() => {
+    if (!order?.id || viewState) return;
+    const controller = new AbortController();
+    const loadReturns = async () => {
+      try {
+        const res = await fetch(`/api/orders/${encodeURIComponent(order.id)}/returns`, {
+          method: "GET",
+          headers: { Accept: "application/json" },
+          credentials: "same-origin",
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!res.ok) return;
+        const data = (await res.json().catch(() => null)) as unknown;
+        if (!controller.signal.aborted) {
+          setReturns(normalizeReturnRequests(data));
+        }
+      } catch {
+        // Silently ignore network/abort/503 errors so order detail remains responsive.
+      }
+    };
+    void loadReturns();
+    return () => controller.abort();
+  }, [order?.id, viewState]);
+
+  const itemLookupBySkuId = useMemo(() => {
+    const map = new Map<string, OrderLineItem>();
+    if (!order) return map;
+    for (const item of order.items) {
+      map.set(item.skuCode, item);
+      const backendSkuId = order.itemSkuIds[item.skuCode];
+      if (backendSkuId) map.set(backendSkuId, item);
+    }
+    return map;
+  }, [order]);
+
+  const selectedReturnSummary = useMemo(() => {
+    if (!order) return { count: 0, totalQty: 0, estimatedVnd: 0 };
+    let count = 0;
+    let totalQty = 0;
+    let estimatedVnd = 0;
+    for (const item of order.items) {
+      const sel = returnSelections[item.skuCode];
+      if (sel?.selected && sel.quantity > 0) {
+        count += 1;
+        totalQty += sel.quantity;
+        estimatedVnd += item.unitPrice * sel.quantity;
+      }
+    }
+    return { count, totalQty, estimatedVnd };
+  }, [order, returnSelections]);
+
   useRevealOnScroll(
-    `${viewState ?? "live"}-${order?.id ?? "none"}-${order?.status ?? ""}-${order?.paymentStatus ?? ""}`
+    `${viewState ?? "live"}-${order?.id ?? "none"}-${order?.status ?? ""}-${order?.paymentStatus ?? ""}-${returns.length}`
   );
 
   const handleReorder = async () => {
@@ -191,28 +279,124 @@ function OrderDetailInner({
     }
   };
 
-  const handleReturnSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!order) return;
-    const cleanNote = returnDetail.trim();
-    if (cleanNote.length < 6) {
-      setReturnError(
-        "Vui lòng mô tả ngắn tình trạng sản phẩm hoặc size cần đổi (tối thiểu 6 ký tự)."
+  const handleToggleReturnItem = (skuCode: string, maxQty: number) => {
+    setReturnError(null);
+    setReturnSelections((prev) => {
+      const current = prev[skuCode] ?? { selected: true, quantity: maxQty };
+      return {
+        ...prev,
+        [skuCode]: {
+          selected: !current.selected,
+          quantity: Math.max(1, Math.min(maxQty, current.quantity || 1)),
+        },
+      };
+    });
+  };
+
+  const handleStepReturnQty = (skuCode: string, delta: number, maxQty: number) => {
+    setReturnError(null);
+    setReturnSelections((prev) => {
+      const current = prev[skuCode] ?? { selected: true, quantity: maxQty };
+      const nextQty = Math.max(1, Math.min(maxQty, current.quantity + delta));
+      return {
+        ...prev,
+        [skuCode]: { selected: true, quantity: nextQty },
+      };
+    });
+  };
+
+  const handleAddReturnPhoto = () => {
+    setPhotoError(null);
+    const trimmed = photoInput.trim();
+    if (!trimmed) {
+      setPhotoError("Vui lòng nhập đường dẫn ảnh minh chứng trước khi thêm.");
+      return;
+    }
+    if (returnPhotos.length >= MAX_RETURN_PHOTOS) {
+      setPhotoError(`Bạn chỉ có thể đính kèm tối đa ${MAX_RETURN_PHOTOS} ảnh minh chứng.`);
+      return;
+    }
+    const safeUrl = sanitizeReturnPhotoUrl(trimmed);
+    if (!safeUrl) {
+      setPhotoError(
+        "Đường dẫn ảnh không hợp lệ. Chỉ chấp nhận ảnh nội bộ (/...) hoặc liên kết https://."
       );
       return;
     }
+    if (returnPhotos.includes(safeUrl)) {
+      setPhotoError("Ảnh này đã có trong danh sách đính kèm.");
+      return;
+    }
+    setReturnPhotos((prev) => [...prev, safeUrl]);
+    setPhotoInput("");
+  };
+
+  const handleRemoveReturnPhoto = (urlToRemove: string) => {
+    setPhotoError(null);
+    setReturnPhotos((prev) => prev.filter((u) => u !== urlToRemove));
+  };
+
+  const handleReturnSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!order) return;
+
+    const selectedItems: ReturnRequestItem[] = [];
+    for (const item of order.items) {
+      const sel = returnSelections[item.skuCode];
+      if (!sel?.selected) continue;
+      const skuId = order.itemSkuIds[item.skuCode] || item.skuCode;
+      selectedItems.push({
+        sku_id: skuId,
+        quantity: Math.max(1, Math.min(item.quantity, Math.trunc(sel.quantity))),
+      });
+    }
+
+    if (selectedItems.length === 0) {
+      setReturnError("Vui lòng chọn ít nhất 1 sản phẩm cần đổi trả.");
+      return;
+    }
+
+    const cleanNote = returnDetail.trim();
+    if (cleanNote.length < 5) {
+      setReturnError(
+        "Vui lòng mô tả ngắn tình trạng sản phẩm hoặc size cần đổi (tối thiểu 5 ký tự)."
+      );
+      return;
+    }
+
+    const combinedReason = `${returnReason}. ${cleanNote}`.slice(0, 500);
+    const validation = validateReturnPayload({
+      items: selectedItems,
+      reason: combinedReason,
+      photos: returnPhotos,
+    });
+    if (!validation.ok) {
+      setReturnError(validation.message);
+      return;
+    }
+
     setReturnError(null);
     setSubmittingReturn(true);
     try {
-      const res = await api<{ order: OrderView; returnRequestId: string }>(
-        `/api/orders/${encodeURIComponent(order.id)}/return`,
-        {
-          method: "POST",
-          body: { reason: `${returnReason}. ${cleanNote}` },
-        }
-      );
-      setOrder(res.order);
+      const res = await api<{
+        return_request?: unknown;
+        order?: OrderView | null;
+      }>(`/api/orders/${encodeURIComponent(order.id)}/returns`, {
+        method: "POST",
+        body: validation.data,
+      });
+
+      const created = normalizeReturnRequest(res.return_request);
+      if (created) {
+        setReturns((prev) => [created, ...prev.filter((r) => r.id !== created.id)]);
+      }
+      if (res.order) {
+        setOrder(res.order);
+      }
       setReturnDetail("");
+      setReturnPhotos([]);
+      setPhotoInput("");
+      setPhotoError(null);
       showToast(`Đã gửi yêu cầu đổi trả tới ${brandName}.`);
       router.refresh();
     } catch (err) {
@@ -529,6 +713,141 @@ function OrderDetailInner({
               </div>
             </div>
 
+            {returns.length > 0 && (
+              <section
+                className={styles.returnSheet}
+                aria-label="Yêu cầu đổi trả và hoàn tiền"
+                data-reveal=""
+              >
+                <div className={shared.sectionHead} style={{ marginBottom: 0 }}>
+                  <h2 className={shared.sectionTitle}>Yêu cầu đổi trả & hoàn tiền</h2>
+                  <span className={`${shared.sectionNote} num`}>{returns.length} yêu cầu</span>
+                </div>
+
+                <div className={styles.returnRequestList}>
+                  {returns.map((ret) => {
+                    const retMeta = RETURN_STATUS_META[ret.status];
+                    return (
+                      <article key={ret.id} className={styles.returnRequestItem}>
+                        <div className={styles.returnRequestHead}>
+                          <span className={`${shared.statusTag} ${toneClass(retMeta.tone)}`}>
+                            {retMeta.label}
+                          </span>
+                          {ret.createdAt && (
+                            <span className={`${shared.sectionNote} num`}>
+                              Gửi lúc {formatDateTimeVi(ret.createdAt)}
+                            </span>
+                          )}
+                        </div>
+
+                        <p className={styles.actionPanelDesc}>{retMeta.description}</p>
+
+                        {ret.items.length > 0 && (
+                          <div className={styles.returnSubBlock}>
+                            <span className={styles.returnSubLabel}>Sản phẩm yêu cầu đổi trả</span>
+                            <ul className={styles.returnItemSummaryList}>
+                              {ret.items.map((rit, idx) => {
+                                const matched =
+                                  (rit.sku_id ? itemLookupBySkuId.get(rit.sku_id) : undefined) ??
+                                  undefined;
+                                return (
+                                  <li
+                                    key={`${rit.order_item_id || rit.sku_id || idx}`}
+                                    className={styles.returnItemSummaryRow}
+                                  >
+                                    <span>
+                                      {matched
+                                        ? `${matched.productName}${
+                                            matched.colorName ? ` (${matched.colorName}` : ""
+                                          }${matched.size ? `, Size ${matched.size}` : ""}${
+                                            matched.colorName ? ")" : ""
+                                          }`
+                                        : "Sản phẩm trong đơn"}
+                                    </span>
+                                    <span className="num">× {rit.quantity}</span>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          </div>
+                        )}
+
+                        {ret.reason && (
+                          <div className={styles.returnSubBlock}>
+                            <span className={styles.returnSubLabel}>Lý do của bạn</span>
+                            <p className={styles.returnBodyText}>{ret.reason}</p>
+                          </div>
+                        )}
+
+                        {ret.photos.length > 0 && (
+                          <div className={styles.returnSubBlock}>
+                            <span className={styles.returnSubLabel}>Ảnh minh chứng</span>
+                            <div className={styles.returnPhotoGrid}>
+                              {ret.photos.map((photoUrl, pIdx) => (
+                                <a
+                                  key={photoUrl}
+                                  href={photoUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className={styles.returnPhotoThumbLink}
+                                >
+                                  <img
+                                    src={photoUrl}
+                                    alt={`Ảnh minh chứng đổi trả ${pIdx + 1}`}
+                                    className={styles.returnPhotoThumb}
+                                    loading="lazy"
+                                  />
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {ret.refundAmountVnd > 0 && (
+                          <div className={styles.returnRefundRow}>
+                            <span>
+                              {ret.status === "REFUNDED"
+                                ? "Số tiền đã hoàn"
+                                : "Số tiền hoàn dự kiến"}
+                            </span>
+                            <strong className={`${styles.returnRefundVal} num`}>
+                              {formatVnd(ret.refundAmountVnd)}
+                            </strong>
+                          </div>
+                        )}
+
+                        {ret.reverseTrackingCode && (
+                          <p className={`${styles.returnMetaLine} num`}>
+                            Mã vận đơn hoàn hàng: <strong>{ret.reverseTrackingCode}</strong>
+                          </p>
+                        )}
+
+                        {ret.sellerNote && (
+                          <div className={styles.returnSellerNote}>
+                            <span className={styles.returnSubLabel}>Phản hồi từ {brandName}</span>
+                            <p className={styles.returnBodyText}>{ret.sellerNote}</p>
+                          </div>
+                        )}
+
+                        {ret.status === "REJECTED" && (
+                          <div className={styles.returnRejectedGuide} role="note">
+                            <p>
+                              <strong>Hướng dẫn tiếp theo:</strong> Vui lòng xem kỹ phản hồi từ{" "}
+                              {brandName}. Nếu sản phẩm vẫn còn nguyên tem mác hoặc có lỗi cần kiểm
+                              tra thêm, bạn có thể nhắn trực tiếp cho gian hàng hoặc liên hệ bộ phận
+                              hỗ trợ khách hàng kèm mã đơn{" "}
+                              <strong className="num">{order.orderCode}</strong> để được xem xét
+                              lại.
+                            </p>
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+
             {order.canConfirmReceived && (
               <div className={styles.unboxedSection} data-reveal="">
                 <h2 className={shared.sectionTitle}>Xác nhận đã nhận hàng</h2>
@@ -609,9 +928,100 @@ function OrderDetailInner({
                   <span className={`${shared.statusTag} ${shared.tonePos}`}>Hỗ trợ sau mua</span>
                 </div>
                 <p className={styles.actionPanelDesc}>
-                  Nếu sản phẩm chưa vừa size hoặc có lỗi sản xuất, hãy gửi yêu cầu để {brandName}{" "}
-                  tiếp nhận đổi trả hoặc hoàn tiền.
+                  Chọn sản phẩm và số lượng cần đổi trả, kèm mô tả tình trạng hoặc ảnh minh chứng để{" "}
+                  {brandName} tiếp nhận nhanh hơn.
                 </p>
+
+                <div className={shared.field}>
+                  <span className={shared.fieldLabel}>Chọn sản phẩm cần đổi trả</span>
+                  <div className={styles.returnPickerList}>
+                    {order.items.map((item) => {
+                      const sel = returnSelections[item.skuCode] ?? {
+                        selected: true,
+                        quantity: item.quantity,
+                      };
+                      const checkboxId = `return-item-${item.skuCode}`;
+                      return (
+                        <div
+                          key={item.skuCode}
+                          className={`${styles.returnPickerRow} ${
+                            sel.selected ? styles.returnPickerRowActive : ""
+                          }`}
+                        >
+                          <label htmlFor={checkboxId} className={styles.returnPickerLabel}>
+                            <input
+                              id={checkboxId}
+                              type="checkbox"
+                              className={shared.checkbox}
+                              checked={sel.selected}
+                              disabled={submittingReturn}
+                              onChange={() => handleToggleReturnItem(item.skuCode, item.quantity)}
+                            />
+                            <img
+                              src={item.image || "/products/ao-thun-cotton-trang.png"}
+                              alt={item.productName}
+                              width={56}
+                              height={74}
+                              className={styles.returnPickerThumb}
+                            />
+                            <span className={styles.returnPickerInfo}>
+                              <span className={styles.returnPickerName}>{item.productName}</span>
+                              <span className={styles.returnPickerMeta}>
+                                {item.colorName}
+                                {item.size ? ` · Size ${item.size}` : ""}
+                                {" · "}
+                                <span className="num">{formatVnd(item.unitPrice)}</span>
+                              </span>
+                            </span>
+                          </label>
+
+                          <div
+                            className={styles.qtyStepper}
+                            aria-label={`Số lượng đổi trả cho ${item.productName}`}
+                          >
+                            <button
+                              type="button"
+                              className={styles.qtyStepBtn}
+                              aria-label="Giảm số lượng"
+                              disabled={submittingReturn || !sel.selected || sel.quantity <= 1}
+                              onClick={() => handleStepReturnQty(item.skuCode, -1, item.quantity)}
+                            >
+                              <IconMinus size={14} />
+                            </button>
+                            <span className={`${styles.qtyStepVal} num`}>
+                              {sel.selected ? sel.quantity : 0}
+                            </span>
+                            <button
+                              type="button"
+                              className={styles.qtyStepBtn}
+                              aria-label="Tăng số lượng"
+                              disabled={
+                                submittingReturn || !sel.selected || sel.quantity >= item.quantity
+                              }
+                              onClick={() => handleStepReturnQty(item.skuCode, 1, item.quantity)}
+                            >
+                              <IconPlus size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className={styles.returnSelectionSummary}>
+                    {selectedReturnSummary.count > 0 ? (
+                      <>
+                        Đã chọn <strong className="num">{selectedReturnSummary.totalQty}</strong>{" "}
+                        sản phẩm
+                        {" · "}Giá trị tạm tính:{" "}
+                        <strong className="num">
+                          {formatVnd(selectedReturnSummary.estimatedVnd)}
+                        </strong>
+                      </>
+                    ) : (
+                      "Chưa chọn sản phẩm nào. Vui lòng tích chọn ít nhất 1 sản phẩm."
+                    )}
+                  </p>
+                </div>
 
                 <div className={shared.field}>
                   <label htmlFor="return-reason" className={shared.fieldLabel}>
@@ -646,6 +1056,75 @@ function OrderDetailInner({
                   />
                 </div>
 
+                <div className={shared.field}>
+                  <label htmlFor="return-photo-url" className={shared.fieldLabel}>
+                    Ảnh minh chứng (tùy chọn, tối đa {MAX_RETURN_PHOTOS} ảnh)
+                  </label>
+                  <div className={shared.codeInputRow}>
+                    <input
+                      id="return-photo-url"
+                      type="text"
+                      className={shared.input}
+                      value={photoInput}
+                      onChange={(e) => {
+                        setPhotoInput(e.target.value);
+                        if (photoError) setPhotoError(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleAddReturnPhoto();
+                        }
+                      }}
+                      placeholder="Nhập đường dẫn ảnh (/products/... hoặc https://...)"
+                      disabled={submittingReturn || returnPhotos.length >= MAX_RETURN_PHOTOS}
+                    />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="md"
+                      disabled={submittingReturn || returnPhotos.length >= MAX_RETURN_PHOTOS}
+                      onClick={handleAddReturnPhoto}
+                    >
+                      Thêm ảnh
+                    </Button>
+                  </div>
+                  <p className={shared.fieldHint}>
+                    Hỗ trợ liên kết ảnh bắt đầu bằng / hoặc https:// ({returnPhotos.length}/
+                    {MAX_RETURN_PHOTOS} ảnh).
+                  </p>
+                  {photoError && (
+                    <p className={shared.fieldError} role="alert">
+                      {photoError}
+                    </p>
+                  )}
+
+                  {returnPhotos.length > 0 && (
+                    <div className={styles.returnPhotoDraftList}>
+                      {returnPhotos.map((url, idx) => (
+                        <div key={url} className={styles.returnPhotoDraftCard}>
+                          <img
+                            src={url}
+                            alt={`Ảnh minh chứng ${idx + 1}`}
+                            className={styles.returnPhotoDraftImg}
+                          />
+                          <span className={styles.returnPhotoDraftUrl}>{url}</span>
+                          <button
+                            type="button"
+                            className={styles.returnPhotoRemoveBtn}
+                            aria-label={`Xóa ảnh minh chứng ${idx + 1}`}
+                            disabled={submittingReturn}
+                            onClick={() => handleRemoveReturnPhoto(url)}
+                          >
+                            <IconTrash size={15} />
+                            <span>Xóa</span>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 {returnError && (
                   <p className={shared.fieldError} role="alert">
                     {returnError}
@@ -653,7 +1132,12 @@ function OrderDetailInner({
                 )}
 
                 <div className={shared.formActions}>
-                  <Button type="submit" variant="primary" size="md" disabled={submittingReturn}>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    size="md"
+                    disabled={submittingReturn || selectedReturnSummary.count === 0}
+                  >
                     {submittingReturn ? "Đang gửi yêu cầu..." : "Gửi yêu cầu đổi trả"}
                   </Button>
                 </div>
