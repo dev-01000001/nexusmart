@@ -1,10 +1,6 @@
 import React from "react";
 import { AdminConfigClient } from "@/features/admin/AdminConfigClient";
-import type {
-  AdminCategory,
-  AdminUser,
-  AdminVoucher,
-} from "@/features/admin/adminComplaintsTypes";
+import type { AdminCategory, AdminUser, AdminVoucher } from "@/features/admin/adminComplaintsTypes";
 import { requireAdminPage } from "@/features/admin/adminServer";
 import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
