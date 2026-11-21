@@ -165,6 +165,10 @@ func waitForProductIndexed(t *testing.T, env *testEnv, query, shopID, productID 
 		if shopID != "" {
 			q.Set("shop_id", shopID)
 		}
+		// sort=newest queries Meilisearch directly; because pgvector is written synchronously
+		// before Meilisearch's async task is enqueued, seeing the product here proves both
+		// backends have committed the document.
+		q.Set("sort", "newest")
 		q.Set("page_size", "50")
 		resp, err := env.client.DoJSON(env.ctx(t), http.MethodGet, "/api/v1/search?"+q.Encode(), "", nil, nil)
 		if err != nil {
