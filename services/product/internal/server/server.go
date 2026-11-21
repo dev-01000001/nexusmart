@@ -596,7 +596,10 @@ func (s *Server) DeleteProduct(ctx context.Context, req *productv1.DeleteProduct
 		if !deleted {
 			return store.ErrNotFound
 		}
-		return q.DeactivateSKUsByProduct(ctx, id)
+		if deactErr := q.DeactivateSKUsByProduct(ctx, id); deactErr != nil {
+			return deactErr
+		}
+		return s.enqueueProductEvent(ctx, q, events.SubjectProductDeleted, existing.ID, existing.ShopID)
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -604,6 +607,7 @@ func (s *Server) DeleteProduct(ctx context.Context, req *productv1.DeleteProduct
 		}
 		return nil, status.Errorf(codes.Internal, "delete product: %v", err)
 	}
+	s.notifyOutbox()
 	return &productv1.DeleteProductResponse{Ok: true}, nil
 }
 
@@ -628,18 +632,35 @@ func (s *Server) AdminReviewProduct(ctx context.Context, req *productv1.AdminRev
 		return nil, status.Error(codes.InvalidArgument, "review decision must be APPROVE or REJECT")
 	}
 
-	updated, err := s.store.UpdateProductReview(ctx, productID, targetStatus, reason)
+	var (
+		updated store.Product
+		skus    []store.SKU
+	)
+	err := s.store.WithTx(ctx, func(q store.Queries) error {
+		p, revErr := q.UpdateProductReview(ctx, productID, targetStatus, reason)
+		if revErr != nil {
+			return revErr
+		}
+		updated = p
+
+		if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductUpdated, updated.ID, updated.ShopID); evErr != nil {
+			return evErr
+		}
+
+		loadedSKUs, listErr := q.ListSKUsByProductIDs(ctx, []string{productID})
+		if listErr != nil {
+			return listErr
+		}
+		skus = loadedSKUs
+		return nil
+	})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, status.Error(codes.NotFound, "product not found")
 		}
 		return nil, status.Errorf(codes.Internal, "review product: %v", err)
 	}
-
-	skus, err := s.store.ListSKUsByProductIDs(ctx, []string{productID})
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "load product skus: %v", err)
-	}
+	s.notifyOutbox()
 
 	return &productv1.AdminReviewProductResponse{
 		Product: toProtoProduct(updated, skus),
@@ -841,7 +862,7 @@ func (s *Server) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequ
 		} else {
 			updatedSKU = refreshed
 		}
-		return nil
+		return s.enqueueProductEvent(ctx, q, events.SubjectProductStockChanged, cur.ProductID, cur.ShopID)
 	})
 	if err != nil {
 		if _, ok := status.FromError(err); ok {
@@ -858,6 +879,7 @@ func (s *Server) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequ
 			return nil, status.Errorf(codes.Internal, "update stock: %v", err)
 		}
 	}
+	s.notifyOutbox()
 
 	return &productv1.UpdateStockResponse{Sku: toProtoSKU(updatedSKU)}, nil
 }
@@ -911,6 +933,14 @@ func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRe
 
 			groupID := uuid.NewString()
 			now := s.nowFn()
+			affectedProducts := make(map[string]string)
+			affectedOrder := make([]string, 0, len(items))
+			recordAffected := func(productID, shopID string) {
+				if _, seen := affectedProducts[productID]; !seen {
+					affectedProducts[productID] = shopID
+					affectedOrder = append(affectedOrder, productID)
+				}
+			}
 			for _, item := range items {
 				if item.flashSaleItemID != "" {
 					sku, getErr := q.GetSKUWithContextForUpdate(ctx, item.skuID)
@@ -978,6 +1008,7 @@ func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRe
 					}); histErr != nil {
 						return histErr
 					}
+					recordAffected(sku.ProductID, sku.ShopID)
 					continue
 				}
 
@@ -1025,6 +1056,13 @@ func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRe
 				}); histErr != nil {
 					return histErr
 				}
+				recordAffected(sku.ProductID, sku.ShopID)
+			}
+
+			for _, prodID := range affectedOrder {
+				if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductStockChanged, prodID, affectedProducts[prodID]); evErr != nil {
+					return evErr
+				}
 			}
 
 			resp = &productv1.ReserveStockResponse{
@@ -1036,6 +1074,9 @@ func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRe
 		})
 
 		if txErr == nil {
+			if !resp.GetAlreadyReserved() {
+				s.notifyOutbox()
+			}
 			return resp, nil
 		}
 		if _, ok := status.FromError(txErr); ok {
@@ -1111,6 +1152,14 @@ func (s *Server) ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRe
 			}
 
 			now := s.nowFn()
+			affectedProducts := make(map[string]string)
+			affectedOrder := make([]string, 0, len(reservedRows))
+			recordAffected := func(productID, shopID string) {
+				if _, seen := affectedProducts[productID]; !seen {
+					affectedProducts[productID] = shopID
+					affectedOrder = append(affectedOrder, productID)
+				}
+			}
 			for _, r := range reservedRows {
 				changed, trErr := q.TransitionStockReservation(ctx, r.ID, store.ReservationStatusReleased, store.ReservationStatusReserved)
 				if trErr != nil {
@@ -1160,6 +1209,7 @@ func (s *Server) ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRe
 					}); histErr != nil {
 						return histErr
 					}
+					recordAffected(sku.ProductID, sku.ShopID)
 					continue
 				}
 
@@ -1187,6 +1237,13 @@ func (s *Server) ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRe
 				}); histErr != nil {
 					return histErr
 				}
+				recordAffected(sku.ProductID, sku.ShopID)
+			}
+
+			for _, prodID := range affectedOrder {
+				if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductStockChanged, prodID, affectedProducts[prodID]); evErr != nil {
+					return evErr
+				}
 			}
 
 			resp = &productv1.ReleaseStockResponse{
@@ -1197,6 +1254,9 @@ func (s *Server) ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRe
 		})
 
 		if txErr == nil {
+			if resp.GetReleased() && !resp.GetAlreadyReleased() {
+				s.notifyOutbox()
+			}
 			return resp, nil
 		}
 		if errors.Is(txErr, store.ErrVersionConflict) {
@@ -1265,7 +1325,12 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 				return status.Error(codes.FailedPrecondition, "stock reservation is not in RESERVED state")
 			}
 
-			touchedProducts := make(map[string]string)
+			type confirmedProduct struct {
+				status string
+				shopID string
+			}
+			touchedProducts := make(map[string]confirmedProduct)
+			touchedOrder := make([]string, 0, len(reservedRows))
 			for _, r := range reservedRows {
 				changed, trErr := q.TransitionStockReservation(ctx, r.ID, store.ReservationStatusConfirmed, store.ReservationStatusReserved)
 				if trErr != nil {
@@ -1284,7 +1349,13 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 				if optErr != nil {
 					return optErr
 				}
-				touchedProducts[sku.ProductID] = sku.ProductStatus
+				if _, seen := touchedProducts[sku.ProductID]; !seen {
+					touchedProducts[sku.ProductID] = confirmedProduct{
+						status: sku.ProductStatus,
+						shopID: sku.ShopID,
+					}
+					touchedOrder = append(touchedOrder, sku.ProductID)
+				}
 
 				if histErr := q.InsertStockHistory(ctx, store.StockHistoryEntry{
 					ID:             uuid.NewString(),
@@ -1302,9 +1373,13 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 				}
 			}
 
-			for prodID, prodStatus := range touchedProducts {
-				if syncErr := syncProductStockStatus(ctx, q, prodID, prodStatus, 0); syncErr != nil {
+			for _, prodID := range touchedOrder {
+				info := touchedProducts[prodID]
+				if syncErr := syncProductStockStatus(ctx, q, prodID, info.status, 0); syncErr != nil {
 					return syncErr
+				}
+				if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductStockChanged, prodID, info.shopID); evErr != nil {
+					return evErr
 				}
 			}
 
@@ -1316,6 +1391,9 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 		})
 
 		if txErr == nil {
+			if resp.GetConfirmed() && !resp.GetAlreadyConfirmed() {
+				s.notifyOutbox()
+			}
 			return resp, nil
 		}
 		if _, ok := status.FromError(txErr); ok {
@@ -1432,6 +1510,10 @@ func (s *Server) ReserveFlashSaleStock(ctx context.Context, req *productv1.Reser
 				return histErr
 			}
 
+			if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductStockChanged, sku.ProductID, sku.ShopID); evErr != nil {
+				return evErr
+			}
+
 			resp = &productv1.ReserveFlashSaleStockResponse{
 				ReservedQty:     qty,
 				AvailableStock:  updated.AvailableStock(),
@@ -1441,6 +1523,9 @@ func (s *Server) ReserveFlashSaleStock(ctx context.Context, req *productv1.Reser
 		})
 
 		if txErr == nil {
+			if !resp.GetAlreadyReserved() {
+				s.notifyOutbox()
+			}
 			return resp, nil
 		}
 		if _, ok := status.FromError(txErr); ok {
@@ -1565,6 +1650,12 @@ func (s *Server) releaseFlashSaleStock(
 				return histErr
 			}
 
+			if remaining > 0 {
+				if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductStockChanged, sku.ProductID, sku.ShopID); evErr != nil {
+					return evErr
+				}
+			}
+
 			resp = &productv1.ReleaseFlashSaleStockResponse{
 				ReleasedQty:     remaining,
 				AvailableStock:  updated.AvailableStock(),
@@ -1574,6 +1665,9 @@ func (s *Server) releaseFlashSaleStock(
 		})
 
 		if txErr == nil {
+			if !resp.GetAlreadyReleased() && resp.GetReleasedQty() > 0 {
+				s.notifyOutbox()
+			}
 			return resp, nil
 		}
 		if errors.Is(txErr, store.ErrVersionConflict) {
