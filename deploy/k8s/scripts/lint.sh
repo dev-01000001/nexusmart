@@ -45,9 +45,9 @@ bash -n "${K8S_DIR}/scripts/rollback.sh"
 echo "  OK: all deploy/k8s shell scripts pass bash -n"
 
 echo "==> [2/5] Checking repository hygiene (no committed kind: Secret or binary .tgz charts)"
-if find "${REPO_ROOT}/deploy" -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.tpl' \) \
+if find "${HELM_DIR}" "${K8S_DIR}" -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.tpl' \) \
     -exec grep -En '^[[:space:]]*kind:[[:space:]]*Secret([[:space:]]|$)' {} + 2>/dev/null; then
-  echo "ERROR: committed 'kind: Secret' manifest found under deploy/!" >&2
+  echo "ERROR: committed 'kind: Secret' manifest found under deploy/helm/ or deploy/k8s/!" >&2
   exit 1
 fi
 if find "${HELM_DIR}" -type f -name '*.tgz' | grep -q .; then
