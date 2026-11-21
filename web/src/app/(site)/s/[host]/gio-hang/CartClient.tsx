@@ -71,7 +71,8 @@ export function CartClient({
   } = useStore();
 
   const cartLayout = cartConfig?.layout ?? templateConfig?.pages.cart.layout ?? "split-summary";
-  const showVouchers = cartConfig?.show_vouchers ?? templateConfig?.pages.cart.show_vouchers ?? true;
+  const showVouchers =
+    cartConfig?.show_vouchers ?? templateConfig?.pages.cart.show_vouchers ?? true;
   const showAddons = cartConfig?.show_addons ?? templateConfig?.pages.cart.show_addons ?? true;
   const trustNote =
     cartConfig?.trust_note?.trim() || templateConfig?.pages.cart.trust_note?.trim() || "";
