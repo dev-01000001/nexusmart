@@ -91,18 +91,18 @@ func paymentAuthInterceptor(users, svc *auth.Manager) grpc.UnaryServerIntercepto
 
 type wirePaymentServer struct {
 	paymentv1.UnimplementedPaymentServiceServer
-	mu             sync.Mutex
-	authLog        []wireAuthRecord
-	createCalls    []*paymentv1.CreatePaymentRequest
-	getCalls       []*paymentv1.GetPaymentRequest
-	cancelCalls    []*paymentv1.CancelPaymentRequest
-	refundCalls    []*paymentv1.CreateRefundRequest
-	escrowCalls    []*paymentv1.ReleaseEscrowRequest
-	createErr      error
-	getErr         error
-	refundErr      error
-	getStatus      paymentv1.PaymentStatus
-	refundsByIdem  map[string]*paymentv1.Refund
+	mu            sync.Mutex
+	authLog       []wireAuthRecord
+	createCalls   []*paymentv1.CreatePaymentRequest
+	getCalls      []*paymentv1.GetPaymentRequest
+	cancelCalls   []*paymentv1.CancelPaymentRequest
+	refundCalls   []*paymentv1.CreateRefundRequest
+	escrowCalls   []*paymentv1.ReleaseEscrowRequest
+	createErr     error
+	getErr        error
+	refundErr     error
+	getStatus     paymentv1.PaymentStatus
+	refundsByIdem map[string]*paymentv1.Refund
 }
 
 func newWirePaymentServer() *wirePaymentServer {

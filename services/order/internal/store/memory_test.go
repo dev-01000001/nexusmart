@@ -280,4 +280,108 @@ func TestMemoryStore_CheckoutLifecycleReturnsComplaintsAndOutbox(t *testing.T) {
 	if _, total, err := st.ListOrdersFiltered(ctx, "buyer-1", "", "", "MARKETPLACE", "", 2, 10); err != nil || total < 4 {
 		t.Fatalf("ListOrdersFiltered beyond end: total=%d err=%v", total, err)
 	}
+
+	// Additional error & edge paths on MemoryStore for high branch coverage.
+	if _, err := st.GetActiveCheckoutGroup(ctx, "nobody", "nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+	if _, err := st.GetOrderWithDetails(ctx, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+	if _, err := st.GetReturnRequestByID(ctx, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+	if _, err := st.GetLatestReturnRequestByOrderID(ctx, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+	if _, err := st.GetComplaintByID(ctx, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+	if _, err := st.GetComplaintByReturnRequestID(ctx, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+	if _, err := st.TransitionOrderShipped(ctx, ShipOrderParams{OrderID: "missing"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+	if _, err := st.TransitionOrderCompleted(ctx, CompleteOrderParams{OrderID: "missing"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+	if _, _, err := st.TransitionOrderReturnRequested(ctx, ReturnRequestParams{OrderID: "missing"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+	if _, _, _, err := st.ApproveReturnReturning(ctx, ApproveReturnReturningParams{OrderID: "missing"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+	if _, err := st.CompleteReturnRefund(ctx, CompleteReturnRefundParams{OrderID: "missing"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+	if _, _, _, err := st.RejectReturnAndCreateComplaint(ctx, RejectReturnParams{OrderID: "missing"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+	if _, _, _, err := st.DismissComplaintAndCompleteOrder(ctx, DismissComplaintParams{ComplaintID: "missing"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+
+	// UpsertOpenComplaint insert path (when no complaint existed yet).
+	newCP, err := st.UpsertOpenComplaint(ctx, UpsertComplaintParams{
+		ComplaintID: "cp-fresh", ReturnRequestID: "rr-fresh", OrderID: "ord-4", BuyerID: "buyer-1", ShopID: "shop-1",
+		Reason: "new dispute", EvidenceURLsJSON: []byte(`["https://e"]`), UpdateEvidence: true,
+	})
+	if err != nil || newCP.ID != "cp-fresh" {
+		t.Fatalf("UpsertOpenComplaint create: %+v err=%v", newCP, err)
+	}
+
+	// ApplyShipmentUpdate: NotFound, AlreadyProcessed, return direction picking/returned.
+	if out, err := st.ApplyShipmentUpdate(ctx, ShipmentUpdateParams{OrderID: "missing", ShipmentStatus: "delivered"}); err != nil || !out.NotFound {
+		t.Fatalf("ApplyShipmentUpdate missing: %+v err=%v", out, err)
+	}
+	if out, err := st.ApplyShipmentUpdate(ctx, ShipmentUpdateParams{EventID: "ev-deliv", OrderID: "ord-1", ShipmentStatus: "delivered"}); err != nil || !out.AlreadyProcessed {
+		t.Fatalf("ApplyShipmentUpdate dup: %+v err=%v", out, err)
+	}
+	if _, err := st.ApplyShipmentUpdate(ctx, ShipmentUpdateParams{EventID: "ev-ret-pick", OrderID: "ord-4", ShipmentStatus: "picking", Direction: "return"}); err != nil {
+		t.Fatalf("ApplyShipmentUpdate return picking: %v", err)
+	}
+	if out, err := st.ApplyShipmentUpdate(ctx, ShipmentUpdateParams{EventID: "ev-ret-4", OrderID: "ord-4", ShipmentStatus: "returned", Direction: "return"}); err != nil || out.TransitionedTo != orderv1.OrderStatus_ORDER_STATUS_RETURNED {
+		t.Fatalf("ApplyShipmentUpdate return returned: %+v err=%v", out, err)
+	}
+
+	// CompleteReturnRefund idempotent AlreadyRefunded + AlreadyProcessed + RecordPaymentRefunded duplicate & group fallback.
+	if out, err := st.CompleteReturnRefund(ctx, CompleteReturnRefundParams{EventID: "ev-ref-idem", OrderID: "ord-1", ReturnRequestID: "rr-1"}); err != nil || !out.AlreadyRefunded {
+		t.Fatalf("CompleteReturnRefund already refunded: %+v err=%v", out, err)
+	}
+	if out, err := st.CompleteReturnRefund(ctx, CompleteReturnRefundParams{EventID: "ev-ref-idem", OrderID: "ord-1"}); err != nil || !out.AlreadyProcessed {
+		t.Fatalf("CompleteReturnRefund dup event: %+v err=%v", out, err)
+	}
+	if dup, err := st.RecordPaymentRefunded(ctx, PaymentRefundedParams{EventID: "ev-ref-4", OrderID: "ord-4"}); err != nil || !dup {
+		t.Fatalf("RecordPaymentRefunded dup: dup=%v err=%v", dup, err)
+	}
+	if dup, err := st.RecordPaymentRefunded(ctx, PaymentRefundedParams{EventID: "ev-ref-grp", OrderID: "grp-4", RefundID: "rg4", AmountVND: 500}); err != nil || dup {
+		t.Fatalf("RecordPaymentRefunded group: dup=%v err=%v", dup, err)
+	}
+
+	// TransitionOrdersPaymentResult with EXPIRED / FAILED / empty group / OrderID lookup.
+	st.SeedLegacyOrder(
+		db.CheckoutGroup{ID: "grp-5", BuyerID: "buyer-1", Status: "COMPLETED"},
+		db.Order{ID: "ord-5", OrderCode: "NM-5", CheckoutGroupID: "grp-5", BuyerID: "buyer-1", ShopID: "shop-1", Status: "PENDING", PaymentMethod: "ZALOPAY"},
+		nil,
+	)
+	if out, err := st.TransitionOrdersPaymentResult(ctx, PaymentResultTransitionParams{
+		OrderID: "ord-5", ResultStatus: orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_EXPIRED,
+	}); err != nil || len(out.Transitioned) != 1 || out.Transitioned[0].PaymentStatus != "EXPIRED" {
+		t.Fatalf("TransitionOrdersPaymentResult EXPIRED: %+v err=%v", out, err)
+	}
+	if out, err := st.TransitionOrdersPaymentResult(ctx, PaymentResultTransitionParams{}); err != nil || len(out.Transitioned) != 0 {
+		t.Fatalf("TransitionOrdersPaymentResult empty: %+v err=%v", out, err)
+	}
+
+	// OutboxEvents snapshot + pagination bounds on returns & complaints.
+	if len(st.OutboxEvents()) == 0 {
+		t.Fatalf("expected non-empty outbox events")
+	}
+	if list, _, err := st.ListReturnRequestsFiltered(ctx, "", "", "", "", 10, 999); err != nil || len(list) != 0 {
+		t.Fatalf("ListReturnRequestsFiltered beyond end: %+v err=%v", list, err)
+	}
+	if list, _, err := st.ListComplaintsFiltered(ctx, "", "", "", 10, 999); err != nil || len(list) != 0 {
+		t.Fatalf("ListComplaintsFiltered beyond end: %+v err=%v", list, err)
+	}
 }

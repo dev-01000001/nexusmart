@@ -478,14 +478,14 @@ func (m *mockPaymentClient) ReleaseEscrow(_ context.Context, req *paymentv1.Rele
 }
 
 type mockShippingClient struct {
-	mu                     sync.Mutex
-	quotes                 []*shippingv1.CarrierQuote
-	createShipCalls        []*shippingv1.CreateShipmentRequest
-	createReturnShipCalls  []*shippingv1.CreateReturnShipmentRequest
-	createReturnShipErr    error
-	cancelShipCalls        []*shippingv1.CancelShipmentRequest
-	calculateFeeReqs       []*shippingv1.CalculateFeeRequest
-	calculateFeeCall       int
+	mu                    sync.Mutex
+	quotes                []*shippingv1.CarrierQuote
+	createShipCalls       []*shippingv1.CreateShipmentRequest
+	createReturnShipCalls []*shippingv1.CreateReturnShipmentRequest
+	createReturnShipErr   error
+	cancelShipCalls       []*shippingv1.CancelShipmentRequest
+	calculateFeeReqs      []*shippingv1.CalculateFeeRequest
+	calculateFeeCall      int
 }
 
 func newMockShippingClient() *mockShippingClient {
