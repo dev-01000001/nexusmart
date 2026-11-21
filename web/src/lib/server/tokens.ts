@@ -9,6 +9,7 @@ import {
   baseCookie,
 } from "./config.ts";
 import { GatewayError, errorFromResponse } from "./errors.ts";
+import { generateTraceparent } from "./trace.ts";
 
 export interface TokenPair {
   accessToken: string;
@@ -114,7 +115,11 @@ async function callRefresh(refreshToken: string): Promise<TokenPair | null> {
   try {
     res = await fetch(`${GATEWAY_URL}/api/v1/auth/refresh`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        traceparent: generateTraceparent(),
+      },
       body: JSON.stringify({ refresh_token: refreshToken }),
       cache: "no-store",
       signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),

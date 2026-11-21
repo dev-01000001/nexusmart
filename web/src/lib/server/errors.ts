@@ -1,5 +1,6 @@
 // Error model shared by every BFF route. Gateway internals (messages, trace ids) stay on the
 // server; the browser only ever sees { error: { code, message } } with a Vietnamese message.
+import { redactLogFields } from "./trace.ts";
 
 export type GatewayErrorKind =
   | "unauthenticated" // 401 – no session / session expired
@@ -82,9 +83,17 @@ export async function errorFromResponse(res: Response): Promise<GatewayError> {
   return new GatewayError(kind, code || undefined, detail, traceId);
 }
 
-/** Structured JSON log line without PII/secrets. */
+/** Structured JSON log line with RFC3339 timestamp, trace_id, and PII/secret redaction. */
 export function logServer(level: "info" | "warn" | "error", msg: string, fields: object = {}) {
-  const line = JSON.stringify({ level, msg, service: "web-bff", ...fields });
+  const safeFields = redactLogFields(fields as Record<string, unknown>);
+  const line = JSON.stringify({
+    time: new Date().toISOString(),
+    level,
+    msg,
+    service: "web-bff",
+    trace_id: typeof safeFields.trace_id === "string" ? safeFields.trace_id : "",
+    ...safeFields,
+  });
   if (level === "error") console.error(line);
   else console.log(line);
 }

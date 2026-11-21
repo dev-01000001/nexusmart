@@ -15,7 +15,16 @@ import {
   REFRESH_COOKIE,
   TRUST_PROXY_HEADERS,
   baseCookie,
+  buildChatWsUrl,
 } from "./config.ts";
+import {
+  extractTraceId,
+  generateTraceparent,
+  isValidTraceparent,
+  redactLogFields,
+  resolveTraceContext,
+  scrubLogString,
+} from "./trace.ts";
 import {
   accessExpiresSoon,
   applyAuthCookiesToHeader,
@@ -597,4 +606,46 @@ test("storefront tenant scoping isolates cart, orders, payments, and vouchers to
     (err) =>
       err instanceof GatewayError && err.status === 400 && err.code === "FOREIGN_SHOP_VOUCHER"
   );
+});
+
+test("buildChatWsUrl converts gateway origin to ws(s) and attaches short-lived ticket", () => {
+  const url = buildChatWsUrl("tk_abc123");
+  assert.match(url, /^wss?:\/\/.+\/api\/v1\/chat\/ws\?ticket=tk_abc123$/);
+});
+
+test("W3C traceparent resolution and log PII/secret redaction protect telemetry and secrets", () => {
+  const generated = generateTraceparent();
+  assert.equal(isValidTraceparent(generated), true);
+  assert.equal(extractTraceId(generated).length, 32);
+  assert.equal(
+    isValidTraceparent("00-00000000000000000000000000000000-1111111111111111-01"),
+    false
+  );
+
+  const incoming = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+  const ctx = resolveTraceContext(
+    new Headers({ traceparent: incoming, tracestate: "vendor=1" })
+  );
+  assert.equal(ctx.traceparent, incoming);
+  assert.equal(ctx.traceId, "4bf92f3577b34da6a3ce929d0e0e4736");
+  assert.equal(ctx.tracestate, "vendor=1");
+
+  const scrubbed = scrubLogString(
+    "Failed Bearer secret.token user=buyer@example.com phone=0909123456 postgres://app:SuperPass@db:5432/nm"
+  );
+  assert.equal(scrubbed.includes("secret.token"), false);
+  assert.equal(scrubbed.includes("buyer@example.com"), false);
+  assert.equal(scrubbed.includes("0909123456"), false);
+  assert.equal(scrubbed.includes("SuperPass"), false);
+
+  const redacted = redactLogFields({
+    trace_id: "4bf92f3577b34da6a3ce929d0e0e4736",
+    email: "buyer@example.com",
+    access_token: "abc",
+    nested: { recipient_name: "Nguyen An", note: "ok" },
+  });
+  assert.equal(redacted.trace_id, "4bf92f3577b34da6a3ce929d0e0e4736");
+  assert.equal(redacted.email, "[REDACTED]");
+  assert.equal(redacted.access_token, "[REDACTED]");
+  assert.deepEqual(redacted.nested, { recipient_name: "[REDACTED]", note: "ok" });
 });

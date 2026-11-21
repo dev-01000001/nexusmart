@@ -32,6 +32,7 @@ import { GatewayError, logServer } from "./errors";
 import { gw } from "./gateway";
 import { resolveRequestHost } from "./http";
 import { lookupPublishedSiteHost, publishedSiteHostCache } from "./siteLookup";
+import { generateTraceparent } from "./trace";
 
 const SITE_REVALIDATE_SECONDS = 30;
 
@@ -186,6 +187,7 @@ export const fetchPublishedSiteByHost = cache(
       logServer("warn", "site_by_host_fetch_failed", {
         host: hostname,
         kind: err instanceof GatewayError ? err.kind : "unknown",
+        trace_id: err instanceof GatewayError ? err.traceId : "",
       });
       return null;
     }
@@ -211,7 +213,7 @@ export async function fetchPublishedSiteByShop(
         `${GATEWAY_URL}/api/v1/sites/by-shop/${encodeURIComponent(cleanShopId)}`,
         {
           method: "GET",
-          headers: { Accept: "application/json" },
+          headers: { Accept: "application/json", traceparent: generateTraceparent() },
           cache: "no-store",
           signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
         }
@@ -250,6 +252,7 @@ export async function fetchPublishedSiteByShop(
     logServer("warn", "site_by_shop_fetch_failed", {
       shopId: cleanShopId,
       kind: err instanceof GatewayError ? err.kind : "unknown",
+      trace_id: err instanceof GatewayError ? err.traceId : "",
     });
     return null;
   }

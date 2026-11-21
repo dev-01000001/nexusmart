@@ -11,6 +11,7 @@ import {
 import { GatewayError, errorFromResponse } from "./errors";
 import { resolveForwardedClientIp } from "./http";
 import { clearAuthCookies, rotateRefreshToken, setAuthCookies } from "./tokens";
+import { generateTraceparent, resolveTraceContext } from "./trace";
 
 type QueryValue = string | number | boolean | null | undefined;
 
@@ -57,10 +58,15 @@ export async function gw<T>(path: string, opts: GwOptions = {}): Promise<T> {
     const h = await headers();
     const ip = resolveForwardedClientIp(h);
     if (ip) reqHeaders["X-Forwarded-For"] = ip;
+    const trace = resolveTraceContext(h);
+    reqHeaders["traceparent"] = trace.traceparent;
+    if (trace.tracestate) reqHeaders["tracestate"] = trace.tracestate;
     if (opts.auth !== "none") {
       store = await cookies();
       access = store.get(ACCESS_COOKIE)?.value || undefined;
     }
+  } else {
+    reqHeaders["traceparent"] = generateTraceparent();
   }
 
   const url = buildUrl(path, opts.query);
@@ -115,6 +121,9 @@ export async function gwRaw(path: string, opts: GwRawOptions = {}): Promise<Resp
   const h = await headers();
   const ip = resolveForwardedClientIp(h);
   if (ip) reqHeaders["X-Forwarded-For"] = ip;
+  const trace = resolveTraceContext(h);
+  reqHeaders["traceparent"] = trace.traceparent;
+  if (trace.tracestate) reqHeaders["tracestate"] = trace.tracestate;
 
   let store: Awaited<ReturnType<typeof cookies>> | undefined;
   let access: string | undefined;
