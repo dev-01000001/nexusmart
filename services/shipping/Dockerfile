@@ -21,7 +21,7 @@ RUN apk add --no-cache ca-certificates wget \
 
 COPY --from=builder /out/shipping /usr/local/bin/shipping
 
-USER appuser
+USER 10001:10001
 
 EXPOSE 50057 8087
 
