@@ -314,6 +314,14 @@ func (s *PGStore) SaveUsageLog(ctx context.Context, log UsageLog) error {
 	return nil
 }
 
+func (s *PGStore) IsEventProcessed(ctx context.Context, eventID string) (bool, error) {
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM assistant_processed_events WHERE event_id = $1)`, eventID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check event processed: %w", err)
+	}
+	return exists, nil
+}
+
 func (s *PGStore) MarkEventProcessed(ctx context.Context, eventID, subject string) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO assistant_processed_events (event_id, subject, processed_at)

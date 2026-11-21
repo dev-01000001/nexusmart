@@ -245,6 +245,13 @@ func (m *MemoryStore) SaveUsageLog(_ context.Context, log UsageLog) error {
 	return nil
 }
 
+func (m *MemoryStore) IsEventProcessed(_ context.Context, eventID string) (bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, exists := m.processedEvents[eventID]
+	return exists, nil
+}
+
 func (m *MemoryStore) MarkEventProcessed(_ context.Context, eventID, _ string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

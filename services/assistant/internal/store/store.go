@@ -109,6 +109,7 @@ type Store interface {
 	SaveHandoffTicket(ctx context.Context, ticket HandoffTicket) error
 	GetHandoffTicket(ctx context.Context, id string) (*HandoffTicket, error)
 	SaveUsageLog(ctx context.Context, log UsageLog) error
+	IsEventProcessed(ctx context.Context, eventID string) (bool, error)
 	MarkEventProcessed(ctx context.Context, eventID, subject string) (inserted bool, err error)
 	Ping(ctx context.Context) error
 }

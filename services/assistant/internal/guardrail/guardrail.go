@@ -258,8 +258,8 @@ func New() *DefaultEngine {
 func (e *DefaultEngine) CheckUserInput(text string) CheckResult {
 	if utf8.RuneCountInString(text) > MaxUserInputRunes {
 		return CheckResult{
-			Allowed: false,
-			Blocked: true,
+			Allowed:  false,
+			Blocked:  true,
 			Category: "input_too_long",
 			Reason:   "Tin nhắn vượt quá giới hạn 4000 ký tự.",
 		}
@@ -326,11 +326,35 @@ func (e *DefaultEngine) SanitizeUntrustedData(source, text string) CheckResult {
 		}
 	}
 
-	lines := strings.Split(stripped, "\n")
+	rawLines := strings.Split(stripped, "\n")
+	lines := make([]string, 0, len(rawLines))
+	for _, line := range rawLines {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			lines = append(lines, trimmed)
+		}
+	}
+
+	// Detect payloads intentionally split across adjacent lines (e.g. "ignore previous\ninstructions").
+	linePoisoned := make([]bool, len(lines))
+	for i := 0; i+1 < len(lines); i++ {
+		_, pA := e.scanText(lines[i], e.untrustedRules, true)
+		_, pB := e.scanText(lines[i+1], e.untrustedRules, true)
+		catAB, pAB := e.scanText(lines[i]+" "+lines[i+1], e.untrustedRules, true)
+		if hasNewPattern(pAB, pA, pB) {
+			record(catAB, pAB)
+			linePoisoned[i] = true
+			linePoisoned[i+1] = true
+		}
+	}
+
 	cleanedLines := make([]string, 0, len(lines))
-	for _, line := range lines {
-		trimmedLine := strings.TrimSpace(line)
-		if trimmedLine == "" {
+	lastLinePlaceholder := false
+	for i, trimmedLine := range lines {
+		if linePoisoned[i] {
+			if !lastLinePlaceholder {
+				cleanedLines = append(cleanedLines, sanitizedPlaceholder)
+				lastLinePlaceholder = true
+			}
 			continue
 		}
 		segments := splitUntrustedSegments(trimmedLine)
@@ -354,14 +378,22 @@ func (e *DefaultEngine) SanitizeUntrustedData(source, text string) CheckResult {
 			lastPlaceholder = false
 		}
 		if len(outSegs) > 0 {
-			cleanedLines = append(cleanedLines, strings.Join(outSegs, " "))
+			joined := strings.Join(outSegs, " ")
+			if joined == sanitizedPlaceholder {
+				if !lastLinePlaceholder {
+					cleanedLines = append(cleanedLines, joined)
+					lastLinePlaceholder = true
+				}
+			} else {
+				cleanedLines = append(cleanedLines, joined)
+				lastLinePlaceholder = false
+			}
 		}
 	}
 
 	sanitized := strings.Join(cleanedLines, "\n")
 
-	// Second pass across the full sanitized string catches multi-line split payloads
-	// (e.g., "ignore previous\ninstructions").
+	// Final full-text check catches multi-line payloads spanning >2 lines.
 	if cat, pats := e.scanText(sanitized, e.untrustedRules, true); len(pats) > 0 {
 		record(cat, pats)
 		sanitized = sanitizedPlaceholder
@@ -592,6 +624,25 @@ func decodePlausibleBase64(candidate string) (string, bool) {
 		return "", false
 	}
 	return string(raw), true
+}
+
+func hasNewPattern(combined, a, b []string) bool {
+	if len(combined) == 0 {
+		return false
+	}
+	existing := make(map[string]struct{}, len(a)+len(b))
+	for _, p := range a {
+		existing[p] = struct{}{}
+	}
+	for _, p := range b {
+		existing[p] = struct{}{}
+	}
+	for _, p := range combined {
+		if _, ok := existing[p]; !ok {
+			return true
+		}
+	}
+	return false
 }
 
 func splitUntrustedSegments(line string) []string {

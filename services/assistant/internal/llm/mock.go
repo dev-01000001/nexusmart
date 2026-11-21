@@ -894,13 +894,14 @@ func renderAddToCart(okVal, requiresAuth, requiresConfirm bool, errMsg string, d
 	if requiresAuth {
 		return "Bạn cần đăng nhập để thêm sản phẩm vào giỏ hàng."
 	}
-	skuID := strVal(data["sku_id"])
-	qty := int64Val(data["quantity"])
+	cartMap, _ := data["cart"].(map[string]any)
+	skuID := firstNonEmpty(strVal(data["sku_id"]), strVal(cartMap["sku_id"]))
+	qty := firstPositiveInt64(int64Val(data["quantity"]), int64Val(cartMap["quantity"]))
 	if qty <= 0 {
 		qty = 1
 	}
-	prodName := strVal(data["product_name"])
-	price := int64Val(data["price_vnd"])
+	prodName := firstNonEmpty(strVal(data["product_name"]), strVal(cartMap["product_name"]))
+	price := firstPositiveInt64(int64Val(data["price_vnd"]), int64Val(cartMap["price_vnd"]))
 
 	if requiresConfirm {
 		var b strings.Builder
@@ -947,13 +948,20 @@ func renderSellerReport(okVal, requiresAuth bool, errMsg string, data map[string
 	}
 
 	period := firstNonEmpty(strVal(data["period"]), "7d")
-	totalOrders := int64Val(data["total_orders"])
-	completed := int64Val(data["completed_orders"])
-	cancelled := int64Val(data["cancelled_orders"])
-	cancelRate := floatVal(data["cancel_rate_pct"])
-	revenue := int64Val(data["gross_revenue_vnd"])
-	availBal := int64Val(data["available_balance_vnd"])
-	pendBal := int64Val(data["pending_balance_vnd"])
+	metrics := data
+	if m, ok := data["metrics"].(map[string]any); ok && len(m) > 0 {
+		metrics = m
+		if p := strVal(m["period"]); p != "" {
+			period = p
+		}
+	}
+	totalOrders := int64Val(metrics["total_orders"])
+	completed := int64Val(metrics["completed_orders"])
+	cancelled := int64Val(metrics["cancelled_orders"])
+	cancelRate := floatVal(metrics["cancel_rate_pct"])
+	revenue := int64Val(metrics["gross_revenue_vnd"])
+	availBal := int64Val(metrics["available_balance_vnd"])
+	pendBal := int64Val(metrics["pending_balance_vnd"])
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Báo cáo kinh doanh gian hàng (kỳ %s):\n", period)
@@ -967,7 +975,11 @@ func renderSellerReport(okVal, requiresAuth bool, errMsg string, data map[string
 		UnitsSold   int64  `json:"units_sold"`
 		RevenueVND  int64  `json:"revenue_vnd"`
 	}
-	_ = decodeInto(data["top_products"], &top)
+	if metrics["top_products"] != nil {
+		_ = decodeInto(metrics["top_products"], &top)
+	} else {
+		_ = decodeInto(data["top_products"], &top)
+	}
 	if len(top) > 0 {
 		b.WriteString("- Sản phẩm bán chạy:\n")
 		for i, item := range top {
