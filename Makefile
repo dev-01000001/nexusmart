@@ -3,7 +3,7 @@ export PATH := $(HOME)/.local/bin:$(HOME)/go/bin:$(HOME)/.cargo/bin:$(PATH)
 export PROTOC := $(HOME)/.local/bin/protoc
 
 GO_MODULES := pkg/common gen/go \
-	$(wildcard services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification services/search services/assistant tools/catalog-gen evals/assistant)
+	$(wildcard services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification services/search services/chat services/assistant tools/catalog-gen evals/assistant)
 
 .PHONY: proto lint test up down e2e seed e2e-web eval-assistant
 
@@ -88,3 +88,17 @@ obs-down:
 
 chaos:
 	./tools/chaos/run.sh
+
+# Swarm F: Helm/K8s lint, one-command rollback, and database backup/restore drill
+.PHONY: helm-lint rollback backup restore-drill
+helm-lint:
+	./deploy/k8s/scripts/lint.sh
+
+rollback:
+	SERVICE="$(SERVICE)" REV="$(REV)" NAMESPACE="$${NAMESPACE:-nexusmart-staging}" ./deploy/k8s/scripts/rollback.sh
+
+backup:
+	./tools/backup/backup.sh
+
+restore-drill:
+	./tools/backup/restore-drill.sh --fresh
