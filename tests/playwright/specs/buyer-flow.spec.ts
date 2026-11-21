@@ -60,14 +60,27 @@ test.describe("Storefront Buyer E2E Journey", () => {
       await page.getByRole("button", { name: "Xác thực và hoàn tất" }).click();
 
       // RegisterForm auto-logs in and redirects to /tai-khoan; if it falls back to /dang-nhap, sign in there.
-      await page.waitForURL((url) => !url.pathname.startsWith("/dang-ky"), { timeout: 25_000 });
+      await page.waitForURL((url) => !url.pathname.startsWith("/dang-ky"), {
+        timeout: 25_000,
+        waitUntil: "commit",
+      });
 
-      if (new URL(page.url()).pathname.startsWith("/dang-nhap")) {
+      const alreadyAuthed = await page
+        .locator('header a[href="/tai-khoan"]')
+        .isVisible()
+        .catch(() => false);
+      if (new URL(page.url()).pathname.startsWith("/dang-nhap") && !alreadyAuthed) {
         await expect(page.locator("#login-email")).toBeVisible();
         await page.locator("#login-email").fill(buyer.email);
         await page.locator("#login-password").fill(buyer.password);
         await page.getByRole("button", { name: "Đăng nhập" }).click();
-        await page.waitForURL((url) => !url.pathname.startsWith("/dang-nhap"), { timeout: 25_000 });
+        await Promise.race([
+          page.waitForURL((url) => !url.pathname.startsWith("/dang-nhap"), {
+            timeout: 25_000,
+            waitUntil: "commit",
+          }),
+          page.locator('header a[href="/tai-khoan"]').waitFor({ state: "visible", timeout: 25_000 }),
+        ]);
       }
 
       // Authenticated site header renders "Đơn hàng" (/don-hang) and "Tài khoản" (/tai-khoan).
@@ -226,7 +239,7 @@ test.describe("Storefront Buyer E2E Journey", () => {
       const checkoutAlert = reviewAside.locator('[role="alert"]').first();
       const navOutcome = await Promise.race([
         page
-          .waitForURL(/\/don-hang(?:\/[^/?#]+)?$/, { timeout: 30_000 })
+          .waitForURL(/\/don-hang(?:\/[^/?#]+)?$/, { timeout: 30_000, waitUntil: "commit" })
           .then(() => ({ kind: "navigated" as const }))
           .catch((error: unknown) => ({ kind: "nav_error" as const, error })),
         checkoutAlert
