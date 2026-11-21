@@ -1,246 +1,245 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import type { SellerSizeChartRow } from "@/data/seller";
-import { Button, IconCheck, StateView } from "@/components";
-import { formatVnd } from "@/lib/format";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Button, IconArrowUpRight, IconCheck, IconRefresh, StateView } from "@/components";
+import { api, ApiError } from "@/lib/api";
+import { formatDateTimeVi, formatInt } from "@/lib/format";
+import type { SessionUser } from "@/lib/server/session";
+import { sanitizeSafeUrl } from "@/lib/site/theme";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { useSellerContext } from "@/features/seller/SellerShell";
+import { getShopStatusLabel, type GwSellerShop } from "@/features/seller/sellerApiTypes";
 import {
-  getShopFactoryProfileWithSession,
-  getShopOperationsConfigWithSession,
-  getShopSizeChartsWithSession,
-  parseUiState,
-  updateShopFactoryProfile,
-  updateShopOperationsConfig,
-  updateShopSizeCharts,
-  useSellerSession,
-} from "@/features/seller/sellerStore";
+  normalizeAutoReplyConfig,
+  parseUiStateParam,
+  type SellerAddress,
+  type SellerAutoReplyConfig,
+} from "@/features/seller/sellerReturns";
+import type { SellerSiteSummary } from "@/features/seller/site/siteSummary";
 import common from "@/features/seller/SellerCommon.module.css";
 import styles from "./page.module.css";
 
-type ProfileTab = "factory" | "sizechart" | "shipping";
-type SizeGroupKey = "tops" | "bottoms";
-type BodyShape = "gay" | "vua" | "day";
+type ProfileTab = "shop" | "warehouse" | "autoreply";
 
-function parseRangeMid(rangeStr: string, fallback: number): number {
-  const nums = rangeStr.match(/\d+/g);
-  if (!nums || nums.length === 0) return fallback;
-  if (nums.length === 1) return Number(nums[0]);
-  return (Number(nums[0]) + Number(nums[1])) / 2;
+const AUTO_REPLY_PRESETS = [
+  {
+    label: "Mẫu giờ làm việc",
+    text: "Cảm ơn bạn đã nhắn tin cho gian hàng. Hiện shop đang ngoài giờ hỗ trợ (8:00 - 21:00) và sẽ phản hồi ngay khi mở ca làm việc tiếp theo.",
+  },
+  {
+    label: "Mẫu phản hồi nhanh",
+    text: "Chào bạn, gian hàng đã nhận được tin nhắn. Nếu bạn cần tư vấn size hoặc kiểm tra đơn hàng, vui lòng để lại chiều cao, cân nặng hoặc mã đơn để shop hỗ trợ nhanh hơn.",
+  },
+];
+
+export interface SellerProfileClientProps {
+  initialUser: SessionUser;
+  shop: GwSellerShop | null;
+  shopError: string | null;
+  addresses: SellerAddress[];
+  addressesError: string | null;
+  site: SellerSiteSummary;
 }
 
-function recommendSizeFromChart(
-  rows: SellerSizeChartRow[],
-  heightCm: number,
-  weightKg: number,
-  shape: BodyShape
-): SellerSizeChartRow {
-  const shapeWeightAdj = shape === "day" ? 4 : shape === "gay" ? -3 : 0;
-  const effWeight = weightKg + shapeWeightAdj;
-  let bestIdx = 0;
-  let bestScore = Number.POSITIVE_INFINITY;
-  rows.forEach((row, idx) => {
-    const midH = parseRangeMid(row.heightRange, 170);
-    const midW = parseRangeMid(row.weightRange, 68);
-    const score = Math.abs(heightCm - midH) * 0.6 + Math.abs(effWeight - midW) * 1.4;
-    if (score < bestScore) {
-      bestScore = score;
-      bestIdx = idx;
-    }
-  });
-  return rows[bestIdx] ?? rows[0];
+function pillCls(tone: "pos" | "warn" | "neg" | "neutral"): string {
+  if (tone === "pos") return `${common.pill} ${common.pillPos}`;
+  if (tone === "warn") return `${common.pill} ${common.pillWarn}`;
+  if (tone === "neg") return `${common.pill} ${common.pillNeg}`;
+  return common.pill;
 }
 
-function SellerProfileOpsContent() {
+function siteStateLabel(state: SellerSiteSummary["state"]): {
+  label: string;
+  tone: "pos" | "warn" | "neg" | "neutral";
+} {
+  switch (state) {
+    case "published":
+      return { label: "Đang mở bán", tone: "pos" };
+    case "draft":
+      return { label: "Bản nháp chưa xuất bản", tone: "warn" };
+    case "suspended":
+      return { label: "Đang tạm khóa", tone: "neg" };
+    default:
+      return { label: "Chưa khởi tạo", tone: "neutral" };
+  }
+}
+
+function SellerProfileContent({
+  initialUser,
+  shop,
+  shopError,
+  addresses,
+  addressesError,
+  site,
+}: SellerProfileClientProps) {
+  const router = useRouter();
   const searchParams = useSearchParams();
-  const uiState = parseUiState(searchParams.get("state"));
-  const initialTab = searchParams.get("tab") as ProfileTab | null;
-
-  const { shop, presentationShopKey, showToast } = useSellerContext();
-  const session = useSellerSession();
-  const displayShopName = shop?.name ?? "Gian hàng của bạn";
+  const uiState = parseUiStateParam(searchParams.get("state"));
+  const tabParam = searchParams.get("tab") as ProfileTab | null;
+  const { showToast } = useSellerContext();
 
   const [tab, setTab] = useState<ProfileTab>(
-    initialTab && ["factory", "sizechart", "shipping"].includes(initialTab) ? initialTab : "factory"
+    tabParam && ["shop", "warehouse", "autoreply"].includes(tabParam) ? tabParam : "shop"
   );
 
-  const profile = getShopFactoryProfileWithSession(presentationShopKey, session);
-  const sizeCharts = getShopSizeChartsWithSession(presentationShopKey, session);
-  const opsConfig = getShopOperationsConfigWithSession(presentationShopKey, session);
+  // Tab 1: Editable owner contact info via PATCH /api/auth/me
+  const [owner, setOwner] = useState<SessionUser>(initialUser);
+  const [fullName, setFullName] = useState(initialUser.fullName);
+  const [phone, setPhone] = useState(initialUser.phone);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState("");
 
-  return (
-    <SellerProfileOpsInner
-      key={presentationShopKey}
-      shopId={presentationShopKey}
-      shopName={displayShopName}
-      shopShortName={displayShopName}
-      uiState={uiState}
-      tab={tab}
-      setTab={setTab}
-      profile={profile}
-      sizeCharts={sizeCharts}
-      opsConfig={opsConfig}
-      onNotify={showToast}
-    />
-  );
-}
+  // Tab 3: Chat auto-reply via GET/PUT /api/seller/chat/auto-reply
+  const [autoReplyLoaded, setAutoReplyLoaded] = useState(false);
+  const [autoReplyLoading, setAutoReplyLoading] = useState(false);
+  const [autoReplyUnavailable, setAutoReplyUnavailable] = useState(false);
+  const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
+  const [autoReplyMessage, setAutoReplyMessage] = useState("");
+  const [autoReplyUpdatedAt, setAutoReplyUpdatedAt] = useState("");
+  const [autoReplySaving, setAutoReplySaving] = useState(false);
+  const [autoReplyError, setAutoReplyError] = useState("");
 
-interface InnerProps {
-  shopId: string;
-  shopName: string;
-  shopShortName: string;
-  uiState: "loading" | "empty" | "error" | null;
-  tab: ProfileTab;
-  setTab: (t: ProfileTab) => void;
-  profile: ReturnType<typeof getShopFactoryProfileWithSession>;
-  sizeCharts: ReturnType<typeof getShopSizeChartsWithSession>;
-  opsConfig: ReturnType<typeof getShopOperationsConfigWithSession>;
-  onNotify: (msg: string) => void;
-}
+  const loadAutoReply = useCallback(async (signal?: AbortSignal) => {
+    setAutoReplyLoading(true);
+    setAutoReplyUnavailable(false);
+    setAutoReplyError("");
+    try {
+      const res = await api<unknown>("/api/seller/chat/auto-reply", { signal });
+      const normalized: SellerAutoReplyConfig = normalizeAutoReplyConfig(res);
+      setAutoReplyEnabled(normalized.enabled);
+      setAutoReplyMessage(normalized.message);
+      setAutoReplyUpdatedAt(normalized.updated_at);
+      setAutoReplyLoaded(true);
+    } catch (err) {
+      if (signal?.aborted) return;
+      if (
+        err instanceof ApiError &&
+        (err.status === 404 || err.status === 503 || err.status === 0)
+      ) {
+        setAutoReplyUnavailable(true);
+      } else {
+        setAutoReplyError(
+          err instanceof ApiError ? err.message : "Không thể tải cấu hình trả lời tự động."
+        );
+      }
+      setAutoReplyLoaded(true);
+    } finally {
+      if (!signal?.aborted) {
+        setAutoReplyLoading(false);
+      }
+    }
+  }, []);
 
-function SellerProfileOpsInner({
-  shopId,
-  shopName,
-  shopShortName,
-  uiState,
-  tab,
-  setTab,
-  profile,
-  sizeCharts,
-  opsConfig,
-  onNotify,
-}: InnerProps) {
-  // Tab 1: Factory profile drafts
-  const [factoryName, setFactoryName] = useState(profile.factoryName);
-  const [establishedYear, setEstablishedYear] = useState(String(profile.establishedYear));
-  const [factoryAddress, setFactoryAddress] = useState(profile.factoryAddress);
-  const [monthlyCapacity, setMonthlyCapacity] = useState(profile.monthlyCapacity);
-  const [yarnText, setYarnText] = useState(profile.yarnSources.join("\n"));
+  useEffect(() => {
+    if (tab !== "autoreply" || autoReplyLoaded) return;
+    const ctrl = new AbortController();
+    void loadAutoReply(ctrl.signal);
+    return () => ctrl.abort();
+  }, [tab, autoReplyLoaded, loadAutoReply]);
 
-  // Tab 2: Size charts drafts & live simulator
-  const [sizeGroup, setSizeGroup] = useState<SizeGroupKey>("tops");
-  const [topsRows, setTopsRows] = useState<SellerSizeChartRow[]>(sizeCharts.tops);
-  const [bottomsRows, setBottomsRows] = useState<SellerSizeChartRow[]>(sizeCharts.bottoms);
-  const [topsNote, setTopsNote] = useState(sizeCharts.topsNote);
-  const [bottomsNote, setBottomsNote] = useState(sizeCharts.bottomsNote);
-  const [simHeight, setSimHeight] = useState(174);
-  const [simWeight, setSimWeight] = useState(70);
-  const [simShape, setSimShape] = useState<BodyShape>("vua");
-
-  // Tab 3: Shipping & Return 45 days drafts
-  const [freeShipStr, setFreeShipStr] = useState(String(opsConfig.freeShipThresholdVnd));
-  const [shipFeeStr, setShipFeeStr] = useState(String(opsConfig.standardShipFeeVnd));
-  const [prepHoursStr, setPrepHoursStr] = useState(String(opsConfig.prepSlaHours));
-  const [fastEnabled, setFastEnabled] = useState(opsConfig.fastDeliveryEnabled);
-  const [fastArea, setFastArea] = useState(opsConfig.fastDeliveryArea);
-  const [fastCutoff, setFastCutoff] = useState(opsConfig.fastDeliveryCutoff);
-  const [return45, setReturn45] = useState(opsConfig.return45DaysEnabled);
-  const [twoWayEx, setTwoWayEx] = useState(opsConfig.twoWayExchangeEnabled);
-  const [exceptionNote, setExceptionNote] = useState(opsConfig.returnExceptionNote);
-
-  const activeRows = sizeGroup === "tops" ? topsRows : bottomsRows;
-  const activeSizeNote = sizeGroup === "tops" ? topsNote : bottomsNote;
-
-  const recommendedRow = useMemo(
-    () => recommendSizeFromChart(activeRows, simHeight, simWeight, simShape),
-    [activeRows, simHeight, simWeight, simShape]
+  const shopDisplayName = shop?.name || "Gian hàng chưa kích hoạt";
+  const shopStatusMeta = shop ? getShopStatusLabel(shop.status) : null;
+  const siteMeta = siteStateLabel(site.state);
+  const safeLicenseUrl = sanitizeSafeUrl(shop?.business_license_doc);
+  const pickupAddress = addresses.find(
+    (a) => shop?.pickup_address_id && a.id === shop.pickup_address_id
   );
 
-  const handleSaveFactory = (e: React.FormEvent) => {
+  const handleSaveOwnerContact = async (e: React.FormEvent) => {
     e.preventDefault();
-    updateShopFactoryProfile(shopId, {
-      factoryName: factoryName.trim() || profile.factoryName,
-      establishedYear: Math.max(1990, Math.trunc(Number(establishedYear) || 2020)),
-      factoryAddress: factoryAddress.trim() || profile.factoryAddress,
-      monthlyCapacity: monthlyCapacity.trim() || profile.monthlyCapacity,
-      yarnSources: yarnText
-        .split("\n")
-        .map((s) => s.trim())
-        .filter(Boolean),
-    });
-    onNotify(`Đã lưu hồ sơ xưởng & nguồn sợi cho ${shopShortName}.`);
-  };
-
-  const updateSizeRow = (
-    idx: number,
-    field: keyof Omit<SellerSizeChartRow, "size">,
-    val: string
-  ) => {
-    const updater = (prev: SellerSizeChartRow[]) =>
-      prev.map((row, i) => (i === idx ? { ...row, [field]: val } : row));
-    if (sizeGroup === "tops") {
-      setTopsRows(updater);
-    } else {
-      setBottomsRows(updater);
+    if (profileSaving) return;
+    const trimmedName = fullName.trim();
+    const trimmedPhone = phone.trim();
+    if (trimmedName.length < 2) {
+      setProfileError("Họ tên người phụ trách cần tối thiểu 2 ký tự.");
+      return;
+    }
+    setProfileError("");
+    setProfileSaving(true);
+    try {
+      const res = await api<{ user: SessionUser }>("/api/auth/me", {
+        method: "PATCH",
+        body: {
+          full_name: trimmedName,
+          phone: trimmedPhone,
+          avatar_url: owner.avatarUrl,
+        },
+      });
+      if (res.user) {
+        setOwner(res.user);
+        setFullName(res.user.fullName);
+        setPhone(res.user.phone);
+      }
+      showToast("Đã cập nhật thông tin liên hệ chủ gian hàng.");
+      router.refresh();
+    } catch (err) {
+      setProfileError(
+        err instanceof ApiError ? err.message : "Không thể lưu thông tin liên hệ lúc này."
+      );
+    } finally {
+      setProfileSaving(false);
     }
   };
 
-  const handleSaveSizeCharts = () => {
-    updateShopSizeCharts(shopId, {
-      shopId,
-      tops: topsRows,
-      bottoms: bottomsRows,
-      topsNote: topsNote.trim(),
-      bottomsNote: bottomsNote.trim(),
-      updatedAt: "2026-11-20",
-    });
-    onNotify(
-      `Đã lưu bảng quy đổi size ${sizeGroup === "tops" ? "nhóm Áo" : "nhóm Quần"} cho site gian hàng.`
-    );
-  };
-
-  const handleSaveOps = (e: React.FormEvent) => {
+  const handleSaveAutoReply = async (e: React.FormEvent) => {
     e.preventDefault();
-    const freeShipThresholdVnd = Math.max(99000, Math.trunc(Number(freeShipStr) || 199000));
-    const standardShipFeeVnd = Math.max(0, Math.trunc(Number(shipFeeStr) || 25000));
-    const prepSlaHours = Math.max(2, Math.min(48, Math.trunc(Number(prepHoursStr) || 12)));
-    updateShopOperationsConfig(shopId, {
-      freeShipThresholdVnd,
-      standardShipFeeVnd,
-      prepSlaHours,
-      fastDeliveryEnabled: fastEnabled,
-      fastDeliveryArea: fastArea.trim() || opsConfig.fastDeliveryArea,
-      fastDeliveryCutoff: fastCutoff.trim() || opsConfig.fastDeliveryCutoff,
-      return45DaysEnabled: return45,
-      twoWayExchangeEnabled: twoWayEx,
-      returnExceptionNote: exceptionNote.trim(),
-    });
-    onNotify(
-      `Đã cập nhật cấu hình giao hàng (freeship từ ${formatVnd(freeShipThresholdVnd)}) và chính sách đổi trả.`
-    );
+    if (autoReplySaving) return;
+    const trimmedMsg = autoReplyMessage.trim();
+    if (autoReplyEnabled && trimmedMsg.length < 5) {
+      setAutoReplyError("Khi bật trả lời tự động, nội dung lời chào cần tối thiểu 5 ký tự.");
+      return;
+    }
+    if (trimmedMsg.length > 500) {
+      setAutoReplyError("Nội dung trả lời tự động không vượt quá 500 ký tự.");
+      return;
+    }
+    setAutoReplyError("");
+    setAutoReplySaving(true);
+    try {
+      const res = await api<unknown>("/api/seller/chat/auto-reply", {
+        method: "PUT",
+        body: {
+          enabled: autoReplyEnabled,
+          message: trimmedMsg,
+        },
+      });
+      const normalized = normalizeAutoReplyConfig(res);
+      setAutoReplyEnabled(normalized.enabled);
+      setAutoReplyMessage(normalized.message || trimmedMsg);
+      setAutoReplyUpdatedAt(normalized.updated_at);
+      setAutoReplyUnavailable(false);
+      showToast("Đã lưu cấu hình trả lời tự động chat.");
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : "Không thể lưu cấu hình trả lời tự động. Dịch vụ chat có thể chưa sẵn sàng.";
+      setAutoReplyError(msg);
+      showToast(msg);
+    } finally {
+      setAutoReplySaving(false);
+    }
   };
-
-  const liveFreeShip = Math.max(0, Math.trunc(Number(freeShipStr) || 0));
-  const liveShipFee = Math.max(0, Math.trunc(Number(shipFeeStr) || 0));
 
   return (
     <div className={common.page}>
       <header className={common.pageHeader}>
         <div className={common.headerText}>
-          <h1 className={common.title}>Hồ sơ xưởng, Bảng size &amp; Vận hành</h1>
+          <h1 className={common.title}>Hồ sơ gian hàng &amp; Vận hành</h1>
           <p className={common.finding}>
-            {shopName} · Freeship gian hàng từ {formatVnd(opsConfig.freeShipThresholdVnd)} ·{" "}
-            {opsConfig.return45DaysEnabled
-              ? "Đổi trả 45 ngày tận nơi"
-              : "Đổi trả theo chính sách shop"}{" "}
-            · {opsConfig.fastDeliveryEnabled ? "Đang bật giao nhanh nội thành" : "Giao tiêu chuẩn"}
+            {shopDisplayName}
+            {shopStatusMeta ? ` · ${shopStatusMeta.label}` : ""}
+            {` · ${formatInt(addresses.length)} địa chỉ kho đã lưu`}
+            {` · Site riêng: ${siteMeta.label}`}
           </p>
         </div>
         <div className={common.headerActions}>
-          {tab === "sizechart" && (
-            <Button variant="ink" size="sm" shape="app" onClick={handleSaveSizeCharts}>
-              <IconCheck size={14} />
-              <span>Lưu bảng size xưởng</span>
-            </Button>
-          )}
-          {tab === "factory" && (
-            <Button variant="outline" size="sm" shape="app" href="/seller/site">
-              Chỉnh giao diện &amp; bố cục site
-            </Button>
-          )}
+          <Button variant="outline" size="sm" shape="app" href="/seller/site">
+            <span>Tùy chỉnh site gian hàng</span>
+            <IconArrowUpRight size={14} />
+          </Button>
         </div>
       </header>
 
@@ -248,7 +247,7 @@ function SellerProfileOpsInner({
         <StateView
           kind="loading"
           surface="app"
-          title="Đang tải hồ sơ xưởng, quy chuẩn QC và bảng quy đổi size..."
+          title="Đang tải hồ sơ gian hàng và danh sách kho lấy hàng..."
           rows={5}
         />
       )}
@@ -257,11 +256,10 @@ function SellerProfileOpsInner({
         <StateView
           kind="error"
           surface="app"
-          title="Không thể tải cấu hình gian hàng"
-          message="Dịch vụ hồ sơ xưởng tạm thời gián đoạn. Vui lòng thử lại."
-          lastUpdated="02:18 · 20/11/2026"
+          title="Không thể tải hồ sơ gian hàng"
+          message={shopError ?? "Hệ thống gian hàng tạm thời chưa phản hồi. Vui lòng thử lại."}
           actionLabel="Thử lại"
-          actionHref="/seller/ho-so"
+          onAction={() => router.refresh()}
         />
       )}
 
@@ -269,10 +267,10 @@ function SellerProfileOpsInner({
         <StateView
           kind="empty"
           surface="app"
-          title="Gian hàng chưa hoàn thiện hồ sơ xưởng và bảng size"
-          message="Khai báo nguồn sợi, quy chuẩn QC và bảng size riêng để hiển thị trên site gian hàng."
-          actionLabel="Mở cấu hình ngay"
-          actionHref="/seller/ho-so"
+          title="Chưa có dữ liệu hồ sơ gian hàng"
+          message="Hoàn thiện thông tin gian hàng và kho lấy hàng để bắt đầu vận hành."
+          actionLabel="Mở cấu hình site"
+          actionHref="/seller/site"
         />
       )}
 
@@ -281,637 +279,483 @@ function SellerProfileOpsInner({
           <div
             className={common.underlineTabs}
             role="tablist"
-            aria-label="Phân mục hồ sơ và vận hành"
+            aria-label="Phân mục hồ sơ gian hàng"
           >
             <button
               type="button"
               role="tab"
-              aria-selected={tab === "factory"}
-              className={`${common.underlineTab} ${tab === "factory" ? common.underlineTabActive : ""}`}
-              onClick={() => setTab("factory")}
+              aria-selected={tab === "shop"}
+              className={`${common.underlineTab} ${tab === "shop" ? common.underlineTabActive : ""}`}
+              onClick={() => setTab("shop")}
             >
-              Hồ sơ xưởng &amp; QC
+              Thông tin gian hàng
             </button>
             <button
               type="button"
               role="tab"
-              aria-selected={tab === "sizechart"}
-              className={`${common.underlineTab} ${tab === "sizechart" ? common.underlineTabActive : ""}`}
-              onClick={() => setTab("sizechart")}
+              aria-selected={tab === "warehouse"}
+              className={`${common.underlineTab} ${tab === "warehouse" ? common.underlineTabActive : ""}`}
+              onClick={() => setTab("warehouse")}
             >
-              Bảng quy đổi size
+              Kho lấy hàng &amp; Địa chỉ ({formatInt(addresses.length)})
             </button>
             <button
               type="button"
               role="tab"
-              aria-selected={tab === "shipping"}
-              className={`${common.underlineTab} ${tab === "shipping" ? common.underlineTabActive : ""}`}
-              onClick={() => setTab("shipping")}
+              aria-selected={tab === "autoreply"}
+              className={`${common.underlineTab} ${tab === "autoreply" ? common.underlineTabActive : ""}`}
+              onClick={() => setTab("autoreply")}
             >
-              Giao hàng &amp; Đổi trả
+              Trả lời tự động chat
             </button>
           </div>
 
-          {/* TAB 1: Factory profile, Yarn sources, QC standards */}
-          {tab === "factory" && (
+          {tab === "shop" && (
             <div className={styles.twoCol}>
-              <form
-                className={common.card}
-                onSubmit={handleSaveFactory}
-                aria-labelledby="factory-info-heading"
-              >
+              <section className={common.card} aria-labelledby="shop-info-heading">
                 <div className={common.cardHeader}>
-                  <h2 id="factory-info-heading" className={common.cardTitle}>
-                    Thông tin nhà máy &amp; nguồn sợi
+                  <h2 id="shop-info-heading" className={common.cardTitle}>
+                    Hồ sơ đăng ký gian hàng
                   </h2>
-                  <span className={`${common.pill} ${common.pillPos}`}>Đã kiểm định QC</span>
+                  {shopStatusMeta && (
+                    <span className={pillCls(shopStatusMeta.tone)}>{shopStatusMeta.label}</span>
+                  )}
                 </div>
 
-                <div className={styles.fieldStack}>
-                  <div className={common.field}>
-                    <label htmlFor="fac-name" className={common.fieldLabel}>
-                      Tên xưởng / nhà máy hợp tác
-                    </label>
-                    <input
-                      id="fac-name"
-                      type="text"
-                      className={common.textInput}
-                      value={factoryName}
-                      onChange={(e) => setFactoryName(e.target.value)}
-                    />
+                {shopError && !shop ? (
+                  <StateView
+                    kind="error"
+                    surface="app"
+                    title="Không thể tải thông tin gian hàng"
+                    message={shopError}
+                    actionLabel="Tải lại"
+                    onAction={() => router.refresh()}
+                  />
+                ) : !shop ? (
+                  <div className={common.inlineEmpty}>
+                    Tài khoản hiện chưa gắn hồ sơ gian hàng trên hệ thống.
                   </div>
-
-                  <div className={styles.fields2}>
-                    <div className={common.field}>
-                      <label htmlFor="fac-year" className={common.fieldLabel}>
-                        Năm thành lập
-                      </label>
-                      <input
-                        id="fac-year"
-                        type="number"
-                        className={common.textInput}
-                        value={establishedYear}
-                        onChange={(e) => setEstablishedYear(e.target.value)}
-                      />
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="fac-cap" className={common.fieldLabel}>
-                        Công suất trung bình
-                      </label>
-                      <input
-                        id="fac-cap"
-                        type="text"
-                        className={common.textInput}
-                        value={monthlyCapacity}
-                        onChange={(e) => setMonthlyCapacity(e.target.value)}
-                      />
-                    </div>
-                  </div>
-
-                  <div className={common.field}>
-                    <label htmlFor="fac-addr" className={common.fieldLabel}>
-                      Địa chỉ nhà máy sản xuất
-                    </label>
-                    <input
-                      id="fac-addr"
-                      type="text"
-                      className={common.textInput}
-                      value={factoryAddress}
-                      onChange={(e) => setFactoryAddress(e.target.value)}
-                    />
-                  </div>
-
-                  <div className={common.field}>
-                    <label htmlFor="fac-yarn" className={common.fieldLabel}>
-                      Nguồn sợi &amp; vật liệu chủ lực (mỗi dòng một mục)
-                    </label>
-                    <textarea
-                      id="fac-yarn"
-                      className={common.textArea}
-                      value={yarnText}
-                      onChange={(e) => setYarnText(e.target.value)}
-                    />
-                  </div>
-
-                  <div className={styles.formActions}>
-                    <Button type="submit" variant="ink" size="sm" shape="app">
-                      Lưu hồ sơ xưởng
-                    </Button>
-                  </div>
-                </div>
-              </form>
-
-              <section className={common.card} aria-labelledby="qc-heading">
-                <div className={common.cardHeader}>
-                  <h2 id="qc-heading" className={common.cardTitle}>
-                    Quy chuẩn kiểm định QC tại xưởng
-                  </h2>
-                  <Link href="/seller/site" className={common.cardLink}>
-                    Tùy chỉnh trang Giới thiệu trên site
-                  </Link>
-                </div>
-                <div className={styles.qcList}>
-                  {profile.qcStandards.map((qc) => (
-                    <div key={qc.code} className={styles.qcRow}>
-                      <div className={styles.qcHead}>
-                        <span className={styles.qcTitle}>{qc.title}</span>
-                        <span className={`${common.pill} ${common.pillPos}`}>{qc.code}</span>
-                      </div>
-                      <p className={styles.qcDesc}>{qc.detail}</p>
-                    </div>
-                  ))}
-                  <div className={styles.qcRow}>
-                    <div className={styles.qcHead}>
-                      <span className={styles.qcTitle}>
-                        Quy trình lưu mẫu &amp; đối chiếu chất lượng
-                      </span>
-                      <span className={common.pill}>Định kỳ quý</span>
-                    </div>
-                    <p className={styles.qcDesc}>
-                      Mọi lô sản xuất lưu mẫu đối chứng tại kho và cho phép đồng kiểm khi giao hàng
-                      để đảm bảo chất lượng ổn định trên site gian hàng.
-                    </p>
-                  </div>
-                </div>
-              </section>
-            </div>
-          )}
-
-          {/* TAB 2: Editable Shop Size Charts + Live Recommendation Widget Preview */}
-          {tab === "sizechart" && (
-            <div className={styles.colStack}>
-              <section className={common.card} aria-labelledby="size-chart-heading">
-                <div className={common.cardHeader}>
-                  <div>
-                    <h2 id="size-chart-heading" className={common.cardTitle}>
-                      Bảng quy đổi thông số size riêng của {shopShortName}
-                    </h2>
-                    <span className={common.cardMeta}>
-                      Bảng gợi ý chọn size trên site gian hàng đọc thông số từ bảng này · Cập nhật{" "}
-                      {sizeCharts.updatedAt}
-                    </span>
-                  </div>
-                  <div className={common.segmented} role="tablist" aria-label="Nhóm bảng size">
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={sizeGroup === "tops"}
-                      className={`${common.segmentedBtn} ${sizeGroup === "tops" ? common.segmentedBtnActive : ""}`}
-                      onClick={() => setSizeGroup("tops")}
-                    >
-                      Nhóm Áo (Thun, Polo, Khoác)
-                    </button>
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={sizeGroup === "bottoms"}
-                      className={`${common.segmentedBtn} ${sizeGroup === "bottoms" ? common.segmentedBtnActive : ""}`}
-                      onClick={() => setSizeGroup("bottoms")}
-                    >
-                      Nhóm Quần (Short, Jogger, Đồ lót)
-                    </button>
-                  </div>
-                </div>
-
-                <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
-                  <table className={common.dataTable}>
-                    <thead>
-                      <tr>
-                        <th>Size</th>
-                        <th className={common.numCol}>Chiều cao (cm)</th>
-                        <th className={common.numCol}>Cân nặng (kg)</th>
-                        <th className={common.numCol}>
-                          {sizeGroup === "tops" ? "Vòng ngực (cm)" : "Vòng eo (cm)"}
-                        </th>
-                        <th className={common.numCol}>
-                          {sizeGroup === "tops" ? "Rộng vai (cm)" : "Vòng mông (cm)"}
-                        </th>
-                        <th className={common.numCol}>
-                          {sizeGroup === "tops" ? "Dài áo (cm)" : "Dài quần (cm)"}
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {activeRows.map((row, idx) => (
-                        <tr key={row.size}>
-                          <td>
-                            <strong>{row.size}</strong>
-                          </td>
-                          <td className={common.numCol}>
-                            <input
-                              type="text"
-                              className={styles.sizeCellInput}
-                              value={row.heightRange}
-                              onChange={(e) => updateSizeRow(idx, "heightRange", e.target.value)}
-                              aria-label={`Chiều cao size ${row.size}`}
-                            />
-                          </td>
-                          <td className={common.numCol}>
-                            <input
-                              type="text"
-                              className={styles.sizeCellInput}
-                              value={row.weightRange}
-                              onChange={(e) => updateSizeRow(idx, "weightRange", e.target.value)}
-                              aria-label={`Cân nặng size ${row.size}`}
-                            />
-                          </td>
-                          <td className={common.numCol}>
-                            <input
-                              type="text"
-                              className={styles.sizeCellInput}
-                              value={row.chestOrWaistCm}
-                              onChange={(e) => updateSizeRow(idx, "chestOrWaistCm", e.target.value)}
-                              aria-label={`Vòng ngực hoặc eo size ${row.size}`}
-                            />
-                          </td>
-                          <td className={common.numCol}>
-                            <input
-                              type="text"
-                              className={styles.sizeCellInput}
-                              value={row.shoulderOrHipCm}
-                              onChange={(e) =>
-                                updateSizeRow(idx, "shoulderOrHipCm", e.target.value)
-                              }
-                              aria-label={`Vai hoặc mông size ${row.size}`}
-                            />
-                          </td>
-                          <td className={common.numCol}>
-                            <input
-                              type="text"
-                              className={styles.sizeCellInput}
-                              value={row.lengthCm}
-                              onChange={(e) => updateSizeRow(idx, "lengthCm", e.target.value)}
-                              aria-label={`Chiều dài size ${row.size}`}
-                            />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className={common.mobileList}>
-                  {activeRows.map((row, idx) => (
-                    <div key={row.size} className={styles.mobileSizeCard}>
-                      <span className={styles.mobileSizeHead}>Size {row.size}</span>
-                      <div className={styles.mobileSizeGrid}>
-                        <div className={common.field}>
-                          <label className={common.fieldHint}>Cao (cm)</label>
-                          <input
-                            type="text"
-                            className={styles.sizeCellInput}
-                            value={row.heightRange}
-                            onChange={(e) => updateSizeRow(idx, "heightRange", e.target.value)}
-                          />
-                        </div>
-                        <div className={common.field}>
-                          <label className={common.fieldHint}>Nặng (kg)</label>
-                          <input
-                            type="text"
-                            className={styles.sizeCellInput}
-                            value={row.weightRange}
-                            onChange={(e) => updateSizeRow(idx, "weightRange", e.target.value)}
-                          />
-                        </div>
-                        <div className={common.field}>
-                          <label className={common.fieldHint}>
-                            {sizeGroup === "tops" ? "Ngực (cm)" : "Eo (cm)"}
-                          </label>
-                          <input
-                            type="text"
-                            className={styles.sizeCellInput}
-                            value={row.chestOrWaistCm}
-                            onChange={(e) => updateSizeRow(idx, "chestOrWaistCm", e.target.value)}
-                          />
-                        </div>
-                        <div className={common.field}>
-                          <label className={common.fieldHint}>Dài (cm)</label>
-                          <input
-                            type="text"
-                            className={styles.sizeCellInput}
-                            value={row.lengthCm}
-                            onChange={(e) => updateSizeRow(idx, "lengthCm", e.target.value)}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className={styles.fieldStack} style={{ marginTop: 14 }}>
-                  <div className={common.field}>
-                    <label htmlFor="size-note" className={common.fieldLabel}>
-                      Ghi chú phom dáng hiển thị dưới bảng size trên trang sản phẩm
-                    </label>
-                    <input
-                      id="size-note"
-                      type="text"
-                      className={common.textInput}
-                      value={activeSizeNote}
-                      onChange={(e) =>
-                        sizeGroup === "tops"
-                          ? setTopsNote(e.target.value)
-                          : setBottomsNote(e.target.value)
-                      }
-                    />
-                  </div>
-                  <div className={styles.formActions}>
-                    <Button variant="ink" size="sm" shape="app" onClick={handleSaveSizeCharts}>
-                      <IconCheck size={14} />
-                      <span>Lưu &amp; đồng bộ bảng size</span>
-                    </Button>
-                  </div>
-                </div>
-              </section>
-
-              <section className={common.card} aria-labelledby="size-sim-heading">
-                <div className={common.cardHeader}>
-                  <h2 id="size-sim-heading" className={common.cardTitle}>
-                    Kiểm tra trực tiếp gợi ý chọn size của gian hàng
-                  </h2>
-                  <span className={common.cardMeta}>
-                    Xem trước kết quả đề xuất theo số đo người mua từ bảng size xưởng vừa khai báo
-                  </span>
-                </div>
-
-                <div className={styles.sizePreviewBox}>
-                  <div className={styles.fields3}>
-                    <div className={common.field}>
-                      <label htmlFor="sim-h" className={common.fieldLabel}>
-                        Chiều cao kiểm tra: {simHeight} cm
-                      </label>
-                      <input
-                        id="sim-h"
-                        type="range"
-                        min={155}
-                        max={190}
-                        value={simHeight}
-                        onChange={(e) => setSimHeight(Number(e.target.value))}
-                      />
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="sim-w" className={common.fieldLabel}>
-                        Cân nặng kiểm tra: {simWeight} kg
-                      </label>
-                      <input
-                        id="sim-w"
-                        type="range"
-                        min={48}
-                        max={95}
-                        value={simWeight}
-                        onChange={(e) => setSimWeight(Number(e.target.value))}
-                      />
-                    </div>
-                    <div className={common.field}>
-                      <span className={common.fieldLabel}>Dáng người</span>
-                      <div className={common.segmented}>
-                        {(
-                          [
-                            ["gay", "Gầy"],
-                            ["vua", "Vừa"],
-                            ["day", "Đầy"],
-                          ] as const
-                        ).map(([sh, lbl]) => (
-                          <button
-                            key={sh}
-                            type="button"
-                            className={`${common.segmentedBtn} ${simShape === sh ? common.segmentedBtnActive : ""}`}
-                            onClick={() => setSimShape(sh)}
-                          >
-                            {lbl}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className={styles.sizeResultWell}>
-                    <div>
-                      <span className={common.fieldLabel}>
-                        Gợi ý cỡ cho khách ({simHeight}cm · {simWeight}kg · dáng{" "}
-                        {simShape === "gay" ? "Gầy" : simShape === "day" ? "Đầy" : "Vừa"})
-                      </span>
-                      <p className={styles.previewLine}>
-                        Khớp nhóm {sizeGroup === "tops" ? "Áo" : "Quần"} của {shopShortName}: Cao{" "}
-                        {recommendedRow.heightRange}cm · Nặng {recommendedRow.weightRange}kg · Dài{" "}
-                        {recommendedRow.lengthCm}cm
-                      </p>
-                    </div>
-                    <span className={styles.sizeResultVal}>Size {recommendedRow.size}</span>
-                  </div>
-                </div>
-              </section>
-            </div>
-          )}
-
-          {/* TAB 3: Shipping threshold, Fast inner-city delivery & Return policy */}
-          {tab === "shipping" && (
-            <div className={styles.twoCol}>
-              <form
-                className={common.card}
-                onSubmit={handleSaveOps}
-                aria-labelledby="shipping-ops-heading"
-              >
-                <div className={common.cardHeader}>
-                  <h2 id="shipping-ops-heading" className={common.cardTitle}>
-                    Cấu hình vận chuyển và cam kết đổi trả
-                  </h2>
-                  <span className={common.cardMeta}>
-                    Hiển thị trên site riêng, trang sản phẩm và chính sách bán hàng
-                  </span>
-                </div>
-
-                <div className={styles.fieldStack}>
-                  <div className={styles.fields3}>
-                    <div className={common.field}>
-                      <label htmlFor="ops-freeship" className={common.fieldLabel}>
-                        Ngưỡng freeship riêng của shop (VND)
-                      </label>
-                      <input
-                        id="ops-freeship"
-                        type="number"
-                        step={10000}
-                        min={99000}
-                        className={common.textInput}
-                        value={freeShipStr}
-                        onChange={(e) => setFreeShipStr(e.target.value)}
-                      />
-                      <span className={common.fieldHint}>
-                        Áp dụng cho đơn trên site từ {formatVnd(liveFreeShip)}
-                      </span>
-                    </div>
-
-                    <div className={common.field}>
-                      <label htmlFor="ops-shipfee" className={common.fieldLabel}>
-                        Cước giao chuẩn (VND)
-                      </label>
-                      <input
-                        id="ops-shipfee"
-                        type="number"
-                        step={1000}
-                        min={0}
-                        className={common.textInput}
-                        value={shipFeeStr}
-                        onChange={(e) => setShipFeeStr(e.target.value)}
-                      />
-                    </div>
-
-                    <div className={common.field}>
-                      <label htmlFor="ops-sla" className={common.fieldLabel}>
-                        Hạn chuẩn bị hàng (giờ)
-                      </label>
-                      <input
-                        id="ops-sla"
-                        type="number"
-                        min={2}
-                        max={48}
-                        className={common.textInput}
-                        value={prepHoursStr}
-                        onChange={(e) => setPrepHoursStr(e.target.value)}
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className={styles.switchRow}>
-                      <div className={styles.switchText}>
-                        <span className={styles.switchTitle}>Giao nhanh nội thành (2-4 giờ)</span>
-                        <span className={styles.switchDesc}>
-                          Cho phép khách cùng tỉnh thành chọn giao gấp ngay tại bước thanh toán.
-                        </span>
-                      </div>
-                      <input
-                        type="checkbox"
-                        className={common.toggleSwitch}
-                        checked={fastEnabled}
-                        onChange={(e) => setFastEnabled(e.target.checked)}
-                        aria-label="Bật hoặc tắt giao nhanh nội thành"
-                      />
-                    </div>
-
-                    {fastEnabled && (
-                      <div className={styles.fields2} style={{ marginBottom: 12 }}>
-                        <div className={common.field}>
-                          <label htmlFor="ops-fast-area" className={common.fieldLabel}>
-                            Khu vực giao nhanh
-                          </label>
-                          <input
-                            id="ops-fast-area"
-                            type="text"
-                            className={common.textInput}
-                            value={fastArea}
-                            onChange={(e) => setFastArea(e.target.value)}
-                          />
-                        </div>
-                        <div className={common.field}>
-                          <label htmlFor="ops-fast-cutoff" className={common.fieldLabel}>
-                            Khung giờ cắt đơn trong ngày
-                          </label>
-                          <input
-                            id="ops-fast-cutoff"
-                            type="text"
-                            className={common.textInput}
-                            value={fastCutoff}
-                            onChange={(e) => setFastCutoff(e.target.value)}
-                          />
-                        </div>
+                ) : (
+                  <>
+                    {shop.rejection_reason && (
+                      <div className={styles.alertBanner} role="alert">
+                        <strong>Lý do từ chối phê duyệt gian hàng:</strong> {shop.rejection_reason}
                       </div>
                     )}
 
-                    <div className={styles.switchRow}>
-                      <div className={styles.switchText}>
-                        <span className={styles.switchTitle}>
-                          Cam kết đổi trả miễn phí 45 ngày (Huy hiệu xưởng)
-                        </span>
-                        <span className={styles.switchDesc}>
-                          Hiển thị huy hiệu Đổi trả 45 ngày trên site riêng và các sản phẩm áp dụng.
+                    <div className={styles.kvList}>
+                      <div className={styles.kvRow}>
+                        <span className={styles.kvKey}>Tên gian hàng</span>
+                        <span className={styles.kvVal}>{shop.name}</span>
+                      </div>
+                      <div className={styles.kvRow}>
+                        <span className={styles.kvKey}>Trạng thái vận hành</span>
+                        <span className={styles.kvVal}>
+                          {shopStatusMeta ? shopStatusMeta.label : shop.status}
                         </span>
                       </div>
-                      <input
-                        type="checkbox"
-                        className={common.toggleSwitch}
-                        checked={return45}
-                        onChange={(e) => setReturn45(e.target.checked)}
-                        aria-label="Bật cam kết đổi trả 45 ngày"
-                      />
+                      <div className={styles.kvRow}>
+                        <span className={styles.kvKey}>Số điện thoại liên hệ</span>
+                        <span className={styles.kvVal}>
+                          {shop.contact_phone || "Chưa cập nhật"}
+                        </span>
+                      </div>
+                      <div className={styles.kvRow}>
+                        <span className={styles.kvKey}>Mô tả gian hàng</span>
+                        <span className={styles.kvVal}>
+                          {shop.description || "Chưa có mô tả giới thiệu"}
+                        </span>
+                      </div>
+                      <div className={styles.kvRow}>
+                        <span className={styles.kvKey}>Giấy phép kinh doanh</span>
+                        <span className={styles.kvVal}>
+                          {safeLicenseUrl ? (
+                            <a
+                              href={safeLicenseUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className={common.cellLink}
+                            >
+                              Xem chứng từ đã nộp
+                            </a>
+                          ) : (
+                            shop.business_license_doc || "Chưa đính kèm"
+                          )}
+                        </span>
+                      </div>
+                      <div className={styles.kvRow}>
+                        <span className={styles.kvKey}>Ngày khởi tạo</span>
+                        <span className={styles.kvVal}>
+                          {shop.created_at ? formatDateTimeVi(shop.created_at) : "Chưa cập nhật"}
+                        </span>
+                      </div>
+                      <div className={styles.kvRow}>
+                        <span className={styles.kvKey}>Kho lấy hàng mặc định</span>
+                        <span className={styles.kvVal}>
+                          {pickupAddress
+                            ? `${pickupAddress.street_address}, ${pickupAddress.ward_name}, ${pickupAddress.province_name}`
+                            : shop.pickup_address_id || "Chưa thiết lập"}
+                        </span>
+                      </div>
                     </div>
 
-                    <div className={styles.switchRow}>
-                      <div className={styles.switchText}>
-                        <span className={styles.switchTitle}>Hỗ trợ đổi size 2 chiều tận nơi</span>
-                        <span className={styles.switchDesc}>
-                          Bưu tá giao size mới và thu hồi hàng đổi trong cùng 1 chuyến tại nhà
-                          khách.
-                        </span>
-                      </div>
-                      <input
-                        type="checkbox"
-                        className={common.toggleSwitch}
-                        checked={twoWayEx}
-                        onChange={(e) => setTwoWayEx(e.target.checked)}
-                        aria-label="Bật đổi size 2 chiều tận nơi"
-                      />
+                    <div className={styles.cardFootNote}>
+                      <span>
+                        Để chỉnh sửa giao diện, giới thiệu thương hiệu và chính sách đổi trả trên
+                        site riêng của shop:
+                      </span>
+                      <Link href="/seller/site" className={common.cardLink}>
+                        Mở trình chỉnh sửa site
+                      </Link>
                     </div>
+                  </>
+                )}
+              </section>
+
+              <form
+                className={common.card}
+                onSubmit={(e) => void handleSaveOwnerContact(e)}
+                aria-labelledby="owner-contact-heading"
+              >
+                <div className={common.cardHeader}>
+                  <h2 id="owner-contact-heading" className={common.cardTitle}>
+                    Tài khoản chủ gian hàng
+                  </h2>
+                  <span className={pillCls(owner.phoneVerified ? "pos" : "neutral")}>
+                    {owner.phoneVerified ? "Đã xác thực SĐT" : "Chưa xác thực SĐT"}
+                  </span>
+                </div>
+
+                <div className={styles.fieldStack}>
+                  <div className={common.field}>
+                    <label htmlFor="owner-email" className={common.fieldLabel}>
+                      Email đăng nhập
+                    </label>
+                    <input
+                      id="owner-email"
+                      type="email"
+                      className={common.textInput}
+                      value={owner.email}
+                      disabled
+                      readOnly
+                    />
+                    <span className={common.fieldHint}>
+                      Email định danh tài khoản quản trị gian hàng, không thể thay đổi trực tiếp.
+                    </span>
                   </div>
 
                   <div className={common.field}>
-                    <label htmlFor="ops-exc" className={common.fieldLabel}>
-                      Ghi chú ngoại lệ đổi trả của gian hàng
+                    <label htmlFor="owner-fullname" className={common.fieldLabel}>
+                      Họ và tên người phụ trách
                     </label>
-                    <textarea
-                      id="ops-exc"
-                      className={common.textArea}
-                      value={exceptionNote}
-                      onChange={(e) => setExceptionNote(e.target.value)}
+                    <input
+                      id="owner-fullname"
+                      type="text"
+                      className={common.textInput}
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
+                      placeholder="Nhập họ tên chủ gian hàng"
+                      maxLength={120}
                     />
                   </div>
 
+                  <div className={common.field}>
+                    <label htmlFor="owner-phone" className={common.fieldLabel}>
+                      Số điện thoại tài khoản
+                    </label>
+                    <input
+                      id="owner-phone"
+                      type="tel"
+                      className={common.textInput}
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      placeholder="Ví dụ: 0901234567"
+                      maxLength={20}
+                    />
+                  </div>
+
+                  {profileError && (
+                    <p className={common.fieldError} role="alert">
+                      {profileError}
+                    </p>
+                  )}
+
                   <div className={styles.formActions}>
-                    <Button type="submit" variant="ink" size="sm" shape="app">
+                    <Button
+                      type="submit"
+                      variant="ink"
+                      size="sm"
+                      shape="app"
+                      disabled={profileSaving}
+                    >
                       <IconCheck size={14} />
-                      <span>Lưu cấu hình vận hành</span>
+                      <span>{profileSaving ? "Đang lưu..." : "Lưu thông tin liên hệ"}</span>
+                    </Button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {tab === "warehouse" && (
+            <div className={styles.twoCol}>
+              <section className={common.card} aria-labelledby="warehouse-heading">
+                <div className={common.cardHeader}>
+                  <div>
+                    <h2 id="warehouse-heading" className={common.cardTitle}>
+                      Danh sách kho lấy hàng &amp; địa chỉ
+                    </h2>
+                    <span className={common.cardMeta}>
+                      Đồng bộ trực tiếp từ sổ địa chỉ tài khoản chủ gian hàng
+                    </span>
+                  </div>
+                </div>
+
+                {addressesError ? (
+                  <StateView
+                    kind="error"
+                    surface="app"
+                    title="Không thể tải danh sách địa chỉ"
+                    message={addressesError}
+                    actionLabel="Tải lại"
+                    onAction={() => router.refresh()}
+                  />
+                ) : addresses.length === 0 ? (
+                  <div className={common.inlineEmpty}>
+                    Chưa có địa chỉ kho lấy hàng nào được lưu trong tài khoản của bạn.
+                  </div>
+                ) : (
+                  <div className={styles.addressList}>
+                    {addresses.map((addr) => {
+                      const isPickup = Boolean(
+                        shop?.pickup_address_id && addr.id === shop.pickup_address_id
+                      );
+                      const fullLine = [addr.street_address, addr.ward_name, addr.province_name]
+                        .filter(Boolean)
+                        .join(", ");
+                      return (
+                        <article
+                          key={addr.id}
+                          className={`${styles.addressItem} ${isPickup ? styles.addressItemPickup : ""}`}
+                        >
+                          <div className={styles.addressHead}>
+                            <div className={styles.addressIdentity}>
+                              <strong className={styles.addressName}>{addr.recipient_name}</strong>
+                              <span className={styles.addressPhone}>{addr.recipient_phone}</span>
+                            </div>
+                            <div className={styles.badgeRow}>
+                              {isPickup && (
+                                <span className={`${common.pill} ${common.pillPos}`}>
+                                  Kho lấy hàng mặc định
+                                </span>
+                              )}
+                              {addr.is_default && (
+                                <span className={common.pill}>Mặc định tài khoản</span>
+                              )}
+                            </div>
+                          </div>
+                          <p className={styles.addressLine}>{fullLine}</p>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+
+              <section className={common.card} aria-labelledby="site-policy-heading">
+                <div className={common.cardHeader}>
+                  <h2 id="site-policy-heading" className={common.cardTitle}>
+                    Site bán hàng &amp; Chính sách công khai
+                  </h2>
+                  <span className={pillCls(siteMeta.tone)}>{siteMeta.label}</span>
+                </div>
+
+                <div className={styles.kvList}>
+                  <div className={styles.kvRow}>
+                    <span className={styles.kvKey}>Tên miền gian hàng</span>
+                    <span className={styles.kvVal}>{site.host || "Chưa thiết lập tên miền"}</span>
+                  </div>
+                  <div className={styles.kvRow}>
+                    <span className={styles.kvKey}>Trạng thái xuất bản</span>
+                    <span className={styles.kvVal}>{siteMeta.label}</span>
+                  </div>
+                  {site.suspendedReason && (
+                    <div className={styles.kvRow}>
+                      <span className={styles.kvKey}>Lý do tạm khóa site</span>
+                      <span className={styles.kvVal}>{site.suspendedReason}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className={styles.previewWell}>
+                  <span className={styles.previewHeading}>Quản trị giao diện và chính sách</span>
+                  <p className={styles.previewLine}>
+                    Chính sách đổi trả, giới thiệu xưởng, bộ sưu tập và tên miền tùy chỉnh được quản
+                    lý tập trung tại mục Site bán hàng để đồng bộ tức thì tới người mua.
+                  </p>
+                  <div className={styles.inlineActions}>
+                    <Button variant="ink" size="sm" shape="app" href="/seller/site">
+                      <span>Mở cấu hình site</span>
+                      <IconArrowUpRight size={14} />
+                    </Button>
+                    {site.url && (
+                      <a
+                        href={site.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={common.cardLink}
+                      >
+                        Xem site đang chạy
+                      </a>
+                    )}
+                  </div>
+                </div>
+              </section>
+            </div>
+          )}
+
+          {tab === "autoreply" && (
+            <div className={styles.twoCol}>
+              <form
+                className={common.card}
+                onSubmit={(e) => void handleSaveAutoReply(e)}
+                aria-labelledby="autoreply-heading"
+              >
+                <div className={common.cardHeader}>
+                  <div>
+                    <h2 id="autoreply-heading" className={common.cardTitle}>
+                      Trả lời tự động khi ngoại tuyến
+                    </h2>
+                    <span className={common.cardMeta}>
+                      Tự động gửi lời chào tới người mua khi gian hàng chưa trực tuyến trên hộp chat
+                    </span>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    shape="app"
+                    disabled={autoReplyLoading}
+                    onClick={() => void loadAutoReply()}
+                  >
+                    <IconRefresh size={14} />
+                    <span>{autoReplyLoading ? "Đang tải..." : "Tải lại"}</span>
+                  </Button>
+                </div>
+
+                {autoReplyUnavailable && (
+                  <div className={styles.noticeWell} role="status">
+                    Dịch vụ chat hiện chưa phản hồi. Bạn vẫn có thể soạn sẵn lời chào và thử lưu lại
+                    khi hộp chat hoạt động.
+                  </div>
+                )}
+
+                <div className={styles.fieldStack}>
+                  <div className={styles.switchRow}>
+                    <div className={styles.switchText}>
+                      <span className={styles.switchTitle}>Bật trả lời tự động</span>
+                      <span className={styles.switchDesc}>
+                        Gửi tin nhắn chào mừng ngay khi khách mở hội thoại mới ngoài giờ trực.
+                      </span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      className={common.toggleSwitch}
+                      checked={autoReplyEnabled}
+                      onChange={(e) => setAutoReplyEnabled(e.target.checked)}
+                      aria-label="Bật hoặc tắt trả lời tự động khi ngoại tuyến"
+                    />
+                  </div>
+
+                  <div className={common.field}>
+                    <label htmlFor="auto-reply-msg" className={common.fieldLabel}>
+                      Nội dung tin nhắn tự động ({formatInt(autoReplyMessage.length)} / 500 ký tự)
+                    </label>
+                    <textarea
+                      id="auto-reply-msg"
+                      className={common.textArea}
+                      value={autoReplyMessage}
+                      onChange={(e) => {
+                        setAutoReplyMessage(e.target.value);
+                        if (autoReplyError) setAutoReplyError("");
+                      }}
+                      maxLength={500}
+                      placeholder="Nhập lời chào khi gian hàng ngoại tuyến, giờ làm việc và thời gian phản hồi dự kiến..."
+                    />
+                    <span className={common.fieldHint}>
+                      Viết ngắn gọn, rõ khung giờ hỗ trợ để người mua yên tâm chờ phản hồi.
+                    </span>
+                  </div>
+
+                  <div className={styles.presetRow}>
+                    {AUTO_REPLY_PRESETS.map((preset) => (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        className={styles.presetBtn}
+                        onClick={() => {
+                          setAutoReplyMessage(preset.text);
+                          setAutoReplyError("");
+                        }}
+                      >
+                        Dùng {preset.label.toLowerCase()}
+                      </button>
+                    ))}
+                  </div>
+
+                  {autoReplyError && (
+                    <p className={common.fieldError} role="alert">
+                      {autoReplyError}
+                    </p>
+                  )}
+
+                  <div className={styles.formActions}>
+                    {autoReplyUpdatedAt && (
+                      <span className={common.cardMeta}>
+                        Cập nhật lúc {formatDateTimeVi(autoReplyUpdatedAt)}
+                      </span>
+                    )}
+                    <Button
+                      type="submit"
+                      variant="ink"
+                      size="sm"
+                      shape="app"
+                      disabled={autoReplySaving || autoReplyLoading}
+                    >
+                      <IconCheck size={14} />
+                      <span>{autoReplySaving ? "Đang lưu..." : "Lưu cấu hình trả lời"}</span>
                     </Button>
                   </div>
                 </div>
               </form>
 
-              <section className={common.card} aria-labelledby="badge-preview-heading">
+              <section className={common.card} aria-labelledby="autoreply-preview-heading">
                 <div className={common.cardHeader}>
-                  <h2 id="badge-preview-heading" className={common.cardTitle}>
-                    Xem trước cam kết trên site gian hàng
+                  <h2 id="autoreply-preview-heading" className={common.cardTitle}>
+                    Xem trước hiển thị trên hộp chat
                   </h2>
-                </div>
-
-                <div className={styles.badgePreviewList}>
-                  {opsConfig.verifiedWorkshopBadge && (
-                    <span className={`${common.pill} ${common.pillPos}`}>Xưởng chuẩn QC</span>
-                  )}
-                  {return45 && (
-                    <span className={`${common.pill} ${common.pillPos}`}>Đổi trả 45 ngày</span>
-                  )}
-                  {twoWayEx && (
-                    <span className={`${common.pill} ${common.pillPos}`}>
-                      Đổi size 2 chiều tận nơi
-                    </span>
-                  )}
-                  {fastEnabled && <span className={common.pill}>Giao nhanh nội thành</span>}
+                  <span className={pillCls(autoReplyEnabled ? "pos" : "neutral")}>
+                    {autoReplyEnabled ? "Đang bật" : "Đang tắt"}
+                  </span>
                 </div>
 
                 <div className={styles.previewWell}>
-                  <span className={styles.previewHeading}>Chính sách giao hàng của gian hàng</span>
-                  <p className={styles.previewLine}>
-                    Miễn phí vận chuyển cho đơn từ <strong>{formatVnd(liveFreeShip)}</strong> tại{" "}
-                    {shopShortName} (tiết kiệm {formatVnd(liveShipFee)} phí giao tiêu chuẩn).
+                  <span className={styles.previewHeading}>{shopDisplayName}</span>
+                  <p className={styles.previewBubble}>
+                    {autoReplyMessage.trim() ||
+                      "Chưa có nội dung lời chào. Nhập nội dung bên trái để xem trước tin nhắn tự động."}
                   </p>
-                  <p className={styles.previewLine}>
-                    Thời gian chuẩn bị tại kho: tối đa {prepHoursStr || "12"} giờ làm việc.
-                  </p>
-                  {fastEnabled && (
-                    <p className={styles.previewLine}>
-                      Giao nhanh nội thành: {fastArea} ({fastCutoff}).
-                    </p>
-                  )}
-                  <p className={styles.previewLine}>{exceptionNote}</p>
+                  <span className={styles.previewLine}>
+                    {autoReplyEnabled
+                      ? "Khách sẽ nhận tin nhắn này tự động khi nhắn tin ngoài giờ trực."
+                      : "Trả lời tự động đang tắt. Tin nhắn khách gửi sẽ chờ nhân viên phản hồi trực tiếp trong mục Tin nhắn."}
+                  </span>
+                </div>
+
+                <div className={styles.cardFootNote}>
+                  <span>Quản lý hội thoại trực tiếp với người mua tại hộp thư gian hàng:</span>
+                  <Link href="/seller/chat" className={common.cardLink}>
+                    Mở hộp Tin nhắn
+                  </Link>
                 </div>
               </section>
             </div>
@@ -922,10 +766,10 @@ function SellerProfileOpsInner({
   );
 }
 
-export default function SellerProfileOpsPage() {
+export default function SellerProfileClient(props: SellerProfileClientProps) {
   return (
     <SellerSuspense>
-      <SellerProfileOpsContent />
+      <SellerProfileContent {...props} />
     </SellerSuspense>
   );
 }

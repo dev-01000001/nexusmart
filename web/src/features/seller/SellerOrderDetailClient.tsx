@@ -1,12 +1,13 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { IconCheck, IconFileText, IconTruck, StateView } from "@/components";
+import { Button, IconCheck, IconFileText, IconRefresh, IconTruck, StateView } from "@/components";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { getSalesChannelMeta } from "@/lib/salesChannel";
+import { sanitizeSafeUrl } from "@/lib/site/theme";
 import { useSellerContext } from "./SellerShell";
 import {
   computeSellerNetReceivable,
@@ -16,11 +17,20 @@ import {
   getSellerOrderStatusMeta,
   type GwSellerOrder,
 } from "./sellerApiTypes";
-import { EMPTY_DASH, parseUiState } from "./sellerStore";
+import {
+  getReturnStatusMeta,
+  normalizeSellerReturns,
+  parseUiStateParam,
+  validateRejectReason,
+  type SellerReturnRequest,
+} from "./sellerReturns";
 import common from "./SellerCommon.module.css";
 import styles from "@/app/(seller)/seller/don-hang/[id]/page.module.css";
 
 type DetailTab = "overview" | "shipping" | "history";
+
+const EMPTY_VALUE = "-";
+const RETURN_CHECK_STATUSES = new Set(["RETURN_REQUESTED", "RETURNED", "DELIVERED"]);
 
 export interface SellerOrderDetailClientProps {
   initialOrder: GwSellerOrder | null;
@@ -30,12 +40,56 @@ export interface SellerOrderDetailClientProps {
 export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrderDetailClientProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const uiState = parseUiState(searchParams.get("state"));
+  const uiState = parseUiStateParam(searchParams.get("state"));
   const { showToast } = useSellerContext();
 
   const [order, setOrder] = useState<GwSellerOrder | null>(initialOrder);
   const [tab, setTab] = useState<DetailTab>("overview");
   const [busy, setBusy] = useState(false);
+
+  const [returns, setReturns] = useState<SellerReturnRequest[]>([]);
+  const [returnsLoading, setReturnsLoading] = useState(false);
+  const [returnsUnavailable, setReturnsUnavailable] = useState(false);
+  const [returnBusyId, setReturnBusyId] = useState<string | null>(null);
+  const [rejectOpenId, setRejectOpenId] = useState<string | null>(null);
+  const [rejectDrafts, setRejectDrafts] = useState<Record<string, string>>({});
+  const [rejectErrors, setRejectErrors] = useState<Record<string, string>>({});
+
+  const orderId = order?.id ?? "";
+  const orderStatusUpper = (order?.status ?? "").toUpperCase();
+  const shouldLoadReturns = Boolean(orderId) && RETURN_CHECK_STATUSES.has(orderStatusUpper);
+
+  const fetchReturns = useCallback(async (targetOrderId: string, signal?: AbortSignal) => {
+    setReturnsLoading(true);
+    setReturnsUnavailable(false);
+    try {
+      const res = await api<{ returns?: SellerReturnRequest[] }>(
+        `/api/seller/orders/${encodeURIComponent(targetOrderId)}/returns`,
+        { signal }
+      );
+      setReturns(normalizeSellerReturns(res));
+    } catch (err) {
+      if (signal?.aborted) return;
+      if (
+        err instanceof ApiError &&
+        (err.status === 404 || err.status === 503 || err.status === 0)
+      ) {
+        setReturnsUnavailable(true);
+      }
+      setReturns([]);
+    } finally {
+      if (!signal?.aborted) {
+        setReturnsLoading(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!shouldLoadReturns || !orderId) return;
+    const ctrl = new AbortController();
+    void fetchReturns(orderId, ctrl.signal);
+    return () => ctrl.abort();
+  }, [shouldLoadReturns, orderId, fetchReturns]);
 
   if (uiState === "loading") {
     return (
@@ -91,7 +145,9 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
   const addr = order.shipping_address;
   const fullAddress = addr
     ? [addr.street_address, addr.ward_name, addr.province_name].filter(Boolean).join(", ")
-    : EMPTY_DASH;
+    : EMPTY_VALUE;
+
+  const showReturnsCard = returns.length > 0 || orderStatusUpper === "RETURN_REQUESTED";
 
   const pillCls = (tone: "neutral" | "warn" | "pos" | "neg") =>
     tone === "pos"
@@ -130,6 +186,69 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
     }
   };
 
+  const handleApproveReturn = async (ret: SellerReturnRequest) => {
+    if (returnBusyId) return;
+    setReturnBusyId(ret.id);
+    try {
+      const res = await api<{ return_request?: SellerReturnRequest | null }>(
+        `/api/seller/returns/${encodeURIComponent(ret.id)}/approve`,
+        { method: "POST", body: {} }
+      );
+      setReturns((prev) =>
+        prev.map((item) =>
+          item.id === ret.id ? (res.return_request ?? { ...item, status: "APPROVED" }) : item
+        )
+      );
+      if (rejectOpenId === ret.id) {
+        setRejectOpenId(null);
+      }
+      showToast(`Đã duyệt yêu cầu đổi trả cho đơn ${order.order_code}.`);
+      router.refresh();
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : "Không thể duyệt yêu cầu đổi trả lúc này.");
+    } finally {
+      setReturnBusyId(null);
+    }
+  };
+
+  const handleRejectReturn = async (ret: SellerReturnRequest) => {
+    if (returnBusyId) return;
+    const check = validateRejectReason(rejectDrafts[ret.id] ?? "");
+    if (!check.ok) {
+      setRejectErrors((prev) => ({ ...prev, [ret.id]: check.error }));
+      return;
+    }
+    setRejectErrors((prev) => ({ ...prev, [ret.id]: "" }));
+    setReturnBusyId(ret.id);
+    try {
+      const res = await api<{ return_request?: SellerReturnRequest | null }>(
+        `/api/seller/returns/${encodeURIComponent(ret.id)}/reject`,
+        { method: "POST", body: { reason: check.value } }
+      );
+      setReturns((prev) =>
+        prev.map((item) =>
+          item.id === ret.id
+            ? (res.return_request ?? {
+                ...item,
+                status: "REJECTED",
+                reject_reason: check.value,
+              })
+            : item
+        )
+      );
+      setRejectOpenId(null);
+      setRejectDrafts((prev) => ({ ...prev, [ret.id]: "" }));
+      showToast(`Đã từ chối yêu cầu đổi trả cho đơn ${order.order_code}.`);
+      router.refresh();
+    } catch (err) {
+      showToast(
+        err instanceof ApiError ? err.message : "Không thể từ chối yêu cầu đổi trả lúc này."
+      );
+    } finally {
+      setReturnBusyId(null);
+    }
+  };
+
   return (
     <div className={common.page}>
       <div className={styles.backRow}>
@@ -161,7 +280,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
               </button>
             </div>
             <p className={styles.objectMeta}>
-              Đặt lúc {order.created_at ? formatDateTimeVi(order.created_at) : EMPTY_DASH}
+              Đặt lúc {order.created_at ? formatDateTimeVi(order.created_at) : EMPTY_VALUE}
               {addr?.province_name ? ` · ${addr.ward_name}, ${addr.province_name}` : ""}
             </p>
           </div>
@@ -199,7 +318,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
           className={`${common.underlineTab} ${tab === "shipping" ? common.underlineTabActive : ""}`}
           onClick={() => setTab("shipping")}
         >
-          Vận chuyển & chứng từ
+          Vận chuyển &amp; chứng từ
         </button>
         <button
           type="button"
@@ -222,7 +341,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
         </div>
 
         <div className={`${styles.kpiTile} ${styles.span2}`}>
-          <span className={styles.kpiTileLabel}>Phí sàn & chiết khấu shop</span>
+          <span className={styles.kpiTileLabel}>Phí sàn &amp; chiết khấu shop</span>
           <span className={styles.kpiTileVal}>{formatVnd(totalDeductions)}</span>
           <span className={styles.kpiTileSub}>
             Voucher {formatVnd(order.shop_voucher_discount_vnd)} · Phí sàn{" "}
@@ -241,6 +360,222 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
 
         {tab === "overview" && (
           <>
+            {showReturnsCard && (
+              <section
+                className={`${styles.detailCard} ${styles.span6}`}
+                aria-labelledby="returns-heading"
+              >
+                <div className={common.cardHeader}>
+                  <div>
+                    <h2 id="returns-heading" className={common.cardTitle}>
+                      Yêu cầu đổi trả từ khách hàng
+                    </h2>
+                    <span className={common.cardMeta}>
+                      Kiểm tra lý do, sản phẩm hoàn và minh chứng trước khi phê duyệt
+                    </span>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    shape="app"
+                    disabled={returnsLoading}
+                    onClick={() => void fetchReturns(order.id)}
+                  >
+                    <IconRefresh size={14} />
+                    <span>{returnsLoading ? "Đang tải..." : "Làm mới"}</span>
+                  </Button>
+                </div>
+
+                {returnsLoading && returns.length === 0 ? (
+                  <div className={common.inlineEmpty}>Đang tải chi tiết yêu cầu đổi trả...</div>
+                ) : returns.length === 0 ? (
+                  <div className={common.inlineEmpty}>
+                    {returnsUnavailable
+                      ? "Đơn hàng đang ở trạng thái yêu cầu đổi trả, nhưng dịch vụ đổi trả tạm thời chưa phản hồi. Vui lòng thử làm mới sau."
+                      : "Chưa tìm thấy hồ sơ đổi trả chi tiết cho đơn hàng này."}
+                  </div>
+                ) : (
+                  <div className={styles.kvList}>
+                    {returns.map((ret) => {
+                      const retMeta = getReturnStatusMeta(ret.status);
+                      const isRejectOpen = rejectOpenId === ret.id;
+                      const isProcessing = returnBusyId === ret.id;
+                      const safePhotos = ret.photos.map((p) => sanitizeSafeUrl(p)).filter(Boolean);
+
+                      return (
+                        <div key={ret.id} className={styles.giftBox}>
+                          <div className={styles.giftRow}>
+                            <div>
+                              <strong>Mã yêu cầu: {ret.id}</strong>
+                              {ret.created_at && (
+                                <span className={common.cellSub}>
+                                  Gửi lúc {formatDateTimeVi(ret.created_at)}
+                                </span>
+                              )}
+                            </div>
+                            <span className={pillCls(retMeta.tone)}>{retMeta.label}</span>
+                          </div>
+
+                          <div className={styles.kvList}>
+                            <div className={styles.kvRow}>
+                              <span className={styles.kvKey}>Lý do đổi trả</span>
+                              <span className={styles.kvVal}>
+                                {ret.reason || "Không có ghi chú"}
+                              </span>
+                            </div>
+
+                            {ret.refund_amount_vnd > 0 && (
+                              <div className={styles.kvRow}>
+                                <span className={styles.kvKey}>Số tiền hoàn dự kiến</span>
+                                <span className={styles.kvVal}>
+                                  {formatVnd(ret.refund_amount_vnd)}
+                                </span>
+                              </div>
+                            )}
+
+                            {ret.items.length > 0 && (
+                              <div className={styles.kvRow}>
+                                <span className={styles.kvKey}>Sản phẩm yêu cầu trả</span>
+                                <span className={styles.kvVal}>
+                                  {ret.items
+                                    .map((it) => {
+                                      const label = it.product_name || it.sku_name || it.sku_id;
+                                      const variant =
+                                        it.product_name && it.sku_name ? ` (${it.sku_name})` : "";
+                                      return `${label}${variant} x${formatInt(it.quantity)}`;
+                                    })
+                                    .join(", ")}
+                                </span>
+                              </div>
+                            )}
+
+                            {safePhotos.length > 0 && (
+                              <div className={styles.kvRow}>
+                                <span className={styles.kvKey}>Ảnh minh chứng</span>
+                                <span className={styles.kvVal}>
+                                  {safePhotos.map((photoUrl, idx) => (
+                                    <React.Fragment key={`${ret.id}-photo-${idx}`}>
+                                      {idx > 0 ? ", " : ""}
+                                      <a
+                                        href={photoUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className={common.cellLink}
+                                      >
+                                        Ảnh {idx + 1}
+                                      </a>
+                                    </React.Fragment>
+                                  ))}
+                                </span>
+                              </div>
+                            )}
+
+                            {ret.reject_reason && (
+                              <div className={styles.kvRow}>
+                                <span className={styles.kvKey}>Lý do từ chối của gian hàng</span>
+                                <span className={styles.kvVal}>{ret.reject_reason}</span>
+                              </div>
+                            )}
+
+                            {ret.seller_note && (
+                              <div className={styles.kvRow}>
+                                <span className={styles.kvKey}>Ghi chú xử lý</span>
+                                <span className={styles.kvVal}>{ret.seller_note}</span>
+                              </div>
+                            )}
+                          </div>
+
+                          {retMeta.canDecide && (
+                            <>
+                              {isRejectOpen && (
+                                <div className={styles.opsReplyBox}>
+                                  <div className={common.field}>
+                                    <label
+                                      htmlFor={`reject-reason-${ret.id}`}
+                                      className={common.fieldLabel}
+                                    >
+                                      Lý do từ chối đổi trả (tối thiểu 5 ký tự)
+                                    </label>
+                                    <textarea
+                                      id={`reject-reason-${ret.id}`}
+                                      className={common.textArea}
+                                      value={rejectDrafts[ret.id] ?? ""}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setRejectDrafts((prev) => ({ ...prev, [ret.id]: val }));
+                                        if (rejectErrors[ret.id]) {
+                                          setRejectErrors((prev) => ({ ...prev, [ret.id]: "" }));
+                                        }
+                                      }}
+                                      placeholder="Nêu rõ lý do từ chối và bằng chứng đối chiếu (ví dụ: sản phẩm đã qua sử dụng, thiếu tem mác)..."
+                                    />
+                                    {rejectErrors[ret.id] && (
+                                      <span className={common.fieldError}>
+                                        {rejectErrors[ret.id]}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
+                              <div className={styles.opsActionBar}>
+                                {isRejectOpen ? (
+                                  <>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      shape="app"
+                                      disabled={isProcessing}
+                                      onClick={() => setRejectOpenId(null)}
+                                    >
+                                      Đóng
+                                    </Button>
+                                    <Button
+                                      variant="danger"
+                                      size="sm"
+                                      shape="app"
+                                      disabled={isProcessing}
+                                      onClick={() => void handleRejectReturn(ret)}
+                                    >
+                                      {isProcessing ? "Đang gửi..." : "Xác nhận từ chối"}
+                                    </Button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      shape="app"
+                                      disabled={isProcessing}
+                                      onClick={() => setRejectOpenId(ret.id)}
+                                    >
+                                      Từ chối đổi trả
+                                    </Button>
+                                    <Button
+                                      variant="ink"
+                                      size="sm"
+                                      shape="app"
+                                      disabled={isProcessing}
+                                      onClick={() => void handleApproveReturn(ret)}
+                                    >
+                                      <IconCheck size={14} />
+                                      <span>
+                                        {isProcessing ? "Đang xử lý..." : "Duyệt đổi trả"}
+                                      </span>
+                                    </Button>
+                                  </>
+                                )}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            )}
+
             <section
               className={`${styles.detailCard} ${styles.span4}`}
               aria-labelledby="items-heading"
@@ -256,7 +591,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                 <table className={common.dataTable}>
                   <thead>
                     <tr>
-                      <th>Sản phẩm & biến thể</th>
+                      <th>Sản phẩm &amp; biến thể</th>
                       <th className={common.numCol}>Đơn giá</th>
                       <th className={common.numCol}>SL</th>
                       <th className={common.numCol}>Thành tiền</th>
@@ -345,11 +680,11 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                 </div>
                 <div className={styles.kvRow}>
                   <span className={styles.kvKey}>Người nhận</span>
-                  <span className={styles.kvVal}>{addr?.recipient_name || EMPTY_DASH}</span>
+                  <span className={styles.kvVal}>{addr?.recipient_name || EMPTY_VALUE}</span>
                 </div>
                 <div className={styles.kvRow}>
                   <span className={styles.kvKey}>Điện thoại</span>
-                  <span className={styles.kvVal}>{addr?.recipient_phone || EMPTY_DASH}</span>
+                  <span className={styles.kvVal}>{addr?.recipient_phone || EMPTY_VALUE}</span>
                 </div>
                 <div className={styles.kvRow}>
                   <span className={styles.kvKey}>Địa chỉ giao hàng</span>
@@ -361,7 +696,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                 </div>
                 <div className={styles.kvRow}>
                   <span className={styles.kvKey}>Mã vận đơn</span>
-                  <span className={styles.kvVal}>{order.tracking_code || EMPTY_DASH}</span>
+                  <span className={styles.kvVal}>{order.tracking_code || EMPTY_VALUE}</span>
                 </div>
                 {order.cancel_reason && (
                   <div className={styles.kvRow}>
@@ -381,7 +716,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
           >
             <div className={common.cardHeader}>
               <h2 id="shipping-heading" className={common.cardTitle}>
-                Thông tin vận đơn & bàn giao ĐVVC
+                Thông tin vận đơn &amp; bàn giao ĐVVC
               </h2>
             </div>
 
@@ -430,7 +765,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                   return (
                     <div key={ev.id} className={styles.kvRow}>
                       <span className={styles.kvKey}>
-                        {ev.created_at ? formatDateTimeVi(ev.created_at) : EMPTY_DASH}
+                        {ev.created_at ? formatDateTimeVi(ev.created_at) : EMPTY_VALUE}
                       </span>
                       <span className={styles.kvVal}>
                         <strong>{toMeta.label}</strong>

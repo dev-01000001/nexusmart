@@ -8,10 +8,12 @@ import {
   IconClose,
   IconDashboard,
   IconFileText,
+  IconFlag,
   IconHome,
   IconMenu,
   IconSearch,
   IconShield,
+  IconSliders,
   IconStore,
   IconTag,
   IconWallet,
@@ -54,6 +56,7 @@ export interface AdminShellProps {
   user: SessionUser;
   pendingShopApprovals: number;
   pendingProductReviews: number;
+  openComplaintsCount?: number;
   ledgerUnbalanced: boolean;
   children: React.ReactNode;
 }
@@ -62,6 +65,7 @@ export function AdminShell({
   user,
   pendingShopApprovals,
   pendingProductReviews,
+  openComplaintsCount = 0,
   ledgerUnbalanced,
   children,
 }: AdminShellProps) {
@@ -130,6 +134,12 @@ export function AdminShell({
       label: "Flash sale",
       icon: <IconTag size={16} />,
     },
+    {
+      href: "/admin/khieu-nai",
+      label: "Khiếu nại",
+      icon: <IconFlag size={16} />,
+      badge: openComplaintsCount > 0 ? openComplaintsCount : undefined,
+    },
   ];
 
   const financeAuditNavItems: AdminNavItem[] = [
@@ -140,6 +150,7 @@ export function AdminShell({
       badge: ledgerUnbalanced ? 1 : undefined,
       alertBadge: ledgerUnbalanced,
     },
+    { href: "/admin/cau-hinh", label: "Cấu hình sàn", icon: <IconSliders size={16} /> },
     { href: "/admin/audit-log", label: "Nhật ký kiểm toán", icon: <IconFileText size={16} /> },
   ];
 
@@ -163,6 +174,8 @@ export function AdminShell({
     const upper = trimmed.toUpperCase();
     if (upper.startsWith("DS-")) {
       router.push(`/admin/doi-soat?q=${encodeURIComponent(trimmed)}`);
+    } else if (upper.startsWith("KN-")) {
+      router.push(`/admin/khieu-nai?q=${encodeURIComponent(trimmed)}`);
     } else if (lower.startsWith("admin.") || lower.startsWith("site.") || lower.startsWith("tr-")) {
       router.push(`/admin/audit-log?q=${encodeURIComponent(trimmed)}`);
     } else if (upper.startsWith("SP-") || upper.startsWith("SKU-") || upper.startsWith("NM-")) {

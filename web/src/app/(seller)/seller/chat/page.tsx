@@ -5,6 +5,6 @@ import { SellerChatClient } from "./SellerChatClient";
 export const dynamic = "force-dynamic";
 
 export default async function SellerChatPage() {
-  await requireSellerPage();
-  return <SellerChatClient />;
+  const session = await requireSellerPage();
+  return <SellerChatClient sellerUserId={session.user.id} />;
 }

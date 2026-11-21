@@ -1,29 +1,10 @@
-/* Seller Factory Profile, Size Chart & Operations (/seller/ho-so) — Achromatic ledger */
+/* Seller Profile & Operations (/seller/ho-so) Frost and Slate ledger */
 
 .twoCol {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
   gap: var(--gap);
-  align-items: stretch;
-}
-
-.colStack {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap);
-  min-width: 0;
-}
-
-.fields2 {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px 14px;
-}
-
-.fields3 {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px 14px;
+  align-items: start;
 }
 
 .fieldStack {
@@ -36,123 +17,135 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 12px;
+  flex-wrap: wrap;
   padding-top: 4px;
 }
 
-.qcList {
+.kvList {
   display: flex;
   flex-direction: column;
 }
 
-.qcRow {
-  padding: 12px 0;
+.kvRow {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  font-size: 14px;
 }
 
-.qcRow + .qcRow {
-  border-top: 1px solid var(--rule); /* taste-skill-ignore: QC standard item divider */
+.kvRow + .kvRow {
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: profile key-value divider */
 }
 
-.qcHead {
+.kvKey {
+  color: var(--muted);
+  flex: none;
+}
+
+.kvVal {
+  color: var(--ink);
+  font-weight: 500;
+  text-align: right;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.alertBanner {
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border-radius: var(--radius-control);
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.noticeWell {
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border-radius: var(--radius-control);
+  background: var(--pill-warning-bg);
+  color: var(--pill-warning-ink);
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.cardFootNote {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule); /* taste-skill-ignore: footer note divider inside card */
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-}
-
-.qcTitle {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.qcDesc {
+  gap: 12px;
+  flex-wrap: wrap;
   font-size: 13px;
   line-height: 19px;
   color: var(--muted);
 }
 
-.menuList {
-  display: flex;
-  flex-direction: column;
-}
-
-.menuRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 0;
-}
-
-.menuRow + .menuRow {
-  border-top: 1px solid var(--rule); /* taste-skill-ignore: shop menu item divider */
-}
-
-.menuLabel {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--ink);
-}
-
-.menuSlug {
-  display: block;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.addCollectionForm {
-  padding: 14px;
-  margin-bottom: 14px;
-  border-radius: var(--radius-control);
-  background: var(--bg);
-  border: 1px solid var(--border); /* taste-skill-ignore: add shop collection form well */
+.addressList {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-/* Size chart inline inputs */
-input.sizeCellInput {
-  width: 100%;
-  min-width: 78px;
-  height: 32px;
-  padding: 0 8px;
-  border: 1px solid var(--control); /* taste-skill-ignore: editable size chart cell input */
-  border-radius: var(--radius-control);
-  background: var(--card);
-  color: var(--ink);
-  font-size: 13px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.sizePreviewBox {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.sizeResultWell {
-  padding: 16px;
+.addressItem {
+  padding: 14px;
   border-radius: var(--radius-control);
   background: var(--bg);
-  border: 1px solid var(--border); /* taste-skill-ignore: size recommendation widget preview */
+  border: 1px solid var(--border); /* taste-skill-ignore: pickup address item card */
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.sizeResultVal {
-  font-size: 28px;
-  line-height: 1.1;
+.addressItemPickup {
+  background: var(--accent-tint);
+  border-color: var(--accent-tint-strong);
+}
+
+.addressHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.addressIdentity {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.addressName {
+  font-size: 14px;
   font-weight: 600;
   color: var(--ink);
+}
+
+.addressPhone {
+  font-size: 13px;
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+.badgeRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.addressLine {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--ink-secondary);
 }
 
 .switchRow {
@@ -160,11 +153,8 @@ input.sizeCellInput {
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
-  padding: 12px 0;
-}
-
-.switchRow + .switchRow {
-  border-top: 1px solid var(--rule); /* taste-skill-ignore: operations toggle row divider */
+  padding: 8px 0 12px;
+  border-bottom: 1px solid var(--rule); /* taste-skill-ignore: toggle row bottom divider */
 }
 
 .switchText {
@@ -186,18 +176,36 @@ input.sizeCellInput {
   color: var(--muted);
 }
 
-.badgePreviewList {
+.presetRow {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
-  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.presetBtn {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--control); /* taste-skill-ignore: quick greeting template button */
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--t-hover) ease;
+}
+
+.presetBtn:hover {
+  background: var(--surface);
 }
 
 .previewWell {
+  margin-top: 12px;
   padding: 14px 16px;
   border-radius: var(--radius-control);
   background: var(--bg);
-  border: 1px solid var(--border); /* taste-skill-ignore: buyer-facing policy preview card */
+  border: 1px solid var(--border); /* taste-skill-ignore: preview panel container */
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -209,32 +217,28 @@ input.sizeCellInput {
   color: var(--ink);
 }
 
+.previewBubble {
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--card);
+  border: 1px solid var(--rule); /* taste-skill-ignore: simulated chat auto-reply bubble */
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--ink);
+}
+
 .previewLine {
   font-size: 13px;
   line-height: 19px;
   color: var(--muted);
 }
 
-.mobileSizeCard {
-  padding: 12px;
-  border-radius: var(--radius-control);
-  border: 1px solid var(--border); /* taste-skill-ignore: mobile size row editor */
+.inlineActions {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.mobileSizeHead {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.mobileSizeGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 4px;
 }
 
 @media (max-width: 980px) {
@@ -244,13 +248,13 @@ input.sizeCellInput {
 }
 
 @media (max-width: 640px) {
-  .fields2,
-  .fields3 {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .sizeResultWell {
+  .kvRow {
     flex-direction: column;
     align-items: flex-start;
+    gap: 4px;
+  }
+
+  .kvVal {
+    text-align: left;
   }
 }

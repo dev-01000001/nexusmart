@@ -399,6 +399,288 @@
   font-weight: 600;
 }
 
+/* Buyer returns status sheet & interactive return form */
+.returnSheet {
+  background: var(--surface-white);
+  padding: clamp(20px, 2.6vw, 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+.returnRequestList {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.returnRequestItem {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 18px;
+  border-top: 2px solid var(--surface-subtle);
+}
+
+.returnRequestItem:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.returnRequestHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.returnSubBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.returnSubLabel {
+  font-size: var(--step-small);
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+
+.returnBodyText {
+  font-size: 16px;
+  color: var(--ink);
+  line-height: 1.55;
+  max-width: 62ch;
+}
+
+.returnItemSummaryList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.returnItemSummaryRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--surface-subtle);
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.returnPhotoGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.returnPhotoThumbLink {
+  display: block;
+  width: 72px;
+  height: 72px;
+  background: var(--surface-subtle);
+  overflow: hidden;
+  flex: none;
+}
+
+.returnPhotoThumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.returnRefundRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--accent-tint);
+  color: var(--ink-strong);
+  font-size: 16px;
+}
+
+.returnRefundVal {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent-tint-ink);
+}
+
+.returnMetaLine {
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.returnSellerNote {
+  padding: 12px 16px;
+  background: var(--surface-subtle);
+  border-left: 4px solid var(--band-dark);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.returnRejectedGuide {
+  padding: 14px 16px;
+  background: var(--pill-warning-bg);
+  color: var(--pill-warning-ink);
+  border-left: 4px solid var(--amber);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.returnPickerList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.returnPickerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  background: var(--surface-white);
+  border-left: 4px solid var(--surface-muted);
+}
+
+.returnPickerRowActive {
+  border-left-color: var(--accent);
+}
+
+.returnPickerLabel {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1 1 auto;
+  cursor: pointer;
+}
+
+.returnPickerThumb {
+  width: 48px;
+  height: 64px;
+  object-fit: cover;
+  background: var(--surface-subtle);
+  flex: none;
+}
+
+.returnPickerInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.returnPickerName {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink);
+  line-height: 1.35;
+}
+
+.returnPickerMeta {
+  font-size: 14px;
+  color: var(--ink-secondary);
+}
+
+.qtyStepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.qtyStepBtn {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-subtle);
+  color: var(--ink);
+  border: 0;
+  cursor: pointer;
+  transition: background-color var(--t-hover) ease;
+}
+
+.qtyStepBtn:hover:not(:disabled) {
+  background: var(--accent-tint);
+}
+
+.qtyStepBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.qtyStepVal {
+  min-width: 28px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+
+.returnSelectionSummary {
+  font-size: 15px;
+  color: var(--ink);
+  padding-top: 4px;
+}
+
+.returnPhotoDraftList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.returnPhotoDraftCard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--surface-white);
+}
+
+.returnPhotoDraftImg {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  background: var(--surface-subtle);
+  flex: none;
+}
+
+.returnPhotoDraftUrl {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 14px;
+  color: var(--ink-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.returnPhotoRemoveBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 10px;
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+  border: 0;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  flex: none;
+}
+
 @media (max-width: 1024px) {
   .detailGrid {
     grid-template-columns: 1fr;
@@ -431,5 +713,14 @@
   .itemAmount {
     grid-column: 2;
     text-align: left;
+  }
+
+  .returnPickerRow {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .qtyStepper {
+    align-self: flex-end;
   }
 }
