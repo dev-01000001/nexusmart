@@ -4,16 +4,14 @@
 import type { PillTone } from "./adminMeta.ts";
 import { sanitizeSafeUrl } from "../../lib/site/theme.ts";
 
-export type ComplaintStatus = "OPEN" | "IN_REVIEW" | "RESOLVED" | "DISMISSED";
+export type ComplaintStatus = "OPEN" | "RESOLVED" | "DISMISSED";
 
-export type ComplaintDecision =
-  "REFUND_BUYER" | "APPROVE_RETURN" | "REJECT_COMPLAINT" | "PARTIAL_REFUND";
+export type ComplaintResolution = "REFUND" | "REPLACE" | "DISMISS";
 
-export const COMPLAINT_DECISIONS: readonly ComplaintDecision[] = [
-  "REFUND_BUYER",
-  "APPROVE_RETURN",
-  "PARTIAL_REFUND",
-  "REJECT_COMPLAINT",
+export const COMPLAINT_RESOLUTIONS: readonly ComplaintResolution[] = [
+  "REFUND",
+  "REPLACE",
+  "DISMISS",
 ] as const;
 
 export interface ComplaintTimelineEntry {
@@ -40,8 +38,7 @@ export interface AdminComplaint {
   buyer_reason: string;
   seller_rejection_reason: string;
   evidence_urls: string[];
-  decision: string;
-  refund_amount_vnd: number | null;
+  resolution: string;
   resolution_note: string;
   resolved_by: string;
   created_at: string;
@@ -51,9 +48,9 @@ export interface AdminComplaint {
 }
 
 export interface ValidatedComplaintResolution {
-  decision: ComplaintDecision;
-  refund_amount_vnd?: number;
+  resolution: ComplaintResolution;
   note: string;
+  require_return_shipping: boolean;
 }
 
 export interface AdminCategory {
@@ -174,30 +171,12 @@ function asNonNegativeInt(value: unknown, fallback = 0): number {
   return fallback;
 }
 
-function asOptionalNonNegativeInt(value: unknown): number | null {
-  if (value === null || value === undefined || value === "") return null;
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.max(0, Math.trunc(value));
-  }
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value.trim());
-    if (Number.isFinite(parsed)) return Math.max(0, Math.trunc(parsed));
-  }
-  return null;
-}
-
 function normalizeComplaintStatus(raw: string): ComplaintStatus {
-  const upper = raw
-    .trim()
-    .toUpperCase()
-    .replace(/^COMPLAINT_STATUS_/, "");
-  if (upper === "IN_REVIEW" || upper === "REVIEWING" || upper === "UNDER_REVIEW") {
-    return "IN_REVIEW";
-  }
-  if (upper === "RESOLVED" || upper === "CLOSED") {
+  const upper = raw.trim().toUpperCase();
+  if (upper === "RESOLVED") {
     return "RESOLVED";
   }
-  if (upper === "DISMISSED" || upper === "REJECTED") {
+  if (upper === "DISMISSED") {
     return "DISMISSED";
   }
   return "OPEN";
@@ -208,40 +187,36 @@ function normalizeTimeline(raw: unknown): ComplaintTimelineEntry[] {
   return raw
     .map((entry, idx) => {
       const rec = asRecord(entry);
-      const note = asString(rec.note || rec.message || rec.content);
-      const action = asString(rec.action || rec.title || rec.status);
+      const note = asString(rec.note);
+      const action = asString(rec.action);
       if (!note && !action) return null;
       return {
         id: asString(rec.id) || `ev-${idx + 1}`,
-        actor_role: asString(rec.actor_role || rec.role) || "system",
-        actor_name: asString(rec.actor_name || rec.actor_id),
+        actor_role: asString(rec.actor_role) || "system",
+        actor_name: asString(rec.actor_name),
         action: action || "Cập nhật khiếu nại",
         note,
-        created_at: asString(rec.created_at || rec.timestamp),
+        created_at: asString(rec.created_at),
       };
     })
     .filter((item): item is ComplaintTimelineEntry => item !== null);
 }
 
 /**
- * Normalizes a complaint payload from either Swarm D proto/gateway DTOs or extended complaint shapes.
+ * Normalizes a complaint DTO returned by the gateway (`handlers_d.go:complaintDTO`).
  * All evidence photo URLs are sanitized via `sanitizeSafeUrl`.
  */
 export function normalizeComplaint(rawInput: unknown): AdminComplaint {
   const raw = asRecord(rawInput);
-  const id = asString(raw.id || raw.complaint_id);
+  const id = asString(raw.id);
   const orderId = asString(raw.order_id);
   const orderCode =
     asString(raw.order_code) || (orderId ? `DH-${orderId.slice(0, 8).toUpperCase()}` : "");
   const complaintCode =
-    asString(raw.complaint_code || raw.code) ||
+    asString(raw.complaint_code) ||
     (id ? (id.toUpperCase().startsWith("KN-") ? id : `KN-${id.slice(0, 8).toUpperCase()}`) : "");
 
-  const rawPhotos = Array.isArray(raw.evidence_urls)
-    ? raw.evidence_urls
-    : Array.isArray(raw.photos)
-      ? raw.photos
-      : [];
+  const rawPhotos = Array.isArray(raw.evidence_urls) ? raw.evidence_urls : [];
   const evidenceUrls = rawPhotos
     .map((url) => sanitizeSafeUrl(typeof url === "string" ? url : ""))
     .filter((url) => url.length > 0);
@@ -249,16 +224,9 @@ export function normalizeComplaint(rawInput: unknown): AdminComplaint {
   const buyerId = asString(raw.buyer_id);
   const shopId = asString(raw.shop_id);
   const status = normalizeComplaintStatus(asString(raw.status));
-  const decision = asString(raw.decision || raw.resolution)
-    .toUpperCase()
-    .replace(/^COMPLAINT_RESOLUTION_/, "");
-
-  const resolutionNote = asString(raw.resolution_note || raw.admin_note || raw.note);
-  const refundAmount = asOptionalNonNegativeInt(raw.refund_amount_vnd);
-  const disputeAmount = asNonNegativeInt(
-    raw.dispute_amount_vnd ?? raw.amount_vnd ?? raw.order_total_vnd ?? raw.refund_amount_vnd,
-    0
-  );
+  const resolution = asString(raw.resolution).toUpperCase();
+  const resolutionNote = asString(raw.admin_note);
+  const disputeAmount = asNonNegativeInt(raw.dispute_amount_vnd, 0);
 
   return {
     id,
@@ -272,19 +240,16 @@ export function normalizeComplaint(rawInput: unknown): AdminComplaint {
     shop_name: asString(raw.shop_name) || (shopId ? `Gian hàng ${shopId.slice(0, 8)}` : ""),
     status,
     dispute_amount_vnd: disputeAmount,
-    buyer_reason: asString(raw.buyer_reason || raw.reason),
-    seller_rejection_reason: asString(
-      raw.seller_rejection_reason || raw.seller_note || raw.rejection_reason
-    ),
+    buyer_reason: asString(raw.reason),
+    seller_rejection_reason: asString(raw.seller_rejection_reason),
     evidence_urls: evidenceUrls,
-    decision,
-    refund_amount_vnd: refundAmount,
+    resolution,
     resolution_note: resolutionNote,
     resolved_by: asString(raw.resolved_by),
     created_at: asString(raw.created_at),
-    updated_at: asString(raw.updated_at || raw.resolved_at || raw.created_at),
+    updated_at: asString(raw.resolved_at || raw.created_at),
     resolved_at: asString(raw.resolved_at),
-    timeline: normalizeTimeline(raw.timeline || raw.notes),
+    timeline: normalizeTimeline(raw.timeline),
   };
 }
 
@@ -292,16 +257,8 @@ export function normalizeComplaintsListResponse(raw: unknown): {
   items: AdminComplaint[];
   total: number;
 } {
-  if (Array.isArray(raw)) {
-    const items = raw.map(normalizeComplaint);
-    return { items, total: items.length };
-  }
   const rec = asRecord(raw);
-  const list = Array.isArray(rec.items)
-    ? rec.items
-    : Array.isArray(rec.complaints)
-      ? rec.complaints
-      : [];
+  const list = Array.isArray(rec.items) ? rec.items : [];
   const items = list.map(normalizeComplaint);
   const total =
     typeof rec.total === "number" && Number.isFinite(rec.total)
@@ -319,8 +276,6 @@ export function getComplaintStatusMeta(status: string): { label: string; tone: P
   switch (normalizeComplaintStatus(status)) {
     case "OPEN":
       return { label: "Chờ xử lý", tone: "warning" };
-    case "IN_REVIEW":
-      return { label: "Đang xem xét", tone: "neutral" };
     case "RESOLVED":
       return { label: "Đã giải quyết", tone: "positive" };
     case "DISMISSED":
@@ -330,26 +285,16 @@ export function getComplaintStatusMeta(status: string): { label: string; tone: P
   }
 }
 
-export function getComplaintDecisionLabelVi(decision: string): string {
-  switch (
-    decision
-      .trim()
-      .toUpperCase()
-      .replace(/^COMPLAINT_RESOLUTION_/, "")
-  ) {
-    case "REFUND_BUYER":
+export function getComplaintResolutionLabelVi(resolution: string): string {
+  switch (resolution.trim().toUpperCase()) {
     case "REFUND":
-      return "Hoàn toàn bộ tiền cho người mua";
-    case "APPROVE_RETURN":
+      return "Hoàn tiền cho người mua";
     case "REPLACE":
-      return "Chấp thuận trả hàng";
-    case "PARTIAL_REFUND":
-      return "Hoàn một phần tiền";
-    case "REJECT_COMPLAINT":
+      return "Đổi sản phẩm thay thế";
     case "DISMISS":
       return "Bác khiếu nại";
     default:
-      return decision || "Chưa có quyết định";
+      return resolution || "Chưa có quyết định";
   }
 }
 
@@ -357,15 +302,15 @@ export function validateComplaintResolution(
   input: unknown
 ): ValidationResult<ValidatedComplaintResolution> {
   const rec = asRecord(input);
-  const rawDecision = asString(rec.decision).toUpperCase();
-  if (!(COMPLAINT_DECISIONS as readonly string[]).includes(rawDecision)) {
+  const rawResolution = asString(rec.resolution).toUpperCase();
+  if (!(COMPLAINT_RESOLUTIONS as readonly string[]).includes(rawResolution)) {
     return {
       ok: false,
-      code: "INVALID_DECISION",
+      code: "INVALID_RESOLUTION",
       message: "Quyết định phân xử không hợp lệ.",
     };
   }
-  const decision = rawDecision as ComplaintDecision;
+  const resolution = rawResolution as ComplaintResolution;
   const note = asString(rec.note);
   if (note.length < 5) {
     return {
@@ -382,30 +327,26 @@ export function validateComplaintResolution(
     };
   }
 
-  if (decision === "PARTIAL_REFUND") {
-    const rawAmount = rec.refund_amount_vnd;
-    if (typeof rawAmount !== "number" || !Number.isInteger(rawAmount) || rawAmount < 0) {
-      return {
-        ok: false,
-        code: "INVALID_REFUND_AMOUNT",
-        message: "Số tiền hoàn một phần phải là số nguyên VND không âm.",
-      };
-    }
+  if (
+    rec.require_return_shipping !== undefined &&
+    typeof rec.require_return_shipping !== "boolean"
+  ) {
     return {
-      ok: true,
-      value: {
-        decision,
-        refund_amount_vnd: rawAmount,
-        note,
-      },
+      ok: false,
+      code: "INVALID_RETURN_SHIPPING",
+      message: "Tùy chọn yêu cầu gửi trả hàng không hợp lệ.",
     };
   }
+
+  const requireReturnShipping =
+    resolution === "DISMISS" ? false : rec.require_return_shipping === true;
 
   return {
     ok: true,
     value: {
-      decision,
+      resolution,
       note,
+      require_return_shipping: requireReturnShipping,
     },
   };
 }

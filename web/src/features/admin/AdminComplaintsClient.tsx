@@ -11,43 +11,38 @@ import { AdminStateGate, AdminSuspenseFallback } from "./AdminStateGate";
 import { useAdminContext } from "./AdminShell";
 import { StatusPill } from "./StatusPill";
 import {
-  getComplaintDecisionLabelVi,
+  getComplaintResolutionLabelVi,
   getComplaintStatusMeta,
   isComplaintResolved,
   normalizeComplaint,
   validateComplaintResolution,
   type AdminComplaint,
-  type ComplaintDecision,
+  type ComplaintResolution,
 } from "./adminComplaintsTypes";
 import shared from "./adminShared.module.css";
 import styles from "@/app/(admin)/admin/khieu-nai/page.module.css";
 
-type ComplaintFilterTab = "all" | "OPEN" | "IN_REVIEW" | "RESOLVED";
+type ComplaintFilterTab = "all" | "OPEN" | "RESOLVED" | "DISMISSED";
 
-const DECISION_OPTIONS: Array<{
-  value: ComplaintDecision;
+const RESOLUTION_OPTIONS: Array<{
+  value: ComplaintResolution;
   title: string;
   hint: string;
 }> = [
   {
-    value: "REFUND_BUYER",
-    title: "Hoàn toàn bộ tiền cho người mua",
-    hint: "Tạo lệnh hoàn toàn bộ giá trị tranh chấp về cho người mua và đóng khiếu nại.",
+    value: "REFUND",
+    title: "Hoàn tiền cho người mua",
+    hint: "Hoàn toàn bộ giá trị đơn hàng cho người mua (hoàn ngay hoặc sau khi nhận hàng hoàn trả).",
   },
   {
-    value: "APPROVE_RETURN",
-    title: "Chấp thuận trả hàng",
-    hint: "Buộc gian hàng tiếp nhận hàng hoàn trả theo vận đơn chiều ngược.",
+    value: "REPLACE",
+    title: "Đổi sản phẩm thay thế",
+    hint: "Tạo vận đơn chiều ngược để người mua gửi trả và nhận sản phẩm thay thế từ gian hàng.",
   },
   {
-    value: "PARTIAL_REFUND",
-    title: "Hoàn một phần tiền",
-    hint: "Người mua giữ sản phẩm và nhận hoàn số tiền VND thỏa thuận dưới đây.",
-  },
-  {
-    value: "REJECT_COMPLAINT",
+    value: "DISMISS",
     title: "Bác khiếu nại",
-    hint: "Giữ nguyên giao dịch cho gian hàng khi bằng chứng khiếu nại không thuyết phục.",
+    hint: "Giữ nguyên đơn hoàn tất và giải ngân cho gian hàng khi bằng chứng không đủ thuyết phục.",
   },
 ];
 
@@ -56,9 +51,9 @@ export interface AdminComplaintsClientProps {
   loadError: string | null;
 }
 
-function bucketStatus(status: string): "OPEN" | "IN_REVIEW" | "RESOLVED" {
-  if (status === "IN_REVIEW") return "IN_REVIEW";
-  if (isComplaintResolved(status)) return "RESOLVED";
+function bucketStatus(status: string): "OPEN" | "RESOLVED" | "DISMISSED" {
+  if (status === "DISMISSED") return "DISMISSED";
+  if (status === "RESOLVED") return "RESOLVED";
   return "OPEN";
 }
 
@@ -84,8 +79,8 @@ function ComplaintsWorkspace({
   );
   const [drawerOpen, setDrawerOpen] = useState(Boolean(initialSelected));
 
-  const [decision, setDecision] = useState<ComplaintDecision>("REFUND_BUYER");
-  const [partialAmountInput, setPartialAmountInput] = useState("");
+  const [resolution, setResolution] = useState<ComplaintResolution>("REFUND");
+  const [requireReturnShipping, setRequireReturnShipping] = useState(false);
   const [note, setNote] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -94,8 +89,8 @@ function ComplaintsWorkspace({
     const map: Record<ComplaintFilterTab, number> = {
       all: complaints.length,
       OPEN: 0,
-      IN_REVIEW: 0,
       RESOLVED: 0,
+      DISMISSED: 0,
     };
     for (const item of complaints) {
       map[bucketStatus(item.status)] += 1;
@@ -135,8 +130,8 @@ function ComplaintsWorkspace({
   useEffect(() => {
     setFormError(null);
     setNote("");
-    setDecision("REFUND_BUYER");
-    setPartialAmountInput("");
+    setResolution("REFUND");
+    setRequireReturnShipping(false);
   }, [activeComplaint?.id]);
 
   useEffect(() => {
@@ -184,31 +179,16 @@ function ComplaintsWorkspace({
     e.preventDefault();
     if (submitting) return;
 
-    const rawRefund =
-      decision === "PARTIAL_REFUND"
-        ? partialAmountInput.trim() === ""
-          ? Number.NaN
-          : Number(partialAmountInput.trim())
-        : undefined;
+    const effectiveReturnShipping =
+      resolution === "REPLACE" ? true : resolution === "REFUND" ? requireReturnShipping : false;
 
     const validated = validateComplaintResolution({
-      decision,
-      refund_amount_vnd: rawRefund,
+      resolution,
       note,
+      require_return_shipping: effectiveReturnShipping,
     });
     if (!validated.ok) {
       setFormError(validated.message);
-      return;
-    }
-
-    if (
-      decision === "PARTIAL_REFUND" &&
-      target.dispute_amount_vnd > 0 &&
-      (validated.value.refund_amount_vnd ?? 0) > target.dispute_amount_vnd
-    ) {
-      setFormError(
-        `Số tiền hoàn một phần không được vượt quá giá trị tranh chấp (${formatVnd(target.dispute_amount_vnd)}).`
-      );
       return;
     }
 
@@ -223,14 +203,13 @@ function ComplaintsWorkspace({
         }
       );
 
-      const resolvedStatus = decision === "REJECT_COMPLAINT" ? "DISMISSED" : "RESOLVED";
+      const resolvedStatus = resolution === "DISMISS" ? "DISMISSED" : "RESOLVED";
       const updatedComplaint: AdminComplaint = res.complaint
         ? normalizeComplaint(res.complaint)
         : {
             ...target,
             status: resolvedStatus,
-            decision: validated.value.decision,
-            refund_amount_vnd: validated.value.refund_amount_vnd ?? target.refund_amount_vnd,
+            resolution: validated.value.resolution,
             resolution_note: validated.value.note,
             resolved_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
@@ -240,9 +219,9 @@ function ComplaintsWorkspace({
         prev.map((item) => (item.id === target.id ? updatedComplaint : item))
       );
       setNote("");
-      setPartialAmountInput("");
+      setRequireReturnShipping(false);
       showToast(
-        `Đã phân xử khiếu nại ${target.complaint_code}: ${getComplaintDecisionLabelVi(decision)}.`
+        `Đã phân xử khiếu nại ${target.complaint_code}: ${getComplaintResolutionLabelVi(resolution)}.`
       );
       router.refresh();
     } catch (err) {
@@ -261,10 +240,6 @@ function ComplaintsWorkspace({
     const safePhotos = complaint.evidence_urls
       .map((u) => sanitizeSafeUrl(u))
       .filter((u) => u.length > 0);
-    const parsedPartialPreview =
-      partialAmountInput.trim() !== "" && Number.isInteger(Number(partialAmountInput.trim()))
-        ? Number(partialAmountInput.trim())
-        : null;
 
     return (
       <div className={styles.inspectorCard}>
@@ -282,7 +257,11 @@ function ComplaintsWorkspace({
         <div className={styles.metaGrid}>
           <div className={shared.detailField}>
             <span className={shared.detailKey}>Giá trị tranh chấp</span>
-            <span className={shared.detailVal}>{formatVnd(complaint.dispute_amount_vnd)}</span>
+            <span className={shared.detailVal}>
+              {complaint.dispute_amount_vnd > 0
+                ? formatVnd(complaint.dispute_amount_vnd)
+                : EMPTY_DASH}
+            </span>
           </div>
           <div className={shared.detailField}>
             <span className={shared.detailKey}>Mã đơn hàng</span>
@@ -300,18 +279,18 @@ function ComplaintsWorkspace({
 
         <div className={styles.reasonBlock}>
           <div className={styles.statementBox}>
-            <span className={styles.statementTitle}>Lý do trả hàng từ người mua</span>
+            <span className={styles.statementTitle}>Lý do khiếu nại</span>
             <p className={styles.statementBody}>
-              {complaint.buyer_reason || "Người mua chưa cung cấp mô tả chi tiết."}
+              {complaint.buyer_reason || "Chưa có mô tả chi tiết cho khiếu nại này."}
             </p>
           </div>
 
-          <div className={styles.statementBox}>
-            <span className={styles.statementTitle}>Phản hồi từ chối của gian hàng</span>
-            <p className={styles.statementBody}>
-              {complaint.seller_rejection_reason || "Gian hàng chưa ghi nhận lý do từ chối cụ thể."}
-            </p>
-          </div>
+          {complaint.seller_rejection_reason && (
+            <div className={styles.statementBox}>
+              <span className={styles.statementTitle}>Phản hồi từ chối của gian hàng</span>
+              <p className={styles.statementBody}>{complaint.seller_rejection_reason}</p>
+            </div>
+          )}
         </div>
 
         <div className={styles.photoSection}>
@@ -364,13 +343,8 @@ function ComplaintsWorkspace({
         {resolved ? (
           <div className={styles.resolutionSummary}>
             <span className={styles.resolutionHeading}>
-              Kết quả phân xử: {getComplaintDecisionLabelVi(complaint.decision)}
+              Kết quả phân xử: {getComplaintResolutionLabelVi(complaint.resolution)}
             </span>
-            {complaint.refund_amount_vnd !== null && (
-              <p className={styles.resolutionText}>
-                Số tiền hoàn đã duyệt: {formatVnd(complaint.refund_amount_vnd)}
-              </p>
-            )}
             <p className={styles.resolutionText}>
               Ghi chú quản trị: {complaint.resolution_note || EMPTY_DASH}
             </p>
@@ -393,8 +367,8 @@ function ComplaintsWorkspace({
               role="radiogroup"
               aria-label="Chọn hướng phân xử khiếu nại"
             >
-              {DECISION_OPTIONS.map((opt) => {
-                const checked = decision === opt.value;
+              {RESOLUTION_OPTIONS.map((opt) => {
+                const checked = resolution === opt.value;
                 return (
                   <label
                     key={opt.value}
@@ -402,11 +376,14 @@ function ComplaintsWorkspace({
                   >
                     <input
                       type="radio"
-                      name={`complaint-decision-${complaint.id}`}
+                      name={`complaint-resolution-${complaint.id}`}
                       value={opt.value}
                       checked={checked}
                       onChange={() => {
-                        setDecision(opt.value);
+                        setResolution(opt.value);
+                        if (opt.value !== "REFUND") {
+                          setRequireReturnShipping(opt.value === "REPLACE");
+                        }
                         setFormError(null);
                       }}
                       className={styles.radioInput}
@@ -420,31 +397,26 @@ function ComplaintsWorkspace({
               })}
             </div>
 
-            {decision === "PARTIAL_REFUND" && (
-              <div className={styles.formField}>
-                <label htmlFor={`partial-refund-${complaint.id}`} className={shared.fieldLabel}>
-                  Số tiền hoàn một phần (số nguyên VND)
-                </label>
+            {resolution === "REFUND" && (
+              <label className={styles.checkboxOption}>
                 <input
-                  id={`partial-refund-${complaint.id}`}
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  step={1}
-                  className={shared.textInput}
-                  value={partialAmountInput}
+                  type="checkbox"
+                  checked={requireReturnShipping}
                   onChange={(e) => {
-                    setPartialAmountInput(e.target.value);
+                    setRequireReturnShipping(e.target.checked);
                     setFormError(null);
                   }}
-                  placeholder="Ví dụ: 150000"
+                  className={styles.checkboxInput}
                 />
-                <span className={styles.fieldHint}>
-                  {parsedPartialPreview !== null && parsedPartialPreview >= 0
-                    ? `Sẽ hoàn ${formatVnd(parsedPartialPreview)} cho người mua.`
-                    : `Nhập số nguyên VND không âm (tối đa ${formatVnd(complaint.dispute_amount_vnd)}).`}
+                <span className={styles.radioText}>
+                  <span className={styles.radioTitle}>
+                    Yêu cầu người mua gửi trả hàng trước khi hoàn tiền
+                  </span>
+                  <span className={styles.radioHint}>
+                    Bật để tạo vận đơn hoàn hàng trước; bỏ chọn để hoàn tiền ngay cho người mua.
+                  </span>
                 </span>
-              </div>
+              </label>
             )}
 
             <div className={styles.formField}>
@@ -479,14 +451,14 @@ function ComplaintsWorkspace({
   const tabs: Array<{ id: ComplaintFilterTab; label: string }> = [
     { id: "all", label: "Tất cả" },
     { id: "OPEN", label: "Chờ xử lý" },
-    { id: "IN_REVIEW", label: "Đang xem xét" },
     { id: "RESOLVED", label: "Đã giải quyết" },
+    { id: "DISMISSED", label: "Đã bác" },
   ];
 
   const subtitle =
-    counts.OPEN + counts.IN_REVIEW > 0
-      ? `${formatInt(counts.OPEN)} khiếu nại chờ xử lý, ${formatInt(counts.IN_REVIEW)} đang xem xét và ${formatInt(counts.RESOLVED)} đã hoàn tất phân xử.`
-      : `Không có khiếu nại tồn đọng; đã giải quyết ${formatInt(counts.RESOLVED)} hồ sơ tranh chấp.`;
+    counts.OPEN > 0
+      ? `${formatInt(counts.OPEN)} khiếu nại chờ xử lý, ${formatInt(counts.RESOLVED)} đã giải quyết và ${formatInt(counts.DISMISSED)} đã bác.`
+      : `Không có khiếu nại tồn đọng; đã xử lý ${formatInt(counts.RESOLVED + counts.DISMISSED)} hồ sơ tranh chấp.`;
 
   return (
     <div className={shared.page}>
@@ -593,7 +565,11 @@ function ComplaintsWorkspace({
                               Shop: {item.shop_name || EMPTY_DASH}
                             </div>
                           </td>
-                          <td className={shared.colNum}>{formatVnd(item.dispute_amount_vnd)}</td>
+                          <td className={shared.colNum}>
+                            {item.dispute_amount_vnd > 0
+                              ? formatVnd(item.dispute_amount_vnd)
+                              : EMPTY_DASH}
+                          </td>
                           <td>
                             <StatusPill label={meta.label} tone={meta.tone} />
                           </td>
@@ -619,7 +595,9 @@ function ComplaintsWorkspace({
                             {item.complaint_code || item.id.slice(0, 12)} · {item.order_code}
                           </span>
                           <span className={shared.mobileMetric}>
-                            {formatVnd(item.dispute_amount_vnd)}
+                            {item.dispute_amount_vnd > 0
+                              ? formatVnd(item.dispute_amount_vnd)
+                              : EMPTY_DASH}
                           </span>
                         </div>
                         <div className={shared.mobileLine2}>

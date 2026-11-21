@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import {
   canModifyUserAccount,
   formatCommissionBps,
-  getComplaintDecisionLabelVi,
+  getComplaintResolutionLabelVi,
   getComplaintStatusMeta,
   isComplaintResolved,
   normalizeComplaint,
@@ -15,20 +15,14 @@ import {
   validateComplaintResolution,
 } from "./adminComplaintsTypes.ts";
 
-test("normalizeComplaint sanitizes evidence photo URLs and maps proto + extended DTO fields", () => {
+test("normalizeComplaint sanitizes evidence photo URLs and maps gateway complaintDTO fields", () => {
   const c = normalizeComplaint({
     id: "cmp-9f8e7d6c-1234",
     return_request_id: "ret-1",
     order_id: "ord-aabbccdd",
-    order_code: "DH-20261121-001",
     buyer_id: "usr-buyer-01",
-    buyer_name: "Trần Thị Minh Anh",
     shop_id: "shop-01",
-    shop_name: "Xưởng Len Hội An",
-    status: "COMPLAINT_STATUS_OPEN",
-    dispute_amount_vnd: 485000.9,
     reason: "Áo nhận được bị rách đường chỉ ở vai phải",
-    seller_note: "Shop kiểm tra camera đóng gói thấy sản phẩm nguyên vẹn",
     evidence_urls: [
       "https://cdn.nexusmart.vn/evidence/photo-1.jpg",
       "/uploads/return-proof.png",
@@ -37,142 +31,168 @@ test("normalizeComplaint sanitizes evidence photo URLs and maps proto + extended
       "http://insecure.example.com/img.jpg",
       "//protocol-relative.evil/x.png",
     ],
+    status: "OPEN",
+    resolution: "",
+    admin_note: "",
+    resolved_by: "",
     created_at: "2026-11-21T08:30:00Z",
-    timeline: [
-      {
-        id: "t1",
-        actor_role: "buyer",
-        actor_name: "Trần Thị Minh Anh",
-        action: "Mở khiếu nại",
-        note: "Đính kèm 2 ảnh mở hộp",
-        created_at: "2026-11-21T08:30:00Z",
-      },
-    ],
+    resolved_at: "",
   });
 
   assert.equal(c.id, "cmp-9f8e7d6c-1234");
   assert.equal(c.complaint_code, "KN-CMP-9F8E");
-  assert.equal(c.order_code, "DH-20261121-001");
-  assert.equal(c.buyer_name, "Trần Thị Minh Anh");
-  assert.equal(c.shop_name, "Xưởng Len Hội An");
+  assert.equal(c.order_code, "DH-ORD-AABB");
+  assert.equal(c.buyer_name, "Người mua usr-buye");
+  assert.equal(c.shop_name, "Gian hàng shop-01");
   assert.equal(c.status, "OPEN");
-  assert.equal(c.dispute_amount_vnd, 485000);
   assert.equal(c.buyer_reason, "Áo nhận được bị rách đường chỉ ở vai phải");
-  assert.equal(c.seller_rejection_reason, "Shop kiểm tra camera đóng gói thấy sản phẩm nguyên vẹn");
   assert.deepEqual(c.evidence_urls, [
     "https://cdn.nexusmart.vn/evidence/photo-1.jpg",
     "/uploads/return-proof.png",
   ]);
-  assert.equal(c.timeline.length, 1);
-  assert.equal(c.timeline[0].actor_name, "Trần Thị Minh Anh");
 });
 
-test("normalizeComplaintsListResponse supports items, complaints, and raw array shapes", () => {
-  const fromComplaints = normalizeComplaintsListResponse({
-    complaints: [{ id: "KN-101", status: "IN_REVIEW", amount_vnd: 120000 }],
-    total: 14,
-  });
-  assert.equal(fromComplaints.items.length, 1);
-  assert.equal(fromComplaints.items[0].complaint_code, "KN-101");
-  assert.equal(fromComplaints.items[0].status, "IN_REVIEW");
-  assert.equal(fromComplaints.items[0].dispute_amount_vnd, 120000);
-  assert.equal(fromComplaints.total, 14);
-
+test("normalizeComplaintsListResponse reads gateway `items` strictly without dual-key fallback", () => {
   const fromItems = normalizeComplaintsListResponse({
-    items: [{ id: "cmp-2", status: "RESOLVED", resolution: "COMPLAINT_RESOLUTION_REFUND" }],
+    items: [
+      {
+        id: "cmp-1",
+        return_request_id: "ret-1",
+        order_id: "ord-1",
+        buyer_id: "buyer-1",
+        shop_id: "shop-42",
+        reason: "Defective item",
+        evidence_urls: [],
+        status: "RESOLVED",
+        resolution: "REFUND",
+        admin_note: "Approved in buyer favor",
+        resolved_by: "admin-1",
+        created_at: "2026-11-21T08:30:00Z",
+        resolved_at: "2026-11-21T09:00:00Z",
+      },
+    ],
+    page: 1,
+    page_size: 20,
+    total: 1,
   });
   assert.equal(fromItems.total, 1);
-  assert.equal(fromItems.items[0].decision, "REFUND");
+  assert.equal(fromItems.items.length, 1);
+  assert.equal(fromItems.items[0].resolution, "REFUND");
+  assert.equal(fromItems.items[0].resolution_note, "Approved in buyer favor");
+
+  // Legacy `complaints` key must NOT be read as a fallback.
+  const wrongKey = normalizeComplaintsListResponse({
+    complaints: [{ id: "KN-101", status: "OPEN" }],
+    total: 1,
+  });
+  assert.deepEqual(wrongKey.items, []);
 });
 
 test("getComplaintStatusMeta and resolution state helpers return Vietnamese labels & tones", () => {
   assert.deepEqual(getComplaintStatusMeta("OPEN"), { label: "Chờ xử lý", tone: "warning" });
-  assert.deepEqual(getComplaintStatusMeta("IN_REVIEW"), {
-    label: "Đang xem xét",
-    tone: "neutral",
-  });
   assert.deepEqual(getComplaintStatusMeta("RESOLVED"), {
     label: "Đã giải quyết",
     tone: "positive",
   });
-  assert.deepEqual(getComplaintStatusMeta("COMPLAINT_STATUS_DISMISSED"), {
+  assert.deepEqual(getComplaintStatusMeta("DISMISSED"), {
     label: "Đã bác khiếu nại",
     tone: "negative",
   });
 
   assert.equal(isComplaintResolved("OPEN"), false);
-  assert.equal(isComplaintResolved("IN_REVIEW"), false);
   assert.equal(isComplaintResolved("RESOLVED"), true);
   assert.equal(isComplaintResolved("DISMISSED"), true);
 
-  assert.equal(getComplaintDecisionLabelVi("REFUND_BUYER"), "Hoàn toàn bộ tiền cho người mua");
-  assert.equal(getComplaintDecisionLabelVi("APPROVE_RETURN"), "Chấp thuận trả hàng");
-  assert.equal(getComplaintDecisionLabelVi("PARTIAL_REFUND"), "Hoàn một phần tiền");
-  assert.equal(getComplaintDecisionLabelVi("REJECT_COMPLAINT"), "Bác khiếu nại");
+  assert.equal(getComplaintResolutionLabelVi("REFUND"), "Hoàn tiền cho người mua");
+  assert.equal(getComplaintResolutionLabelVi("REPLACE"), "Đổi sản phẩm thay thế");
+  assert.equal(getComplaintResolutionLabelVi("DISMISS"), "Bác khiếu nại");
 });
 
-test("validateComplaintResolution enforces decisions, note length, and integer VND partial refund", () => {
-  const validRefund = validateComplaintResolution({
-    decision: "REFUND_BUYER",
+test("validateComplaintResolution enforces gateway {resolution, note, require_return_shipping} contract", () => {
+  const immediateRefund = validateComplaintResolution({
+    resolution: "REFUND",
     note: "Ảnh mở hộp xác nhận sản phẩm rách từ trước khi giao.",
+    require_return_shipping: false,
   });
-  assert.equal(validRefund.ok, true);
-  if (validRefund.ok) {
-    assert.equal(validRefund.value.decision, "REFUND_BUYER");
-    assert.equal(validRefund.value.refund_amount_vnd, undefined);
+  assert.equal(immediateRefund.ok, true);
+  if (immediateRefund.ok) {
+    assert.deepEqual(immediateRefund.value, {
+      resolution: "REFUND",
+      note: "Ảnh mở hộp xác nhận sản phẩm rách từ trước khi giao.",
+      require_return_shipping: false,
+    });
   }
 
-  const validPartialZero = validateComplaintResolution({
-    decision: "PARTIAL_REFUND",
-    refund_amount_vnd: 0,
-    note: "Hai bên đồng thuận giảm 0đ và giữ voucher hỗ trợ.",
+  const returnThenRefund = validateComplaintResolution({
+    resolution: "refund",
+    note: "Người mua cần gửi trả hàng trước khi hoàn tiền.",
+    require_return_shipping: true,
   });
-  assert.equal(validPartialZero.ok, true);
-
-  const validPartial = validateComplaintResolution({
-    decision: "PARTIAL_REFUND",
-    refund_amount_vnd: 125000,
-    note: "Hoàn một phần tiền lỗi đường may nhỏ theo thỏa thuận.",
-  });
-  assert.equal(validPartial.ok, true);
-  if (validPartial.ok) {
-    assert.equal(validPartial.value.refund_amount_vnd, 125000);
+  assert.equal(returnThenRefund.ok, true);
+  if (returnThenRefund.ok) {
+    assert.deepEqual(returnThenRefund.value, {
+      resolution: "REFUND",
+      note: "Người mua cần gửi trả hàng trước khi hoàn tiền.",
+      require_return_shipping: true,
+    });
   }
 
-  const missingPartial = validateComplaintResolution({
-    decision: "PARTIAL_REFUND",
-    note: "Thiếu số tiền hoàn trả một phần.",
+  const replace = validateComplaintResolution({
+    resolution: "REPLACE",
+    note: "Đổi sản phẩm mới đúng kích cỡ đã đặt.",
+    require_return_shipping: true,
   });
-  assert.equal(missingPartial.ok, false);
-  if (!missingPartial.ok) assert.equal(missingPartial.code, "INVALID_REFUND_AMOUNT");
+  assert.equal(replace.ok, true);
+  if (replace.ok) {
+    assert.deepEqual(replace.value, {
+      resolution: "REPLACE",
+      note: "Đổi sản phẩm mới đúng kích cỡ đã đặt.",
+      require_return_shipping: true,
+    });
+  }
 
-  const floatPartial = validateComplaintResolution({
-    decision: "PARTIAL_REFUND",
-    refund_amount_vnd: 50000.5,
-    note: "Không được nhập số thập phân VND.",
+  const dismiss = validateComplaintResolution({
+    resolution: "DISMISS",
+    note: "Bằng chứng không đủ cơ sở để chấp thuận khiếu nại.",
+    require_return_shipping: true,
   });
-  assert.equal(floatPartial.ok, false);
+  assert.equal(dismiss.ok, true);
+  if (dismiss.ok) {
+    assert.deepEqual(dismiss.value, {
+      resolution: "DISMISS",
+      note: "Bằng chứng không đủ cơ sở để chấp thuận khiếu nại.",
+      require_return_shipping: false,
+    });
+  }
 
-  const negativePartial = validateComplaintResolution({
-    decision: "PARTIAL_REFUND",
-    refund_amount_vnd: -1000,
-    note: "Không được nhập số âm VND.",
+  // Unsupported / legacy decisions & dual-key `decision` must be rejected.
+  for (const invalidInput of [
+    { resolution: "PARTIAL_REFUND", note: "Không hỗ trợ hoàn một phần trên gateway." },
+    { resolution: "REFUND_BUYER", note: "Legacy enum không được hỗ trợ." },
+    { resolution: "APPROVE_RETURN", note: "Legacy enum không được hỗ trợ." },
+    { resolution: "REJECT_COMPLAINT", note: "Legacy enum không được hỗ trợ." },
+    { decision: "DISMISS", note: "Không dùng khóa decision cũ." },
+    { resolution: "FREE_MONEY", note: "Quyết định không có trong danh sách hợp lệ." },
+  ]) {
+    const res = validateComplaintResolution(invalidInput);
+    assert.equal(res.ok, false);
+    if (!res.ok) assert.equal(res.code, "INVALID_RESOLUTION");
+  }
+
+  const badReturnFlag = validateComplaintResolution({
+    resolution: "REFUND",
+    note: "Kiểm tra kiểu boolean của require_return_shipping.",
+    require_return_shipping: "yes",
   });
-  assert.equal(negativePartial.ok, false);
+  assert.equal(badReturnFlag.ok, false);
+  if (!badReturnFlag.ok) assert.equal(badReturnFlag.code, "INVALID_RETURN_SHIPPING");
 
   const shortNote = validateComplaintResolution({
-    decision: "REJECT_COMPLAINT",
+    resolution: "DISMISS",
     note: "Ok",
   });
   assert.equal(shortNote.ok, false);
   if (!shortNote.ok) assert.equal(shortNote.code, "NOTE_TOO_SHORT");
-
-  const badDecision = validateComplaintResolution({
-    decision: "FREE_MONEY",
-    note: "Quyết định không có trong danh sách hợp lệ.",
-  });
-  assert.equal(badDecision.ok, false);
-  if (!badDecision.ok) assert.equal(badDecision.code, "INVALID_DECISION");
 });
 
 test("formatCommissionBps formats basis points as Vietnamese percentage strings", () => {
