@@ -208,7 +208,7 @@ func deliverVietQROrder(
 	buyer *userFixture,
 	seller *sellerFixture,
 	sku SKUDTO,
-) (OrderDTO, string) {
+) OrderDTO {
 	t.Helper()
 	ctx := env.ctx(t)
 
@@ -316,7 +316,7 @@ func deliverVietQROrder(
 		delivered = env.getOrder(t, buyer.AccessToken, order.ID)
 		return StatusEquals(delivered.Status, "DELIVERED"), fmt.Sprintf("status=%s", delivered.Status)
 	})
-	return delivered, co.PaymentID
+	return delivered
 }
 
 func TestE2E_OrderDepth_ShippingZaloPayReturnsComplaintsAndReconciliation(t *testing.T) {
@@ -535,7 +535,7 @@ func TestE2E_OrderDepth_ShippingZaloPayReturnsComplaintsAndReconciliation(t *tes
 	// (c.1) Return Approved -> Reverse Shipment -> Seller Confirm Received -> REFUNDED + Ledger + Seller Balance + RBAC.
 	t.Run("Returns_ApproveReverseShipmentConfirmReceivedAndRBAC", func(t *testing.T) {
 		_, skuRet1 := env.createApprovedProduct(t, seller1, cat.ID, "Return Approve Jacket E2E "+env.runID, 280000, 20, 500)
-		order1, _ := deliverVietQROrder(t, env, buyer1, seller1, skuRet1)
+		order1 := deliverVietQROrder(t, env, buyer1, seller1, skuRet1)
 
 		ledgerBefore := env.getLedgerSummary(t)
 		balBeforeResp := env.mustDoJSON(t, http.MethodGet, "/api/v1/seller/balance", seller1.AccessToken, nil, nil, http.StatusOK)
@@ -680,7 +680,7 @@ func TestE2E_OrderDepth_ShippingZaloPayReturnsComplaintsAndReconciliation(t *tes
 	// (c.2) Return Rejected -> Complaint Escalated -> Buyer Complaint Evidence -> Admin Resolve Complaint + RBAC.
 	t.Run("Returns_RejectEscalateComplaintAndAdminResolve", func(t *testing.T) {
 		_, skuRet2 := env.createApprovedProduct(t, seller1, cat.ID, "Return Reject Shoes E2E "+env.runID, 310000, 20, 700)
-		order2, _ := deliverVietQROrder(t, env, buyer1, seller1, skuRet2)
+		order2 := deliverVietQROrder(t, env, buyer1, seller1, skuRet2)
 
 		crResp := env.mustDoJSON(t, http.MethodPost,
 			"/api/v1/orders/"+url.PathEscape(order2.ID)+"/returns",

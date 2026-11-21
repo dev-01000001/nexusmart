@@ -83,6 +83,7 @@ func setFirstHeroCTAHref(t *testing.T, cfg map[string]any, href string) {
 }
 
 func TestE2E_SiteTemplates_DiscoveryApplyPublishRollbackSecurityAndRBAC(t *testing.T) {
+	outerT := t
 	env := getEnv()
 	registerRateLimitResetCleanup(t, env)
 
@@ -186,10 +187,12 @@ func TestE2E_SiteTemplates_DiscoveryApplyPublishRollbackSecurityAndRBAC(t *testi
 		siteID = applyOut.Site.ID
 		baseDraft = applyOut.Site.Config
 
-		// Always suspend ephemeral site in t.Cleanup so repeated runs never pollute the public directory.
-		t.Cleanup(func() {
+		// Always suspend ephemeral site in outerT.Cleanup (after all subtests finish) so repeated runs
+		// never pollute the public directory and subsequent security subtests still operate on the active site.
+		ephemeralSiteID := siteID
+		outerT.Cleanup(func() {
 			_, _ = env.client.DoJSON(context.Background(), http.MethodPost,
-				"/api/v1/admin/sites/"+url.PathEscape(siteID)+"/suspend",
+				"/api/v1/admin/sites/"+url.PathEscape(ephemeralSiteID)+"/suspend",
 				adminTok, nil, map[string]any{
 					"suspend": true,
 					"reason":  "e2e template test cleanup",

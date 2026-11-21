@@ -361,7 +361,6 @@ type e2eWSFrame struct {
 	Messages       []e2eChatMessageDTO `json:"messages"`
 	LatestCursor   string              `json:"latest_cursor"`
 	Code           string              `json:"code"`
-	MessageText    string              `json:"-"`
 }
 
 func waitForWSFrame(t *testing.T, ws *wsClient, timeout time.Duration, desc string, match func(e2eWSFrame) bool) e2eWSFrame {
