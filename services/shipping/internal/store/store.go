@@ -22,6 +22,20 @@ var (
 	ErrCannotCancel = errors.New("shipment cannot be cancelled in current status")
 )
 
+// Shipment directions supported by the shipping service.
+const (
+	DirectionForward = "forward"
+	DirectionReturn  = "return"
+)
+
+// NormalizeDirection returns DirectionReturn for "return", otherwise DirectionForward.
+func NormalizeDirection(dir string) string {
+	if strings.EqualFold(strings.TrimSpace(dir), DirectionReturn) {
+		return DirectionReturn
+	}
+	return DirectionForward
+}
+
 func isTerminalStatus(status string) bool {
 	return status == "delivered" || status == "returned" || status == "cancelled"
 }
@@ -43,6 +57,8 @@ type Shipment struct {
 	FromWardCode     string
 	ToProvinceCode   string
 	ToWardCode       string
+	Direction        string
+	ReturnRequestID  string
 	LastEventAt      *time.Time
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
@@ -103,6 +119,7 @@ type Repository interface {
 	MapLegacyAddress(ctx context.Context, legacyProv, legacyDist, legacyWard string) (*address.LegacyMatch, error)
 
 	GetShipmentByOrderID(ctx context.Context, orderID string) (*Shipment, error)
+	GetShipmentByOrderIDAndDirection(ctx context.Context, orderID, direction string) (*Shipment, error)
 	GetShipmentByTrackingCode(ctx context.Context, trackingCode string) (*Shipment, error)
 	ListShipmentEvents(ctx context.Context, shipmentID string) ([]ShipmentEvent, error)
 	CreateShipment(ctx context.Context, s *Shipment, initialEvent *ShipmentEvent) (*Shipment, bool, error)
@@ -311,7 +328,7 @@ func (s *PGStore) MapLegacyAddress(ctx context.Context, legacyProv, legacyDist, 
 		return &address.LegacyMatch{Found: false}, nil
 	}
 
-	// Score best match: exact (prov+dist+ward) > (prov+dist) > (prov default).
+	// Score best match: exact (prov+dist+ward) > (prov+dist) or (prov+ward) > (prov default).
 	var match address.LegacyMatch
 	err := s.pool.QueryRow(ctx, `
 		SELECT
@@ -325,12 +342,14 @@ func (s *PGStore) MapLegacyAddress(ctx context.Context, legacyProv, legacyDist, 
 		  AND (
 			(m.legacy_district_norm = $2 AND m.legacy_ward_norm = $3)
 			OR (m.legacy_district_norm = $2 AND $2 <> '')
+			OR (m.legacy_ward_norm = $3 AND $3 <> '' AND $2 = '')
 			OR (m.legacy_district_norm = '' AND m.legacy_ward_norm = '')
 		  )
 		ORDER BY
 			CASE
 				WHEN m.legacy_district_norm = $2 AND m.legacy_ward_norm = $3 AND $3 <> '' THEN 3
 				WHEN m.legacy_district_norm = $2 AND $2 <> '' THEN 2
+				WHEN m.legacy_ward_norm = $3 AND $3 <> '' AND $2 = '' THEN 2
 				ELSE 1
 			END DESC,
 			m.id ASC
@@ -372,6 +391,8 @@ func scanShipment(row pgx.Row) (*Shipment, error) {
 		&sh.FromWardCode,
 		&sh.ToProvinceCode,
 		&sh.ToWardCode,
+		&sh.Direction,
+		&sh.ReturnRequestID,
 		&sh.LastEventAt,
 		&sh.CreatedAt,
 		&sh.UpdatedAt,
@@ -382,6 +403,7 @@ func scanShipment(row pgx.Row) (*Shipment, error) {
 		}
 		return nil, err
 	}
+	sh.Direction = NormalizeDirection(sh.Direction)
 	return &sh, nil
 }
 
@@ -389,11 +411,17 @@ const shipmentColumns = `
 	id, order_id, shop_id, carrier_code, service_code, tracking_code, label_url,
 	status, fee_vnd, cod_amount_vnd, weight_grams,
 	from_province_code, from_ward_code, to_province_code, to_ward_code,
+	direction, return_request_id,
 	last_event_at, created_at, updated_at
 `
 
 func (s *PGStore) GetShipmentByOrderID(ctx context.Context, orderID string) (*Shipment, error) {
-	return scanShipment(s.pool.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE order_id = $1`, orderID))
+	return s.GetShipmentByOrderIDAndDirection(ctx, orderID, DirectionForward)
+}
+
+func (s *PGStore) GetShipmentByOrderIDAndDirection(ctx context.Context, orderID, direction string) (*Shipment, error) {
+	dir := NormalizeDirection(direction)
+	return scanShipment(s.pool.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE order_id = $1 AND direction = $2`, orderID, dir))
 }
 
 func (s *PGStore) GetShipmentByTrackingCode(ctx context.Context, trackingCode string) (*Shipment, error) {
@@ -423,9 +451,11 @@ func (s *PGStore) ListShipmentEvents(ctx context.Context, shipmentID string) ([]
 	return out, rows.Err()
 }
 
-// CreateShipment inserts a shipment and its initial event atomically. If order_id already exists
+// CreateShipment inserts a shipment and its initial event atomically. If (order_id, direction) already exists
 // due to a concurrent request, it returns the existing shipment and alreadyExisted=true.
 func (s *PGStore) CreateShipment(ctx context.Context, sh *Shipment, initialEvent *ShipmentEvent) (*Shipment, bool, error) {
+	sh.Direction = NormalizeDirection(sh.Direction)
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("begin create shipment tx: %w", err)
@@ -437,13 +467,15 @@ func (s *PGStore) CreateShipment(ctx context.Context, sh *Shipment, initialEvent
 			id, order_id, shop_id, carrier_code, service_code, tracking_code, label_url,
 			status, fee_vnd, cod_amount_vnd, weight_grams,
 			from_province_code, from_ward_code, to_province_code, to_ward_code,
+			direction, return_request_id,
 			created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
-		ON CONFLICT (order_id) DO NOTHING
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		ON CONFLICT (order_id, direction) DO NOTHING
 	`,
 		sh.ID, sh.OrderID, sh.ShopID, sh.CarrierCode, sh.ServiceCode, sh.TrackingCode, sh.LabelURL,
 		sh.Status, sh.FeeVND, sh.CODAmountVND, sh.WeightGrams,
 		sh.FromProvinceCode, sh.FromWardCode, sh.ToProvinceCode, sh.ToWardCode,
+		sh.Direction, sh.ReturnRequestID,
 		sh.CreatedAt, sh.UpdatedAt,
 	)
 	if err != nil {
@@ -451,7 +483,7 @@ func (s *PGStore) CreateShipment(ctx context.Context, sh *Shipment, initialEvent
 	}
 
 	if tag.RowsAffected() == 0 {
-		existing, fetchErr := scanShipment(tx.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE order_id = $1`, sh.OrderID))
+		existing, fetchErr := scanShipment(tx.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE order_id = $1 AND direction = $2`, sh.OrderID, sh.Direction))
 		if fetchErr != nil {
 			return nil, false, fmt.Errorf("fetch existing shipment on conflict: %w", fetchErr)
 		}
@@ -476,7 +508,7 @@ func (s *PGStore) CreateShipment(ctx context.Context, sh *Shipment, initialEvent
 	return sh, false, nil
 }
 
-// CancelShipment marks a shipment as cancelled atomically only while still in CREATED/PICKING.
+// CancelShipment marks a forward shipment as cancelled atomically only while still in CREATED/PICKING.
 func (s *PGStore) CancelShipment(ctx context.Context, orderID, reason string) (*Shipment, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -484,7 +516,7 @@ func (s *PGStore) CancelShipment(ctx context.Context, orderID, reason string) (*
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	existing, err := scanShipment(tx.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE order_id = $1 FOR UPDATE`, orderID))
+	existing, err := scanShipment(tx.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE order_id = $1 AND direction = 'forward' FOR UPDATE`, orderID))
 	if err != nil {
 		return nil, err
 	}
@@ -502,7 +534,7 @@ func (s *PGStore) CancelShipment(ctx context.Context, orderID, reason string) (*
 	sh, err := scanShipment(tx.QueryRow(ctx, `
 		UPDATE shipments
 		SET status = 'cancelled', updated_at = $2
-		WHERE order_id = $1 AND status IN ('created', 'picking')
+		WHERE order_id = $1 AND direction = 'forward' AND status IN ('created', 'picking')
 		RETURNING `+shipmentColumns, orderID, now))
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -528,7 +560,7 @@ func (s *PGStore) CancelShipment(ctx context.Context, orderID, reason string) (*
 	return sh, nil
 }
 
-// CancelShipmentWithEvent atomically records event_id in processed_events and cancels the shipment
+// CancelShipmentWithEvent atomically records event_id in processed_events and cancels the forward shipment
 // in ONE PostgreSQL transaction ONLY if the shipment is still in CREATED/PICKING.
 func (s *PGStore) CancelShipmentWithEvent(ctx context.Context, eventID, subject, orderID, reason string) (*Shipment, bool, error) {
 	tx, err := s.pool.Begin(ctx)
@@ -552,7 +584,7 @@ func (s *PGStore) CancelShipmentWithEvent(ctx context.Context, eventID, subject,
 		return nil, true, nil
 	}
 
-	existing, err := scanShipment(tx.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE order_id = $1 FOR UPDATE`, orderID))
+	existing, err := scanShipment(tx.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE order_id = $1 AND direction = 'forward' FOR UPDATE`, orderID))
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			if commitErr := tx.Commit(ctx); commitErr != nil {
@@ -574,7 +606,7 @@ func (s *PGStore) CancelShipmentWithEvent(ctx context.Context, eventID, subject,
 	sh, err := scanShipment(tx.QueryRow(ctx, `
 		UPDATE shipments
 		SET status = 'cancelled', updated_at = $2
-		WHERE order_id = $1 AND status IN ('created', 'picking')
+		WHERE order_id = $1 AND direction = 'forward' AND status IN ('created', 'picking')
 		RETURNING `+shipmentColumns, orderID, now))
 	if err != nil {
 		return nil, false, err
@@ -622,13 +654,13 @@ func (s *PGStore) ApplyWebhookEvent(ctx context.Context, params WebhookUpdatePar
 		return nil, WebhookOutcomeDuplicate, nil
 	}
 
-	// 2. Lock shipment row by tracking_code (fallback order_id).
+	// 2. Lock shipment row by tracking_code (fallback forward shipment by order_id).
 	var sh *Shipment
 	if params.TrackingCode != "" {
 		sh, err = scanShipment(tx.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE tracking_code = $1 FOR UPDATE`, params.TrackingCode))
 	}
 	if (sh == nil || errors.Is(err, ErrNotFound)) && params.OrderID != "" {
-		sh, err = scanShipment(tx.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE order_id = $1 FOR UPDATE`, params.OrderID))
+		sh, err = scanShipment(tx.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE order_id = $1 AND direction = 'forward' FOR UPDATE`, params.OrderID))
 	}
 	if err != nil {
 		return nil, "", err
@@ -704,10 +736,12 @@ func (s *PGStore) ListActiveShipments(ctx context.Context, limit int) ([]Shipmen
 			&sh.ID, &sh.OrderID, &sh.ShopID, &sh.CarrierCode, &sh.ServiceCode,
 			&sh.TrackingCode, &sh.LabelURL, &sh.Status, &sh.FeeVND, &sh.CODAmountVND,
 			&sh.WeightGrams, &sh.FromProvinceCode, &sh.FromWardCode, &sh.ToProvinceCode,
-			&sh.ToWardCode, &sh.LastEventAt, &sh.CreatedAt, &sh.UpdatedAt,
+			&sh.ToWardCode, &sh.Direction, &sh.ReturnRequestID,
+			&sh.LastEventAt, &sh.CreatedAt, &sh.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan active shipment: %w", err)
 		}
+		sh.Direction = NormalizeDirection(sh.Direction)
 		out = append(out, sh)
 	}
 	return out, rows.Err()

@@ -161,6 +161,58 @@ func (s *Server) CreateShipment(ctx context.Context, req *shippingv1.CreateShipm
 	}, nil
 }
 
+func (s *Server) CreateReturnShipment(ctx context.Context, req *shippingv1.CreateReturnShipmentRequest) (*shippingv1.CreateReturnShipmentResponse, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok || strings.TrimSpace(claims.UserID()) == "" {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if !auth.HasRole(claims, "seller", "admin", "super_admin") {
+		return nil, status.Error(codes.PermissionDenied, "only seller or admin may create return shipments")
+	}
+	if auth.HasRole(claims, "seller") {
+		if claims.ShopID == "" || req.GetShopId() == "" || claims.ShopID != req.GetShopId() {
+			return nil, status.Error(codes.PermissionDenied, "seller cannot create return shipment for another shop")
+		}
+	}
+
+	in := service.CreateReturnShipmentInput{
+		OrderID:         req.GetOrderId(),
+		ReturnRequestID: req.GetReturnRequestId(),
+		ShopID:          req.GetShopId(),
+		CarrierCode:     req.GetCarrierCode(),
+		ServiceCode:     req.GetServiceCode(),
+		WeightGrams:     req.GetWeightGrams(),
+		ItemsSummary:    req.GetItemsSummary(),
+	}
+	if from := req.GetFromAddress(); from != nil {
+		in.FromAddress = carrier.Address{
+			Name:          from.GetName(),
+			Phone:         from.GetPhone(),
+			ProvinceCode:  from.GetProvinceCode(),
+			WardCode:      from.GetWardCode(),
+			StreetAddress: from.GetStreetAddress(),
+		}
+	}
+	if to := req.GetToAddress(); to != nil {
+		in.ToAddress = carrier.Address{
+			Name:          to.GetName(),
+			Phone:         to.GetPhone(),
+			ProvinceCode:  to.GetProvinceCode(),
+			WardCode:      to.GetWardCode(),
+			StreetAddress: to.GetStreetAddress(),
+		}
+	}
+
+	sh, existed, err := s.svc.CreateReturnShipment(ctx, in)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &shippingv1.CreateReturnShipmentResponse{
+		Shipment:       toProtoShipment(sh),
+		AlreadyExisted: existed,
+	}, nil
+}
+
 func (s *Server) CancelShipment(ctx context.Context, req *shippingv1.CancelShipmentRequest) (*shippingv1.CancelShipmentResponse, error) {
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok || strings.TrimSpace(claims.UserID()) == "" {
