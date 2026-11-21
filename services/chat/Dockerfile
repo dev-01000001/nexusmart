@@ -21,7 +21,7 @@ RUN apk add --no-cache ca-certificates wget \
 
 COPY --from=builder /out/chat /usr/local/bin/chat
 
-USER appuser
+USER 10001:10001
 
 EXPOSE 50060 8090
 
