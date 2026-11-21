@@ -21,3 +21,13 @@ Phát hiện kiểm tra mã nguồn trực tiếp trên nhánh `phase-0b` cho to
 
 *Lưu ý cho Swarm A (`search`), B (`chat`), C (`assistant`) đang triển khai:* đảm bảo dùng `logger.New` + `*Context`, gắn đủ `HTTPMiddleware`/`GRPCUnary*Interceptor`/NATS `SpanKindProducer`+`SpanKindConsumer`, và dùng `prometheus.DefaultRegisterer` để có đủ `process_*` metrics ngay từ đầu.
 
+
+## Swarm G (Web) — Ghi nhận vấn đề ở phạm vi Swarm T khi chạy gate toàn `web/` (2026-11-21)
+
+| ID | Swarm đích | Mức độ | File:Dòng | Lỗi & Kịch bản tái hiện | Hướng khắc phục |
+|---|---|---|---|---|---|
+| WEB-T-01 | Swarm T (`templates`) | **High** | `web/src/features/seller/site/SellerSiteEditorClient.tsx:96,228,310,1036` | **`tsc --noEmit` và `next build` lỗi type `SiteTemplateConfig` không gán được cho `SiteConfig`.** **Kịch bản:** Chạy `cd web && npx tsc --noEmit` hoặc `NEXT_DIST_DIR=.next-g npm run build` -> lỗi `TS2345`/`TS2322` do `SiteSectionV2[]` (có `"lookbook"`) không tương thích `SiteSection[]`. | Cập nhật kiểu state `config` và prop trong `SellerSiteEditorClient.tsx` sang `SiteTemplateConfig` / union tương thích với v2. |
+| WEB-T-02 | Swarm T (`templates`) | **Medium** | `web/src/features/site/templateValidator.ts:868` | **Design-taste lint báo 1 FAIL `[eyebrow]` do chuỗi `.eyebrow,` trong source.** **Kịch bản:** Chạy `node /home/dev/.claude/skills/design-taste-frontend/scripts/lint.mjs web/src` -> `FAIL [eyebrow] src/features/site/templateValidator.ts:868 .eyebrow,`. | Nếu là rule kiểm tra/chặn selector trong validator, thêm chú thích `// taste-skill-ignore` hoặc đổi cách khớp chuỗi để không dính pattern CSS tĩnh của `lint.mjs`. |
+| WEB-T-03 | Swarm T (`templates`) | **Low** | `web/src/features/site/templateCatalog.ts`, `web/src/features/site/templateValidator.ts`, `web/src/app/api/seller/site/apply-template/route.ts` | **`npm run format:check` báo 3 file của Swarm T chưa chạy Prettier.** **Kịch bản:** Chạy `cd web && npm run format:check`. | Chạy `npx prettier --write` trên các file của Swarm T trước khi báo xong. |
+
+*Cập nhật `OBS-11` (Swarm G):* Đã bổ sung W3C `traceparent`/`tracestate` trong `web/src/lib/server/{trace.ts,gateway.ts,tokens.ts,siteLookup.ts,sites.ts}` và `time` + `trace_id` + PII/secret redaction trong `web/src/lib/server/errors.ts` kèm unit test tại `web/src/lib/server/security.test.mjs`.
