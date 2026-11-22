@@ -1131,6 +1131,107 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 	return nil, status.Error(codes.Aborted, "STOCK_VERSION_CONFLICT: concurrent confirm contention exceeded retries")
 }
 
+func (s *Server) RestockOrderItems(ctx context.Context, req *productv1.RestockOrderItemsRequest) (*productv1.RestockOrderItemsResponse, error) {
+	claims, err := requireServiceOrAdmin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	orderID := strings.TrimSpace(req.GetOrderId())
+	if orderID == "" {
+		return nil, status.Error(codes.InvalidArgument, "order_id is required")
+	}
+	items, err := normalizeAndSortReservationItems(req.GetItems())
+	if err != nil {
+		return nil, err
+	}
+
+	actorID := strings.TrimSpace(claims.Service)
+	if actorID == "" {
+		actorID = claims.UserID()
+	}
+
+	var restockedCount int
+	err = s.store.WithTx(ctx, func(q store.Queries) error {
+		type productSync struct {
+			status      string
+			latestStock int32
+		}
+		touchedProducts := make(map[string]productSync)
+
+		for _, item := range items {
+			sku, getErr := q.GetSKUWithContextForUpdate(ctx, item.skuID)
+			if getErr != nil {
+				if errors.Is(getErr, store.ErrNotFound) {
+					return status.Errorf(codes.NotFound, "sku %s not found", item.skuID)
+				}
+				return getErr
+			}
+
+			inserted, histErr := q.TryInsertRestockHistory(ctx, store.StockHistoryEntry{
+				ID:             uuid.NewString(),
+				SKUID:          item.skuID,
+				OrderID:        orderID,
+				ChangeType:     "RESTOCK",
+				Delta:          item.quantity,
+				StockBefore:    sku.Stock,
+				StockAfter:     sku.Stock + item.quantity,
+				ReservedBefore: sku.ReservedStock,
+				ReservedAfter:  sku.ReservedStock,
+				ActorID:        actorID,
+				Reason:         "order item restock",
+			})
+			if histErr != nil {
+				return histErr
+			}
+			if !inserted {
+				continue
+			}
+
+			updated, updErr := q.RestockSKUAtomic(ctx, item.skuID, item.quantity)
+			if updErr != nil {
+				return updErr
+			}
+			restockedCount++
+
+			if updated.Status != store.SKUStatusInactive {
+				ps := touchedProducts[sku.ProductID]
+				ps.status = sku.ProductStatus
+				if updated.Stock > ps.latestStock {
+					ps.latestStock = updated.Stock
+				}
+				touchedProducts[sku.ProductID] = ps
+			}
+		}
+
+		prodIDs := make([]string, 0, len(touchedProducts))
+		for prodID := range touchedProducts {
+			prodIDs = append(prodIDs, prodID)
+		}
+		sort.Strings(prodIDs)
+		for _, prodID := range prodIDs {
+			ps := touchedProducts[prodID]
+			if syncErr := syncProductStockStatus(ctx, q, prodID, ps.status, ps.latestStock); syncErr != nil {
+				return syncErr
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		if _, ok := status.FromError(err); ok {
+			return nil, err
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, status.Error(codes.NotFound, "sku not found")
+		}
+		return nil, status.Errorf(codes.Internal, "restock order items: %v", err)
+	}
+
+	return &productv1.RestockOrderItemsResponse{
+		Restocked:        true,
+		AlreadyRestocked: restockedCount == 0,
+	}, nil
+}
+
 // --- Helpers ---
 
 func requireAdmin(ctx context.Context) (*auth.Claims, error) {
@@ -1140,6 +1241,17 @@ func requireAdmin(ctx context.Context) (*auth.Claims, error) {
 	}
 	if !auth.HasRole(claims, "admin", "super_admin") {
 		return nil, status.Error(codes.PermissionDenied, "admin role required")
+	}
+	return claims, nil
+}
+
+func requireServiceOrAdmin(ctx context.Context) (*auth.Claims, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if strings.TrimSpace(claims.Service) == "" && !auth.HasRole(claims, "admin", "super_admin") {
+		return nil, status.Error(codes.PermissionDenied, "service or admin identity required")
 	}
 	return claims, nil
 }

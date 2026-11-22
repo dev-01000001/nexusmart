@@ -231,6 +231,18 @@ JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
 WHERE s.id = $1;
 
+-- name: GetSKUWithContextForUpdate :one
+SELECT
+    s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+FROM skus s
+JOIN products p ON p.id = s.product_id
+JOIN categories c ON c.id = p.category_id
+WHERE s.id = $1
+FOR UPDATE OF s;
+
 -- name: CountActiveInStockSKUsByProduct :one
 SELECT COUNT(*)::bigint AS cnt
 FROM skus
@@ -291,6 +303,20 @@ WHERE id = $2
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
           reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
 
+-- name: RestockSKUAtomic :one
+UPDATE skus
+SET stock = stock + $1,
+    status = CASE
+        WHEN status = 'INACTIVE' THEN 'INACTIVE'
+        WHEN stock + $1 > 0 THEN 'ACTIVE'
+        ELSE status
+    END,
+    version = version + 1,
+    updated_at = NOW()
+WHERE id = $2
+RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+
 -- Stock reservations
 
 -- name: ListReservationsByOrderID :many
@@ -326,3 +352,12 @@ INSERT INTO stock_history (
     actor_id, reason
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+
+-- name: TryInsertRestockHistory :execrows
+INSERT INTO stock_history (
+    id, sku_id, order_id, change_type, delta,
+    stock_before, stock_after, reserved_before, reserved_after,
+    actor_id, reason
+)
+VALUES ($1, $2, $3, 'RESTOCK', $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT (order_id, sku_id) WHERE change_type = 'RESTOCK' DO NOTHING;

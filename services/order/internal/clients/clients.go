@@ -31,10 +31,10 @@ type UserClient interface {
 // ProductClient defines the subset of ProductService RPCs required by OrderService.
 type ProductClient interface {
 	GetSKUsBatch(ctx context.Context, req *productv1.GetSKUsBatchRequest, opts ...grpc.CallOption) (*productv1.GetSKUsBatchResponse, error)
-	UpdateStock(ctx context.Context, req *productv1.UpdateStockRequest, opts ...grpc.CallOption) (*productv1.UpdateStockResponse, error)
 	ReserveStock(ctx context.Context, req *productv1.ReserveStockRequest, opts ...grpc.CallOption) (*productv1.ReserveStockResponse, error)
 	ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRequest, opts ...grpc.CallOption) (*productv1.ReleaseStockResponse, error)
 	ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRequest, opts ...grpc.CallOption) (*productv1.ConfirmStockResponse, error)
+	RestockOrderItems(ctx context.Context, req *productv1.RestockOrderItemsRequest, opts ...grpc.CallOption) (*productv1.RestockOrderItemsResponse, error)
 }
 
 // CartClient defines the subset of CartService RPCs required by OrderService.

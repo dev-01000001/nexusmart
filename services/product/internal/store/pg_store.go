@@ -360,6 +360,19 @@ func (p *pgQueries) GetSKUWithContext(ctx context.Context, skuID string) (SKU, e
 	), nil
 }
 
+func (p *pgQueries) GetSKUWithContextForUpdate(ctx context.Context, skuID string) (SKU, error) {
+	r, err := p.q.GetSKUWithContextForUpdate(ctx, skuID)
+	if err != nil {
+		return SKU{}, mapPgError(err)
+	}
+	return fromSKUContextFields(
+		r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
+		r.Attributes, r.PriceVnd, r.Stock, r.ReservedStock, r.Version,
+		r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
+		r.SkuStatus, r.ProductStatus, r.ProductDeletedAt,
+	), nil
+}
+
 func (p *pgQueries) CountActiveInStockSKUsByProduct(ctx context.Context, productID string) (int64, error) {
 	return p.q.CountActiveInStockSKUsByProduct(ctx, productID)
 }
@@ -440,6 +453,17 @@ func (p *pgQueries) ConfirmSKUOptimistic(ctx context.Context, skuID string, qty 
 		if errors.Is(err, pgx.ErrNoRows) {
 			return SKU{}, ErrVersionConflict
 		}
+		return SKU{}, mapPgError(err)
+	}
+	return mergeDBSKU(row, SKU{}), nil
+}
+
+func (p *pgQueries) RestockSKUAtomic(ctx context.Context, skuID string, qty int32) (SKU, error) {
+	row, err := p.q.RestockSKUAtomic(ctx, db.RestockSKUAtomicParams{
+		Stock: qty,
+		ID:    skuID,
+	})
+	if err != nil {
 		return SKU{}, mapPgError(err)
 	}
 	return mergeDBSKU(row, SKU{}), nil
@@ -527,6 +551,25 @@ func (p *pgQueries) InsertStockHistory(ctx context.Context, h StockHistoryEntry)
 		ActorID:        h.ActorID,
 		Reason:         h.Reason,
 	}))
+}
+
+func (p *pgQueries) TryInsertRestockHistory(ctx context.Context, h StockHistoryEntry) (bool, error) {
+	n, err := p.q.TryInsertRestockHistory(ctx, db.TryInsertRestockHistoryParams{
+		ID:             h.ID,
+		SkuID:          h.SKUID,
+		OrderID:        h.OrderID,
+		Delta:          h.Delta,
+		StockBefore:    h.StockBefore,
+		StockAfter:     h.StockAfter,
+		ReservedBefore: h.ReservedBefore,
+		ReservedAfter:  h.ReservedAfter,
+		ActorID:        h.ActorID,
+		Reason:         h.Reason,
+	})
+	if err != nil {
+		return false, mapPgError(err)
+	}
+	return n > 0, nil
 }
 
 func mapPgError(err error) error {

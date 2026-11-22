@@ -226,7 +226,7 @@ func (s *OrderService) HandleShipmentUpdated(ctx context.Context, eventID string
 		defer cancel()
 
 		// Restock returned items.
-		s.restockOrderItems(compCtx, ord.ShopID, outcome.Order.Items)
+		s.restockOrderItems(compCtx, ord.ID, outcome.Order.Items)
 
 		// If order was paid online, initiate refund idempotently.
 		wasPaidOnline := statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&

@@ -32,6 +32,7 @@ import (
 
 type authCallSnapshot struct {
 	role     string
+	service  string
 	rawToken string
 }
 
@@ -140,12 +141,14 @@ type mockProductClient struct {
 	skus             map[string]*productv1.SKU
 	reserveErr       error
 	releaseErr       error
+	restockErr       error
 	releaseReturnsOk bool
 	reserveCalls     []string
 	releaseCalls     []string
 	confirmCalls     []string
-	updateStockCalls []*productv1.UpdateStockRequest
-	updateStockAuth  []authCallSnapshot
+	restockCalls     []*productv1.RestockOrderItemsRequest
+	restockAuth      []authCallSnapshot
+	onRelease        func(orderID string)
 }
 
 func newMockProductClient() *mockProductClient {
@@ -210,21 +213,30 @@ func (m *mockProductClient) GetSKUsBatch(_ context.Context, req *productv1.GetSK
 	return &productv1.GetSKUsBatchResponse{Skus: out}, nil
 }
 
-func (m *mockProductClient) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequest, _ ...grpc.CallOption) (*productv1.UpdateStockResponse, error) {
+func (m *mockProductClient) RestockOrderItems(ctx context.Context, req *productv1.RestockOrderItemsRequest, _ ...grpc.CallOption) (*productv1.RestockOrderItemsResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.updateStockCalls = append(m.updateStockCalls, req)
-	m.updateStockAuth = append(m.updateStockAuth, authCallSnapshot{
+	m.restockCalls = append(m.restockCalls, req)
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.restockAuth = append(m.restockAuth, authCallSnapshot{
 		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
 		rawToken: auth.RawTokenFromContext(ctx),
 	})
-	if sku, ok := m.skus[req.GetSkuId()]; ok {
-		sku.Stock = req.GetNewStock()
-		sku.AvailableStock = req.GetNewStock()
-		sku.Version++
-		return &productv1.UpdateStockResponse{Sku: sku}, nil
+	if m.restockErr != nil {
+		return nil, m.restockErr
 	}
-	return nil, status.Error(codes.NotFound, "sku not found")
+	for _, it := range req.GetItems() {
+		if sku, ok := m.skus[it.GetSkuId()]; ok {
+			sku.Stock += it.GetQuantity()
+			sku.AvailableStock += it.GetQuantity()
+			sku.Version++
+		}
+	}
+	return &productv1.RestockOrderItemsResponse{Restocked: true}, nil
 }
 
 func (m *mockProductClient) ReserveStock(_ context.Context, req *productv1.ReserveStockRequest, _ ...grpc.CallOption) (*productv1.ReserveStockResponse, error) {
@@ -241,6 +253,9 @@ func (m *mockProductClient) ReleaseStock(_ context.Context, req *productv1.Relea
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.releaseCalls = append(m.releaseCalls, req.GetOrderId())
+	if m.onRelease != nil {
+		m.onRelease(req.GetOrderId())
+	}
 	if m.releaseErr != nil {
 		return nil, m.releaseErr
 	}
@@ -298,10 +313,12 @@ func (m *mockCartClient) ClearItems(_ context.Context, req *cartv1.ClearItemsReq
 type mockPromotionClient struct {
 	mu           sync.Mutex
 	reserveErr   error
+	releaseErr   error
 	breakdown    *promotionv1.DiscountBreakdown
 	flashSales   []*promotionv1.FlashSale
 	reserveCalls []string
 	releaseCalls []string
+	onRelease    func(orderID string)
 }
 
 func (m *mockPromotionClient) ListActiveFlashSales(_ context.Context, _ *promotionv1.ListActiveFlashSalesRequest, _ ...grpc.CallOption) (*promotionv1.ListActiveFlashSalesResponse, error) {
@@ -333,6 +350,12 @@ func (m *mockPromotionClient) ReleasePromotion(_ context.Context, req *promotion
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.releaseCalls = append(m.releaseCalls, req.GetOrderId())
+	if m.onRelease != nil {
+		m.onRelease(req.GetOrderId())
+	}
+	if m.releaseErr != nil {
+		return nil, m.releaseErr
+	}
 	return &promotionv1.ReleasePromotionResponse{Released: true}, nil
 }
 
@@ -1172,8 +1195,12 @@ func TestCancelConfirmedPaidOrder_TriggersRefundAndRestock(t *testing.T) {
 	if len(h.payment.refundCalls) != 1 || h.payment.refundCalls[0].AmountVnd != resp.Orders[0].TotalPayableVnd {
 		t.Fatalf("expected refund call for %d VND, got %+v", resp.Orders[0].TotalPayableVnd, h.payment.refundCalls)
 	}
-	if len(h.product.updateStockCalls) != 1 || h.product.updateStockCalls[0].NewStock != 52 {
-		t.Fatalf("expected UpdateStock restock to 52, got %+v", h.product.updateStockCalls)
+	if len(h.product.restockCalls) != 1 {
+		t.Fatalf("expected 1 RestockOrderItems call, got %+v", h.product.restockCalls)
+	}
+	rst := h.product.restockCalls[0]
+	if rst.GetOrderId() != orderID || len(rst.GetItems()) != 1 || rst.GetItems()[0].GetSkuId() != "sku-1" || rst.GetItems()[0].GetQuantity() != 2 {
+		t.Fatalf("unexpected RestockOrderItems request: %+v (want order_id=%s sku-1 x2)", rst, orderID)
 	}
 }
 
@@ -1235,8 +1262,12 @@ func TestRequestReturnAndShipmentReturned_RestocksAndRefunds(t *testing.T) {
 	if len(h.payment.refundCalls) != 1 {
 		t.Fatalf("expected 1 refund call on returned paid order, got %d", len(h.payment.refundCalls))
 	}
-	if len(h.product.updateStockCalls) != 1 {
-		t.Fatalf("expected 1 restock call on returned order, got %d", len(h.product.updateStockCalls))
+	if len(h.product.restockCalls) != 1 {
+		t.Fatalf("expected 1 RestockOrderItems call on returned order, got %d", len(h.product.restockCalls))
+	}
+	rst := h.product.restockCalls[0]
+	if rst.GetOrderId() != orderID || len(rst.GetItems()) != 1 || rst.GetItems()[0].GetSkuId() != "sku-1" || rst.GetItems()[0].GetQuantity() != 1 {
+		t.Fatalf("unexpected RestockOrderItems request on returned order: %+v (want order_id=%s sku-1 x1)", rst, orderID)
 	}
 }
 
@@ -1608,7 +1639,7 @@ func TestInternalAdminCalls_StripBuyerJWTForPickupAddressAndRestock(t *testing.T
 		t.Fatalf("expected CalculateFee from_province_code=01, got %+v", h.shipping.calculateFeeReqs)
 	}
 
-	// Buyer cancels the CONFIRMED COD order -> triggers restockOrderItems -> ProductService.UpdateStock.
+	// Buyer cancels the CONFIRMED COD order -> triggers restockOrderItems -> ProductService.RestockOrderItems.
 	if _, err := h.svc.CancelOrder(buyerCtx, &orderv1.CancelOrderRequest{
 		OrderId: resp.Orders[0].Id,
 		Reason:  "buyer changed mind",
@@ -1616,11 +1647,11 @@ func TestInternalAdminCalls_StripBuyerJWTForPickupAddressAndRestock(t *testing.T
 		t.Fatalf("CancelOrder failed: %v", err)
 	}
 
-	if len(h.product.updateStockAuth) != 1 {
-		t.Fatalf("expected 1 UpdateStock restock call, got %d", len(h.product.updateStockAuth))
+	if len(h.product.restockAuth) != 1 {
+		t.Fatalf("expected 1 RestockOrderItems call, got %d", len(h.product.restockAuth))
 	}
-	if got := h.product.updateStockAuth[0]; got.role != "admin" || got.rawToken != "" {
-		t.Fatalf("restock UpdateStock must use internal admin without raw buyer JWT, got %+v", got)
+	if got := h.product.restockAuth[0]; got.role != "admin" || got.service != clients.InternalServiceName || got.rawToken != "" {
+		t.Fatalf("RestockOrderItems must use internal service context without raw buyer JWT, got %+v", got)
 	}
 }
 
@@ -1666,5 +1697,64 @@ func TestPaymentRefundedEvent_GroupLevelFallbackUpdatesAllSubOrders(t *testing.T
 		if len(got.Order.Timeline) != 2 {
 			t.Fatalf("order %s expected 2 timeline events (create + 1 refund), got %d", o.Id, len(got.Order.Timeline))
 		}
+	}
+}
+
+func TestCancelConfirmedOrder_WithActiveSibling_RestocksSubOrderOnly(t *testing.T) {
+	h := newTestHarness()
+	buyerCtx := auth.WithRawToken(ctxWithUser("buyer-1", "buyer", ""), "Bearer buyer-jwt")
+
+	// Multi-shop COD checkout produces 2 CONFIRMED sub-orders (shop-1: sku-1 x1, shop-2: sku-2 x2).
+	resp, err := h.svc.CreateCheckout(buyerCtx, &orderv1.CreateCheckoutRequest{
+		IdempotencyKey: "idem-cancel-sibling-1",
+		BuyerId:        "buyer-1",
+		AddressId:      "addr-buyer-1",
+		FromCart:       true,
+		PaymentMethod:  orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD,
+	})
+	if err != nil || len(resp.Orders) != 2 {
+		t.Fatalf("expected 2 CONFIRMED sub-orders, got %+v err=%v", resp, err)
+	}
+
+	var shop1Order, shop2Order *orderv1.Order
+	for _, o := range resp.Orders {
+		if o.ShopId == "shop-1" {
+			shop1Order = o
+		} else if o.ShopId == "shop-2" {
+			shop2Order = o
+		}
+	}
+	if shop1Order == nil || shop2Order == nil {
+		t.Fatalf("expected both shop-1 and shop-2 orders")
+	}
+
+	// Cancel only shop-2's sub-order while shop-1 remains CONFIRMED.
+	cancelResp, err := h.svc.CancelOrder(buyerCtx, &orderv1.CancelOrderRequest{
+		OrderId: shop2Order.Id,
+		Reason:  "cancel shop-2 item only",
+	})
+	if err != nil || cancelResp.Order.Status != orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+		t.Fatalf("CancelOrder failed: %v (resp=%+v)", err, cancelResp)
+	}
+
+	// Group-level ReleaseStock / ReleasePromotion must NOT be called because shop-1 is still active.
+	if len(h.product.releaseCalls) != 0 || len(h.promo.releaseCalls) != 0 {
+		t.Fatalf("active sibling exists: expected no group release calls, got stock=%v promo=%v",
+			h.product.releaseCalls, h.promo.releaseCalls)
+	}
+
+	// RestockOrderItems must be called once with shop-2's sub-order ID and exact items (sku-2 x2).
+	if len(h.product.restockCalls) != 1 {
+		t.Fatalf("expected 1 RestockOrderItems call, got %d", len(h.product.restockCalls))
+	}
+	rst := h.product.restockCalls[0]
+	if rst.GetOrderId() != shop2Order.Id {
+		t.Fatalf("RestockOrderItems order_id = %q, want sub-order id %q", rst.GetOrderId(), shop2Order.Id)
+	}
+	if len(rst.GetItems()) != 1 || rst.GetItems()[0].GetSkuId() != "sku-2" || rst.GetItems()[0].GetQuantity() != 2 {
+		t.Fatalf("unexpected RestockOrderItems items: %+v", rst.GetItems())
+	}
+	if got := h.product.restockAuth[0]; got.service != clients.InternalServiceName || got.rawToken != "" {
+		t.Fatalf("expected internal service token context for RestockOrderItems, got %+v", got)
 	}
 }

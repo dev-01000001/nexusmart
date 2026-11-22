@@ -328,6 +328,7 @@ Every message published to `NEXUSMART` MUST use this exact JSON envelope:
    - On `payment.failed` or `payment.expired`: transition sub-orders `PENDING -> CANCELLED`, call `ProductService.ReleaseStock(checkout_group_id)` and `PromotionService.ReleasePromotion(checkout_group_id)`, write `order.cancelled` outbox event.
    - On `payment.succeeded`: transition sub-orders `PENDING -> CONFIRMED`, call `ProductService.ConfirmStock(checkout_group_id)`, write `order.confirmed` outbox event.
    - On `BuyerConfirmReceived` (`DELIVERED -> COMPLETED`): call `PaymentService.ReleaseEscrow(order_id)` (or emit `order.completed`), credit reward coins via `PromotionService.CreditCoins` (idempotent by `order_id`).
+   - On cancellation of a `CONFIRMED`/`PREPARING` sub-order (after stock confirmation or when active sibling sub-orders remain) or `shipment.updated=returned`: call internal gRPC `ProductService.RestockOrderItems(order_id=sub_order_id, items)` (service-token or admin only, not exposed over REST; atomic stock increment, idempotent per `(order_id, sku_id)` via `stock_history`).
 
 ---
 

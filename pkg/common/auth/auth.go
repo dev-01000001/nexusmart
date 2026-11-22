@@ -38,6 +38,7 @@ var internalRPCs = map[string]bool{
 	"/nexusmart.user.v1.UserService/GetProfile":                 true,
 	"/nexusmart.product.v1.ProductService/ReleaseStock":         true,
 	"/nexusmart.product.v1.ProductService/ConfirmStock":         true,
+	"/nexusmart.product.v1.ProductService/RestockOrderItems":    true,
 	"/nexusmart.product.v1.ProductService/ReserveStock":         false,
 	"/nexusmart.promotion.v1.PromotionService/ReleasePromotion": true,
 	"/nexusmart.promotion.v1.PromotionService/ReservePromotion": false,

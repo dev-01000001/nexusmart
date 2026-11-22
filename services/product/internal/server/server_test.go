@@ -821,3 +821,152 @@ func TestProductUpdateRejectAndOutOfStockTransitions(t *testing.T) {
 		t.Fatalf("expected product restored to APPROVED after restock, got %+v err=%v", got2, err)
 	}
 }
+
+func TestRestockOrderItems_IdempotentAuthAndOutOfStockRecovery(t *testing.T) {
+	st := store.NewMemoryStore()
+	srv := New(st, nil)
+
+	adminCtx := ctxWithRole("admin-1", "admin", "")
+	sellerCtx := ctxWithRole("seller-1", "seller", "shop-1")
+	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
+	serviceCtx := auth.WithClaims(context.Background(), &auth.Claims{
+		Role:    auth.ServiceRole,
+		Service: "order-service",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject: "order-service",
+		},
+	})
+
+	_, prod := setupApprovedProduct(t, srv, "shop-1", []*productv1.SKUInput{
+		{SkuCode: "RST-A", Name: "A", PriceVnd: 100000, Stock: 3, WeightGrams: 100},
+		{SkuCode: "RST-B", Name: "B", PriceVnd: 200000, Stock: 2, WeightGrams: 100},
+	})
+	prodID := prod.Id
+	skuA := prod.Skus[0].Id
+	skuB := prod.Skus[1].Id
+
+	// Drain all stock -> both SKUs and product become OUT_OF_STOCK.
+	if _, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+		OrderId: "grp-drain",
+		Items: []*productv1.StockReservationItem{
+			{SkuId: skuA, Quantity: 3},
+			{SkuId: skuB, Quantity: 2},
+		},
+	}); err != nil {
+		t.Fatalf("ReserveStock: %v", err)
+	}
+	if _, err := srv.ConfirmStock(context.Background(), &productv1.ConfirmStockRequest{OrderId: "grp-drain"}); err != nil {
+		t.Fatalf("ConfirmStock: %v", err)
+	}
+	drainedProd, err := srv.GetProduct(context.Background(), &productv1.GetProductRequest{Id: prodID})
+	if err != nil || drainedProd.Product.Status != productv1.ProductStatus_PRODUCT_STATUS_OUT_OF_STOCK {
+		t.Fatalf("expected product OUT_OF_STOCK, got %+v err=%v", drainedProd, err)
+	}
+
+	// Auth checks: anonymous -> Unauthenticated; seller/buyer -> PermissionDenied.
+	req := &productv1.RestockOrderItemsRequest{
+		OrderId: "sub-order-1",
+		Items: []*productv1.StockReservationItem{
+			{SkuId: skuB, Quantity: 1},
+			{SkuId: skuA, Quantity: 2},
+			{SkuId: skuA, Quantity: 1}, // duplicate SKU should merge to qty 3
+		},
+	}
+	if _, err := srv.RestockOrderItems(context.Background(), req); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("anonymous RestockOrderItems: want Unauthenticated, got %v", err)
+	}
+	if _, err := srv.RestockOrderItems(sellerCtx, req); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("seller RestockOrderItems: want PermissionDenied, got %v", err)
+	}
+	if _, err := srv.RestockOrderItems(buyerCtx, req); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("buyer RestockOrderItems: want PermissionDenied, got %v", err)
+	}
+
+	// Validation checks.
+	if _, err := srv.RestockOrderItems(serviceCtx, &productv1.RestockOrderItemsRequest{
+		OrderId: "",
+		Items:   []*productv1.StockReservationItem{{SkuId: skuA, Quantity: 1}},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty order_id: want InvalidArgument, got %v", err)
+	}
+	if _, err := srv.RestockOrderItems(serviceCtx, &productv1.RestockOrderItemsRequest{
+		OrderId: "sub-order-invalid",
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty items: want InvalidArgument, got %v", err)
+	}
+	if _, err := srv.RestockOrderItems(serviceCtx, &productv1.RestockOrderItemsRequest{
+		OrderId: "sub-order-invalid",
+		Items:   []*productv1.StockReservationItem{{SkuId: skuA, Quantity: 0}},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("zero quantity: want InvalidArgument, got %v", err)
+	}
+
+	// First restock with service token succeeds, increments stock atomically, and restores OUT_OF_STOCK -> APPROVED/ACTIVE.
+	resp1, err := srv.RestockOrderItems(serviceCtx, req)
+	if err != nil || !resp1.Restocked || resp1.AlreadyRestocked {
+		t.Fatalf("first RestockOrderItems: resp=%+v err=%v", resp1, err)
+	}
+
+	skA, err := st.GetSKUWithContext(context.Background(), skuA)
+	if err != nil {
+		t.Fatalf("GetSKUWithContext(A): %v", err)
+	}
+	skB, err := st.GetSKUWithContext(context.Background(), skuB)
+	if err != nil {
+		t.Fatalf("GetSKUWithContext(B): %v", err)
+	}
+	if skA.Stock != 3 || skA.Status != store.SKUStatusActive {
+		t.Fatalf("SKU-A after restock: stock=%d status=%s, want stock=3 status=ACTIVE", skA.Stock, skA.Status)
+	}
+	if skB.Stock != 1 || skB.Status != store.SKUStatusActive {
+		t.Fatalf("SKU-B after restock: stock=%d status=%s, want stock=1 status=ACTIVE", skB.Stock, skB.Status)
+	}
+	restoredProd, err := srv.GetProduct(context.Background(), &productv1.GetProductRequest{Id: prodID})
+	if err != nil || restoredProd.Product.Status != productv1.ProductStatus_PRODUCT_STATUS_APPROVED {
+		t.Fatalf("expected product restored to APPROVED, got %+v err=%v", restoredProd, err)
+	}
+
+	// Repeat call with the SAME order_id is strictly idempotent: already_restocked=true, stock unchanged.
+	resp2, err := srv.RestockOrderItems(serviceCtx, req)
+	if err != nil || !resp2.Restocked || !resp2.AlreadyRestocked {
+		t.Fatalf("duplicate RestockOrderItems: resp=%+v err=%v", resp2, err)
+	}
+	skA2, _ := st.GetSKUWithContext(context.Background(), skuA)
+	skB2, _ := st.GetSKUWithContext(context.Background(), skuB)
+	if skA2.Stock != 3 || skB2.Stock != 1 {
+		t.Fatalf("duplicate RestockOrderItems must not double-add stock: A=%d B=%d", skA2.Stock, skB2.Stock)
+	}
+
+	// Verify stock_history recorded exactly 2 RESTOCK rows for sub-order-1 with accurate before/after values.
+	restockRows := 0
+	for _, h := range st.StockHistory() {
+		if h.ChangeType == "RESTOCK" && h.OrderID == "sub-order-1" {
+			restockRows++
+			if h.ActorID != "order-service" {
+				t.Fatalf("expected ActorID=order-service, got %q", h.ActorID)
+			}
+			if h.SKUID == skuA && (h.StockBefore != 0 || h.StockAfter != 3 || h.Delta != 3) {
+				t.Fatalf("unexpected RESTOCK history for SKU-A: %+v", h)
+			}
+			if h.SKUID == skuB && (h.StockBefore != 0 || h.StockAfter != 1 || h.Delta != 1) {
+				t.Fatalf("unexpected RESTOCK history for SKU-B: %+v", h)
+			}
+		}
+	}
+	if restockRows != 2 {
+		t.Fatalf("expected exactly 2 RESTOCK history entries, got %d", restockRows)
+	}
+
+	// Admin caller with a different order_id is also allowed and adds stock.
+	resp3, err := srv.RestockOrderItems(adminCtx, &productv1.RestockOrderItemsRequest{
+		OrderId: "sub-order-2",
+		Items:   []*productv1.StockReservationItem{{SkuId: skuB, Quantity: 2}},
+	})
+	if err != nil || !resp3.Restocked || resp3.AlreadyRestocked {
+		t.Fatalf("admin RestockOrderItems: resp=%+v err=%v", resp3, err)
+	}
+	skB3, _ := st.GetSKUWithContext(context.Background(), skuB)
+	if skB3.Stock != 3 {
+		t.Fatalf("SKU-B after admin restock: stock=%d, want 3", skB3.Stock)
+	}
+}
