@@ -213,7 +213,7 @@ replace (
 | --- | --- | --- | --- |
 | `GET /api/v1/payments/{id}` | Buyer owner / Admin | — | `200` `{"payment":{...}}` |
 | `POST /api/v1/payments/{id}/retry` | Buyer owner | `{"method":"COD"\|"VIETQR"}` | `200` `{"payment":{...}}` (cancels superseded pending intent, UC-B25) |
-| `GET /api/v1/payments/{id}/events` | Buyer owner / Seller (shop allocation) / Admin — `payment:8086/payments/{id}/events` verifies end-user JWT and payment read access directly (`401`/`403`/`404`; service tokens rejected with `403`); gateway also checks ownership before proxying | — | `text/event-stream` (`payment.pending` / `payment.succeeded` / `payment.expired` / `payment.failed` / `payment.refunded`) |
+| `GET /api/v1/payments/{id}/events` | Buyer owner / Admin — gateway checks payment owner before proxying; `payment:8086/payments/{id}/events` verifies end-user JWT and read access directly (`401`/`403`/`404`; service tokens rejected with `403`; direct calls also allow sellers with a shop allocation) | — | `text/event-stream` (`payment.pending` / `payment.succeeded` / `payment.expired` / `payment.failed` / `payment.refunded`) |
 | `GET /api/v1/seller/balance` | `seller` | — | `200` `{"shop_id","pending_vnd","available_vnd","total_earned_vnd"}` |
 | `GET /api/v1/admin/ledger/summary` | `admin`, `super_admin` | — | `200` `{"total_debits_vnd","total_credits_vnd","is_balanced":true,"accounts":[...]}` |
 | `POST /api/v1/admin/payments/{id}/refund` | `admin`, `super_admin` + `Idempotency-Key` | `{"order_id","amount_vnd","reason"}` | `200` `{"refund":{...},"already_existed":false}` |
