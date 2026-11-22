@@ -16,6 +16,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::auth::{require_payment_read_access, Caller, GrpcAuth};
 use crate::error::PaymentError;
 use crate::metrics::red_metrics_middleware;
 use crate::service::PaymentService;
@@ -25,11 +26,12 @@ use crate::webhook_security::{verify_webhook_request, IncomingWebhookPayload};
 #[derive(Clone)]
 pub struct HttpState {
     pub service: PaymentService,
+    pub auth: GrpcAuth,
 }
 
-pub fn build_router(service: PaymentService) -> Router {
+pub fn build_router(service: PaymentService, auth: GrpcAuth) -> Router {
     let metrics = service.metrics().clone();
-    let state = HttpState { service };
+    let state = HttpState { service, auth };
 
     Router::new()
         .route("/healthz", get(healthz))
@@ -162,39 +164,41 @@ async fn process_webhook_http(
 /// Server-Sent Events stream for checkout payment status updates (UC-PAY01).
 async fn payment_events_sse(
     State(state): State<HttpState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let parsed_uuid = Uuid::parse_str(&id).ok();
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, PaymentError> {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    let caller = state
+        .auth
+        .authenticate_header(auth_header, "PaymentEventsSse")?;
 
-    let initial_payment = if let Some(pid) = parsed_uuid {
-        state.service.get_payment(Some(pid), None, None).await.ok()
+    let parsed_uuid = Uuid::parse_str(&id).ok();
+    let pwa = if let Some(pid) = parsed_uuid {
+        state.service.get_payment(Some(pid), None, None).await?
     } else {
         state
             .service
             .get_payment(None, Some(&id), Some(&id))
-            .await
-            .ok()
+            .await?
     };
 
-    let initial_event = match initial_payment {
-        Some(pwa) => {
-            let p = pwa.payment;
-            let event_name = status_to_sse_event_name(&p.status);
-            let data = json!({
-                "payment_id": p.id,
-                "order_group_id": p.order_group_id,
-                "order_id": p.order_id,
-                "status": p.status,
-                "amount_vnd": p.amount_vnd,
-                "provider_tx_id": p.provider_tx_id,
-                "updated_at": p.updated_at,
-            });
-            Event::default().event(event_name).data(data.to_string())
-        }
-        None => Event::default()
-            .event("payment.status")
-            .data(json!({ "id": id, "status": "unknown" }).to_string()),
-    };
+    require_payment_read_access(&caller, &pwa)?;
+
+    let p = pwa.payment;
+    let payment_id = p.id;
+    let event_name = status_to_sse_event_name(&p.status);
+    let data = json!({
+        "payment_id": p.id,
+        "order_group_id": p.order_group_id,
+        "order_id": p.order_id,
+        "status": p.status,
+        "amount_vnd": p.amount_vnd,
+        "provider_tx_id": p.provider_tx_id,
+        "updated_at": p.updated_at,
+    });
+    let initial_event = Event::default().event(event_name).data(data.to_string());
 
     let rx = state.service.subscribe_sse();
     let filter_id = id.clone();
@@ -204,10 +208,10 @@ async fn payment_events_sse(
         async move {
             match msg {
                 Ok(evt) => {
-                    let matches_uuid = parsed_uuid.is_some_and(|u| u == evt.payment_id);
+                    let matches_payment = evt.payment_id == payment_id;
                     let matches_order =
                         evt.order_id == filter_id || evt.order_group_id == filter_id;
-                    if matches_uuid || matches_order {
+                    if matches_payment || matches_order {
                         let event_name = status_to_sse_event_name(&evt.status);
                         let data = serde_json::to_string(&evt).unwrap_or_default();
                         Some(Ok::<Event, Infallible>(
@@ -222,16 +226,20 @@ async fn payment_events_sse(
         }
     });
 
-    info!(payment_ref = %id, "client subscribed to payment status SSE");
+    info!(
+        payment_ref = %id,
+        user_id = %caller.user_id,
+        "client subscribed to payment status SSE"
+    );
 
     let combined =
         stream::once(async move { Ok::<Event, Infallible>(initial_event) }).chain(live_stream);
 
-    Sse::new(combined).keep_alive(
+    Ok(Sse::new(combined).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
-    )
+    ))
 }
 
 fn status_to_sse_event_name(status: &str) -> &'static str {
@@ -244,23 +252,50 @@ fn status_to_sse_event_name(status: &str) -> &'static str {
     }
 }
 
+fn require_admin(
+    state: &HttpState,
+    headers: &HeaderMap,
+    method: &str,
+) -> Result<Caller, PaymentError> {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    let caller = state.auth.authenticate_header(auth_header, method)?;
+    if !caller.is_admin() {
+        return Err(PaymentError::Forbidden(format!(
+            "{method} requires admin role"
+        )));
+    }
+    Ok(caller)
+}
+
 async fn internal_ledger_summary(
     State(state): State<HttpState>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, PaymentError> {
+    require_admin(&state, &headers, "InternalLedgerSummary")?;
     let summary = state.service.get_ledger_summary().await?;
     Ok((StatusCode::OK, Json(summary)))
 }
 
 async fn internal_reconciliation_queue(
     State(state): State<HttpState>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, PaymentError> {
+    require_admin(&state, &headers, "InternalReconciliationQueue")?;
     let items = state.service.list_reconciliation_queue().await?;
     Ok((StatusCode::OK, Json(json!({ "items": items }))))
 }
 
 async fn internal_reconciliation_run(
     State(state): State<HttpState>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, PaymentError> {
+    let caller = require_admin(&state, &headers, "InternalReconciliationRun")?;
+    info!(
+        user_id = %caller.user_id,
+        "admin triggered payment reconciliation"
+    );
     let today = Utc::now().date_naive();
     let report = state.service.run_reconciliation(today).await?;
     Ok((StatusCode::OK, Json(report)))
@@ -273,7 +308,8 @@ fn header_str<'a>(headers: &'a HeaderMap, key: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::auth::sign_hs256;
+    use crate::config::{Config, VietQrMode};
     use crate::metrics::Metrics;
     use crate::webhook_security::compute_hmac_hex;
     use axum::body::Body;
@@ -282,14 +318,220 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
     use tower::ServiceExt;
 
+    const TEST_USER_JWT_SECRET: &str = "http-unit-test-user-jwt-secret";
+    const TEST_SERVICE_JWT_SECRET: &str = "http-unit-test-service-jwt-secret";
+
     fn test_router() -> (Router, Config) {
         let mut cfg = Config::from_env();
         cfg.webhook_secret = "unit-test-secret".to_string();
+        cfg.vietqr_mode = VietQrMode::Mock;
+        cfg.database_url = "postgres://unit:unit@127.0.0.1:1/unit_test_db".to_string();
         let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(200))
             .connect_lazy(&cfg.database_url)
             .expect("lazy pool");
         let svc = PaymentService::new(pool, cfg.clone(), Metrics::new());
-        (build_router(svc), cfg)
+        let auth =
+            GrpcAuth::new(TEST_USER_JWT_SECRET, TEST_SERVICE_JWT_SECRET).expect("test GrpcAuth");
+        (build_router(svc, auth), cfg)
+    }
+
+    #[tokio::test]
+    async fn test_internal_routes_require_admin_jwt() {
+        let (app, _) = test_router();
+        let now = Utc::now().timestamp();
+
+        let buyer_tok = sign_hs256(
+            TEST_USER_JWT_SECRET,
+            json!({"sub": "buyer-1", "role": "buyer", "exp": now + 60}),
+        );
+        let seller_tok = sign_hs256(
+            TEST_USER_JWT_SECRET,
+            json!({"sub": "seller-1", "role": "seller", "shop_id": "shop-1", "exp": now + 60}),
+        );
+        let expired_admin_tok = sign_hs256(
+            TEST_USER_JWT_SECRET,
+            json!({"sub": "admin-1", "role": "admin", "exp": now - 60}),
+        );
+        let svc_tok = sign_hs256(
+            TEST_SERVICE_JWT_SECRET,
+            json!({"sub": "order-service", "role": "admin", "service": "order-service", "exp": now + 60}),
+        );
+        let admin_tok = sign_hs256(
+            TEST_USER_JWT_SECRET,
+            json!({"sub": "admin-1", "role": "admin", "exp": now + 60}),
+        );
+        let super_admin_tok = sign_hs256(
+            TEST_USER_JWT_SECRET,
+            json!({"sub": "sadmin-1", "role": "super_admin", "exp": now + 60}),
+        );
+
+        let routes = [
+            (Method::GET, "/internal/ledger/summary"),
+            (Method::GET, "/internal/reconciliation/queue"),
+            (Method::POST, "/internal/reconciliation/run"),
+        ];
+
+        for (method, path) in routes {
+            // Missing Authorization header (even with spoofed x-user-role) -> 401
+            let resp_no_tok = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(path)
+                        .header("x-user-role", "admin")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp_no_tok.status(), StatusCode::UNAUTHORIZED, "{path}");
+
+            // Expired admin JWT -> 401
+            let resp_expired = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(path)
+                        .header(header::AUTHORIZATION, format!("Bearer {expired_admin_tok}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp_expired.status(), StatusCode::UNAUTHORIZED, "{path}");
+
+            // Valid buyer / seller JWT -> 403
+            for (role, tok) in [("buyer", &buyer_tok), ("seller", &seller_tok)] {
+                let resp = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method.clone())
+                            .uri(path)
+                            .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{path} role={role}");
+            }
+
+            // Valid service token -> 403
+            let resp_svc = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(path)
+                        .header(header::AUTHORIZATION, format!("Bearer {svc_tok}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp_svc.status(), StatusCode::FORBIDDEN, "{path} service");
+
+            // Valid admin & super_admin JWT -> passes auth (hits lazy DB -> not 401/403)
+            for (role, tok) in [("admin", &admin_tok), ("super_admin", &super_admin_tok)] {
+                let resp = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method.clone())
+                            .uri(path)
+                            .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_ne!(
+                    resp.status(),
+                    StatusCode::UNAUTHORIZED,
+                    "{path} role={role}"
+                );
+                assert_ne!(resp.status(), StatusCode::FORBIDDEN, "{path} role={role}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sse_rejects_missing_invalid_expired_garbage_and_service_tokens() {
+        let (app, _) = test_router();
+        let uri = format!("/payments/{}/events", Uuid::new_v4());
+        let now = Utc::now().timestamp();
+
+        // Missing Authorization header (even with spoofed x-user-* headers) -> 401
+        let resp_missing = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&uri)
+                    .header("x-user-id", "attacker")
+                    .header("x-user-role", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp_missing.status(), StatusCode::UNAUTHORIZED);
+
+        // Wrong signing key -> 401
+        let wrong_key_tok = sign_hs256(
+            "wrong-signing-key",
+            json!({"sub": "buyer-1", "role": "buyer", "exp": now + 60}),
+        );
+        // Expired user JWT -> 401
+        let expired_tok = sign_hs256(
+            TEST_USER_JWT_SECRET,
+            json!({"sub": "buyer-1", "role": "buyer", "exp": now - 60}),
+        );
+        // Garbage token -> 401
+        for (case, auth_val) in [
+            ("wrong key", format!("Bearer {wrong_key_tok}")),
+            ("expired", format!("Bearer {expired_tok}")),
+            ("garbage", "Bearer not-a-valid.jwt.token".to_string()),
+            ("non-bearer", "Basic dXNlcjpwYXNz".to_string()),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(&uri)
+                        .header(header::AUTHORIZATION, auth_val)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "case={case}");
+        }
+
+        // Valid internal service token -> 403 (PaymentEventsSse is not in SERVICE_METHODS)
+        let svc_tok = sign_hs256(
+            TEST_SERVICE_JWT_SECRET,
+            json!({
+                "sub": "order-service",
+                "role": "admin",
+                "service": "order-service",
+                "exp": now + 60,
+            }),
+        );
+        let resp_svc = app
+            .oneshot(
+                Request::builder()
+                    .uri(&uri)
+                    .header(header::AUTHORIZATION, format!("Bearer {svc_tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp_svc.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

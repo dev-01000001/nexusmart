@@ -113,7 +113,7 @@ replace (
   "total": 42
 }
 ```
-- **RBAC Defense-in-Depth**: Gateway validates JWT + route role AND forwards `Authorization` + `x-user-id` / `x-user-role` / `x-shop-id` in gRPC metadata. Every backend service MUST re-verify object-level ownership (e.g., buyer can only read/cancel their own order; seller can only mutate their own `shop_id`'s products/orders; admin cannot lock self or last admin).
+- **RBAC Defense-in-Depth**: Gateway validates JWT + route role and forwards **only** `Authorization: Bearer <token>` in gRPC metadata (plain `x-user-id` / `x-user-role` / `x-shop-id` metadata is ignored). Every backend service re-verifies the signed JWT on incoming gRPC calls and enforces object-level ownership (e.g., buyer can only read/cancel their own order; seller can only mutate their own `shop_id`'s products/orders; admin cannot lock self or last admin). Internal service-to-service calls without an end user (saga compensation, background jobs, consumers) use short-lived HS256 service tokens signed by `SERVICE_JWT_SECRET`, accepted only on allowlisted RPCs (`internalRPCs` in `pkg/common/auth/auth.go` for Go services; `SERVICE_METHODS` in `services/payment/src/auth.rs` for `payment`).
 
 ---
 
@@ -213,11 +213,13 @@ replace (
 | --- | --- | --- | --- |
 | `GET /api/v1/payments/{id}` | Buyer owner / Admin | — | `200` `{"payment":{...}}` |
 | `POST /api/v1/payments/{id}/retry` | Buyer owner | `{"method":"COD"\|"VIETQR"}` | `200` `{"payment":{...}}` (cancels superseded pending intent, UC-B25) |
-| `GET /api/v1/payments/{id}/events` | Any authenticated (proxied SSE to `payment:8086/payments/{id}/events`) | — | `text/event-stream` (`payment.succeeded` / `payment.expired` / `payment.failed`) |
+| `GET /api/v1/payments/{id}/events` | Buyer owner / Admin — gateway checks payment owner before proxying; `payment:8086/payments/{id}/events` verifies end-user JWT and read access directly (`401`/`403`/`404`; service tokens rejected with `403`; direct calls also allow sellers with a shop allocation) | — | `text/event-stream` (`payment.pending` / `payment.succeeded` / `payment.expired` / `payment.failed` / `payment.refunded`) |
 | `GET /api/v1/seller/balance` | `seller` | — | `200` `{"shop_id","pending_vnd","available_vnd","total_earned_vnd"}` |
 | `GET /api/v1/admin/ledger/summary` | `admin`, `super_admin` | — | `200` `{"total_debits_vnd","total_credits_vnd","is_balanced":true,"accounts":[...]}` |
 | `POST /api/v1/admin/payments/{id}/refund` | `admin`, `super_admin` + `Idempotency-Key` | `{"order_id","amount_vnd","reason"}` | `200` `{"refund":{...},"already_existed":false}` |
 | `POST /api/v1/admin/payments/reconcile` | `admin`, `super_admin` | `{"date":"2026-11-20"}` | `200` `{"run_id","matched_count","missing_local_count","missing_provider_count","amount_mismatch_count","items":[...]}` |
+
+- Direct HTTP routes on `payment:8086` under `/internal/*` (`GET /internal/ledger/summary`, `GET /internal/reconciliation/queue`, `POST /internal/reconciliation/run`) are not proxied by the gateway and require an end-user `admin`/`super_admin` JWT (`401`/`403`; service tokens rejected with `403`).
 
 ### 4.7 Shipping & Administrative Addresses (`shipping` service)
 | Method & Path | Auth / RBAC | Request JSON | Response JSON |
@@ -319,8 +321,8 @@ Every message published to `NEXUSMART` MUST use this exact JSON envelope:
 - `CONFIRMED` → `PREPARING` (seller confirms), `SHIPPING` (seller ships directly), `CANCELLED` (buyer/seller cancel before pickup)
 - `PREPARING` → `SHIPPING` (seller ships / shipment picked up), `CANCELLED` (before carrier pickup)
 - `SHIPPING` → `DELIVERED` (`shipment.updated=delivered`), `RETURNED` (`shipment.updated=returned` after failed delivery)
-- `DELIVERED` → `COMPLETED` (buyer confirms received or 7d auto-complete), `RETURN_REQUESTED` (buyer requests return within 7d)
-- `RETURN_REQUESTED` → `RETURNED` (return accepted & completed), `COMPLETED` (return rejected/closed)
+- `DELIVERED` → `COMPLETED` (buyer confirms received; **7d auto-complete job is NOT YET IMPLEMENTED**), `RETURN_REQUESTED` (buyer requests return within 7d)
+- `RETURN_REQUESTED` → `RETURNED` (`shipment.updated=returned`), `COMPLETED` (allowed in state machine; **return rejection/close RPC is NOT YET IMPLEMENTED**)
 
 ### Multi-Shop Checkout Saga (`OrderService.CreateCheckout`)
 1. **Idempotency check**: Look up `(buyer_id, idempotency_key)` in `checkout_groups`. If found, immediately return the saved response (`idempotent_replay=true`).
@@ -335,11 +337,12 @@ Every message published to `NEXUSMART` MUST use this exact JSON envelope:
 7. **Create Payment**: Call `PaymentService.CreatePayment(...)` with `shop_allocations` (per-sub-order `order_id`, `shop_id`, `subtotal_vnd`, `commission_vnd`, `shipping_fee_vnd`).
    - *On failure*: mark sub-orders `CANCELLED`, compensate via `PromotionService.ReleasePromotion` and `ProductService.ReleaseStock`.
 8. **Clear Cart**: Best-effort `CartService.ClearItems(buyer_id, ordered_sku_ids)`.
-9. **Async Payment Failure / Expiry Compensation**:
+9. **Async Payment Failure / Expiry Compensation, Restock & Watchdogs**:
    - On `payment.failed` or `payment.expired`: transition sub-orders `PENDING -> CANCELLED`, call `ProductService.ReleaseStock(checkout_group_id)` and `PromotionService.ReleasePromotion(checkout_group_id)`, write `order.cancelled` outbox event.
    - On `payment.succeeded`: transition sub-orders `PENDING -> CONFIRMED`, call `ProductService.ConfirmStock(checkout_group_id)`, write `order.confirmed` outbox event.
-   - On `BuyerConfirmReceived` (`DELIVERED -> COMPLETED`): call `PaymentService.ReleaseEscrow(order_id)` (or emit `order.completed`), credit reward coins via `PromotionService.CreditCoins` (idempotent by `order_id`).
    - On cancellation of a `CONFIRMED`/`PREPARING` sub-order (after stock confirmation or when active sibling sub-orders remain) or `shipment.updated=returned`: call internal gRPC `ProductService.RestockOrderItems(order_id=sub_order_id, items)` (service-token or admin only, not exposed over REST; atomic stock increment, idempotent per `(order_id, sku_id)` via `stock_history`).
+   - On `BuyerConfirmReceived` (`DELIVERED -> COMPLETED`): write `order.completed` (carrying `coins_reward`) to the transactional outbox and call best-effort `PaymentService.ReleaseEscrow(order_id)`; `promotion` credits reward coins idempotently when consuming `order.completed` (rather than a synchronous `PromotionService.CreditCoins` RPC).
+   - **Stale `IN_PROGRESS` Checkout Group Sweep**: runs on the same `RunExpiryWatchdog` ticker as expired VietQR `PENDING` order checks (`ORDER_STALE_CHECKOUT_AFTER`, default `5m`). Sweeps `IN_PROGRESS` `checkout_groups` older than the threshold that have no persisted sub-orders, calls idempotent `PromotionService.ReleasePromotion(checkout_group_id)` then `ProductService.ReleaseStock(checkout_group_id)` under a service token (`NotFound` treated as already released), and transitions the group to `FAILED` only after both succeed (groups that already have persisted sub-orders are left untouched).
 
 ---
 

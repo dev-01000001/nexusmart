@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -1089,6 +1090,28 @@ func (s *PostgresStore) FindExpiredPendingGroups(ctx context.Context, limit int3
 		return nil, err
 	}
 	return candidates, nil
+}
+
+func (s *PostgresStore) FindStaleInProgressCheckoutGroups(ctx context.Context, olderThan time.Duration, limit int32) ([]string, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := s.queries.WithTx(tx)
+	ids, err := q.LockStaleInProgressCheckoutGroups(ctx, db.LockStaleInProgressCheckoutGroupsParams{
+		StaleAfterMs: olderThan.Milliseconds(),
+		BatchLimit:   limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 func loadOrderAggregate(ctx context.Context, q *db.Queries, orderID string) (*OrderAggregate, error) {

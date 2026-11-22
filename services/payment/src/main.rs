@@ -64,10 +64,12 @@ async fn main() -> anyhow::Result<()> {
         let _ = signal_tx.send(true);
     });
 
+    let grpc_auth = GrpcAuth::new(&config.jwt_secret, &config.service_jwt_secret)?;
+
     // HTTP server on port 8086 (Axum)
     let http_addr = SocketAddr::from(([0, 0, 0, 0], config.http_port));
     let http_listener = TcpListener::bind(http_addr).await?;
-    let http_router = build_router(service.clone());
+    let http_router = build_router(service.clone(), grpc_auth.clone());
     let mut http_shutdown = shutdown_rx.clone();
 
     let http_future = async move {
@@ -82,7 +84,6 @@ async fn main() -> anyhow::Result<()> {
 
     // gRPC server on port 50056 (Tonic)
     let grpc_addr = SocketAddr::from(([0, 0, 0, 0], config.grpc_port));
-    let grpc_auth = GrpcAuth::new(&config.jwt_secret, &config.service_jwt_secret)?;
     let grpc_service = PaymentGrpcServer::new(service, grpc_auth).into_service();
     let mut grpc_shutdown = shutdown_rx.clone();
 

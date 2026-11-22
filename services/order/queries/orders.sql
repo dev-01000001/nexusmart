@@ -37,7 +37,8 @@ UPDATE checkout_groups
 SET status = 'FAILED',
     payment_status = $2,
     updated_at = NOW()
-WHERE id = $1;
+WHERE id = $1
+  AND status = 'IN_PROGRESS';
 
 -- name: UpdateCheckoutGroupPaymentStatus :exec
 UPDATE checkout_groups
@@ -259,3 +260,15 @@ WHERE status = 'PENDING'
 ORDER BY payment_expires_at ASC
 LIMIT $1
 FOR UPDATE SKIP LOCKED;
+
+-- name: LockStaleInProgressCheckoutGroups :many
+SELECT g.id
+FROM checkout_groups g
+WHERE g.status = 'IN_PROGRESS'
+  AND g.updated_at < NOW() - (sqlc.arg(stale_after_ms)::bigint * INTERVAL '1 millisecond')
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o WHERE o.checkout_group_id = g.id
+  )
+ORDER BY g.updated_at ASC
+LIMIT sqlc.arg(batch_limit)::int
+FOR UPDATE OF g SKIP LOCKED;

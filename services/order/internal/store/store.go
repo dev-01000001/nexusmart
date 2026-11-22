@@ -203,6 +203,7 @@ type Store interface {
 	InsertDeadLetterEvent(ctx context.Context, arg db.InsertDeadLetterEventParams) error
 	ProcessPendingOutbox(ctx context.Context, limit int32, publishFn func(ctx context.Context, ev db.OutboxEvent) error) (int, error)
 	FindExpiredPendingGroups(ctx context.Context, limit int32) ([]ExpiredGroupCandidate, error)
+	FindStaleInProgressCheckoutGroups(ctx context.Context, olderThan time.Duration, limit int32) ([]string, error)
 
 	Ping(ctx context.Context) error
 }
