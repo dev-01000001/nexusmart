@@ -96,7 +96,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !VerifySignature(h.secret, rawBody, sig) {
 		h.logger.WarnContext(ctx, "rejected shipping webhook with invalid signature",
 			slog.String("carrier", carrierCode),
-			slog.String("signature", sig),
+			slog.Bool("signature_present", sig != ""),
 		)
 		h.writeError(w, r, http.StatusUnauthorized, "INVALID_SIGNATURE", "invalid or missing webhook signature")
 		return
