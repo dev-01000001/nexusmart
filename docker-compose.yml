@@ -1,4 +1,4 @@
-# All published ports except gateway bind to 127.0.0.1 only; use an SSH tunnel for remote access.
+# All published ports except gateway and web bind to 127.0.0.1 only; use an SSH tunnel for remote access.
 services:
   postgres:
     image: postgres:16-alpine
