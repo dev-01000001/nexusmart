@@ -16,6 +16,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::auth::{require_payment_read_access, GrpcAuth};
 use crate::error::PaymentError;
 use crate::metrics::red_metrics_middleware;
 use crate::service::PaymentService;
@@ -25,11 +26,12 @@ use crate::webhook_security::{verify_webhook_request, IncomingWebhookPayload};
 #[derive(Clone)]
 pub struct HttpState {
     pub service: PaymentService,
+    pub auth: GrpcAuth,
 }
 
-pub fn build_router(service: PaymentService) -> Router {
+pub fn build_router(service: PaymentService, auth: GrpcAuth) -> Router {
     let metrics = service.metrics().clone();
-    let state = HttpState { service };
+    let state = HttpState { service, auth };
 
     Router::new()
         .route("/healthz", get(healthz))
@@ -162,39 +164,41 @@ async fn process_webhook_http(
 /// Server-Sent Events stream for checkout payment status updates (UC-PAY01).
 async fn payment_events_sse(
     State(state): State<HttpState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let parsed_uuid = Uuid::parse_str(&id).ok();
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, PaymentError> {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    let caller = state
+        .auth
+        .authenticate_header(auth_header, "PaymentEventsSse")?;
 
-    let initial_payment = if let Some(pid) = parsed_uuid {
-        state.service.get_payment(Some(pid), None, None).await.ok()
+    let parsed_uuid = Uuid::parse_str(&id).ok();
+    let pwa = if let Some(pid) = parsed_uuid {
+        state.service.get_payment(Some(pid), None, None).await?
     } else {
         state
             .service
             .get_payment(None, Some(&id), Some(&id))
-            .await
-            .ok()
+            .await?
     };
 
-    let initial_event = match initial_payment {
-        Some(pwa) => {
-            let p = pwa.payment;
-            let event_name = status_to_sse_event_name(&p.status);
-            let data = json!({
-                "payment_id": p.id,
-                "order_group_id": p.order_group_id,
-                "order_id": p.order_id,
-                "status": p.status,
-                "amount_vnd": p.amount_vnd,
-                "provider_tx_id": p.provider_tx_id,
-                "updated_at": p.updated_at,
-            });
-            Event::default().event(event_name).data(data.to_string())
-        }
-        None => Event::default()
-            .event("payment.status")
-            .data(json!({ "id": id, "status": "unknown" }).to_string()),
-    };
+    require_payment_read_access(&caller, &pwa)?;
+
+    let p = pwa.payment;
+    let payment_id = p.id;
+    let event_name = status_to_sse_event_name(&p.status);
+    let data = json!({
+        "payment_id": p.id,
+        "order_group_id": p.order_group_id,
+        "order_id": p.order_id,
+        "status": p.status,
+        "amount_vnd": p.amount_vnd,
+        "provider_tx_id": p.provider_tx_id,
+        "updated_at": p.updated_at,
+    });
+    let initial_event = Event::default().event(event_name).data(data.to_string());
 
     let rx = state.service.subscribe_sse();
     let filter_id = id.clone();
@@ -204,10 +208,10 @@ async fn payment_events_sse(
         async move {
             match msg {
                 Ok(evt) => {
-                    let matches_uuid = parsed_uuid.is_some_and(|u| u == evt.payment_id);
+                    let matches_payment = evt.payment_id == payment_id;
                     let matches_order =
                         evt.order_id == filter_id || evt.order_group_id == filter_id;
-                    if matches_uuid || matches_order {
+                    if matches_payment || matches_order {
                         let event_name = status_to_sse_event_name(&evt.status);
                         let data = serde_json::to_string(&evt).unwrap_or_default();
                         Some(Ok::<Event, Infallible>(
@@ -222,16 +226,20 @@ async fn payment_events_sse(
         }
     });
 
-    info!(payment_ref = %id, "client subscribed to payment status SSE");
+    info!(
+        payment_ref = %id,
+        user_id = %caller.user_id,
+        "client subscribed to payment status SSE"
+    );
 
     let combined =
         stream::once(async move { Ok::<Event, Infallible>(initial_event) }).chain(live_stream);
 
-    Sse::new(combined).keep_alive(
+    Ok(Sse::new(combined).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
-    )
+    ))
 }
 
 fn status_to_sse_event_name(status: &str) -> &'static str {
@@ -273,6 +281,7 @@ fn header_str<'a>(headers: &'a HeaderMap, key: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::sign_hs256;
     use crate::config::Config;
     use crate::metrics::Metrics;
     use crate::webhook_security::compute_hmac_hex;
@@ -282,6 +291,9 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
     use tower::ServiceExt;
 
+    const TEST_USER_JWT_SECRET: &str = "http-unit-test-user-jwt-secret";
+    const TEST_SERVICE_JWT_SECRET: &str = "http-unit-test-service-jwt-secret";
+
     fn test_router() -> (Router, Config) {
         let mut cfg = Config::from_env();
         cfg.webhook_secret = "unit-test-secret".to_string();
@@ -289,7 +301,84 @@ mod tests {
             .connect_lazy(&cfg.database_url)
             .expect("lazy pool");
         let svc = PaymentService::new(pool, cfg.clone(), Metrics::new());
-        (build_router(svc), cfg)
+        let auth =
+            GrpcAuth::new(TEST_USER_JWT_SECRET, TEST_SERVICE_JWT_SECRET).expect("test GrpcAuth");
+        (build_router(svc, auth), cfg)
+    }
+
+    #[tokio::test]
+    async fn test_sse_rejects_missing_invalid_expired_garbage_and_service_tokens() {
+        let (app, _) = test_router();
+        let uri = format!("/payments/{}/events", Uuid::new_v4());
+        let now = Utc::now().timestamp();
+
+        // Missing Authorization header (even with spoofed x-user-* headers) -> 401
+        let resp_missing = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&uri)
+                    .header("x-user-id", "attacker")
+                    .header("x-user-role", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp_missing.status(), StatusCode::UNAUTHORIZED);
+
+        // Wrong signing key -> 401
+        let wrong_key_tok = sign_hs256(
+            "wrong-signing-key",
+            json!({"sub": "buyer-1", "role": "buyer", "exp": now + 60}),
+        );
+        // Expired user JWT -> 401
+        let expired_tok = sign_hs256(
+            TEST_USER_JWT_SECRET,
+            json!({"sub": "buyer-1", "role": "buyer", "exp": now - 60}),
+        );
+        // Garbage token -> 401
+        for (case, auth_val) in [
+            ("wrong key", format!("Bearer {wrong_key_tok}")),
+            ("expired", format!("Bearer {expired_tok}")),
+            ("garbage", "Bearer not-a-valid.jwt.token".to_string()),
+            ("non-bearer", "Basic dXNlcjpwYXNz".to_string()),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(&uri)
+                        .header(header::AUTHORIZATION, auth_val)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "case={case}");
+        }
+
+        // Valid internal service token -> 403 (PaymentEventsSse is not in SERVICE_METHODS)
+        let svc_tok = sign_hs256(
+            TEST_SERVICE_JWT_SECRET,
+            json!({
+                "sub": "order-service",
+                "role": "admin",
+                "service": "order-service",
+                "exp": now + 60,
+            }),
+        );
+        let resp_svc = app
+            .oneshot(
+                Request::builder()
+                    .uri(&uri)
+                    .header(header::AUTHORIZATION, format!("Bearer {svc_tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp_svc.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

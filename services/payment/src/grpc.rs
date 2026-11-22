@@ -5,7 +5,7 @@ use prost_types::Timestamp;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
-use crate::auth::GrpcAuth;
+use crate::auth::{require_payment_read_access, Caller, GrpcAuth};
 use crate::domain::{
     CreatePaymentInput, CreateRefundInput, PaymentMethod as DomainMethod, PaymentWithAllocations,
     ReconciliationItemRecord, RefundRecord, ShopAllocationInput,
@@ -30,9 +30,7 @@ use pb::{
 
 #[derive(Debug, Clone, Default)]
 struct CallerAuth {
-    role: String,
-    user_id: String,
-    shop_id: String,
+    caller: Caller,
 }
 
 impl CallerAuth {
@@ -43,20 +41,16 @@ impl CallerAuth {
         request: &Request<T>,
         method: &str,
     ) -> Result<Self, Status> {
-        let c = auth.authenticate(request.metadata(), method)?;
-        Ok(Self {
-            role: c.role,
-            user_id: c.user_id,
-            shop_id: c.shop_id,
-        })
+        let caller = auth.authenticate(request.metadata(), method)?;
+        Ok(Self { caller })
     }
 
     fn has_role(&self) -> bool {
-        !self.role.is_empty()
+        !self.caller.role.is_empty()
     }
 
     fn is_admin(&self) -> bool {
-        matches!(self.role.as_str(), "admin" | "super_admin")
+        self.caller.is_admin()
     }
 
     #[allow(clippy::result_large_err)]
@@ -71,28 +65,7 @@ impl CallerAuth {
 
     #[allow(clippy::result_large_err)]
     fn require_payment_read_access(&self, pwa: &PaymentWithAllocations) -> Result<(), Status> {
-        if !self.has_role() || self.is_admin() {
-            return Ok(());
-        }
-        match self.role.as_str() {
-            "buyer" => {
-                if !self.user_id.is_empty() && pwa.payment.user_id == self.user_id {
-                    return Ok(());
-                }
-            }
-            "seller" => {
-                let owns_as_buyer = !self.user_id.is_empty() && pwa.payment.user_id == self.user_id;
-                let owns_shop_alloc = !self.shop_id.is_empty()
-                    && pwa.allocations.iter().any(|a| a.shop_id == self.shop_id);
-                if owns_as_buyer || owns_shop_alloc {
-                    return Ok(());
-                }
-            }
-            _ => {}
-        }
-        Err(Status::permission_denied(
-            "forbidden: cannot access another user's payment",
-        ))
+        require_payment_read_access(&self.caller, pwa).map_err(|e| e.to_tonic_status())
     }
 
     #[allow(clippy::result_large_err)]
@@ -100,7 +73,7 @@ impl CallerAuth {
         if !self.has_role() || self.is_admin() {
             return Ok(());
         }
-        if !self.user_id.is_empty() && owner_user_id == self.user_id {
+        if !self.caller.user_id.is_empty() && owner_user_id == self.caller.user_id {
             return Ok(());
         }
         Err(Status::permission_denied(format!(
@@ -113,7 +86,10 @@ impl CallerAuth {
         if !self.has_role() || self.is_admin() {
             return Ok(());
         }
-        if self.role == "seller" && !self.shop_id.is_empty() && self.shop_id == target_shop_id {
+        if self.caller.role == "seller"
+            && !self.caller.shop_id.is_empty()
+            && self.caller.shop_id == target_shop_id
+        {
             return Ok(());
         }
         Err(Status::permission_denied(
@@ -280,7 +256,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
 
             // Defense-in-depth ownership check BEFORE cancelling when caller role metadata is present.
             if caller.has_role() && !caller.is_admin() {
-                if caller.user_id.is_empty() {
+                if caller.caller.user_id.is_empty() {
                     return Err(Status::permission_denied(
                         "forbidden: missing x-user-id for CancelPayment",
                     ));
