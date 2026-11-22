@@ -21,6 +21,7 @@ import (
 	"github.com/nexusmart/core/pkg/common/logger"
 	"github.com/nexusmart/core/services/order/internal/clients"
 	"github.com/nexusmart/core/services/order/internal/config"
+	"github.com/nexusmart/core/services/order/internal/db"
 	"github.com/nexusmart/core/services/order/internal/events"
 	"github.com/nexusmart/core/services/order/internal/store"
 	"google.golang.org/grpc"
@@ -1756,5 +1757,157 @@ func TestCancelConfirmedOrder_WithActiveSibling_RestocksSubOrderOnly(t *testing.
 	}
 	if got := h.product.restockAuth[0]; got.service != clients.InternalServiceName || got.rawToken != "" {
 		t.Fatalf("expected internal service token context for RestockOrderItems, got %+v", got)
+	}
+}
+
+func TestScanStaleCheckoutGroups_CleanupGuardsAndRetries(t *testing.T) {
+	ctx := context.Background()
+
+	// Case 1: Stale IN_PROGRESS group with no orders -> ReleasePromotion then ReleaseStock (NotFound treated as ok) -> FAILED.
+	h := newTestHarness()
+	h.svc.cfg.StaleCheckoutAfter = 5 * time.Minute
+
+	staleGroupID := "grp-stale-no-orders"
+	if _, err := h.store.CreateCheckoutGroup(ctx, db.CreateCheckoutGroupParams{
+		ID:             staleGroupID,
+		BuyerID:        "buyer-1",
+		IdempotencyKey: "idem-stale-1",
+		Status:         "IN_PROGRESS",
+		PaymentMethod:  "VIETQR",
+	}); err != nil {
+		t.Fatalf("CreateCheckoutGroup(stale): %v", err)
+	}
+	h.store.SetCheckoutGroupUpdatedAt(staleGroupID, time.Now().UTC().Add(-10*time.Minute))
+
+	// Fresh IN_PROGRESS group (2m old < 5m) -> must NOT be touched.
+	freshGroupID := "grp-fresh-no-orders"
+	if _, err := h.store.CreateCheckoutGroup(ctx, db.CreateCheckoutGroupParams{
+		ID:             freshGroupID,
+		BuyerID:        "buyer-1",
+		IdempotencyKey: "idem-fresh-1",
+		Status:         "IN_PROGRESS",
+		PaymentMethod:  "VIETQR",
+	}); err != nil {
+		t.Fatalf("CreateCheckoutGroup(fresh): %v", err)
+	}
+	h.store.SetCheckoutGroupUpdatedAt(freshGroupID, time.Now().UTC().Add(-2*time.Minute))
+
+	// Stale IN_PROGRESS group that ALREADY has a persisted sub-order -> must NOT be touched.
+	withOrdersGroupID := "grp-stale-with-orders"
+	if _, err := h.store.CreateCheckoutGroup(ctx, db.CreateCheckoutGroupParams{
+		ID:             withOrdersGroupID,
+		BuyerID:        "buyer-1",
+		IdempotencyKey: "idem-with-orders-1",
+		Status:         "IN_PROGRESS",
+		PaymentMethod:  "VIETQR",
+	}); err != nil {
+		t.Fatalf("CreateCheckoutGroup(withOrders): %v", err)
+	}
+	if _, err := h.store.PersistCheckoutBatch(ctx, store.CheckoutBatch{
+		CheckoutGroupID: withOrdersGroupID,
+		Orders: []store.NewOrderRecord{
+			{
+				Order: db.InsertOrderParams{
+					ID:                  "ord-existing-1",
+					OrderCode:           "NM-20261122-EXIST001",
+					CheckoutGroupID:     withOrdersGroupID,
+					BuyerID:             "buyer-1",
+					ShopID:              "shop-1",
+					Status:              "PENDING",
+					PaymentMethod:       "VIETQR",
+					ShippingAddressJSON: []byte("{}"),
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("PersistCheckoutBatch: %v", err)
+	}
+	h.store.SetCheckoutGroupUpdatedAt(withOrdersGroupID, time.Now().UTC().Add(-10*time.Minute))
+
+	var orderOfCalls []string
+	h.promo.onRelease = func(orderID string) {
+		orderOfCalls = append(orderOfCalls, "promo:"+orderID)
+	}
+	h.product.onRelease = func(orderID string) {
+		orderOfCalls = append(orderOfCalls, "stock:"+orderID)
+	}
+	// NotFound from ReleasePromotion (e.g., checkout had no promotions) must be treated as success.
+	h.promo.releaseErr = status.Error(codes.NotFound, "no reservation")
+
+	handled, err := h.svc.ScanStaleCheckoutGroups(ctx)
+	if err != nil || handled != 1 {
+		t.Fatalf("expected 1 stale group handled, got handled=%d err=%v", handled, err)
+	}
+	if len(orderOfCalls) != 2 || orderOfCalls[0] != "promo:"+staleGroupID || orderOfCalls[1] != "stock:"+staleGroupID {
+		t.Fatalf("expected ReleasePromotion then ReleaseStock for %s, got %v", staleGroupID, orderOfCalls)
+	}
+
+	gStale, _ := h.store.GetCheckoutGroupByID(ctx, staleGroupID)
+	if gStale.Status != "FAILED" {
+		t.Fatalf("stale group status = %q, want FAILED", gStale.Status)
+	}
+	gFresh, _ := h.store.GetCheckoutGroupByID(ctx, freshGroupID)
+	if gFresh.Status != "IN_PROGRESS" {
+		t.Fatalf("fresh group status = %q, want IN_PROGRESS", gFresh.Status)
+	}
+	gWithOrders, _ := h.store.GetCheckoutGroupByID(ctx, withOrdersGroupID)
+	if gWithOrders.Status != "IN_PROGRESS" {
+		t.Fatalf("group with sub-orders status = %q, want IN_PROGRESS", gWithOrders.Status)
+	}
+
+	// Case 2: Release failure keeps group IN_PROGRESS for retry on next tick.
+	h2 := newTestHarness()
+	h2.svc.cfg.StaleCheckoutAfter = 5 * time.Minute
+	retryGroupID := "grp-stale-release-err"
+	if _, err := h2.store.CreateCheckoutGroup(ctx, db.CreateCheckoutGroupParams{
+		ID:             retryGroupID,
+		BuyerID:        "buyer-1",
+		IdempotencyKey: "idem-retry-1",
+		Status:         "IN_PROGRESS",
+		PaymentMethod:  "VIETQR",
+	}); err != nil {
+		t.Fatalf("CreateCheckoutGroup(retry): %v", err)
+	}
+	h2.store.SetCheckoutGroupUpdatedAt(retryGroupID, time.Now().UTC().Add(-10*time.Minute))
+	h2.product.releaseErr = status.Error(codes.Unavailable, "product service down")
+
+	nFail, err := h2.svc.ScanStaleCheckoutGroups(ctx)
+	if err != nil || nFail != 0 {
+		t.Fatalf("expected 0 handled when ReleaseStock fails, got %d err=%v", nFail, err)
+	}
+	gRetry, _ := h2.store.GetCheckoutGroupByID(ctx, retryGroupID)
+	if gRetry.Status != "IN_PROGRESS" {
+		t.Fatalf("group must remain IN_PROGRESS on release error, got %q", gRetry.Status)
+	}
+
+	// Next tick after product recovers -> succeeds and marks group FAILED.
+	h2.product.releaseErr = nil
+	nRetry, err := h2.svc.ScanStaleCheckoutGroups(ctx)
+	if err != nil || nRetry != 1 {
+		t.Fatalf("expected 1 handled on retry tick, got %d err=%v", nRetry, err)
+	}
+	gRetryAfter, _ := h2.store.GetCheckoutGroupByID(ctx, retryGroupID)
+	if gRetryAfter.Status != "FAILED" {
+		t.Fatalf("group after retry status = %q, want FAILED", gRetryAfter.Status)
+	}
+
+	// Case 3: FailCheckoutGroup must never overwrite a COMPLETED checkout group.
+	h3 := newTestHarness()
+	resp, err := h3.svc.CreateCheckout(ctxWithUser("buyer-1", "buyer", ""), &orderv1.CreateCheckoutRequest{
+		IdempotencyKey: "idem-completed-guard",
+		BuyerId:        "buyer-1",
+		AddressId:      "addr-buyer-1",
+		Items:          []*orderv1.CheckoutItemInput{{SkuId: "sku-1", Quantity: 1}},
+		PaymentMethod:  orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD,
+	})
+	if err != nil {
+		t.Fatalf("CreateCheckout: %v", err)
+	}
+	if err := h3.store.FailCheckoutGroup(ctx, resp.CheckoutGroupId, "SHOULD_NOT_APPLY"); err != nil {
+		t.Fatalf("FailCheckoutGroup: %v", err)
+	}
+	gDone, _ := h3.store.GetCheckoutGroupByID(ctx, resp.CheckoutGroupId)
+	if gDone.Status != "COMPLETED" {
+		t.Fatalf("FailCheckoutGroup must not overwrite COMPLETED group, got %q", gDone.Status)
 	}
 }

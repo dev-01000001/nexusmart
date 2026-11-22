@@ -35,6 +35,7 @@ type Config struct {
 	OutboxPollInterval    time.Duration
 	ExpiryWatchdogTimeout time.Duration
 	ExpiryWatchdogPeriod  time.Duration
+	StaleCheckoutAfter    time.Duration
 
 	JWTSecret    string
 	OTLPEndpoint string
@@ -68,6 +69,7 @@ func Load() Config {
 		OutboxPollInterval:    env.EnvDuration("ORDER_OUTBOX_POLL_INTERVAL", 250*time.Millisecond),
 		ExpiryWatchdogPeriod:  env.EnvDuration("ORDER_EXPIRY_WATCHDOG_INTERVAL", 10*time.Second),
 		ExpiryWatchdogTimeout: env.EnvDuration("ORDER_EXPIRY_WATCHDOG_TIMEOUT", 15*time.Second),
+		StaleCheckoutAfter:    env.EnvDuration("ORDER_STALE_CHECKOUT_AFTER", 5*time.Minute),
 
 		JWTSecret:    env.EnvString("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me"),
 		OTLPEndpoint: env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),

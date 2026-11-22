@@ -70,6 +70,16 @@ func (m *MemoryStore) SetOrderPaymentExpiresAt(orderID string, t time.Time) {
 	}
 }
 
+// SetCheckoutGroupUpdatedAt overrides updated_at for testing stale checkout group cleanup.
+func (m *MemoryStore) SetCheckoutGroupUpdatedAt(groupID string, t time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if g, ok := m.groups[groupID]; ok {
+		g.UpdatedAt = t
+		m.groups[groupID] = g
+	}
+}
+
 func (m *MemoryStore) Ping(_ context.Context) error { return nil }
 
 func (m *MemoryStore) GetActiveCheckoutGroup(_ context.Context, buyerID, idempotencyKey string) (*db.CheckoutGroup, error) {
@@ -122,7 +132,7 @@ func (m *MemoryStore) CreateCheckoutGroup(_ context.Context, arg db.CreateChecko
 func (m *MemoryStore) FailCheckoutGroup(_ context.Context, id, paymentStatus string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if g, ok := m.groups[id]; ok {
+	if g, ok := m.groups[id]; ok && g.Status == "IN_PROGRESS" {
 		g.Status = "FAILED"
 		g.PaymentStatus = paymentStatus
 		g.UpdatedAt = time.Now().UTC()
@@ -293,7 +303,7 @@ func (m *MemoryStore) CancelCheckoutGroupOrders(_ context.Context, params Cancel
 		cancelled = append(cancelled, ord)
 	}
 
-	if g, ok := m.groups[params.CheckoutGroupID]; ok {
+	if g, ok := m.groups[params.CheckoutGroupID]; ok && g.Status == "IN_PROGRESS" {
 		g.Status = "FAILED"
 		g.PaymentStatus = params.PaymentStatus
 		g.UpdatedAt = now
@@ -947,6 +957,48 @@ func (m *MemoryStore) FindExpiredPendingGroups(_ context.Context, limit int32) (
 				break
 			}
 		}
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) FindStaleInProgressCheckoutGroups(_ context.Context, olderThan time.Duration, limit int32) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cutoff := time.Now().UTC().Add(-olderThan)
+
+	groupsWithOrders := make(map[string]struct{}, len(m.orders))
+	for _, ord := range m.orders {
+		groupsWithOrders[ord.CheckoutGroupID] = struct{}{}
+	}
+
+	var matched []db.CheckoutGroup
+	for _, g := range m.groups {
+		if g.Status != "IN_PROGRESS" {
+			continue
+		}
+		if !g.UpdatedAt.Before(cutoff) {
+			continue
+		}
+		if _, hasOrders := groupsWithOrders[g.ID]; hasOrders {
+			continue
+		}
+		matched = append(matched, g)
+	}
+
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].UpdatedAt.Equal(matched[j].UpdatedAt) {
+			return matched[i].UpdatedAt.Before(matched[j].UpdatedAt)
+		}
+		return matched[i].ID < matched[j].ID
+	})
+
+	if limit > 0 && int32(len(matched)) > limit {
+		matched = matched[:limit]
+	}
+
+	out := make([]string, 0, len(matched))
+	for _, g := range matched {
+		out = append(out, g.ID)
 	}
 	return out, nil
 }

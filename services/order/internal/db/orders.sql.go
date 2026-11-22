@@ -123,6 +123,7 @@ SET status = 'FAILED',
     payment_status = $2,
     updated_at = NOW()
 WHERE id = $1
+  AND status = 'IN_PROGRESS'
 `
 
 type FailCheckoutGroupParams struct {
@@ -951,6 +952,44 @@ func (q *Queries) LockPendingOutboxEvents(ctx context.Context, limit int32) ([]O
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockStaleInProgressCheckoutGroups = `-- name: LockStaleInProgressCheckoutGroups :many
+SELECT g.id
+FROM checkout_groups g
+WHERE g.status = 'IN_PROGRESS'
+  AND g.updated_at < NOW() - ($1::bigint * INTERVAL '1 millisecond')
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o WHERE o.checkout_group_id = g.id
+  )
+ORDER BY g.updated_at ASC
+LIMIT $2::int
+FOR UPDATE OF g SKIP LOCKED
+`
+
+type LockStaleInProgressCheckoutGroupsParams struct {
+	StaleAfterMs int64 `json:"stale_after_ms"`
+	BatchLimit   int32 `json:"batch_limit"`
+}
+
+func (q *Queries) LockStaleInProgressCheckoutGroups(ctx context.Context, arg LockStaleInProgressCheckoutGroupsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, lockStaleInProgressCheckoutGroups, arg.StaleAfterMs, arg.BatchLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

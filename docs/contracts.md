@@ -335,11 +335,12 @@ Every message published to `NEXUSMART` MUST use this exact JSON envelope:
 7. **Create Payment**: Call `PaymentService.CreatePayment(...)` with `shop_allocations` (per-sub-order `order_id`, `shop_id`, `subtotal_vnd`, `commission_vnd`, `shipping_fee_vnd`).
    - *On failure*: mark sub-orders `CANCELLED`, compensate via `PromotionService.ReleasePromotion` and `ProductService.ReleaseStock`.
 8. **Clear Cart**: Best-effort `CartService.ClearItems(buyer_id, ordered_sku_ids)`.
-9. **Async Payment Failure / Expiry Compensation**:
+9. **Async Payment Failure / Expiry Compensation, Restock & Watchdogs**:
    - On `payment.failed` or `payment.expired`: transition sub-orders `PENDING -> CANCELLED`, call `ProductService.ReleaseStock(checkout_group_id)` and `PromotionService.ReleasePromotion(checkout_group_id)`, write `order.cancelled` outbox event.
    - On `payment.succeeded`: transition sub-orders `PENDING -> CONFIRMED`, call `ProductService.ConfirmStock(checkout_group_id)`, write `order.confirmed` outbox event.
    - On `BuyerConfirmReceived` (`DELIVERED -> COMPLETED`): call `PaymentService.ReleaseEscrow(order_id)` (or emit `order.completed`), credit reward coins via `PromotionService.CreditCoins` (idempotent by `order_id`).
    - On cancellation of a `CONFIRMED`/`PREPARING` sub-order (after stock confirmation or when active sibling sub-orders remain) or `shipment.updated=returned`: call internal gRPC `ProductService.RestockOrderItems(order_id=sub_order_id, items)` (service-token or admin only, not exposed over REST; atomic stock increment, idempotent per `(order_id, sku_id)` via `stock_history`).
+   - **Stale `IN_PROGRESS` Checkout Group Sweep**: runs on the same `RunExpiryWatchdog` ticker as expired VietQR `PENDING` order checks (`ORDER_STALE_CHECKOUT_AFTER`, default `5m`). Sweeps `IN_PROGRESS` `checkout_groups` older than the threshold that have no persisted sub-orders, calls idempotent `PromotionService.ReleasePromotion(checkout_group_id)` then `ProductService.ReleaseStock(checkout_group_id)` under a service token (`NotFound` treated as already released), and transitions the group to `FAILED` only after both succeed (groups that already have persisted sub-orders are left untouched).
 
 ---
 

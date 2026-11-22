@@ -316,7 +316,73 @@ func (s *OrderService) processExpiredGroup(ctx context.Context, cand store.Expir
 	})
 }
 
-// RunExpiryWatchdog periodically scans and resolves expired PENDING VietQR orders until ctx is cancelled.
+const defaultStaleCheckoutAfter = 5 * time.Minute
+
+// ScanStaleCheckoutGroups sweeps IN_PROGRESS checkout_groups with no sub-orders that have
+// exceeded StaleCheckoutAfter, releases held promotion/stock reservations, and marks them FAILED.
+func (s *OrderService) ScanStaleCheckoutGroups(ctx context.Context) (int, error) {
+	staleAfter := s.cfg.StaleCheckoutAfter
+	if staleAfter <= 0 {
+		staleAfter = defaultStaleCheckoutAfter
+	}
+
+	groupIDs, err := s.store.FindStaleInProgressCheckoutGroups(ctx, staleAfter, 20)
+	if err != nil {
+		return 0, err
+	}
+
+	handled := 0
+	for _, groupID := range groupIDs {
+		if err := s.cleanupStaleCheckoutGroup(ctx, groupID); err != nil {
+			s.logger.WarnContext(ctx, "stale checkout cleanup skipped group due to error",
+				"checkout_group_id", groupID, "error", err)
+			continue
+		}
+		handled++
+	}
+	return handled, nil
+}
+
+func (s *OrderService) cleanupStaleCheckoutGroup(ctx context.Context, groupID string) error {
+	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+	defer cancel()
+
+	if s.clients.Promotion != nil {
+		if err := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
+			_, rErr := s.clients.Promotion.ReleasePromotion(c, &promotionv1.ReleasePromotionRequest{
+				OrderId: groupID,
+			})
+			if status.Code(rErr) == codes.NotFound {
+				return nil
+			}
+			return rErr
+		}); err != nil {
+			return fmt.Errorf("release promotion for stale checkout %s: %w", groupID, err)
+		}
+	}
+
+	if s.clients.Product != nil {
+		if err := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
+			_, rErr := s.clients.Product.ReleaseStock(c, &productv1.ReleaseStockRequest{
+				OrderId: groupID,
+			})
+			if status.Code(rErr) == codes.NotFound {
+				return nil
+			}
+			return rErr
+		}); err != nil {
+			return fmt.Errorf("release stock for stale checkout %s: %w", groupID, err)
+		}
+	}
+
+	if err := s.store.FailCheckoutGroup(compCtx, groupID, "STALE_CHECKOUT_EXPIRED"); err != nil {
+		return fmt.Errorf("fail stale checkout group %s: %w", groupID, err)
+	}
+	return nil
+}
+
+// RunExpiryWatchdog periodically scans and resolves expired PENDING VietQR orders
+// and stale IN_PROGRESS checkout groups until ctx is cancelled.
 func (s *OrderService) RunExpiryWatchdog(ctx context.Context) {
 	period := s.cfg.ExpiryWatchdogPeriod
 	if period <= 0 {
@@ -333,6 +399,9 @@ func (s *OrderService) RunExpiryWatchdog(ctx context.Context) {
 			sweepCtx, cancel := context.WithTimeout(ctx, s.cfg.ExpiryWatchdogTimeout)
 			if _, err := s.ScanExpiredPendingOrders(sweepCtx); err != nil {
 				s.logger.WarnContext(sweepCtx, "payment expiry watchdog sweep failed", "error", err)
+			}
+			if _, err := s.ScanStaleCheckoutGroups(sweepCtx); err != nil {
+				s.logger.WarnContext(sweepCtx, "stale checkout group sweep failed", "error", err)
 			}
 			cancel()
 		}
