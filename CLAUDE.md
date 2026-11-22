@@ -71,7 +71,7 @@ Ngoại lệ Claude Code được tự sửa: tài liệu điều phối (`CLAUD
 
 ## Skill đã cài cho agy
 
-- Workspace (`.agents/skills/`, agy tự nạp): `codebase-memory` (tìm code theo graph thay grep), `frontend-design` (UI web Next.js), cùng các skill hành động/tham chiếu liệt kê ở `AGENTS.md` (symlink từ `.claude/skills/`).
+- Workspace (`.agents/skills/`, agy tự nạp): `codebase-memory` (tìm code theo graph thay grep), `frontend-design` (UI web Next.js), cùng các skill hành động/tham chiếu liệt kê ở `AGENTS.md` (symlink từ `.claude/skills/`). agy tự nạp skill tham chiếu; skill hành động có `disable-model-invocation: true` nên agy không tự gọi, Claude gọi bằng `/tên` đầu prompt: `./scripts/agy.sh -p "/add-rpc order.CancelOrder <ngữ cảnh, tiêu chí>"`.
 - Global (`agy plugin list`, `agy mcp list`): plugin `ponytail` (lời giải đơn giản nhất, có `ponytail-review`) và `superpowers`; MCP `codebase-memory-mcp` (index `home-tai-Document-nexusmart`, index lại sau thay đổi lớn; bỏ qua `pkg/common/env`, tìm trong đó bằng `rg`).
 - Không cài `design-taste-frontend` cho agy: `SKILL.md` 38 KB vượt giới hạn 24 KB của agy, bị cắt. Claude Code dùng khi review UI.
 
