@@ -87,17 +87,9 @@ func NewSSEProxy(paymentHTTPURL string, log *slog.Logger) (http.Handler, error) 
 			pr.Out.Host = target.Host
 			pr.SetXForwarded()
 
-			if claims, ok := auth.ClaimsFromContext(pr.In.Context()); ok {
-				if claims.UserID() != "" {
-					pr.Out.Header.Set("X-User-Id", claims.UserID())
-				}
-				if claims.Role != "" {
-					pr.Out.Header.Set("X-User-Role", claims.Role)
-				}
-				if claims.ShopID != "" {
-					pr.Out.Header.Set("X-Shop-Id", claims.ShopID)
-				}
-			}
+			pr.Out.Header.Del("X-User-Id")
+			pr.Out.Header.Del("X-User-Role")
+			pr.Out.Header.Del("X-Shop-Id")
 			if rawAuth := auth.RawTokenFromContext(pr.In.Context()); rawAuth != "" {
 				pr.Out.Header.Set("Authorization", rawAuth)
 			}
