@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	promotionv1 "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/gateway/internal/httpx"
@@ -327,6 +328,29 @@ func (h *handler) handleSaveVoucher(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *handler) handleSellerListVouchers(w http.ResponseWriter, r *http.Request) {
+	shopID := auth.ShopIDFromContext(r.Context())
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Promotion.ListAvailableVouchers(ctx, &promotionv1.ListAvailableVouchersRequest{
+		ShopId: shopID,
+		Scope:  promotionv1.VoucherScope_VOUCHER_SCOPE_SHOP,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	vouchers := make([]*voucherDTO, 0, len(resp.GetVouchers()))
+	for _, v := range resp.GetVouchers() {
+		if v.GetShopId() != shopID {
+			continue
+		}
+		vouchers = append(vouchers, mapVoucher(v))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"vouchers": vouchers})
+}
+
 func (h *handler) handleSellerCreateVoucher(w http.ResponseWriter, r *http.Request) {
 	var body createVoucherBody
 	if err := httpx.DecodeJSON(r, &body); err != nil {
@@ -486,13 +510,47 @@ func (h *handler) handleSellerRegisterFlashSaleItem(w http.ResponseWriter, r *ht
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 		return
 	}
+	skuID := strings.TrimSpace(body.SKUID)
+	if skuID == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "sku_id is required")
+		return
+	}
+	if h.clients.Product == nil {
+		httpx.WriteError(w, r, http.StatusServiceUnavailable, "UNAVAILABLE", "product service unavailable")
+		return
+	}
+
+	shopID := auth.ShopIDFromContext(r.Context())
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
+	skuResp, err := h.clients.Product.GetSKUsBatch(ctx, &productv1.GetSKUsBatchRequest{
+		SkuIds: []string{skuID},
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	var targetSKU *productv1.SKU
+	for _, sk := range skuResp.GetSkus() {
+		if sk.GetId() == skuID {
+			targetSKU = sk
+			break
+		}
+	}
+	if targetSKU == nil {
+		httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "sku not found")
+		return
+	}
+	if targetSKU.GetShopId() != shopID {
+		httpx.WriteError(w, r, http.StatusForbidden, "PERMISSION_DENIED", "cannot register another shop's SKU for flash sale")
+		return
+	}
+
 	resp, err := h.clients.Promotion.RegisterFlashSaleItem(ctx, &promotionv1.RegisterFlashSaleItemRequest{
 		FlashSaleId:   chi.URLParam(r, "id"),
-		ShopId:        auth.ShopIDFromContext(r.Context()),
-		SkuId:         body.SKUID,
+		ShopId:        shopID,
+		SkuId:         skuID,
 		FlashPriceVnd: body.FlashPriceVND,
 		TotalSlots:    body.TotalSlots,
 		PerUserLimit:  body.PerUserLimit,

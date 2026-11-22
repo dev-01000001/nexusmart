@@ -29,6 +29,7 @@ type shopDTO struct {
 	ID                 string `json:"id"`
 	OwnerUserID        string `json:"owner_user_id"`
 	Name               string `json:"name"`
+	Slug               string `json:"slug"`
 	Description        string `json:"description"`
 	PickupAddressID    string `json:"pickup_address_id"`
 	ContactPhone       string `json:"contact_phone"`
@@ -37,6 +38,17 @@ type shopDTO struct {
 	RejectionReason    string `json:"rejection_reason"`
 	CreatedAt          string `json:"created_at,omitempty"`
 	UpdatedAt          string `json:"updated_at,omitempty"`
+}
+
+// publicShopDTO exposes only non-sensitive fields for unauthenticated storefront reads.
+type publicShopDTO struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Slug        string `json:"slug"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	CreatedAt   string `json:"created_at,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
 }
 
 type addressDTO struct {
@@ -99,6 +111,7 @@ func mapShop(s *userv1.Shop) *shopDTO {
 		ID:                 s.GetId(),
 		OwnerUserID:        s.GetOwnerUserId(),
 		Name:               s.GetName(),
+		Slug:               s.GetSlug(),
 		Description:        s.GetDescription(),
 		PickupAddressID:    s.GetPickupAddressId(),
 		ContactPhone:       s.GetContactPhone(),
@@ -107,6 +120,21 @@ func mapShop(s *userv1.Shop) *shopDTO {
 		RejectionReason:    s.GetRejectionReason(),
 		CreatedAt:          httpx.FormatTimestamp(s.GetCreatedAt()),
 		UpdatedAt:          httpx.FormatTimestamp(s.GetUpdatedAt()),
+	}
+}
+
+func mapPublicShop(s *userv1.Shop) *publicShopDTO {
+	if s == nil {
+		return nil
+	}
+	return &publicShopDTO{
+		ID:          s.GetId(),
+		Name:        s.GetName(),
+		Slug:        s.GetSlug(),
+		Description: s.GetDescription(),
+		Status:      shopStatusString(s.GetStatus()),
+		CreatedAt:   httpx.FormatTimestamp(s.GetCreatedAt()),
+		UpdatedAt:   httpx.FormatTimestamp(s.GetUpdatedAt()),
 	}
 }
 
@@ -574,6 +602,7 @@ func (h *handler) handleDeleteAddress(w http.ResponseWriter, r *http.Request) {
 func (h *handler) handleRegisterShop(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name               string `json:"name"`
+		Slug               string `json:"slug"`
 		Description        string `json:"description"`
 		PickupAddressID    string `json:"pickup_address_id"`
 		ContactPhone       string `json:"contact_phone"`
@@ -589,6 +618,7 @@ func (h *handler) handleRegisterShop(w http.ResponseWriter, r *http.Request) {
 	resp, err := h.clients.User.RegisterShop(ctx, &userv1.RegisterShopRequest{
 		UserId:             auth.UserIDFromContext(r.Context()),
 		Name:               body.Name,
+		Slug:               body.Slug,
 		Description:        body.Description,
 		PickupAddressId:    body.PickupAddressID,
 		ContactPhone:       body.ContactPhone,
@@ -601,12 +631,92 @@ func (h *handler) handleRegisterShop(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"shop": mapShop(resp.GetShop())})
 }
 
+func (h *handler) handleListPublicShops(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := httpx.ParsePagination(r)
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.ListPublicShops(ctx, &userv1.ListPublicShopsRequest{
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	items := make([]*publicShopDTO, 0, len(resp.GetShops()))
+	for _, s := range resp.GetShops() {
+		if s.GetStatus() != userv1.ShopStatus_SHOP_STATUS_ACTIVE {
+			continue
+		}
+		items = append(items, mapPublicShop(s))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"page":      page,
+		"page_size": pageSize,
+		"total":     resp.GetTotal(),
+	})
+}
+
 func (h *handler) handleGetShop(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.User.GetShop(ctx, &userv1.GetShopRequest{
 		ShopId: chi.URLParam(r, "id"),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	shop := resp.GetShop()
+	if shop == nil || shop.GetStatus() != userv1.ShopStatus_SHOP_STATUS_ACTIVE {
+		httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "shop not found")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"shop": mapPublicShop(shop)})
+}
+
+func (h *handler) handleGetShopBySlug(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.GetShop(ctx, &userv1.GetShopRequest{
+		Slug: chi.URLParam(r, "slug"),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	shop := resp.GetShop()
+	if shop == nil || shop.GetStatus() != userv1.ShopStatus_SHOP_STATUS_ACTIVE {
+		httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "shop not found")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"shop": mapPublicShop(shop)})
+}
+
+func (h *handler) handleGetMyShop(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.GetShop(ctx, &userv1.GetShopRequest{
+		OwnerUserId: auth.UserIDFromContext(r.Context()),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"shop": mapShop(resp.GetShop())})
+}
+
+func (h *handler) handleSellerGetShop(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.GetShop(ctx, &userv1.GetShopRequest{
+		ShopId: auth.ShopIDFromContext(r.Context()),
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)

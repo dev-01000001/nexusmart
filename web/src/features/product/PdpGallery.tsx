@@ -3,18 +3,23 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import type { Product } from "@/data";
-import { MODEL_SHOTS } from "@/data/media";
+import type { CatalogProduct } from "@/lib/catalog-types";
+import { getEditorialModelShotBySlug } from "@/mock/productEditorial";
 import { IconChevronRight, IconClose, IconPlay } from "@/components";
 import styles from "./PdpGallery.module.css";
 
 export interface PdpGalleryProps {
-  product: Product;
+  product: Product | CatalogProduct;
   activeImage: string;
   onSelectImage: (src: string) => void;
 }
 
 export function PdpGallery({ product, activeImage, onSelectImage }: PdpGalleryProps) {
-  const onModelSrc = product.onModelImage ?? MODEL_SHOTS[product.id]?.src ?? null;
+  const editorialModelShot = useMemo(
+    () => getEditorialModelShotBySlug(product.slug),
+    [product.slug]
+  );
+  const onModelSrc = product.onModelImage ?? editorialModelShot?.src ?? null;
 
   // Keep flat-lay primary first and on-model shot immediately second for clear comparison
   const images = useMemo(() => {
@@ -23,7 +28,7 @@ export function PdpGallery({ product, activeImage, onSelectImage }: PdpGalleryPr
       ...(onModelSrc ? [onModelSrc] : []),
       ...product.gallery,
       ...product.colors.map((c) => c.image),
-    ];
+    ].filter(Boolean);
     return Array.from(new Set(ordered));
   }, [product, onModelSrc]);
 
@@ -39,7 +44,7 @@ export function PdpGallery({ product, activeImage, onSelectImage }: PdpGalleryPr
 
   const getImageAlt = (src: string, idx: number): string => {
     if (isModelShot(src)) {
-      return MODEL_SHOTS[product.id]?.alt ?? `${product.name} - ảnh người mẫu mặc thực tế`;
+      return editorialModelShot?.alt ?? `${product.name} - ảnh người mẫu mặc thực tế`;
     }
     const matchedColor = product.colors.find((c) => c.image === src);
     if (matchedColor) return `${product.name} - màu ${matchedColor.name}`;

@@ -311,6 +311,111 @@
   background: var(--surface);
 }
 
+.orderThumbPlaceholder {
+  width: 56px;
+  height: 75px;
+  background: var(--surface);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.coinDelta {
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.coinPlus {
+  color: var(--positive);
+}
+
+.coinMinus {
+  color: var(--negative);
+}
+
+.filterPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.filterPill {
+  min-height: 38px;
+  padding: 0 14px;
+  background: var(--surface-white);
+  color: var(--ink);
+  font-size: var(--step-small);
+  font-weight: 500;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.filterPill:hover {
+  background: var(--accent-tint);
+}
+
+.filterPillActive {
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+}
+
+.filterPillActive:hover {
+  background: var(--band-dark);
+}
+
+.notifList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.notifCard {
+  background: var(--surface-white);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.notifUnread {
+  border-left: 4px solid var(--accent);
+  background: var(--accent-tint);
+}
+
+.prefGroupList {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.prefGroup {
+  border: 0;
+  padding: 14px 0 0;
+  border-top: 2px solid var(--surface-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prefLegend {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink-strong);
+  margin-bottom: 6px;
+}
+
+.formHintRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .orderInfo {
   min-width: 0;
   display: flex;

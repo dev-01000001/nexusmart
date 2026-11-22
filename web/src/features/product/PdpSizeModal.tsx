@@ -2,7 +2,8 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import type { Product, Shop, SizeCode } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import type { CatalogProduct, CatalogShop } from "@/lib/catalog-types";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { BODY_SHAPE_LABELS, recommendSize, type BodyShape, type FitPreference } from "@/lib/sizing";
 import { Button, IconClose } from "@/components";
 import styles from "./PdpSizeModal.module.css";
@@ -11,8 +12,8 @@ export interface PdpSizeModalProps {
   open: boolean;
   initialTab: "chart" | "finder";
   onClose: () => void;
-  product: Product;
-  shop: Shop;
+  product: Product | CatalogProduct;
+  shop: Shop | CatalogShop;
   selectedSize: SizeCode;
   onSelectSize: (size: SizeCode) => void;
 }
@@ -40,7 +41,7 @@ export function PdpSizeModal({
   selectedSize,
   onSelectSize,
 }: PdpSizeModalProps) {
-  const { bodyProfile, updateBodyProfile } = useStore();
+  const { bodyProfile, updateBodyProfile } = useMockStore();
   const [tab, setTab] = useState<"chart" | "finder">(initialTab);
   const [heightCm, setHeightCm] = useState<number>(bodyProfile.heightCm);
   const [weightKg, setWeightKg] = useState<number>(bodyProfile.weightKg);
@@ -73,9 +74,16 @@ export function PdpSizeModal({
     if (product.categorySlug === "ao-thun" || product.categorySlug === "ao-polo") return "top";
     if (product.categorySlug === "quan-jogger") return "jogger";
     if (product.categorySlug === "do-lot") return "underwear";
-    if (product.categorySlug === "tat-phu-kien" && product.id !== "prod-aokhoac-gio") return "sock";
-    return product.id === "prod-aokhoac-gio" ? "top" : "bottom";
+    if (
+      product.categorySlug === "tat-phu-kien" &&
+      product.slug !== "ao-khoac-gio-nhe-gap-gon-xam-tro"
+    ) {
+      return "sock";
+    }
+    return product.slug === "ao-khoac-gio-nhe-gap-gon-xam-tro" ? "top" : "bottom";
   }, [product]);
+
+  const editorialShopId = "editorialShopId" in shop ? shop.editorialShopId : shop.id;
 
   const recommendation = useMemo(
     () =>
@@ -85,11 +93,20 @@ export function PdpSizeModal({
         shape,
         preferredFit,
         garmentGroup,
-        shopId: shop.id,
-        availableSizes: product.sizes,
+        shopId: editorialShopId,
+        availableSizes: product.sizes.length > 0 ? product.sizes : undefined,
         shoeSizeEu: garmentGroup === "sock" ? shoeSizeEu : undefined,
       }),
-    [heightCm, weightKg, shape, preferredFit, garmentGroup, shop.id, product.sizes, shoeSizeEu]
+    [
+      heightCm,
+      weightKg,
+      shape,
+      preferredFit,
+      garmentGroup,
+      editorialShopId,
+      product.sizes,
+      shoeSizeEu,
+    ]
   );
 
   if (!open) return null;
@@ -98,6 +115,10 @@ export function PdpSizeModal({
   const isSock = garmentGroup === "sock";
   const shopTopRows = isTop ? shop.sizeCharts?.top : undefined;
   const fitBias = shop.sizeCharts?.fitBias ?? "regular";
+  const hasChartRows = Boolean(
+    (shopTopRows && shopTopRows.filter((r) => product.sizes.includes(r.size)).length > 0) ||
+    product.sizeChart.length > 0
+  );
 
   const handleSaveProfile = () => {
     updateBodyProfile({
@@ -130,7 +151,8 @@ export function PdpSizeModal({
               Bảng size và gợi ý cỡ {shop.shortName}
             </h2>
             <p className={styles.subtitle}>
-              {FIT_BIAS_LABEL[fitBias]} · {product.fit}
+              {FIT_BIAS_LABEL[fitBias]}
+              {product.fit ? ` · ${product.fit}` : ""}
             </p>
           </div>
           <button
@@ -170,23 +192,52 @@ export function PdpSizeModal({
               <p className={styles.shopNote}>{shop.sizeCharts.sizeNote}</p>
             )}
 
-            <div className={styles.tableWrap}>
-              <table className={styles.table}>
-                <thead>
-                  <tr>
-                    <th scope="col">Size</th>
-                    <th scope="col">{isSock ? "Cỡ giày" : "Cao (cm)"}</th>
-                    <th scope="col">{isSock ? "Chiều dài chân" : "Nặng (kg)"}</th>
-                    <th scope="col">{isTop ? "Ngực (cm)" : isSock ? "Độ co giãn" : "Eo (cm)"}</th>
-                    {shopTopRows && <th scope="col">Vai (cm)</th>}
-                    <th scope="col">Dài (cm)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {shopTopRows
-                    ? shopTopRows
-                        .filter((r) => product.sizes.includes(r.size))
-                        .map((row) => {
+            {hasChartRows ? (
+              <div className={styles.tableWrap}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th scope="col">Size</th>
+                      <th scope="col">{isSock ? "Cỡ giày" : "Cao (cm)"}</th>
+                      <th scope="col">{isSock ? "Chiều dài chân" : "Nặng (kg)"}</th>
+                      <th scope="col">{isTop ? "Ngực (cm)" : isSock ? "Độ co giãn" : "Eo (cm)"}</th>
+                      {shopTopRows && <th scope="col">Vai (cm)</th>}
+                      <th scope="col">Dài (cm)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shopTopRows
+                      ? shopTopRows
+                          .filter((r) => product.sizes.includes(r.size))
+                          .map((row) => {
+                            const isCurrent = row.size === selectedSize;
+                            return (
+                              <tr
+                                key={row.size}
+                                className={isCurrent ? styles.rowActive : undefined}
+                              >
+                                <td>
+                                  <button
+                                    type="button"
+                                    className={styles.sizePickCell}
+                                    onClick={() => handlePickRecommended(row.size)}
+                                  >
+                                    {row.size}
+                                  </button>
+                                </td>
+                                <td>
+                                  {row.heightMin}-{row.heightMax}
+                                </td>
+                                <td>
+                                  {row.weightMin}-{row.weightMax}
+                                </td>
+                                <td>{row.chestOrWaistCm}</td>
+                                <td>{row.shoulderCm ?? "-"}</td>
+                                <td>{row.lengthCm}</td>
+                              </tr>
+                            );
+                          })
+                      : product.sizeChart.map((row) => {
                           const isCurrent = row.size === selectedSize;
                           return (
                             <tr key={row.size} className={isCurrent ? styles.rowActive : undefined}>
@@ -199,41 +250,22 @@ export function PdpSizeModal({
                                   {row.size}
                                 </button>
                               </td>
-                              <td>
-                                {row.heightMin}-{row.heightMax}
-                              </td>
-                              <td>
-                                {row.weightMin}-{row.weightMax}
-                              </td>
+                              <td>{row.heightCm}</td>
+                              <td>{row.weightKg}</td>
                               <td>{row.chestOrWaistCm}</td>
-                              <td>{row.shoulderCm ?? "-"}</td>
                               <td>{row.lengthCm}</td>
                             </tr>
                           );
-                        })
-                    : product.sizeChart.map((row) => {
-                        const isCurrent = row.size === selectedSize;
-                        return (
-                          <tr key={row.size} className={isCurrent ? styles.rowActive : undefined}>
-                            <td>
-                              <button
-                                type="button"
-                                className={styles.sizePickCell}
-                                onClick={() => handlePickRecommended(row.size)}
-                              >
-                                {row.size}
-                              </button>
-                            </td>
-                            <td>{row.heightCm}</td>
-                            <td>{row.weightKg}</td>
-                            <td>{row.chestOrWaistCm}</td>
-                            <td>{row.lengthCm}</td>
-                          </tr>
-                        );
-                      })}
-                </tbody>
-              </table>
-            </div>
+                        })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className={styles.shopNote}>
+                Gian hàng chưa cập nhật bảng số đo chi tiết riêng cho mẫu này. Bạn có thể dùng công
+                cụ gợi ý size theo chiều cao và cân nặng ở tab bên cạnh.
+              </p>
+            )}
 
             <div className={styles.chartFooter}>
               <p className={styles.footnote}>

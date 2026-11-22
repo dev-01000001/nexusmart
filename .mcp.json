@@ -1,0 +1,123 @@
+{
+  "mcpServers": {
+    "pg-user": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--network=host",
+        "-e",
+        "DATABASE_URI",
+        "crystaldba/postgres-mcp",
+        "--access-mode=restricted"
+      ],
+      "env": {
+        "DATABASE_URI": "postgresql://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-}@127.0.0.1:${POSTGRES_PORT:-5432}/user_db"
+      }
+    },
+    "pg-product": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--network=host",
+        "-e",
+        "DATABASE_URI",
+        "crystaldba/postgres-mcp",
+        "--access-mode=restricted"
+      ],
+      "env": {
+        "DATABASE_URI": "postgresql://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-}@127.0.0.1:${POSTGRES_PORT:-5432}/product_db"
+      }
+    },
+    "pg-promotion": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--network=host",
+        "-e",
+        "DATABASE_URI",
+        "crystaldba/postgres-mcp",
+        "--access-mode=restricted"
+      ],
+      "env": {
+        "DATABASE_URI": "postgresql://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-}@127.0.0.1:${POSTGRES_PORT:-5432}/promotion_db"
+      }
+    },
+    "pg-order": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--network=host",
+        "-e",
+        "DATABASE_URI",
+        "crystaldba/postgres-mcp",
+        "--access-mode=restricted"
+      ],
+      "env": {
+        "DATABASE_URI": "postgresql://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-}@127.0.0.1:${POSTGRES_PORT:-5432}/order_db"
+      }
+    },
+    "pg-payment": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--network=host",
+        "-e",
+        "DATABASE_URI",
+        "crystaldba/postgres-mcp",
+        "--access-mode=restricted"
+      ],
+      "env": {
+        "DATABASE_URI": "postgresql://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-}@127.0.0.1:${POSTGRES_PORT:-5432}/payment_db"
+      }
+    },
+    "pg-shipping": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--network=host",
+        "-e",
+        "DATABASE_URI",
+        "crystaldba/postgres-mcp",
+        "--access-mode=restricted"
+      ],
+      "env": {
+        "DATABASE_URI": "postgresql://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-}@127.0.0.1:${POSTGRES_PORT:-5432}/shipping_db"
+      }
+    },
+    "pg-notification": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--network=host",
+        "-e",
+        "DATABASE_URI",
+        "crystaldba/postgres-mcp",
+        "--access-mode=restricted"
+      ],
+      "env": {
+        "DATABASE_URI": "postgresql://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-}@127.0.0.1:${POSTGRES_PORT:-5432}/notification_db"
+      }
+    }
+  }
+}

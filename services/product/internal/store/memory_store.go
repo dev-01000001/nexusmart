@@ -52,6 +52,7 @@ const (
 	skuOpReserve
 	skuOpRelease
 	skuOpConfirm
+	skuOpRestock
 )
 
 type stagedSKUOp struct {
@@ -197,6 +198,17 @@ func (m *MemoryStore) GetProductByID(_ context.Context, id string) (Product, err
 		return Product{}, ErrNotFound
 	}
 	return cloneProduct(p), nil
+}
+
+func (m *MemoryStore) GetProductBySlug(_ context.Context, slug string) (Product, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, p := range m.products {
+		if p.DeletedAt == nil && p.Slug != "" && p.Slug == slug {
+			return cloneProduct(p), nil
+		}
+	}
+	return Product{}, ErrNotFound
 }
 
 func (m *MemoryStore) UpdateProduct(ctx context.Context, p Product) (Product, error) {
@@ -415,6 +427,10 @@ func (m *MemoryStore) GetSKUWithContext(_ context.Context, skuID string) (SKU, e
 	return m.enrichSKULocked(s), nil
 }
 
+func (m *MemoryStore) GetSKUWithContextForUpdate(ctx context.Context, skuID string) (SKU, error) {
+	return m.GetSKUWithContext(ctx, skuID)
+}
+
 func (m *MemoryStore) CountActiveInStockSKUsByProduct(_ context.Context, productID string) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -467,6 +483,16 @@ func (m *MemoryStore) ConfirmSKUOptimistic(ctx context.Context, skuID string, qt
 	return out, err
 }
 
+func (m *MemoryStore) RestockSKUAtomic(ctx context.Context, skuID string, qty int32) (SKU, error) {
+	var out SKU
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		out, e = q.RestockSKUAtomic(ctx, skuID, qty)
+		return e
+	})
+	return out, err
+}
+
 func (m *MemoryStore) ListReservationsByOrderID(_ context.Context, orderID string, _ bool) ([]StockReservation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -504,6 +530,16 @@ func (m *MemoryStore) InsertStockHistory(ctx context.Context, h StockHistoryEntr
 	return m.WithTx(ctx, func(q Queries) error {
 		return q.InsertStockHistory(ctx, h)
 	})
+}
+
+func (m *MemoryStore) TryInsertRestockHistory(ctx context.Context, h StockHistoryEntry) (bool, error) {
+	var inserted bool
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		inserted, e = q.TryInsertRestockHistory(ctx, h)
+		return e
+	})
+	return inserted, err
 }
 
 func (m *MemoryStore) enrichSKULocked(s SKU) SKU {
@@ -550,6 +586,21 @@ func (t *memTx) commit() error {
 		}
 	}
 
+	// 1b. Validate active product slug uniqueness
+	for id, prod := range t.stagedProds {
+		if prod.DeletedAt != nil || prod.Slug == "" {
+			continue
+		}
+		for existingID, existing := range t.store.products {
+			if existingID != id && existing.DeletedAt == nil && existing.Slug == prod.Slug {
+				if staged, hasStaged := t.stagedProds[existingID]; hasStaged && (staged.DeletedAt != nil || staged.Slug != prod.Slug) {
+					continue
+				}
+				return ErrAlreadyExists
+			}
+		}
+	}
+
 	// 2. Validate new stock reservations unique (order_id, sku_id)
 	for _, r := range t.newRes {
 		for _, existing := range t.store.reservations {
@@ -567,9 +618,32 @@ func (t *memTx) commit() error {
 		}
 	}
 
+	// 3b. Detect any concurrent RESTOCK history conflict so concurrent transactions never double-restock.
+	duplicateRestockSKUs := make(map[string]bool)
+	filteredHistory := make([]StockHistoryEntry, 0, len(t.stagedHistory))
+	for _, h := range t.stagedHistory {
+		if h.ChangeType == "RESTOCK" {
+			dup := false
+			for _, existing := range t.store.history {
+				if existing.ChangeType == "RESTOCK" && existing.OrderID == h.OrderID && existing.SKUID == h.SKUID {
+					dup = true
+					break
+				}
+			}
+			if dup {
+				duplicateRestockSKUs[h.SKUID] = true
+				continue
+			}
+		}
+		filteredHistory = append(filteredHistory, h)
+	}
+
 	// 4. Validate and compute optimistic SKU operations against committed state
 	computedSKUs := make(map[string]SKU)
 	for _, op := range t.skuOps {
+		if op.kind == skuOpRestock && duplicateRestockSKUs[op.skuID] {
+			continue
+		}
 		cur, ok := computedSKUs[op.skuID]
 		if !ok {
 			cur, ok = t.store.skus[op.skuID]
@@ -632,6 +706,13 @@ func (t *memTx) commit() error {
 			}
 			cur.Version++
 			cur.UpdatedAt = now
+		case skuOpRestock:
+			cur.Stock += op.amount
+			if cur.Status != SKUStatusInactive && cur.Stock > 0 {
+				cur.Status = SKUStatusActive
+			}
+			cur.Version++
+			cur.UpdatedAt = now
 		}
 		computedSKUs[op.skuID] = cur
 	}
@@ -647,7 +728,7 @@ func (t *memTx) commit() error {
 		t.store.products[id] = cloneProduct(p)
 	}
 	for id, s := range t.stagedSKUs {
-		if _, hasOp := computedSKUs[id]; !hasOp {
+		if _, hasOp := computedSKUs[id]; !hasOp && !duplicateRestockSKUs[id] {
 			t.store.skus[id] = cloneSKU(s)
 		}
 	}
@@ -663,7 +744,7 @@ func (t *memTx) commit() error {
 		r.UpdatedAt = now
 		t.store.reservations[tr.id] = r
 	}
-	t.store.history = append(t.store.history, t.stagedHistory...)
+	t.store.history = append(t.store.history, filteredHistory...)
 	return nil
 }
 
@@ -753,6 +834,28 @@ func (t *memTx) GetProductByID(_ context.Context, id string) (Product, error) {
 		return Product{}, ErrNotFound
 	}
 	return cloneProduct(p), nil
+}
+
+func (t *memTx) GetProductBySlug(_ context.Context, slug string) (Product, error) {
+	for _, p := range t.stagedProds {
+		if p.DeletedAt == nil && p.Slug != "" && p.Slug == slug {
+			return cloneProduct(p), nil
+		}
+	}
+	t.store.mu.Lock()
+	defer t.store.mu.Unlock()
+	for id, p := range t.store.products {
+		if staged, ok := t.stagedProds[id]; ok {
+			if staged.DeletedAt == nil && staged.Slug != "" && staged.Slug == slug {
+				return cloneProduct(staged), nil
+			}
+			continue
+		}
+		if p.DeletedAt == nil && p.Slug != "" && p.Slug == slug {
+			return cloneProduct(p), nil
+		}
+	}
+	return Product{}, ErrNotFound
 }
 
 func (t *memTx) UpdateProduct(ctx context.Context, p Product) (Product, error) {
@@ -913,6 +1016,10 @@ func (t *memTx) GetSKUWithContext(_ context.Context, skuID string) (SKU, error) 
 		return SKU{}, ErrNotFound
 	}
 	return t.store.enrichSKULocked(s), nil
+}
+
+func (t *memTx) GetSKUWithContextForUpdate(ctx context.Context, skuID string) (SKU, error) {
+	return t.GetSKUWithContext(ctx, skuID)
 }
 
 func (t *memTx) enrichWithStaged(s SKU) SKU {
@@ -1078,6 +1185,25 @@ func (t *memTx) ConfirmSKUOptimistic(ctx context.Context, skuID string, qty int3
 	return cur, nil
 }
 
+func (t *memTx) RestockSKUAtomic(ctx context.Context, skuID string, qty int32) (SKU, error) {
+	cur, err := t.GetSKUWithContext(ctx, skuID)
+	if err != nil {
+		return SKU{}, err
+	}
+	t.skuOps = append(t.skuOps, stagedSKUOp{
+		kind:   skuOpRestock,
+		skuID:  skuID,
+		amount: qty,
+	})
+	cur.Stock += qty
+	if cur.Status != SKUStatusInactive && cur.Stock > 0 {
+		cur.Status = SKUStatusActive
+	}
+	cur.Version++
+	t.stagedSKUs[skuID] = cloneSKU(cur)
+	return cur, nil
+}
+
 func (t *memTx) ListReservationsByOrderID(_ context.Context, orderID string, _ bool) ([]StockReservation, error) {
 	t.store.mu.Lock()
 	defer t.store.mu.Unlock()
@@ -1120,6 +1246,26 @@ func (t *memTx) InsertStockHistory(_ context.Context, h StockHistoryEntry) error
 	h.CreatedAt = time.Now().UTC()
 	t.stagedHistory = append(t.stagedHistory, h)
 	return nil
+}
+
+func (t *memTx) TryInsertRestockHistory(_ context.Context, h StockHistoryEntry) (bool, error) {
+	h.ChangeType = "RESTOCK"
+	t.store.mu.Lock()
+	for _, existing := range t.store.history {
+		if existing.ChangeType == "RESTOCK" && existing.OrderID == h.OrderID && existing.SKUID == h.SKUID {
+			t.store.mu.Unlock()
+			return false, nil
+		}
+	}
+	t.store.mu.Unlock()
+	for _, staged := range t.stagedHistory {
+		if staged.ChangeType == "RESTOCK" && staged.OrderID == h.OrderID && staged.SKUID == h.SKUID {
+			return false, nil
+		}
+	}
+	h.CreatedAt = time.Now().UTC()
+	t.stagedHistory = append(t.stagedHistory, h)
+	return true, nil
 }
 
 func cloneProduct(p Product) Product {

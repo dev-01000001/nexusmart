@@ -47,6 +47,7 @@ type Product struct {
 	ShopID          string
 	CategoryID      string
 	Name            string
+	Slug            string
 	Description     string
 	Images          []string
 	Status          string
@@ -149,6 +150,7 @@ type Queries interface {
 
 	CreateProduct(ctx context.Context, p Product) (Product, error)
 	GetProductByID(ctx context.Context, id string) (Product, error)
+	GetProductBySlug(ctx context.Context, slug string) (Product, error)
 	UpdateProduct(ctx context.Context, p Product) (Product, error)
 	UpdateProductReview(ctx context.Context, id, status, rejectionReason string) (Product, error)
 	UpdateProductStatus(ctx context.Context, id, status string) error
@@ -162,17 +164,20 @@ type Queries interface {
 	ListSKUsByProductIDs(ctx context.Context, productIDs []string) ([]SKU, error)
 	GetSKUsBatch(ctx context.Context, skuIDs []string) ([]SKU, error)
 	GetSKUWithContext(ctx context.Context, skuID string) (SKU, error)
+	GetSKUWithContextForUpdate(ctx context.Context, skuID string) (SKU, error)
 	CountActiveInStockSKUsByProduct(ctx context.Context, productID string) (int64, error)
 
 	UpdateSKUStockOptimistic(ctx context.Context, skuID string, newStock int32, expectedVersion int64) (SKU, error)
 	ReserveSKUOptimistic(ctx context.Context, skuID string, qty int32, expectedVersion int64) (SKU, error)
 	ReleaseSKUOptimistic(ctx context.Context, skuID string, qty int32, expectedVersion int64) (SKU, error)
 	ConfirmSKUOptimistic(ctx context.Context, skuID string, qty int32, expectedVersion int64) (SKU, error)
+	RestockSKUAtomic(ctx context.Context, skuID string, qty int32) (SKU, error)
 
 	ListReservationsByOrderID(ctx context.Context, orderID string, forUpdate bool) ([]StockReservation, error)
 	CreateStockReservation(ctx context.Context, r StockReservation) (StockReservation, error)
 	TransitionStockReservation(ctx context.Context, id, toStatus, fromStatus string) (bool, error)
 	InsertStockHistory(ctx context.Context, h StockHistoryEntry) error
+	TryInsertRestockHistory(ctx context.Context, h StockHistoryEntry) (bool, error)
 }
 
 // Store is the top-level persistence interface supporting transactions and health pings.

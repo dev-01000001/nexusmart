@@ -119,15 +119,20 @@ WHERE user_id = $1
 
 -- name: CreateShop :one
 INSERT INTO shops (
-    id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status
+    id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, slug
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
 )
 RETURNING *;
 
 -- name: GetShopByID :one
 SELECT * FROM shops
 WHERE id = $1
+LIMIT 1;
+
+-- name: GetShopBySlug :one
+SELECT * FROM shops
+WHERE slug = $1
 LIMIT 1;
 
 -- name: GetShopByOwnerID :one

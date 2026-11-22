@@ -2,7 +2,7 @@
 
 import React, { Suspense, useMemo, useState } from "react";
 import type { AdminDispute, DisputeStatus, VulnerablePriorityGroup } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconSearch } from "@/components";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import {
@@ -13,7 +13,6 @@ import {
   VULNERABLE_GROUP_LABELS,
 } from "@/features/admin/adminMeta";
 import {
-  appendAdminAuditLog,
   confirmDisputeAckSla,
   updateDisputePriorityGroup,
   useAdminDisputeOverrides,
@@ -34,7 +33,7 @@ function DisputesContent({
   initialQuery: string;
   initialSelected: string | null;
 }) {
-  const { disputes, updateDisputeStatus, showToast } = useStore();
+  const { disputes, updateDisputeStatus, showToast } = useMockStore();
   const overrides = useAdminDisputeOverrides();
 
   const [activeTab, setActiveTab] = useState<DisputeTab>("all");
@@ -161,13 +160,6 @@ function DisputesContent({
   const handleConfirmAck24h = (dispute: AdminDispute) => {
     confirmDisputeAckSla(dispute.id);
     showToast(`Đã xác nhận tiếp nhận hồ sơ ${dispute.caseCode} trong hạn SLA 24h.`);
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Xác nhận tiếp nhận khiếu nại trong SLA 24h",
-      module: "Khiếu nại",
-      target: dispute.caseCode,
-      changeSummary: `Đơn ${dispute.orderCode} (${dispute.buyerName}) đã xác nhận tiếp nhận, chuyển sang chu kỳ xử lý 5–7 ngày làm việc.`,
-    });
   };
 
   const handlePriorityChange = (dispute: AdminDispute, rawValue: string) => {
@@ -175,13 +167,6 @@ function DisputesContent({
     updateDisputePriorityGroup(dispute.id, nextGroup);
     const label = nextGroup ? VULNERABLE_GROUP_LABELS[nextGroup] : "Bỏ nhãn ưu tiên";
     showToast(`Cập nhật nhãn ưu tiên nhóm yếu thế cho ${dispute.caseCode}: ${label}.`);
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Cập nhật nhãn Ưu tiên nhóm yếu thế",
-      module: "Khiếu nại",
-      target: dispute.caseCode,
-      changeSummary: `Đơn ${dispute.orderCode}: ${label}.`,
-    });
   };
 
   const handleResolve = (
@@ -196,13 +181,6 @@ function DisputesContent({
         `${dispute.evidenceNote} Đã xác nhận tiếp nhận và chuyển bước đối chiếu chứng từ vận đơn.`;
       confirmDisputeAckSla(dispute.id);
       updateDisputeStatus(dispute.id, "dang_xac_minh", nextNote);
-      appendAdminAuditLog({
-        role: "Vận hành sàn",
-        action: "Chuyển khiếu nại sang Đang xác minh",
-        module: "Khiếu nại",
-        target: dispute.caseCode,
-        changeSummary: `Đơn ${dispute.orderCode} (${formatVnd(dispute.amount)}): ${nextNote}`,
-      });
       return;
     }
 
@@ -222,13 +200,6 @@ function DisputesContent({
         `Hoàn ${formatVnd(partialAmount)} về Ví NexusPay người mua ${dispute.buyerName} và giải ngân ${formatVnd(sellerShare)} cho ${dispute.shopName}.`;
       confirmDisputeAckSla(dispute.id);
       updateDisputeStatus(dispute.id, "da_xu_ly", summary);
-      appendAdminAuditLog({
-        role: "Vận hành sàn",
-        action: "Phân xử hoàn tiền một phần",
-        module: "Khiếu nại",
-        target: dispute.caseCode,
-        changeSummary: summary,
-      });
       return;
     }
 
@@ -240,13 +211,6 @@ function DisputesContent({
         customNote ||
         `Đã hoàn toàn bộ ${formatVnd(dispute.amount)} về Ví NexusPay người mua ${dispute.buyerName} và ghi nợ gian hàng ${dispute.shopName}.`;
       updateDisputeStatus(dispute.id, "da_xu_ly", summary);
-      appendAdminAuditLog({
-        role: "Vận hành sàn",
-        action: "Hoàn tiền 100% cho người mua",
-        module: "Khiếu nại",
-        target: dispute.caseCode,
-        changeSummary: summary,
-      });
       return;
     }
 
@@ -254,13 +218,6 @@ function DisputesContent({
       customNote ||
       `Đã giải ngân toàn bộ ${formatVnd(dispute.amount)} cho gian hàng ${dispute.shopName} sau khi xác minh chứng từ đóng gói.`;
     updateDisputeStatus(dispute.id, "da_xu_ly", summary);
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Giải ngân khiếu nại cho gian hàng",
-      module: "Khiếu nại",
-      target: dispute.caseCode,
-      changeSummary: summary,
-    });
   };
 
   const renderDetailPanel = (dispute: (typeof enrichedDisputes)[number], showHeading = false) => {

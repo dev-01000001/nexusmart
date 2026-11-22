@@ -35,6 +35,7 @@ type Product struct {
 	DeletedAt       *time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	Slug            string
 }
 
 type Sku struct {

@@ -3,14 +3,14 @@
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ORDER_STATUS_META, SHOPS, getShopById } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import { ORDER_STATUS_META, SHOPS, getSellerWorkspace, getShopById } from "@/data";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconSearch, StateView } from "@/components";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
+import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
 import {
   getShopChatThreadsWithSession,
-  getUnifiedSellerOrders,
   parseUiState,
   sendExtraSellerChatMessage,
   useSellerSession,
@@ -43,17 +43,19 @@ function getInitials(fullName: string): string {
 }
 
 function SellerChatContent() {
+  return (
+    <SellerShopGate pageTitle="Tin nhắn khách hàng">{() => <SellerChatInner />}</SellerShopGate>
+  );
+}
+
+function SellerChatInner() {
   const searchParams = useSearchParams();
   const uiState = parseUiState(searchParams.get("state"));
-  const {
-    activeSellerShopId,
-    chatThreads,
-    sendChatMessage,
-    orders: storeOrders,
-    showToast,
-  } = useStore();
+  const { chatThreads, sendChatMessage, showToast } = useMockStore();
+  const { shop, mockShopKey } = useSellerContext();
   const session = useSellerSession();
-  const activeShop = getShopById(activeSellerShopId) ?? SHOPS[0];
+  const activeShop = getShopById(mockShopKey) ?? SHOPS[0];
+  const displayShopName = shop?.name ?? activeShop.name;
 
   const [query, setQuery] = useState("");
   const [selectedThreadId, setSelectedThreadId] = useState<string>("");
@@ -65,10 +67,7 @@ function SellerChatContent() {
     [activeShop.id, chatThreads, session]
   );
 
-  const shopOrders = useMemo(
-    () => getUnifiedSellerOrders(activeShop.id, storeOrders, session),
-    [activeShop.id, storeOrders, session]
-  );
+  const shopOrders = useMemo(() => getSellerWorkspace(activeShop.id).orders, [activeShop.id]);
 
   const filteredThreads = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -119,7 +118,7 @@ function SellerChatContent() {
         <div className={common.headerText}>
           <h1 className={common.title}>Tin nhắn khách hàng</h1>
           <p className={common.finding}>
-            {activeShop.name} · {formatInt(threads.length)} hội thoại đang theo dõi · Phản hồi trung
+            {displayShopName} · {formatInt(threads.length)} hội thoại đang theo dõi · Phản hồi trung
             bình {activeShop.responseTime.toLowerCase()}
           </p>
         </div>

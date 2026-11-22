@@ -35,7 +35,17 @@ registerHooks({
 
 const PUBLIC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../public");
 
-const { formatVnd, formatSignedVnd, formatCompactVnd } = await import("../src/lib/format.ts");
+const {
+  formatVnd,
+  formatSignedVnd,
+  formatCompactVnd,
+  formatDateVi,
+  formatDateTimeVi,
+  formatDayMonthVi,
+  formatTimeHmVn,
+  formatShortTimeDateVi,
+  formatVnDayKey,
+} = await import("../src/lib/format.ts");
 const { PROVINCES, getProvinceByCode, getShippingFeeForProvince } =
   await import("../src/lib/provinces.ts");
 const { SHOPS } = await import("../src/data/shops.ts");
@@ -86,6 +96,7 @@ const {
   computeReconciliationSummary,
   computeAdminDailySeries,
 } = await import("../src/data/admin.ts");
+const { sanitizeNextPath } = await import("../src/lib/redirect.ts");
 
 let passed = 0;
 function check(name, fn) {
@@ -105,6 +116,18 @@ check("VND integer formatting", () => {
   assert.equal(formatSignedVnd(0), "0₫");
   assert.equal(formatCompactVnd(12500000), "12,5 tr₫");
   assert.equal(formatCompactVnd(450000), "450k₫");
+});
+
+// 1b. Vietnam timezone (Asia/Ho_Chi_Minh, UTC+7) deterministic date/time formatting across any host TZ
+check("Vietnam timezone (Asia/Ho_Chi_Minh) date/time formatting", () => {
+  assert.equal(formatDateTimeVi("2026-11-22T17:30:00Z"), "00:30 · 23/11/2026");
+  assert.equal(formatDateVi("2026-11-22T17:30:00Z"), "23/11/2026");
+  assert.equal(formatDayMonthVi("2026-11-22T17:30:00Z"), "23/11");
+  assert.equal(formatTimeHmVn("2026-11-22T17:30:00Z"), "00:30");
+  assert.equal(formatShortTimeDateVi("2026-11-22T17:30:00Z"), "00:30 · 23/11");
+  assert.equal(formatVnDayKey("2026-11-22T17:30:00Z"), "2026-11-23");
+  assert.equal(formatDateTimeVi("2026-11-22T17:00:00Z"), "00:00 · 23/11/2026");
+  assert.equal(formatDateVi("2026-11-22"), "22/11/2026");
 });
 
 // 2. 34 Vietnamese provinces (2-level model, no districts)
@@ -635,6 +658,54 @@ check("Wave 3 editorial models, banners, category tiles, and workshop media exis
   }
   assert.ok(existsSync(resolve(PUBLIC_DIR, WORKSHOP_MEDIA.loomVideo.src.replace(/^\//, ""))));
   assert.ok(existsSync(resolve(PUBLIC_DIR, WORKSHOP_MEDIA.loomVideo.poster.replace(/^\//, ""))));
+});
+
+// 14. Open-redirect sanitization (dot-segment normalization, protocol-relative, absolute URLs, control chars)
+check("sanitizeNextPath blocks open-redirect vectors and preserves internal paths", () => {
+  const malicious = [
+    "/..//evil.com",
+    "/.//evil.com",
+    "/a/..//evil.com",
+    "/%2e%2e//evil.com",
+    "/%2e//evil.com",
+    "/a/b/../..//evil.com",
+    "//evil.com",
+    "///evil.com",
+    "/\\evil.com",
+    "\\\\evil.com",
+    "https://evil.com",
+    "https://evil.com/dang-nhap",
+    "http://evil.com",
+    "javascript:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+    "evil.com",
+    "/tai-khoan\r\nSet-Cookie: x=1",
+    "/tai-khoan\n/evil",
+    "/tai-khoan\u0000",
+    "/\t//evil.com",
+  ];
+  for (const vector of malicious) {
+    assert.equal(
+      sanitizeNextPath(vector, "/"),
+      "/",
+      `Expected fallback "/" for open-redirect vector: ${JSON.stringify(vector)}`
+    );
+  }
+
+  assert.equal(sanitizeNextPath(null, "/"), "/");
+  assert.equal(sanitizeNextPath(undefined, "/"), "/");
+  assert.equal(sanitizeNextPath("", "/"), "/");
+  assert.equal(sanitizeNextPath("/", "/"), "/");
+  assert.equal(sanitizeNextPath("/seller", "/"), "/seller");
+  assert.equal(sanitizeNextPath("/admin/doi-soat", "/"), "/admin/doi-soat");
+  assert.equal(
+    sanitizeNextPath("/thanh-toan?step=2&voucher=NEXUS30#summary", "/"),
+    "/thanh-toan?step=2&voucher=NEXUS30#summary"
+  );
+  assert.equal(
+    sanitizeNextPath("/san-pham/ao-thun-cotton?color=trang", "/"),
+    "/san-pham/ao-thun-cotton?color=trang"
+  );
 });
 
 console.log(`\nALL ${passed} DATA INTEGRITY CHECKS PASSED.`);

@@ -2,13 +2,15 @@
 
 import React, { useMemo, useState } from "react";
 import type { Product, ProductSku, SizeCode } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import type { CatalogProduct, CatalogSku } from "@/lib/catalog-types";
+import { useSession } from "@/context/SessionContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconCheck } from "@/components";
 import styles from "./PdpBackInStock.module.css";
 
 export interface PdpBackInStockProps {
-  product: Product;
-  activeSku: ProductSku | undefined;
+  product: Product | CatalogProduct;
+  activeSku: (ProductSku | CatalogSku) | undefined;
   colorName: string;
   size: SizeCode;
   isOpen: boolean;
@@ -23,14 +25,14 @@ export function PdpBackInStock({
   isOpen,
   onClose,
 }: PdpBackInStockProps) {
-  const { user, isAuthenticated, subscribeBackInStock, hasBackInStockAlert, backInStockAlerts } =
-    useStore();
+  const { user, isAuthenticated } = useSession();
+  const { subscribeBackInStock, hasBackInStockAlert, backInStockAlerts } = useMockStore();
 
   const outOfStockSkus = useMemo(() => product.skus.filter((s) => s.stock <= 0), [product.skus]);
 
   const [pickedSkuCode, setPickedSkuCode] = useState<string>("");
   const [contact, setContact] = useState<string>(() =>
-    isAuthenticated ? user.phone || user.email : ""
+    isAuthenticated && user ? user.phone || user.email : ""
   );
   const [error, setError] = useState<string>("");
 

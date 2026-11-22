@@ -13,6 +13,7 @@ import (
 
 const (
 	internalServiceRPC = "/nexusmart.product.v1.ProductService/ReleaseStock"
+	restockServiceRPC  = "/nexusmart.product.v1.ProductService/RestockOrderItems"
 	internalUserRPC    = "/nexusmart.product.v1.ProductService/ReserveStock"
 	publicRPC          = "/nexusmart.product.v1.ProductService/CreateProduct"
 )
@@ -42,8 +43,10 @@ func TestGRPCInterceptorIgnoresSpoofedIdentityMetadata(t *testing.T) {
 		t.Fatalf("spoofed metadata must stay anonymous, got claims=%+v err=%v", claims, err)
 	}
 	// Internal RPC: anonymous caller is rejected outright.
-	if _, err := callInterceptor(t, users, svc, internalServiceRPC, spoof...); status.Code(err) != codes.Unauthenticated {
-		t.Fatalf("anonymous internal RPC: want Unauthenticated, got %v", err)
+	for _, m := range []string{internalServiceRPC, restockServiceRPC} {
+		if _, err := callInterceptor(t, users, svc, m, spoof...); status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("anonymous internal RPC %s: want Unauthenticated, got %v", m, err)
+		}
 	}
 
 	// Valid shop-A JWT + x-shop-id of shop B: metadata ignored, identity is shop A.
@@ -59,9 +62,11 @@ func TestGRPCInterceptorServiceTokens(t *testing.T) {
 	svc, _ := NewManager("service-key", ServiceTokenTTL)
 
 	good, _ := svc.SignServiceToken("order-service")
-	claims, err := callInterceptor(t, users, svc, internalServiceRPC, MDAuthorization, "Bearer "+good)
-	if err != nil || claims == nil || claims.Service != "order-service" || claims.Role != ServiceRole {
-		t.Fatalf("valid service token on allowed RPC: claims=%+v err=%v", claims, err)
+	for _, m := range []string{internalServiceRPC, restockServiceRPC} {
+		claims, err := callInterceptor(t, users, svc, m, MDAuthorization, "Bearer "+good)
+		if err != nil || claims == nil || claims.Service != "order-service" || claims.Role != ServiceRole {
+			t.Fatalf("valid service token on allowed RPC %s: claims=%+v err=%v", m, claims, err)
+		}
 	}
 	// Service identity is refused on RPCs not marked for it.
 	for _, m := range []string{internalUserRPC, publicRPC} {

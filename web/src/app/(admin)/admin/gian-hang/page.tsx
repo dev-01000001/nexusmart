@@ -1,19 +1,27 @@
 "use client";
 
-import React, { Suspense, useMemo, useState } from "react";
-import type { ShopApprovalApplication, ShopApprovalStatus } from "@/data";
-import { useStore } from "@/context/StoreContext";
-import { Button, IconCheck, IconClock, IconSearch } from "@/components";
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import type { GatewayShop, PaginatedResponse, ShopStatus } from "@/lib/gateway-types";
+import { api, getErrorMessage } from "@/lib/api";
+import { useMockStore } from "@/mock/MockStoreContext";
+import { Button, IconSearch, StateView } from "@/components";
 import { formatDateTimeVi, formatInt } from "@/lib/format";
-import { EMPTY_DASH, SHOP_APPROVAL_META } from "@/features/admin/adminMeta";
-import { appendAdminAuditLog } from "@/features/admin/auditStore";
+import { EMPTY_DASH } from "@/features/admin/adminMeta";
+import { getAdminShopStatusMeta } from "@/features/admin/types";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { StatusPill } from "@/features/admin/StatusPill";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
 
-type ShopFilterTab = "all" | ShopApprovalStatus;
-type ShopSortKey = "sla" | "newest" | "sku";
+type ShopFilterTab = "all" | ShopStatus;
+type ShopSortKey = "pending_first" | "newest" | "name";
+
+const STATUS_PRIORITY: Record<string, number> = {
+  PENDING: 0,
+  REJECTED: 1,
+  SUSPENDED: 2,
+  ACTIVE: 3,
+};
 
 function ShopApprovalContent({
   initialQuery,
@@ -22,123 +30,144 @@ function ShopApprovalContent({
   initialQuery: string;
   initialSelected: string | null;
 }) {
-  const { shopApprovals, updateShopApprovalStatus } = useStore();
+  const { showToast } = useMockStore();
+  const [shops, setShops] = useState<GatewayShop[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
   const [activeTab, setActiveTab] = useState<ShopFilterTab>("all");
   const [query, setQuery] = useState(initialQuery);
-  const [sortBy, setSortBy] = useState<ShopSortKey>("sla");
-  const [selectedId, setSelectedId] = useState<string | null>(initialSelected ?? "app-3");
+  const [sortBy, setSortBy] = useState<ShopSortKey>("pending_first");
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelected);
   const [mobileOpenId, setMobileOpenId] = useState<string | null>(initialSelected);
   const [reasonDrafts, setReasonDrafts] = useState<Record<string, string>>({});
   const [reasonErrorId, setReasonErrorId] = useState<string | null>(null);
+  const [submittingId, setSubmittingId] = useState<string | null>(null);
+
+  const loadShops = useCallback(async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const res = await api<PaginatedResponse<GatewayShop>>("admin/shops?page=1&page_size=100");
+      setShops(res.items ?? []);
+    } catch (err) {
+      setErrorMsg(getErrorMessage(err, "Không thể tải danh sách hồ sơ gian hàng lúc này."));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadShops();
+  }, [loadShops]);
 
   const counts = useMemo(() => {
     const map: Record<ShopFilterTab, number> = {
-      all: shopApprovals.length,
-      cho_duyet: 0,
-      bo_sung_ho_so: 0,
-      da_duyet: 0,
-      tu_choi: 0,
+      all: shops.length,
+      PENDING: 0,
+      ACTIVE: 0,
+      REJECTED: 0,
+      SUSPENDED: 0,
     };
-    for (const app of shopApprovals) {
-      map[app.status] += 1;
+    for (const shop of shops) {
+      if (shop.status in map) {
+        map[shop.status as ShopStatus] += 1;
+      }
     }
     return map;
-  }, [shopApprovals]);
+  }, [shops]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = shopApprovals.filter((app) => {
-      if (activeTab !== "all" && app.status !== activeTab) return false;
+    const list = shops.filter((shop) => {
+      if (activeTab !== "all" && shop.status !== activeTab) return false;
       if (!q) return true;
       return (
-        app.shopName.toLowerCase().includes(q) ||
-        app.ownerName.toLowerCase().includes(q) ||
-        app.applicationCode.toLowerCase().includes(q) ||
-        app.businessLicense.toLowerCase().includes(q) ||
-        app.provinceName.toLowerCase().includes(q) ||
-        app.primaryCategory.toLowerCase().includes(q)
+        shop.name.toLowerCase().includes(q) ||
+        (shop.slug ?? "").toLowerCase().includes(q) ||
+        shop.contact_phone.toLowerCase().includes(q) ||
+        shop.business_license_doc.toLowerCase().includes(q) ||
+        shop.description.toLowerCase().includes(q) ||
+        shop.id.toLowerCase().includes(q)
       );
     });
 
     return [...list].sort((a, b) => {
       if (sortBy === "newest") {
-        return b.submittedAt.localeCompare(a.submittedAt);
+        return (b.created_at ?? "").localeCompare(a.created_at ?? "");
       }
-      if (sortBy === "sku") {
-        return b.initialSkuCount - a.initialSkuCount;
+      if (sortBy === "name") {
+        return a.name.localeCompare(b.name, "vi");
       }
-      const aOpen = a.slaHoursLeft > 0 ? a.slaHoursLeft : 9999;
-      const bOpen = b.slaHoursLeft > 0 ? b.slaHoursLeft : 9999;
-      return aOpen - bOpen;
+      const rankDiff = (STATUS_PRIORITY[a.status] ?? 9) - (STATUS_PRIORITY[b.status] ?? 9);
+      if (rankDiff !== 0) return rankDiff;
+      return (b.created_at ?? "").localeCompare(a.created_at ?? "");
     });
-  }, [shopApprovals, activeTab, query, sortBy]);
+  }, [shops, activeTab, query, sortBy]);
 
-  const activeDesktopApp = useMemo(() => {
+  const activeDesktopShop = useMemo(() => {
     if (filtered.length === 0) return null;
     if (selectedId) {
-      const exact = filtered.find((a) => a.id === selectedId);
+      const exact = filtered.find((s) => s.id === selectedId);
       if (exact) return exact;
     }
     return filtered[0];
   }, [filtered, selectedId]);
 
-  const handleSelectDesktop = (id: string) => {
-    setReasonErrorId(null);
-    setSelectedId(id);
-  };
-
-  const handleToggleMobile = (id: string) => {
-    setReasonErrorId(null);
-    setMobileOpenId((prev) => (prev === id ? null : id));
-  };
-
-  const handleDecision = (
-    app: ShopApprovalApplication,
-    nextStatus: "da_duyet" | "bo_sung_ho_so" | "tu_choi"
+  const handleDecision = async (
+    shop: GatewayShop,
+    decision: "APPROVE" | "REQUEST_INFO" | "REJECT"
   ) => {
-    const noteText = (reasonDrafts[app.id] ?? "").trim();
-    if (nextStatus === "tu_choi" && !noteText) {
-      setReasonErrorId(app.id);
+    const noteText = (reasonDrafts[shop.id] ?? "").trim();
+    if ((decision === "REJECT" || decision === "REQUEST_INFO") && !noteText) {
+      setReasonErrorId(shop.id);
       return;
     }
     setReasonErrorId(null);
-
-    const resolvedNote =
-      noteText ||
-      (nextStatus === "da_duyet"
-        ? `Đã phê duyệt mở gian hàng với ${app.initialSkuCount} mã SKU ban đầu.`
-        : "Đã gửi yêu cầu bổ sung giấy phép kinh doanh và đối chiếu tài khoản ngân hàng.");
-
-    updateShopApprovalStatus(app.id, nextStatus, resolvedNote);
-
-    const actionLabel =
-      nextStatus === "da_duyet"
-        ? "Phê duyệt mở gian hàng"
-        : nextStatus === "bo_sung_ho_so"
-          ? "Yêu cầu bổ sung hồ sơ gian hàng"
-          : "Từ chối hồ sơ gian hàng";
-
-    appendAdminAuditLog({
-      action: actionLabel,
-      module: "Gian hàng",
-      target: app.applicationCode,
-      changeSummary: `${app.shopName}: ${resolvedNote}`,
-    });
-
-    setReasonDrafts((prev) => ({ ...prev, [app.id]: "" }));
+    setSubmittingId(shop.id);
+    try {
+      const res = await api<{ shop: GatewayShop }>(`admin/shops/${shop.id}/review`, {
+        method: "POST",
+        json: {
+          decision,
+          reason:
+            noteText ||
+            (decision === "APPROVE" ? "Hồ sơ gian hàng đầy đủ, đã phê duyệt hoạt động." : ""),
+        },
+      });
+      if (res.shop) {
+        setShops((prev) => prev.map((item) => (item.id === shop.id ? res.shop : item)));
+      } else {
+        await loadShops();
+      }
+      setReasonDrafts((prev) => ({ ...prev, [shop.id]: "" }));
+      const label =
+        decision === "APPROVE"
+          ? `Đã phê duyệt gian hàng "${shop.name}". Chủ gian hàng có thể truy cập Kênh người bán.`
+          : decision === "REQUEST_INFO"
+            ? `Đã gửi yêu cầu bổ sung hồ sơ cho "${shop.name}".`
+            : `Đã từ chối hồ sơ gian hàng "${shop.name}".`;
+      showToast(label);
+    } catch (err) {
+      showToast(getErrorMessage(err, "Không thể cập nhật quyết định thẩm định gian hàng."));
+    } finally {
+      setSubmittingId(null);
+    }
   };
 
-  const renderInspectionPanel = (app: ShopApprovalApplication, showHeading = false) => {
-    const draftValue = reasonDrafts[app.id] ?? "";
-    const showReasonError = reasonErrorId === app.id;
-    const meta = SHOP_APPROVAL_META[app.status];
+  const renderInspectionPanel = (shop: GatewayShop, showHeading = false) => {
+    const draftValue = reasonDrafts[shop.id] ?? "";
+    const showReasonError = reasonErrorId === shop.id;
+    const meta = getAdminShopStatusMeta(shop.status);
+    const isBusy = submittingId === shop.id;
 
     return (
       <div className={shared.detailWell}>
         {showHeading && (
           <div className={shared.detailHeader}>
             <h2 className={shared.detailHeading}>
-              Chi tiết hồ sơ: {app.shopName} ({app.applicationCode})
+              Chi tiết hồ sơ: {shop.name}
+              {shop.slug ? ` (/${shop.slug})` : ""}
             </h2>
             <div className={shared.detailHeaderMeta}>
               <StatusPill label={meta.label} tone={meta.tone} />
@@ -147,75 +176,64 @@ function ShopApprovalContent({
         )}
         <div className={shared.detailGrid}>
           <div className={shared.detailField}>
-            <span className={shared.detailKey}>Tên gian hàng & mã hồ sơ</span>
-            <span className={shared.detailVal}>
-              {app.shopName} ({app.applicationCode})
-            </span>
+            <span className={shared.detailKey}>Mã gian hàng</span>
+            <span className={shared.detailVal}>{shop.id}</span>
           </div>
           <div className={shared.detailField}>
-            <span className={shared.detailKey}>Chủ sở hữu</span>
-            <span className={shared.detailVal}>{app.ownerName}</span>
+            <span className={shared.detailKey}>Mã chủ sở hữu</span>
+            <span className={shared.detailVal}>{shop.owner_user_id}</span>
           </div>
           <div className={shared.detailField}>
-            <span className={shared.detailKey}>Mã số thuế / GPKD</span>
-            <span className={`${shared.detailVal} num`}>{app.businessLicense}</span>
+            <span className={shared.detailKey}>Điện thoại liên hệ</span>
+            <span className={shared.detailVal}>{shop.contact_phone || EMPTY_DASH}</span>
           </div>
           <div className={shared.detailField}>
-            <span className={shared.detailKey}>Địa chỉ kho hàng</span>
+            <span className={shared.detailKey}>Giấy phép kinh doanh / Tài liệu</span>
+            <span className={shared.detailValPlain}>{shop.business_license_doc || EMPTY_DASH}</span>
+          </div>
+          <div className={shared.detailField}>
+            <span className={shared.detailKey}>Ngày đăng ký</span>
             <span className={shared.detailValPlain}>
-              {app.wardName}, {app.provinceName}
+              {shop.created_at ? formatDateTimeVi(shop.created_at) : EMPTY_DASH}
             </span>
           </div>
           <div className={shared.detailField}>
-            <span className={shared.detailKey}>Ngành hàng & SKU khởi tạo</span>
-            <span className={`${shared.detailValPlain} num`}>
-              {app.primaryCategory} · {formatInt(app.initialSkuCount)} SKU
+            <span className={shared.detailKey}>Cập nhật gần nhất</span>
+            <span className={shared.detailValPlain}>
+              {shop.updated_at ? formatDateTimeVi(shop.updated_at) : EMPTY_DASH}
             </span>
-          </div>
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>Thời điểm nộp hồ sơ</span>
-            <span className={`${shared.detailValPlain} num`}>
-              {formatDateTimeVi(app.submittedAt)}
-            </span>
-          </div>
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>Tài liệu đã nộp</span>
-            <div className={styles.checklistRow}>
-              <span className={app.documentsVerified ? styles.docTagOk : styles.docTagPending}>
-                {app.documentsVerified ? <IconCheck size={12} /> : <IconClock size={12} />}
-                {app.documentsVerified ? "GPKD đã xác minh" : "GPKD chờ bổ sung"}
-              </span>
-              <span className={app.bankVerified ? styles.docTagOk : styles.docTagPending}>
-                {app.bankVerified ? <IconCheck size={12} /> : <IconClock size={12} />}
-                {app.bankVerified ? "Ngân hàng chính chủ" : "Chờ đối chiếu sao kê"}
-              </span>
-            </div>
           </div>
           <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-            <span className={shared.detailKey}>Ghi chú thẩm định hiện tại</span>
-            <span className={shared.detailValPlain}>{app.note}</span>
+            <span className={shared.detailKey}>Mô tả gian hàng</span>
+            <span className={shared.detailValPlain}>{shop.description || EMPTY_DASH}</span>
           </div>
+          {shop.rejection_reason && (
+            <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+              <span className={shared.detailKey}>Ghi chú / Lý do thẩm định trước đó</span>
+              <span className={shared.detailValPlain}>{shop.rejection_reason}</span>
+            </div>
+          )}
         </div>
 
         <div className={shared.detailActionBar}>
           <div className={shared.detailNoteGroup}>
-            <label htmlFor={`shop-note-${app.id}`} className={shared.fieldLabel}>
+            <label htmlFor={`shop-note-${shop.id}`} className={shared.fieldLabel}>
               Ghi chú thẩm định hoặc lý do từ chối
             </label>
             <input
-              id={`shop-note-${app.id}`}
+              id={`shop-note-${shop.id}`}
               type="text"
               className={shared.textInput}
               value={draftValue}
               onChange={(e) => {
-                setReasonDrafts((prev) => ({ ...prev, [app.id]: e.target.value }));
+                setReasonDrafts((prev) => ({ ...prev, [shop.id]: e.target.value }));
                 if (showReasonError) setReasonErrorId(null);
               }}
-              placeholder="Nhập ghi chú gửi gian hàng (bắt buộc khi Từ chối)..."
+              placeholder="Nhập ghi chú gửi chủ gian hàng (bắt buộc khi Từ chối hoặc Yêu cầu bổ sung)..."
             />
             {showReasonError && (
               <span className={styles.validationError}>
-                Vui lòng nhập lý do cụ thể trước khi từ chối hồ sơ.
+                Vui lòng nhập lý do cụ thể trước khi từ chối hoặc yêu cầu bổ sung.
               </span>
             )}
           </div>
@@ -225,17 +243,17 @@ function ShopApprovalContent({
               variant="primary"
               size="sm"
               shape="app"
-              disabled={app.status === "da_duyet"}
-              onClick={() => handleDecision(app, "da_duyet")}
+              disabled={isBusy || shop.status === "ACTIVE"}
+              onClick={() => void handleDecision(shop, "APPROVE")}
             >
-              Phê duyệt
+              {isBusy ? "Đang xử lý..." : "Phê duyệt"}
             </Button>
             <Button
               variant="outline"
               size="sm"
               shape="app"
-              disabled={app.status === "da_duyet"}
-              onClick={() => handleDecision(app, "bo_sung_ho_so")}
+              disabled={isBusy || shop.status === "ACTIVE"}
+              onClick={() => void handleDecision(shop, "REQUEST_INFO")}
             >
               Yêu cầu bổ sung
             </Button>
@@ -243,8 +261,8 @@ function ShopApprovalContent({
               variant="danger"
               size="sm"
               shape="app"
-              disabled={app.status === "tu_choi"}
-              onClick={() => handleDecision(app, "tu_choi")}
+              disabled={isBusy || shop.status === "REJECTED"}
+              onClick={() => void handleDecision(shop, "REJECT")}
             >
               Từ chối
             </Button>
@@ -256,16 +274,58 @@ function ShopApprovalContent({
 
   const tabs: Array<{ id: ShopFilterTab; label: string }> = [
     { id: "all", label: "Tất cả" },
-    { id: "cho_duyet", label: "Chờ duyệt" },
-    { id: "bo_sung_ho_so", label: "Yêu cầu bổ sung" },
-    { id: "da_duyet", label: "Đã duyệt" },
-    { id: "tu_choi", label: "Từ chối" },
+    { id: "PENDING", label: "Chờ duyệt" },
+    { id: "ACTIVE", label: "Đang hoạt động" },
+    { id: "REJECTED", label: "Từ chối" },
+    { id: "SUSPENDED", label: "Tạm ngưng" },
   ];
 
   const subtitle =
-    counts.cho_duyet > 0
-      ? `${counts.cho_duyet} hồ sơ chờ duyệt mới và ${counts.bo_sung_ho_so} hồ sơ chờ bổ sung giấy phép kinh doanh.`
-      : `Không còn hồ sơ chờ duyệt mới; ${counts.da_duyet} gian hàng đã kích hoạt hoạt động.`;
+    counts.PENDING > 0
+      ? `Hiện có ${formatInt(counts.PENDING)} hồ sơ gian hàng chờ duyệt mới và ${formatInt(counts.ACTIVE)} gian hàng đang hoạt động.`
+      : `Không còn hồ sơ chờ duyệt mới; ${formatInt(counts.ACTIVE)} gian hàng đã được phê duyệt hoạt động.`;
+
+  if (loading) {
+    return (
+      <div className={shared.page}>
+        <header className={shared.titleRow}>
+          <div className={shared.titleBlock}>
+            <h1 className={shared.pageTitle}>Duyệt gian hàng</h1>
+          </div>
+        </header>
+        <div className={shared.stateWrap}>
+          <StateView
+            kind="loading"
+            surface="app"
+            title="Đang tải danh sách hồ sơ gian hàng..."
+            rows={5}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (errorMsg) {
+    return (
+      <div className={shared.page}>
+        <header className={shared.titleRow}>
+          <div className={shared.titleBlock}>
+            <h1 className={shared.pageTitle}>Duyệt gian hàng</h1>
+          </div>
+        </header>
+        <div className={shared.stateWrap}>
+          <StateView
+            kind="error"
+            surface="app"
+            title="Không thể tải danh sách hồ sơ gian hàng"
+            message={errorMsg}
+            actionLabel="Thử lại"
+            onAction={() => void loadShops()}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={shared.page}>
@@ -273,6 +333,11 @@ function ShopApprovalContent({
         <div className={shared.titleBlock}>
           <h1 className={shared.pageTitle}>Duyệt gian hàng</h1>
           <p className={shared.pageSubtitle}>{subtitle}</p>
+        </div>
+        <div className={shared.titleActions}>
+          <Button variant="outline" size="sm" shape="app" onClick={() => void loadShops()}>
+            Làm mới
+          </Button>
         </div>
       </header>
 
@@ -308,23 +373,23 @@ function ShopApprovalContent({
               className={shared.toolbarSearch}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Tìm tên gian hàng, chủ shop, mã HS-..."
+              placeholder="Tìm tên gian hàng, SĐT, giấy phép..."
               aria-label="Tìm kiếm hồ sơ gian hàng"
             />
           </div>
         </div>
 
         <div className={shared.toolbarRight}>
-          <span className={shared.resultCount}>{formatInt(filtered.length)} hồ sơ</span>
+          <span className={shared.resultCount}>{formatInt(filtered.length)} gian hàng</span>
           <select
             className={shared.toolbarSelect}
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value as ShopSortKey)}
             aria-label="Sắp xếp hồ sơ gian hàng"
           >
-            <option value="sla">Hạn SLA gấp nhất</option>
-            <option value="newest">Mới nộp gần nhất</option>
-            <option value="sku">Số SKU nhiều nhất</option>
+            <option value="pending_first">Ưu tiên chờ duyệt</option>
+            <option value="newest">Mới đăng ký gần nhất</option>
+            <option value="name">Tên gian hàng (A-Z)</option>
           </select>
         </div>
       </div>
@@ -339,46 +404,39 @@ function ShopApprovalContent({
             <table className={shared.dataTable}>
               <thead>
                 <tr>
-                  <th>Gian hàng & chủ sở hữu</th>
-                  <th>Ngành hàng & kho</th>
-                  <th className={shared.colNum}>SKU khởi tạo</th>
-                  <th className={shared.colNum}>Hạn SLA</th>
+                  <th>Gian hàng</th>
+                  <th>Liên hệ & giấy phép</th>
+                  <th>Ngày đăng ký</th>
                   <th>Trạng thái</th>
                   <th className={shared.colAction}>Thao tác</th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((app) => {
-                  const meta = SHOP_APPROVAL_META[app.status];
-                  const isSelected = activeDesktopApp?.id === app.id;
+                {filtered.map((shop) => {
+                  const meta = getAdminShopStatusMeta(shop.status);
+                  const isSelected = activeDesktopShop?.id === shop.id;
                   return (
                     <tr
-                      key={app.id}
+                      key={shop.id}
                       className={`${shared.rowInteractive} ${isSelected ? shared.rowSelected : ""}`}
-                      onClick={() => handleSelectDesktop(app.id)}
+                      onClick={() => {
+                        setReasonErrorId(null);
+                        setSelectedId(shop.id);
+                      }}
                     >
                       <td>
-                        <div className={shared.cellPrimary}>{app.shopName}</div>
+                        <div className={shared.cellPrimary}>{shop.name}</div>
                         <div className={shared.cellSub}>
-                          {app.applicationCode} · {app.ownerName}
+                          {shop.slug ? `/${shop.slug}` : shop.id}
                         </div>
                       </td>
                       <td>
-                        <div>{app.primaryCategory}</div>
-                        <div className={shared.cellSub}>{app.provinceName}</div>
+                        <div>{shop.contact_phone || EMPTY_DASH}</div>
+                        <div className={shared.cellSub}>
+                          {shop.business_license_doc || "Chưa đính kèm GPKD"}
+                        </div>
                       </td>
-                      <td className={shared.colNum}>{formatInt(app.initialSkuCount)}</td>
-                      <td
-                        className={`${shared.colNum} ${
-                          app.slaHoursLeft > 0 && app.slaHoursLeft <= 12
-                            ? shared.numNegative
-                            : app.slaHoursLeft === 0
-                              ? shared.numMuted
-                              : ""
-                        }`}
-                      >
-                        {app.slaHoursLeft > 0 ? `Còn ${app.slaHoursLeft}h` : EMPTY_DASH}
-                      </td>
+                      <td>{shop.created_at ? formatDateTimeVi(shop.created_at) : EMPTY_DASH}</td>
                       <td>
                         <StatusPill label={meta.label} tone={meta.tone} />
                       </td>
@@ -388,10 +446,11 @@ function ShopApprovalContent({
                           className={shared.rowActionBtn}
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleSelectDesktop(app.id);
+                            setReasonErrorId(null);
+                            setSelectedId(shop.id);
                           }}
                         >
-                          {isSelected ? "Đang xem" : "Xem hồ sơ"}
+                          {isSelected ? "Đang xem" : "Thẩm định"}
                         </button>
                       </td>
                     </tr>
@@ -401,38 +460,37 @@ function ShopApprovalContent({
             </table>
           </div>
 
-          {activeDesktopApp && (
+          {activeDesktopShop && (
             <section
               className={shared.desktopDetailSection}
               aria-label="Bảng thẩm định chi tiết hồ sơ gian hàng"
             >
-              {renderInspectionPanel(activeDesktopApp, true)}
+              {renderInspectionPanel(activeDesktopShop, true)}
             </section>
           )}
 
           <div className={shared.mobileList}>
-            {filtered.map((app) => {
-              const meta = SHOP_APPROVAL_META[app.status];
-              const isSelected = mobileOpenId === app.id;
+            {filtered.map((shop) => {
+              const meta = getAdminShopStatusMeta(shop.status);
+              const isSelected = mobileOpenId === shop.id;
               return (
-                <div key={app.id} className={shared.mobileItem}>
+                <div key={shop.id} className={shared.mobileItem}>
                   <button
                     type="button"
                     className={shared.mobileItemBtn}
-                    onClick={() => handleToggleMobile(app.id)}
+                    onClick={() => {
+                      setReasonErrorId(null);
+                      setMobileOpenId((prev) => (prev === shop.id ? null : shop.id));
+                    }}
                     aria-expanded={isSelected}
                   >
                     <div className={shared.mobileLine1}>
-                      <span className={shared.mobileIdentity}>{app.shopName}</span>
-                      <span className={shared.mobileMetric}>
-                        {app.slaHoursLeft > 0
-                          ? `Còn ${app.slaHoursLeft}h`
-                          : `${formatInt(app.initialSkuCount)} SKU`}
-                      </span>
+                      <span className={shared.mobileIdentity}>{shop.name}</span>
+                      <span className={shared.mobileMetric}>{shop.contact_phone}</span>
                     </div>
                     <div className={shared.mobileLine2}>
                       <span className={shared.mobileMetaText}>
-                        {app.applicationCode} · {app.primaryCategory} · {app.provinceName}
+                        {shop.business_license_doc || shop.id}
                       </span>
                       <span className={styles.mobilePillRow}>
                         <StatusPill label={meta.label} tone={meta.tone} />
@@ -440,7 +498,7 @@ function ShopApprovalContent({
                     </div>
                   </button>
                   {isSelected && (
-                    <div className={shared.mobileDetailWrap}>{renderInspectionPanel(app)}</div>
+                    <div className={shared.mobileDetailWrap}>{renderInspectionPanel(shop)}</div>
                   )}
                 </div>
               );
@@ -456,7 +514,7 @@ function ShopApprovalRoute() {
   return (
     <AdminStateGate
       title="Duyệt gian hàng"
-      subtitle="Thẩm định giấy phép kinh doanh, tài khoản ngân hàng và bộ ảnh sản phẩm của gian hàng đăng ký."
+      subtitle="Thẩm định giấy phép kinh doanh, thông tin liên hệ và kích hoạt tài khoản người bán."
       emptyTitle="Hàng đợi duyệt gian hàng đang trống"
       emptyMessage="Tất cả hồ sơ đăng ký mở gian hàng mới đã được xử lý hoàn tất."
       errorTitle="Không thể tải danh sách hồ sơ gian hàng"

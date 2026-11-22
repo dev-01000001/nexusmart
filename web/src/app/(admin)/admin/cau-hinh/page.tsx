@@ -2,24 +2,25 @@
 
 import React, { Suspense, useMemo, useState } from "react";
 import type { CategoryCommissionSetting } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button } from "@/components";
 import { formatInt, formatPercent, formatVnd } from "@/lib/format";
 import { formatNowHHMM } from "@/features/admin/adminMeta";
 import {
-  appendAdminAuditLog,
   updateAdminExtendedConfig,
   updateAdminExtraConfig,
   useAdminExtendedConfig,
   useAdminExtraConfig,
 } from "@/features/admin/auditStore";
+import { AdminCategoriesPanel } from "@/features/admin/AdminCategoriesPanel";
+import { AdminUsersPanel } from "@/features/admin/AdminUsersPanel";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { StatusPill } from "@/features/admin/StatusPill";
 import { ToggleSwitch } from "@/features/admin/ToggleSwitch";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
 
-type ConfigTab = "dat_hang" | "doi_tra" | "thanh_toan" | "thong_bao";
+type ConfigTab = "danh_muc" | "nguoi_dung" | "dat_hang" | "doi_tra" | "thanh_toan" | "thong_bao";
 
 function renderNotificationPreview(template: string): string {
   return template
@@ -39,11 +40,11 @@ function renderNotificationPreview(template: string): string {
 }
 
 function PlatformConfigContent() {
-  const { platformConfig, updatePlatformConfig, showToast } = useStore();
+  const { platformConfig, updatePlatformConfig, showToast } = useMockStore();
   const extraConfig = useAdminExtraConfig();
   const extendedConfig = useAdminExtendedConfig();
 
-  const [activeTab, setActiveTab] = useState<ConfigTab>("dat_hang");
+  const [activeTab, setActiveTab] = useState<ConfigTab>("danh_muc");
   const [savedNotice, setSavedNotice] = useState<Record<string, string>>({});
 
   // Tab 1: Guest checkout, freeship, coins, shipping carriers
@@ -159,12 +160,6 @@ function PlatformConfigContent() {
       guestCheckoutEnabled,
       guestLookupAndCancelEnabled,
     }));
-    appendAdminAuditLog({
-      action: "Cập nhật đặt hàng vãng lai, freeship và trần xu",
-      module: "Cấu hình",
-      target: "checkout-guest-logistics",
-      changeSummary: `Guest checkout: ${guestCheckoutEnabled ? "Bật" : "Tắt"}, Freeship từ ${formatVnd(cleanFreeship)}, trần trừ Xu ${cleanCoinCap}%, giữ đối soát ${cleanHold} ngày.`,
-    });
     markSectionSaved("logistics");
   };
 
@@ -175,12 +170,6 @@ function PlatformConfigContent() {
       carriers: carriersDraft,
     }));
     showToast("Đã lưu cấu hình vùng và hãng vận chuyển.");
-    appendAdminAuditLog({
-      action: "Cập nhật vùng và hãng vận chuyển sàn",
-      module: "Cấu hình",
-      target: "shipping-carriers",
-      changeSummary: `${enabledCarriersCount}/${carriersDraft.length} hãng đang hoạt động (SPX / GHN / Giao nhanh).`,
-    });
     markSectionSaved("carriers");
   };
 
@@ -220,12 +209,6 @@ function PlatformConfigContent() {
       bankRefundSchedule: bankRefundSchedule.trim() || prev.bankRefundSchedule,
       returnExceptions: exceptionsDraft,
     }));
-    appendAdminAuditLog({
-      action: "Cập nhật chuẩn đổi trả sàn & danh sách ngoại lệ",
-      module: "Cấu hình",
-      target: "return-policy-45d",
-      changeSummary: `Chuẩn đổi trả ${cleanDays} ngày (tối đa ${cleanCount} lần), đổi 2 chiều: ${twoWayExchange ? "Bật" : "Tắt"}, ${exceptionsDraft.filter((x) => x.active).length} nhóm ngoại lệ.`,
-    });
     markSectionSaved("returns");
   };
 
@@ -255,12 +238,6 @@ function PlatformConfigContent() {
       ...platformConfig,
       commissions,
     });
-    appendAdminAuditLog({
-      action: "Cập nhật biểu phí hoa hồng ngành hàng",
-      module: "Cấu hình",
-      target: "category-commissions",
-      changeSummary: `Cập nhật ${commissions.length} ngành hàng, phí trung bình ${formatPercent(commissionStats.avg, 1, false)}.`,
-    });
     markSectionSaved("commissions");
   };
 
@@ -279,12 +256,6 @@ function PlatformConfigContent() {
       codEnabled,
       retryPaymentWindowMinutes: cleanRetry,
     }));
-    appendAdminAuditLog({
-      action: "Cập nhật cổng thanh toán (COD/VietQR/Ví) & Flash sale",
-      module: "Cấu hình",
-      target: "payment-gateways",
-      changeSummary: `COD: ${codEnabled ? "Bật" : "Tắt"}, VietQR: ${vietqrEnabled ? "Bật" : "Tắt"}, Ví NexusPay: ${sandboxWalletEnabled ? "Bật" : "Tắt"}, Thanh toán lại ${cleanRetry} phút.`,
-    });
     markSectionSaved("gateways");
   };
 
@@ -299,12 +270,6 @@ function PlatformConfigContent() {
       autoCheckTaxAndPhoto,
     });
     showToast("Đã lưu quy tắc cảnh báo đối soát và thẩm định gian hàng.");
-    appendAdminAuditLog({
-      action: "Cập nhật ngưỡng cảnh báo đối soát và SLA duyệt shop",
-      module: "Cấu hình",
-      target: "ops-alerts",
-      changeSummary: `Cảnh báo lệch từ ${formatVnd(cleanAlert)}, hạn SLA duyệt ${cleanSla} giờ, kiểm tra GPKD tự động: ${autoCheckTaxAndPhoto ? "Bật" : "Tắt"}.`,
-    });
     markSectionSaved("alerts");
   };
 
@@ -316,12 +281,6 @@ function PlatformConfigContent() {
       notificationTemplates: templatesDraft,
     }));
     showToast("Đã lưu mẫu thông báo Email & Zalo ZNS.");
-    appendAdminAuditLog({
-      action: "Cập nhật mẫu thông báo Email & Zalo ZNS",
-      module: "Cấu hình",
-      target: activeTemplate?.eventCode ?? "NOTIF-TEMPLATES",
-      changeSummary: `Gộp đơn cha: ${groupParentNotif ? "Bật" : "Tắt"}, đã cập nhật ${templatesDraft.filter((t) => t.enabled).length}/${templatesDraft.length} mẫu đang hoạt động.`,
-    });
     markSectionSaved("notifications");
   };
 
@@ -329,16 +288,34 @@ function PlatformConfigContent() {
     <div className={styles.settingsContainer}>
       <header className={shared.titleRow}>
         <div className={shared.titleBlock}>
-          <h1 className={shared.pageTitle}>Cấu hình hệ thống</h1>
+          <h1 className={shared.pageTitle}>Cấu hình hệ thống & Quản trị sàn</h1>
           <p className={shared.pageSubtitle}>
-            Quản lý đặt hàng vãng lai, hãng vận chuyển (SPX/GHN/Giao nhanh), chuẩn đổi trả 45 ngày,
-            cổng thanh toán (COD/VietQR/Ví) và mẫu thông báo Email & Zalo ZNS.
+            Quản trị danh mục ngành hàng, hoa hồng, tài khoản người dùng và các cấu hình vận hành
+            toàn sàn.
           </p>
         </div>
       </header>
 
       <div className={shared.tabsBar}>
         <div className={shared.tabList} role="tablist" aria-label="Phân nhóm cấu hình sàn">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "danh_muc"}
+            className={`${shared.tabBtn} ${activeTab === "danh_muc" ? shared.tabBtnActive : ""}`}
+            onClick={() => setActiveTab("danh_muc")}
+          >
+            Danh mục & Hoa hồng
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "nguoi_dung"}
+            className={`${shared.tabBtn} ${activeTab === "nguoi_dung" ? shared.tabBtnActive : ""}`}
+            onClick={() => setActiveTab("nguoi_dung")}
+          >
+            Quản trị người dùng
+          </button>
           <button
             type="button"
             role="tab"
@@ -355,7 +332,7 @@ function PlatformConfigContent() {
             className={`${shared.tabBtn} ${activeTab === "doi_tra" ? shared.tabBtnActive : ""}`}
             onClick={() => setActiveTab("doi_tra")}
           >
-            Đổi trả & Hoa hồng
+            Đổi trả & Hoa hồng mẫu
           </button>
           <button
             type="button"
@@ -377,6 +354,9 @@ function PlatformConfigContent() {
           </button>
         </div>
       </div>
+
+      {activeTab === "danh_muc" && <AdminCategoriesPanel />}
+      {activeTab === "nguoi_dung" && <AdminUsersPanel />}
 
       {/* TAB 1: ĐẶT HÀNG VÃNG LAI, FREESHIP & HÃNG VẬN CHUYỂN */}
       {activeTab === "dat_hang" && (

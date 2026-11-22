@@ -34,6 +34,7 @@ const (
 	ProductService_ReserveStock_FullMethodName       = "/nexusmart.product.v1.ProductService/ReserveStock"
 	ProductService_ReleaseStock_FullMethodName       = "/nexusmart.product.v1.ProductService/ReleaseStock"
 	ProductService_ConfirmStock_FullMethodName       = "/nexusmart.product.v1.ProductService/ConfirmStock"
+	ProductService_RestockOrderItems_FullMethodName  = "/nexusmart.product.v1.ProductService/RestockOrderItems"
 )
 
 // ProductServiceClient is the client API for ProductService service.
@@ -55,6 +56,7 @@ type ProductServiceClient interface {
 	ReserveStock(ctx context.Context, in *ReserveStockRequest, opts ...grpc.CallOption) (*ReserveStockResponse, error)
 	ReleaseStock(ctx context.Context, in *ReleaseStockRequest, opts ...grpc.CallOption) (*ReleaseStockResponse, error)
 	ConfirmStock(ctx context.Context, in *ConfirmStockRequest, opts ...grpc.CallOption) (*ConfirmStockResponse, error)
+	RestockOrderItems(ctx context.Context, in *RestockOrderItemsRequest, opts ...grpc.CallOption) (*RestockOrderItemsResponse, error)
 }
 
 type productServiceClient struct {
@@ -215,6 +217,16 @@ func (c *productServiceClient) ConfirmStock(ctx context.Context, in *ConfirmStoc
 	return out, nil
 }
 
+func (c *productServiceClient) RestockOrderItems(ctx context.Context, in *RestockOrderItemsRequest, opts ...grpc.CallOption) (*RestockOrderItemsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RestockOrderItemsResponse)
+	err := c.cc.Invoke(ctx, ProductService_RestockOrderItems_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ProductServiceServer is the server API for ProductService service.
 // All implementations must embed UnimplementedProductServiceServer
 // for forward compatibility.
@@ -234,6 +246,7 @@ type ProductServiceServer interface {
 	ReserveStock(context.Context, *ReserveStockRequest) (*ReserveStockResponse, error)
 	ReleaseStock(context.Context, *ReleaseStockRequest) (*ReleaseStockResponse, error)
 	ConfirmStock(context.Context, *ConfirmStockRequest) (*ConfirmStockResponse, error)
+	RestockOrderItems(context.Context, *RestockOrderItemsRequest) (*RestockOrderItemsResponse, error)
 	mustEmbedUnimplementedProductServiceServer()
 }
 
@@ -288,6 +301,9 @@ func (UnimplementedProductServiceServer) ReleaseStock(context.Context, *ReleaseS
 }
 func (UnimplementedProductServiceServer) ConfirmStock(context.Context, *ConfirmStockRequest) (*ConfirmStockResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ConfirmStock not implemented")
+}
+func (UnimplementedProductServiceServer) RestockOrderItems(context.Context, *RestockOrderItemsRequest) (*RestockOrderItemsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RestockOrderItems not implemented")
 }
 func (UnimplementedProductServiceServer) mustEmbedUnimplementedProductServiceServer() {}
 func (UnimplementedProductServiceServer) testEmbeddedByValue()                        {}
@@ -580,6 +596,24 @@ func _ProductService_ConfirmStock_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ProductService_RestockOrderItems_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RestockOrderItemsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).RestockOrderItems(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_RestockOrderItems_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).RestockOrderItems(ctx, req.(*RestockOrderItemsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ProductService_ServiceDesc is the grpc.ServiceDesc for ProductService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -646,6 +680,10 @@ var ProductService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ConfirmStock",
 			Handler:    _ProductService_ConfirmStock_Handler,
+		},
+		{
+			MethodName: "RestockOrderItems",
+			Handler:    _ProductService_RestockOrderItems_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

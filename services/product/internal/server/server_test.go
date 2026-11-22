@@ -821,3 +821,302 @@ func TestProductUpdateRejectAndOutOfStockTransitions(t *testing.T) {
 		t.Fatalf("expected product restored to APPROVED after restock, got %+v err=%v", got2, err)
 	}
 }
+
+func TestSellerProductStatusTransitionMatrix(t *testing.T) {
+	t.Run("resolveUpdatedProductStatus_matrix", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			current  string
+			req      productv1.ProductStatus
+			isAdmin  bool
+			want     string
+			wantCode codes.Code
+		}{
+			// Seller blocked from hiding unapproved products (prevents PENDING/REJECTED -> HIDDEN -> APPROVED self-approval).
+			{"seller_pending_to_hidden_blocked", store.ProductStatusPending, productv1.ProductStatus_PRODUCT_STATUS_HIDDEN, false, "", codes.PermissionDenied},
+			{"seller_rejected_to_hidden_blocked", store.ProductStatusRejected, productv1.ProductStatus_PRODUCT_STATUS_HIDDEN, false, "", codes.PermissionDenied},
+			{"seller_pending_to_approved_blocked", store.ProductStatusPending, productv1.ProductStatus_PRODUCT_STATUS_APPROVED, false, "", codes.PermissionDenied},
+			{"seller_rejected_to_approved_blocked", store.ProductStatusRejected, productv1.ProductStatus_PRODUCT_STATUS_APPROVED, false, "", codes.PermissionDenied},
+			{"seller_approved_to_pending_blocked", store.ProductStatusApproved, productv1.ProductStatus_PRODUCT_STATUS_PENDING, false, "", codes.InvalidArgument},
+			{"seller_approved_to_rejected_blocked", store.ProductStatusApproved, productv1.ProductStatus_PRODUCT_STATUS_REJECTED, false, "", codes.PermissionDenied},
+			{"seller_approved_to_out_of_stock_blocked", store.ProductStatusApproved, productv1.ProductStatus_PRODUCT_STATUS_OUT_OF_STOCK, false, "", codes.PermissionDenied},
+
+			// Seller allowed transitions on approved / previously-approved products and rejected resubmission.
+			{"seller_approved_to_hidden_ok", store.ProductStatusApproved, productv1.ProductStatus_PRODUCT_STATUS_HIDDEN, false, store.ProductStatusHidden, codes.OK},
+			{"seller_out_of_stock_to_hidden_ok", store.ProductStatusOutOfStock, productv1.ProductStatus_PRODUCT_STATUS_HIDDEN, false, store.ProductStatusHidden, codes.OK},
+			{"seller_hidden_to_approved_ok", store.ProductStatusHidden, productv1.ProductStatus_PRODUCT_STATUS_APPROVED, false, store.ProductStatusApproved, codes.OK},
+			{"seller_out_of_stock_to_approved_ok", store.ProductStatusOutOfStock, productv1.ProductStatus_PRODUCT_STATUS_APPROVED, false, store.ProductStatusApproved, codes.OK},
+			{"seller_rejected_to_pending_ok", store.ProductStatusRejected, productv1.ProductStatus_PRODUCT_STATUS_PENDING, false, store.ProductStatusPending, codes.OK},
+			{"seller_pending_unspecified_noop", store.ProductStatusPending, productv1.ProductStatus_PRODUCT_STATUS_UNSPECIFIED, false, store.ProductStatusPending, codes.OK},
+			{"seller_pending_to_pending_noop", store.ProductStatusPending, productv1.ProductStatus_PRODUCT_STATUS_PENDING, false, store.ProductStatusPending, codes.OK},
+
+			// Admin remains unrestricted across valid statuses.
+			{"admin_pending_to_hidden_ok", store.ProductStatusPending, productv1.ProductStatus_PRODUCT_STATUS_HIDDEN, true, store.ProductStatusHidden, codes.OK},
+			{"admin_rejected_to_hidden_ok", store.ProductStatusRejected, productv1.ProductStatus_PRODUCT_STATUS_HIDDEN, true, store.ProductStatusHidden, codes.OK},
+			{"admin_pending_to_approved_ok", store.ProductStatusPending, productv1.ProductStatus_PRODUCT_STATUS_APPROVED, true, store.ProductStatusApproved, codes.OK},
+			{"admin_approved_to_rejected_ok", store.ProductStatusApproved, productv1.ProductStatus_PRODUCT_STATUS_REJECTED, true, store.ProductStatusRejected, codes.OK},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				got, err := resolveUpdatedProductStatus(tc.current, tc.req, tc.isAdmin)
+				if tc.wantCode == codes.OK {
+					if err != nil {
+						t.Fatalf("expected nil err, got %v", err)
+					}
+					if got != tc.want {
+						t.Fatalf("expected status %q, got %q", tc.want, got)
+					}
+					return
+				}
+				if status.Code(err) != tc.wantCode {
+					t.Fatalf("expected code %v, got %v (err=%v, status=%q)", tc.wantCode, status.Code(err), err, got)
+				}
+			})
+		}
+	})
+
+	t.Run("rpc_update_product_blocks_self_approval_bypass", func(t *testing.T) {
+		st := store.NewMemoryStore()
+		srv := New(st, nil)
+
+		adminCtx := ctxWithRole("admin-1", "admin", "")
+		sellerCtx := ctxWithRole("seller-1", "seller", "shop-1")
+
+		cat, err := srv.CreateCategory(adminCtx, &productv1.CreateCategoryRequest{Name: "Apparel", Slug: "apparel", CommissionRateBps: 500})
+		if err != nil {
+			t.Fatalf("CreateCategory: %v", err)
+		}
+
+		created, err := srv.CreateProduct(sellerCtx, &productv1.CreateProductRequest{
+			CategoryId: cat.Category.Id,
+			Name:       "Unreviewed Tee",
+			Skus:       []*productv1.SKUInput{{SkuCode: "UNREV-1", Name: "M", PriceVnd: 180000, Stock: 10, WeightGrams: 200}},
+		})
+		if err != nil {
+			t.Fatalf("CreateProduct: %v", err)
+		}
+		prodID := created.Product.Id
+
+		// 1. PENDING -> HIDDEN MUST be rejected for seller.
+		if _, err := srv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
+			Id:     prodID,
+			Status: productv1.ProductStatus_PRODUCT_STATUS_HIDDEN,
+		}); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("expected PermissionDenied for PENDING->HIDDEN by seller, got %v", err)
+		}
+		if _, err := srv.GetProduct(context.Background(), &productv1.GetProductRequest{Id: prodID}); status.Code(err) != codes.NotFound {
+			t.Fatalf("pending product must remain invisible publicly, got %v", err)
+		}
+
+		// 2. Admin rejects -> REJECTED -> HIDDEN MUST also be rejected for seller.
+		if _, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+			ProductId: prodID,
+			Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_REJECT,
+			Reason:    "Missing fabric details",
+		}); err != nil {
+			t.Fatalf("AdminReviewProduct reject: %v", err)
+		}
+		if _, err := srv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
+			Id:     prodID,
+			Status: productv1.ProductStatus_PRODUCT_STATUS_HIDDEN,
+		}); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("expected PermissionDenied for REJECTED->HIDDEN by seller, got %v", err)
+		}
+
+		// 3. Admin approves -> seller can hide (APPROVED->HIDDEN) and unhide (HIDDEN->APPROVED).
+		if _, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+			ProductId: prodID,
+			Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
+		}); err != nil {
+			t.Fatalf("AdminReviewProduct approve: %v", err)
+		}
+		hidden, err := srv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
+			Id:     prodID,
+			Status: productv1.ProductStatus_PRODUCT_STATUS_HIDDEN,
+		})
+		if err != nil || hidden.Product.Status != productv1.ProductStatus_PRODUCT_STATUS_HIDDEN {
+			t.Fatalf("expected APPROVED->HIDDEN to succeed, got %+v err=%v", hidden, err)
+		}
+		if _, err := srv.GetProduct(context.Background(), &productv1.GetProductRequest{Id: prodID}); status.Code(err) != codes.NotFound {
+			t.Fatalf("hidden product must not be publicly visible, got %v", err)
+		}
+		unhidden, err := srv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
+			Id:     prodID,
+			Status: productv1.ProductStatus_PRODUCT_STATUS_APPROVED,
+		})
+		if err != nil || unhidden.Product.Status != productv1.ProductStatus_PRODUCT_STATUS_APPROVED {
+			t.Fatalf("expected HIDDEN->APPROVED to succeed, got %+v err=%v", unhidden, err)
+		}
+		if got, err := srv.GetProduct(context.Background(), &productv1.GetProductRequest{Id: prodID}); err != nil || got.Product.Status != productv1.ProductStatus_PRODUCT_STATUS_APPROVED {
+			t.Fatalf("unhidden product should be publicly visible again, got %+v err=%v", got, err)
+		}
+
+		// 4. Admin UpdateProduct on PENDING product is unaffected.
+		pending2, err := srv.CreateProduct(sellerCtx, &productv1.CreateProductRequest{
+			CategoryId: cat.Category.Id,
+			Name:       "Admin Managed Tee",
+			Skus:       []*productv1.SKUInput{{SkuCode: "ADM-1", Name: "L", PriceVnd: 190000, Stock: 5, WeightGrams: 200}},
+		})
+		if err != nil {
+			t.Fatalf("CreateProduct pending2: %v", err)
+		}
+		adminHid, err := srv.UpdateProduct(adminCtx, &productv1.UpdateProductRequest{
+			Id:     pending2.Product.Id,
+			ShopId: "shop-1",
+			Status: productv1.ProductStatus_PRODUCT_STATUS_HIDDEN,
+		})
+		if err != nil || adminHid.Product.Status != productv1.ProductStatus_PRODUCT_STATUS_HIDDEN {
+			t.Fatalf("expected admin PENDING->HIDDEN to succeed, got %+v err=%v", adminHid, err)
+		}
+	})
+}
+
+func TestRestockOrderItems_IdempotentAuthAndOutOfStockRecovery(t *testing.T) {
+	st := store.NewMemoryStore()
+	srv := New(st, nil)
+
+	adminCtx := ctxWithRole("admin-1", "admin", "")
+	sellerCtx := ctxWithRole("seller-1", "seller", "shop-1")
+	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
+	serviceCtx := auth.WithClaims(context.Background(), &auth.Claims{
+		Role:    auth.ServiceRole,
+		Service: "order-service",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject: "order-service",
+		},
+	})
+
+	_, prod := setupApprovedProduct(t, srv, "shop-1", []*productv1.SKUInput{
+		{SkuCode: "RST-A", Name: "A", PriceVnd: 100000, Stock: 3, WeightGrams: 100},
+		{SkuCode: "RST-B", Name: "B", PriceVnd: 200000, Stock: 2, WeightGrams: 100},
+	})
+	prodID := prod.Id
+	skuA := prod.Skus[0].Id
+	skuB := prod.Skus[1].Id
+
+	// Drain all stock -> both SKUs and product become OUT_OF_STOCK.
+	if _, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+		OrderId: "grp-drain",
+		Items: []*productv1.StockReservationItem{
+			{SkuId: skuA, Quantity: 3},
+			{SkuId: skuB, Quantity: 2},
+		},
+	}); err != nil {
+		t.Fatalf("ReserveStock: %v", err)
+	}
+	if _, err := srv.ConfirmStock(context.Background(), &productv1.ConfirmStockRequest{OrderId: "grp-drain"}); err != nil {
+		t.Fatalf("ConfirmStock: %v", err)
+	}
+	drainedProd, err := srv.GetProduct(context.Background(), &productv1.GetProductRequest{Id: prodID})
+	if err != nil || drainedProd.Product.Status != productv1.ProductStatus_PRODUCT_STATUS_OUT_OF_STOCK {
+		t.Fatalf("expected product OUT_OF_STOCK, got %+v err=%v", drainedProd, err)
+	}
+
+	// Auth checks: anonymous -> Unauthenticated; seller/buyer -> PermissionDenied.
+	req := &productv1.RestockOrderItemsRequest{
+		OrderId: "sub-order-1",
+		Items: []*productv1.StockReservationItem{
+			{SkuId: skuB, Quantity: 1},
+			{SkuId: skuA, Quantity: 2},
+			{SkuId: skuA, Quantity: 1}, // duplicate SKU should merge to qty 3
+		},
+	}
+	if _, err := srv.RestockOrderItems(context.Background(), req); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("anonymous RestockOrderItems: want Unauthenticated, got %v", err)
+	}
+	if _, err := srv.RestockOrderItems(sellerCtx, req); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("seller RestockOrderItems: want PermissionDenied, got %v", err)
+	}
+	if _, err := srv.RestockOrderItems(buyerCtx, req); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("buyer RestockOrderItems: want PermissionDenied, got %v", err)
+	}
+
+	// Validation checks.
+	if _, err := srv.RestockOrderItems(serviceCtx, &productv1.RestockOrderItemsRequest{
+		OrderId: "",
+		Items:   []*productv1.StockReservationItem{{SkuId: skuA, Quantity: 1}},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty order_id: want InvalidArgument, got %v", err)
+	}
+	if _, err := srv.RestockOrderItems(serviceCtx, &productv1.RestockOrderItemsRequest{
+		OrderId: "sub-order-invalid",
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty items: want InvalidArgument, got %v", err)
+	}
+	if _, err := srv.RestockOrderItems(serviceCtx, &productv1.RestockOrderItemsRequest{
+		OrderId: "sub-order-invalid",
+		Items:   []*productv1.StockReservationItem{{SkuId: skuA, Quantity: 0}},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("zero quantity: want InvalidArgument, got %v", err)
+	}
+
+	// First restock with service token succeeds, increments stock atomically, and restores OUT_OF_STOCK -> APPROVED/ACTIVE.
+	resp1, err := srv.RestockOrderItems(serviceCtx, req)
+	if err != nil || !resp1.Restocked || resp1.AlreadyRestocked {
+		t.Fatalf("first RestockOrderItems: resp=%+v err=%v", resp1, err)
+	}
+
+	skA, err := st.GetSKUWithContext(context.Background(), skuA)
+	if err != nil {
+		t.Fatalf("GetSKUWithContext(A): %v", err)
+	}
+	skB, err := st.GetSKUWithContext(context.Background(), skuB)
+	if err != nil {
+		t.Fatalf("GetSKUWithContext(B): %v", err)
+	}
+	if skA.Stock != 3 || skA.Status != store.SKUStatusActive {
+		t.Fatalf("SKU-A after restock: stock=%d status=%s, want stock=3 status=ACTIVE", skA.Stock, skA.Status)
+	}
+	if skB.Stock != 1 || skB.Status != store.SKUStatusActive {
+		t.Fatalf("SKU-B after restock: stock=%d status=%s, want stock=1 status=ACTIVE", skB.Stock, skB.Status)
+	}
+	restoredProd, err := srv.GetProduct(context.Background(), &productv1.GetProductRequest{Id: prodID})
+	if err != nil || restoredProd.Product.Status != productv1.ProductStatus_PRODUCT_STATUS_APPROVED {
+		t.Fatalf("expected product restored to APPROVED, got %+v err=%v", restoredProd, err)
+	}
+
+	// Repeat call with the SAME order_id is strictly idempotent: already_restocked=true, stock unchanged.
+	resp2, err := srv.RestockOrderItems(serviceCtx, req)
+	if err != nil || !resp2.Restocked || !resp2.AlreadyRestocked {
+		t.Fatalf("duplicate RestockOrderItems: resp=%+v err=%v", resp2, err)
+	}
+	skA2, _ := st.GetSKUWithContext(context.Background(), skuA)
+	skB2, _ := st.GetSKUWithContext(context.Background(), skuB)
+	if skA2.Stock != 3 || skB2.Stock != 1 {
+		t.Fatalf("duplicate RestockOrderItems must not double-add stock: A=%d B=%d", skA2.Stock, skB2.Stock)
+	}
+
+	// Verify stock_history recorded exactly 2 RESTOCK rows for sub-order-1 with accurate before/after values.
+	restockRows := 0
+	for _, h := range st.StockHistory() {
+		if h.ChangeType == "RESTOCK" && h.OrderID == "sub-order-1" {
+			restockRows++
+			if h.ActorID != "order-service" {
+				t.Fatalf("expected ActorID=order-service, got %q", h.ActorID)
+			}
+			if h.SKUID == skuA && (h.StockBefore != 0 || h.StockAfter != 3 || h.Delta != 3) {
+				t.Fatalf("unexpected RESTOCK history for SKU-A: %+v", h)
+			}
+			if h.SKUID == skuB && (h.StockBefore != 0 || h.StockAfter != 1 || h.Delta != 1) {
+				t.Fatalf("unexpected RESTOCK history for SKU-B: %+v", h)
+			}
+		}
+	}
+	if restockRows != 2 {
+		t.Fatalf("expected exactly 2 RESTOCK history entries, got %d", restockRows)
+	}
+
+	// Admin caller with a different order_id is also allowed and adds stock.
+	resp3, err := srv.RestockOrderItems(adminCtx, &productv1.RestockOrderItemsRequest{
+		OrderId: "sub-order-2",
+		Items:   []*productv1.StockReservationItem{{SkuId: skuB, Quantity: 2}},
+	})
+	if err != nil || !resp3.Restocked || resp3.AlreadyRestocked {
+		t.Fatalf("admin RestockOrderItems: resp=%+v err=%v", resp3, err)
+	}
+	skB3, _ := st.GetSKUWithContext(context.Background(), skuB)
+	if skB3.Stock != 3 {
+		t.Fatalf("SKU-B after admin restock: stock=%d, want 3", skB3.Stock)
+	}
+}

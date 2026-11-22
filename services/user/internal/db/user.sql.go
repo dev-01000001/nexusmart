@@ -241,11 +241,11 @@ func (q *Queries) CreateRefreshToken(ctx context.Context, arg CreateRefreshToken
 
 const createShop = `-- name: CreateShop :one
 INSERT INTO shops (
-    id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status
+    id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, slug
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
 )
-RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at
+RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug
 `
 
 type CreateShopParams struct {
@@ -257,6 +257,7 @@ type CreateShopParams struct {
 	ContactPhone       string `json:"contact_phone"`
 	BusinessLicenseDoc string `json:"business_license_doc"`
 	Status             string `json:"status"`
+	Slug               string `json:"slug"`
 }
 
 func (q *Queries) CreateShop(ctx context.Context, arg CreateShopParams) (Shop, error) {
@@ -269,6 +270,7 @@ func (q *Queries) CreateShop(ctx context.Context, arg CreateShopParams) (Shop, e
 		arg.ContactPhone,
 		arg.BusinessLicenseDoc,
 		arg.Status,
+		arg.Slug,
 	)
 	var i Shop
 	err := row.Scan(
@@ -283,6 +285,7 @@ func (q *Queries) CreateShop(ctx context.Context, arg CreateShopParams) (Shop, e
 		&i.RejectionReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }
@@ -399,7 +402,7 @@ func (q *Queries) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (
 }
 
 const getShopByID = `-- name: GetShopByID :one
-SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at FROM shops
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug FROM shops
 WHERE id = $1
 LIMIT 1
 `
@@ -419,12 +422,13 @@ func (q *Queries) GetShopByID(ctx context.Context, id string) (Shop, error) {
 		&i.RejectionReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }
 
 const getShopByName = `-- name: GetShopByName :one
-SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at FROM shops
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug FROM shops
 WHERE LOWER(name) = LOWER($1)
 LIMIT 1
 `
@@ -444,12 +448,13 @@ func (q *Queries) GetShopByName(ctx context.Context, lower string) (Shop, error)
 		&i.RejectionReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }
 
 const getShopByOwnerID = `-- name: GetShopByOwnerID :one
-SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at FROM shops
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug FROM shops
 WHERE owner_user_id = $1
 ORDER BY created_at DESC
 LIMIT 1
@@ -470,6 +475,33 @@ func (q *Queries) GetShopByOwnerID(ctx context.Context, ownerUserID string) (Sho
 		&i.RejectionReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
+	)
+	return i, err
+}
+
+const getShopBySlug = `-- name: GetShopBySlug :one
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug FROM shops
+WHERE slug = $1
+LIMIT 1
+`
+
+func (q *Queries) GetShopBySlug(ctx context.Context, slug string) (Shop, error) {
+	row := q.db.QueryRow(ctx, getShopBySlug, slug)
+	var i Shop
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerUserID,
+		&i.Name,
+		&i.Description,
+		&i.PickupAddressID,
+		&i.ContactPhone,
+		&i.BusinessLicenseDoc,
+		&i.Status,
+		&i.RejectionReason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }
@@ -748,7 +780,7 @@ func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([
 }
 
 const listShops = `-- name: ListShops :many
-SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at FROM shops
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug FROM shops
 WHERE ($1::text = '' OR status = $1::text)
 ORDER BY created_at DESC
 LIMIT $3 OFFSET $2
@@ -781,6 +813,7 @@ func (q *Queries) ListShops(ctx context.Context, arg ListShopsParams) ([]Shop, e
 			&i.RejectionReason,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Slug,
 		); err != nil {
 			return nil, err
 		}
@@ -972,7 +1005,7 @@ SET status = $2,
     rejection_reason = $3,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at
+RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug
 `
 
 type UpdateShopReviewParams struct {
@@ -996,6 +1029,7 @@ func (q *Queries) UpdateShopReview(ctx context.Context, arg UpdateShopReviewPara
 		&i.RejectionReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }

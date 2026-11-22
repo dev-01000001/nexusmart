@@ -186,11 +186,11 @@ const createProduct = `-- name: CreateProduct :one
 
 INSERT INTO products (
     id, shop_id, category_id, name, description, images, status,
-    rejection_reason, min_price_vnd, max_price_vnd
+    rejection_reason, min_price_vnd, max_price_vnd, slug
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
 `
 
 type CreateProductParams struct {
@@ -204,6 +204,7 @@ type CreateProductParams struct {
 	RejectionReason string
 	MinPriceVnd     int64
 	MaxPriceVnd     int64
+	Slug            string
 }
 
 // Products
@@ -219,6 +220,7 @@ func (q *Queries) CreateProduct(ctx context.Context, arg CreateProductParams) (P
 		arg.RejectionReason,
 		arg.MinPriceVnd,
 		arg.MaxPriceVnd,
+		arg.Slug,
 	)
 	var i Product
 	err := row.Scan(
@@ -235,6 +237,7 @@ func (q *Queries) CreateProduct(ctx context.Context, arg CreateProductParams) (P
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }
@@ -394,7 +397,7 @@ func (q *Queries) GetCategoryByID(ctx context.Context, id string) (Category, err
 
 const getProductByID = `-- name: GetProductByID :one
 SELECT id, shop_id, category_id, name, description, images, status,
-       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
 FROM products
 WHERE id = $1 AND deleted_at IS NULL
 `
@@ -416,6 +419,36 @@ func (q *Queries) GetProductByID(ctx context.Context, id string) (Product, error
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
+	)
+	return i, err
+}
+
+const getProductBySlug = `-- name: GetProductBySlug :one
+SELECT id, shop_id, category_id, name, description, images, status,
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
+FROM products
+WHERE slug = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) GetProductBySlug(ctx context.Context, slug string) (Product, error) {
+	row := q.db.QueryRow(ctx, getProductBySlug, slug)
+	var i Product
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.CategoryID,
+		&i.Name,
+		&i.Description,
+		&i.Images,
+		&i.Status,
+		&i.RejectionReason,
+		&i.MinPriceVnd,
+		&i.MaxPriceVnd,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }
@@ -456,6 +489,66 @@ type GetSKUWithContextRow struct {
 func (q *Queries) GetSKUWithContext(ctx context.Context, id string) (GetSKUWithContextRow, error) {
 	row := q.db.QueryRow(ctx, getSKUWithContext, id)
 	var i GetSKUWithContextRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProductID,
+		&i.ShopID,
+		&i.ProductName,
+		&i.SkuCode,
+		&i.Name,
+		&i.Attributes,
+		&i.PriceVnd,
+		&i.Stock,
+		&i.ReservedStock,
+		&i.Version,
+		&i.WeightGrams,
+		&i.ImageURL,
+		&i.CategoryID,
+		&i.CommissionRateBps,
+		&i.SkuStatus,
+		&i.ProductStatus,
+		&i.ProductDeletedAt,
+	)
+	return i, err
+}
+
+const getSKUWithContextForUpdate = `-- name: GetSKUWithContextForUpdate :one
+SELECT
+    s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+FROM skus s
+JOIN products p ON p.id = s.product_id
+JOIN categories c ON c.id = p.category_id
+WHERE s.id = $1
+FOR UPDATE OF s
+`
+
+type GetSKUWithContextForUpdateRow struct {
+	ID                string
+	ProductID         string
+	ShopID            string
+	ProductName       string
+	SkuCode           string
+	Name              string
+	Attributes        []byte
+	PriceVnd          int64
+	Stock             int32
+	ReservedStock     int32
+	Version           int64
+	WeightGrams       int32
+	ImageURL          string
+	CategoryID        string
+	CommissionRateBps int32
+	SkuStatus         string
+	ProductStatus     string
+	ProductDeletedAt  *time.Time
+}
+
+func (q *Queries) GetSKUWithContextForUpdate(ctx context.Context, id string) (GetSKUWithContextForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getSKUWithContextForUpdate, id)
+	var i GetSKUWithContextForUpdateRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProductID,
@@ -667,7 +760,7 @@ func (q *Queries) ListCategoriesByParent(ctx context.Context, parentID pgtype.Te
 
 const listProductsFiltered = `-- name: ListProductsFiltered :many
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
-       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at
+       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug
 FROM products p
 WHERE p.deleted_at IS NULL
   AND ($1::text = '' OR p.category_id = $1::text OR p.category_id IN (SELECT c.id FROM categories c WHERE c.parent_id = $1::text))
@@ -743,6 +836,7 @@ func (q *Queries) ListProductsFiltered(ctx context.Context, arg ListProductsFilt
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Slug,
 		); err != nil {
 			return nil, err
 		}
@@ -1018,6 +1112,48 @@ func (q *Queries) ReserveSKUOptimistic(ctx context.Context, arg ReserveSKUOptimi
 	return i, err
 }
 
+const restockSKUAtomic = `-- name: RestockSKUAtomic :one
+UPDATE skus
+SET stock = stock + $1,
+    status = CASE
+        WHEN status = 'INACTIVE' THEN 'INACTIVE'
+        WHEN stock + $1 > 0 THEN 'ACTIVE'
+        ELSE status
+    END,
+    version = version + 1,
+    updated_at = NOW()
+WHERE id = $2
+RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+`
+
+type RestockSKUAtomicParams struct {
+	Stock int32
+	ID    string
+}
+
+func (q *Queries) RestockSKUAtomic(ctx context.Context, arg RestockSKUAtomicParams) (Sku, error) {
+	row := q.db.QueryRow(ctx, restockSKUAtomic, arg.Stock, arg.ID)
+	var i Sku
+	err := row.Scan(
+		&i.ID,
+		&i.ProductID,
+		&i.SkuCode,
+		&i.Name,
+		&i.Attributes,
+		&i.PriceVnd,
+		&i.Stock,
+		&i.ReservedStock,
+		&i.Version,
+		&i.WeightGrams,
+		&i.ImageURL,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const softDeleteProduct = `-- name: SoftDeleteProduct :execrows
 UPDATE products
 SET deleted_at = NOW(),
@@ -1049,6 +1185,48 @@ type TransitionStockReservationParams struct {
 
 func (q *Queries) TransitionStockReservation(ctx context.Context, arg TransitionStockReservationParams) (int64, error) {
 	result, err := q.db.Exec(ctx, transitionStockReservation, arg.ID, arg.Status, arg.Status_2)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const tryInsertRestockHistory = `-- name: TryInsertRestockHistory :execrows
+INSERT INTO stock_history (
+    id, sku_id, order_id, change_type, delta,
+    stock_before, stock_after, reserved_before, reserved_after,
+    actor_id, reason
+)
+VALUES ($1, $2, $3, 'RESTOCK', $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT (order_id, sku_id) WHERE change_type = 'RESTOCK' DO NOTHING
+`
+
+type TryInsertRestockHistoryParams struct {
+	ID             string
+	SkuID          string
+	OrderID        string
+	Delta          int32
+	StockBefore    int32
+	StockAfter     int32
+	ReservedBefore int32
+	ReservedAfter  int32
+	ActorID        string
+	Reason         string
+}
+
+func (q *Queries) TryInsertRestockHistory(ctx context.Context, arg TryInsertRestockHistoryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, tryInsertRestockHistory,
+		arg.ID,
+		arg.SkuID,
+		arg.OrderID,
+		arg.Delta,
+		arg.StockBefore,
+		arg.StockAfter,
+		arg.ReservedBefore,
+		arg.ReservedAfter,
+		arg.ActorID,
+		arg.Reason,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -1109,10 +1287,11 @@ SET category_id = $2,
     rejection_reason = $7,
     min_price_vnd = $8,
     max_price_vnd = $9,
+    slug = $10,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
 `
 
 type UpdateProductParams struct {
@@ -1125,6 +1304,7 @@ type UpdateProductParams struct {
 	RejectionReason string
 	MinPriceVnd     int64
 	MaxPriceVnd     int64
+	Slug            string
 }
 
 func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (Product, error) {
@@ -1138,6 +1318,7 @@ func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (P
 		arg.RejectionReason,
 		arg.MinPriceVnd,
 		arg.MaxPriceVnd,
+		arg.Slug,
 	)
 	var i Product
 	err := row.Scan(
@@ -1154,6 +1335,7 @@ func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (P
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }
@@ -1165,7 +1347,7 @@ SET status = $2,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
 `
 
 type UpdateProductReviewParams struct {
@@ -1191,6 +1373,7 @@ func (q *Queries) UpdateProductReview(ctx context.Context, arg UpdateProductRevi
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -248,6 +249,7 @@ func toProtoShop(s db.Shop) *userv1.Shop {
 		Id:                 s.ID,
 		OwnerUserId:        s.OwnerUserID,
 		Name:               s.Name,
+		Slug:               s.Slug,
 		Description:        s.Description,
 		PickupAddressId:    s.PickupAddressID,
 		ContactPhone:       s.ContactPhone,
@@ -256,6 +258,66 @@ func toProtoShop(s db.Shop) *userv1.Shop {
 		RejectionReason:    s.RejectionReason,
 		CreatedAt:          timestamppb.New(s.CreatedAt),
 		UpdatedAt:          timestamppb.New(s.UpdatedAt),
+	}
+}
+
+// toPublicProtoShop strips private owner/contact/license fields for unauthenticated storefront listings.
+func toPublicProtoShop(s db.Shop) *userv1.Shop {
+	return &userv1.Shop{
+		Id:          s.ID,
+		Name:        s.Name,
+		Slug:        s.Slug,
+		Description: s.Description,
+		Status:      shopStatusToProto(s.Status),
+		CreatedAt:   timestamppb.New(s.CreatedAt),
+		UpdatedAt:   timestamppb.New(s.UpdatedAt),
+	}
+}
+
+func slugifyShop(name, fallback string) string {
+	s := normalizeShopSlug(name)
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
+func normalizeShopSlug(input string) string {
+	var b strings.Builder
+	prevDash := false
+	for _, r := range strings.ToLower(strings.TrimSpace(input)) {
+		r = foldVietnameseRune(r)
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevDash = false
+		} else if unicode.IsSpace(r) || r == '-' || r == '_' || r == '/' || r == '.' {
+			if b.Len() > 0 && !prevDash {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func foldVietnameseRune(r rune) rune {
+	switch r {
+	case 'á', 'à', 'ả', 'ã', 'ạ', 'ă', 'ắ', 'ằ', 'ẳ', 'ẵ', 'ặ', 'â', 'ấ', 'ầ', 'ẩ', 'ẫ', 'ậ':
+		return 'a'
+	case 'đ':
+		return 'd'
+	case 'é', 'è', 'ẻ', 'ẽ', 'ẹ', 'ê', 'ế', 'ề', 'ể', 'ễ', 'ệ':
+		return 'e'
+	case 'í', 'ì', 'ỉ', 'ĩ', 'ị':
+		return 'i'
+	case 'ó', 'ò', 'ỏ', 'õ', 'ọ', 'ô', 'ố', 'ồ', 'ổ', 'ỗ', 'ộ', 'ơ', 'ớ', 'ờ', 'ở', 'ỡ', 'ợ':
+		return 'o'
+	case 'ú', 'ù', 'ủ', 'ũ', 'ụ', 'ư', 'ứ', 'ừ', 'ử', 'ữ', 'ự':
+		return 'u'
+	case 'ý', 'ỳ', 'ỷ', 'ỹ', 'ỵ':
+		return 'y'
+	default:
+		return r
 	}
 }
 

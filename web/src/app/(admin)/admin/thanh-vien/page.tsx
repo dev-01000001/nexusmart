@@ -3,49 +3,41 @@
 import React, { Suspense, useMemo, useState } from "react";
 import { computeGiftCardSummary } from "@/data";
 import type {
-  AdminFlashSaleProposal,
   AdminGiftCardRecord,
   AdminLoyaltyTierConfig,
-  AdminPlatformVoucher,
   AdminStudentVerificationItem,
 } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button } from "@/components";
 import { formatDateVi, formatInt, formatPercent, formatVnd } from "@/lib/format";
 import {
-  FLASH_PROPOSAL_STATUS_META,
   formatNowHHMM,
   formatShortTimeDateVi,
   GIFT_CARD_STATUS_META,
   STUDENT_VERIF_STATUS_META,
 } from "@/features/admin/adminMeta";
-import {
-  appendAdminAuditLog,
-  updateAdminLoyaltyState,
-  useAdminLoyaltyState,
-} from "@/features/admin/auditStore";
+import { updateAdminLoyaltyState, useAdminLoyaltyState } from "@/features/admin/auditStore";
+import { AdminPromoCoinsPanel } from "@/features/admin/AdminPromoCoinsPanel";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { StatusPill } from "@/features/admin/StatusPill";
 import { ToggleSwitch } from "@/features/admin/ToggleSwitch";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
 
-type LoyaltyTab = "hoi_vien" | "the_qua_tang" | "flash_voucher";
+type LoyaltyTab = "flash_voucher" | "cong_xu" | "hoi_vien" | "the_qua_tang";
 
 function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
   const loyalty = useAdminLoyaltyState();
-  const { showToast } = useStore();
+  const { showToast } = useMockStore();
 
   const initialTab: LoyaltyTab = initialQuery.toUpperCase().startsWith("NXGIFT")
     ? "the_qua_tang"
-    : initialQuery.toUpperCase().startsWith("FS-")
-      ? "flash_voucher"
-      : "hoi_vien";
+    : "flash_voucher";
 
   const [activeTab, setActiveTab] = useState<LoyaltyTab>(initialTab);
   const [savedNotice, setSavedNotice] = useState<Record<string, string>>({});
 
-  // Tab 1 local drafts
+  // Tab 3 local drafts (mock loyalty tiers)
   const [tiersDraft, setTiersDraft] = useState<AdminLoyaltyTierConfig[]>(loyalty.tiers);
   const [fridayDouble, setFridayDouble] = useState(loyalty.fridayDoubleEnabled);
   const [coinExpiryMonths, setCoinExpiryMonths] = useState(loyalty.coinExpiryMonths);
@@ -53,20 +45,12 @@ function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
   const [referralDraft, setReferralDraft] = useState(loyalty.referral);
   const [studentDraft, setStudentDraft] = useState(loyalty.student);
 
-  // Tab 2 Gift card issuer form
+  // Tab 4 Gift card issuer form (mock)
   const [gcCode, setGcCode] = useState("");
   const [gcAmount, setGcAmount] = useState(500000);
   const [gcPurpose, setGcPurpose] = useState("");
   const [gcMonths, setGcMonths] = useState(11);
   const [gcError, setGcError] = useState("");
-
-  // Tab 3 Platform voucher form
-  const [vcCode, setVcCode] = useState("");
-  const [vcTitle, setVcTitle] = useState("");
-  const [vcScope, setVcScope] = useState<AdminPlatformVoucher["scope"]>("Giảm đơn sàn");
-  const [vcDiscount, setVcDiscount] = useState(25000);
-  const [vcMinOrder, setVcMinOrder] = useState(299000);
-  const [vcQuota, setVcQuota] = useState(500);
 
   const markSaved = (key: string) => {
     setSavedNotice((prev) => ({ ...prev, [key]: `Đã lưu lúc ${formatNowHHMM()}` }));
@@ -75,11 +59,6 @@ function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
   const giftCardSummary = useMemo(
     () => computeGiftCardSummary(loyalty.giftCards, loyalty.giftCardLedger),
     [loyalty.giftCards, loyalty.giftCardLedger]
-  );
-
-  const pendingFlashCount = useMemo(
-    () => loyalty.flashProposals.filter((p) => p.status === "cho_duyet").length,
-    [loyalty.flashProposals]
   );
 
   const pendingEduCount = useMemo(
@@ -129,13 +108,6 @@ function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
       coinExpiryMonths: cleanExpiry,
       clawbackOnReturnEnabled: clawbackEnabled,
     }));
-    appendAdminAuditLog({
-      role: "Quản trị viên",
-      action: "Cập nhật bậc hạng Hội viên Nexus & tỷ lệ đồng tài trợ Xu",
-      module: "Hội viên",
-      target: "NEXUS-LOYALTY-TIERS",
-      changeSummary: `Cập nhật 4 hạng xét 4 quý, x2 Thứ Sáu: ${fridayDouble ? "Bật" : "Tắt"}, hạn Xu ${cleanExpiry} tháng.`,
-    });
     markSaved("tiers");
     showToast("Đã lưu cấu hình 4 hạng Hội viên Nexus.");
   };
@@ -152,13 +124,6 @@ function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
         minInviteeOrderVnd: Math.max(0, Math.trunc(referralDraft.minInviteeOrderVnd)),
       },
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Cập nhật hạn mức Giới thiệu bạn bè chống trục lợi",
-      module: "Hội viên",
-      target: "REFERRAL-POLICY",
-      changeSummary: `Hoàn ${referralDraft.rewardPercent}% (tối đa ${formatVnd(referralDraft.maxRewardPerOrderVnd)}/đơn), trần ${referralDraft.maxReferralsPerMonth} lượt/tháng.`,
-    });
     markSaved("referral");
     showToast("Đã lưu hạn mức Giới thiệu bạn bè.");
   };
@@ -177,13 +142,6 @@ function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
         reverifyMonths: Math.max(3, Math.trunc(studentDraft.reverifyMonths)),
       },
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Cập nhật chương trình Ưu đãi sinh viên .edu",
-      module: "Hội viên",
-      target: "STUDENT-EDU",
-      changeSummary: `${studentDraft.enabled ? "Bật" : "Tắt"} ưu đãi ${studentDraft.discountPercent}% (tối đa ${formatVnd(studentDraft.maxDiscountVnd)}), tên miền ${studentDraft.allowedDomains}.`,
-    });
     markSaved("student");
     showToast("Đã lưu cấu hình Ưu đãi sinh viên .edu.");
   };
@@ -201,16 +159,6 @@ function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
         ),
       },
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action:
-        nextStatus === "da_xac_thuc"
-          ? "Xác thực tài khoản sinh viên .edu"
-          : "Từ chối xác thực email sinh viên",
-      module: "Hội viên",
-      target: item.code,
-      changeSummary: `${item.studentName} (${item.eduEmail} · ${item.university}).`,
-    });
     showToast(
       nextStatus === "da_xac_thuc"
         ? `Đã xác thực sinh viên ${item.studentName}.`
@@ -218,7 +166,7 @@ function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
     );
   };
 
-  // --- Tab 2 handlers: Gift card double-entry VND ---
+  // --- Tab 2 handlers: Gift card double-entry VND (mock) ---
   const handleIssueGiftCard = (e: React.FormEvent) => {
     e.preventDefault();
     const cleanCode = gcCode.trim().toUpperCase().replace(/\s+/g, "-");
@@ -239,13 +187,9 @@ function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
     setGcError("");
 
     const issueDate = "2026-11-20";
-    const expDate = new Date("2026-11-20T00:00:00+07:00");
-    expDate.setMonth(expDate.getMonth() + cleanMonths);
-    const yyyy = expDate.getFullYear();
-    const mm =
-      expDate.getMonth() + 1 < 10 ? `0${expDate.getMonth() + 1}` : `${expDate.getMonth() + 1}`;
-    const dd = expDate.getDate() < 10 ? `0${expDate.getDate()}` : `${expDate.getDate()}`;
-    const expiresAt = `${yyyy}-${mm}-${dd}`;
+    const expDate = new Date("2026-11-20T00:00:00Z");
+    expDate.setUTCMonth(expDate.getUTCMonth() + cleanMonths);
+    const expiresAt = expDate.toISOString().slice(0, 10);
     const purpose =
       gcPurpose.trim() || `Phát hành thẻ quà tặng tiêu toàn sàn (hạn ${cleanMonths} tháng)`;
     const entrySeq = loyalty.giftCardLedger.length + 1;
@@ -284,14 +228,6 @@ function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
         ...prev.giftCardLedger,
       ],
     }));
-
-    appendAdminAuditLog({
-      role: "Đối soát tài chính",
-      action: "Phát hành mã Thẻ quà tặng toàn sàn",
-      module: "Hội viên",
-      target: cleanCode,
-      changeSummary: `Phát hành ${formatVnd(cleanAmount)} (hạn ${cleanMonths} tháng), ghi Có TK 3387 (${entryCode}).`,
-    });
 
     setGcCode("");
     setGcPurpose("");
@@ -333,110 +269,17 @@ function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
       ],
     }));
 
-    appendAdminAuditLog({
-      role: "Đối soát tài chính",
-      action: "Tất toán hết hạn Thẻ quà tặng",
-      module: "Hội viên",
-      target: card.code,
-      changeSummary: `Ghi Nợ TK 3387 số dư ${formatVnd(settleAmount)} (${entryCode}), chuyển trạng thái Đã hết hạn.`,
-    });
     showToast(`Đã tất toán hết hạn mã ${card.code} (${formatVnd(settleAmount)}).`);
-  };
-
-  // --- Tab 3 handlers: Flash sale & Platform vouchers ---
-  const handleFlashDecision = (
-    item: AdminFlashSaleProposal,
-    nextStatus: "da_duyet" | "tu_choi"
-  ) => {
-    updateAdminLoyaltyState((prev) => ({
-      ...prev,
-      flashProposals: prev.flashProposals.map((p) =>
-        p.id === item.id ? { ...p, status: nextStatus } : p
-      ),
-    }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action:
-        nextStatus === "da_duyet"
-          ? "Duyệt khung giờ Flash sale & mở quỹ suất"
-          : "Từ chối đề xuất Flash sale / Deal sốc",
-      module: "Hội viên",
-      target: item.code,
-      changeSummary: `${item.productName} (${item.shopName}) · ${formatVnd(item.flashPrice)} · ${item.quotaSlots} suất (tối đa ${item.maxQtyPerOrder} SP/đơn).`,
-    });
-    showToast(
-      nextStatus === "da_duyet"
-        ? `Đã duyệt ${item.code} và mở ${item.quotaSlots} suất Flash sale.`
-        : `Đã từ chối đề xuất ${item.code}.`
-    );
-  };
-
-  const handleAddPlatformVoucher = (e: React.FormEvent) => {
-    e.preventDefault();
-    const code = vcCode.trim().toUpperCase().replace(/\s+/g, "");
-    const title = vcTitle.trim();
-    if (!code || !title) return;
-    const cleanDiscount = Math.max(5000, Math.trunc(vcDiscount));
-    const cleanMin = Math.max(0, Math.trunc(vcMinOrder));
-    const cleanQuota = Math.max(10, Math.trunc(vcQuota));
-
-    updateAdminLoyaltyState((prev) => ({
-      ...prev,
-      platformVouchers: [
-        {
-          id: `pv-${Date.now()}`,
-          code,
-          title,
-          scope: vcScope,
-          discountVnd: cleanDiscount,
-          minOrderVnd: cleanMin,
-          stackableWithShop: true,
-          usedQuota: 0,
-          totalQuota: cleanQuota,
-          active: true,
-        },
-        ...prev.platformVouchers,
-      ],
-    }));
-
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Tạo mã giảm giá cấp sàn",
-      module: "Hội viên",
-      target: code,
-      changeSummary: `${title} · Giảm ${formatVnd(cleanDiscount)} cho đơn từ ${formatVnd(cleanMin)} · ${formatInt(cleanQuota)} suất phát hành.`,
-    });
-    setVcCode("");
-    setVcTitle("");
-    showToast(`Đã tạo mã sàn ${code} (${formatInt(cleanQuota)} suất).`);
-  };
-
-  const handleToggleVoucher = (v: AdminPlatformVoucher) => {
-    const nextActive = !v.active;
-    updateAdminLoyaltyState((prev) => ({
-      ...prev,
-      platformVouchers: prev.platformVouchers.map((item) =>
-        item.id === v.id ? { ...item, active: nextActive } : item
-      ),
-    }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: nextActive ? "Kích hoạt mã giảm giá cấp sàn" : "Tạm dừng mã giảm giá cấp sàn",
-      module: "Hội viên",
-      target: v.code,
-      changeSummary: `${nextActive ? "Mở lại" : "Tạm dừng"} mã ${v.code} (${v.usedQuota}/${v.totalQuota} suất đã dùng).`,
-    });
   };
 
   return (
     <div className={shared.page}>
       <header className={shared.titleRow}>
         <div className={shared.titleBlock}>
-          <h1 className={shared.pageTitle}>Hội viên, khuyến mãi sàn & thẻ quà tặng</h1>
+          <h1 className={shared.pageTitle}>Khuyến mãi sàn, Xu & Hội viên</h1>
           <p className={shared.pageSubtitle}>
-            Quản trị {formatInt(totalMembers)} tài khoản Hội viên Nexus (4 hạng), quỹ Thẻ quà tặng
-            đang lưu hành {formatVnd(giftCardSummary.totalRemaining)} và {pendingFlashCount} đề xuất
-            Flash sale chờ duyệt chống nâng giá ảo.
+            Tạo voucher cấp sàn, mở khung Flash sale, duyệt suất đăng ký SKU, cộng Xu cho thành viên
+            và xem cấu hình hạng hội viên ({formatInt(totalMembers)} tài khoản mẫu).
           </p>
         </div>
       </header>
@@ -446,11 +289,29 @@ function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
           <button
             type="button"
             role="tab"
+            aria-selected={activeTab === "flash_voucher"}
+            className={`${shared.tabBtn} ${activeTab === "flash_voucher" ? shared.tabBtnActive : ""}`}
+            onClick={() => setActiveTab("flash_voucher")}
+          >
+            <span>Mã sàn & Flash sale</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "cong_xu"}
+            className={`${shared.tabBtn} ${activeTab === "cong_xu" ? shared.tabBtnActive : ""}`}
+            onClick={() => setActiveTab("cong_xu")}
+          >
+            <span>Cộng Xu thành viên</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={activeTab === "hoi_vien"}
             className={`${shared.tabBtn} ${activeTab === "hoi_vien" ? shared.tabBtnActive : ""}`}
             onClick={() => setActiveTab("hoi_vien")}
           >
-            <span>Hội viên Nexus & Giới thiệu</span>
+            <span>Hội viên & .edu (mẫu)</span>
             {pendingEduCount > 0 && <span className={shared.tabCount}>{pendingEduCount}</span>}
           </button>
           <button
@@ -460,21 +321,14 @@ function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
             className={`${shared.tabBtn} ${activeTab === "the_qua_tang" ? shared.tabBtnActive : ""}`}
             onClick={() => setActiveTab("the_qua_tang")}
           >
-            <span>Thẻ quà tặng</span>
+            <span>Thẻ quà tặng (mẫu)</span>
             <span className={shared.tabCount}>{loyalty.giftCards.length}</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "flash_voucher"}
-            className={`${shared.tabBtn} ${activeTab === "flash_voucher" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("flash_voucher")}
-          >
-            <span>Mã sàn & Flash sale</span>
-            {pendingFlashCount > 0 && <span className={shared.tabCount}>{pendingFlashCount}</span>}
           </button>
         </div>
       </div>
+
+      {activeTab === "flash_voucher" && <AdminPromoCoinsPanel mode="promo" />}
+      {activeTab === "cong_xu" && <AdminPromoCoinsPanel mode="coins" />}
 
       {/* TAB 1: HỘI VIÊN NEXUS, GIỚI THIỆU & SINH VIÊN .EDU */}
       {activeTab === "hoi_vien" && (
@@ -1340,283 +1194,7 @@ function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
         </div>
       )}
 
-      {/* TAB 3: MÃ SÀN & FLASH SALE */}
-      {activeTab === "flash_voucher" && (
-        <div className={styles.stack}>
-          {/* 3A: Duyệt khung giờ Flash sale & Deal sốc */}
-          <section className={shared.panel} aria-labelledby="tv-flash-heading">
-            <div className={shared.panelHeader}>
-              <h2 id="tv-flash-heading" className={shared.panelTitle}>
-                Duyệt khung giờ Flash sale & Deal sốc (chống nâng giá ảo)
-              </h2>
-              <span className={shared.panelMeta}>
-                {pendingFlashCount} đề xuất chờ duyệt · Khóa suất theo khung giờ
-              </span>
-            </div>
-
-            <div className={shared.tableWrap}>
-              <table className={shared.dataTable}>
-                <thead>
-                  <tr>
-                    <th>Khung giờ & sản phẩm đề xuất</th>
-                    <th className={shared.colNum}>Trung vị 30 ngày</th>
-                    <th className={shared.colNum}>Giá gốc khai báo</th>
-                    <th className={shared.colNum}>Giá Flash / Trần SL</th>
-                    <th>Kiểm tra giá & trạng thái</th>
-                    <th className={shared.colAction}>Thao tác</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {loyalty.flashProposals.map((item) => {
-                    const meta = FLASH_PROPOSAL_STATUS_META[item.status];
-                    return (
-                      <tr key={item.id}>
-                        <td>
-                          <div className={shared.cellPrimary}>
-                            {item.code} · {item.productName}
-                          </div>
-                          <div className={shared.cellSub}>
-                            {item.slotLabel} · {item.campaignType} · {item.shopName}
-                          </div>
-                        </td>
-                        <td className={shared.colNum}>{formatVnd(item.medianPrice30d)}</td>
-                        <td
-                          className={`${shared.colNum} ${
-                            item.priceInflationAlert ? shared.numNegative : ""
-                          }`}
-                        >
-                          {formatVnd(item.declaredOriginalPrice)}
-                        </td>
-                        <td className={shared.colNum}>
-                          <div className={shared.cellPrimary}>{formatVnd(item.flashPrice)}</div>
-                          <div className={shared.cellSub}>
-                            {formatInt(item.quotaSlots)} suất · ≤ {item.maxQtyPerOrder} SP/đơn
-                          </div>
-                        </td>
-                        <td>
-                          <StatusPill label={meta.label} tone={meta.tone} />
-                          <div
-                            className={
-                              item.priceInflationAlert ? shared.priorityText : shared.tierText
-                            }
-                          >
-                            {item.priceInflationAlert
-                              ? "Cảnh báo nâng giá gốc ảo"
-                              : "Khớp trung vị 30 ngày"}
-                          </div>
-                        </td>
-                        <td className={shared.colAction}>
-                          <div className={styles.actionInline}>
-                            <button
-                              type="button"
-                              className={shared.rowActionBtn}
-                              disabled={item.status === "da_duyet"}
-                              onClick={() => handleFlashDecision(item, "da_duyet")}
-                            >
-                              Duyệt suất
-                            </button>
-                            <button
-                              type="button"
-                              className={shared.rowActionBtn}
-                              disabled={item.status === "tu_choi"}
-                              onClick={() => handleFlashDecision(item, "tu_choi")}
-                            >
-                              Từ chối
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            <div className={shared.mobileList}>
-              {loyalty.flashProposals.map((item) => {
-                const meta = FLASH_PROPOSAL_STATUS_META[item.status];
-                return (
-                  <div key={item.id} className={shared.mobileItem}>
-                    <div className={shared.mobileLine1}>
-                      <span className={shared.mobileIdentity}>{item.productName}</span>
-                      <span className={shared.mobileMetric}>{formatVnd(item.flashPrice)}</span>
-                    </div>
-                    <div className={shared.mobileLine2}>
-                      <span className={shared.mobileMetaText}>
-                        {item.shopName} · Trung vị {formatVnd(item.medianPrice30d)}
-                        {item.priceInflationAlert ? " · Cảnh báo giá ảo" : ""}
-                      </span>
-                      <StatusPill label={meta.label} tone={meta.tone} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-
-          {/* 3B: Quản trị mã giảm giá cấp sàn */}
-          <section className={shared.panel} aria-labelledby="tv-vc-heading">
-            <div className={shared.panelHeader}>
-              <h2 id="tv-vc-heading" className={shared.panelTitle}>
-                Mã giảm giá cấp sàn (chồng được 1 mã gian hàng)
-              </h2>
-              <span className={shared.panelMeta}>
-                {loyalty.platformVouchers.filter((v) => v.active).length}/
-                {loyalty.platformVouchers.length} mã đang hoạt động
-              </span>
-            </div>
-
-            <form className={styles.voucherForm} onSubmit={handleAddPlatformVoucher}>
-              <div className={styles.fieldGroup}>
-                <label htmlFor="vc-code" className={shared.fieldLabel}>
-                  Mã sàn
-                </label>
-                <input
-                  id="vc-code"
-                  type="text"
-                  className={shared.textInput}
-                  value={vcCode}
-                  onChange={(e) => setVcCode(e.target.value)}
-                  placeholder="VD: NEXUS40"
-                />
-              </div>
-              <div className={styles.fieldGroup}>
-                <label htmlFor="vc-title" className={shared.fieldLabel}>
-                  Mô tả ngắn
-                </label>
-                <input
-                  id="vc-title"
-                  type="text"
-                  className={shared.textInput}
-                  value={vcTitle}
-                  onChange={(e) => setVcTitle(e.target.value)}
-                  placeholder="Giảm 40.000₫ đơn cơ bản"
-                />
-              </div>
-              <div className={styles.fieldGroup}>
-                <label htmlFor="vc-scope" className={shared.fieldLabel}>
-                  Phạm vi
-                </label>
-                <select
-                  id="vc-scope"
-                  className={shared.toolbarSelect}
-                  value={vcScope}
-                  onChange={(e) => setVcScope(e.target.value as AdminPlatformVoucher["scope"])}
-                >
-                  <option value="Giảm đơn sàn">Giảm đơn sàn</option>
-                  <option value="Freeship sàn">Freeship sàn</option>
-                  <option value="Hội viên Nexus">Hội viên Nexus</option>
-                  <option value="Sinh viên .edu">Sinh viên .edu</option>
-                </select>
-              </div>
-              <div className={styles.fieldGroup}>
-                <label htmlFor="vc-disc" className={shared.fieldLabel}>
-                  Giảm (VND)
-                </label>
-                <input
-                  id="vc-disc"
-                  type="number"
-                  min={5000}
-                  step={5000}
-                  className={shared.textInput}
-                  value={vcDiscount}
-                  onChange={(e) => setVcDiscount(Number(e.target.value) || 0)}
-                />
-              </div>
-              <div className={styles.fieldGroup}>
-                <label htmlFor="vc-quota" className={shared.fieldLabel}>
-                  Tổng suất
-                </label>
-                <input
-                  id="vc-quota"
-                  type="number"
-                  min={10}
-                  step={50}
-                  className={shared.textInput}
-                  value={vcQuota}
-                  onChange={(e) => {
-                    setVcQuota(Number(e.target.value) || 100);
-                    setVcMinOrder((prev) => prev || 299000);
-                  }}
-                />
-              </div>
-              <Button type="submit" variant="primary" size="sm" shape="app">
-                Tạo mã sàn
-              </Button>
-            </form>
-
-            <div className={shared.tableWrap}>
-              <table className={shared.dataTable}>
-                <thead>
-                  <tr>
-                    <th>Mã sàn & mô tả</th>
-                    <th>Phạm vi</th>
-                    <th className={shared.colNum}>Mức giảm / Đơn tối thiểu</th>
-                    <th className={shared.colNum}>Suất đã dùng</th>
-                    <th>Trạng thái</th>
-                    <th className={shared.colAction}>Bật/tắt</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {loyalty.platformVouchers.map((v) => (
-                    <tr key={v.id}>
-                      <td>
-                        <div className={shared.cellPrimary}>{v.code}</div>
-                        <div className={shared.cellSub}>{v.title}</div>
-                      </td>
-                      <td>{v.scope}</td>
-                      <td className={shared.colNum}>
-                        <div className={shared.cellPrimary}>{formatVnd(v.discountVnd)}</div>
-                        <div className={shared.cellSub}>Đơn từ {formatVnd(v.minOrderVnd)}</div>
-                      </td>
-                      <td className={shared.colNum}>
-                        {formatInt(v.usedQuota)} / {formatInt(v.totalQuota)}
-                      </td>
-                      <td>
-                        <StatusPill
-                          label={v.active ? "Đang chạy" : "Tạm dừng"}
-                          tone={v.active ? "positive" : "neutral"}
-                        />
-                      </td>
-                      <td className={shared.colAction}>
-                        <ToggleSwitch
-                          id={`sw-pv-${v.id}`}
-                          checked={v.active}
-                          label={`Bật hoặc tạm dừng mã sàn ${v.code}`}
-                          onChange={() => handleToggleVoucher(v)}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className={shared.mobileList}>
-              {loyalty.platformVouchers.map((v) => (
-                <div key={v.id} className={shared.mobileItem}>
-                  <div className={shared.mobileLine1}>
-                    <span className={shared.mobileIdentity}>
-                      {v.code} · {formatVnd(v.discountVnd)}
-                    </span>
-                    <ToggleSwitch
-                      id={`sw-pvm-${v.id}`}
-                      checked={v.active}
-                      label={`Bật hoặc tạm dừng mã sàn ${v.code}`}
-                      onChange={() => handleToggleVoucher(v)}
-                    />
-                  </div>
-                  <div className={shared.mobileLine2}>
-                    <span className={shared.mobileMetaText}>
-                      {v.scope} · {formatInt(v.usedQuota)}/{formatInt(v.totalQuota)} suất
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        </div>
-      )}
+      {/* Mock tabs 1 & 2 above; real Promo & Coins rendered via AdminPromoCoinsPanel */}
     </div>
   );
 }

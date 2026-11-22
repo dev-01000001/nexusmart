@@ -6,7 +6,8 @@ import { useRouter } from "next/navigation";
 import { EDU_DISCOUNT_CONFIG, GIFT_CARD_DENOMINATIONS, GIFT_CARD_POLICY, PRODUCTS } from "@/data";
 import { MEDIA_BANNERS } from "@/data/media";
 import { formatDateVi, formatVnd } from "@/lib/format";
-import { useStore } from "@/context/StoreContext";
+import { useCart } from "@/context/CartContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, ProductCard, StateView } from "@/components";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import shared from "@/features/commerce/commerce.module.css";
@@ -15,14 +16,9 @@ import styles from "./page.module.css";
 function GiftCardsPageContent() {
   const router = useRouter();
   const viewState = usePageStateParam();
-  const {
-    membership,
-    purchaseGiftCard,
-    applyGiftCardCode,
-    verifyEduEmail,
-    setPlatformVoucher,
-    showToast,
-  } = useStore();
+  const { setPlatformVoucher } = useCart();
+  const { membership, purchaseGiftCard, applyGiftCardCode, verifyEduEmail, showToast } =
+    useMockStore();
 
   const [amountVnd, setAmountVnd] = useState<number>(500000);
   const [customCode, setCustomCode] = useState("QUATANG26");

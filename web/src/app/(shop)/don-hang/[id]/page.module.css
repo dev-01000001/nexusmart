@@ -166,6 +166,60 @@
   object-fit: cover;
 }
 
+.itemThumbPlaceholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.priceOriginal {
+  text-decoration: line-through;
+  color: var(--muted);
+  margin-left: 6px;
+}
+
+.retryStack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.confirmBox {
+  background: var(--accent-tint);
+  border-left: 4px solid var(--accent);
+  padding: clamp(20px, 2.4vw, 28px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.shipmentMetaGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 24px;
+}
+
+.shipmentMetaItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.shipmentKey {
+  font-size: var(--step-small);
+  color: var(--muted);
+}
+
+.shipmentVal {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--ink-strong);
+}
+
 .itemInfo {
   display: flex;
   flex-direction: column;

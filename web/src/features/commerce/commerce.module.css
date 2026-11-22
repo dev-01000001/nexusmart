@@ -750,3 +750,34 @@ table.dataTable tbody tr:last-child td {
     font-weight: 500;
   }
 }
+
+/* Checkout & VietQR payment waiting additions */
+.qrImage {
+  width: 148px;
+  height: 148px;
+  display: block;
+  object-fit: contain;
+  background: var(--surface-white);
+}
+
+.paymentTitleGroup {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.countdownPill {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  font-size: var(--step-small);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.paymentLiveStatus {
+  font-size: var(--step-small);
+  color: var(--ink-secondary);
+  line-height: 1.45;
+}

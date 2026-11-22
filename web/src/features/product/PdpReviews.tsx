@@ -2,21 +2,23 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  SAMPLE_DATA_NOTICE,
   computeReviewSummary,
   type FitFeedback,
   type Product,
   type Shop,
   type SizeCode,
 } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import { isCatalogProduct, type CatalogProduct, type CatalogShop } from "@/lib/catalog-types";
+import { useSession } from "@/context/SessionContext";
+import { useMockStore } from "@/mock/MockStoreContext";
+import { SAMPLE_DATA_NOTICE } from "@/mock/productEditorial";
 import { Button, IconClose, IconStar } from "@/components";
 import { formatDateVi } from "@/lib/format";
 import styles from "./PdpReviews.module.css";
 
 export interface PdpReviewsProps {
-  product: Product;
-  shop: Shop;
+  product: Product | CatalogProduct;
+  shop: Shop | CatalogShop;
   selectedColorName: string;
   selectedSize: SizeCode;
 }
@@ -33,7 +35,8 @@ const FIT_ORDER: FitFeedback[] = ["chat", "dung", "rong"];
 const STAR_LEVELS: Array<5 | 4 | 3 | 2 | 1> = [5, 4, 3, 2, 1];
 
 export function PdpReviews({ product, shop, selectedColorName, selectedSize }: PdpReviewsProps) {
-  const { reviews, submitReview, bodyProfile, orders, user } = useStore();
+  const { user } = useSession();
+  const { reviews, submitReview, bodyProfile } = useMockStore();
 
   const [filter, setFilter] = useState<ReviewFilter>("all");
   const [formOpen, setFormOpen] = useState<boolean>(false);
@@ -48,8 +51,11 @@ export function PdpReviews({ product, shop, selectedColorName, selectedSize }: P
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [zoomPhoto]);
 
+  const editorialProductId = isCatalogProduct(product) ? product.editorialProductId : undefined;
+  const reviewKeyId = editorialProductId ?? product.id;
+
   // Form state
-  const [authorName, setAuthorName] = useState<string>(user.fullName);
+  const [authorName, setAuthorName] = useState<string>(user?.full_name ?? "");
   const [rating, setRating] = useState<number>(5);
   const [fitFeedback, setFitFeedback] = useState<FitFeedback>("dung");
   const [heightCm, setHeightCm] = useState<number>(bodyProfile.heightCm);
@@ -61,19 +67,19 @@ export function PdpReviews({ product, shop, selectedColorName, selectedSize }: P
   const [formError, setFormError] = useState<string>("");
 
   const productReviews = useMemo(
-    () => reviews.filter((r) => r.productId === product.id),
-    [reviews, product.id]
-  );
-
-  const summary = useMemo(() => computeReviewSummary(reviews, product.id), [reviews, product.id]);
-
-  const hasDeliveredOrder = useMemo(
     () =>
-      orders.some(
-        (o) => o.status === "da_giao" && o.items.some((it) => it.productId === product.id)
+      reviews.filter(
+        (r) =>
+          r.productId === product.id ||
+          (editorialProductId ? r.productId === editorialProductId : false)
       ),
-    [orders, product.id]
+    [reviews, product.id, editorialProductId]
   );
+
+  const summary = useMemo(() => {
+    const normalized = productReviews.map((r) => ({ ...r, productId: reviewKeyId }));
+    return computeReviewSummary(normalized, reviewKeyId);
+  }, [productReviews, reviewKeyId]);
 
   const filteredReviews = useMemo(() => {
     return productReviews.filter((r) => {
@@ -103,8 +109,8 @@ export function PdpReviews({ product, shop, selectedColorName, selectedSize }: P
     }
     const matchedColor = product.colors.find((c) => c.name === colorName);
     submitReview({
-      productId: product.id,
-      authorName: authorName.trim() || user.fullName,
+      productId: reviewKeyId,
+      authorName: authorName.trim() || user?.full_name || "Khách hàng",
       rating,
       fitFeedback,
       buyerHeightCm: Math.max(140, Math.min(210, Math.round(heightCm))),
@@ -120,6 +126,8 @@ export function PdpReviews({ product, shop, selectedColorName, selectedSize }: P
     setFormOpen(false);
     setFilter("all");
   };
+
+  const availableSizes = product.sizes.length > 0 ? product.sizes : (["M"] as SizeCode[]);
 
   return (
     <section className={styles.section} aria-labelledby="pdp-reviews-heading">
@@ -204,9 +212,7 @@ export function PdpReviews({ product, shop, selectedColorName, selectedSize }: P
             {formOpen ? "Đóng biểu mẫu đánh giá" : "Viết đánh giá sản phẩm"}
           </Button>
           <p className={styles.eligibilityNote}>
-            {hasDeliveredOrder
-              ? "Đơn hàng đã giao của bạn có mẫu này, đủ điều kiện gửi đánh giá."
-              : "Chia sẻ cảm nhận về chất vải và độ vừa để giúp người mua sau chọn đúng size."}
+            Chia sẻ cảm nhận về chất vải và độ vừa để giúp người mua sau chọn đúng size.
           </p>
         </aside>
 
@@ -336,7 +342,7 @@ export function PdpReviews({ product, shop, selectedColorName, selectedSize }: P
                     onChange={(e) => setPurchasedSize(e.target.value as SizeCode)}
                     className={styles.select}
                   >
-                    {product.sizes.map((sz) => (
+                    {availableSizes.map((sz) => (
                       <option key={sz} value={sz}>
                         Size {sz}
                       </option>

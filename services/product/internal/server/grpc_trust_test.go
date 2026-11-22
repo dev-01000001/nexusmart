@@ -117,4 +117,37 @@ func TestGRPCTrust_SpoofedMetadataAndServiceTokens(t *testing.T) {
 	if _, err = client.CreateCategory(bearer(good), &productv1.CreateCategoryRequest{Name: "Svc", CommissionRateBps: 1}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("service token on admin RPC: want PermissionDenied, got %v", err)
 	}
+
+	// 5. RestockOrderItems: internal RPC allowing service tokens & admin, rejecting anonymous & seller.
+	skuID := created.GetProduct().GetSkus()[0].GetId()
+	restockReq := &productv1.RestockOrderItemsRequest{
+		OrderId: "sub-order-trust-1",
+		Items:   []*productv1.StockReservationItem{{SkuId: skuID, Quantity: 2}},
+	}
+	for name, ctx := range map[string]context.Context{
+		"no token":  md("x-user-id", "order-service", "x-user-role", "admin"),
+		"wrong key": bearer(forged),
+		"expired":   bearer(expired),
+	} {
+		if _, err := client.RestockOrderItems(ctx, restockReq); status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("RestockOrderItems with %s: want Unauthenticated, got %v", name, err)
+		}
+	}
+	if _, err := client.RestockOrderItems(bearer(sellerATok), restockReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("RestockOrderItems with seller JWT: want PermissionDenied, got %v", err)
+	}
+	rstResp, err := client.RestockOrderItems(bearer(good), restockReq)
+	if err != nil || !rstResp.GetRestocked() || rstResp.GetAlreadyRestocked() {
+		t.Fatalf("RestockOrderItems with valid service token: resp=%+v err=%v", rstResp, err)
+	}
+	rstDup, err := client.RestockOrderItems(bearer(good), restockReq)
+	if err != nil || !rstDup.GetRestocked() || !rstDup.GetAlreadyRestocked() {
+		t.Fatalf("duplicate RestockOrderItems with valid service token: resp=%+v err=%v", rstDup, err)
+	}
+	if _, err := client.RestockOrderItems(bearer(adminTok), &productv1.RestockOrderItemsRequest{
+		OrderId: "sub-order-trust-2",
+		Items:   []*productv1.StockReservationItem{{SkuId: skuID, Quantity: 1}},
+	}); err != nil {
+		t.Fatalf("RestockOrderItems with admin JWT failed: %v", err)
+	}
 }

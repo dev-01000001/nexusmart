@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -245,5 +246,76 @@ func TestWebhookHandlerHMACIdempotencyAndOutOfOrder(t *testing.T) {
 	sh, _ := repo.GetShipmentByOrderID(context.Background(), "ord-1")
 	if sh.Status != carrier.StatusDelivering {
 		t.Fatalf("expected status to remain delivering, got %s", sh.Status)
+	}
+}
+
+func TestWebhookHandlerInvalidSignatureDoesNotLogSignature(t *testing.T) {
+	const secret = "test-shipping-webhook-secret"
+	const badSig = "deadbeefcafebabe0123456789abcdef"
+
+	var logBuf bytes.Buffer
+	jsonLog := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	repo := newStubRepo()
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc := service.NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h := NewHandler(secret, svc, jsonLog)
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	h.nowFn = func() time.Time { return now }
+
+	r := chi.NewRouter()
+	r.Post("/webhooks/shipping/{carrier}", h.ServeHTTP)
+
+	raw, err := json.Marshal(map[string]any{
+		"event_id":      "evt-bad-log",
+		"tracking_code": "GHN-TEST-001",
+		"raw_status":    "delivering",
+		"occurred_at":   now.Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("marshal webhook body: %v", err)
+	}
+
+	// 1. Non-empty invalid signature: raw signature must not appear in log output.
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/shipping/ghn", bytes.NewReader(raw))
+	req.Header.Set("X-Signature", badSig)
+	req.Header.Set("X-Timestamp", strconv.FormatInt(now.Unix(), 10))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on invalid signature, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	logged := logBuf.String()
+	if strings.Contains(logged, badSig) {
+		t.Fatalf("log output must not contain raw signature %q, got: %s", badSig, logged)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logBuf.Bytes()), &entry); err != nil {
+		t.Fatalf("decode JSON log entry: %v (raw=%s)", err, logged)
+	}
+	if _, exists := entry["signature"]; exists {
+		t.Fatalf("log entry must not include raw signature field, got: %s", logged)
+	}
+	if present, ok := entry["signature_present"].(bool); !ok || !present {
+		t.Fatalf("expected signature_present=true, got %v (raw=%s)", entry["signature_present"], logged)
+	}
+
+	// 2. Missing signature: signature_present=false.
+	logBuf.Reset()
+	req = httptest.NewRequest(http.MethodPost, "/webhooks/shipping/ghn", bytes.NewReader(raw))
+	req.Header.Set("X-Timestamp", strconv.FormatInt(now.Unix(), 10))
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on missing signature, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	entry = nil
+	if err := json.Unmarshal(bytes.TrimSpace(logBuf.Bytes()), &entry); err != nil {
+		t.Fatalf("decode JSON log entry: %v (raw=%s)", err, logBuf.String())
+	}
+	if present, ok := entry["signature_present"].(bool); !ok || present {
+		t.Fatalf("expected signature_present=false, got %v (raw=%s)", entry["signature_present"], logBuf.String())
 	}
 }

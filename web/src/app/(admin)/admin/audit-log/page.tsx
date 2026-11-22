@@ -1,78 +1,90 @@
 "use client";
 
-import React, { Suspense, useMemo, useState } from "react";
-import type { AuditLogEntry } from "@/data";
-import { IconSearch } from "@/components";
+import React, { Suspense, useCallback, useEffect, useState } from "react";
+import type { GatewayAuditLog, PaginatedResponse } from "@/lib/gateway-types";
+import { api, getErrorMessage } from "@/lib/api";
+import { Button, IconSearch, StateView } from "@/components";
 import { formatDateTimeVi, formatInt } from "@/lib/format";
-import { formatShortTimeDateVi } from "@/features/admin/adminMeta";
-import { useAdminAuditLogs } from "@/features/admin/auditStore";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { StatusPill } from "@/features/admin/StatusPill";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
 
-type AuditModuleTab =
-  | "all"
-  | "Gian hàng"
-  | "Nội dung"
-  | "Kiểm duyệt"
-  | "Hội viên"
-  | "Cấu hình"
-  | "Khiếu nại"
-  | "Đối soát";
-type AuditRoleFilter = "all" | AuditLogEntry["role"];
+type TargetTypeTab = "all" | "shop" | "user";
+
+const TARGET_TYPE_LABELS: Record<string, string> = {
+  shop: "Gian hàng",
+  user: "Người dùng",
+};
+
+const PAGE_SIZE = 20;
 
 function AuditLogContent({ initialQuery }: { initialQuery: string }) {
-  const auditLogs = useAdminAuditLogs();
-  const [activeTab, setActiveTab] = useState<AuditModuleTab>("all");
-  const [roleFilter, setRoleFilter] = useState<AuditRoleFilter>("all");
-  const [query, setQuery] = useState(initialQuery);
+  const [targetType, setTargetType] = useState<TargetTypeTab>("all");
+  const [actorIdInput, setActorIdInput] = useState("");
+  const [targetIdInput, setTargetIdInput] = useState(initialQuery);
+  const [appliedFilters, setAppliedFilters] = useState({
+    actorId: "",
+    targetId: initialQuery,
+  });
+  const [page, setPage] = useState(1);
 
-  const counts = useMemo(() => {
-    const map: Record<AuditModuleTab, number> = {
-      all: auditLogs.length,
-      "Gian hàng": 0,
-      "Nội dung": 0,
-      "Kiểm duyệt": 0,
-      "Hội viên": 0,
-      "Cấu hình": 0,
-      "Khiếu nại": 0,
-      "Đối soát": 0,
-    };
-    for (const log of auditLogs) {
-      if (log.module in map) {
-        map[log.module as AuditModuleTab] += 1;
-      }
-    }
-    return map;
-  }, [auditLogs]);
+  const [logs, setLogs] = useState<GatewayAuditLog[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return auditLogs.filter((log) => {
-      if (activeTab !== "all" && log.module !== activeTab) return false;
-      if (roleFilter !== "all" && log.role !== roleFilter) return false;
-      if (!q) return true;
-      return (
-        log.action.toLowerCase().includes(q) ||
-        log.actor.toLowerCase().includes(q) ||
-        log.role.toLowerCase().includes(q) ||
-        log.target.toLowerCase().includes(q) ||
-        log.changeSummary.toLowerCase().includes(q) ||
-        log.traceId.toLowerCase().includes(q)
+  const loadLogs = useCallback(async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const qs = new URLSearchParams();
+      qs.set("page", String(page));
+      qs.set("page_size", String(PAGE_SIZE));
+      if (targetType !== "all") qs.set("target_type", targetType);
+      if (appliedFilters.actorId.trim()) qs.set("actor_id", appliedFilters.actorId.trim());
+      if (appliedFilters.targetId.trim()) qs.set("target_id", appliedFilters.targetId.trim());
+
+      const res = await api<PaginatedResponse<GatewayAuditLog>>(
+        `admin/audit-logs?${qs.toString()}`
       );
-    });
-  }, [auditLogs, activeTab, roleFilter, query]);
+      setLogs(res.items ?? []);
+      setTotal(res.total ?? (res.items ?? []).length);
+    } catch (err) {
+      setErrorMsg(getErrorMessage(err, "Không thể tải nhật ký kiểm toán lúc này."));
+    } finally {
+      setLoading(false);
+    }
+  }, [page, targetType, appliedFilters]);
 
-  const tabs: Array<{ id: AuditModuleTab; label: string }> = [
-    { id: "all", label: "Tất cả" },
-    { id: "Gian hàng", label: "Gian hàng" },
-    { id: "Nội dung", label: "Nội dung" },
-    { id: "Kiểm duyệt", label: "Kiểm duyệt" },
-    { id: "Hội viên", label: "Hội viên" },
-    { id: "Cấu hình", label: "Cấu hình" },
-    { id: "Khiếu nại", label: "Khiếu nại" },
-    { id: "Đối soát", label: "Đối soát" },
+  useEffect(() => {
+    void loadLogs();
+  }, [loadLogs]);
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  const handleApplyFilters = (e: React.FormEvent) => {
+    e.preventDefault();
+    setPage(1);
+    setAppliedFilters({
+      actorId: actorIdInput.trim(),
+      targetId: targetIdInput.trim(),
+    });
+  };
+
+  const handleResetFilters = () => {
+    setTargetType("all");
+    setActorIdInput("");
+    setTargetIdInput("");
+    setPage(1);
+    setAppliedFilters({ actorId: "", targetId: "" });
+  };
+
+  const tabs: Array<{ id: TargetTypeTab; label: string }> = [
+    { id: "all", label: "Tất cả đối tượng" },
+    { id: "shop", label: "Gian hàng" },
+    { id: "user", label: "Người dùng" },
   ];
 
   return (
@@ -81,16 +93,21 @@ function AuditLogContent({ initialQuery }: { initialQuery: string }) {
         <div className={shared.titleBlock}>
           <h1 className={shared.pageTitle}>Nhật ký kiểm toán</h1>
           <p className={shared.pageSubtitle}>
-            Ghi nhận {formatInt(auditLogs.length)} thao tác quản trị kèm mã truy vết trên toàn bộ
-            phân hệ (Gian hàng, Nội dung, Kiểm duyệt, Hội viên, Cấu hình, Khiếu nại, Đối soát).
+            Ghi nhận {formatInt(total)} bản ghi thao tác quản trị (duyệt gian hàng, khóa/mở tài
+            khoản, thay đổi vai trò) trực tiếp từ hệ thống.
           </p>
+        </div>
+        <div className={shared.titleActions}>
+          <Button variant="outline" size="sm" shape="app" onClick={() => void loadLogs()}>
+            Làm mới
+          </Button>
         </div>
       </header>
 
       <div className={shared.tabsBar}>
-        <div className={shared.tabList} role="tablist" aria-label="Lọc nhật ký theo phân hệ">
+        <div className={shared.tabList} role="tablist" aria-label="Lọc nhật ký theo loại đối tượng">
           {tabs.map((tab) => {
-            const active = activeTab === tab.id;
+            const active = targetType === tab.id;
             return (
               <button
                 key={tab.id}
@@ -98,17 +115,19 @@ function AuditLogContent({ initialQuery }: { initialQuery: string }) {
                 role="tab"
                 aria-selected={active}
                 className={`${shared.tabBtn} ${active ? shared.tabBtnActive : ""}`}
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => {
+                  setTargetType(tab.id);
+                  setPage(1);
+                }}
               >
                 <span>{tab.label}</span>
-                <span className={shared.tabCount}>{counts[tab.id]}</span>
               </button>
             );
           })}
         </div>
       </div>
 
-      <div className={shared.toolbar}>
+      <form className={shared.toolbar} onSubmit={handleApplyFilters}>
         <div className={shared.toolbarLeft}>
           <div className={shared.searchWrap}>
             <span className={shared.searchIcon}>
@@ -117,34 +136,66 @@ function AuditLogContent({ initialQuery }: { initialQuery: string }) {
             <input
               type="search"
               className={shared.toolbarSearch}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Tìm hành động, đối tượng, người thực hiện, mã trace..."
-              aria-label="Tìm kiếm trong nhật ký kiểm toán"
+              value={targetIdInput}
+              onChange={(e) => setTargetIdInput(e.target.value)}
+              placeholder="Lọc theo mã đối tượng (target ID)..."
+              aria-label="Lọc theo mã đối tượng"
             />
           </div>
+          <div className={shared.searchWrap}>
+            <span className={shared.searchIcon}>
+              <IconSearch size={14} />
+            </span>
+            <input
+              type="search"
+              className={shared.toolbarSearch}
+              value={actorIdInput}
+              onChange={(e) => setActorIdInput(e.target.value)}
+              placeholder="Lọc theo mã người thực hiện (actor ID)..."
+              aria-label="Lọc theo mã người thực hiện"
+            />
+          </div>
+          <Button type="submit" variant="primary" size="sm" shape="app">
+            Lọc
+          </Button>
+          {(appliedFilters.actorId || appliedFilters.targetId || targetType !== "all") && (
+            <Button variant="outline" size="sm" shape="app" onClick={handleResetFilters}>
+              Đặt lại
+            </Button>
+          )}
         </div>
 
         <div className={shared.toolbarRight}>
-          <span className={shared.resultCount}>{formatInt(filtered.length)} bản ghi</span>
-          <select
-            className={shared.toolbarSelect}
-            value={roleFilter}
-            onChange={(e) => setRoleFilter(e.target.value as AuditRoleFilter)}
-            aria-label="Lọc theo vai trò thực hiện"
-          >
-            <option value="all">Tất cả vai trò</option>
-            <option value="Quản trị viên">Quản trị viên</option>
-            <option value="Vận hành sàn">Vận hành sàn</option>
-            <option value="Đối soát tài chính">Đối soát tài chính</option>
-            <option value="Hệ thống">Hệ thống</option>
-          </select>
+          <span className={shared.resultCount}>
+            Trang {formatInt(page)} / {formatInt(totalPages)} ({formatInt(total)} bản ghi)
+          </span>
         </div>
-      </div>
+      </form>
 
-      {filtered.length === 0 ? (
+      {loading && (
+        <div className={shared.stateWrap}>
+          <StateView kind="loading" surface="app" title="Đang tải nhật ký kiểm toán..." rows={5} />
+        </div>
+      )}
+
+      {!loading && errorMsg && (
+        <div className={shared.stateWrap}>
+          <StateView
+            kind="error"
+            surface="app"
+            title="Không thể tải nhật ký kiểm toán"
+            message={errorMsg}
+            actionLabel="Thử lại"
+            onAction={() => void loadLogs()}
+          />
+        </div>
+      )}
+
+      {!loading && !errorMsg && logs.length === 0 && (
         <p className={shared.emptyRow}>Không tìm thấy bản ghi kiểm toán nào phù hợp với bộ lọc.</p>
-      ) : (
+      )}
+
+      {!loading && !errorMsg && logs.length > 0 && (
         <>
           <div className={shared.tableWrap}>
             <table className={shared.dataTable}>
@@ -152,54 +203,130 @@ function AuditLogContent({ initialQuery }: { initialQuery: string }) {
                 <tr>
                   <th>Thời gian</th>
                   <th>Người thực hiện</th>
-                  <th>Phân hệ</th>
-                  <th>Hành động & tóm tắt thay đổi</th>
-                  <th className={shared.colNum}>Đối tượng & mã truy vết</th>
+                  <th>Loại đối tượng</th>
+                  <th>Hành động & lý do</th>
+                  <th className={shared.colNum}>Đối tượng</th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((log) => (
-                  <tr key={log.id}>
-                    <td className={styles.timeCol}>{formatDateTimeVi(log.timestamp)}</td>
-                    <td>
-                      <div className={shared.cellPrimary}>{log.actor}</div>
-                      <div className={shared.cellSub}>{log.role}</div>
-                    </td>
-                    <td>
-                      <StatusPill label={log.module} tone="neutral" />
-                    </td>
-                    <td className={styles.summaryCol}>
-                      <div className={shared.cellPrimary}>{log.action}</div>
-                      <div className={shared.cellSub}>{log.changeSummary}</div>
-                    </td>
-                    <td className={styles.targetCol}>
-                      <div className={shared.cellPrimary}>{log.target}</div>
-                      <div className={shared.cellSub}>{log.traceId}</div>
-                    </td>
-                  </tr>
-                ))}
+                {logs.map((log) => {
+                  const isOpen = expandedId === log.id;
+                  return (
+                    <React.Fragment key={log.id}>
+                      <tr
+                        className={`${shared.rowInteractive} ${isOpen ? shared.rowSelected : ""}`}
+                        onClick={() => setExpandedId((prev) => (prev === log.id ? null : log.id))}
+                      >
+                        <td className={styles.timeCol}>
+                          {log.created_at ? formatDateTimeVi(log.created_at) : "—"}
+                        </td>
+                        <td>
+                          <div className={shared.cellPrimary}>{log.actor_role || "Quản trị"}</div>
+                          <div className={shared.cellSub}>{log.actor_id}</div>
+                        </td>
+                        <td>
+                          <StatusPill
+                            label={TARGET_TYPE_LABELS[log.target_type] ?? log.target_type}
+                            tone="neutral"
+                          />
+                        </td>
+                        <td className={styles.summaryCol}>
+                          <div className={shared.cellPrimary}>{log.action}</div>
+                          <div className={shared.cellSub}>{log.reason || "Không có ghi chú"}</div>
+                        </td>
+                        <td className={styles.targetCol}>
+                          <div className={shared.cellPrimary}>{log.target_id}</div>
+                          <div className={shared.cellSub}>{log.ip_address || "—"}</div>
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr className={shared.detailRow}>
+                          <td colSpan={5}>
+                            <div className={shared.detailWell}>
+                              <div className={shared.detailGrid}>
+                                <div className={shared.detailField}>
+                                  <span className={shared.detailKey}>Trạng thái trước</span>
+                                  <span className={shared.detailValPlain}>
+                                    {log.before_json || "{}"}
+                                  </span>
+                                </div>
+                                <div className={shared.detailField}>
+                                  <span className={shared.detailKey}>Trạng thái sau</span>
+                                  <span className={shared.detailValPlain}>
+                                    {log.after_json || "{}"}
+                                  </span>
+                                </div>
+                                <div className={shared.detailField}>
+                                  <span className={shared.detailKey}>Địa chỉ nguồn</span>
+                                  <span className={shared.detailValPlain}>
+                                    {log.ip_address || "Không ghi nhận"}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
 
           <div className={shared.mobileList}>
-            {filtered.map((log) => (
+            {logs.map((log) => (
               <article key={log.id} className={shared.mobileItem}>
                 <div className={shared.mobileLine1}>
                   <span className={shared.mobileIdentity}>{log.action}</span>
                   <span className={shared.mobileMetric}>
-                    {formatShortTimeDateVi(log.timestamp)}
+                    {log.created_at ? formatDateTimeVi(log.created_at) : "—"}
                   </span>
                 </div>
                 <div className={shared.mobileLine2}>
                   <span className={shared.mobileMetaText}>
-                    {log.actor} · {log.target} · {log.traceId}
+                    {log.actor_role} · {log.target_id}
                   </span>
-                  <StatusPill label={log.module} tone="neutral" />
+                  <StatusPill
+                    label={TARGET_TYPE_LABELS[log.target_type] ?? log.target_type}
+                    tone="neutral"
+                  />
                 </div>
-                <p className={styles.mobileAuditSummary}>{log.changeSummary}</p>
+                {log.reason && <p className={styles.mobileAuditSummary}>{log.reason}</p>}
               </article>
             ))}
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "flex-end",
+              gap: 8,
+              marginTop: 16,
+            }}
+          >
+            <Button
+              variant="outline"
+              size="sm"
+              shape="app"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              Trang trước
+            </Button>
+            <span className={shared.resultCount}>
+              {formatInt(page)} / {formatInt(totalPages)}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              shape="app"
+              disabled={page >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            >
+              Trang sau
+            </Button>
           </div>
         </>
       )}
@@ -211,9 +338,9 @@ function AuditLogRoute() {
   return (
     <AdminStateGate
       title="Nhật ký kiểm toán"
-      subtitle="Theo dõi đầy đủ lịch sử thay đổi cấu hình, duyệt gian hàng, phân xử khiếu nại và đối soát."
+      subtitle="Theo dõi đầy đủ lịch sử duyệt gian hàng, cập nhật tài khoản và thay đổi phân quyền."
       emptyTitle="Chưa có bản ghi kiểm toán nào"
-      emptyMessage="Các sự kiện quản trị sẽ được ghi lại tự động kèm mã trace ngay khi có thao tác."
+      emptyMessage="Các sự kiện quản trị sẽ được ghi lại tự động ngay khi có thao tác."
       errorTitle="Không thể tải nhật ký kiểm toán"
       errorMessage="Kho lưu trữ sự kiện kiểm toán tạm thời không phản hồi. Vui lòng thử tải lại."
       loadingRows={6}

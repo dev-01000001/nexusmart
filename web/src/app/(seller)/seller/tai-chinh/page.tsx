@@ -1,81 +1,107 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { SHOPS, getShopById } from "@/data";
-import { useStore } from "@/context/StoreContext";
-import { Button, IconWallet, StateView } from "@/components";
-import { formatDateVi, formatInt, formatVnd } from "@/lib/format";
+import type {
+  GatewayOrder,
+  GatewaySellerBalance,
+  GatewayShop,
+  PaginatedResponse,
+} from "@/lib/gateway-types";
+import { api, getErrorMessage } from "@/lib/api";
+import { Button, StateView } from "@/components";
+import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
+import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
 import {
-  EMPTY_DASH,
-  createSellerPayoutEntry,
-  getShopBankAccount,
-  getShopLedgerWithSession,
-  parseUiState,
-  useSellerSession,
-} from "@/features/seller/sellerStore";
+  PAYMENT_METHOD_TEXT,
+  computeOrderNetVnd,
+  getOrderStatusMeta,
+} from "@/features/seller/types";
+import { EMPTY_DASH, getShopBankAccount, parseUiState } from "@/features/seller/sellerStore";
 import common from "@/features/seller/SellerCommon.module.css";
 import styles from "./page.module.css";
 
-type LedgerFilter = "all" | "settled" | "pending";
+type FinanceFilter = "all" | "settled" | "pending";
 const TRUE_MINUS = "\u2212";
 
-function SellerFinanceContent() {
+function isSettledOrder(status: string): boolean {
+  return status === "COMPLETED" || status === "DELIVERED";
+}
+
+function isPendingOrder(status: string): boolean {
+  return status === "CONFIRMED" || status === "PREPARING" || status === "SHIPPING";
+}
+
+function SellerFinanceInner({ shop }: { shop: GatewayShop }) {
   const searchParams = useSearchParams();
   const uiState = parseUiState(searchParams.get("state"));
-  const { activeSellerShopId, showToast } = useStore();
-  const session = useSellerSession();
-  const activeShop = getShopById(activeSellerShopId) ?? SHOPS[0];
+  const { mockShopKey } = useSellerContext();
 
-  const [ledgerFilter, setLedgerFilter] = useState<LedgerFilter>("all");
-  const [showWithdraw, setShowWithdraw] = useState(false);
-  const [amountStr, setAmountStr] = useState("5000000");
-  const [withdrawError, setWithdrawError] = useState<string | null>(null);
+  const [balance, setBalance] = useState<GatewaySellerBalance | null>(null);
+  const [orders, setOrders] = useState<GatewayOrder[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [filter, setFilter] = useState<FinanceFilter>("all");
 
-  const ledgerSummary = useMemo(
-    () => getShopLedgerWithSession(activeShop.id, session),
-    [activeShop.id, session]
-  );
-  const bank = getShopBankAccount(activeShop.id);
+  const bankRef = useMemo(() => getShopBankAccount(mockShopKey), [mockShopKey]);
 
-  const filteredEntries = useMemo(() => {
-    if (ledgerFilter === "all") return ledgerSummary.entries;
-    return ledgerSummary.entries.filter((e) => e.state === ledgerFilter);
-  }, [ledgerSummary.entries, ledgerFilter]);
-
-  const visibleCredits = useMemo(
-    () => filteredEntries.reduce((s, e) => s + e.credit, 0),
-    [filteredEntries]
-  );
-  const visibleDebits = useMemo(
-    () => filteredEntries.reduce((s, e) => s + e.debit, 0),
-    [filteredEntries]
-  );
-
-  const handleWithdrawSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const raw = Number(amountStr);
-    const intAmount = Math.trunc(raw);
-    if (!Number.isFinite(raw) || intAmount !== raw || intAmount < 100000) {
-      setWithdrawError("Số tiền rút phải là số nguyên VND tối thiểu 100.000₫.");
-      return;
+  const loadFinance = useCallback(async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const [balRes, ordersRes] = await Promise.all([
+        api<GatewaySellerBalance>("seller/balance"),
+        api<PaginatedResponse<GatewayOrder>>("seller/orders?page=1&page_size=50"),
+      ]);
+      setBalance(balRes);
+      setOrders(ordersRes.items ?? []);
+    } catch (err) {
+      setErrorMsg(getErrorMessage(err, "Không thể tải số dư và đối soát tài chính lúc này."));
+    } finally {
+      setLoading(false);
     }
-    if (intAmount > ledgerSummary.availableBalance) {
-      setWithdrawError(
-        `Số tiền vượt quá số dư khả dụng (${formatVnd(ledgerSummary.availableBalance)}).`
-      );
-      return;
+  }, []);
+
+  useEffect(() => {
+    if (!uiState) {
+      void loadFinance();
     }
-    setWithdrawError(null);
-    createSellerPayoutEntry(
-      activeShop.id,
-      intAmount,
-      `Rút tiền về ${bank.bank} ${bank.mask} (${bank.branch})`
-    );
-    setShowWithdraw(false);
-    showToast(`Đã tạo lệnh rút ${formatVnd(intAmount)} về ${bank.bank} ${bank.mask}.`);
-  };
+  }, [uiState, loadFinance]);
+
+  const activeOrders = useMemo(
+    () => orders.filter((o) => o.status !== "CANCELLED" && o.status !== "RETURNED"),
+    [orders]
+  );
+
+  const filteredOrders = useMemo(() => {
+    if (filter === "settled") return activeOrders.filter((o) => isSettledOrder(o.status));
+    if (filter === "pending") return activeOrders.filter((o) => isPendingOrder(o.status));
+    return activeOrders;
+  }, [activeOrders, filter]);
+
+  const visibleSubtotal = useMemo(
+    () => filteredOrders.reduce((s, o) => s + o.subtotal_vnd, 0),
+    [filteredOrders]
+  );
+  const visibleCommission = useMemo(
+    () => filteredOrders.reduce((s, o) => s + o.commission_vnd, 0),
+    [filteredOrders]
+  );
+  const visibleNet = useMemo(
+    () => filteredOrders.reduce((s, o) => s + computeOrderNetVnd(o), 0),
+    [filteredOrders]
+  );
+
+  const completedCount = useMemo(
+    () => activeOrders.filter((o) => isSettledOrder(o.status)).length,
+    [activeOrders]
+  );
+
+  const availableVnd = balance?.available_vnd ?? 0;
+  const pendingVnd = balance?.pending_vnd ?? 0;
+  const totalEarnedVnd = balance?.total_earned_vnd ?? 0;
 
   return (
     <div className={common.page}>
@@ -83,46 +109,34 @@ function SellerFinanceContent() {
         <div className={common.headerText}>
           <h1 className={common.title}>Tài chính & đối soát</h1>
           <p className={common.finding}>
-            {activeShop.name} · Tài khoản nhận tiền {bank.bank} {bank.mask} · Số dư khớp sổ cái{" "}
-            {formatVnd(ledgerSummary.netBalance)}
+            {shop.name} · Khả dụng {formatVnd(availableVnd)} · Chờ đối soát {formatVnd(pendingVnd)}{" "}
+            · Tổng doanh thu ghi nhận {formatVnd(totalEarnedVnd)}
           </p>
         </div>
         <div className={common.headerActions}>
-          <Button
-            variant="ink"
-            size="sm"
-            shape="app"
-            disabled={ledgerSummary.availableBalance < 100000}
-            onClick={() => {
-              setWithdrawError(null);
-              setAmountStr(String(Math.min(5000000, ledgerSummary.availableBalance)));
-              setShowWithdraw((prev) => !prev);
-            }}
-          >
-            <IconWallet size={14} />
-            <span>{showWithdraw ? "Đóng lệnh rút" : "Tạo lệnh rút tiền"}</span>
+          <Button variant="outline" size="sm" shape="app" onClick={() => void loadFinance()}>
+            Làm mới số dư
           </Button>
         </div>
       </header>
 
-      {uiState === "loading" && (
+      {(uiState === "loading" || (!uiState && loading)) && (
         <StateView
           kind="loading"
           surface="app"
-          title="Đang đối chiếu sổ cái ghi kép và số dư ngân hàng..."
+          title="Đang tải số dư gian hàng và bảng đối soát đơn hàng..."
           rows={5}
         />
       )}
 
-      {uiState === "error" && (
+      {(uiState === "error" || (!uiState && !loading && errorMsg)) && (
         <StateView
           kind="error"
           surface="app"
-          title="Không thể tải sổ cái đối soát"
-          message="Dịch vụ thanh toán tạm thời không phản hồi. Số dư sẽ cập nhật lại sau vài phút."
-          lastUpdated="02:18 · 20/11/2026"
+          title="Không thể tải sổ dư tài chính"
+          message={errorMsg ?? "Dịch vụ thanh toán tạm thời không phản hồi."}
           actionLabel="Thử lại"
-          actionHref="/seller/tai-chinh"
+          onAction={() => void loadFinance()}
         />
       )}
 
@@ -130,167 +144,86 @@ function SellerFinanceContent() {
         <StateView
           kind="empty"
           surface="app"
-          title="Chưa phát sinh bút toán đối soát nào"
-          message="Bút toán ghi có và khấu trừ phí sàn sẽ tự động ghi nhận khi có đơn hàng hoàn tất."
+          title="Chưa phát sinh giao dịch đối soát nào"
+          message="Doanh thu và hoa hồng sàn sẽ tự động cập nhật khi có đơn hàng phát sinh."
           actionLabel="Xem đơn hàng gian hàng"
           actionHref="/seller/don-hang"
         />
       )}
 
-      {!uiState && (
+      {!uiState && !loading && !errorMsg && (
         <>
-          {/* Divided 4-column balance strip */}
           <section className={common.balanceStrip} aria-label="Tổng hợp số dư gian hàng">
             <div className={common.balanceCell}>
-              <span className={common.balanceLabel}>Khả dụng rút ngay</span>
+              <span className={common.balanceLabel}>Khả dụng</span>
               <span
-                className={`${common.balanceValue} ${ledgerSummary.availableBalance === 0 ? common.balanceValueZero : ""}`}
+                className={`${common.balanceValue} ${availableVnd === 0 ? common.balanceValueZero : ""}`}
               >
-                {formatVnd(ledgerSummary.availableBalance)}
+                {formatVnd(availableVnd)}
               </span>
-              <span className={common.balanceCaption}>
-                {ledgerSummary.availableBalance > 0
-                  ? `Đã trừ ${formatVnd(ledgerSummary.totalPaidOut)} đã rút`
-                  : "Hoàn tất chu kỳ giữ tiền để mở khóa rút"}
-              </span>
+              <span className={common.balanceCaption}>Số dư đã quyết toán trên hệ thống</span>
             </div>
 
             <div className={common.balanceCell}>
               <span className={common.balanceLabel}>Đang chờ đối soát</span>
               <span
-                className={`${common.balanceValue} ${ledgerSummary.pendingBalance === 0 ? common.balanceValueZero : ""}`}
+                className={`${common.balanceValue} ${pendingVnd === 0 ? common.balanceValueZero : ""}`}
               >
-                {formatVnd(ledgerSummary.pendingBalance)}
+                {formatVnd(pendingVnd)}
               </span>
-              <span className={common.balanceCaption}>Giữ 3 ngày sau khi giao thành công</span>
+              <span className={common.balanceCaption}>Tạm giữ cho các đơn đang xử lý & giao</span>
             </div>
 
             <div className={common.balanceCell}>
-              <span className={common.balanceLabel}>Tổng thu kỳ này</span>
-              <span className={common.balanceValue}>{formatVnd(ledgerSummary.totalCredits)}</span>
-              <span className={common.balanceCaption}>Tổng phát sinh Ghi có trên sổ cái</span>
+              <span className={common.balanceLabel}>Tổng thu lũy kế</span>
+              <span
+                className={`${common.balanceValue} ${totalEarnedVnd === 0 ? common.balanceValueZero : ""}`}
+              >
+                {formatVnd(totalEarnedVnd)}
+              </span>
+              <span className={common.balanceCaption}>Tổng số tiền đã ghi nhận về gian hàng</span>
             </div>
 
             <div className={common.balanceCell}>
-              <span className={common.balanceLabel}>Phí sàn & hoàn trả</span>
-              <span className={common.balanceValue}>
-                {formatVnd(ledgerSummary.totalFeesAndRefunds)}
+              <span className={common.balanceLabel}>Đơn đã giao / hoàn tất</span>
+              <span
+                className={`${common.balanceValue} ${completedCount === 0 ? common.balanceValueZero : ""}`}
+              >
+                {formatInt(completedCount)}
               </span>
               <span className={common.balanceCaption}>
-                Hoa hồng {(activeShop.commissionRate * 100).toFixed(1).replace(".", ",")}% và bút
-                toán hoàn trả
+                Trên {formatInt(activeOrders.length)} đơn hợp lệ gần nhất
               </span>
             </div>
           </section>
 
-          {/* Payout withdrawal request panel */}
-          {showWithdraw && (
-            <form
-              className={styles.withdrawCard}
-              onSubmit={handleWithdrawSubmit}
-              aria-label="Tạo lệnh rút tiền về tài khoản ngân hàng"
-            >
-              <div className={common.cardHeader}>
-                <h2 className={common.cardTitle}>Tạo lệnh rút tiền về tài khoản ngân hàng</h2>
-                <span className={common.cardMeta}>
-                  Khả dụng tối đa: {formatVnd(ledgerSummary.availableBalance)}
-                </span>
-              </div>
-
-              <div className={styles.withdrawGrid}>
-                <div className={common.field}>
-                  <label htmlFor="withdraw-amount" className={common.fieldLabel}>
-                    Số tiền muốn rút (số nguyên VND)
-                  </label>
-                  <input
-                    id="withdraw-amount"
-                    type="number"
-                    min={100000}
-                    max={ledgerSummary.availableBalance}
-                    step={10000}
-                    className={common.textInput}
-                    value={amountStr}
-                    onChange={(e) => setAmountStr(e.target.value)}
-                  />
-                  <div className={styles.quickFillRow}>
-                    <button
-                      type="button"
-                      className={styles.quickChip}
-                      onClick={() =>
-                        setAmountStr(
-                          String(Math.floor(ledgerSummary.availableBalance / 2 / 1000) * 1000)
-                        )
-                      }
-                    >
-                      50% khả dụng
-                    </button>
-                    <button
-                      type="button"
-                      className={styles.quickChip}
-                      onClick={() => setAmountStr(String(ledgerSummary.availableBalance))}
-                    >
-                      Rút tối đa ({formatVnd(ledgerSummary.availableBalance)})
-                    </button>
-                  </div>
-                  {withdrawError && <span className={common.fieldError}>{withdrawError}</span>}
-                </div>
-
-                <div className={styles.bankSummary}>
-                  <span className={styles.bankTitle}>
-                    {bank.bank} · {bank.mask}
-                  </span>
-                  <span className={styles.bankMeta}>{bank.holder}</span>
-                  <span className={styles.bankMeta}>
-                    {bank.branch} · Chuyển nhanh Napas 24/7 (miễn phí rút)
-                  </span>
-                </div>
-              </div>
-
-              <div className={styles.withdrawActions}>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  shape="app"
-                  onClick={() => setShowWithdraw(false)}
-                >
-                  Hủy
-                </Button>
-                <Button type="submit" variant="ink" size="sm" shape="app">
-                  Xác nhận lệnh rút
-                </Button>
-              </div>
-            </form>
-          )}
-
-          {/* Double-entry ledger table */}
           <section className={common.card} aria-labelledby="ledger-heading">
             <div className={styles.ledgerHead}>
               <div>
                 <h2 id="ledger-heading" className={common.cardTitle}>
-                  Sổ cái đối soát ghi kép
+                  Đối chiếu doanh thu theo đơn hàng
                 </h2>
                 <p className={styles.reconFormula}>
-                  Tổng Có ({formatVnd(ledgerSummary.totalCredits)}) {TRUE_MINUS} Tổng Nợ (
-                  {formatVnd(ledgerSummary.totalDebits)}) ={" "}
-                  <strong>{formatVnd(ledgerSummary.netBalance)}</strong> (Khớp Khả dụng + Chờ đối
-                  soát)
+                  Tiền hàng ({formatVnd(visibleSubtotal)}) {TRUE_MINUS} Phí sàn (
+                  {formatVnd(visibleCommission)}) = Thực nhận dự kiến{" "}
+                  <strong>{formatVnd(visibleNet)}</strong>
                 </p>
               </div>
 
-              <div className={common.segmented} role="group" aria-label="Lọc trạng thái bút toán">
+              <div className={common.segmented} role="group" aria-label="Lọc trạng thái đơn hàng">
                 {(
                   [
-                    { key: "all", label: `Tất cả (${formatInt(ledgerSummary.entries.length)})` },
-                    { key: "settled", label: "Đã quyết toán" },
-                    { key: "pending", label: "Chờ đối soát" },
+                    { key: "all", label: `Tất cả (${formatInt(activeOrders.length)})` },
+                    { key: "settled", label: "Đã giao / Hoàn tất" },
+                    { key: "pending", label: "Đang xử lý" },
                   ] as const
                 ).map((opt) => (
                   <button
                     key={opt.key}
                     type="button"
-                    aria-pressed={ledgerFilter === opt.key}
-                    className={`${common.segmentedBtn} ${ledgerFilter === opt.key ? common.segmentedBtnActive : ""}`}
-                    onClick={() => setLedgerFilter(opt.key)}
+                    aria-pressed={filter === opt.key}
+                    className={`${common.segmentedBtn} ${filter === opt.key ? common.segmentedBtnActive : ""}`}
+                    onClick={() => setFilter(opt.key)}
                   >
                     {opt.label}
                   </button>
@@ -298,117 +231,150 @@ function SellerFinanceContent() {
               </div>
             </div>
 
-            <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
-              <table className={common.dataTable}>
-                <thead>
-                  <tr>
-                    <th>Ngày</th>
-                    <th>Mã bút toán</th>
-                    <th>Loại giao dịch</th>
-                    <th className={common.numCol}>Ghi có (VND)</th>
-                    <th className={common.numCol}>Ghi nợ (VND)</th>
-                    <th className={common.numCol}>Số dư lũy kế</th>
-                    <th>Trạng thái</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredEntries.map((entry) => (
-                    <tr key={entry.id}>
-                      <td>{formatDateVi(entry.date)}</td>
-                      <td>
-                        <strong>{entry.entryCode}</strong>
-                        <span className={common.cellSub}>Tham chiếu: {entry.referenceCode}</span>
-                      </td>
-                      <td>
-                        <span>{entry.typeLabel}</span>
-                        <span className={common.cellSub}>{entry.description}</span>
-                      </td>
-                      <td
-                        className={`${common.numCol} ${entry.credit > 0 ? styles.creditCell : styles.mutedCell}`}
-                      >
-                        {entry.credit > 0 ? `+${formatVnd(entry.credit)}` : EMPTY_DASH}
-                      </td>
-                      <td
-                        className={`${common.numCol} ${entry.debit > 0 ? styles.debitCell : styles.mutedCell}`}
-                      >
-                        {entry.debit > 0 ? `${TRUE_MINUS}${formatVnd(entry.debit)}` : EMPTY_DASH}
-                      </td>
-                      <td className={`${common.numCol} ${styles.runningCell}`}>
-                        {formatVnd(entry.runningBalance)}
-                      </td>
-                      <td>
-                        <span
-                          className={
-                            entry.state === "settled"
-                              ? `${common.pill} ${common.pillPos}`
-                              : `${common.pill} ${common.pillWarn}`
-                          }
-                        >
-                          {entry.state === "settled" ? "Đã quyết toán" : "Chờ đối soát"}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr>
-                    <td colSpan={3}>
-                      Tổng cộng ({formatInt(filteredEntries.length)} bút toán hiển thị)
-                    </td>
-                    <td className={`${common.numCol} ${styles.creditCell}`}>
-                      +{formatVnd(visibleCredits)}
-                    </td>
-                    <td className={common.numCol}>
-                      {visibleDebits > 0 ? `${TRUE_MINUS}${formatVnd(visibleDebits)}` : "0₫"}
-                    </td>
-                    <td className={common.numCol}>{formatVnd(visibleCredits - visibleDebits)}</td>
-                    <td />
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-
-            {/* Distinct phone 2-line ledger entries */}
-            <div className={common.mobileList}>
-              {filteredEntries.map((entry) => (
-                <div key={entry.id} className={common.mobileRow}>
-                  <div className={common.mobileRowTop}>
-                    <div>
-                      <strong>{entry.typeLabel}</strong>
-                      <span className={common.cellSub}>
-                        {formatDateVi(entry.date)} · {entry.entryCode}
-                      </span>
-                    </div>
-                    <span
-                      className={entry.credit > 0 ? styles.creditCell : styles.debitCell}
-                      style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums" }}
-                    >
-                      {entry.credit > 0
-                        ? `+${formatVnd(entry.credit)}`
-                        : `${TRUE_MINUS}${formatVnd(entry.debit)}`}
-                    </span>
-                  </div>
-                  <div className={common.mobileRowMeta}>
-                    <span
-                      className={
-                        entry.state === "settled"
-                          ? `${common.pill} ${common.pillPos}`
-                          : `${common.pill} ${common.pillWarn}`
-                      }
-                    >
-                      {entry.state === "settled" ? "Đã quyết toán" : "Chờ đối soát"}
-                    </span>
-                    <span style={{ fontVariantNumeric: "tabular-nums" }}>
-                      Lũy kế: <strong>{formatVnd(entry.runningBalance)}</strong>
-                    </span>
-                  </div>
+            {filteredOrders.length === 0 ? (
+              <div className={common.inlineEmpty}>
+                Chưa có đơn hàng nào thuộc nhóm đối soát này.
+              </div>
+            ) : (
+              <>
+                <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
+                  <table className={common.dataTable}>
+                    <thead>
+                      <tr>
+                        <th>Thời gian</th>
+                        <th>Mã đơn hàng</th>
+                        <th>Thanh toán</th>
+                        <th className={common.numCol}>Tiền hàng</th>
+                        <th className={common.numCol}>Chiết khấu & phí sàn</th>
+                        <th className={common.numCol}>Thực nhận dự kiến</th>
+                        <th>Trạng thái</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredOrders.map((order) => {
+                        const meta = getOrderStatusMeta(order.status);
+                        const deductions =
+                          order.flash_sale_discount_vnd +
+                          order.shop_voucher_discount_vnd +
+                          order.commission_vnd;
+                        const netVnd = computeOrderNetVnd(order);
+                        return (
+                          <tr key={order.id}>
+                            <td>
+                              {order.created_at ? formatDateTimeVi(order.created_at) : EMPTY_DASH}
+                            </td>
+                            <td>
+                              <Link
+                                href={`/seller/don-hang/${order.id}`}
+                                className={common.cellLink}
+                              >
+                                {order.order_code}
+                              </Link>
+                            </td>
+                            <td>
+                              {PAYMENT_METHOD_TEXT[order.payment_method] ?? order.payment_method}
+                            </td>
+                            <td className={`${common.numCol} ${styles.creditCell}`}>
+                              +{formatVnd(order.subtotal_vnd)}
+                            </td>
+                            <td className={`${common.numCol} ${styles.debitCell}`}>
+                              {deductions > 0
+                                ? `${TRUE_MINUS}${formatVnd(deductions)}`
+                                : EMPTY_DASH}
+                            </td>
+                            <td className={`${common.numCol} ${styles.runningCell}`}>
+                              {formatVnd(netVnd)}
+                            </td>
+                            <td>
+                              <span
+                                className={
+                                  meta.tone === "pos"
+                                    ? `${common.pill} ${common.pillPos}`
+                                    : meta.tone === "warn"
+                                      ? `${common.pill} ${common.pillWarn}`
+                                      : common.pill
+                                }
+                              >
+                                {meta.label}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <td colSpan={3}>Tổng cộng ({formatInt(filteredOrders.length)} đơn hàng)</td>
+                        <td className={`${common.numCol} ${styles.creditCell}`}>
+                          +{formatVnd(visibleSubtotal)}
+                        </td>
+                        <td className={common.numCol}>
+                          {visibleCommission > 0
+                            ? `${TRUE_MINUS}${formatVnd(visibleCommission)}`
+                            : "0₫"}
+                        </td>
+                        <td className={common.numCol}>{formatVnd(visibleNet)}</td>
+                        <td />
+                      </tr>
+                    </tfoot>
+                  </table>
                 </div>
-              ))}
+
+                <div className={common.mobileList}>
+                  {filteredOrders.map((order) => {
+                    const meta = getOrderStatusMeta(order.status);
+                    const netVnd = computeOrderNetVnd(order);
+                    return (
+                      <div key={order.id} className={common.mobileRow}>
+                        <div className={common.mobileRowTop}>
+                          <div>
+                            <Link href={`/seller/don-hang/${order.id}`} className={common.cellLink}>
+                              {order.order_code}
+                            </Link>
+                            <span className={common.cellSub}>
+                              {order.created_at ? formatDateTimeVi(order.created_at) : EMPTY_DASH}
+                            </span>
+                          </div>
+                          <span className={styles.runningCell}>{formatVnd(netVnd)}</span>
+                        </div>
+                        <div className={common.mobileRowMeta}>
+                          <span className={common.pill}>{meta.label}</span>
+                          <span>Tiền hàng: {formatVnd(order.subtotal_vnd)}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </section>
+
+          <section className={common.card} aria-label="Thông tin tài khoản nhận giải ngân">
+            <div className={common.cardHeader}>
+              <h2 className={common.cardTitle}>Tài khoản nhận giải ngân (tham khảo)</h2>
+              <span className={common.cardMeta}>
+                Lệnh rút tiền ngân hàng tự động sẽ mở ở giai đoạn thanh toán tiếp theo
+              </span>
+            </div>
+            <div className={styles.bankSummary}>
+              <span className={styles.bankTitle}>
+                {bankRef.bank} · {bankRef.mask}
+              </span>
+              <span className={styles.bankMeta}>{bankRef.holder}</span>
+              <span className={styles.bankMeta}>{bankRef.branch}</span>
             </div>
           </section>
         </>
       )}
     </div>
+  );
+}
+
+function SellerFinanceContent() {
+  return (
+    <SellerShopGate pageTitle="Tài chính & đối soát">
+      {(shop) => <SellerFinanceInner shop={shop} />}
+    </SellerShopGate>
   );
 }
 

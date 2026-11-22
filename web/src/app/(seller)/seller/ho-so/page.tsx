@@ -2,12 +2,14 @@
 
 import React, { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { SHOPS, getShopById } from "@/data";
+import type { GatewayShop } from "@/lib/gateway-types";
 import type { SellerSizeChartRow } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconCheck, IconPlus, StateView } from "@/components";
-import { formatInt, formatVnd } from "@/lib/format";
+import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
+import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
+import { getShopStatusMeta } from "@/features/seller/types";
 import {
   addShopCollectionItem,
   getShopFactoryProfileWithSession,
@@ -67,29 +69,37 @@ function slugifyCollection(text: string): string {
 }
 
 function SellerProfileOpsContent() {
+  return (
+    <SellerShopGate pageTitle="Hồ sơ gian hàng & Vận hành">
+      {(realShop) => <SellerProfileOpsLoader realShop={realShop} />}
+    </SellerShopGate>
+  );
+}
+
+function SellerProfileOpsLoader({ realShop }: { realShop: GatewayShop }) {
   const searchParams = useSearchParams();
   const uiState = parseUiState(searchParams.get("state"));
   const initialTab = searchParams.get("tab") as ProfileTab | null;
 
-  const { activeSellerShopId, showToast } = useStore();
+  const { showToast } = useMockStore();
+  const { mockShopKey } = useSellerContext();
   const session = useSellerSession();
-  const activeShop = getShopById(activeSellerShopId) ?? SHOPS[0];
 
   const [tab, setTab] = useState<ProfileTab>(
     initialTab && ["factory", "sizechart", "shipping"].includes(initialTab) ? initialTab : "factory"
   );
 
-  // Sync key per active shop so switching shop resets local form drafts cleanly
-  const profile = getShopFactoryProfileWithSession(activeShop.id, session);
-  const sizeCharts = getShopSizeChartsWithSession(activeShop.id, session);
-  const opsConfig = getShopOperationsConfigWithSession(activeShop.id, session);
+  const profile = getShopFactoryProfileWithSession(mockShopKey, session);
+  const sizeCharts = getShopSizeChartsWithSession(mockShopKey, session);
+  const opsConfig = getShopOperationsConfigWithSession(mockShopKey, session);
 
   return (
     <SellerProfileOpsInner
-      key={activeShop.id}
-      shopId={activeShop.id}
-      shopName={activeShop.name}
-      shopShortName={activeShop.shortName}
+      key={realShop.id}
+      realShop={realShop}
+      shopId={mockShopKey}
+      shopName={realShop.name}
+      shopShortName={realShop.name}
       uiState={uiState}
       tab={tab}
       setTab={setTab}
@@ -102,6 +112,7 @@ function SellerProfileOpsContent() {
 }
 
 interface InnerProps {
+  realShop: GatewayShop;
   shopId: string;
   shopName: string;
   shopShortName: string;
@@ -115,6 +126,7 @@ interface InnerProps {
 }
 
 function SellerProfileOpsInner({
+  realShop,
   shopId,
   shopName,
   shopShortName,
@@ -305,6 +317,52 @@ function SellerProfileOpsInner({
 
       {!uiState && (
         <>
+          <section className={common.card} aria-label="Hồ sơ gian hàng trên hệ thống">
+            <div className={common.cardHeader}>
+              <div>
+                <h2 className={common.cardTitle}>Thông tin gian hàng đã đăng ký</h2>
+                <span className={common.cardMeta}>
+                  Dữ liệu xác thực trực tiếp từ hồ sơ gian hàng NexusMart
+                </span>
+              </div>
+              <span
+                className={
+                  getShopStatusMeta(realShop.status).tone === "pos"
+                    ? `${common.pill} ${common.pillPos}`
+                    : `${common.pill} ${common.pillWarn}`
+                }
+              >
+                {getShopStatusMeta(realShop.status).label}
+              </span>
+            </div>
+            <div className={styles.fields3}>
+              <div className={common.field}>
+                <span className={common.fieldHint}>Tên gian hàng</span>
+                <strong>{realShop.name}</strong>
+              </div>
+              <div className={common.field}>
+                <span className={common.fieldHint}>Điện thoại liên hệ</span>
+                <strong>{realShop.contact_phone || "Chưa cập nhật"}</strong>
+              </div>
+              <div className={common.field}>
+                <span className={common.fieldHint}>Giấy phép / Hồ sơ pháp lý</span>
+                <strong>{realShop.business_license_doc || "Đã nộp khi mở gian hàng"}</strong>
+              </div>
+            </div>
+            <div className={styles.fields2} style={{ marginTop: 12 }}>
+              <div className={common.field}>
+                <span className={common.fieldHint}>Mô tả gian hàng</span>
+                <span>{realShop.description || "Chưa có mô tả"}</span>
+              </div>
+              <div className={common.field}>
+                <span className={common.fieldHint}>Ngày tạo hồ sơ</span>
+                <span>
+                  {realShop.created_at ? formatDateTimeVi(realShop.created_at) : "Đang cập nhật"}
+                </span>
+              </div>
+            </div>
+          </section>
+
           <div
             className={common.underlineTabs}
             role="tablist"

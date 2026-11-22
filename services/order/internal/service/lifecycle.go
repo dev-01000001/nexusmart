@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -289,11 +290,11 @@ func (s *OrderService) compensateCancelledOrder(
 			}
 		}
 		if !releasedViaReservation {
-			s.restockOrderItems(compCtx, agg.Order.ShopID, agg.Items)
+			s.restockOrderItems(compCtx, agg.Order.ID, agg.Items)
 		}
 	} else {
 		// Only restock this specific cancelled sub-order so active sibling sub-orders keep their stock.
-		s.restockOrderItems(compCtx, agg.Order.ShopID, agg.Items)
+		s.restockOrderItems(compCtx, agg.Order.ID, agg.Items)
 	}
 
 	if s.clients.Payment != nil && agg.Order.PaymentID != "" {
@@ -324,51 +325,43 @@ func (s *OrderService) compensateCancelledOrder(
 	}
 }
 
-func (s *OrderService) restockOrderItems(ctx context.Context, shopID string, items []db.OrderItem) {
-	if s.clients.Product == nil || len(items) == 0 {
+func (s *OrderService) restockOrderItems(ctx context.Context, orderID string, items []db.OrderItem) {
+	if s.clients.Product == nil || strings.TrimSpace(orderID) == "" || len(items) == 0 {
 		return
 	}
-	skuIDs := make([]string, 0, len(items))
 	qtyBySKU := make(map[string]int32, len(items))
 	for _, it := range items {
-		if it.SKUID != "" && it.Quantity > 0 {
-			skuIDs = append(skuIDs, it.SKUID)
-			qtyBySKU[it.SKUID] += it.Quantity
+		skuID := strings.TrimSpace(it.SKUID)
+		if skuID != "" && it.Quantity > 0 {
+			qtyBySKU[skuID] += it.Quantity
 		}
 	}
-	if len(skuIDs) == 0 {
+	if len(qtyBySKU) == 0 {
 		return
 	}
 
-	for attempt := 0; attempt < 3; attempt++ {
-		resp, err := s.clients.Product.GetSKUsBatch(ctx, &productv1.GetSKUsBatchRequest{SkuIds: skuIDs})
-		if err != nil || len(resp.GetSkus()) == 0 {
-			return
-		}
-		var remaining []string
-		for _, sku := range resp.GetSkus() {
-			addQty := qtyBySKU[sku.GetId()]
-			if addQty <= 0 {
-				continue
-			}
-			_, uErr := s.clients.Product.UpdateStock(ctx, &productv1.UpdateStockRequest{
-				SkuId:           sku.GetId(),
-				ShopId:          shopID,
-				NewStock:        sku.GetStock() + addQty,
-				ExpectedVersion: sku.GetVersion(),
-			})
-			if uErr != nil {
-				if status.Code(uErr) == codes.Aborted {
-					remaining = append(remaining, sku.GetId())
-				} else {
-					s.logger.WarnContext(ctx, "restock UpdateStock failed", "sku_id", sku.GetId(), "error", uErr)
-				}
-			}
-		}
-		if len(remaining) == 0 {
-			return
-		}
-		skuIDs = remaining
+	skuIDs := make([]string, 0, len(qtyBySKU))
+	for skuID := range qtyBySKU {
+		skuIDs = append(skuIDs, skuID)
+	}
+	sort.Strings(skuIDs)
+
+	reqItems := make([]*productv1.StockReservationItem, 0, len(skuIDs))
+	for _, skuID := range skuIDs {
+		reqItems = append(reqItems, &productv1.StockReservationItem{
+			SkuId:    skuID,
+			Quantity: qtyBySKU[skuID],
+		})
+	}
+
+	if err := clients.RetryIdempotent(ctx, 3, func(c context.Context) error {
+		_, rErr := s.clients.Product.RestockOrderItems(c, &productv1.RestockOrderItemsRequest{
+			OrderId: orderID,
+			Items:   reqItems,
+		})
+		return rErr
+	}); err != nil {
+		s.logger.WarnContext(ctx, "restock RestockOrderItems failed", "order_id", orderID, "error", err)
 	}
 }
 

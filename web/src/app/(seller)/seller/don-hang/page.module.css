@@ -103,3 +103,32 @@
   font-size: 13px;
   color: var(--muted);
 }
+
+.shipDrawer {
+  background: var(--bg);
+  padding: 12px 14px !important;
+}
+
+.shipFormRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.shipFormControls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.shipMobileBox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg);
+}

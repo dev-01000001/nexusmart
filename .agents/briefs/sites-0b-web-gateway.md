@@ -4,7 +4,7 @@ Bạn là coordinator của swarm. Claude Code là manager và sẽ review. Đ�
 
 ## Hiện trạng
 - `web/` (Next.js 15, 44 route) dùng 100% dữ liệu mẫu: `src/data/*`, `StoreContext.tsx` (~1.850 dòng, localStorage), `sellerStore`, `auditStore`. Không có `fetch()`, không có `middleware.ts`, không Dockerfile, không nằm trong compose/CI.
-- Backend chạy qua `make up`; gateway REST ở `http://localhost:28080` trên máy này (cổng host có override). gRPC không còn công bố ra host. `make e2e` chạy trong network compose.
+- Backend chạy qua `make up`; worktree này có stack riêng, gateway REST ở `http://localhost:38080` (xem `sites-0b-swarm-rules.md`). gRPC không còn công bố ra host. `make e2e` chạy trong network compose.
 
 ## Mục tiêu
 Một người mua thật dùng `web/` để: đăng ký (OTP qua mailpit), đăng nhập, xem danh mục và sản phẩm, thêm giỏ, áp voucher, đặt hàng nhiều gian hàng bằng COD và VietQR mock, xem danh sách và chi tiết đơn. Mọi dữ liệu của luồng này đến từ backend qua gateway.
@@ -31,9 +31,9 @@ Một người mua thật dùng `web/` để: đăng ký (OTP qua mailpit), đă
 3. Một worker QA viết và chạy test đầu-cuối qua web, gửi lỗi về đúng worker.
 
 ## Gate trước khi báo xong
-- `cd web && npm run lint && npm run format:check && npm run build` sạch; `node /home/dev/.claude/skills/design-taste-frontend/scripts/lint.mjs web/src` không FAIL mới.
-- `make lint`, `make test`, `make e2e` (8/8) vẫn xanh.
+- `cd web && npm run lint && npm run format:check && npm run build` sạch; `node /home/tai/.claude/plugins/cache/taste-skill/taste-skill/2.1.4/skills/taste-skill/scripts/lint.mjs web/src` không FAIL mới.
+- `make lint`, `make test`, `make e2e` (9/9) vẫn xanh.
 - Test đầu-cuối tự động MỚI chạy qua web server (BFF) trên backend thật, một lệnh `make e2e-web`: đăng ký + OTP mailpit → đăng nhập → thêm giỏ từ 2 gian hàng → áp voucher → đặt COD → thấy đơn trong danh sách; một lượt VietQR mock tới trạng thái đã thanh toán; gửi lại checkout cùng idempotency key chỉ ra một đơn; người mua A không đọc được đơn của người mua B (403/404); gọi route ghi không có phiên → 401; request ghi từ `Origin` lạ bị từ chối.
 - `grep -rn "localStorage" web/src` chỉ còn tiện ích theo người xem (ghi lý do từng chỗ); không còn giỏ/đơn/token trong localStorage.
-- `inspect.mjs` 0 FAIL ở 1440/768/390 cho trang chủ, danh mục, một trang sản phẩm, giỏ, thanh toán, đơn hàng với dữ liệu thật sau `make seed`.
+- `node /home/tai/.claude/plugins/cache/taste-skill/taste-skill/2.1.4/skills/taste-skill/scripts/inspect.mjs` 0 FAIL ở 1440/768/390 cho trang chủ, danh mục, một trang sản phẩm, giỏ, thanh toán, đơn hàng với dữ liệu thật sau `make seed`.
 - Viết `docs/WEB_INTEGRATION_REPORT.md`: bảng route → nguồn dữ liệu (thật / mock + lý do), endpoint gateway và RPC đã thêm, cách chạy, kết quả từng gate, phần chưa xong.

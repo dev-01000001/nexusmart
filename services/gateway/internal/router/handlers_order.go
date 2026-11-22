@@ -491,6 +491,33 @@ func (h *handler) handleSellerListOrders(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+func (h *handler) handleSellerGetOrder(w http.ResponseWriter, r *http.Request) {
+	shopID := auth.ShopIDFromContext(r.Context())
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Order.GetOrder(ctx, &orderv1.GetOrderRequest{
+		OrderId:     chi.URLParam(r, "id"),
+		ActorId:     auth.UserIDFromContext(r.Context()),
+		ActorRole:   auth.RoleFromContext(r.Context()),
+		ActorShopId: shopID,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	ord := resp.GetOrder()
+	if ord == nil {
+		httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "order not found")
+		return
+	}
+	if ord.GetShopId() != shopID {
+		httpx.WriteError(w, r, http.StatusForbidden, "PERMISSION_DENIED", "cannot access another shop's order")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"order": mapOrder(ord)})
+}
+
 func (h *handler) handleSellerConfirmOrder(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()

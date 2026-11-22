@@ -62,6 +62,31 @@
   text-underline-offset: 3px;
 }
 
+.otpInput {
+  letter-spacing: 0.18em;
+  font-weight: 600;
+}
+
+.otpActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.backTextBtn {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-secondary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.backTextBtn:hover {
+  color: var(--accent);
+}
+
 /* Right editorial & member perks column */
 .showcaseCol {
   display: flex;

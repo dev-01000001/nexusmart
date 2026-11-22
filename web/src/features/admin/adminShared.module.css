@@ -817,10 +817,18 @@ textarea.textareaInput::placeholder {
     flex-direction: column;
     align-items: stretch;
     gap: 8px;
+    padding-bottom: 4px;
   }
 
   .tabList {
-    gap: 14px;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    overflow-x: visible;
+  }
+
+  .tabBtn {
+    height: 32px;
+    margin-bottom: 0;
   }
 
   .tabsMeta {

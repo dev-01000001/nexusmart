@@ -6,8 +6,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
+	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/gateway/internal/httpx"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type categoryDTO struct {
@@ -46,6 +49,7 @@ type productDTO struct {
 	ShopID          string    `json:"shop_id"`
 	CategoryID      string    `json:"category_id"`
 	Name            string    `json:"name"`
+	Slug            string    `json:"slug"`
 	Description     string    `json:"description"`
 	Images          []string  `json:"images"`
 	Status          string    `json:"status"`
@@ -130,6 +134,7 @@ func mapProduct(p *productv1.Product) *productDTO {
 		ShopID:          p.GetShopId(),
 		CategoryID:      p.GetCategoryId(),
 		Name:            p.GetName(),
+		Slug:            p.GetSlug(),
 		Description:     p.GetDescription(),
 		Images:          imgs,
 		Status:          productStatusString(p.GetStatus()),
@@ -295,20 +300,88 @@ func (h *handler) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": resp.GetOk()})
 }
 
+func normalizeProductSortQuery(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "price-asc":
+		return "price_asc"
+	case "price-desc":
+		return "price_desc"
+	case "name-asc":
+		return "name_asc"
+	default:
+		return strings.TrimSpace(s)
+	}
+}
+
+func writeEmptyProductPage(w http.ResponseWriter, page, pageSize int32) {
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":     []*productDTO{},
+		"page":      page,
+		"page_size": pageSize,
+		"total":     int64(0),
+	})
+}
+
 func (h *handler) handleListProducts(w http.ResponseWriter, r *http.Request) {
 	page, pageSize := httpx.ParsePagination(r)
 	q := r.URL.Query()
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
+	categoryID := strings.TrimSpace(q.Get("category_id"))
+	if categoryID == "" {
+		if catSlug := strings.TrimSpace(q.Get("category_slug")); catSlug != "" {
+			catResp, err := h.clients.Product.ListCategories(ctx, &productv1.ListCategoriesRequest{})
+			if err != nil {
+				httpx.WriteGRPCError(w, r, err)
+				return
+			}
+			for _, c := range catResp.GetCategories() {
+				if strings.EqualFold(c.GetSlug(), catSlug) {
+					categoryID = c.GetId()
+					break
+				}
+			}
+			if categoryID == "" {
+				writeEmptyProductPage(w, page, pageSize)
+				return
+			}
+		}
+	}
+
+	shopID := strings.TrimSpace(q.Get("shop_id"))
+	if shopID == "" {
+		if shopSlug := strings.TrimSpace(q.Get("shop_slug")); shopSlug != "" {
+			if h.clients.User == nil {
+				writeEmptyProductPage(w, page, pageSize)
+				return
+			}
+			shopResp, err := h.clients.User.GetShop(ctx, &userv1.GetShopRequest{Slug: shopSlug})
+			if err != nil {
+				if status.Code(err) == codes.NotFound {
+					writeEmptyProductPage(w, page, pageSize)
+					return
+				}
+				httpx.WriteGRPCError(w, r, err)
+				return
+			}
+			sh := shopResp.GetShop()
+			if sh == nil || sh.GetStatus() != userv1.ShopStatus_SHOP_STATUS_ACTIVE {
+				writeEmptyProductPage(w, page, pageSize)
+				return
+			}
+			shopID = sh.GetId()
+		}
+	}
+
 	resp, err := h.clients.Product.ListProducts(ctx, &productv1.ListProductsRequest{
-		CategoryId:  q.Get("category_id"),
+		CategoryId:  categoryID,
 		Keyword:     q.Get("keyword"),
-		ShopId:      q.Get("shop_id"),
+		ShopId:      shopID,
 		Status:      parseProductStatus(q.Get("status")),
 		MinPriceVnd: httpx.ParseInt64Query(r, "min_price_vnd", 0),
 		MaxPriceVnd: httpx.ParseInt64Query(r, "max_price_vnd", 0),
-		SortBy:      q.Get("sort_by"),
+		SortBy:      normalizeProductSortQuery(q.Get("sort_by")),
 		Page:        page,
 		PageSize:    pageSize,
 	})
@@ -342,10 +415,82 @@ func (h *handler) handleGetProduct(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"product": mapProduct(resp.GetProduct())})
 }
 
+func (h *handler) handleGetProductBySlug(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Product.GetProduct(ctx, &productv1.GetProductRequest{
+		Slug: chi.URLParam(r, "slug"),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"product": mapProduct(resp.GetProduct())})
+}
+
+func (h *handler) handleSellerListProducts(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := httpx.ParsePagination(r)
+	q := r.URL.Query()
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	// Always force shop_id from verified seller claims; never trust client query shop_id.
+	resp, err := h.clients.Product.ListProducts(ctx, &productv1.ListProductsRequest{
+		CategoryId:  q.Get("category_id"),
+		Keyword:     q.Get("keyword"),
+		ShopId:      auth.ShopIDFromContext(r.Context()),
+		Status:      parseProductStatus(q.Get("status")),
+		MinPriceVnd: httpx.ParseInt64Query(r, "min_price_vnd", 0),
+		MaxPriceVnd: httpx.ParseInt64Query(r, "max_price_vnd", 0),
+		SortBy:      normalizeProductSortQuery(q.Get("sort_by")),
+		Page:        page,
+		PageSize:    pageSize,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	items := make([]*productDTO, 0, len(resp.GetProducts()))
+	for _, p := range resp.GetProducts() {
+		items = append(items, mapProduct(p))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"page":      page,
+		"page_size": pageSize,
+		"total":     resp.GetTotal(),
+	})
+}
+
+func (h *handler) handleSellerGetProduct(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Product.GetProduct(ctx, &productv1.GetProductRequest{
+		Id: chi.URLParam(r, "id"),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	prod := resp.GetProduct()
+	if prod == nil {
+		httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "product not found")
+		return
+	}
+	if prod.GetShopId() != auth.ShopIDFromContext(r.Context()) {
+		httpx.WriteError(w, r, http.StatusForbidden, "PERMISSION_DENIED", "cannot access another shop's product")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"product": mapProduct(prod)})
+}
+
 func (h *handler) handleSellerCreateProduct(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		CategoryID  string         `json:"category_id"`
 		Name        string         `json:"name"`
+		Slug        string         `json:"slug"`
 		Description string         `json:"description"`
 		Images      []string       `json:"images"`
 		SKUs        []skuInputBody `json:"skus"`
@@ -361,6 +506,7 @@ func (h *handler) handleSellerCreateProduct(w http.ResponseWriter, r *http.Reque
 		ShopId:      auth.ShopIDFromContext(r.Context()),
 		CategoryId:  body.CategoryID,
 		Name:        body.Name,
+		Slug:        body.Slug,
 		Description: body.Description,
 		Images:      body.Images,
 		Skus:        toProtoSKUInputs(body.SKUs),
@@ -376,6 +522,7 @@ func (h *handler) handleSellerUpdateProduct(w http.ResponseWriter, r *http.Reque
 	var body struct {
 		CategoryID  string         `json:"category_id"`
 		Name        string         `json:"name"`
+		Slug        string         `json:"slug"`
 		Description string         `json:"description"`
 		Images      []string       `json:"images"`
 		Status      string         `json:"status"`
@@ -393,6 +540,7 @@ func (h *handler) handleSellerUpdateProduct(w http.ResponseWriter, r *http.Reque
 		ShopId:      auth.ShopIDFromContext(r.Context()),
 		CategoryId:  body.CategoryID,
 		Name:        body.Name,
+		Slug:        body.Slug,
 		Description: body.Description,
 		Images:      body.Images,
 		Status:      parseProductStatus(body.Status),
@@ -443,6 +591,53 @@ func (h *handler) handleSellerUpdateStock(w http.ResponseWriter, r *http.Request
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"sku": mapSKU(resp.GetSku())})
+}
+
+func (h *handler) handleAdminListProducts(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := httpx.ParsePagination(r)
+	q := r.URL.Query()
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Product.ListProducts(ctx, &productv1.ListProductsRequest{
+		CategoryId:  q.Get("category_id"),
+		Keyword:     q.Get("keyword"),
+		ShopId:      q.Get("shop_id"),
+		Status:      parseProductStatus(q.Get("status")),
+		MinPriceVnd: httpx.ParseInt64Query(r, "min_price_vnd", 0),
+		MaxPriceVnd: httpx.ParseInt64Query(r, "max_price_vnd", 0),
+		SortBy:      normalizeProductSortQuery(q.Get("sort_by")),
+		Page:        page,
+		PageSize:    pageSize,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	items := make([]*productDTO, 0, len(resp.GetProducts()))
+	for _, p := range resp.GetProducts() {
+		items = append(items, mapProduct(p))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"page":      page,
+		"page_size": pageSize,
+		"total":     resp.GetTotal(),
+	})
+}
+
+func (h *handler) handleAdminGetProduct(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Product.GetProduct(ctx, &productv1.GetProductRequest{
+		Id: chi.URLParam(r, "id"),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"product": mapProduct(resp.GetProduct())})
 }
 
 func (h *handler) handleAdminReviewProduct(w http.ResponseWriter, r *http.Request) {

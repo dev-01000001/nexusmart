@@ -5,7 +5,8 @@ import Link from "next/link";
 import { SHOPS, getShopById } from "@/data";
 import type { ChatMessage } from "@/data";
 import { formatDateTimeVi, formatVnd } from "@/lib/format";
-import { useStore } from "@/context/StoreContext";
+import { useSession } from "@/context/SessionContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button } from "@/components/Button";
 import { IconClose, IconPhone } from "@/components/Icons";
 import styles from "./OverlayPanel.module.css";
@@ -49,7 +50,8 @@ function buildVietnameseSellerReply(shopName: string, buyerText: string): string
 }
 
 export function BuyerChatPanel() {
-  const { chatOpen, closeChat, chatShopId, chatThreads, sendChatMessage, user } = useStore();
+  const { user } = useSession();
+  const { chatOpen, closeChat, chatShopId, chatThreads, sendChatMessage } = useMockStore();
   const [selectedShopId, setSelectedShopId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [typingShopId, setTypingShopId] = useState<string | null>(null);
@@ -99,12 +101,12 @@ export function BuyerChatPanel() {
         id: `welcome-${activeShop.id}`,
         sender: "seller",
         senderName: activeShop.name,
-        text: `Xin chào ${user.fullName}, ${activeShop.name} (${activeShop.city}) sẵn sàng hỗ trợ chọn size, chất liệu vải và kiểm tra đơn hàng cho bạn.`,
+        text: `Xin chào ${user?.full_name ?? "bạn"}, ${activeShop.name} (${activeShop.city}) sẵn sàng hỗ trợ chọn size, chất liệu vải và kiểm tra đơn hàng cho bạn.`,
         timestamp: "2026-11-20T02:00:00+07:00",
       },
       ...localList,
     ];
-  }, [activeThread, activeShop, extraMessages, user.fullName]);
+  }, [activeThread, activeShop, extraMessages, user?.full_name]);
 
   useEffect(() => {
     if (!chatOpen || !bodyRef.current) return;
@@ -127,7 +129,7 @@ export function BuyerChatPanel() {
       const msg: ChatMessage = {
         id: `local-buyer-${Date.now()}`,
         sender: "buyer",
-        senderName: user.fullName,
+        senderName: user?.full_name ?? "Bạn",
         text: clean,
         timestamp: new Date().toISOString(),
       };

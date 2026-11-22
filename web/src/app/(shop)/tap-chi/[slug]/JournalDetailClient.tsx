@@ -14,7 +14,10 @@ import {
   type Product,
   type SizeCode,
 } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import { useSession } from "@/context/SessionContext";
+import { useCart } from "@/context/CartContext";
+import { useMockStore } from "@/mock/MockStoreContext";
+import { resolveGatewaySkuId } from "@/lib/api";
 import { formatDateVi, formatInt } from "@/lib/format";
 import { Button, Price, StateView } from "@/components";
 import { SizeFinder } from "@/features/catalog/SizeFinder";
@@ -30,7 +33,10 @@ const SHORT_HEADLINE_BY_SLUG: Record<string, string> = {
 
 function EmbeddedProductBuyCard({ product }: { product: Product }) {
   const router = useRouter();
-  const { addToCart } = useStore();
+  const { isAuthenticated } = useSession();
+  const { addToCart } = useCart();
+  const { showToast } = useMockStore();
+  const [submitting, setSubmitting] = useState(false);
   const shop = getShopById(product.shopId);
 
   const [colorCode, setColorCode] = useState<string>(product.colors[0]?.code ?? "");
@@ -61,16 +67,35 @@ function EmbeddedProductBuyCard({ product }: { product: Product }) {
       : (activeColor?.image ?? product.image);
   const isModelImg = previewSrc.startsWith("/models/");
 
-  const handleAdd = (goCheckout: boolean) => {
-    if (!activeColor || outOfStock) return;
-    const ok = addToCart({
-      productId: product.id,
-      colorCode: activeColor.code,
-      size: resolvedSize,
-      quantity: 1,
-    });
-    if (ok && goCheckout) {
-      router.push("/thanh-toan");
+  const handleAdd = async (goCheckout: boolean) => {
+    if (!activeColor || outOfStock || !resolvedSku || submitting) return;
+    if (!isAuthenticated) {
+      const nextPath =
+        typeof window !== "undefined"
+          ? `${window.location.pathname}${window.location.search}`
+          : "/tap-chi";
+      router.push(`/dang-nhap?next=${encodeURIComponent(nextPath)}`);
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const realSkuId = await resolveGatewaySkuId(product.slug, {
+        skuCode: resolvedSku.skuCode,
+        colorCode: activeColor.code,
+        size: resolvedSize,
+      });
+      if (!realSkuId) {
+        showToast("Phân loại sản phẩm này hiện đã hết hàng.");
+        return;
+      }
+      const res = await addToCart({ skuId: realSkuId, quantity: 1 });
+      if (res.ok && goCheckout) {
+        router.push("/thanh-toan");
+      }
+    } catch {
+      showToast("Không thể thêm sản phẩm vào giỏ hàng lúc này.");
+    } finally {
+      setSubmitting(false);
     }
   };
 

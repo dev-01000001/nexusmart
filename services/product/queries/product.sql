@@ -57,17 +57,23 @@ ORDER BY sort_order ASC, name ASC, id ASC;
 -- name: CreateProduct :one
 INSERT INTO products (
     id, shop_id, category_id, name, description, images, status,
-    rejection_reason, min_price_vnd, max_price_vnd
+    rejection_reason, min_price_vnd, max_price_vnd, slug
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at;
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug;
 
 -- name: GetProductByID :one
 SELECT id, shop_id, category_id, name, description, images, status,
-       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
 FROM products
 WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: GetProductBySlug :one
+SELECT id, shop_id, category_id, name, description, images, status,
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
+FROM products
+WHERE slug = $1 AND deleted_at IS NULL;
 
 -- name: UpdateProduct :one
 UPDATE products
@@ -79,10 +85,11 @@ SET category_id = $2,
     rejection_reason = $7,
     min_price_vnd = $8,
     max_price_vnd = $9,
+    slug = $10,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at;
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug;
 
 -- name: UpdateProductReview :one
 UPDATE products
@@ -91,7 +98,7 @@ SET status = $2,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at;
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug;
 
 -- name: UpdateProductStatus :exec
 UPDATE products
@@ -128,7 +135,7 @@ WHERE p.deleted_at IS NULL
 
 -- name: ListProductsFiltered :many
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
-       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at
+       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug
 FROM products p
 WHERE p.deleted_at IS NULL
   AND (sqlc.arg(category_id)::text = '' OR p.category_id = sqlc.arg(category_id)::text OR p.category_id IN (SELECT c.id FROM categories c WHERE c.parent_id = sqlc.arg(category_id)::text))
@@ -231,6 +238,18 @@ JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
 WHERE s.id = $1;
 
+-- name: GetSKUWithContextForUpdate :one
+SELECT
+    s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+FROM skus s
+JOIN products p ON p.id = s.product_id
+JOIN categories c ON c.id = p.category_id
+WHERE s.id = $1
+FOR UPDATE OF s;
+
 -- name: CountActiveInStockSKUsByProduct :one
 SELECT COUNT(*)::bigint AS cnt
 FROM skus
@@ -291,6 +310,20 @@ WHERE id = $2
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
           reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
 
+-- name: RestockSKUAtomic :one
+UPDATE skus
+SET stock = stock + $1,
+    status = CASE
+        WHEN status = 'INACTIVE' THEN 'INACTIVE'
+        WHEN stock + $1 > 0 THEN 'ACTIVE'
+        ELSE status
+    END,
+    version = version + 1,
+    updated_at = NOW()
+WHERE id = $2
+RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+
 -- Stock reservations
 
 -- name: ListReservationsByOrderID :many
@@ -326,3 +359,12 @@ INSERT INTO stock_history (
     actor_id, reason
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+
+-- name: TryInsertRestockHistory :execrows
+INSERT INTO stock_history (
+    id, sku_id, order_id, change_type, delta,
+    stock_before, stock_after, reserved_before, reserved_after,
+    actor_id, reason
+)
+VALUES ($1, $2, $3, 'RESTOCK', $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT (order_id, sku_id) WHERE change_type = 'RESTOCK' DO NOTHING;

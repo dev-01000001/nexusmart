@@ -317,6 +317,7 @@ func (m *memStore) CreateShop(_ context.Context, arg db.CreateShopParams) (db.Sh
 		ID:                 arg.ID,
 		OwnerUserID:        arg.OwnerUserID,
 		Name:               arg.Name,
+		Slug:               arg.Slug,
 		Description:        arg.Description,
 		PickupAddressID:    arg.PickupAddressID,
 		ContactPhone:       arg.ContactPhone,
@@ -337,6 +338,17 @@ func (m *memStore) GetShopByID(_ context.Context, id string) (db.Shop, error) {
 		return db.Shop{}, pgx.ErrNoRows
 	}
 	return sh, nil
+}
+
+func (m *memStore) GetShopBySlug(_ context.Context, slug string) (db.Shop, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, sh := range m.shops {
+		if sh.Slug != "" && sh.Slug == slug {
+			return sh, nil
+		}
+	}
+	return db.Shop{}, pgx.ErrNoRows
 }
 
 func (m *memStore) GetShopByOwnerID(_ context.Context, ownerID string) (db.Shop, error) {
@@ -1120,4 +1132,118 @@ func TestRefreshTokenConcurrentReplayRevokesFamilyOutsideRolledBackTx(t *testing
 		}
 	}
 	store.mu.Unlock()
+}
+
+func TestShopSlugAutoGenerationLookupAndPublicList(t *testing.T) {
+	srv, store, _, pub, _ := newTestHarness(t)
+	hasher := password.NewDefaultHasher()
+	log := logger.New("user-test", logger.WithWriter(io.Discard))
+	ctx := context.Background()
+
+	_ = BootstrapAdmin(ctx, store, hasher, log, "admin@nexusmart.local", "AdminPass123!")
+	adminUser, _ := store.GetUserByEmail(ctx, "admin@nexusmart.local")
+	adminCtx := ctxWithUser(adminUser.ID, RoleSuperAdmin, "")
+
+	regUser := func(email, phone string) string {
+		r, err := srv.Register(ctx, &userv1.RegisterRequest{
+			FullName: "Shop Owner",
+			Email:    email,
+			Phone:    phone,
+			Password: "Password123!",
+		})
+		if err != nil {
+			t.Fatalf("Register %s: %v", email, err)
+		}
+		otp := pub.userRegistered[len(pub.userRegistered)-1].OTP
+		if _, err := srv.VerifyOTP(ctx, &userv1.VerifyOTPRequest{Email: email, Otp: otp}); err != nil {
+			t.Fatalf("VerifyOTP %s: %v", email, err)
+		}
+		return r.GetUserId()
+	}
+
+	owner1 := regUser("owner1@example.com", "0971111111")
+	owner2 := regUser("owner2@example.com", "0972222222")
+	owner3 := regUser("owner3@example.com", "0973333333")
+
+	// 1. Auto-generated Vietnamese slug from shop name.
+	sh1Resp, err := srv.RegisterShop(ctxWithUser(owner1, RoleBuyer, ""), &userv1.RegisterShopRequest{
+		Name:               "Xưởng Dệt Bạch Đằng",
+		Description:        "Cotton compact 220gsm",
+		ContactPhone:       "0971111111",
+		BusinessLicenseDoc: "GPKD-SECRET-001.pdf",
+	})
+	if err != nil {
+		t.Fatalf("RegisterShop 1: %v", err)
+	}
+	if sh1Resp.GetShop().GetSlug() != "xuong-det-bach-dang" {
+		t.Fatalf("expected slug xuong-det-bach-dang, got %q", sh1Resp.GetShop().GetSlug())
+	}
+
+	// 2. Explicit slug succeeds; duplicate explicit slug rejected; invalid slug rejected.
+	sh2Resp, err := srv.RegisterShop(ctxWithUser(owner2, RoleBuyer, ""), &userv1.RegisterShopRequest{
+		Name:               "Xưởng Dệt Sông Hồng",
+		Slug:               "xuong-det-song-hong",
+		Description:        "Pending shop",
+		ContactPhone:       "0972222222",
+		BusinessLicenseDoc: "GPKD-SECRET-002.pdf",
+	})
+	if err != nil {
+		t.Fatalf("RegisterShop 2: %v", err)
+	}
+	if sh2Resp.GetShop().GetSlug() != "xuong-det-song-hong" {
+		t.Fatalf("expected explicit slug xuong-det-song-hong, got %q", sh2Resp.GetShop().GetSlug())
+	}
+	if _, err := srv.RegisterShop(ctxWithUser(owner3, RoleBuyer, ""), &userv1.RegisterShopRequest{
+		Name: "Xưởng Dệt Mới",
+		Slug: "xuong-det-song-hong",
+	}); status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("expected AlreadyExists on duplicate shop slug, got %v", err)
+	}
+	if _, err := srv.RegisterShop(ctxWithUser(owner3, RoleBuyer, ""), &userv1.RegisterShopRequest{
+		Name: "Xưởng Dệt Lỗi",
+		Slug: "!!!",
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument on invalid shop slug, got %v", err)
+	}
+
+	// 3. Before any approval, ListPublicShops returns 0 shops.
+	pubBefore, err := srv.ListPublicShops(ctx, &userv1.ListPublicShopsRequest{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("ListPublicShops before approve: %v", err)
+	}
+	if len(pubBefore.GetShops()) != 0 || pubBefore.GetTotal() != 0 {
+		t.Fatalf("expected 0 public shops while all pending, got %d (total=%d)", len(pubBefore.GetShops()), pubBefore.GetTotal())
+	}
+
+	// 4. Approve shop 1 only; ListPublicShops returns only shop 1 with private fields stripped.
+	if _, err := srv.AdminReviewShop(adminCtx, &userv1.AdminReviewShopRequest{
+		ShopId:   sh1Resp.GetShop().GetId(),
+		Decision: userv1.ReviewDecision_REVIEW_DECISION_APPROVE,
+	}); err != nil {
+		t.Fatalf("AdminReviewShop: %v", err)
+	}
+
+	pubAfter, err := srv.ListPublicShops(ctx, &userv1.ListPublicShopsRequest{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("ListPublicShops after approve: %v", err)
+	}
+	if len(pubAfter.GetShops()) != 1 || pubAfter.GetTotal() != 1 {
+		t.Fatalf("expected 1 public shop, got %d (total=%d)", len(pubAfter.GetShops()), pubAfter.GetTotal())
+	}
+	pubShop := pubAfter.GetShops()[0]
+	if pubShop.GetId() != sh1Resp.GetShop().GetId() || pubShop.GetSlug() != "xuong-det-bach-dang" {
+		t.Fatalf("unexpected public shop identity: %+v", pubShop)
+	}
+	if pubShop.GetOwnerUserId() != "" || pubShop.GetContactPhone() != "" || pubShop.GetBusinessLicenseDoc() != "" || pubShop.GetPickupAddressId() != "" || pubShop.GetRejectionReason() != "" {
+		t.Fatalf("public shop leaked private fields: %+v", pubShop)
+	}
+
+	// 5. GetShop lookup by slug works and returns NotFound for unknown slug.
+	bySlug, err := srv.GetShop(ctx, &userv1.GetShopRequest{Slug: "xuong-det-bach-dang"})
+	if err != nil || bySlug.GetShop().GetId() != sh1Resp.GetShop().GetId() {
+		t.Fatalf("GetShop by slug failed: resp=%+v err=%v", bySlug, err)
+	}
+	if _, err := srv.GetShop(ctx, &userv1.GetShopRequest{Slug: "khong-ton-tai"}); status.Code(err) != codes.NotFound {
+		t.Fatalf("expected NotFound for unknown shop slug, got %v", err)
+	}
 }

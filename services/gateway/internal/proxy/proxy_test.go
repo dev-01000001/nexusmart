@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/logger"
 )
 
@@ -70,8 +71,10 @@ func TestWebhookProxyPreservesRawBodyAndHeaders(t *testing.T) {
 
 func TestSSEProxyRewritesPathAndFlushes(t *testing.T) {
 	var gotPath string
+	var gotHeaders http.Header
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
+		gotHeaders = r.Header.Clone()
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
@@ -88,7 +91,18 @@ func TestSSEProxyRewritesPathAndFlushes(t *testing.T) {
 		t.Fatalf("NewSSEProxy failed: %v", err)
 	}
 
+	claims := &auth.Claims{Role: "seller", ShopID: "shop-42"}
+	claims.Subject = "seller-1"
+	const expectedAuth = "Bearer test-access-token"
+
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/payments/pay-1/events", nil)
+	ctx := auth.WithClaims(req.Context(), claims)
+	ctx = auth.WithRawToken(ctx, expectedAuth)
+	req = req.WithContext(ctx)
+	req.Header.Set("X-User-Id", "spoofed-user")
+	req.Header.Set("X-User-Role", "admin")
+	req.Header.Set("X-Shop-Id", "spoofed-shop")
+
 	rec := httptest.NewRecorder()
 	sp.ServeHTTP(rec, req)
 
@@ -100,5 +114,13 @@ func TestSSEProxyRewritesPathAndFlushes(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "event: payment.succeeded") {
 		t.Fatalf("expected SSE payload, got %q", rec.Body.String())
+	}
+	for _, hdr := range []string{"X-User-Id", "X-User-Role", "X-Shop-Id"} {
+		if vals := gotHeaders.Values(hdr); len(vals) != 0 {
+			t.Fatalf("expected %s to be stripped from upstream request, got %v", hdr, vals)
+		}
+	}
+	if gotAuth := gotHeaders.Get("Authorization"); gotAuth != expectedAuth {
+		t.Fatalf("expected Authorization %q forwarded, got %q", expectedAuth, gotAuth)
 	}
 }

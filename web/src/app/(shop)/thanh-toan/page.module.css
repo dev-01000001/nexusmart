@@ -576,3 +576,148 @@
     box-shadow: 0 -6px 20px rgba(31, 48, 56, 0.12); /* taste-skill-ignore: sticky mobile checkout bar */
   }
 }
+
+/* Real backend shipping quotes, Buy Now banner & voucher selector */
+.buyNowBanner {
+  background: var(--accent-tint);
+  border-left: 4px solid var(--accent);
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  font-size: 16px;
+  color: var(--ink);
+}
+
+.quoteOptions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.quoteBtn {
+  padding: 12px 14px;
+  background: var(--surface-subtle);
+  color: var(--ink);
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.quoteBtn:hover {
+  background: var(--accent-tint);
+}
+
+.quoteBtnActive {
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+}
+
+.quoteBtnActive:hover {
+  background: var(--band-dark);
+}
+
+.quoteBtnActive .quoteMeta {
+  color: var(--band-dark-muted);
+}
+
+.quoteTop {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.quoteMeta {
+  font-size: var(--step-small);
+  color: var(--ink-secondary);
+}
+
+.voucherPickList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.voucherPickBtn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface-subtle);
+  color: var(--ink);
+  text-align: left;
+  width: 100%;
+  transition: background-color var(--t-hover) ease;
+}
+
+.voucherPickBtn:hover:not(:disabled) {
+  background: var(--accent-tint);
+}
+
+.voucherPickBtnActive {
+  background: var(--accent-tint);
+  border-left: 4px solid var(--accent);
+}
+
+.voucherPickBtn:disabled {
+  cursor: not-allowed;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.voucherPickCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.voucherPickCode {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+
+.voucherPickDesc {
+  font-size: var(--step-small);
+  color: var(--ink-secondary);
+}
+
+.voucherPickAction {
+  font-size: var(--step-small);
+  font-weight: 600;
+  color: var(--accent-tint-ink);
+  white-space: nowrap;
+}
+
+.warningList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.codAdvisory {
+  font-size: var(--step-small);
+  color: var(--amber-ink);
+  background: var(--pill-warning-bg);
+  padding: 8px 12px;
+  line-height: 1.45;
+}
+
+@media (max-width: 768px) {
+  .quoteOptions {
+    grid-template-columns: 1fr;
+  }
+}

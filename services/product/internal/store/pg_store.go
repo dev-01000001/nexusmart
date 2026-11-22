@@ -151,6 +151,7 @@ func (p *pgQueries) CreateProduct(ctx context.Context, prod Product) (Product, e
 		RejectionReason: prod.RejectionReason,
 		MinPriceVnd:     prod.MinPriceVND,
 		MaxPriceVnd:     prod.MaxPriceVND,
+		Slug:            prod.Slug,
 	})
 	if err != nil {
 		return Product{}, mapPgError(err)
@@ -160,6 +161,14 @@ func (p *pgQueries) CreateProduct(ctx context.Context, prod Product) (Product, e
 
 func (p *pgQueries) GetProductByID(ctx context.Context, id string) (Product, error) {
 	row, err := p.q.GetProductByID(ctx, id)
+	if err != nil {
+		return Product{}, mapPgError(err)
+	}
+	return fromDBProduct(row), nil
+}
+
+func (p *pgQueries) GetProductBySlug(ctx context.Context, slug string) (Product, error) {
+	row, err := p.q.GetProductBySlug(ctx, slug)
 	if err != nil {
 		return Product{}, mapPgError(err)
 	}
@@ -181,6 +190,7 @@ func (p *pgQueries) UpdateProduct(ctx context.Context, prod Product) (Product, e
 		RejectionReason: prod.RejectionReason,
 		MinPriceVnd:     prod.MinPriceVND,
 		MaxPriceVnd:     prod.MaxPriceVND,
+		Slug:            prod.Slug,
 	})
 	if err != nil {
 		return Product{}, mapPgError(err)
@@ -360,6 +370,19 @@ func (p *pgQueries) GetSKUWithContext(ctx context.Context, skuID string) (SKU, e
 	), nil
 }
 
+func (p *pgQueries) GetSKUWithContextForUpdate(ctx context.Context, skuID string) (SKU, error) {
+	r, err := p.q.GetSKUWithContextForUpdate(ctx, skuID)
+	if err != nil {
+		return SKU{}, mapPgError(err)
+	}
+	return fromSKUContextFields(
+		r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
+		r.Attributes, r.PriceVnd, r.Stock, r.ReservedStock, r.Version,
+		r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
+		r.SkuStatus, r.ProductStatus, r.ProductDeletedAt,
+	), nil
+}
+
 func (p *pgQueries) CountActiveInStockSKUsByProduct(ctx context.Context, productID string) (int64, error) {
 	return p.q.CountActiveInStockSKUsByProduct(ctx, productID)
 }
@@ -440,6 +463,17 @@ func (p *pgQueries) ConfirmSKUOptimistic(ctx context.Context, skuID string, qty 
 		if errors.Is(err, pgx.ErrNoRows) {
 			return SKU{}, ErrVersionConflict
 		}
+		return SKU{}, mapPgError(err)
+	}
+	return mergeDBSKU(row, SKU{}), nil
+}
+
+func (p *pgQueries) RestockSKUAtomic(ctx context.Context, skuID string, qty int32) (SKU, error) {
+	row, err := p.q.RestockSKUAtomic(ctx, db.RestockSKUAtomicParams{
+		Stock: qty,
+		ID:    skuID,
+	})
+	if err != nil {
 		return SKU{}, mapPgError(err)
 	}
 	return mergeDBSKU(row, SKU{}), nil
@@ -529,6 +563,25 @@ func (p *pgQueries) InsertStockHistory(ctx context.Context, h StockHistoryEntry)
 	}))
 }
 
+func (p *pgQueries) TryInsertRestockHistory(ctx context.Context, h StockHistoryEntry) (bool, error) {
+	n, err := p.q.TryInsertRestockHistory(ctx, db.TryInsertRestockHistoryParams{
+		ID:             h.ID,
+		SkuID:          h.SKUID,
+		OrderID:        h.OrderID,
+		Delta:          h.Delta,
+		StockBefore:    h.StockBefore,
+		StockAfter:     h.StockAfter,
+		ReservedBefore: h.ReservedBefore,
+		ReservedAfter:  h.ReservedAfter,
+		ActorID:        h.ActorID,
+		Reason:         h.Reason,
+	})
+	if err != nil {
+		return false, mapPgError(err)
+	}
+	return n > 0, nil
+}
+
 func mapPgError(err error) error {
 	if err == nil {
 		return nil
@@ -569,6 +622,7 @@ func fromDBProduct(p db.Product) Product {
 		ShopID:          p.ShopID,
 		CategoryID:      p.CategoryID,
 		Name:            p.Name,
+		Slug:            p.Slug,
 		Description:     p.Description,
 		Images:          unmarshalStringSlice(p.Images),
 		Status:          p.Status,
