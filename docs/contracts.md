@@ -219,6 +219,8 @@ replace (
 | `POST /api/v1/admin/payments/{id}/refund` | `admin`, `super_admin` + `Idempotency-Key` | `{"order_id","amount_vnd","reason"}` | `200` `{"refund":{...},"already_existed":false}` |
 | `POST /api/v1/admin/payments/reconcile` | `admin`, `super_admin` | `{"date":"2026-11-20"}` | `200` `{"run_id","matched_count","missing_local_count","missing_provider_count","amount_mismatch_count","items":[...]}` |
 
+- Direct HTTP routes on `payment:8086` under `/internal/*` (`GET /internal/ledger/summary`, `GET /internal/reconciliation/queue`, `POST /internal/reconciliation/run`) are not proxied by the gateway and require an end-user `admin`/`super_admin` JWT (`401`/`403`; service tokens rejected with `403`).
+
 ### 4.7 Shipping & Administrative Addresses (`shipping` service)
 | Method & Path | Auth / RBAC | Request JSON | Response JSON |
 | --- | --- | --- | --- |

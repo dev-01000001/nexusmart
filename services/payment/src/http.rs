@@ -16,7 +16,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::auth::{require_payment_read_access, GrpcAuth};
+use crate::auth::{require_payment_read_access, Caller, GrpcAuth};
 use crate::error::PaymentError;
 use crate::metrics::red_metrics_middleware;
 use crate::service::PaymentService;
@@ -252,23 +252,50 @@ fn status_to_sse_event_name(status: &str) -> &'static str {
     }
 }
 
+fn require_admin(
+    state: &HttpState,
+    headers: &HeaderMap,
+    method: &str,
+) -> Result<Caller, PaymentError> {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    let caller = state.auth.authenticate_header(auth_header, method)?;
+    if !caller.is_admin() {
+        return Err(PaymentError::Forbidden(format!(
+            "{method} requires admin role"
+        )));
+    }
+    Ok(caller)
+}
+
 async fn internal_ledger_summary(
     State(state): State<HttpState>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, PaymentError> {
+    require_admin(&state, &headers, "InternalLedgerSummary")?;
     let summary = state.service.get_ledger_summary().await?;
     Ok((StatusCode::OK, Json(summary)))
 }
 
 async fn internal_reconciliation_queue(
     State(state): State<HttpState>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, PaymentError> {
+    require_admin(&state, &headers, "InternalReconciliationQueue")?;
     let items = state.service.list_reconciliation_queue().await?;
     Ok((StatusCode::OK, Json(json!({ "items": items }))))
 }
 
 async fn internal_reconciliation_run(
     State(state): State<HttpState>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, PaymentError> {
+    let caller = require_admin(&state, &headers, "InternalReconciliationRun")?;
+    info!(
+        user_id = %caller.user_id,
+        "admin triggered payment reconciliation"
+    );
     let today = Utc::now().date_naive();
     let report = state.service.run_reconciliation(today).await?;
     Ok((StatusCode::OK, Json(report)))
@@ -282,7 +309,7 @@ fn header_str<'a>(headers: &'a HeaderMap, key: &str) -> Option<&'a str> {
 mod tests {
     use super::*;
     use crate::auth::sign_hs256;
-    use crate::config::Config;
+    use crate::config::{Config, VietQrMode};
     use crate::metrics::Metrics;
     use crate::webhook_security::compute_hmac_hex;
     use axum::body::Body;
@@ -297,13 +324,139 @@ mod tests {
     fn test_router() -> (Router, Config) {
         let mut cfg = Config::from_env();
         cfg.webhook_secret = "unit-test-secret".to_string();
+        cfg.vietqr_mode = VietQrMode::Mock;
+        cfg.database_url = "postgres://unit:unit@127.0.0.1:1/unit_test_db".to_string();
         let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(200))
             .connect_lazy(&cfg.database_url)
             .expect("lazy pool");
         let svc = PaymentService::new(pool, cfg.clone(), Metrics::new());
         let auth =
             GrpcAuth::new(TEST_USER_JWT_SECRET, TEST_SERVICE_JWT_SECRET).expect("test GrpcAuth");
         (build_router(svc, auth), cfg)
+    }
+
+    #[tokio::test]
+    async fn test_internal_routes_require_admin_jwt() {
+        let (app, _) = test_router();
+        let now = Utc::now().timestamp();
+
+        let buyer_tok = sign_hs256(
+            TEST_USER_JWT_SECRET,
+            json!({"sub": "buyer-1", "role": "buyer", "exp": now + 60}),
+        );
+        let seller_tok = sign_hs256(
+            TEST_USER_JWT_SECRET,
+            json!({"sub": "seller-1", "role": "seller", "shop_id": "shop-1", "exp": now + 60}),
+        );
+        let expired_admin_tok = sign_hs256(
+            TEST_USER_JWT_SECRET,
+            json!({"sub": "admin-1", "role": "admin", "exp": now - 60}),
+        );
+        let svc_tok = sign_hs256(
+            TEST_SERVICE_JWT_SECRET,
+            json!({"sub": "order-service", "role": "admin", "service": "order-service", "exp": now + 60}),
+        );
+        let admin_tok = sign_hs256(
+            TEST_USER_JWT_SECRET,
+            json!({"sub": "admin-1", "role": "admin", "exp": now + 60}),
+        );
+        let super_admin_tok = sign_hs256(
+            TEST_USER_JWT_SECRET,
+            json!({"sub": "sadmin-1", "role": "super_admin", "exp": now + 60}),
+        );
+
+        let routes = [
+            (Method::GET, "/internal/ledger/summary"),
+            (Method::GET, "/internal/reconciliation/queue"),
+            (Method::POST, "/internal/reconciliation/run"),
+        ];
+
+        for (method, path) in routes {
+            // Missing Authorization header (even with spoofed x-user-role) -> 401
+            let resp_no_tok = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(path)
+                        .header("x-user-role", "admin")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp_no_tok.status(), StatusCode::UNAUTHORIZED, "{path}");
+
+            // Expired admin JWT -> 401
+            let resp_expired = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(path)
+                        .header(header::AUTHORIZATION, format!("Bearer {expired_admin_tok}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp_expired.status(), StatusCode::UNAUTHORIZED, "{path}");
+
+            // Valid buyer / seller JWT -> 403
+            for (role, tok) in [("buyer", &buyer_tok), ("seller", &seller_tok)] {
+                let resp = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method.clone())
+                            .uri(path)
+                            .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{path} role={role}");
+            }
+
+            // Valid service token -> 403
+            let resp_svc = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(path)
+                        .header(header::AUTHORIZATION, format!("Bearer {svc_tok}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp_svc.status(), StatusCode::FORBIDDEN, "{path} service");
+
+            // Valid admin & super_admin JWT -> passes auth (hits lazy DB -> not 401/403)
+            for (role, tok) in [("admin", &admin_tok), ("super_admin", &super_admin_tok)] {
+                let resp = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method.clone())
+                            .uri(path)
+                            .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_ne!(
+                    resp.status(),
+                    StatusCode::UNAUTHORIZED,
+                    "{path} role={role}"
+                );
+                assert_ne!(resp.status(), StatusCode::FORBIDDEN, "{path} role={role}");
+            }
+        }
     }
 
     #[tokio::test]
