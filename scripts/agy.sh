@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
-# Coder agent cho repo này. Model và effort cố định ở đây: đổi một chỗ khi có model mạnh hơn (`agy models`).
-exec agy --dangerously-skip-permissions --model claude-opus-5-5-high "$@"
+# Coder agent cho repo này. Chỉ dùng model Gemini mới nhất, mức suy nghĩ cao nhất: đổi một chỗ ở đây khi `agy models` có Gemini mới hơn.
+exec agy --dangerously-skip-permissions --model gemini-4-neon-xhigh "$@"
