@@ -19,22 +19,25 @@ npm run check:data    # node scripts/check-data.mjs (kiểm toàn vẹn dữ li�
 npm run build         # next build (kiểm tra TypeScript + SSG/route)
 ```
 
-Hiện không có test runner (unit hay E2E). `web/next.config.ts` đặt `images.unoptimized: true` và `reactStrictMode: true`.
+Lưu ý: build với `NEXT_DIST_DIR` (ví dụ `NEXT_DIST_DIR=.next-dev npm run build`) sẽ tự chèn dòng vào `web/tsconfig.json`, cần hoàn nguyên `tsconfig.json` trước khi commit. Test E2E qua BFF chạy từ gốc repo bằng `make e2e-web` (`node --test 'tests/e2e-web/*.test.mjs'`). `web/next.config.ts` đặt `output: "standalone"`, `distDir: process.env.NEXT_DIST_DIR || ".next"`, `images.unoptimized: true` và `reactStrictMode: true`.
 
 ## Hiện trạng dữ liệu và Hạ tầng
 
-- 100% dữ liệu mẫu, chưa gọi API gateway: dữ liệu tĩnh ở `src/data/*`, state người mua ở `src/context/StoreContext.tsx` (lưu `localStorage` key `nexusmart_store_v2`), state người bán ở `src/features/seller/sellerStore.ts` và quản trị ở `src/features/admin/auditStore.ts` (bộ nhớ phiên qua `useSyncExternalStore`).
-- Chưa có `web/Dockerfile`, chưa khai báo trong `docker-compose.yml` và chưa có job CI.
-- Kế hoạch nối dữ liệu thật qua BFF cùng origin (cookie `HttpOnly`, không CORS trên gateway) nằm ở `.agents/briefs/sites-0b-web-gateway.md` (chưa thực hiện).
+- **Nối backend qua BFF cùng origin**: trình duyệt chỉ gọi `/api/auth/*` và `/api/gw/*`; Next server gọi gateway qua `GATEWAY_URL` (không bật CORS trên gateway). Access/refresh token giữ hoàn toàn trong cookie `HttpOnly`, `SameSite=Lax`, xoay refresh token theo service `user` và kiểm `Origin` chống CSRF cho mọi thao tác ghi; `src/middleware.ts` và server component kiểm phiên + RBAC theo role backend. Không lưu token, giỏ hàng hay đơn hàng trong `localStorage`.
+- **Dữ liệu thật**: danh mục, sản phẩm/SKU/tồn kho, gian hàng, flash sale, voucher, Xu, giỏ hàng, tính phí vận chuyển & xem trước giảm giá, checkout (COD & VietQR với `Idempotency-Key` sinh ở server), danh sách/chi tiết đơn hàng, sổ địa chỉ 2 cấp, thông báo, và các màn có RPC sẵn ở Seller/Admin (đơn, sản phẩm/tồn, khuyến mãi, hồ sơ gian hàng, tài chính, duyệt gian hàng/sản phẩm, người dùng, đối soát sổ cái/hoàn tiền, nhật ký hệ thống).
+- **Phần giữ mock tách riêng**: các tính năng chưa có backend (số đo gợi ý size, yêu thích, đã xem, báo có hàng, đánh giá/H&Đ mẫu, chat, trợ lý AI, hội viên/thẻ quà tặng, khiếu nại/cấu hình mẫu) đọc từ `src/mock/` (`MockStoreContext.tsx` chỉ lưu tiện ích theo người xem trong `localStorage`), `src/features/seller/sellerStore.ts`, `src/features/admin/auditStore.ts` và `src/data/*`.
+- **Hạ tầng**: `web/Dockerfile` (multi-stage standalone, user không phải root), service `web` trong `docker-compose.yml` (cổng host `WEB_PORT`, mặc định `3000`), job `web` trong `.github/workflows/ci.yml` (`workflow_dispatch`). Nạp dữ liệu demo bằng `make seed` (`tools/seed/seed.mjs`, idempotent, lấy nguồn từ `src/data/*`), chạy kiểm thử đầu-cuối bằng `make e2e-web`.
 
 ## Bố cục `src/`
 
-- `src/app/` — `layout.tsx` (nạp `Work_Sans`, `tokens.css`, `globals.css`, `StoreProvider`) và 3 route group `(shop)`, `(seller)`, `(admin)`.
+- `src/app/` — `layout.tsx` (nạp `Work_Sans`, `tokens.css`, `globals.css`, `SessionProvider`, `MockStoreProvider`, `CartProvider`), `api/` (route handler BFF `auth/*`, `gw/[...path]`) và 3 route group `(shop)`, `(seller)`, `(admin)`.
+- `src/middleware.ts` — kiểm cookie phiên cho route được bảo vệ trước khi vào trang.
 - `src/components/` — component dùng chung (`Button`, `Icons`, `Price`, `ProductCard`, `ShopHeader`, `ShopFooter`, `StateView`, `SvgChart`).
-- `src/features/` — module theo nghiệp vụ gồm `admin/`, `catalog/`, `commerce/`, `product/`, `seller/`.
-- `src/data/` — dữ liệu mẫu tĩnh (`products.ts`, `shops.ts`, `vouchers.ts`, `flash-sale.ts`, `orders.ts`, `seller.ts`, `admin.ts`, `membership.ts`, `content.ts`, `chat.ts`, `media.ts`).
-- `src/lib/` — hàm thuần (`format.ts` tiền VND, `provinces.ts` 34 tỉnh 2 cấp, `search.ts` tìm kiếm bỏ dấu/đồng nghĩa, `sizing.ts` gợi ý size & phí giao).
-- `src/context/` — `StoreContext.tsx` giữ trạng thái giỏ hàng, đơn hàng, yêu thích, địa chỉ, hội viên (lưu `localStorage`).
+- `src/features/` — module theo nghiệp vụ gồm `account/`, `admin/`, `catalog/`, `checkout/`, `commerce/`, `product/`, `seller/`.
+- `src/context/` — `SessionContext.tsx` (phiên từ `/api/auth/session`) và `CartContext.tsx` (giỏ hàng thật từ `/api/gw/cart`).
+- `src/mock/` — state và dữ liệu mẫu tách khỏi dữ liệu thật (`MockStoreContext.tsx`, `productEditorial.ts`, `guestOrderLookup.ts`).
+- `src/data/` — dữ liệu mẫu tĩnh dùng chung cho `tools/seed/seed.mjs` và các màn biên tập/mock.
+- `src/lib/` — `gateway-types.ts` (nguồn sự thật DTO gateway), `api.ts` (client BFF + tự refresh 401), `server/` (`gateway.ts`, `auth.ts`, `session.ts`, `csrf.ts`), `catalog.ts` / `catalog-mapper.ts` / `catalog-types.ts`, cùng hàm thuần (`format.ts` tiền VND & nhãn trạng thái chung, `provinces.ts`, `search.ts`, `sizing.ts`).
 - `src/styles/` — `tokens.css` (design token nguồn sự thật) và `globals.css` (reset, typography, utility bề mặt & motion).
 
 ## Tài liệu thiết kế và QA

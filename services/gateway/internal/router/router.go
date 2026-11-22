@@ -126,6 +126,8 @@ func New(deps Dependencies) http.Handler {
 			api.Post("/auth/login", h.handleLogin)
 			api.Post("/auth/refresh", h.handleRefreshToken)
 
+			api.Get("/shops", h.handleListPublicShops)
+			api.Get("/shops/slug/{slug}", h.handleGetShopBySlug)
 			api.Get("/shops/{id}", h.handleGetShop)
 			api.Get("/categories", h.handleListCategories)
 
@@ -137,6 +139,7 @@ func New(deps Dependencies) http.Handler {
 			api.Group(func(opt chi.Router) {
 				opt.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, false))
 				opt.Get("/products", h.handleListProducts)
+				opt.Get("/products/slug/{slug}", h.handleGetProductBySlug)
 				opt.Get("/products/{id}", h.handleGetProduct)
 				opt.Get("/vouchers", h.handleListVouchers)
 			})
@@ -162,7 +165,8 @@ func New(deps Dependencies) http.Handler {
 				authed.Put("/users/me/addresses/{id}", h.handleUpdateAddress)
 				authed.Delete("/users/me/addresses/{id}", h.handleDeleteAddress)
 
-				// Shop registration (buyer, seller)
+				// Shop ownership & registration (buyer, seller)
+				authed.Get("/shops/me", h.handleGetMyShop)
 				authed.Group(func(shopReg chi.Router) {
 					shopReg.Use(middleware.RequireRoles("buyer", "seller", "admin", "super_admin"))
 					shopReg.Post("/shops/register", h.handleRegisterShop)
@@ -208,19 +212,26 @@ func New(deps Dependencies) http.Handler {
 					seller.Use(middleware.RequireRoles("seller"))
 					seller.Use(middleware.RequireSellerShop())
 
+					// Section 4.1 Seller Shop
+					seller.Get("/shop", h.handleSellerGetShop)
+
 					// Section 4.2 Seller Products & Stock
+					seller.Get("/products", h.handleSellerListProducts)
+					seller.Get("/products/{id}", h.handleSellerGetProduct)
 					seller.Post("/products", h.handleSellerCreateProduct)
 					seller.Put("/products/{id}", h.handleSellerUpdateProduct)
 					seller.Delete("/products/{id}", h.handleSellerDeleteProduct)
 					seller.Patch("/skus/{sku_id}/stock", h.handleSellerUpdateStock)
 
 					// Section 4.4 Seller Vouchers & Flash Sales
+					seller.Get("/vouchers", h.handleSellerListVouchers)
 					seller.Post("/vouchers", h.handleSellerCreateVoucher)
 					seller.With(middleware.RateLimitFlashSale(deps.RateLimiter, deps.RateLimitFlashPerMin, deps.Logger)).
 						Post("/flash-sales/{id}/items", h.handleSellerRegisterFlashSaleItem)
 
 					// Section 4.5 Seller Orders
 					seller.Get("/orders", h.handleSellerListOrders)
+					seller.Get("/orders/{id}", h.handleSellerGetOrder)
 					seller.Post("/orders/{id}/confirm", h.handleSellerConfirmOrder)
 					seller.Post("/orders/{id}/ship", h.handleSellerShipOrder)
 
@@ -244,6 +255,8 @@ func New(deps Dependencies) http.Handler {
 					admin.Post("/categories", h.handleCreateCategory)
 					admin.Put("/categories/{id}", h.handleUpdateCategory)
 					admin.Delete("/categories/{id}", h.handleDeleteCategory)
+					admin.Get("/products", h.handleAdminListProducts)
+					admin.Get("/products/{id}", h.handleAdminGetProduct)
 					admin.Post("/products/{id}/review", h.handleAdminReviewProduct)
 
 					// Section 4.4 Admin Vouchers, Flash Sales & Coins

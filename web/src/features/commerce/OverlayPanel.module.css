@@ -273,7 +273,7 @@
 
 .recCard {
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr) auto;
+  grid-template-columns: 52px minmax(0, 1fr);
   gap: 12px;
   align-items: center;
   padding: 10px 12px;

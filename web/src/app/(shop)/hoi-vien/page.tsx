@@ -4,6 +4,7 @@ import React, { Suspense, useMemo, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import {
+  INITIAL_USER_COINS,
   MEMBERSHIP_TIERS,
   PRODUCTS,
   REFERRAL_CONFIG,
@@ -14,7 +15,9 @@ import {
 import type { MembershipTierId } from "@/data";
 import { MEDIA_BANNERS } from "@/data/media";
 import { formatDateVi, formatInt, formatVnd } from "@/lib/format";
-import { useStore } from "@/context/StoreContext";
+import { useSession } from "@/context/SessionContext";
+import { useCart } from "@/context/CartContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, ProductCard, StateView } from "@/components";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import shared from "@/features/commerce/commerce.module.css";
@@ -23,16 +26,17 @@ import styles from "./page.module.css";
 function MembershipPageContent() {
   const router = useRouter();
   const viewState = usePageStateParam();
+  const { user } = useSession();
+  const { saveVoucherCode } = useCart();
   const {
-    user,
     membership,
     membershipTier,
     updateBirthday,
     claimBirthdayGift,
     inviteFriendMock,
-    saveVoucherCode,
     showToast,
-  } = useStore();
+  } = useMockStore();
+  const coins = INITIAL_USER_COINS;
 
   const [birthdayDraft, setBirthdayDraft] = useState(membership.birthday || "1996-11-24");
   const [friendName, setFriendName] = useState("");
@@ -170,7 +174,9 @@ function MembershipPageContent() {
             <div className={styles.tierTopRow}>
               <div>
                 <h2 className={styles.tierNameBig}>Hạng {membershipTier.name}</h2>
-                <p className={styles.memberSub}>Hội viên Nexus · {user.fullName}</p>
+                <p className={styles.memberSub}>
+                  Hội viên Nexus · {user?.full_name ?? "Thành viên"}
+                </p>
               </div>
               <span className={styles.tierRateBadge}>
                 Hoàn {membershipTier.cashbackPercentLabel} Xu · Thứ Sáu x2
@@ -203,7 +209,7 @@ function MembershipPageContent() {
                 data-rise=""
                 style={{ "--i": 3 } as React.CSSProperties}
               >
-                <span className={`${styles.xuStatBig} num`}>{formatInt(user.coins)} Xu</span>
+                <span className={`${styles.xuStatBig} num`}>{formatInt(coins)} Xu</span>
                 <span className={styles.xuStatLabel}>Xu khả dụng (1 Xu = 1₫)</span>
               </div>
               <div

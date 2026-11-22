@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Work_Sans } from "next/font/google";
-import { StoreProvider } from "@/context/StoreContext";
+import { SessionProvider } from "@/context/SessionContext";
+import { MockStoreProvider } from "@/mock/MockStoreContext";
+import { CartProvider } from "@/context/CartContext";
 import "@/styles/tokens.css";
 import "@/styles/globals.css";
 
@@ -28,7 +30,11 @@ export default function RootLayout({
   return (
     <html lang="vi" className={workSans.variable}>
       <body>
-        <StoreProvider>{children}</StoreProvider>
+        <SessionProvider>
+          <MockStoreProvider>
+            <CartProvider>{children}</CartProvider>
+          </MockStoreProvider>
+        </SessionProvider>
       </body>
     </html>
   );

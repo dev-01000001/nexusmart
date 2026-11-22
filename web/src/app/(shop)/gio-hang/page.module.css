@@ -740,3 +740,40 @@
     color: var(--ink-strong);
   }
 }
+
+/* Real backend cart notices & voucher meta */
+.priceChangedRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.oldPriceStrike {
+  font-size: var(--step-small);
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.warningStack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.previewLoadingNote {
+  font-size: var(--step-small);
+  color: var(--ink-secondary);
+}
+
+.voucherMetaRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.loadingStage {
+  min-height: 85vh;
+}

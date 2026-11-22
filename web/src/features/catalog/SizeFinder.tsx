@@ -2,8 +2,10 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { PRODUCTS, SHOPS, type CategorySlug } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import type { CategorySlug, Product, Shop } from "@/data";
+import type { CatalogProduct, CatalogShop } from "@/lib/catalog-types";
+import { useMockStore } from "@/mock/MockStoreContext";
+import { getEditorialCatalogFallback } from "@/mock/productEditorial";
 import { formatVnd } from "@/lib/format";
 import { BODY_SHAPE_LABELS, recommendSize, type BodyShape, type FitPreference } from "@/lib/sizing";
 import styles from "./SizeFinder.module.css";
@@ -12,6 +14,8 @@ type GarmentGroup = "ao" | "quan" | "dolot";
 
 export interface SizeFinderProps {
   defaultShopId?: string;
+  products?: Array<Product | CatalogProduct>;
+  shops?: Array<Shop | CatalogShop>;
 }
 
 const GROUP_CATEGORIES: Record<GarmentGroup, CategorySlug[]> = {
@@ -46,8 +50,26 @@ const FIT_BIAS_SHORT: Record<"slim" | "regular" | "relaxed", string> = {
   relaxed: "Form thoáng",
 };
 
-export function SizeFinder({ defaultShopId }: SizeFinderProps) {
-  const { bodyProfile, updateBodyProfile, showToast } = useStore();
+function getEditorialShopId(shop: Shop | CatalogShop | undefined): string | undefined {
+  if (!shop) return undefined;
+  if ("editorialShopId" in shop) return shop.editorialShopId;
+  return shop.id;
+}
+
+export function SizeFinder({ defaultShopId, products, shops }: SizeFinderProps) {
+  const { bodyProfile, updateBodyProfile, showToast } = useMockStore();
+
+  // Only fall back to editorial catalog when embedded inside mock-only pages (e.g. /tap-chi)
+  const fallback = useMemo(() => {
+    if (products && shops) return null;
+    return getEditorialCatalogFallback();
+  }, [products, shops]);
+
+  const effectiveProducts = useMemo(
+    () => products ?? fallback?.products ?? [],
+    [products, fallback]
+  );
+  const effectiveShops = useMemo(() => shops ?? fallback?.shops ?? [], [shops, fallback]);
 
   const [heightCm, setHeightCm] = useState<number>(bodyProfile.heightCm);
   const [weightKg, setWeightKg] = useState<number>(bodyProfile.weightKg);
@@ -58,7 +80,7 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
   const [group, setGroup] = useState<GarmentGroup>("ao");
   const [selectedShopId, setSelectedShopId] = useState<string>(defaultShopId ?? "all");
 
-  // Sync after client hydration when persisted bodyProfile is loaded from localStorage
+  // Đồng bộ form khi hồ sơ số đo (tiện ích người xem lưu trong MockStore) vừa được nạp sau hydration
   useEffect(() => {
     setHeightCm(bodyProfile.heightCm);
     setWeightKg(bodyProfile.weightKg);
@@ -72,6 +94,14 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
     }
   }, [defaultShopId]);
 
+  const selectedShop = useMemo(
+    () =>
+      selectedShopId === "all"
+        ? undefined
+        : effectiveShops.find((s) => s.id === selectedShopId || s.slug === selectedShopId),
+    [effectiveShops, selectedShopId]
+  );
+
   const recommendation = useMemo(
     () =>
       recommendSize({
@@ -80,9 +110,9 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
         shape,
         preferredFit,
         garmentGroup: GROUP_TO_SIZING[group],
-        shopId: selectedShopId === "all" ? undefined : selectedShopId,
+        shopId: selectedShop ? getEditorialShopId(selectedShop) : undefined,
       }),
-    [heightCm, weightKg, shape, preferredFit, group, selectedShopId]
+    [heightCm, weightKg, shape, preferredFit, group, selectedShop]
   );
 
   const recommendedSize = recommendation.size;
@@ -101,7 +131,9 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
   const matchingProducts = useMemo(() => {
     const allowedCats = GROUP_CATEGORIES[group];
     const inShopPool =
-      selectedShopId === "all" ? PRODUCTS : PRODUCTS.filter((p) => p.shopId === selectedShopId);
+      selectedShopId === "all"
+        ? effectiveProducts
+        : effectiveProducts.filter((p) => p.shopId === selectedShopId);
     const primaryMatches = inShopPool
       .filter((p) => allowedCats.includes(p.categorySlug))
       .map((product) => {
@@ -115,7 +147,8 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
     if (primaryMatches.length > 0) return primaryMatches.slice(0, 3);
 
     // Fallback across all shops when a specific workshop does not produce the chosen garment group
-    return PRODUCTS.filter((p) => allowedCats.includes(p.categorySlug))
+    return effectiveProducts
+      .filter((p) => allowedCats.includes(p.categorySlug))
       .map((product) => {
         const sizeStock = product.skus
           .filter((s) => s.size === recommendedSize)
@@ -124,7 +157,7 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
       })
       .filter((entry) => entry.sizeStock > 0)
       .slice(0, 3);
-  }, [group, recommendedSize, selectedShopId]);
+  }, [effectiveProducts, group, recommendedSize, selectedShopId]);
 
   const referenceSpec = useMemo(() => {
     if (recommendation.measurements) {
@@ -135,17 +168,29 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
         lengthCm: recommendation.measurements.lengthCm,
       };
     }
-    const sample = matchingProducts[0]?.product ?? PRODUCTS[0];
-    return sample.sizeChart.find((row) => row.size === recommendedSize) ?? sample.sizeChart[2];
-  }, [matchingProducts, recommendation.measurements, recommendedSize]);
+    const sample = matchingProducts[0]?.product ?? effectiveProducts[0];
+    if (!sample || sample.sizeChart.length === 0) return null;
+    return (
+      sample.sizeChart.find((row) => row.size === recommendedSize) ??
+      sample.sizeChart[2] ??
+      sample.sizeChart[0]
+    );
+  }, [effectiveProducts, matchingProducts, recommendation.measurements, recommendedSize]);
 
   const clampHeight = (v: number) => Math.max(155, Math.min(190, v));
   const clampWeight = (v: number) => Math.max(48, Math.min(95, v));
 
-  const catalogFilterHref =
-    selectedShopId !== "all"
-      ? `/danh-muc?size=${recommendedSize}&cat=${GROUP_CATEGORIES[group][0]}&shop=${selectedShopId}`
-      : `/danh-muc?size=${recommendedSize}&cat=${GROUP_CATEGORIES[group][0]}`;
+  const catalogFilterHref = selectedShop
+    ? `/danh-muc?size=${recommendedSize}&cat=${GROUP_CATEGORIES[group][0]}&shop=${encodeURIComponent(selectedShop.slug)}`
+    : `/danh-muc?size=${recommendedSize}&cat=${GROUP_CATEGORIES[group][0]}`;
+
+  const selectableShops = useMemo(
+    () =>
+      effectiveShops.filter((s) => Boolean(s.sizeCharts) || s.id === selectedShopId).slice(0, 4),
+    [effectiveShops, selectedShopId]
+  );
+
+  const displayedShopName = selectedShop?.name ?? recommendation.shopName;
 
   return (
     <div className={styles.wrap} id="chon-size">
@@ -168,7 +213,7 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
             >
               Chuẩn NexusMart
             </button>
-            {SHOPS.map((shop) => {
+            {selectableShops.map((shop) => {
               const active = selectedShopId === shop.id;
               const bias = shop.sizeCharts?.fitBias ?? "regular";
               return (
@@ -316,7 +361,7 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
       <div className={styles.resultCol} aria-live="polite">
         <div className={styles.resultHead}>
           <div className={styles.resultHeadMeta}>
-            <span className={styles.resultSizeLabel}>Size gợi ý · {recommendation.shopName}</span>
+            <span className={styles.resultSizeLabel}>Size gợi ý · {displayedShopName}</span>
             <span className={styles.confidenceText}>{recommendation.confidenceLabel}</span>
           </div>
           <span className={styles.resultSize}>{recommendedSize}</span>
@@ -368,7 +413,8 @@ export function SizeFinder({ defaultShopId }: SizeFinderProps) {
               <span className={styles.matchInfo}>
                 <span className={styles.matchName}>{product.shortName}</span>
                 <span className={styles.matchStock}>
-                  {product.gsm}gsm · Còn {sizeStock} chiếc size {recommendedSize}
+                  {product.gsm > 0 ? `${product.gsm}gsm · ` : ""}Còn {sizeStock} chiếc size{" "}
+                  {recommendedSize}
                 </span>
               </span>
               <span className={styles.matchPrice}>{formatVnd(product.price)}</span>

@@ -13,7 +13,9 @@ import {
 } from "@/data";
 import { getInstantSearchSuggestions } from "@/lib/search";
 import { formatVnd } from "@/lib/format";
-import { useStore } from "@/context/StoreContext";
+import { useSession } from "@/context/SessionContext";
+import { useCart } from "@/context/CartContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import {
   IconBag,
   IconChat,
@@ -128,9 +130,12 @@ const MOBILE_CATEGORY_SECTIONS = [
 export function ShopHeader() {
   const pathname = usePathname();
   const router = useRouter();
-  const { cartCount, wishlist, openChat, openAi, openCookieModal, chatThreads } = useStore();
+  const { user, isAuthenticated, logout } = useSession();
+  const { cartCount } = useCart();
+  const { wishlist, openChat, openAi, openCookieModal, chatThreads } = useMockStore();
 
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [openMobileGroup, setOpenMobileGroup] = useState<string>("mob-ao");
   const [megaOpen, setMegaOpen] = useState(false);
   const [activeMegaGroupId, setActiveMegaGroupId] = useState<string>(MEGA_MENU_GROUPS[0].id);
@@ -198,6 +203,7 @@ export function ShopHeader() {
     setDrawerOpen(false);
     setMegaOpen(false);
     setSearchOpen(false);
+    setAccountMenuOpen(false);
     setMobileSearchFocus(false);
   }, [pathname]);
 
@@ -215,6 +221,7 @@ export function ShopHeader() {
         clearMegaCloseTimer();
         setMegaOpen(false);
         setSearchOpen(false);
+        setAccountMenuOpen(false);
         setDrawerOpen(false);
       }
     };
@@ -223,6 +230,7 @@ export function ShopHeader() {
         clearMegaCloseTimer();
         setMegaOpen(false);
         setSearchOpen(false);
+        setAccountMenuOpen(false);
       }
     };
     document.addEventListener("keydown", onKeyDown);
@@ -263,6 +271,17 @@ export function ShopHeader() {
     setDrawerOpen(false);
     router.push(`/tim-kiem?q=${encodeURIComponent(query)}`);
   };
+
+  const handleLogout = async () => {
+    setAccountMenuOpen(false);
+    setDrawerOpen(false);
+    await logout();
+    window.location.assign("/");
+  };
+
+  const displayName = user?.full_name?.trim() || user?.email || "";
+  const isSeller = user?.role === "seller";
+  const isAdmin = user?.role === "admin" || user?.role === "super_admin";
 
   return (
     <>
@@ -540,15 +559,99 @@ export function ShopHeader() {
                 <span className={styles.actionLabelWide}>Trợ lý AI</span>
               </button>
 
-              <Link
-                href="/tai-khoan"
-                className={`${styles.actionItem} ${isActive("/tai-khoan") ? styles.actionItemActive : ""}`}
-                aria-label="Tài khoản của tôi"
-                title="Tài khoản"
-              >
-                <IconUser size={17} />
-                <span className={styles.actionLabel}>Tài khoản</span>
-              </Link>
+              {isAuthenticated && user ? (
+                <div className={styles.accountMenuWrap}>
+                  <button
+                    type="button"
+                    className={`${styles.actionItem} ${
+                      accountMenuOpen || isActive("/tai-khoan") ? styles.actionItemActive : ""
+                    }`}
+                    aria-expanded={accountMenuOpen}
+                    aria-haspopup="menu"
+                    aria-label={`Tài khoản ${displayName}`}
+                    title={displayName}
+                    onClick={() => {
+                      setSearchOpen(false);
+                      setMegaOpen(false);
+                      setAccountMenuOpen((v) => !v);
+                    }}
+                  >
+                    <IconUser size={17} />
+                    <span className={`${styles.actionLabel} ${styles.userNameLabel}`}>
+                      {displayName}
+                    </span>
+                    <IconChevronDown
+                      size={13}
+                      className={accountMenuOpen ? styles.chevronOpen : styles.chevron}
+                    />
+                  </button>
+
+                  {accountMenuOpen && (
+                    <div className={styles.accountDropdown} role="menu" aria-label="Menu tài khoản">
+                      <div className={styles.accountIdentity}>
+                        <span className={styles.accountFullName}>{displayName}</span>
+                        <span className={styles.accountEmail}>{user.email}</span>
+                      </div>
+                      <Link
+                        href="/tai-khoan"
+                        role="menuitem"
+                        className={styles.accountMenuLink}
+                        onClick={() => setAccountMenuOpen(false)}
+                      >
+                        Tài khoản của tôi
+                      </Link>
+                      <Link
+                        href="/don-hang"
+                        role="menuitem"
+                        className={styles.accountMenuLink}
+                        onClick={() => setAccountMenuOpen(false)}
+                      >
+                        Đơn hàng của tôi
+                      </Link>
+                      {isSeller && (
+                        <Link
+                          href="/seller"
+                          prefetch={false}
+                          role="menuitem"
+                          className={styles.accountMenuLink}
+                          onClick={() => setAccountMenuOpen(false)}
+                        >
+                          Kênh người bán
+                        </Link>
+                      )}
+                      {isAdmin && (
+                        <Link
+                          href="/admin"
+                          prefetch={false}
+                          role="menuitem"
+                          className={styles.accountMenuLink}
+                          onClick={() => setAccountMenuOpen(false)}
+                        >
+                          Quản trị sàn
+                        </Link>
+                      )}
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className={styles.accountLogoutBtn}
+                        onClick={() => void handleLogout()}
+                      >
+                        Đăng xuất
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <Link
+                  href="/dang-nhap"
+                  className={`${styles.actionItem} ${isActive("/dang-nhap") ? styles.actionItemActive : ""}`}
+                  aria-label="Đăng nhập tài khoản"
+                  title="Đăng nhập"
+                >
+                  <IconUser size={17} />
+                  <span className={styles.actionLabel}>Đăng nhập</span>
+                </Link>
+              )}
 
               <Link
                 href="/tai-khoan?tab=yeu-thich"
@@ -857,11 +960,11 @@ export function ShopHeader() {
                 Yêu thích ({wishlistCount})
               </Link>
               <Link
-                href="/tai-khoan"
+                href={isAuthenticated ? "/tai-khoan" : "/dang-nhap"}
                 className={styles.drawerQuickTile}
                 onClick={() => setDrawerOpen(false)}
               >
-                Tài khoản
+                {isAuthenticated ? displayName : "Đăng nhập"}
               </Link>
             </div>
 
@@ -968,15 +1071,34 @@ export function ShopHeader() {
             </div>
 
             <div className={styles.drawerFooter}>
-              <Link href="/dang-nhap" className={styles.drawerSubLink}>
-                Đăng nhập / Đăng ký
-              </Link>
-              <Link href="/seller" className={styles.drawerSubLink}>
-                Kênh người bán
-              </Link>
-              <Link href="/admin" className={styles.drawerSubLink}>
-                Cổng Quản trị
-              </Link>
+              {isAuthenticated && user ? (
+                <>
+                  <Link href="/tai-khoan" className={styles.drawerSubLink}>
+                    {displayName} ({user.email})
+                  </Link>
+                  <button
+                    type="button"
+                    className={styles.drawerSubLink}
+                    onClick={() => void handleLogout()}
+                  >
+                    Đăng xuất
+                  </button>
+                </>
+              ) : (
+                <Link href="/dang-nhap" className={styles.drawerSubLink}>
+                  Đăng nhập / Đăng ký
+                </Link>
+              )}
+              {isSeller && (
+                <Link href="/seller" prefetch={false} className={styles.drawerSubLink}>
+                  Kênh người bán
+                </Link>
+              )}
+              {isAdmin && (
+                <Link href="/admin" prefetch={false} className={styles.drawerSubLink}>
+                  Cổng Quản trị
+                </Link>
+              )}
             </div>
           </div>
         </div>

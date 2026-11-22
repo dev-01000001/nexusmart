@@ -243,6 +243,15 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 		return nil, err
 	}
 
+	rawSlug := strings.TrimSpace(req.GetSlug())
+	var explicitSlug string
+	if rawSlug != "" {
+		explicitSlug = normalizeSlug(rawSlug)
+		if explicitSlug == "" {
+			return nil, status.Error(codes.InvalidArgument, "slug must contain letters or digits")
+		}
+	}
+
 	var (
 		createdProd store.Product
 		createdSKUs []store.SKU
@@ -250,11 +259,29 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
 		prodID := uuid.NewString()
+		prodSlug := explicitSlug
+		if prodSlug != "" {
+			if _, lookupErr := q.GetProductBySlug(ctx, prodSlug); lookupErr == nil {
+				return status.Error(codes.AlreadyExists, "product slug already exists")
+			} else if !errors.Is(lookupErr, store.ErrNotFound) {
+				return lookupErr
+			}
+		} else {
+			base := slugify(name, "prod-"+prodID[:8])
+			prodSlug = base
+			if _, lookupErr := q.GetProductBySlug(ctx, prodSlug); lookupErr == nil {
+				prodSlug = base + "-" + prodID[:8]
+			} else if !errors.Is(lookupErr, store.ErrNotFound) {
+				return lookupErr
+			}
+		}
+
 		p, createErr := q.CreateProduct(ctx, store.Product{
 			ID:          prodID,
 			ShopID:      shopID,
 			CategoryID:  categoryID,
 			Name:        name,
+			Slug:        prodSlug,
 			Description: strings.TrimSpace(req.GetDescription()),
 			Images:      req.GetImages(),
 			Status:      store.ProductStatusPending,
@@ -297,8 +324,11 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 		return nil
 	})
 	if err != nil {
+		if _, ok := status.FromError(err); ok {
+			return nil, err
+		}
 		if errors.Is(err, store.ErrAlreadyExists) {
-			return nil, status.Error(codes.AlreadyExists, "duplicate sku_code within product")
+			return nil, status.Error(codes.AlreadyExists, "duplicate product slug or sku_code")
 		}
 		return nil, status.Errorf(codes.Internal, "create product: %v", err)
 	}
@@ -345,6 +375,17 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 	name := strings.TrimSpace(req.GetName())
 	if name == "" {
 		name = existing.Name
+	}
+	prodSlug := existing.Slug
+	if rawSlug := strings.TrimSpace(req.GetSlug()); rawSlug != "" {
+		normalized := normalizeSlug(rawSlug)
+		if normalized == "" {
+			return nil, status.Error(codes.InvalidArgument, "slug must contain letters or digits")
+		}
+		prodSlug = normalized
+	}
+	if prodSlug == "" {
+		prodSlug = slugify(name, "prod-"+id[:min(8, len(id))])
 	}
 	desc := existing.Description
 	if req.GetDescription() != "" {
@@ -456,11 +497,20 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 			rejectionReason = ""
 		}
 
+		if prodSlug != existing.Slug {
+			if other, lookupErr := q.GetProductBySlug(ctx, prodSlug); lookupErr == nil && other.ID != id {
+				return status.Error(codes.AlreadyExists, "product slug already exists")
+			} else if lookupErr != nil && !errors.Is(lookupErr, store.ErrNotFound) {
+				return lookupErr
+			}
+		}
+
 		p, updErr := q.UpdateProduct(ctx, store.Product{
 			ID:              id,
 			ShopID:          existing.ShopID,
 			CategoryID:      categoryID,
 			Name:            name,
+			Slug:            prodSlug,
 			Description:     desc,
 			Images:          images,
 			Status:          nextStatus,
@@ -576,10 +626,20 @@ func (s *Server) AdminReviewProduct(ctx context.Context, req *productv1.AdminRev
 
 func (s *Server) GetProduct(ctx context.Context, req *productv1.GetProductRequest) (*productv1.GetProductResponse, error) {
 	id := strings.TrimSpace(req.GetId())
-	if id == "" {
-		return nil, status.Error(codes.InvalidArgument, "product id is required")
+	slug := strings.ToLower(strings.TrimSpace(req.GetSlug()))
+	if id == "" && slug == "" {
+		return nil, status.Error(codes.InvalidArgument, "product id or slug is required")
 	}
-	prod, err := s.store.GetProductByID(ctx, id)
+
+	var (
+		prod store.Product
+		err  error
+	)
+	if slug != "" {
+		prod, err = s.store.GetProductBySlug(ctx, slug)
+	} else {
+		prod, err = s.store.GetProductByID(ctx, id)
+	}
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, status.Error(codes.NotFound, "product not found")
@@ -589,7 +649,7 @@ func (s *Server) GetProduct(ctx context.Context, req *productv1.GetProductReques
 	if !canViewProduct(ctx, prod) {
 		return nil, status.Error(codes.NotFound, "product not found")
 	}
-	skus, err := s.store.ListSKUsByProductIDs(ctx, []string{id})
+	skus, err := s.store.ListSKUsByProductIDs(ctx, []string{prod.ID})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list product skus: %v", err)
 	}
@@ -1375,7 +1435,10 @@ func resolveUpdatedProductStatus(current string, requested productv1.ProductStat
 	}
 	switch next {
 	case store.ProductStatusHidden:
-		return next, nil
+		if current == store.ProductStatusApproved || current == store.ProductStatusOutOfStock {
+			return next, nil
+		}
+		return "", status.Error(codes.PermissionDenied, "only approved products can be hidden by seller")
 	case store.ProductStatusApproved:
 		if current == store.ProductStatusHidden || current == store.ProductStatusOutOfStock {
 			return next, nil
@@ -1463,24 +1526,53 @@ func normalizeSortBy(sortBy string) string {
 }
 
 func slugify(name, fallback string) string {
+	s := normalizeSlug(name)
+	if s == "" {
+		if strings.Contains(fallback, "-") {
+			return fallback
+		}
+		return "cat-" + fallback
+	}
+	return s
+}
+
+func normalizeSlug(input string) string {
 	var b strings.Builder
 	prevDash := false
-	for _, r := range strings.ToLower(name) {
+	for _, r := range strings.ToLower(strings.TrimSpace(input)) {
+		r = foldVietnameseRune(r)
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
 			b.WriteRune(r)
 			prevDash = false
-		} else if unicode.IsSpace(r) || r == '-' || r == '_' {
+		} else if unicode.IsSpace(r) || r == '-' || r == '_' || r == '/' || r == '.' {
 			if b.Len() > 0 && !prevDash {
 				b.WriteByte('-')
 				prevDash = true
 			}
 		}
 	}
-	s := strings.Trim(b.String(), "-")
-	if s == "" {
-		return "cat-" + fallback
+	return strings.Trim(b.String(), "-")
+}
+
+func foldVietnameseRune(r rune) rune {
+	switch r {
+	case 'á', 'à', 'ả', 'ã', 'ạ', 'ă', 'ắ', 'ằ', 'ẳ', 'ẵ', 'ặ', 'â', 'ấ', 'ầ', 'ẩ', 'ẫ', 'ậ':
+		return 'a'
+	case 'đ':
+		return 'd'
+	case 'é', 'è', 'ẻ', 'ẽ', 'ẹ', 'ê', 'ế', 'ề', 'ể', 'ễ', 'ệ':
+		return 'e'
+	case 'í', 'ì', 'ỉ', 'ĩ', 'ị':
+		return 'i'
+	case 'ó', 'ò', 'ỏ', 'õ', 'ọ', 'ô', 'ố', 'ồ', 'ổ', 'ỗ', 'ộ', 'ơ', 'ớ', 'ờ', 'ở', 'ỡ', 'ợ':
+		return 'o'
+	case 'ú', 'ù', 'ủ', 'ũ', 'ụ', 'ư', 'ứ', 'ừ', 'ử', 'ữ', 'ự':
+		return 'u'
+	case 'ý', 'ỳ', 'ỷ', 'ỹ', 'ỵ':
+		return 'y'
+	default:
+		return r
 	}
-	return s
 }
 
 func toProtoCategory(c store.Category) *productv1.Category {
@@ -1543,6 +1635,7 @@ func toProtoProduct(p store.Product, skus []store.SKU) *productv1.Product {
 		ShopId:          p.ShopID,
 		CategoryId:      p.CategoryID,
 		Name:            p.Name,
+		Slug:            p.Slug,
 		Description:     p.Description,
 		Images:          imgs,
 		Status:          toProtoProductStatus(p.Status),

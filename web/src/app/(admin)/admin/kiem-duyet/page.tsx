@@ -8,35 +8,35 @@ import type {
   AdminReviewModerationItem,
   ModerationStatus,
 } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconAlert, IconCheck, IconSearch } from "@/components";
 import { formatDateTimeVi, formatInt } from "@/lib/format";
 import { formatShortTimeDateVi, MODERATION_STATUS_META } from "@/features/admin/adminMeta";
-import {
-  appendAdminAuditLog,
-  updateAdminModerationState,
-  useAdminModerationState,
-} from "@/features/admin/auditStore";
+import { updateAdminModerationState, useAdminModerationState } from "@/features/admin/auditStore";
+import { AdminProductModerationTab } from "@/features/admin/AdminProductModerationTab";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { StatusPill } from "@/features/admin/StatusPill";
 import { ToggleSwitch } from "@/features/admin/ToggleSwitch";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
 
-type ModTab = "reviews" | "qa" | "media";
+type ModTab = "san_pham" | "reviews" | "qa" | "media";
 type StatusFilter = "all" | ModerationStatus;
 
 function ModerationContent({ initialQuery }: { initialQuery: string }) {
   const mod = useAdminModerationState();
-  const { showToast } = useStore();
+  const { showToast } = useMockStore();
 
   const initialTab: ModTab = initialQuery.toUpperCase().startsWith("QA-")
     ? "qa"
     : initialQuery.toUpperCase().startsWith("MD-")
       ? "media"
-      : "reviews";
+      : initialQuery.toUpperCase().startsWith("DG-")
+        ? "reviews"
+        : "san_pham";
 
   const [activeTab, setActiveTab] = useState<ModTab>(initialTab);
+  const [pendingProductCount, setPendingProductCount] = useState(0);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [query, setQuery] = useState(initialQuery);
   const [selectedReviewId, setSelectedReviewId] = useState<string | null>("rev-2");
@@ -154,13 +154,6 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
           ? "Ẩn đánh giá vi phạm"
           : "Cảnh báo đánh giá spam / vi phạm";
 
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: actionText,
-      module: "Kiểm duyệt",
-      target: item.code,
-      changeSummary: `${item.skuCode} (${item.shopName}): ${note}`,
-    });
     showToast(`${actionText} ${item.code}.`);
   };
 
@@ -191,13 +184,6 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
           ? "Ẩn Hỏi đáp dính từ cấm"
           : "Cảnh báo gian hàng vi phạm bộ lọc Q&A";
 
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: actionText,
-      module: "Kiểm duyệt",
-      target: item.code,
-      changeSummary: `${item.productName} (${item.shopName}): ${note}`,
-    });
     showToast(`${actionText} ${item.code}.`);
   };
 
@@ -228,13 +214,6 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
           ? "Ẩn media không đạt chuẩn"
           : "Cảnh báo media biến thể sản phẩm";
 
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: actionText,
-      module: "Kiểm duyệt",
-      target: item.code,
-      changeSummary: `${item.skuCode} (${item.colorName} · ${item.shopName}): ${note}`,
-    });
     showToast(`${actionText} ${item.code}.`);
   };
 
@@ -256,13 +235,6 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
         ...prev.bannedKeywords,
       ],
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Thêm cụm từ cấm vào bộ lọc Q&A & Đánh giá",
-      module: "Kiểm duyệt",
-      target: "BANNED-FILTER",
-      changeSummary: `Thêm "${clean}" (${newBannedCategory}, ${newBannedMode === "chan_tu_dong" ? "Chặn tự động" : "Gắn cờ duyệt"}).`,
-    });
     setNewBannedTerm("");
     showToast(`Đã thêm cụm từ cấm "${clean}".`);
   };
@@ -277,13 +249,6 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
         b.id === id ? { ...b, active: nextActive } : b
       ),
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: nextActive ? "Bật quy tắc bộ lọc từ cấm" : "Tạm tắt quy tắc bộ lọc từ cấm",
-      module: "Kiểm duyệt",
-      target: item.id,
-      changeSummary: `${nextActive ? "Kích hoạt" : "Tắt"} cụm từ "${item.term}".`,
-    });
   };
 
   const renderReviewDetail = (item: AdminReviewModerationItem, showHeading = false) => {
@@ -606,11 +571,10 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
     <div className={shared.page}>
       <header className={shared.titleRow}>
         <div className={shared.titleBlock}>
-          <h1 className={shared.pageTitle}>Kiểm duyệt đánh giá, hỏi đáp & media</h1>
+          <h1 className={shared.pageTitle}>Kiểm duyệt sản phẩm & nội dung</h1>
           <p className={shared.pageSubtitle}>
-            Còn {formatInt(counts.totalPending)} mục chờ kiểm duyệt ({counts.revPending} đánh giá,{" "}
-            {counts.qaPending} hỏi đáp, {counts.mediaPending} media biến thể); mọi quyết định Duyệt,
-            Ẩn hoặc Cảnh báo được ghi ngay vào Nhật ký hệ thống.
+            Hiện có {formatInt(pendingProductCount)} sản phẩm mới chờ duyệt hiển thị công khai trên
+            sàn cùng các mục kiểm duyệt đánh giá, hỏi đáp và media mẫu.
           </p>
         </div>
       </header>
@@ -620,33 +584,43 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
         aria-label="Tổng hợp hàng đợi kiểm duyệt"
       >
         <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Tổng chờ kiểm duyệt</span>
-          <span className={shared.kpiValue}>{formatInt(counts.totalPending)}</span>
-          <span className={shared.kpiCaption}>Đồng bộ trực tiếp lên thanh điều hướng</span>
+          <span className={shared.kpiLabel}>Sản phẩm chờ duyệt</span>
+          <span className={shared.kpiValue}>{formatInt(pendingProductCount)}</span>
+          <span className={shared.kpiCaption}>Hàng đợi thực từ gian hàng đăng bán</span>
         </div>
         <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Đánh giá bị gắn cờ</span>
+          <span className={shared.kpiLabel}>Đánh giá mẫu</span>
           <span className={shared.kpiValue}>{formatInt(counts.revPending)}</span>
           <span className={shared.kpiCaption}>
             Trong {formatInt(mod.reviews.length)} đánh giá mẫu
           </span>
         </div>
         <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Hỏi đáp chờ duyệt</span>
+          <span className={shared.kpiLabel}>Hỏi đáp mẫu</span>
           <span className={shared.kpiValue}>{formatInt(counts.qaPending)}</span>
           <span className={shared.kpiCaption}>
             {formatInt(counts.activeBanned)} cụm từ cấm đang bật
           </span>
         </div>
         <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Media biến thể chờ duyệt</span>
+          <span className={shared.kpiLabel}>Media mẫu</span>
           <span className={shared.kpiValue}>{formatInt(counts.mediaPending)}</span>
-          <span className={shared.kpiCaption}>Ảnh nền phẳng & video Seller tải lên</span>
+          <span className={shared.kpiCaption}>Ảnh nền phẳng & video tham khảo</span>
         </div>
       </section>
 
       <div className={shared.tabsBar}>
         <div className={shared.tabList} role="tablist" aria-label="Hàng đợi kiểm duyệt theo loại">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "san_pham"}
+            className={`${shared.tabBtn} ${activeTab === "san_pham" ? shared.tabBtnActive : ""}`}
+            onClick={() => setActiveTab("san_pham")}
+          >
+            <span>Sản phẩm chờ duyệt</span>
+            <span className={shared.tabCount}>{pendingProductCount}</span>
+          </button>
           <button
             type="button"
             role="tab"
@@ -680,39 +654,48 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
         </div>
       </div>
 
-      <div className={shared.toolbar}>
-        <div className={shared.toolbarLeft}>
-          <div className={shared.searchWrap}>
-            <span className={shared.searchIcon}>
-              <IconSearch size={14} />
-            </span>
-            <input
-              type="search"
-              className={shared.toolbarSearch}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Tìm mã DG-, QA-, MD-, SKU, gian hàng..."
-              aria-label="Tìm kiếm trong hàng đợi kiểm duyệt"
-            />
+      {activeTab === "san_pham" && (
+        <AdminProductModerationTab
+          initialQuery={initialQuery}
+          onPendingCountChange={setPendingProductCount}
+        />
+      )}
+
+      {activeTab !== "san_pham" && (
+        <div className={shared.toolbar}>
+          <div className={shared.toolbarLeft}>
+            <div className={shared.searchWrap}>
+              <span className={shared.searchIcon}>
+                <IconSearch size={14} />
+              </span>
+              <input
+                type="search"
+                className={shared.toolbarSearch}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Tìm mã DG-, QA-, MD-, SKU, gian hàng..."
+                aria-label="Tìm kiếm trong hàng đợi kiểm duyệt"
+              />
+            </div>
+          </div>
+
+          <div className={shared.toolbarRight}>
+            <span className={shared.resultCount}>{formatInt(currentResultCount)} mục</span>
+            <select
+              className={shared.toolbarSelect}
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+              aria-label="Lọc trạng thái kiểm duyệt"
+            >
+              <option value="all">Tất cả trạng thái</option>
+              <option value="cho_duyet">Chờ kiểm duyệt</option>
+              <option value="da_duyet">Đã duyệt</option>
+              <option value="da_an">Đã ẩn</option>
+              <option value="canh_bao">Đã cảnh báo</option>
+            </select>
           </div>
         </div>
-
-        <div className={shared.toolbarRight}>
-          <span className={shared.resultCount}>{formatInt(currentResultCount)} mục</span>
-          <select
-            className={shared.toolbarSelect}
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-            aria-label="Lọc trạng thái kiểm duyệt"
-          >
-            <option value="all">Tất cả trạng thái</option>
-            <option value="cho_duyet">Chờ kiểm duyệt</option>
-            <option value="da_duyet">Đã duyệt</option>
-            <option value="da_an">Đã ẩn</option>
-            <option value="canh_bao">Đã cảnh báo</option>
-          </select>
-        </div>
-      </div>
+      )}
 
       {/* TAB 1: ĐÁNH GIÁ SẢN PHẨM */}
       {activeTab === "reviews" &&

@@ -134,8 +134,12 @@ replace (
 | `POST /api/v1/users/me/addresses` | Any authenticated | `{"recipient_name","recipient_phone","province_code","ward_code","street_address","is_default","legacy_province","legacy_district","legacy_ward"}` | `201` `{"address":{...}}` |
 | `PUT /api/v1/users/me/addresses/{id}` | Any authenticated (owner) | Same as create | `200` `{"address":{...}}` |
 | `DELETE /api/v1/users/me/addresses/{id}` | Any authenticated (owner) | — | `200` `{"ok":true}` |
-| `POST /api/v1/shops/register` | `buyer`, `seller` | `{"name","description","pickup_address_id","contact_phone","business_license_doc"}` | `201` `{"shop":{...}}` |
-| `GET /api/v1/shops/{id}` | Public | — | `200` `{"shop":{...}}` |
+| `POST /api/v1/shops/register` | `buyer`, `seller` | `{"name","slug","description","pickup_address_id","contact_phone","business_license_doc"}` (`slug` optional, auto-slugified from `name` if omitted) | `201` `{"shop":{...}}` |
+| `GET /api/v1/shops` | Public | Query: `page`, `page_size` | `200` `{"items":[{"id","name","slug","description","status","created_at","updated_at"}],"page","page_size","total"}` (`ACTIVE` shops only; no private fields) |
+| `GET /api/v1/shops/{id}` | Public | — | `200` `{"shop":{"id","name","slug","description","status","created_at","updated_at"}}` (`ACTIVE` shop only; `404` otherwise; no private fields) |
+| `GET /api/v1/shops/slug/{slug}` | Public | — | `200` `{"shop":{"id","name","slug","description","status","created_at","updated_at"}}` (`ACTIVE` shop only; `404` otherwise; no private fields) |
+| `GET /api/v1/shops/me` | Any authenticated | — | `200` `{"shop":{...}}` (caller's own shop in any status, full fields) |
+| `GET /api/v1/seller/shop` | `seller` | — | `200` `{"shop":{...}}` (verified `shop_id` from JWT, full fields) |
 | `GET /api/v1/admin/users` | `admin`, `super_admin` | Query: `query`, `role`, `status`, `page`, `page_size` | `200` `{"items":[...],"page","page_size","total"}` |
 | `PATCH /api/v1/admin/users/{id}/status` | `admin`, `super_admin` | `{"status":"ACTIVE"\|"LOCKED","reason"}` | `200` `{"user":{...}}` |
 | `PATCH /api/v1/admin/users/{id}/role` | `admin`, `super_admin` | `{"role":"buyer"\|"seller"\|"admin","reason"}` | `200` `{"user":{...}}` |
@@ -150,12 +154,17 @@ replace (
 | `POST /api/v1/admin/categories` | `admin`, `super_admin` | `{"name","slug","parent_id","commission_rate_bps","sort_order"}` | `201` `{"category":{...}}` |
 | `PUT /api/v1/admin/categories/{id}` | `admin`, `super_admin` | Same as create | `200` `{"category":{...}}` |
 | `DELETE /api/v1/admin/categories/{id}` | `admin`, `super_admin` | — | `200` `{"ok":true}` |
-| `GET /api/v1/products` | Public | Query: `category_id`, `keyword`, `shop_id`, `status`, `min_price_vnd`, `max_price_vnd`, `sort_by`, `page`, `page_size` | `200` `{"items":[...],"page","page_size","total"}` |
-| `GET /api/v1/products/{id}` | Public | — | `200` `{"product":{...,"skus":[...]}}` |
-| `POST /api/v1/seller/products` | `seller` | `{"category_id","name","description","images":[...],"skus":[{"sku_code","name","attributes":{},"price_vnd":100000,"stock":50,"weight_grams":500,"image_url"}]}` | `201` `{"product":{...}}` |
-| `PUT /api/v1/seller/products/{id}` | `seller` (shop owner) | Same + `status` | `200` `{"product":{...}}` |
+| `GET /api/v1/products` | Public / Optional auth | Query: `category_id`, `category_slug`, `keyword`, `shop_id`, `shop_slug`, `status`, `min_price_vnd`, `max_price_vnd`, `sort_by`, `page`, `page_size` | `200` `{"items":[...],"page","page_size","total"}` (each product includes `slug`) |
+| `GET /api/v1/products/{id}` | Public / Optional auth | — | `200` `{"product":{...,"slug","skus":[...]}}` |
+| `GET /api/v1/products/slug/{slug}` | Public / Optional auth | — | `200` `{"product":{...,"slug","skus":[...]}}` (public sees `APPROVED`/`OUT_OF_STOCK` only; owner seller/admin sees any status) |
+| `GET /api/v1/seller/products` | `seller` | Query: `category_id`, `keyword`, `status`, `min_price_vnd`, `max_price_vnd`, `sort_by`, `page`, `page_size` (forces `shop_id` from JWT) | `200` `{"items":[...],"page","page_size","total"}` (all statuses of seller's own shop) |
+| `GET /api/v1/seller/products/{id}` | `seller` (shop owner) | — | `200` `{"product":{...,"skus":[...]}}` (`403` for another shop's product) |
+| `POST /api/v1/seller/products` | `seller` | `{"category_id","name","slug","description","images":[...],"skus":[{"sku_code","name","attributes":{},"price_vnd":100000,"stock":50,"weight_grams":500,"image_url"}]}` (`slug` optional, auto-slugified from `name` if omitted) | `201` `{"product":{...}}` |
+| `PUT /api/v1/seller/products/{id}` | `seller` (shop owner) | Same + `status` (seller may only hide `APPROVED`/`OUT_OF_STOCK` → `HIDDEN`, unhide `HIDDEN` → `APPROVED`, or resubmit `REJECTED` → `PENDING`; `PENDING`/`REJECTED` → `HIDDEN`/`APPROVED` returns `403`) | `200` `{"product":{...}}` |
 | `DELETE /api/v1/seller/products/{id}` | `seller` (shop owner) | — | `200` `{"ok":true}` |
 | `PATCH /api/v1/seller/skus/{sku_id}/stock` | `seller` (shop owner) | `{"new_stock":80,"expected_version":1}` | `200` `{"sku":{...}}` (or `409` on version conflict) |
+| `GET /api/v1/admin/products` | `admin`, `super_admin` | Query: `category_id`, `shop_id`, `keyword`, `status`, `min_price_vnd`, `max_price_vnd`, `sort_by`, `page`, `page_size` | `200` `{"items":[...],"page","page_size","total"}` (all statuses) |
+| `GET /api/v1/admin/products/{id}` | `admin`, `super_admin` | — | `200` `{"product":{...,"skus":[...]}}` (any status) |
 | `POST /api/v1/admin/products/{id}/review` | `admin`, `super_admin` | `{"decision":"APPROVE"\|"REJECT","reason"}` | `200` `{"product":{...}}` |
 
 ### 4.3 Shopping Cart (`cart` service)
@@ -172,11 +181,12 @@ replace (
 | --- | --- | --- | --- |
 | `GET /api/v1/vouchers` | Public / Optional auth | Query: `shop_id`, `scope`, `order_amount_vnd` | `200` `{"vouchers":[...]}` |
 | `POST /api/v1/vouchers/{id}/save` | Any authenticated | Optional `{"code"}` | `200` `{"saved":true,"voucher":{...}}` |
+| `GET /api/v1/seller/vouchers` | `seller` | — (forces `scope=SHOP`, `shop_id` from JWT) | `200` `{"vouchers":[...]}` |
 | `POST /api/v1/seller/vouchers` | `seller` | `{"code","name","discount_type":"FIXED"\|"PERCENT","value_vnd","discount_percent","max_discount_vnd","min_order_vnd","quota","per_user_limit","budget_vnd","starts_at","ends_at"}` (forces `scope=SHOP`, `shop_id` from JWT) | `201` `{"voucher":{...}}` |
 | `POST /api/v1/admin/vouchers` | `admin`, `super_admin` | Same + `scope:"PLATFORM"\|"FREESHIP"` | `201` `{"voucher":{...}}` |
 | `GET /api/v1/flash-sales` | Public | Query: `include_upcoming` | `200` `{"flash_sales":[...]}` |
 | `POST /api/v1/admin/flash-sales` | `admin`, `super_admin` | `{"name","starts_at","ends_at"}` | `201` `{"flash_sale":{...}}` |
-| `POST /api/v1/seller/flash-sales/{id}/items` | `seller` | `{"sku_id","flash_price_vnd","total_slots","per_user_limit"}` | `201` `{"item":{...}}` |
+| `POST /api/v1/seller/flash-sales/{id}/items` | `seller` | `{"sku_id","flash_price_vnd","total_slots","per_user_limit"}` | `201` `{"item":{...}}` (gateway verifies `sku_id` via `Product.GetSKUsBatch` and checks `sku.shop_id == JWT shop_id`; `404` if SKU not found, `403` `PERMISSION_DENIED` if SKU belongs to another shop) |
 | `POST /api/v1/admin/flash-sale-items/{item_id}/approve` | `admin`, `super_admin` | `{"approve":true,"reason"}` | `200` `{"item":{...}}` |
 | `GET /api/v1/coins/balance` | Any authenticated | — | `200` `{"user_id","balance":5000,"recent_transactions":[...]}` |
 | `POST /api/v1/admin/coins/credit` | `admin`, `super_admin` | `{"user_id","amount","reason","reference_id"}` | `200` `{"user_id","balance","already_credited":false}` |
@@ -193,6 +203,7 @@ replace (
 | `POST /api/v1/orders/{id}/confirm-received` | Buyer owner | — | `200` `{"order":{...}}` |
 | `POST /api/v1/orders/{id}/return` | Buyer owner | `{"reason","evidence_urls":[...]}` | `200` `{"order":{...},"return_request_id"}` |
 | `GET /api/v1/seller/orders` | `seller` | Query: `status`, `page`, `page_size` | `200` `{"items":[...],"page","page_size","total"}` |
+| `GET /api/v1/seller/orders/{id}` | `seller` (shop owner) | — | `200` `{"order":{...}}` (`403` for another shop's order) |
 | `POST /api/v1/seller/orders/{id}/confirm` | `seller` (shop owner) | — | `200` `{"order":{...}}` |
 | `POST /api/v1/seller/orders/{id}/ship` | `seller` (shop owner) | `{"carrier_code","service_code"}` | `200` `{"order":{...},"tracking_code","label_url"}` |
 | `GET /api/v1/admin/orders` | `admin`, `super_admin` | Query: `buyer_id`, `shop_id`, `status`, `page`, `page_size` | `200` `{"items":[...],"page","page_size","total"}` |

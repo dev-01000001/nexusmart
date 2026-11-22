@@ -2,46 +2,24 @@
 
 import React, { Suspense, useMemo, useState } from "react";
 import Link from "next/link";
-import {
-  DEMO_USER,
-  ORDER_STATUS_META,
-  PAYMENT_METHOD_LABELS,
-  PAYMENT_STATUS_META,
-  PRODUCTS,
-} from "@/data";
+import { ORDER_STATUS_META, PAYMENT_METHOD_LABELS, PAYMENT_STATUS_META, PRODUCTS } from "@/data";
 import { MEDIA_BANNERS } from "@/data/media";
-import type { StatusTone } from "@/data";
+import type { Order, StatusTone } from "@/data";
 import { formatDateTimeVi, formatVnd } from "@/lib/format";
-import { useStore } from "@/context/StoreContext";
+import {
+  GUEST_LOOKUP_DEFAULT_PHONE,
+  GUEST_LOOKUP_SAMPLES,
+  cancelGuestSampleOrder,
+  createInitialGuestLookupOrders,
+  lookupGuestSampleOrder,
+  requestEditGuestSampleAddress,
+} from "@/mock/guestOrderLookup";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconChat, StateView } from "@/components";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
-import { RetryPaymentBox } from "@/features/commerce/RetryPaymentBox";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./OrderLookupView.module.css";
-
-const SAMPLE_DEMOS = [
-  {
-    code: "NM-261120-109",
-    phone: DEMO_USER.phone,
-    hint: "Chờ thanh toán · Thử thanh toán lại",
-  },
-  {
-    code: "NM-261120-104",
-    phone: DEMO_USER.phone,
-    hint: "Chờ xác nhận · Có thể hủy & xuất VAT",
-  },
-  {
-    code: "NM-261117-082",
-    phone: DEMO_USER.phone,
-    hint: "Đang giao hàng · Vận đơn SPX",
-  },
-  {
-    code: "NM-261112-061",
-    phone: DEMO_USER.phone,
-    hint: "Đã giao · Đổi trả 45 ngày",
-  },
-];
 
 function toneClass(tone: StatusTone): string {
   if (tone === "pos") return shared.tonePos;
@@ -52,13 +30,14 @@ function toneClass(tone: StatusTone): string {
 
 function OrderLookupContent() {
   const viewState = usePageStateParam();
-  const { lookupOrder, cancelOrder, requestEditOrderAddress, openChat } = useStore();
+  const { openChat, showToast } = useMockStore();
 
+  const [sampleOrders, setSampleOrders] = useState<Order[]>(() => createInitialGuestLookupOrders());
   const [orderCode, setOrderCode] = useState("NM-261120-109");
-  const [phone, setPhone] = useState(DEMO_USER.phone);
+  const [phone, setPhone] = useState(GUEST_LOOKUP_DEFAULT_PHONE);
   const [searchedKey, setSearchedKey] = useState<{ code: string; phone: string } | null>({
     code: "NM-261120-109",
-    phone: DEMO_USER.phone,
+    phone: GUEST_LOOKUP_DEFAULT_PHONE,
   });
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -68,8 +47,8 @@ function OrderLookupContent() {
 
   const foundOrder = useMemo(() => {
     if (!searchedKey) return undefined;
-    return lookupOrder(searchedKey.code, searchedKey.phone);
-  }, [lookupOrder, searchedKey]);
+    return lookupGuestSampleOrder(sampleOrders, searchedKey.code, searchedKey.phone);
+  }, [sampleOrders, searchedKey]);
 
   const suggestedProducts = useMemo(() => PRODUCTS.slice(2, 6), []);
 
@@ -100,6 +79,17 @@ function OrderLookupContent() {
     setSearchedKey({ code, phone: samplePhone });
   };
 
+  const handleCancelSample = (targetOrderId: string) => {
+    setSampleOrders((prev) =>
+      cancelGuestSampleOrder(
+        prev,
+        targetOrderId,
+        "Người mua tự hủy trên trang tra cứu trước khi đóng gói."
+      )
+    );
+    showToast("Đã hủy đơn hàng trước khi đóng gói.");
+  };
+
   const handleEditAddress = (e: React.FormEvent) => {
     e.preventDefault();
     if (!foundOrder) return;
@@ -108,7 +98,10 @@ function OrderLookupContent() {
       return;
     }
     setEditError(null);
-    requestEditOrderAddress(foundOrder.id, newAddress, editReason);
+    setSampleOrders((prev) =>
+      requestEditGuestSampleAddress(prev, foundOrder.id, newAddress, editReason)
+    );
+    showToast("Đã ghi nhận yêu cầu đổi địa chỉ giao hàng.");
     setNewAddress("");
   };
 
@@ -265,7 +258,7 @@ function OrderLookupContent() {
               <div className={styles.sampleWrap}>
                 <p className={shared.fieldLabel}>Chọn nhanh một đơn gần đây</p>
                 <div className={styles.sampleList}>
-                  {SAMPLE_DEMOS.map((sample, idx) => {
+                  {GUEST_LOOKUP_SAMPLES.map((sample, idx) => {
                     const isActive = searchedKey?.code.toUpperCase() === sample.code.toUpperCase();
                     return (
                       <button
@@ -318,7 +311,7 @@ function OrderLookupContent() {
                 title="Không tìm thấy đơn hàng khớp mã và số điện thoại"
                 message="Kiểm tra lại mã đơn gửi trong email xác nhận hoặc chọn nhanh một đơn bên trái."
                 actionLabel="Xem đơn NM-261120-109"
-                onAction={() => handleSelectSample("NM-261120-109", DEMO_USER.phone)}
+                onAction={() => handleSelectSample("NM-261120-109", GUEST_LOOKUP_DEFAULT_PHONE)}
               />
             ) : (
               <div className={styles.resultCard}>
@@ -352,8 +345,39 @@ function OrderLookupContent() {
 
                 <div className={styles.sheetBody}>
                   {needsRetry && (
-                    <div data-rise="" style={{ "--i": 4 } as React.CSSProperties}>
-                      <RetryPaymentBox order={foundOrder} />
+                    <div
+                      className={shared.retryBox}
+                      role="region"
+                      aria-label={`Thông tin chờ thanh toán đơn ${foundOrder.orderCode}`}
+                      data-rise=""
+                      style={{ "--i": 4 } as React.CSSProperties}
+                    >
+                      <div className={shared.retryHead}>
+                        <p className={shared.retryTitle}>
+                          Đơn <span className="num">{foundOrder.orderCode}</span> đang chờ hoàn tất
+                          thanh toán
+                        </p>
+                        <span className={`${shared.statusTag} ${shared.toneWarn} num`}>
+                          Cần thanh toán: {formatVnd(foundOrder.total)}
+                        </span>
+                      </div>
+                      <p className={shared.retryText}>
+                        Giao dịch chuyển khoản trước đó chưa hoàn tất. Các sản phẩm đúng màu và size
+                        vẫn đang được giữ chỗ
+                        {foundOrder.paymentDueAt
+                          ? ` đến ${formatDateTimeVi(foundOrder.paymentDueAt)}`
+                          : ""}
+                        . Đăng nhập vào tài khoản mua hàng để mở lại mã VietQR và hoàn tất thanh
+                        toán an toàn.
+                      </p>
+                      <div className={shared.formActions}>
+                        <Button variant="primary" size="md" href="/don-hang">
+                          Đăng nhập để thanh toán lại
+                        </Button>
+                        <Button variant="secondary" size="md" href="/tro-giup">
+                          Liên hệ hỗ trợ
+                        </Button>
+                      </div>
                     </div>
                   )}
 
@@ -470,12 +494,7 @@ function OrderLookupContent() {
                         <Button
                           variant="danger"
                           size="sm"
-                          onClick={() =>
-                            cancelOrder(
-                              foundOrder.id,
-                              "Người mua tự hủy trên trang tra cứu trước khi đóng gói."
-                            )
-                          }
+                          onClick={() => handleCancelSample(foundOrder.id)}
                         >
                           Hủy đơn {foundOrder.orderCode}
                         </Button>
@@ -553,8 +572,8 @@ function OrderLookupContent() {
                           <IconChat size={14} />
                           <span>Nhắn tin cho xưởng</span>
                         </Button>
-                        <Button variant="secondary" size="sm" href={`/don-hang/${foundOrder.id}`}>
-                          Xem chi tiết đầy đủ
+                        <Button variant="secondary" size="sm" href="/don-hang">
+                          Đơn hàng của tôi
                         </Button>
                       </div>
                     </form>

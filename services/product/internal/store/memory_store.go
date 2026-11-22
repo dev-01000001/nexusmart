@@ -200,6 +200,17 @@ func (m *MemoryStore) GetProductByID(_ context.Context, id string) (Product, err
 	return cloneProduct(p), nil
 }
 
+func (m *MemoryStore) GetProductBySlug(_ context.Context, slug string) (Product, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, p := range m.products {
+		if p.DeletedAt == nil && p.Slug != "" && p.Slug == slug {
+			return cloneProduct(p), nil
+		}
+	}
+	return Product{}, ErrNotFound
+}
+
 func (m *MemoryStore) UpdateProduct(ctx context.Context, p Product) (Product, error) {
 	var out Product
 	err := m.WithTx(ctx, func(q Queries) error {
@@ -575,6 +586,21 @@ func (t *memTx) commit() error {
 		}
 	}
 
+	// 1b. Validate active product slug uniqueness
+	for id, prod := range t.stagedProds {
+		if prod.DeletedAt != nil || prod.Slug == "" {
+			continue
+		}
+		for existingID, existing := range t.store.products {
+			if existingID != id && existing.DeletedAt == nil && existing.Slug == prod.Slug {
+				if staged, hasStaged := t.stagedProds[existingID]; hasStaged && (staged.DeletedAt != nil || staged.Slug != prod.Slug) {
+					continue
+				}
+				return ErrAlreadyExists
+			}
+		}
+	}
+
 	// 2. Validate new stock reservations unique (order_id, sku_id)
 	for _, r := range t.newRes {
 		for _, existing := range t.store.reservations {
@@ -808,6 +834,28 @@ func (t *memTx) GetProductByID(_ context.Context, id string) (Product, error) {
 		return Product{}, ErrNotFound
 	}
 	return cloneProduct(p), nil
+}
+
+func (t *memTx) GetProductBySlug(_ context.Context, slug string) (Product, error) {
+	for _, p := range t.stagedProds {
+		if p.DeletedAt == nil && p.Slug != "" && p.Slug == slug {
+			return cloneProduct(p), nil
+		}
+	}
+	t.store.mu.Lock()
+	defer t.store.mu.Unlock()
+	for id, p := range t.store.products {
+		if staged, ok := t.stagedProds[id]; ok {
+			if staged.DeletedAt == nil && staged.Slug != "" && staged.Slug == slug {
+				return cloneProduct(staged), nil
+			}
+			continue
+		}
+		if p.DeletedAt == nil && p.Slug != "" && p.Slug == slug {
+			return cloneProduct(p), nil
+		}
+	}
+	return Product{}, ErrNotFound
 }
 
 func (t *memTx) UpdateProduct(ctx context.Context, p Product) (Product, error) {

@@ -1,29 +1,27 @@
 "use client";
 
-import React, { Suspense, useMemo, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import {
-  DEMO_USER,
-  FLASH_SALE_RULES,
-  GIFT_ORDER_THRESHOLD,
-  PLATFORM_FREESHIP_THRESHOLD,
-  PRODUCTS,
-  VOUCHERS,
-  WALLET_PAYMENT_METHOD,
-  getProductById,
-  getShopById,
-  getShopVouchers,
-  validateVoucher,
-} from "@/data";
-import type { PaymentMethod } from "@/data";
-import { PROVINCES, getProvinceByCode } from "@/lib/provinces";
-import { formatInt, formatSignedVnd, formatVnd } from "@/lib/format";
-import { useStore } from "@/context/StoreContext";
+import type {
+  GatewayAddress,
+  GatewayCalculateFeeResponse,
+  GatewayCoinBalance,
+  GatewayDiscountBreakdown,
+  GatewayPreviewDiscountsResponse,
+  GatewayProduct,
+  GatewayPublicShop,
+  GatewayVoucher,
+  GatewayVouchersResponse,
+  PaginatedResponse,
+} from "@/lib/gateway-types";
+import { ApiError, api, getErrorMessage } from "@/lib/api";
+import { formatInt, formatSignedVnd, formatVnd, formatVoucherBenefit } from "@/lib/format";
+import { useSession } from "@/context/SessionContext";
+import { useCart } from "@/context/CartContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import {
   Button,
   IconChat,
-  IconGift,
   IconMinus,
   IconPlus,
   IconTag,
@@ -32,251 +30,497 @@ import {
   Price,
   StateView,
 } from "@/components";
-import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
+import { formatVoucherCondition, translateVoucherReason } from "@/features/checkout/messages";
+import { CheckoutSuggestionStrip } from "@/features/checkout/CheckoutSuggestionStrip";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./page.module.css";
 
-type QuickPayChoice = "vietqr" | "cod" | "nexuspay" | "linked_wallet";
-
-const QUICK_PAY_META: Record<QuickPayChoice, { shortLabel: string; method: PaymentMethod }> = {
-  vietqr: { shortLabel: "VietQR", method: "vietqr" },
-  cod: { shortLabel: "COD đồng kiểm", method: "cod" },
-  nexuspay: { shortLabel: "Ví NexusPay", method: WALLET_PAYMENT_METHOD },
-  linked_wallet: { shortLabel: "Ví liên kết", method: WALLET_PAYMENT_METHOD },
-};
-
 function CartPageContent() {
-  const router = useRouter();
   const viewState = usePageStateParam();
+  const { isAuthenticated, loading: sessionLoading } = useSession();
   const {
     cartItems,
-    cartSummary,
+    shopGroups,
+    selectedShopGroups,
+    selectedCount,
+    selectedSubtotalVnd,
+    cartLoading,
+    cartInitialized,
+    cartError,
+    clampedSkuNotices,
+    refreshCart,
+    updateCartQuantity,
+    removeFromCart,
+    clearCart,
+    toggleCartItemSelected,
+    toggleShopSelected,
+    toggleSelectAllCart,
     selectedShopVouchers,
     platformVoucherCode,
     freeshipVoucherCode,
     useCoins,
-    user,
-    isAuthenticated,
-    loginMock,
-    addresses,
-    selectedAddress,
-    selectAddress,
-    guestCheckout,
-    setGuestCheckout,
-    deliveryMethod,
-    setDeliveryMethod,
-    membership,
-    membershipTier,
-    applyGiftCardCode,
-    updateCartQuantity,
-    removeFromCart,
-    toggleCartItemSelected,
-    toggleShopSelected,
-    toggleSelectAllCart,
     setShopVoucher,
     setPlatformVoucher,
     setFreeshipVoucher,
     setUseCoins,
-    placeOrder,
-    clearCart,
-    openChat,
-    showToast,
-  } = useStore();
+  } = useCart();
+  const { openChat, showToast } = useMockStore();
 
+  const [busySkuIds, setBusySkuIds] = useState<Record<string, boolean>>({});
   const [confirmClear, setConfirmClear] = useState(false);
+  const [clearingCart, setClearingCart] = useState(false);
+
+  // Public metadata for links (product slug & shop slug) + real suggested products
+  const [shopMetaById, setShopMetaById] = useState<Record<string, GatewayPublicShop>>({});
+  const [productSlugById, setProductSlugById] = useState<Record<string, string>>({});
+  const [catalogProducts, setCatalogProducts] = useState<GatewayProduct[]>([]);
+
+  // Default address & best-effort shipping estimate for freeship preview
+  const [defaultAddress, setDefaultAddress] = useState<GatewayAddress | null>(null);
+  const [shippingFeeByShop, setShippingFeeByShop] = useState<Record<string, number>>({});
+
+  // Real vouchers, coins & preview from PromotionService
+  const [shopVouchersByShop, setShopVouchersByShop] = useState<Record<string, GatewayVoucher[]>>(
+    {}
+  );
+  const [platformVouchers, setPlatformVouchers] = useState<GatewayVoucher[]>([]);
+  const [freeshipVouchers, setFreeshipVouchers] = useState<GatewayVoucher[]>([]);
+  const [coinBalance, setCoinBalance] = useState<number>(0);
+
+  const [preview, setPreview] = useState<GatewayDiscountBreakdown | null>(null);
+  const [previewLoading, setPreviewLoading] = useState<boolean>(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
   const [manualCode, setManualCode] = useState("");
+  const [applyingCode, setApplyingCode] = useState(false);
   const [codeFeedback, setCodeFeedback] = useState<{ ok: boolean; message: string } | null>(null);
-  const [quickCheckoutOpen, setQuickCheckoutOpen] = useState(false);
-  const [quickPayChoice, setQuickPayChoice] = useState<QuickPayChoice>("vietqr");
-  const [quickError, setQuickError] = useState<string | null>(null);
+
+  const previewReqSeq = useRef(0);
 
   useRevealOnScroll(
-    `${viewState ?? "live"}-${cartItems.length}-${quickCheckoutOpen ? "quick" : "std"}`
+    `${viewState ?? "live"}-${cartItems.length}-${shopGroups.length}-${isAuthenticated}`
   );
 
-  const platformVouchers = useMemo(() => VOUCHERS.filter((v) => v.scope === "platform"), []);
-  const freeshipVouchers = useMemo(() => VOUCHERS.filter((v) => v.scope === "freeship"), []);
+  // Load shop & product slugs once for storefront links (best-effort)
+  useEffect(() => {
+    let active = true;
+    const loadMeta = async () => {
+      const [shopsRes, productsRes] = await Promise.allSettled([
+        api<PaginatedResponse<GatewayPublicShop>>("shops?page_size=50"),
+        api<PaginatedResponse<GatewayProduct>>("products?page_size=100"),
+      ]);
+      if (!active) return;
+      if (shopsRes.status === "fulfilled" && Array.isArray(shopsRes.value?.items)) {
+        const map: Record<string, GatewayPublicShop> = {};
+        for (const s of shopsRes.value.items) {
+          map[s.id] = s;
+        }
+        setShopMetaById(map);
+      }
+      if (productsRes.status === "fulfilled" && Array.isArray(productsRes.value?.items)) {
+        const map: Record<string, string> = {};
+        for (const p of productsRes.value.items) {
+          if (p.slug) map[p.id] = p.slug;
+        }
+        setProductSlugById(map);
+        setCatalogProducts(productsRes.value.items);
+      }
+    };
+    void loadMeta();
+    return () => {
+      active = false;
+    };
+  }, []);
 
-  const addonProducts = useMemo(() => {
-    const inCart = new Set(cartItems.map((c) => c.productId));
-    const filtered = PRODUCTS.filter((p) => !inCart.has(p.id));
-    return (filtered.length >= 4 ? filtered : PRODUCTS).slice(0, 4);
-  }, [cartItems]);
+  // Load real coin balance & default address when authenticated
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setCoinBalance(0);
+      setDefaultAddress(null);
+      return;
+    }
+    let active = true;
+    const loadAccountPromoData = async () => {
+      const [coinsRes, addrRes] = await Promise.allSettled([
+        api<GatewayCoinBalance>("coins/balance"),
+        api<{ addresses: GatewayAddress[] }>("users/me/addresses"),
+      ]);
+      if (!active) return;
+      if (coinsRes.status === "fulfilled" && typeof coinsRes.value?.balance === "number") {
+        setCoinBalance(Math.max(0, Math.trunc(coinsRes.value.balance)));
+      }
+      if (addrRes.status === "fulfilled" && Array.isArray(addrRes.value?.addresses)) {
+        const list = addrRes.value.addresses;
+        const preferred = list.find((a) => a.is_default) ?? list[0] ?? null;
+        setDefaultAddress(preferred);
+      }
+    };
+    void loadAccountPromoData();
+    return () => {
+      active = false;
+    };
+  }, [isAuthenticated]);
 
-  const allSelected = cartItems.length > 0 && cartItems.every((i) => i.selected);
-  const tierDiscountTotal = cartSummary.tierDiscountTotal ?? 0;
-  const giftCardDiscount = cartSummary.giftCardDiscount ?? 0;
-  const afterShopAndTier = Math.max(
-    0,
-    cartSummary.subtotal - tierDiscountTotal - cartSummary.shopVoucherTotal
-  );
-  const hasOutletSelected = useMemo(
+  // Estimate shipping per selected shop using default address so freeship preview is accurate
+  const selectedShopShippingKey = useMemo(
     () =>
-      cartItems.some((it) => {
-        if (!it.selected) return false;
-        const p = getProductById(it.productId);
-        return Boolean(p?.badges?.includes("outlet"));
-      }),
-    [cartItems]
+      selectedShopGroups
+        .map((g) => `${g.shopId}:${g.selectedSubtotalVnd}:${g.selectedWeightGrams}`)
+        .join("|"),
+    [selectedShopGroups]
   );
 
-  const flashSaleQty = useMemo(
-    () => cartItems.filter((it) => it.isFlashSaleItem).reduce((s, it) => s + it.quantity, 0),
-    [cartItems]
+  useEffect(() => {
+    if (!isAuthenticated || !defaultAddress || selectedShopGroups.length === 0) {
+      setShippingFeeByShop({});
+      return;
+    }
+    let active = true;
+    const calcFees = async () => {
+      const results = await Promise.allSettled(
+        selectedShopGroups.map(async (g) => {
+          const res = await api<GatewayCalculateFeeResponse>("shipping/calculate-fee", {
+            method: "POST",
+            json: {
+              shop_id: g.shopId,
+              from_province_code: "",
+              from_ward_code: "",
+              to_province_code: defaultAddress.province_code,
+              to_ward_code: defaultAddress.ward_code,
+              weight_grams: Math.max(100, g.selectedWeightGrams),
+              cod_amount_vnd: 0,
+            },
+          });
+          const quotes = res?.quotes ?? [];
+          if (quotes.length === 0) return { shopId: g.shopId, feeVnd: 0 };
+          const cheapest = quotes.reduce(
+            (min, q) => (q.fee_vnd < min.fee_vnd ? q : min),
+            quotes[0]
+          );
+          return { shopId: g.shopId, feeVnd: cheapest.fee_vnd };
+        })
+      );
+      if (!active) return;
+      const next: Record<string, number> = {};
+      for (const r of results) {
+        if (r.status === "fulfilled") {
+          next[r.value.shopId] = r.value.feeVnd;
+        }
+      }
+      setShippingFeeByShop(next);
+    };
+    void calcFees();
+    return () => {
+      active = false;
+    };
+  }, [isAuthenticated, defaultAddress, selectedShopShippingKey, selectedShopGroups]);
+
+  // Load real vouchers from GET /vouchers (by scope, shop_id, order_amount_vnd)
+  const voucherQueryKey = useMemo(
+    () =>
+      `${selectedSubtotalVnd}|${shopGroups
+        .map((g) => `${g.shopId}:${g.selectedSubtotalVnd}`)
+        .join(",")}`,
+    [selectedSubtotalVnd, shopGroups]
   );
-  const shockDealQty = useMemo(
-    () => cartItems.filter((it) => it.isShockDeal).reduce((s, it) => s + it.quantity, 0),
-    [cartItems]
-  );
 
-  const effectiveProvinceCode = guestCheckout.enabled
-    ? guestCheckout.provinceCode || "HCM"
-    : (selectedAddress?.provinceCode ?? "HCM");
-  const provinceInfo = getProvinceByCode(effectiveProvinceCode) ?? PROVINCES[0];
+  useEffect(() => {
+    if (!isAuthenticated || shopGroups.length === 0) {
+      setPlatformVouchers([]);
+      setFreeshipVouchers([]);
+      setShopVouchersByShop({});
+      return;
+    }
+    let active = true;
+    const timer = window.setTimeout(() => {
+      const loadVouchers = async () => {
+        const orderAmountQuery =
+          selectedSubtotalVnd > 0 ? `&order_amount_vnd=${selectedSubtotalVnd}` : "";
+        const [platformRes, freeshipRes, ...shopResults] = await Promise.allSettled([
+          api<GatewayVouchersResponse>(`vouchers?scope=PLATFORM${orderAmountQuery}`),
+          api<GatewayVouchersResponse>(`vouchers?scope=FREESHIP${orderAmountQuery}`),
+          ...shopGroups.map((g) => {
+            const shopAmount =
+              g.selectedSubtotalVnd > 0 ? `&order_amount_vnd=${g.selectedSubtotalVnd}` : "";
+            return api<GatewayVouchersResponse>(
+              `vouchers?scope=SHOP&shop_id=${encodeURIComponent(g.shopId)}${shopAmount}`
+            ).then((res) => ({ shopId: g.shopId, vouchers: res?.vouchers ?? [] }));
+          }),
+        ]);
+        if (!active) return;
+        if (platformRes.status === "fulfilled") {
+          setPlatformVouchers(platformRes.value?.vouchers ?? []);
+        }
+        if (freeshipRes.status === "fulfilled") {
+          setFreeshipVouchers(freeshipRes.value?.vouchers ?? []);
+        }
+        const nextByShop: Record<string, GatewayVoucher[]> = {};
+        for (const r of shopResults) {
+          if (r.status === "fulfilled") {
+            nextByShop[r.value.shopId] = r.value.vouchers;
+          }
+        }
+        setShopVouchersByShop(nextByShop);
+      };
+      void loadVouchers();
+    }, 180);
 
-  const platformShipThreshold =
-    cartSummary.platformFreeShipThreshold ?? PLATFORM_FREESHIP_THRESHOLD;
-  const platformShipRemaining =
-    cartSummary.platformFreeShipRemaining ??
-    Math.max(0, platformShipThreshold - cartSummary.subtotal);
-  const platformShipPct = Math.min(
-    100,
-    Math.round((cartSummary.subtotal / Math.max(1, platformShipThreshold)) * 100)
-  );
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [isAuthenticated, voucherQueryKey, shopGroups, selectedSubtotalVnd]);
 
-  const giftRemaining = Math.max(0, GIFT_ORDER_THRESHOLD - cartSummary.subtotal);
-  const freeGifts = cartSummary.freeGifts ?? [];
-  const selectedQuickPay = QUICK_PAY_META[quickPayChoice];
+  const buildShopDiscountInputs = useCallback(() => {
+    return selectedShopGroups.map((g) => ({
+      shop_id: g.shopId,
+      subtotal_vnd: g.selectedSubtotalVnd,
+      shipping_fee_vnd: shippingFeeByShop[g.shopId] ?? 0,
+      items: g.items.map((it) => ({
+        sku_id: it.skuId,
+        quantity: it.quantity,
+        unit_price_vnd: it.priceVnd,
+      })),
+    }));
+  }, [selectedShopGroups, shippingFeeByShop]);
 
-  const handleApplyManualCode = (e: React.FormEvent) => {
+  const activeShopVoucherMap = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const g of selectedShopGroups) {
+      const code = selectedShopVouchers[g.shopId];
+      if (code) out[g.shopId] = code;
+    }
+    return out;
+  }, [selectedShopGroups, selectedShopVouchers]);
+
+  // Debounced POST /promotions/preview whenever cart selection, vouchers, shipping, or coins change
+  useEffect(() => {
+    if (!isAuthenticated || selectedShopGroups.length === 0) {
+      setPreview(null);
+      setPreviewError(null);
+      setPreviewLoading(false);
+      return;
+    }
+
+    const seq = ++previewReqSeq.current;
+    setPreviewLoading(true);
+    setPreviewError(null);
+
+    const timer = window.setTimeout(() => {
+      const runPreview = async () => {
+        try {
+          const res = await api<GatewayPreviewDiscountsResponse>("promotions/preview", {
+            method: "POST",
+            json: {
+              shop_items: buildShopDiscountInputs(),
+              shop_voucher_ids: activeShopVoucherMap,
+              platform_voucher_id: platformVoucherCode ?? "",
+              freeship_voucher_id: freeshipVoucherCode ?? "",
+              coins_to_use: useCoins ? coinBalance : 0,
+            },
+          });
+          if (previewReqSeq.current !== seq) return;
+          setPreview(res?.breakdown ?? null);
+          setPreviewError(null);
+        } catch (err) {
+          if (previewReqSeq.current !== seq) return;
+          if (err instanceof ApiError && err.status === 401) {
+            setPreview(null);
+          } else {
+            setPreviewError(
+              getErrorMessage(err, "Chưa thể tính trước ưu đãi lúc này. Vui lòng thử lại.")
+            );
+          }
+        } finally {
+          if (previewReqSeq.current === seq) {
+            setPreviewLoading(false);
+          }
+        }
+      };
+      void runPreview();
+    }, 240);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    isAuthenticated,
+    selectedShopGroups,
+    buildShopDiscountInputs,
+    activeShopVoucherMap,
+    platformVoucherCode,
+    freeshipVoucherCode,
+    useCoins,
+    coinBalance,
+  ]);
+
+  const handleQtyChange = async (skuId: string, nextQty: number) => {
+    if (busySkuIds[skuId]) return;
+    setBusySkuIds((prev) => ({ ...prev, [skuId]: true }));
+    await updateCartQuantity(skuId, nextQty);
+    setBusySkuIds((prev) => {
+      const next = { ...prev };
+      delete next[skuId];
+      return next;
+    });
+  };
+
+  const handleRemove = async (skuId: string) => {
+    if (busySkuIds[skuId]) return;
+    setBusySkuIds((prev) => ({ ...prev, [skuId]: true }));
+    await removeFromCart(skuId);
+    setBusySkuIds((prev) => {
+      const next = { ...prev };
+      delete next[skuId];
+      return next;
+    });
+  };
+
+  const handleApplyManualCode = async (e: React.FormEvent) => {
     e.preventDefault();
     const clean = manualCode.trim().toUpperCase();
     if (!clean) {
-      setCodeFeedback({ ok: false, message: "Vui lòng nhập mã voucher hoặc mã thẻ quà tặng." });
+      setCodeFeedback({ ok: false, message: "Vui lòng nhập mã ưu đãi cần áp dụng." });
       return;
     }
-
-    const matchedGift = membership.giftCards.find((gc) => gc.code.toUpperCase() === clean);
-    if (matchedGift || clean.startsWith("NEXUS-")) {
-      const res = applyGiftCardCode(clean);
-      setCodeFeedback(res);
-      if (res.ok) setManualCode("");
-      return;
-    }
-
-    const voucherObj = VOUCHERS.find((v) => v.code.toUpperCase() === clean);
-    const matchingShopGroup = voucherObj?.shopId
-      ? cartSummary.groups.find((g) => g.shopId === voucherObj.shopId)
-      : undefined;
-
-    const eligibleAmount =
-      voucherObj?.scope === "shop"
-        ? Math.max(
-            0,
-            (matchingShopGroup?.selectedSubtotal ?? 0) - (matchingShopGroup?.tierDiscount ?? 0)
-          )
-        : voucherObj?.scope === "freeship"
-          ? cartSummary.subtotal
-          : afterShopAndTier;
-
-    const check = validateVoucher(clean, {
-      eligibleAmount,
-      shopId:
-        voucherObj?.scope === "shop"
-          ? (matchingShopGroup?.shopId ?? cartSummary.groups[0]?.shopId)
-          : undefined,
-      hasOutletItems: hasOutletSelected,
-      eduVerified: membership.eduVerified,
-      memberTier: membershipTier.id,
-      capAmount: voucherObj?.scope === "freeship" ? cartSummary.shippingFee : undefined,
-    });
-
-    if (!check.valid || !check.voucher) {
+    if (selectedShopGroups.length === 0) {
       setCodeFeedback({
         ok: false,
-        message: check.reason ?? `Mã ${clean} chưa đủ điều kiện áp dụng.`,
+        message: "Hãy chọn ít nhất 1 sản phẩm trước khi áp dụng mã ưu đãi.",
       });
       return;
     }
 
-    if (check.voucher.scope === "shop" && check.voucher.shopId) {
-      if (!matchingShopGroup || matchingShopGroup.selectedSubtotal <= 0) {
+    const allKnownVouchers: GatewayVoucher[] = [
+      ...platformVouchers,
+      ...freeshipVouchers,
+      ...Object.values(shopVouchersByShop).flat(),
+    ];
+    const matched = allKnownVouchers.find((v) => v.code.toUpperCase() === clean);
+
+    if (matched) {
+      const scope = matched.scope.toUpperCase();
+      if (scope === "SHOP") {
+        const shopGroup = selectedShopGroups.find((g) => g.shopId === matched.shop_id);
+        if (!shopGroup) {
+          setCodeFeedback({
+            ok: false,
+            message: "Giỏ hàng chưa có sản phẩm đang chọn thuộc gian hàng áp dụng mã này.",
+          });
+          return;
+        }
+        if (!matched.eligible) {
+          setCodeFeedback({
+            ok: false,
+            message:
+              translateVoucherReason(matched.ineligible_reason) ||
+              `Mã ${matched.code} chưa đủ điều kiện áp dụng.`,
+          });
+          return;
+        }
+        setShopVoucher(matched.shop_id, matched.code);
+        setCodeFeedback({ ok: true, message: `Đã chọn mã gian hàng ${matched.code}.` });
+        setManualCode("");
+        return;
+      }
+
+      if (!matched.eligible) {
         setCodeFeedback({
           ok: false,
-          message: `Giỏ hàng chưa có sản phẩm đang chọn thuộc gian hàng áp dụng mã ${check.voucher.code}.`,
+          message:
+            translateVoucherReason(matched.ineligible_reason) ||
+            `Mã ${matched.code} chưa đủ điều kiện áp dụng.`,
         });
         return;
       }
-      setShopVoucher(check.voucher.shopId, check.voucher.code);
-    } else if (check.voucher.scope === "freeship") {
-      setFreeshipVoucher(check.voucher.code);
-    } else {
-      setPlatformVoucher(check.voucher.code);
-    }
 
-    setCodeFeedback({
-      ok: true,
-      message: `Đã áp dụng mã ${check.voucher.code} (giảm ${formatVnd(check.discount)}).`,
-    });
-    setManualCode("");
-  };
-
-  const handleQuickOrderSubmit = () => {
-    if (cartSummary.selectedCount <= 0) {
-      setQuickError("Hãy chọn ít nhất 1 sản phẩm trước khi đặt hàng nhanh.");
+      if (scope === "FREESHIP") {
+        setFreeshipVoucher(matched.code);
+        setCodeFeedback({ ok: true, message: `Đã chọn mã vận chuyển ${matched.code}.` });
+      } else {
+        setPlatformVoucher(matched.code);
+        setCodeFeedback({ ok: true, message: `Đã chọn mã toàn sàn ${matched.code}.` });
+      }
+      setManualCode("");
       return;
     }
-    if (guestCheckout.enabled || !isAuthenticated) {
-      const cleanName = guestCheckout.fullName.trim();
-      const cleanPhone = guestCheckout.phone.replace(/\s+/g, "").trim();
-      const cleanStreet = guestCheckout.streetDetail.trim();
-      if (cleanName.length < 2) {
-        setQuickError("Vui lòng nhập họ tên người nhận để hoàn tất đặt hàng.");
-        return;
-      }
-      if (!/^0\d{9,10}$/.test(cleanPhone)) {
-        setQuickError("Số điện thoại cần có 10-11 chữ số, bắt đầu bằng số 0.");
-        return;
-      }
-      if (cleanStreet.length < 5) {
-        setQuickError("Vui lòng nhập địa chỉ số nhà, tên đường cụ thể.");
-        return;
-      }
-      setQuickError(null);
-      const created = placeOrder({
-        paymentMethod: selectedQuickPay.method,
-        deliveryMethod,
-        guestAddress: {
-          recipientName: cleanName,
-          phone: guestCheckout.phone.trim(),
-          email: guestCheckout.email.trim() || undefined,
-          provinceCode: provinceInfo.code,
-          provinceName: provinceInfo.name,
-          wardName: guestCheckout.wardName || provinceInfo.wards[0] || "",
-          streetDetail: cleanStreet,
+
+    // Unknown or expired/exhausted code: verify live via POST /promotions/preview
+    setApplyingCode(true);
+    setCodeFeedback(null);
+    try {
+      const res = await api<GatewayPreviewDiscountsResponse>("promotions/preview", {
+        method: "POST",
+        json: {
+          shop_items: buildShopDiscountInputs(),
+          shop_voucher_ids: activeShopVoucherMap,
+          platform_voucher_id: clean,
+          freeship_voucher_id: freeshipVoucherCode ?? "",
+          coins_to_use: useCoins ? coinBalance : 0,
         },
       });
-      if (created.length > 0) {
-        router.push(`/don-hang/${created[0].id}`);
+      const bd = res?.breakdown;
+      if (bd && bd.total_platform_voucher_discount_vnd > 0) {
+        setPlatformVoucher(clean);
+        setCodeFeedback({
+          ok: true,
+          message: `Áp dụng thành công mã ${clean} (giảm ${formatVnd(bd.total_platform_voucher_discount_vnd)}).`,
+        });
+        setManualCode("");
+      } else {
+        const warning = bd?.warnings?.[0];
+        setCodeFeedback({
+          ok: false,
+          message: warning
+            ? translateVoucherReason(warning)
+            : `Mã ${clean} không tồn tại hoặc chưa đủ điều kiện áp dụng.`,
+        });
       }
-      return;
-    }
-
-    if (!selectedAddress) {
-      setQuickError("Chưa có địa chỉ nhận hàng mặc định. Hãy chuyển sang trang Thanh toán đầy đủ.");
-      return;
-    }
-    setQuickError(null);
-    const created = placeOrder({
-      addressId: selectedAddress.id,
-      paymentMethod: selectedQuickPay.method,
-      deliveryMethod,
-    });
-    if (created.length > 0) {
-      router.push(`/don-hang/${created[0].id}`);
+    } catch (err) {
+      setCodeFeedback({
+        ok: false,
+        message: getErrorMessage(err, `Không thể kiểm tra mã ${clean} lúc này.`),
+      });
+    } finally {
+      setApplyingCode(false);
     }
   };
+
+  const inStockItems = useMemo(() => cartItems.filter((it) => it.availableStock > 0), [cartItems]);
+  const allSelected = inStockItems.length > 0 && inStockItems.every((i) => i.selected);
+
+  const estimatedShippingTotal = useMemo(
+    () => selectedShopGroups.reduce((sum, g) => sum + (shippingFeeByShop[g.shopId] ?? 0), 0),
+    [selectedShopGroups, shippingFeeByShop]
+  );
+
+  const subtotalDisplay = preview?.total_subtotal_vnd ?? selectedSubtotalVnd;
+  const shopVoucherDisplay = preview?.total_shop_voucher_discount_vnd ?? 0;
+  const platformVoucherDisplay = preview?.total_platform_voucher_discount_vnd ?? 0;
+  const shippingDisplay = preview?.total_shipping_fee_vnd ?? estimatedShippingTotal;
+  const freeshipDisplay = preview?.total_freeship_discount_vnd ?? 0;
+  const coinsDisplay = preview?.total_coins_discount_vnd ?? 0;
+  const totalDiscountDisplay = preview?.total_discount_vnd ?? 0;
+  const grandTotalDisplay =
+    preview?.final_payable_vnd ?? Math.max(0, selectedSubtotalVnd + estimatedShippingTotal);
+
+  const shopNameById = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const [id, shop] of Object.entries(shopMetaById)) {
+      map[id] = shop.name;
+    }
+    return map;
+  }, [shopMetaById]);
+
+  const suggestedProducts = useMemo(() => {
+    const inCartIds = new Set(cartItems.map((it) => it.productId));
+    const fresh = catalogProducts.filter((p) => !inCartIds.has(p.id));
+    return (fresh.length >= 4 ? fresh : catalogProducts).slice(0, 4);
+  }, [catalogProducts, cartItems]);
+
+  const translatedWarnings = useMemo(() => {
+    if (!preview?.warnings?.length) return [];
+    return Array.from(new Set(preview.warnings.map(translateVoucherReason).filter(Boolean)));
+  }, [preview?.warnings]);
 
   const renderHeader = (subtitle: string) => (
     <section className={shared.pageHeader}>
@@ -300,29 +544,27 @@ function CartPageContent() {
     </section>
   );
 
-  if (viewState === "loading") {
+  if (
+    viewState === "loading" ||
+    sessionLoading ||
+    (isAuthenticated && (!cartInitialized || (cartLoading && cartItems.length === 0)))
+  ) {
     return (
       <div className={shared.page}>
-        {renderHeader("Đang cập nhật sản phẩm, ưu đãi mua nhiều và mã giảm giá trong giỏ hàng.")}
-        <section className={shared.section}>
+        {renderHeader("Đang cập nhật sản phẩm, giá bán và tồn kho mới nhất trong giỏ hàng.")}
+        <section className={`${shared.section} ${styles.loadingStage}`}>
           <h2 className={shared.sectionTitle}>Danh sách sản phẩm</h2>
           <StateView
             kind="loading"
-            title="Đang tính lại giá và ưu đãi theo gian hàng..."
+            title="Đang đồng bộ giỏ hàng và ưu đãi theo gian hàng..."
             rows={4}
           />
         </section>
-        <ProductAddonStrip
-          title="Đồ cơ bản bán chạy tại NexusMart"
-          subtitle="Bốn mẫu tiêu chuẩn từ các xưởng dệt Việt Nam"
-          products={addonProducts}
-          showTierHint
-        />
       </div>
     );
   }
 
-  if (viewState === "error") {
+  if (viewState === "error" || cartError) {
     return (
       <div className={shared.page}>
         {renderHeader("Không thể kết nối đến giỏ hàng lúc này. Sản phẩm bạn đã chọn vẫn được giữ.")}
@@ -330,13 +572,43 @@ function CartPageContent() {
           <h2 className={shared.sectionTitle}>Trạng thái giỏ hàng</h2>
           <StateView
             kind="error"
-            title="Chưa thể cập nhật giỏ hàng"
-            message="Kết nối đang tạm gián đoạn. Vui lòng thử tải lại trang."
+            title="Chưa thể tải giỏ hàng"
+            message={cartError ?? "Kết nối đang tạm gián đoạn. Vui lòng thử tải lại trang."}
             actionLabel="Tải lại giỏ hàng"
-            actionHref="/gio-hang"
+            onAction={() => void refreshCart()}
           />
         </section>
-        <ProductAddonStrip title="Gợi ý xem nhanh danh mục cơ bản" products={addonProducts} />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className={shared.page}>
+        {renderHeader(
+          "Đăng nhập tài khoản NexusMart để xem giỏ hàng, giữ giá và áp dụng mã ưu đãi."
+        )}
+        <section
+          className={shared.section}
+          data-rise=""
+          style={{ "--i": 3 } as React.CSSProperties}
+        >
+          <h2 className={shared.sectionTitle}>Giỏ hàng tài khoản</h2>
+          <StateView
+            kind="empty"
+            title="Đăng nhập để sử dụng giỏ hàng"
+            message="Giỏ hàng được đồng bộ trực tiếp theo tài khoản để kiểm tra số lượng còn lại và ưu đãi theo từng gian hàng."
+            actionLabel="Đăng nhập ngay"
+            actionHref="/dang-nhap?next=%2Fgio-hang"
+          />
+        </section>
+        <CheckoutSuggestionStrip
+          title="Đồ cơ bản thường mua kèm"
+          subtitle="Sản phẩm chuẩn chất liệu đang có sẵn từ các xưởng dệt NexusMart."
+          products={suggestedProducts}
+          shopNameById={shopNameById}
+          showQuickAdd
+        />
       </div>
     );
   }
@@ -356,16 +628,17 @@ function CartPageContent() {
           <StateView
             kind="empty"
             title="Giỏ hàng đang trống"
-            message="Khám phá áo thun cotton 220gsm, polo pique, quần short và đồ lót sợi tre từ 4 xưởng dệt Việt Nam."
+            message="Khám phá áo thun cotton 220gsm, polo pique, quần short và đồ lót sợi tre từ các xưởng dệt Việt Nam."
             actionLabel="Khám phá danh mục"
             actionHref="/danh-muc"
           />
         </section>
-        <ProductAddonStrip
-          title="Gợi ý bắt đầu cho tủ đồ cơ bản"
-          subtitle="Thêm nhanh theo size trực tiếp từ thẻ sản phẩm"
-          products={addonProducts}
-          showTierHint
+        <CheckoutSuggestionStrip
+          title="Gợi ý bắt đầu giỏ hàng"
+          subtitle="Thêm nhanh các sản phẩm cơ bản đang có sẵn từ xưởng dệt NexusMart."
+          products={suggestedProducts}
+          shopNameById={shopNameById}
+          showQuickAdd
         />
       </div>
     );
@@ -373,63 +646,12 @@ function CartPageContent() {
 
   return (
     <div className={`${shared.page} ${styles.mobileSpacer}`}>
-      {renderHeader("Kiểm tra sản phẩm, áp mã ưu đãi và chọn cách thanh toán phù hợp.")}
+      {renderHeader("Kiểm tra số lượng, áp mã ưu đãi và chọn sản phẩm cần thanh toán.")}
 
       <section className={shared.section}>
         <div className={styles.cartLayout}>
-          {/* Left column: Freeship accent band, unboxed toolbar, crisp white shop sheets, free gifts */}
+          {/* Left column: Toolbar & real shop groups */}
           <div className={styles.leftCol}>
-            {/* Platform freeship highlight band */}
-            <div
-              className={styles.platformShipBar}
-              data-rise=""
-              style={{ "--i": 2 } as React.CSSProperties}
-            >
-              <div className={shared.progressBlock}>
-                <div className={shared.progressMeta}>
-                  <span>
-                    {cartSummary.platformFreeShipUnlocked ? (
-                      <>
-                        Đã đạt miễn phí vận chuyển toàn sàn{" "}
-                        <strong className="num">{formatVnd(platformShipThreshold)}</strong>
-                      </>
-                    ) : (
-                      <>
-                        Mua thêm <strong className="num">{formatVnd(platformShipRemaining)}</strong>{" "}
-                        để được miễn phí vận chuyển đơn từ{" "}
-                        <span className="num">{formatVnd(platformShipThreshold)}</span>
-                      </>
-                    )}
-                  </span>
-                  <span className="num">
-                    <strong>
-                      {formatVnd(Math.min(cartSummary.subtotal, platformShipThreshold))}
-                    </strong>{" "}
-                    / {formatVnd(platformShipThreshold)}
-                  </span>
-                </div>
-                <div
-                  className={`${shared.progressTrack} ${shared.progressTrackLight}`}
-                  aria-hidden="true"
-                >
-                  <div
-                    className={`${shared.progressFill} ${
-                      cartSummary.platformFreeShipUnlocked ? shared.progressFillDone : ""
-                    }`}
-                    style={{ width: `${platformShipPct}%` }}
-                  />
-                </div>
-              </div>
-              {giftRemaining > 0 && cartSummary.selectedCount > 0 && (
-                <p className={styles.coinMeta}>
-                  Mua thêm <strong className="num">{formatVnd(giftRemaining)}</strong> để nhận tặng
-                  1 đôi Tất Cotton gân trị giá 39.000₫ ở mốc{" "}
-                  <span className="num">{formatVnd(GIFT_ORDER_THRESHOLD)}</span>.
-                </p>
-              )}
-            </div>
-
-            {/* Unboxed select-all & flash-sale quota strip */}
             <div
               className={styles.cartToolbar}
               data-rise=""
@@ -441,10 +663,11 @@ function CartPageContent() {
                     type="checkbox"
                     className={shared.checkbox}
                     checked={allSelected}
+                    disabled={inStockItems.length === 0}
                     onChange={(e) => toggleSelectAllCart(e.target.checked)}
                   />
                   <span>
-                    Chọn tất cả (<strong className="num">{cartItems.length}</strong> sản phẩm)
+                    Chọn tất cả (<strong className="num">{cartItems.length}</strong> mặt hàng)
                   </span>
                 </label>
 
@@ -453,13 +676,18 @@ function CartPageContent() {
                     <Button
                       variant="danger"
                       size="sm"
-                      onClick={() => {
-                        clearCart();
+                      disabled={clearingCart}
+                      onClick={async () => {
+                        setClearingCart(true);
+                        const ok = await clearCart();
+                        setClearingCart(false);
                         setConfirmClear(false);
-                        showToast("Đã xóa toàn bộ sản phẩm trong giỏ hàng.");
+                        if (ok) {
+                          showToast("Đã xóa toàn bộ sản phẩm trong giỏ hàng.");
+                        }
                       }}
                     >
-                      Xác nhận xóa hết
+                      {clearingCart ? "Đang xóa..." : "Xác nhận xóa hết"}
                     </Button>
                     <Button variant="secondary" size="sm" onClick={() => setConfirmClear(false)}>
                       Giữ lại
@@ -475,35 +703,18 @@ function CartPageContent() {
                   </button>
                 )}
               </div>
-
-              {(flashSaleQty > 0 || shockDealQty > 0) && (
-                <p className={styles.promoRuleLine}>
-                  <span>{FLASH_SALE_RULES.note}</span>
-                  <span className="num">
-                    Flash sale: <strong>{flashSaleQty}</strong>/{FLASH_SALE_RULES.maxItemsPerOrder}{" "}
-                    · Deal sốc: <strong>{shockDealQty}</strong>/
-                    {FLASH_SALE_RULES.shockDealMaxPerOrder}
-                  </span>
-                </p>
-              )}
             </div>
 
-            {/* Shop groups: one clean white surface per shop */}
             <div className={styles.shopGroupList}>
-              {cartSummary.groups.map((group, groupIdx) => {
-                const shop = getShopById(group.shopId);
-                const shopVouchers = getShopVouchers(group.shopId);
-                const shopAllSelected = group.items.every((it) => it.selected);
+              {shopGroups.map((group, groupIdx) => {
+                const shopMeta = shopMetaById[group.shopId];
+                const shopName = shopMeta?.name || group.shopName;
+                const shopVouchers = shopVouchersByShop[group.shopId] ?? [];
+                const selectableItems = group.items.filter((it) => it.availableStock > 0);
+                const shopAllSelected =
+                  selectableItems.length > 0 && selectableItems.every((it) => it.selected);
                 const chosenShopCode = selectedShopVouchers[group.shopId] ?? null;
-                const shopShipThreshold =
-                  group.freeShipThreshold ?? shop?.freeShipThreshold ?? 199000;
-                const shopShipRemaining = group.freeShipRemaining ?? 0;
-                const shopShipPct = Math.min(
-                  100,
-                  Math.round((group.selectedSubtotal / Math.max(1, shopShipThreshold)) * 100)
-                );
-                const shopTierDiscount = group.tierDiscount ?? 0;
-                const shopAfterTier = Math.max(0, group.selectedSubtotal - shopTierDiscount);
+                const shopBreakdown = preview?.shops.find((s) => s.shop_id === group.shopId);
 
                 return (
                   <article
@@ -518,18 +729,17 @@ function CartPageContent() {
                           type="checkbox"
                           className={shared.checkbox}
                           checked={shopAllSelected}
+                          disabled={selectableItems.length === 0}
                           onChange={(e) => toggleShopSelected(group.shopId, e.target.checked)}
-                          aria-label={`Chọn toàn bộ sản phẩm của ${shop?.name ?? "gian hàng"}`}
+                          aria-label={`Chọn toàn bộ sản phẩm của ${shopName}`}
                         />
-                        <span
-                          className={styles.shopDot}
-                          style={{ background: shop?.accentDot ?? "var(--accent)" }}
-                          aria-hidden="true"
-                        />
-                        <Link href={`/gian-hang/${shop?.slug ?? ""}`} className={styles.shopLink}>
-                          {shop?.name ?? "Gian hàng NexusMart"}
-                        </Link>
-                        {shop?.city && <span className={styles.shopCity}>{shop.city}</span>}
+                        {shopMeta?.slug ? (
+                          <Link href={`/gian-hang/${shopMeta.slug}`} className={styles.shopLink}>
+                            {shopName}
+                          </Link>
+                        ) : (
+                          <span className={styles.shopLink}>{shopName}</span>
+                        )}
                       </div>
 
                       <button
@@ -542,49 +752,18 @@ function CartPageContent() {
                       </button>
                     </div>
 
-                    {/* Per-shop freeship progress bar */}
-                    <div className={styles.shopShipStrip}>
-                      <div className={shared.progressBlock}>
-                        <div className={shared.progressMeta}>
-                          <span>
-                            {group.freeShipUnlocked ? (
-                              <>
-                                Đạt ưu đãi vận chuyển của {shop?.shortName} (
-                                <span className="num">{formatVnd(shopShipThreshold)}</span>)
-                              </>
-                            ) : (
-                              <>
-                                Thêm <strong className="num">{formatVnd(shopShipRemaining)}</strong>{" "}
-                                tại {shop?.shortName} để freeship gian hàng{" "}
-                                <span className="num">{formatVnd(shopShipThreshold)}</span>
-                              </>
-                            )}
-                          </span>
-                          {shopTierDiscount > 0 && (
-                            <span className={`${styles.breakdownDiscount} num`}>
-                              Giảm mua nhiều: {formatSignedVnd(-shopTierDiscount)}
-                            </span>
-                          )}
-                        </div>
-                        <div className={shared.progressTrack} aria-hidden="true">
-                          <div
-                            className={`${shared.progressFill} ${
-                              group.freeShipUnlocked ? shared.progressFillDone : ""
-                            }`}
-                            style={{ width: `${shopShipPct}%` }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-
                     <ul className={styles.itemList}>
                       {group.items.map((item, itemIdx) => {
-                        const lineTotal = item.unitPrice * item.quantity;
-                        const prod = getProductById(item.productId);
-                        const tierInfo = prod?.tierDiscounts;
+                        const lineTotal = item.priceVnd * item.quantity;
+                        const outOfStock = item.availableStock <= 0;
+                        const isBusy = Boolean(busySkuIds[item.skuId]);
+                        const clampedNote = clampedSkuNotices[item.skuId];
+                        const slug = productSlugById[item.productId];
+                        const productHref = slug ? `/san-pham/${slug}` : null;
+
                         return (
                           <li
-                            key={item.skuCode}
+                            key={item.skuId}
                             className={styles.itemRow}
                             data-rise=""
                             style={{ "--i": Math.min(itemIdx + 3, 6) } as React.CSSProperties}
@@ -594,64 +773,84 @@ function CartPageContent() {
                                 type="checkbox"
                                 className={shared.checkbox}
                                 checked={item.selected}
-                                onChange={() => toggleCartItemSelected(item.skuCode)}
+                                disabled={outOfStock}
+                                onChange={() => toggleCartItemSelected(item.skuId)}
                                 aria-label={`Chọn ${item.productName}`}
                               />
                             </div>
 
-                            <Link
-                              href={`/san-pham/${item.productSlug}`}
-                              className={styles.itemThumbLink}
-                            >
-                              <img
-                                src={item.image}
-                                alt={item.productName}
-                                width={896}
-                                height={1200}
-                                className={styles.itemThumb}
-                              />
-                            </Link>
+                            {productHref ? (
+                              <Link href={productHref} className={styles.itemThumbLink}>
+                                <img
+                                  src={item.imageUrl}
+                                  alt={item.productName}
+                                  width={896}
+                                  height={1200}
+                                  className={styles.itemThumb}
+                                />
+                              </Link>
+                            ) : (
+                              <div className={styles.itemThumbLink}>
+                                <img
+                                  src={item.imageUrl}
+                                  alt={item.productName}
+                                  width={896}
+                                  height={1200}
+                                  className={styles.itemThumb}
+                                />
+                              </div>
+                            )}
 
                             <div className={styles.itemInfo}>
-                              <Link
-                                href={`/san-pham/${item.productSlug}`}
-                                className={styles.itemName}
-                              >
-                                {item.productName}
-                              </Link>
-                              <p className={styles.itemVariant}>
-                                Màu: {item.colorName} · Size {item.size}
-                              </p>
+                              {productHref ? (
+                                <Link href={productHref} className={styles.itemName}>
+                                  {item.productName}
+                                </Link>
+                              ) : (
+                                <span className={styles.itemName}>{item.productName}</span>
+                              )}
+
+                              {item.skuName && (
+                                <p className={styles.itemVariant}>Phân loại: {item.skuName}</p>
+                              )}
+
                               <div className={styles.itemTags}>
-                                {item.isFlashSaleItem && (
-                                  <span className={`${shared.statusTag} ${shared.toneWarn}`}>
-                                    Flash sale (≤3/đơn)
-                                  </span>
-                                )}
-                                {item.isShockDeal && (
+                                {outOfStock && (
                                   <span className={`${shared.statusTag} ${shared.toneNeg}`}>
-                                    Deal sốc (1/đơn)
+                                    Hết hàng
                                   </span>
                                 )}
-                                {tierInfo && tierInfo.length > 0 && !item.isShockDeal && (
-                                  <span className={`${shared.statusTag} ${shared.tonePos}`}>
-                                    {tierInfo.map((t) => t.label).join(" · ")}
+                                {item.priceChanged && (
+                                  <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+                                    Giá vừa cập nhật (trước đó {formatVnd(item.addedPriceVnd)})
                                   </span>
                                 )}
-                                {prod?.returnEligible === false && (
-                                  <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
-                                    Không đổi trả (Outlet / niêm phong)
+                                {clampedNote && (
+                                  <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+                                    {clampedNote}
                                   </span>
                                 )}
                               </div>
-                              <Price
-                                amount={item.unitPrice}
-                                originalAmount={item.originalPrice}
-                                size="sm"
-                              />
+
+                              <div className={styles.priceChangedRow}>
+                                <Price amount={item.priceVnd} size="sm" />
+                                {item.priceChanged && item.addedPriceVnd > 0 && (
+                                  <span className={`${styles.oldPriceStrike} num`}>
+                                    {formatVnd(item.addedPriceVnd)}
+                                  </span>
+                                )}
+                              </div>
+
                               <p className={styles.itemStock}>
-                                Còn <span className="num">{item.maxStock}</span> sản phẩm sẵn giao
-                                {item.quantity >= item.maxStock ? " (đã đạt tối đa)" : ""}
+                                {outOfStock ? (
+                                  "Phân loại này tạm hết hàng, vui lòng xóa hoặc chọn phân loại khác."
+                                ) : (
+                                  <>
+                                    Còn <span className="num">{item.availableStock}</span> sản phẩm
+                                    sẵn giao
+                                    {item.quantity >= item.availableStock ? " (đã đạt tối đa)" : ""}
+                                  </>
+                                )}
                               </p>
                             </div>
 
@@ -664,8 +863,9 @@ function CartPageContent() {
                                 <button
                                   type="button"
                                   className={styles.stepBtn}
+                                  disabled={isBusy}
                                   onClick={() =>
-                                    updateCartQuantity(item.skuCode, item.quantity - 1)
+                                    void handleQtyChange(item.skuId, item.quantity - 1)
                                   }
                                   aria-label="Giảm 1 sản phẩm"
                                 >
@@ -675,10 +875,12 @@ function CartPageContent() {
                                 <button
                                   type="button"
                                   className={styles.stepBtn}
-                                  onClick={() =>
-                                    updateCartQuantity(item.skuCode, item.quantity + 1)
+                                  disabled={
+                                    isBusy || outOfStock || item.quantity >= item.availableStock
                                   }
-                                  disabled={item.quantity >= item.maxStock}
+                                  onClick={() =>
+                                    void handleQtyChange(item.skuId, item.quantity + 1)
+                                  }
                                   aria-label="Tăng 1 sản phẩm"
                                 >
                                   <IconPlus size={14} />
@@ -688,10 +890,8 @@ function CartPageContent() {
                               <button
                                 type="button"
                                 className={styles.removeBtn}
-                                onClick={() => {
-                                  removeFromCart(item.skuCode);
-                                  showToast(`Đã bỏ ${item.productName} khỏi giỏ hàng.`);
-                                }}
+                                disabled={isBusy}
+                                onClick={() => void handleRemove(item.skuId)}
                               >
                                 <IconTrash size={14} />
                                 <span>Xóa</span>
@@ -707,47 +907,48 @@ function CartPageContent() {
                         <div className={styles.shopVoucherHead}>
                           <span className={styles.shopVoucherTitle}>
                             <IconTag size={15} />
-                            <span>Voucher của {shop?.shortName}</span>
+                            <span>Ưu đãi của {shopName}</span>
                           </span>
-                          {group.shopVoucherDiscount > 0 && (
+                          {(shopBreakdown?.shop_voucher_discount_vnd ?? 0) > 0 && (
                             <span className={`${styles.breakdownDiscount} num`}>
-                              {formatSignedVnd(-group.shopVoucherDiscount)}
+                              {formatSignedVnd(-(shopBreakdown?.shop_voucher_discount_vnd ?? 0))}
                             </span>
                           )}
                         </div>
 
                         <div className={styles.voucherOptions}>
                           {shopVouchers.map((voucher) => {
-                            const check = validateVoucher(voucher.code, {
-                              eligibleAmount: shopAfterTier,
-                              shopId: group.shopId,
-                            });
-                            const isSelected = chosenShopCode === voucher.code && check.valid;
+                            const hasSelectedInShop = group.selectedSubtotalVnd > 0;
+                            const eligible = hasSelectedInShop && voucher.eligible;
+                            const isSelected = chosenShopCode === voucher.code;
+                            const reasonText = !hasSelectedInShop
+                              ? "Hãy chọn sản phẩm của gian hàng này để áp dụng mã."
+                              : translateVoucherReason(voucher.ineligible_reason);
 
                             return (
                               <button
-                                key={voucher.code}
+                                key={voucher.id}
                                 type="button"
                                 className={`${styles.voucherOption} ${
                                   isSelected ? styles.voucherOptionActive : ""
-                                } ${!check.valid ? styles.voucherOptionDisabled : ""}`}
-                                disabled={!check.valid}
+                                } ${!eligible && !isSelected ? styles.voucherOptionDisabled : ""}`}
+                                disabled={!eligible && !isSelected}
                                 onClick={() =>
                                   setShopVoucher(group.shopId, isSelected ? null : voucher.code)
                                 }
                               >
                                 <div className={styles.voucherCopy}>
                                   <span className={styles.voucherCodeLine}>
-                                    {voucher.code} · {voucher.title}
+                                    {voucher.code} · {formatVoucherBenefit(voucher)}
                                   </span>
                                   <span className={styles.voucherDesc}>
-                                    {check.valid
-                                      ? `Áp dụng cho đơn từ ${formatVnd(voucher.minOrderValue)}`
-                                      : check.reason}
+                                    {eligible
+                                      ? `${formatVoucherCondition(voucher)} · Còn ${formatInt(voucher.remaining_quota)} lượt`
+                                      : reasonText || formatVoucherCondition(voucher)}
                                   </span>
                                 </div>
                                 <span className={styles.voucherActionLabel}>
-                                  {isSelected ? "Đang dùng" : check.valid ? "Áp dụng" : "Chưa đủ"}
+                                  {isSelected ? "Bỏ chọn" : eligible ? "Áp dụng" : "Chưa đủ"}
                                 </span>
                               </button>
                             );
@@ -759,50 +960,12 @@ function CartPageContent() {
                 );
               })}
             </div>
-
-            {/* Automatic Free Gifts block */}
-            {freeGifts.length > 0 && (
-              <div
-                className={styles.giftPanel}
-                role="region"
-                aria-label="Quà tặng miễn phí trong đơn"
-                data-reveal=""
-              >
-                <div className={styles.giftPanelHead}>
-                  <h2 className={styles.giftPanelTitle}>
-                    <IconGift size={17} />
-                    <span>Quà tặng miễn phí kèm đơn ({freeGifts.length})</span>
-                  </h2>
-                  <span className={`${shared.statusTag} ${shared.tonePos}`}>0₫</span>
-                </div>
-                <div className={styles.giftList}>
-                  {freeGifts.map((gift) => (
-                    <div key={gift.id} className={styles.giftRow}>
-                      <img
-                        src={gift.image}
-                        alt={gift.title}
-                        width={896}
-                        height={1200}
-                        className={styles.giftImg}
-                      />
-                      <div className={styles.giftMeta}>
-                        <span className={styles.giftName}>{gift.title}</span>
-                        <span className={styles.giftReason}>{gift.reason}</span>
-                      </div>
-                      <span className={`${shared.statusTag} ${shared.toneNeutral} num`}>
-                        Trị giá {formatVnd(gift.valueVnd)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
 
-          {/* Right column: ONE clean white sheet + dark total/CTA block */}
+          {/* Right column: Real promotions, Xu & integer VND breakdown */}
           <aside
             className={styles.summaryCol}
-            aria-label="Tóm tắt đơn hàng, mã ưu đãi và đặt hàng nhanh"
+            aria-label="Tóm tắt đơn hàng và mã ưu đãi"
             data-rise=""
             style={{ "--i": 3 } as React.CSSProperties}
           >
@@ -812,17 +975,26 @@ function CartPageContent() {
               <div className={styles.destBanner}>
                 <IconTruck size={18} className={styles.destIcon} />
                 <div>
-                  <p>
-                    Giao dự kiến tới <strong>{provinceInfo.name}</strong> ({provinceInfo.etaDays})
+                  {defaultAddress ? (
+                    <p>
+                      Giao dự kiến tới{" "}
+                      <strong>
+                        {defaultAddress.ward_name}, {defaultAddress.province_name}
+                      </strong>
+                    </p>
+                  ) : (
+                    <p>Bạn sẽ chọn địa chỉ giao hàng và đơn vị vận chuyển ở bước tiếp theo.</p>
+                  )}
+                  <p className={styles.coinMeta}>
+                    Hỗ trợ tách đơn tự động theo từng gian hàng và theo dõi hành trình giao nhận.
                   </p>
-                  <p className={styles.coinMeta}>Mở kiểm tra khi nhận · Đổi trả 45 ngày tận nơi.</p>
                 </div>
               </div>
 
-              {/* Manual voucher / gift card input */}
+              {/* Manual voucher code input */}
               <form className={styles.summaryBlock} onSubmit={handleApplyManualCode} noValidate>
                 <label htmlFor="cart-manual-code" className={styles.blockHeading}>
-                  Nhập mã ưu đãi hoặc thẻ quà tặng
+                  Nhập mã ưu đãi
                 </label>
                 <div className={shared.codeInputRow}>
                   <input
@@ -831,10 +1003,10 @@ function CartPageContent() {
                     className={shared.input}
                     value={manualCode}
                     onChange={(e) => setManualCode(e.target.value)}
-                    placeholder="Ví dụ: NEXUS30, EDU15, NEXUS-GIFT100"
+                    placeholder="Nhập mã ưu đãi (ví dụ: NEXUS30)"
                   />
-                  <Button type="submit" variant="ink" size="md">
-                    Áp mã
+                  <Button type="submit" variant="ink" size="md" disabled={applyingCode}>
+                    {applyingCode ? "Đang kiểm..." : "Áp mã"}
                   </Button>
                 </div>
                 {codeFeedback && (
@@ -847,452 +1019,204 @@ function CartPageContent() {
                     {codeFeedback.message}
                   </p>
                 )}
-                {membership.appliedGiftCardCode && (
-                  <div className={`${shared.feedbackBox} ${shared.feedbackSuccess}`}>
-                    Đang dùng thẻ quà tặng <strong>{membership.appliedGiftCardCode}</strong> (
-                    <span className="num">{formatSignedVnd(-giftCardDiscount)}</span>).{" "}
-                    <button
-                      type="button"
-                      className={shared.breadcrumbLink}
-                      onClick={() => applyGiftCardCode(null)}
-                    >
-                      Gỡ thẻ
-                    </button>
-                  </div>
-                )}
               </form>
 
               {/* Platform vouchers */}
-              <div className={styles.summaryBlock}>
-                <h3 className={styles.blockHeading}>Ưu đãi toàn sàn</h3>
-                <div className={styles.voucherOptions}>
-                  {platformVouchers.map((voucher) => {
-                    const check = validateVoucher(voucher.code, {
-                      eligibleAmount: afterShopAndTier,
-                      hasOutletItems: hasOutletSelected,
-                      eduVerified: membership.eduVerified,
-                      memberTier: membershipTier.id,
-                    });
-                    const isSelected = platformVoucherCode === voucher.code && check.valid;
+              {platformVouchers.length > 0 && (
+                <div className={styles.summaryBlock}>
+                  <h3 className={styles.blockHeading}>Ưu đãi toàn sàn</h3>
+                  <div className={styles.voucherOptions}>
+                    {platformVouchers.map((voucher) => {
+                      const eligible = selectedCount > 0 && voucher.eligible;
+                      const isSelected = platformVoucherCode === voucher.code;
+                      const reasonText =
+                        selectedCount <= 0
+                          ? "Hãy chọn sản phẩm để áp dụng mã."
+                          : translateVoucherReason(voucher.ineligible_reason);
 
-                    return (
-                      <button
-                        key={voucher.code}
-                        type="button"
-                        className={`${styles.voucherOption} ${
-                          isSelected ? styles.voucherOptionActive : ""
-                        } ${!check.valid ? styles.voucherOptionDisabled : ""}`}
-                        disabled={!check.valid}
-                        onClick={() => setPlatformVoucher(isSelected ? null : voucher.code)}
-                      >
-                        <div className={styles.voucherCopy}>
-                          <span className={styles.voucherCodeLine}>
-                            {voucher.code} · {voucher.title}
+                      return (
+                        <button
+                          key={voucher.id}
+                          type="button"
+                          className={`${styles.voucherOption} ${
+                            isSelected ? styles.voucherOptionActive : ""
+                          } ${!eligible && !isSelected ? styles.voucherOptionDisabled : ""}`}
+                          disabled={!eligible && !isSelected}
+                          onClick={() => setPlatformVoucher(isSelected ? null : voucher.code)}
+                        >
+                          <div className={styles.voucherCopy}>
+                            <span className={styles.voucherCodeLine}>
+                              {voucher.code} · {formatVoucherBenefit(voucher)}
+                            </span>
+                            <span className={styles.voucherDesc}>
+                              {eligible
+                                ? `${formatVoucherCondition(voucher)} · Còn ${formatInt(voucher.remaining_quota)} lượt`
+                                : reasonText || formatVoucherCondition(voucher)}
+                            </span>
+                          </div>
+                          <span className={styles.voucherActionLabel}>
+                            {isSelected ? "Bỏ chọn" : eligible ? "Chọn mã" : "Chưa đủ"}
                           </span>
-                          <span className={styles.voucherDesc}>
-                            {check.valid ? voucher.description : check.reason}
-                          </span>
-                        </div>
-                        <span className={styles.voucherActionLabel}>
-                          {isSelected ? "Đang dùng" : check.valid ? "Chọn mã" : "Chưa đủ"}
-                        </span>
-                      </button>
-                    );
-                  })}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* Freeship vouchers */}
-              <div className={styles.summaryBlock}>
-                <h3 className={styles.blockHeading}>Mã miễn phí vận chuyển</h3>
-                <div className={styles.voucherOptions}>
-                  {freeshipVouchers.map((voucher) => {
-                    const check = validateVoucher(voucher.code, {
-                      eligibleAmount: cartSummary.subtotal,
-                      capAmount: cartSummary.shippingFee,
-                    });
-                    const eligible = cartSummary.shippingFee > 0 && check.valid;
-                    const isSelected = freeshipVoucherCode === voucher.code && eligible;
+              {freeshipVouchers.length > 0 && (
+                <div className={styles.summaryBlock}>
+                  <h3 className={styles.blockHeading}>Mã hỗ trợ vận chuyển</h3>
+                  <div className={styles.voucherOptions}>
+                    {freeshipVouchers.map((voucher) => {
+                      const eligible = selectedCount > 0 && voucher.eligible;
+                      const isSelected = freeshipVoucherCode === voucher.code;
+                      const reasonText =
+                        selectedCount <= 0
+                          ? "Hãy chọn sản phẩm để áp dụng mã."
+                          : translateVoucherReason(voucher.ineligible_reason);
 
-                    return (
-                      <button
-                        key={voucher.code}
-                        type="button"
-                        className={`${styles.voucherOption} ${
-                          isSelected ? styles.voucherOptionActive : ""
-                        } ${!eligible ? styles.voucherOptionDisabled : ""}`}
-                        disabled={!eligible}
-                        onClick={() => setFreeshipVoucher(isSelected ? null : voucher.code)}
-                      >
-                        <div className={styles.voucherCopy}>
-                          <span className={styles.voucherCodeLine}>
-                            {voucher.code} · {voucher.title}
+                      return (
+                        <button
+                          key={voucher.id}
+                          type="button"
+                          className={`${styles.voucherOption} ${
+                            isSelected ? styles.voucherOptionActive : ""
+                          } ${!eligible && !isSelected ? styles.voucherOptionDisabled : ""}`}
+                          disabled={!eligible && !isSelected}
+                          onClick={() => setFreeshipVoucher(isSelected ? null : voucher.code)}
+                        >
+                          <div className={styles.voucherCopy}>
+                            <span className={styles.voucherCodeLine}>
+                              {voucher.code} · {formatVoucherBenefit(voucher)}
+                            </span>
+                            <span className={styles.voucherDesc}>
+                              {eligible
+                                ? `${formatVoucherCondition(voucher)} · Còn ${formatInt(voucher.remaining_quota)} lượt`
+                                : reasonText || formatVoucherCondition(voucher)}
+                            </span>
+                          </div>
+                          <span className={styles.voucherActionLabel}>
+                            {isSelected ? "Bỏ chọn" : eligible ? "Chọn mã" : "Chưa đủ"}
                           </span>
-                          <span className={styles.voucherDesc}>
-                            {eligible
-                              ? `Giảm tối đa ${formatVnd(voucher.discountValue)} phí vận chuyển`
-                              : (check.reason ?? "Chưa có phí vận chuyển để trừ")}
-                          </span>
-                        </div>
-                        <span className={styles.voucherActionLabel}>
-                          {isSelected ? "Đang dùng" : eligible ? "Chọn mã" : "Chưa đủ"}
-                        </span>
-                      </button>
-                    );
-                  })}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
+              )}
 
-              {/* NexusMart Coins */}
+              {/* Real NexusMart Coins */}
               <div className={styles.summaryBlock}>
-                <h3 className={styles.blockHeading}>Dùng Xu Hội viên Nexus</h3>
+                <h3 className={styles.blockHeading}>Dùng Xu NexusMart</h3>
                 <label className={shared.checkboxRow}>
                   <input
                     type="checkbox"
                     className={shared.checkbox}
-                    checked={useCoins && cartSummary.maxUsableCoins > 0}
-                    disabled={cartSummary.maxUsableCoins <= 0}
+                    checked={useCoins && coinBalance > 0}
+                    disabled={coinBalance <= 0 || selectedCount <= 0}
                     onChange={(e) => setUseCoins(e.target.checked)}
                   />
                   <span>
-                    Dùng <strong className="num">{formatInt(cartSummary.maxUsableCoins)} Xu</strong>{" "}
-                    (<span className="num">{formatSignedVnd(-cartSummary.maxUsableCoins)}</span>)
+                    Dùng Xu khả dụng (<strong className="num">{formatInt(coinBalance)} Xu</strong>)
                   </span>
                 </label>
                 <p className={styles.coinMeta}>
-                  Hạng <strong>{membershipTier.name}</strong> · Số dư:{" "}
-                  <strong className="num">{formatInt(user.coins)} Xu</strong> (1 Xu = 1₫). Trừ tối
-                  đa 20% tiền hàng sau voucher.
+                  Số dư hiện tại: <strong className="num">{formatInt(coinBalance)} Xu</strong> (1 Xu
+                  = 1₫).
                 </p>
               </div>
 
-              {/* Full integer VND breakdown */}
-              <dl className={styles.breakdown}>
-                <div className={styles.breakdownRow}>
-                  <dt className={styles.breakdownLabel}>
-                    Tạm tính (<span className="num">{cartSummary.selectedCount}</span> sản phẩm)
-                  </dt>
-                  <dd className="num">{formatVnd(cartSummary.subtotal)}</dd>
+              {translatedWarnings.length > 0 && (
+                <div className={styles.warningStack} role="status">
+                  {translatedWarnings.map((w) => (
+                    <p key={w} className={`${shared.feedbackBox} ${shared.feedbackWarn}`}>
+                      {w}
+                    </p>
+                  ))}
                 </div>
+              )}
 
-                {tierDiscountTotal > 0 && (
-                  <div className={styles.breakdownRow}>
-                    <dt className={styles.breakdownLabel}>Giảm mua nhiều / combo</dt>
-                    <dd className={`${styles.breakdownDiscount} num`}>
-                      {formatSignedVnd(-tierDiscountTotal)}
-                    </dd>
-                  </div>
+              {previewError && (
+                <p className={`${shared.feedbackBox} ${shared.feedbackError}`} role="alert">
+                  {previewError}
+                </p>
+              )}
+
+              {/* Real integer VND breakdown from POST /promotions/preview */}
+              <dl className={styles.breakdown}>
+                {previewLoading && (
+                  <p className={styles.previewLoadingNote}>Đang tính lại ưu đãi...</p>
                 )}
 
                 <div className={styles.breakdownRow}>
-                  <dt className={styles.breakdownLabel}>Voucher gian hàng</dt>
+                  <dt className={styles.breakdownLabel}>
+                    Tạm tính (<span className="num">{selectedCount}</span> sản phẩm)
+                  </dt>
+                  <dd className="num">{formatVnd(subtotalDisplay)}</dd>
+                </div>
+
+                <div className={styles.breakdownRow}>
+                  <dt className={styles.breakdownLabel}>Ưu đãi gian hàng</dt>
                   <dd className={`${styles.breakdownDiscount} num`}>
-                    {cartSummary.shopVoucherTotal > 0
-                      ? formatSignedVnd(-cartSummary.shopVoucherTotal)
-                      : "0₫"}
+                    {shopVoucherDisplay > 0 ? formatSignedVnd(-shopVoucherDisplay) : "0₫"}
                   </dd>
                 </div>
 
                 <div className={styles.breakdownRow}>
-                  <dt className={styles.breakdownLabel}>Voucher toàn sàn</dt>
+                  <dt className={styles.breakdownLabel}>Ưu đãi toàn sàn</dt>
                   <dd className={`${styles.breakdownDiscount} num`}>
-                    {cartSummary.platformVoucherDiscount > 0
-                      ? formatSignedVnd(-cartSummary.platformVoucherDiscount)
-                      : "0₫"}
+                    {platformVoucherDisplay > 0 ? formatSignedVnd(-platformVoucherDisplay) : "0₫"}
                   </dd>
                 </div>
 
                 <div className={styles.breakdownRow}>
                   <dt className={styles.breakdownLabel}>Phí vận chuyển dự kiến</dt>
-                  <dd className="num">{formatVnd(cartSummary.shippingFee)}</dd>
+                  <dd className="num">
+                    {defaultAddress ? formatVnd(shippingDisplay) : "Tính ở bước thanh toán"}
+                  </dd>
                 </div>
 
                 <div className={styles.breakdownRow}>
                   <dt className={styles.breakdownLabel}>Giảm phí vận chuyển</dt>
                   <dd className={`${styles.breakdownDiscount} num`}>
-                    {cartSummary.freeshipDiscount > 0
-                      ? formatSignedVnd(-cartSummary.freeshipDiscount)
-                      : "0₫"}
+                    {freeshipDisplay > 0 ? formatSignedVnd(-freeshipDisplay) : "0₫"}
                   </dd>
                 </div>
 
                 <div className={styles.breakdownRow}>
                   <dt className={styles.breakdownLabel}>Trừ Xu NexusMart</dt>
                   <dd className={`${styles.breakdownDiscount} num`}>
-                    {cartSummary.coinDiscount > 0
-                      ? formatSignedVnd(-cartSummary.coinDiscount)
-                      : "0₫"}
+                    {coinsDisplay > 0 ? formatSignedVnd(-coinsDisplay) : "0₫"}
                   </dd>
                 </div>
-
-                {giftCardDiscount > 0 && (
-                  <div className={styles.breakdownRow}>
-                    <dt className={styles.breakdownLabel}>Trừ thẻ quà tặng</dt>
-                    <dd className={`${styles.breakdownDiscount} num`}>
-                      {formatSignedVnd(-giftCardDiscount)}
-                    </dd>
-                  </div>
-                )}
               </dl>
-
-              {/* 1-page quick checkout toggle & inline form */}
-              <div className={styles.summaryBlock}>
-                <div className={shared.modeSwitch} role="group" aria-label="Chế độ thanh toán">
-                  <button
-                    type="button"
-                    className={`${shared.modeBtn} ${!quickCheckoutOpen ? shared.modeBtnActive : ""}`}
-                    onClick={() => setQuickCheckoutOpen(false)}
-                  >
-                    Thanh toán đầy đủ (VAT & Thiệp)
-                  </button>
-                  <button
-                    type="button"
-                    className={`${shared.modeBtn} ${quickCheckoutOpen ? shared.modeBtnActive : ""}`}
-                    onClick={() => setQuickCheckoutOpen(true)}
-                  >
-                    Đặt nhanh tại đây
-                  </button>
-                </div>
-
-                {quickCheckoutOpen && (
-                  <div className={styles.quickCheckoutBox}>
-                    <div className={shared.modeSwitch} role="group" aria-label="Tài khoản đặt hàng">
-                      <button
-                        type="button"
-                        className={`${shared.modeBtn} ${
-                          !guestCheckout.enabled && isAuthenticated ? shared.modeBtnActive : ""
-                        }`}
-                        onClick={() => {
-                          setGuestCheckout({ enabled: false });
-                          if (!isAuthenticated) {
-                            loginMock(DEMO_USER.email, DEMO_USER.fullName);
-                          }
-                        }}
-                      >
-                        {isAuthenticated ? `Tài khoản (${user.fullName})` : "Đăng nhập nhanh"}
-                      </button>
-                      <button
-                        type="button"
-                        className={`${shared.modeBtn} ${
-                          guestCheckout.enabled || !isAuthenticated ? shared.modeBtnActive : ""
-                        }`}
-                        onClick={() => setGuestCheckout({ enabled: true })}
-                      >
-                        Đặt không cần tài khoản
-                      </button>
-                    </div>
-
-                    {guestCheckout.enabled || !isAuthenticated ? (
-                      <div className={shared.formGrid}>
-                        <div className={shared.field}>
-                          <label htmlFor="quick-name" className={shared.fieldLabel}>
-                            Họ và tên
-                          </label>
-                          <input
-                            id="quick-name"
-                            type="text"
-                            className={shared.input}
-                            value={guestCheckout.fullName}
-                            onChange={(e) => setGuestCheckout({ fullName: e.target.value })}
-                            placeholder="Trần Hải Đăng"
-                          />
-                        </div>
-                        <div className={shared.field}>
-                          <label htmlFor="quick-phone" className={shared.fieldLabel}>
-                            Số điện thoại
-                          </label>
-                          <input
-                            id="quick-phone"
-                            type="tel"
-                            className={shared.input}
-                            value={guestCheckout.phone}
-                            onChange={(e) => setGuestCheckout({ phone: e.target.value })}
-                            placeholder="0908 123 456"
-                          />
-                        </div>
-                        <div className={shared.field}>
-                          <label htmlFor="quick-prov" className={shared.fieldLabel}>
-                            Tỉnh / Thành phố
-                          </label>
-                          <select
-                            id="quick-prov"
-                            className={shared.select}
-                            value={guestCheckout.provinceCode}
-                            onChange={(e) => {
-                              const nextProv = getProvinceByCode(e.target.value) ?? PROVINCES[0];
-                              setGuestCheckout({
-                                provinceCode: nextProv.code,
-                                wardName: nextProv.wards[0] ?? "",
-                              });
-                            }}
-                          >
-                            {PROVINCES.map((p) => (
-                              <option key={p.code} value={p.code}>
-                                {p.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className={shared.field}>
-                          <label htmlFor="quick-ward" className={shared.fieldLabel}>
-                            Phường / Xã
-                          </label>
-                          <select
-                            id="quick-ward"
-                            className={shared.select}
-                            value={guestCheckout.wardName}
-                            onChange={(e) => setGuestCheckout({ wardName: e.target.value })}
-                          >
-                            {provinceInfo.wards.map((w) => (
-                              <option key={w} value={w}>
-                                {w}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className={`${shared.field} ${shared.formFull}`}>
-                          <label htmlFor="quick-street" className={shared.fieldLabel}>
-                            Số nhà, tên đường
-                          </label>
-                          <input
-                            id="quick-street"
-                            type="text"
-                            className={shared.input}
-                            value={guestCheckout.streetDetail}
-                            onChange={(e) => setGuestCheckout({ streetDetail: e.target.value })}
-                            placeholder="Số 128 Nguyễn Huệ"
-                          />
-                        </div>
-                      </div>
-                    ) : (
-                      <div className={shared.field}>
-                        <label htmlFor="quick-addr" className={shared.fieldLabel}>
-                          Địa chỉ nhận hàng đã lưu
-                        </label>
-                        <select
-                          id="quick-addr"
-                          className={shared.select}
-                          value={selectedAddress?.id ?? ""}
-                          onChange={(e) => selectAddress(e.target.value)}
-                        >
-                          {addresses.map((a) => (
-                            <option key={a.id} value={a.id}>
-                              {a.recipientName} · {a.wardName}, {a.provinceName}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
-
-                    <div className={shared.field}>
-                      <span className={shared.fieldLabel}>Gói giao hàng</span>
-                      <div className={styles.quickMethodGrid}>
-                        <button
-                          type="button"
-                          className={`${styles.quickMethodBtn} ${
-                            deliveryMethod === "standard" ? styles.quickMethodActive : ""
-                          }`}
-                          onClick={() => setDeliveryMethod("standard")}
-                        >
-                          Tiêu chuẩn (SPX/GHN)
-                        </button>
-                        <button
-                          type="button"
-                          className={`${styles.quickMethodBtn} ${
-                            deliveryMethod === "fast" ? styles.quickMethodActive : ""
-                          }`}
-                          onClick={() => setDeliveryMethod("fast")}
-                        >
-                          Giao nhanh nội thành (+15k)
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className={shared.field}>
-                      <span className={shared.fieldLabel}>Phương thức thanh toán</span>
-                      <div className={styles.quickMethodGrid}>
-                        {(Object.keys(QUICK_PAY_META) as QuickPayChoice[]).map((key) => (
-                          <button
-                            key={key}
-                            type="button"
-                            className={`${styles.quickMethodBtn} ${
-                              quickPayChoice === key ? styles.quickMethodActive : ""
-                            }`}
-                            onClick={() => setQuickPayChoice(key)}
-                          >
-                            {QUICK_PAY_META[key].shortLabel}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {quickError && (
-                      <p className={shared.fieldError} role="alert">
-                        {quickError}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
             </div>
 
-            {/* Bold dark total & primary CTA anchor */}
             <div className={styles.ctaBand}>
               <div className={styles.grandRow}>
-                <span className={styles.grandLabel}>Tổng thanh toán</span>
-                <span className={`${styles.grandAmount} num`}>
-                  {formatVnd(cartSummary.grandTotal)}
-                </span>
+                <span className={styles.grandLabel}>Tổng tạm tính</span>
+                <span className={`${styles.grandAmount} num`}>{formatVnd(grandTotalDisplay)}</span>
               </div>
 
-              {cartSummary.totalDiscount > 0 && (
+              {totalDiscountDisplay > 0 && (
                 <p className={styles.savingsNote}>
-                  Đã tiết kiệm:{" "}
-                  <strong className="num">{formatVnd(cartSummary.totalDiscount)}</strong>
+                  Đã tiết kiệm: <strong className="num">{formatVnd(totalDiscountDisplay)}</strong>
                 </p>
               )}
 
-              {(cartSummary.estimatedCashbackCoins ?? 0) > 0 && (
-                <p className={styles.cashbackNote}>
-                  Tích thêm{" "}
-                  <strong className="num">
-                    +{formatInt(cartSummary.estimatedCashbackCoins ?? 0)} Xu
-                  </strong>{" "}
-                  (hạng {membershipTier.name} · hoàn {membershipTier.cashbackPercentLabel}, x2 Thứ
-                  Sáu).
-                </p>
-              )}
-
-              {cartSummary.selectedCount > 0 ? (
+              {selectedCount > 0 ? (
                 <div className={styles.ctaStack}>
-                  {quickCheckoutOpen ? (
-                    <>
-                      <Button
-                        variant="primary"
-                        size="lg"
-                        fullWidth
-                        className={shared.wrapBtn}
-                        onClick={handleQuickOrderSubmit}
-                      >
-                        Đặt hàng ngay · {formatVnd(cartSummary.grandTotal)} (
-                        {selectedQuickPay.shortLabel})
-                      </Button>
-                      <Link href="/thanh-toan" className={styles.darkSecondaryLink}>
-                        Thanh toán đầy đủ (gói quà & hóa đơn VAT)
-                      </Link>
-                    </>
-                  ) : (
-                    <Button
-                      variant="primary"
-                      size="lg"
-                      fullWidth
-                      className={shared.wrapBtn}
-                      href="/thanh-toan"
-                    >
-                      Thanh toán · {formatVnd(cartSummary.grandTotal)} (
-                      {selectedQuickPay.shortLabel})
-                    </Button>
-                  )}
+                  <Button
+                    variant="primary"
+                    size="lg"
+                    fullWidth
+                    className={shared.wrapBtn}
+                    href="/thanh-toan"
+                  >
+                    Tiến hành thanh toán · {formatVnd(grandTotalDisplay)}
+                  </Button>
                 </div>
               ) : (
                 <div className={styles.ctaStack}>
@@ -1300,7 +1224,7 @@ function CartPageContent() {
                     Tiến hành thanh toán
                   </Button>
                   <p className={styles.ctaHint}>
-                    Hãy chọn ít nhất 1 sản phẩm bên trái để tiếp tục thanh toán.
+                    Hãy chọn ít nhất 1 sản phẩm còn hàng bên trái để tiếp tục thanh toán.
                   </p>
                 </div>
               )}
@@ -1309,33 +1233,26 @@ function CartPageContent() {
         </div>
       </section>
 
-      <ProductAddonStrip
-        title="Gợi ý mua kèm đạt mốc freeship"
-        subtitle="Thêm nhanh để đạt miễn phí vận chuyển 249.000₫ hoặc mốc quà tặng 499.000₫"
-        products={addonProducts}
-        showTierHint
+      <CheckoutSuggestionStrip
+        title="Đồ cơ bản thường mua kèm"
+        subtitle="Sản phẩm đang có sẵn từ các xưởng dệt NexusMart, thêm nhanh vào giỏ hàng."
+        products={suggestedProducts}
+        shopNameById={shopNameById}
+        showQuickAdd
       />
 
-      {/* Sticky mobile checkout bar (390px thumb zone) */}
-      <div className={styles.mobileStickyBar} aria-label="Thanh toán nhanh">
+      {/* Sticky mobile checkout bar */}
+      <div className={styles.mobileStickyBar} aria-label="Tiến hành thanh toán">
         <div className={styles.mobileTotalWrap}>
           <span className={styles.mobileTotalLabel}>
-            {selectedQuickPay.shortLabel} (<span className="num">{cartSummary.selectedCount}</span>)
+            Đã chọn <span className="num">{selectedCount}</span> sản phẩm
           </span>
-          <span className={`${styles.mobileTotalVal} num`}>
-            {formatVnd(cartSummary.grandTotal)}
-          </span>
+          <span className={`${styles.mobileTotalVal} num`}>{formatVnd(grandTotalDisplay)}</span>
         </div>
-        {cartSummary.selectedCount > 0 ? (
-          quickCheckoutOpen ? (
-            <Button variant="primary" size="md" onClick={handleQuickOrderSubmit}>
-              Đặt · {formatVnd(cartSummary.grandTotal)}
-            </Button>
-          ) : (
-            <Button variant="primary" size="md" href="/thanh-toan">
-              Thanh toán
-            </Button>
-          )
+        {selectedCount > 0 ? (
+          <Button variant="primary" size="md" href="/thanh-toan">
+            Thanh toán
+          </Button>
         ) : (
           <Button variant="primary" size="md" disabled>
             Chọn hàng

@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { useStore } from "@/context/StoreContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { IconClose, NexusMark } from "./Icons";
 import styles from "./ShopFooter.module.css";
 
@@ -16,7 +16,7 @@ const SHIPPING_METHODS = [
 
 export function ShopFooter() {
   const { cookiePrefs, updateCookiePrefs, cookieModalOpen, openCookieModal, closeCookieModal } =
-    useStore();
+    useMockStore();
 
   const [draftAnalytics, setDraftAnalytics] = useState(cookiePrefs.analytics);
   const [draftPersonalization, setDraftPersonalization] = useState(cookiePrefs.personalization);
@@ -249,12 +249,12 @@ export function ShopFooter() {
               <h3 className={styles.colTitle}>Bán hàng cùng NexusMart</h3>
               <ul className={styles.colList}>
                 <li>
-                  <Link href="/seller" className={styles.colLink}>
+                  <Link href="/seller" prefetch={false} className={styles.colLink}>
                     Kênh Người bán
                   </Link>
                 </li>
                 <li>
-                  <Link href="/admin" className={styles.colLink}>
+                  <Link href="/admin" prefetch={false} className={styles.colLink}>
                     Cổng Quản trị
                   </Link>
                 </li>
@@ -264,7 +264,7 @@ export function ShopFooter() {
                   </Link>
                 </li>
                 <li>
-                  <Link href="/seller/ho-so" className={styles.colLink}>
+                  <Link href="/seller/ho-so" prefetch={false} className={styles.colLink}>
                     Đăng ký mở gian hàng
                   </Link>
                 </li>

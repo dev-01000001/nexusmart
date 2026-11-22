@@ -1,139 +1,295 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ORDER_STATUS_META, SHOPS, getSellerWorkspace, getShopById } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import type {
+  GatewayOrder,
+  GatewayProduct,
+  GatewaySellerBalance,
+  GatewayShop,
+  PaginatedResponse,
+} from "@/lib/gateway-types";
+import { api, getErrorMessage } from "@/lib/api";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconChevronRight, StateView } from "@/components";
 import {
   formatCompactVnd,
+  formatDateTimeVi,
+  formatDayMonthVi,
   formatInt,
   formatSignedInt,
   formatSignedVnd,
+  formatVnDayKey,
   formatVnd,
 } from "@/lib/format";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
+import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
 import { SellerTrendChart } from "@/features/seller/SellerTrendChart";
 import {
-  applySellerOrderStatusOverride,
-  computeShopLowStockAlerts,
-  formatDeltaPct,
-  getNextSellerTransition,
-  getShopLedgerWithSession,
-  getShopProductsWithSession,
-  getUnifiedSellerOrders,
-  parseUiState,
-  useSellerSession,
-} from "@/features/seller/sellerStore";
+  canSellerConfirmOrder,
+  computeOrderNetVnd,
+  getOrderStatusMeta,
+  getProductCoverImage,
+} from "@/features/seller/types";
+import { formatDeltaPct, parseUiState } from "@/features/seller/sellerStore";
 import common from "@/features/seller/SellerCommon.module.css";
 import styles from "./page.module.css";
 
 type MetricTabKey = "netRevenue" | "orders" | "avgOrder";
 
 const PRIORITY_STATUS_RANK: Record<string, number> = {
-  cho_xac_nhan: 0,
-  dang_chuan_bi: 1,
-  yeu_cau_tra_hang: 2,
-  dang_giao: 3,
-  da_giao: 4,
-  da_huy: 5,
+  CONFIRMED: 0,
+  PREPARING: 1,
+  PENDING: 2,
+  RETURN_REQUESTED: 3,
+  SHIPPING: 4,
+  DELIVERED: 5,
+  COMPLETED: 6,
+  CANCELLED: 7,
+  RETURNED: 8,
 };
 
-function SellerOverviewContent() {
+interface DayBucket {
+  key: string;
+  label: string;
+  gmv: number;
+  netRevenue: number;
+  orders: number;
+}
+
+interface LowStockRow {
+  skuId: string;
+  skuCode: string;
+  skuName: string;
+  productId: string;
+  productName: string;
+  image: string;
+  priceVnd: number;
+  availableStock: number;
+  totalStock: number;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function isRevenueOrder(status: string): boolean {
+  return status !== "CANCELLED" && status !== "RETURNED";
+}
+
+function summarizeOrderItems(order: GatewayOrder): string {
+  if (!order.items || order.items.length === 0) return "Chưa có dòng sản phẩm";
+  const first = order.items[0];
+  const rest = order.items.length - 1;
+  return rest > 0
+    ? `${first.product_name} (+${rest} sản phẩm khác)`
+    : `${first.product_name} · ${first.sku_name}`;
+}
+
+function SellerOverviewInner({ shop }: { shop: GatewayShop }) {
   const searchParams = useSearchParams();
   const uiState = parseUiState(searchParams.get("state"));
-  const { activeSellerShopId, orders: storeOrders, updateOrderStatus, showToast } = useStore();
-  const session = useSellerSession();
+  const { showToast } = useMockStore();
+  const { refreshPendingOrders } = useSellerContext();
 
   const [activeTab, setActiveTab] = useState<MetricTabKey>("netRevenue");
+  const [orders, setOrders] = useState<GatewayOrder[]>([]);
+  const [products, setProducts] = useState<GatewayProduct[]>([]);
+  const [balance, setBalance] = useState<GatewaySellerBalance | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
 
-  const activeShop = getShopById(activeSellerShopId) ?? SHOPS[0];
-  const workspace = getSellerWorkspace(activeShop.id);
-  const shopProducts = useMemo(
-    () => getShopProductsWithSession(activeShop.id, session),
-    [activeShop.id, session]
+  const loadOverview = useCallback(async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const [ordersRes, productsRes, balanceRes] = await Promise.all([
+        api<PaginatedResponse<GatewayOrder>>("seller/orders?page=1&page_size=100"),
+        api<PaginatedResponse<GatewayProduct>>("seller/products?page=1&page_size=100"),
+        api<GatewaySellerBalance>("seller/balance").catch(() => null),
+      ]);
+      setOrders(ordersRes.items ?? []);
+      setProducts(productsRes.items ?? []);
+      setBalance(balanceRes);
+    } catch (err) {
+      setErrorMsg(getErrorMessage(err, "Không thể tải tổng quan gian hàng lúc này."));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!uiState) {
+      void loadOverview();
+    }
+  }, [uiState, loadOverview]);
+
+  const lowStockAlerts = useMemo<LowStockRow[]>(() => {
+    const rows: LowStockRow[] = [];
+    for (const p of products) {
+      const cover = getProductCoverImage(p);
+      for (const s of p.skus ?? []) {
+        if (!s.is_active) continue;
+        if (s.available_stock <= 5) {
+          rows.push({
+            skuId: s.id,
+            skuCode: s.sku_code,
+            skuName: s.name,
+            productId: p.id,
+            productName: p.name,
+            image: s.image_url || cover,
+            priceVnd: s.price_vnd,
+            availableStock: s.available_stock,
+            totalStock: s.stock,
+          });
+        }
+      }
+    }
+    return rows.sort((a, b) => a.availableStock - b.availableStock);
+  }, [products]);
+
+  const pendingConfirmCount = useMemo(
+    () => orders.filter((o) => o.status === "CONFIRMED").length,
+    [orders]
   );
-  const lowStockAlerts = useMemo(() => computeShopLowStockAlerts(shopProducts, 5), [shopProducts]);
-  const unifiedOrders = useMemo(
-    () => getUnifiedSellerOrders(activeShop.id, storeOrders, session),
-    [activeShop.id, storeOrders, session]
+  const preparingCount = useMemo(
+    () => orders.filter((o) => o.status === "PREPARING").length,
+    [orders]
   );
-  const ledgerSummary = useMemo(
-    () => getShopLedgerWithSession(activeShop.id, session),
-    [activeShop.id, session]
-  );
+  const actionableCount = pendingConfirmCount + preparingCount;
 
-  const pendingConfirmCount = unifiedOrders.filter((o) => o.status === "cho_xac_nhan").length;
-  const packingCount = unifiedOrders.filter((o) => o.status === "dang_chuan_bi").length;
-  const actionableCount = pendingConfirmCount + packingCount;
+  const periodStats = useMemo(() => {
+    const nowMs = Date.now();
+    const currentDays: DayBucket[] = [];
+    const currentIndexByKey = new Map<string, number>();
 
-  const priorAvgOrder =
-    workspace.prior7dOrders > 0 ? Math.round(workspace.prior7dGmv / workspace.prior7dOrders) : 0;
-  const avgOrderDelta = workspace.avgOrderValue - priorAvgOrder;
+    for (let offset = 6; offset >= 0; offset--) {
+      const ts = nowMs - offset * DAY_MS;
+      const key = formatVnDayKey(ts);
+      currentIndexByKey.set(key, currentDays.length);
+      currentDays.push({
+        key,
+        label: formatDayMonthVi(new Date(ts).toISOString()),
+        gmv: 0,
+        netRevenue: 0,
+        orders: 0,
+      });
+    }
 
-  const netPct = formatDeltaPct(workspace.total7dNetRevenue, workspace.prior7dNetRevenue);
-  const ordersPct = formatDeltaPct(workspace.total7dOrders, workspace.prior7dOrders);
-  const aovPct = formatDeltaPct(workspace.avgOrderValue, priorAvgOrder);
-  const gmvPct = formatDeltaPct(workspace.total7dGmv, workspace.prior7dGmv);
+    const priorKeys = new Set<string>();
+    for (let offset = 13; offset >= 7; offset--) {
+      priorKeys.add(formatVnDayKey(nowMs - offset * DAY_MS));
+    }
+
+    let priorGmv = 0;
+    let priorNet = 0;
+    let priorOrders = 0;
+
+    for (const order of orders) {
+      if (!isRevenueOrder(order.status) || !order.created_at) continue;
+      const key = formatVnDayKey(order.created_at);
+      const net = computeOrderNetVnd(order);
+      const curIdx = currentIndexByKey.get(key);
+      if (curIdx !== undefined) {
+        currentDays[curIdx].gmv += order.subtotal_vnd;
+        currentDays[curIdx].netRevenue += net;
+        currentDays[curIdx].orders += 1;
+      } else if (priorKeys.has(key)) {
+        priorGmv += order.subtotal_vnd;
+        priorNet += net;
+        priorOrders += 1;
+      }
+    }
+
+    const total7dGmv = currentDays.reduce((s, d) => s + d.gmv, 0);
+    const total7dNetRevenue = currentDays.reduce((s, d) => s + d.netRevenue, 0);
+    const total7dOrders = currentDays.reduce((s, d) => s + d.orders, 0);
+    const avgOrderValue = total7dOrders > 0 ? Math.trunc(total7dGmv / total7dOrders) : 0;
+    const priorAvgOrder = priorOrders > 0 ? Math.trunc(priorGmv / priorOrders) : 0;
+
+    return {
+      daily7d: currentDays,
+      periodLabel: `${currentDays[0]?.label ?? ""} - ${currentDays[currentDays.length - 1]?.label ?? ""}`,
+      total7dGmv,
+      total7dNetRevenue,
+      total7dOrders,
+      avgOrderValue,
+      prior7dGmv: priorGmv,
+      prior7dNetRevenue: priorNet,
+      prior7dOrders: priorOrders,
+      priorAvgOrder,
+      gmvDelta: total7dGmv - priorGmv,
+      netDelta: total7dNetRevenue - priorNet,
+      ordersDelta: total7dOrders - priorOrders,
+      avgOrderDelta: avgOrderValue - priorAvgOrder,
+    };
+  }, [orders]);
+
+  const netPct = formatDeltaPct(periodStats.total7dNetRevenue, periodStats.prior7dNetRevenue);
+  const ordersPct = formatDeltaPct(periodStats.total7dOrders, periodStats.prior7dOrders);
+  const aovPct = formatDeltaPct(periodStats.avgOrderValue, periodStats.priorAvgOrder);
+  const gmvPct = formatDeltaPct(periodStats.total7dGmv, periodStats.prior7dGmv);
 
   const chartConfig = useMemo(() => {
-    const labels = workspace.daily7d.map((d) => d.label);
-    const annIdx = workspace.daily7d.findIndex((d) => Boolean(d.annotation));
-    const annotation =
-      annIdx >= 0 && workspace.daily7d[annIdx].annotation
-        ? { index: annIdx, label: workspace.daily7d[annIdx].annotation! }
-        : null;
-
+    const labels = periodStats.daily7d.map((d) => d.label);
     if (activeTab === "orders") {
       return {
         labels,
-        values: workspace.daily7d.map((d) => d.orders),
-        metricName: "Số đơn hoàn tất theo ngày",
+        values: periodStats.daily7d.map((d) => d.orders),
+        metricName: "Số đơn hợp lệ theo ngày (7 ngày gần nhất)",
         formatValue: (v: number) => `${formatInt(v)} đơn`,
         formatTick: (v: number) => formatInt(v),
-        annotation,
       };
     }
     if (activeTab === "avgOrder") {
       return {
         labels,
-        values: workspace.daily7d.map((d) => (d.orders > 0 ? Math.round(d.gmv / d.orders) : 0)),
+        values: periodStats.daily7d.map((d) => (d.orders > 0 ? Math.trunc(d.gmv / d.orders) : 0)),
         metricName: "Giá trị đơn trung bình theo ngày",
         formatValue: formatVnd,
         formatTick: formatCompactVnd,
-        annotation: null,
       };
     }
     return {
       labels,
-      values: workspace.daily7d.map((d) => d.netRevenue),
+      values: periodStats.daily7d.map((d) => d.netRevenue),
       metricName: "Doanh thu thuần sau phí 7 ngày gần nhất",
       formatValue: formatVnd,
       formatTick: formatCompactVnd,
-      annotation,
     };
-  }, [workspace.daily7d, activeTab]);
+  }, [periodStats.daily7d, activeTab]);
 
-  // Exactly 4 rows in each paired card so left and right cards always share the exact bottom edge
   const topOrders = useMemo(() => {
-    return [...unifiedOrders]
-      .sort((a, b) => (PRIORITY_STATUS_RANK[a.status] ?? 9) - (PRIORITY_STATUS_RANK[b.status] ?? 9))
+    return [...orders]
+      .sort((a, b) => {
+        const diff = (PRIORITY_STATUS_RANK[a.status] ?? 9) - (PRIORITY_STATUS_RANK[b.status] ?? 9);
+        if (diff !== 0) return diff;
+        return (b.created_at ?? "").localeCompare(a.created_at ?? "");
+      })
       .slice(0, 4);
-  }, [unifiedOrders]);
+  }, [orders]);
 
   const topLowStock = useMemo(() => lowStockAlerts.slice(0, 4), [lowStockAlerts]);
 
-  const handleQuickAdvance = (orderId: string, orderCode: string, storeOrderId?: string) => {
-    const target = unifiedOrders.find((o) => o.id === orderId);
-    if (!target) return;
-    const transition = getNextSellerTransition(target.status);
-    if (!transition) return;
-    applySellerOrderStatusOverride(orderCode, transition.nextStatus, transition.note);
-    if (storeOrderId) {
-      updateOrderStatus(storeOrderId, transition.nextStatus, transition.note);
+  const handleQuickConfirm = async (order: GatewayOrder) => {
+    if (!canSellerConfirmOrder(order.status) || busyOrderId) return;
+    setBusyOrderId(order.id);
+    try {
+      const res = await api<{ order: GatewayOrder }>(`seller/orders/${order.id}/confirm`, {
+        method: "POST",
+      });
+      if (res.order) {
+        setOrders((prev) => prev.map((item) => (item.id === order.id ? res.order : item)));
+      } else {
+        await loadOverview();
+      }
+      await refreshPendingOrders();
+      showToast(`Đã xác nhận đơn ${order.order_code} và chuyển sang chuẩn bị hàng.`);
+    } catch (err) {
+      showToast(getErrorMessage(err, "Không thể xác nhận đơn hàng lúc này."));
+    } finally {
+      setBusyOrderId(null);
     }
-    showToast(`Đơn ${orderCode}: ${transition.label.toLowerCase()} thành công.`);
   };
 
   const deltaClass = (dir: "up" | "down" | "flat") =>
@@ -148,14 +304,18 @@ function SellerOverviewContent() {
           ? `${common.pill} ${common.pillNeg}`
           : common.pill;
 
+  const availableVnd = balance?.available_vnd ?? 0;
+  const pendingVnd = balance?.pending_vnd ?? 0;
+
   return (
     <div className={common.page}>
       <header className={common.pageHeader}>
         <div className={common.headerText}>
           <h1 className={common.title}>Tổng quan gian hàng</h1>
           <p className={common.finding}>
-            {activeShop.name} · {formatInt(pendingConfirmCount)} đơn chờ xác nhận,{" "}
-            {formatInt(lowStockAlerts.length)} SKU tồn từ 5 chiếc trở xuống · Kỳ 14/11 - 20/11
+            {shop.name} · {formatInt(pendingConfirmCount)} đơn chờ xác nhận,{" "}
+            {formatInt(lowStockAlerts.length)} SKU tồn khả dụng từ 5 chiếc trở xuống · Kỳ{" "}
+            {periodStats.periodLabel}
           </p>
         </div>
         <div className={common.headerActions}>
@@ -167,7 +327,7 @@ function SellerOverviewContent() {
             size="sm"
             shape="app"
             href={
-              pendingConfirmCount > 0 ? "/seller/don-hang?status=cho_xac_nhan" : "/seller/don-hang"
+              pendingConfirmCount > 0 ? "/seller/don-hang?status=CONFIRMED" : "/seller/don-hang"
             }
           >
             {pendingConfirmCount > 0
@@ -177,7 +337,7 @@ function SellerOverviewContent() {
         </div>
       </header>
 
-      {uiState === "loading" && (
+      {(uiState === "loading" || (!uiState && loading)) && (
         <StateView
           kind="loading"
           surface="app"
@@ -186,15 +346,14 @@ function SellerOverviewContent() {
         />
       )}
 
-      {uiState === "error" && (
+      {(uiState === "error" || (!uiState && !loading && errorMsg)) && (
         <StateView
           kind="error"
           surface="app"
           title="Không thể tải tổng quan gian hàng"
-          message="Kết nối đến dịch vụ đối soát đơn hàng tạm gián đoạn."
-          lastUpdated="02:18 · 20/11/2026"
+          message={errorMsg ?? "Kết nối đến dịch vụ đối soát đơn hàng tạm gián đoạn."}
           actionLabel="Tải lại"
-          actionHref="/seller"
+          onAction={() => void loadOverview()}
         />
       )}
 
@@ -209,34 +368,33 @@ function SellerOverviewContent() {
         />
       )}
 
-      {!uiState && (
+      {!uiState && !loading && !errorMsg && (
         <>
-          {/* Row 1: Balances strip split by 1px vertical dividers */}
           <section className={common.balanceStrip} aria-label="Số dư và hàng chờ vận hành">
             <div className={common.balanceCell}>
               <span className={common.balanceLabel}>Số dư khả dụng</span>
               <span
-                className={`${common.balanceValue} ${ledgerSummary.availableBalance === 0 ? common.balanceValueZero : ""}`}
+                className={`${common.balanceValue} ${availableVnd === 0 ? common.balanceValueZero : ""}`}
               >
-                {formatVnd(ledgerSummary.availableBalance)}
+                {formatVnd(availableVnd)}
               </span>
-              {ledgerSummary.availableBalance > 0 ? (
+              {availableVnd > 0 ? (
                 <Link href="/seller/tai-chinh" className={common.balanceActionLink}>
-                  Rút về ngân hàng
+                  Xem tài chính
                 </Link>
               ) : (
-                <span className={common.balanceCaption}>Hoàn tất đối soát để rút tiền</span>
+                <span className={common.balanceCaption}>Hoàn tất đối soát để giải ngân</span>
               )}
             </div>
 
             <div className={common.balanceCell}>
               <span className={common.balanceLabel}>Chờ đối soát</span>
               <span
-                className={`${common.balanceValue} ${ledgerSummary.pendingBalance === 0 ? common.balanceValueZero : ""}`}
+                className={`${common.balanceValue} ${pendingVnd === 0 ? common.balanceValueZero : ""}`}
               >
-                {formatVnd(ledgerSummary.pendingBalance)}
+                {formatVnd(pendingVnd)}
               </span>
-              <span className={common.balanceCaption}>Giữ 3 ngày sau giao thành công</span>
+              <span className={common.balanceCaption}>Giữ an toàn cho tới khi đơn hoàn tất</span>
             </div>
 
             <div className={common.balanceCell}>
@@ -248,8 +406,8 @@ function SellerOverviewContent() {
               </span>
               <span className={common.balanceCaption}>
                 {actionableCount > 0
-                  ? `${formatInt(pendingConfirmCount)} chờ duyệt, ${formatInt(packingCount)} đang gói`
-                  : "Đã xử lý toàn bộ đơn hôm nay"}
+                  ? `${formatInt(pendingConfirmCount)} chờ xác nhận, ${formatInt(preparingCount)} đang chuẩn bị`
+                  : "Đã xử lý hết đơn cần giao"}
               </span>
             </div>
 
@@ -262,13 +420,12 @@ function SellerOverviewContent() {
               </span>
               <span className={common.balanceCaption}>
                 {lowStockAlerts.length > 0
-                  ? "Tồn kho từ 5 chiếc trở xuống"
-                  : "Mọi biến thể đều đủ tồn kho"}
+                  ? "Tồn khả dụng từ 5 chiếc trở xuống"
+                  : "Mọi biến thể đang hoạt động đều đủ tồn"}
               </span>
             </div>
           </section>
 
-          {/* Row 2: Main KPI-tabbed trend card + 3-row comparison table */}
           <section className={common.cardFlush} aria-label="Biểu đồ hiệu suất 7 ngày">
             <div className={styles.kpiTabs} role="tablist" aria-label="Chỉ số theo ngày">
               <button
@@ -278,10 +435,10 @@ function SellerOverviewContent() {
                 className={`${styles.kpiTab} ${activeTab === "netRevenue" ? styles.kpiTabActive : ""}`}
                 onClick={() => setActiveTab("netRevenue")}
               >
-                <span className={styles.kpiTabLabel}>Doanh thu thuần</span>
+                <span className={styles.kpiTabLabel}>Doanh thu thuần (7 ngày)</span>
                 <span className={styles.kpiTabRow}>
                   <span className={styles.kpiTabValue}>
-                    {formatVnd(workspace.total7dNetRevenue)}
+                    {formatVnd(periodStats.total7dNetRevenue)}
                   </span>
                   <span className={`${styles.kpiTabDelta} ${deltaClass(netPct.direction)}`}>
                     {netPct.label}
@@ -296,9 +453,9 @@ function SellerOverviewContent() {
                 className={`${styles.kpiTab} ${activeTab === "orders" ? styles.kpiTabActive : ""}`}
                 onClick={() => setActiveTab("orders")}
               >
-                <span className={styles.kpiTabLabel}>Số đơn hoàn tất</span>
+                <span className={styles.kpiTabLabel}>Số đơn hợp lệ (7 ngày)</span>
                 <span className={styles.kpiTabRow}>
-                  <span className={styles.kpiTabValue}>{formatInt(workspace.total7dOrders)}</span>
+                  <span className={styles.kpiTabValue}>{formatInt(periodStats.total7dOrders)}</span>
                   <span className={`${styles.kpiTabDelta} ${deltaClass(ordersPct.direction)}`}>
                     {ordersPct.label}
                   </span>
@@ -314,7 +471,7 @@ function SellerOverviewContent() {
               >
                 <span className={styles.kpiTabLabel}>Giá trị đơn trung bình</span>
                 <span className={styles.kpiTabRow}>
-                  <span className={styles.kpiTabValue}>{formatVnd(workspace.avgOrderValue)}</span>
+                  <span className={styles.kpiTabValue}>{formatVnd(periodStats.avgOrderValue)}</span>
                   <span className={`${styles.kpiTabDelta} ${deltaClass(aovPct.direction)}`}>
                     {aovPct.label}
                   </span>
@@ -336,7 +493,7 @@ function SellerOverviewContent() {
                 metricName={chartConfig.metricName}
                 formatValue={chartConfig.formatValue}
                 formatTick={chartConfig.formatTick}
-                annotation={chartConfig.annotation}
+                annotation={null}
                 desktopHeight={194}
                 mobileHeight={180}
               />
@@ -345,9 +502,9 @@ function SellerOverviewContent() {
                 <table className={styles.compareTable}>
                   <thead>
                     <tr>
-                      <th>So với tuần trước</th>
-                      <th className={common.numCol}>Tuần trước</th>
-                      <th className={common.numCol}>7 ngày này</th>
+                      <th>So với 7 ngày trước đó</th>
+                      <th className={common.numCol}>7 ngày trước</th>
+                      <th className={common.numCol}>7 ngày gần nhất</th>
                       <th className={common.numCol}>Chênh lệch</th>
                     </tr>
                   </thead>
@@ -355,51 +512,50 @@ function SellerOverviewContent() {
                     <tr>
                       <td>Tổng giá trị đơn hàng (GMV)</td>
                       <td className={`${common.numCol} ${styles.comparePrior}`}>
-                        {formatVnd(workspace.prior7dGmv)}
+                        {formatVnd(periodStats.prior7dGmv)}
                       </td>
-                      <td className={common.numCol}>{formatVnd(workspace.total7dGmv)}</td>
+                      <td className={common.numCol}>{formatVnd(periodStats.total7dGmv)}</td>
                       <td className={`${common.numCol} ${deltaClass(gmvPct.direction)}`}>
-                        {formatSignedVnd(workspace.gmvDelta)} ({gmvPct.label})
+                        {formatSignedVnd(periodStats.gmvDelta)} ({gmvPct.label})
                       </td>
                     </tr>
                     <tr>
-                      <td>Doanh thu thuần sau phí sàn</td>
+                      <td>Doanh thu thuần sau chiết khấu & phí sàn</td>
                       <td className={`${common.numCol} ${styles.comparePrior}`}>
-                        {formatVnd(workspace.prior7dNetRevenue)}
+                        {formatVnd(periodStats.prior7dNetRevenue)}
                       </td>
-                      <td className={common.numCol}>{formatVnd(workspace.total7dNetRevenue)}</td>
+                      <td className={common.numCol}>{formatVnd(periodStats.total7dNetRevenue)}</td>
                       <td className={`${common.numCol} ${deltaClass(netPct.direction)}`}>
-                        {formatSignedVnd(workspace.netDelta)} ({netPct.label})
+                        {formatSignedVnd(periodStats.netDelta)} ({netPct.label})
                       </td>
                     </tr>
                     <tr>
-                      <td>Số đơn hàng và giá trị trung bình</td>
+                      <td>Số đơn hợp lệ và giá trị trung bình</td>
                       <td className={`${common.numCol} ${styles.comparePrior}`}>
-                        {formatInt(workspace.prior7dOrders)} đơn
+                        {formatInt(periodStats.prior7dOrders)} đơn
                       </td>
                       <td className={common.numCol}>
-                        {formatInt(workspace.total7dOrders)} đơn (
-                        {formatVnd(workspace.avgOrderValue)})
+                        {formatInt(periodStats.total7dOrders)} đơn (
+                        {formatVnd(periodStats.avgOrderValue)})
                       </td>
                       <td className={`${common.numCol} ${deltaClass(ordersPct.direction)}`}>
-                        {formatSignedInt(workspace.ordersDelta)} đơn (
-                        {formatSignedVnd(avgOrderDelta)})
+                        {formatSignedInt(periodStats.ordersDelta)} đơn (
+                        {formatSignedVnd(periodStats.avgOrderDelta)})
                       </td>
                     </tr>
                   </tbody>
                 </table>
 
-                {/* Distinct 2-line phone comparison list (zero right-edge clipping at 390px) */}
                 <div className={styles.compareMobile}>
-                  <div className={styles.compareMobileHead}>So với tuần trước</div>
+                  <div className={styles.compareMobileHead}>So với 7 ngày trước đó</div>
                   <div className={styles.compareMobileRow}>
                     <span className={styles.compareMobileLabel}>Tổng giá trị đơn hàng (GMV)</span>
                     <div className={styles.compareMobileFigs}>
                       <span className={styles.compareMobileVal}>
-                        {formatVnd(workspace.total7dGmv)}
+                        {formatVnd(periodStats.total7dGmv)}
                       </span>
                       <span className={deltaClass(gmvPct.direction)}>
-                        {formatSignedVnd(workspace.gmvDelta)} ({gmvPct.label})
+                        {formatSignedVnd(periodStats.gmvDelta)} ({gmvPct.label})
                       </span>
                     </div>
                   </div>
@@ -407,10 +563,10 @@ function SellerOverviewContent() {
                     <span className={styles.compareMobileLabel}>Doanh thu thuần sau phí sàn</span>
                     <div className={styles.compareMobileFigs}>
                       <span className={styles.compareMobileVal}>
-                        {formatVnd(workspace.total7dNetRevenue)}
+                        {formatVnd(periodStats.total7dNetRevenue)}
                       </span>
                       <span className={deltaClass(netPct.direction)}>
-                        {formatSignedVnd(workspace.netDelta)} ({netPct.label})
+                        {formatSignedVnd(periodStats.netDelta)} ({netPct.label})
                       </span>
                     </div>
                   </div>
@@ -418,11 +574,11 @@ function SellerOverviewContent() {
                     <span className={styles.compareMobileLabel}>Số đơn và giá trị trung bình</span>
                     <div className={styles.compareMobileFigs}>
                       <span className={styles.compareMobileVal}>
-                        {formatInt(workspace.total7dOrders)} đơn (
-                        {formatVnd(workspace.avgOrderValue)})
+                        {formatInt(periodStats.total7dOrders)} đơn (
+                        {formatVnd(periodStats.avgOrderValue)})
                       </span>
                       <span className={deltaClass(ordersPct.direction)}>
-                        {formatSignedInt(workspace.ordersDelta)} đơn ({ordersPct.label})
+                        {formatSignedInt(periodStats.ordersDelta)} đơn ({ordersPct.label})
                       </span>
                     </div>
                   </div>
@@ -431,7 +587,6 @@ function SellerOverviewContent() {
             </div>
           </section>
 
-          {/* Row 3: Paired 2-column operational cards — balanced 4 rows each */}
           <div className={styles.pairedGrid}>
             <section className={styles.opCard} aria-labelledby="op-orders-heading">
               <div className={common.cardHeader}>
@@ -439,56 +594,67 @@ function SellerOverviewContent() {
                   Đơn hàng cần xử lý
                 </h2>
                 <Link href="/seller/don-hang" className={common.cardLink}>
-                  <span>Xem tất cả ({formatInt(unifiedOrders.length)})</span>
+                  <span>Xem tất cả ({formatInt(orders.length)})</span>
                   <IconChevronRight size={13} />
                 </Link>
               </div>
 
               <div className={styles.opRows}>
-                {topOrders.map((order) => {
-                  const meta = ORDER_STATUS_META[order.status];
-                  const nextAction = getNextSellerTransition(order.status);
-                  return (
-                    <div key={order.id} className={styles.opRow}>
-                      <div className={styles.opRowMain}>
-                        <div className={styles.opInfo}>
-                          <Link href={`/seller/don-hang/${order.id}`} className={styles.opPrimary}>
-                            {order.orderCode} · {order.buyerName}
-                          </Link>
-                          <span className={styles.opSecondary}>
-                            {order.itemSummary} · {order.provinceName}
-                          </span>
+                {topOrders.length === 0 ? (
+                  <div className={common.inlineEmpty}>
+                    Chưa có đơn hàng nào thuộc gian hàng này.
+                  </div>
+                ) : (
+                  topOrders.map((order) => {
+                    const meta = getOrderStatusMeta(order.status);
+                    const canConfirm = canSellerConfirmOrder(order.status);
+                    const recipient = order.shipping_address?.recipient_name || "Khách đặt hàng";
+                    const province = order.shipping_address?.province_name || "Chưa rõ khu vực";
+                    return (
+                      <div key={order.id} className={styles.opRow}>
+                        <div className={styles.opRowMain}>
+                          <div className={styles.opInfo}>
+                            <Link
+                              href={`/seller/don-hang/${order.id}`}
+                              className={styles.opPrimary}
+                            >
+                              {order.order_code} · {recipient}
+                            </Link>
+                            <span className={styles.opSecondary}>
+                              {summarizeOrderItems(order)} · {province}
+                              {order.created_at ? ` · ${formatDateTimeVi(order.created_at)}` : ""}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className={styles.opRight}>
+                          <div className={styles.opFigure}>
+                            <span className={styles.opMoney}>{formatVnd(order.subtotal_vnd)}</span>
+                            <span className={statusPillClass(meta.tone)}>{meta.label}</span>
+                          </div>
+
+                          {canConfirm ? (
+                            <button
+                              type="button"
+                              className={styles.inlineActionBtn}
+                              disabled={busyOrderId === order.id}
+                              onClick={() => void handleQuickConfirm(order)}
+                            >
+                              {busyOrderId === order.id ? "Đang xử lý..." : "Xác nhận"}
+                            </button>
+                          ) : (
+                            <Link
+                              href={`/seller/don-hang/${order.id}`}
+                              className={styles.inlineActionBtn}
+                            >
+                              Chi tiết
+                            </Link>
+                          )}
                         </div>
                       </div>
-
-                      <div className={styles.opRight}>
-                        <div className={styles.opFigure}>
-                          <span className={styles.opMoney}>{formatVnd(order.subtotal)}</span>
-                          <span className={statusPillClass(meta.tone)}>{meta.label}</span>
-                        </div>
-
-                        {nextAction ? (
-                          <button
-                            type="button"
-                            className={styles.inlineActionBtn}
-                            onClick={() =>
-                              handleQuickAdvance(order.id, order.orderCode, order.storeOrderId)
-                            }
-                          >
-                            {nextAction.shortLabel}
-                          </button>
-                        ) : (
-                          <Link
-                            href={`/seller/don-hang/${order.id}`}
-                            className={styles.inlineActionBtn}
-                          >
-                            Chi tiết
-                          </Link>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })
+                )}
               </div>
             </section>
 
@@ -497,62 +663,78 @@ function SellerOverviewContent() {
                 <h2 id="op-stock-heading" className={common.cardTitle}>
                   Cảnh báo tồn kho theo SKU
                 </h2>
-                <Link href="/seller/san-pham?filter=low" className={common.cardLink}>
+                <Link href="/seller/san-pham?filter=LOW_OOS" className={common.cardLink}>
                   <span>Quản lý kho ({formatInt(lowStockAlerts.length)})</span>
                   <IconChevronRight size={13} />
                 </Link>
               </div>
 
               <div className={styles.opRows}>
-                {topLowStock.map((alert) => (
-                  <div key={alert.skuCode} className={styles.opRow}>
-                    <div className={styles.opRowMain}>
-                      <img
-                        src={alert.image}
-                        alt={alert.productName}
-                        className={styles.opThumb}
-                        width={34}
-                        height={45}
-                      />
-                      <div className={styles.opInfo}>
+                {topLowStock.length === 0 ? (
+                  <div className={common.inlineEmpty}>
+                    Tất cả biến thể SKU đang mở bán đều có tồn kho khả dụng trên 5 chiếc.
+                  </div>
+                ) : (
+                  topLowStock.map((alert) => (
+                    <div key={alert.skuId} className={styles.opRow}>
+                      <div className={styles.opRowMain}>
+                        <img
+                          src={alert.image}
+                          alt={alert.productName}
+                          className={styles.opThumb}
+                          width={34}
+                          height={45}
+                        />
+                        <div className={styles.opInfo}>
+                          <Link
+                            href={`/seller/san-pham/${alert.productId}`}
+                            className={styles.opPrimary}
+                          >
+                            {alert.productName} · {alert.skuName}
+                          </Link>
+                          <span className={styles.opSecondary}>
+                            {alert.skuCode} · {formatVnd(alert.priceVnd)}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className={styles.opRight}>
+                        <div className={styles.opFigure}>
+                          <span
+                            className={`${styles.opMoney} ${alert.availableStock === 0 ? styles.opStockCrit : ""}`}
+                          >
+                            {alert.availableStock === 0
+                              ? "0 chiếc"
+                              : `Còn ${formatInt(alert.availableStock)}`}
+                          </span>
+                          <span className={styles.opSubFigure}>
+                            {alert.availableStock === 0 ? "Hết tồn khả dụng" : "Ngưỡng tối thiểu 5"}
+                          </span>
+                        </div>
                         <Link
                           href={`/seller/san-pham/${alert.productId}`}
-                          className={styles.opPrimary}
+                          className={styles.inlineActionBtn}
                         >
-                          {alert.productName} · {alert.colorName} / {alert.size}
+                          Cập nhật
                         </Link>
-                        <span className={styles.opSecondary}>
-                          {alert.skuCode} · {formatVnd(alert.price)}
-                        </span>
                       </div>
                     </div>
-
-                    <div className={styles.opRight}>
-                      <div className={styles.opFigure}>
-                        <span
-                          className={`${styles.opMoney} ${alert.stock === 0 ? styles.opStockCrit : ""}`}
-                        >
-                          {alert.stock === 0 ? "0 chiếc" : `Còn ${formatInt(alert.stock)}`}
-                        </span>
-                        <span className={styles.opSubFigure}>
-                          {alert.stock === 0 ? "Hết biến thể" : "Ngưỡng tối thiểu 5"}
-                        </span>
-                      </div>
-                      <Link
-                        href={`/seller/san-pham/${alert.productId}`}
-                        className={styles.inlineActionBtn}
-                      >
-                        Nhập tồn
-                      </Link>
-                    </div>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             </section>
           </div>
         </>
       )}
     </div>
+  );
+}
+
+function SellerOverviewContent() {
+  return (
+    <SellerShopGate pageTitle="Tổng quan gian hàng">
+      {(shop) => <SellerOverviewInner shop={shop} />}
+    </SellerShopGate>
   );
 }
 

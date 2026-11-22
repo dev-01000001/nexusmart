@@ -47,6 +47,7 @@ type Product struct {
 	ShopID          string
 	CategoryID      string
 	Name            string
+	Slug            string
 	Description     string
 	Images          []string
 	Status          string
@@ -149,6 +150,7 @@ type Queries interface {
 
 	CreateProduct(ctx context.Context, p Product) (Product, error)
 	GetProductByID(ctx context.Context, id string) (Product, error)
+	GetProductBySlug(ctx context.Context, slug string) (Product, error)
 	UpdateProduct(ctx context.Context, p Product) (Product, error)
 	UpdateProductReview(ctx context.Context, id, status, rejectionReason string) (Product, error)
 	UpdateProductStatus(ctx context.Context, id, status string) error

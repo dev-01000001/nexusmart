@@ -2,11 +2,19 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { AI_SUGGESTED_PROMPTS, ORDER_STATUS_META, PRODUCTS, SHOPS, getShopById } from "@/data";
+import {
+  AI_SUGGESTED_PROMPTS,
+  INITIAL_ORDERS,
+  ORDER_STATUS_META,
+  PRODUCTS,
+  SHOPS,
+  getShopById,
+} from "@/data";
 import type { Order, Product } from "@/data";
 import { BODY_SHAPE_LABELS, recommendSize, type BodyProfile } from "@/lib/sizing";
 import { formatDateTimeVi, formatVnd } from "@/lib/format";
-import { useStore } from "@/context/StoreContext";
+import { useSession } from "@/context/SessionContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button } from "@/components/Button";
 import { IconClose, IconShield } from "@/components/Icons";
 import styles from "./OverlayPanel.module.css";
@@ -284,7 +292,7 @@ function buildAiAnswer(
 
   if (matched.length > 0) {
     return {
-      text: `Mình tìm thấy ${matched.length} sản phẩm phù hợp nhất với yêu cầu "${prompt}" trên NexusMart. Bạn có thể xem chi tiết thông số vải hoặc thêm trực tiếp vào giỏ hàng:`,
+      text: `Mình tìm thấy ${matched.length} sản phẩm phù hợp nhất với yêu cầu "${prompt}" trên NexusMart. Bạn có thể mở trang sản phẩm để xem chi tiết thông số vải và chọn size:`,
       products: matched,
     };
   }
@@ -296,7 +304,8 @@ function buildAiAnswer(
 }
 
 export function AiAssistantPanel() {
-  const { aiOpen, closeAi, orders, isAuthenticated, bodyProfile, addToCart } = useStore();
+  const { isAuthenticated } = useSession();
+  const { aiOpen, closeAi, bodyProfile } = useMockStore();
   const [turns, setTurns] = useState<AiTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -341,7 +350,7 @@ export function AiAssistantPanel() {
     if (!clean) return;
     stopStreaming();
 
-    const answer = buildAiAnswer(clean, orders, isAuthenticated, bodyProfile);
+    const answer = buildAiAnswer(clean, INITIAL_ORDERS, isAuthenticated, bodyProfile);
     const userTurnId = `ai-u-${Date.now()}`;
     const assistantTurnId = `ai-a-${Date.now() + 1}`;
 
@@ -524,9 +533,6 @@ export function AiAssistantPanel() {
                   <div className={styles.recList}>
                     {turn.products.map((product) => {
                       const shop = getShopById(product.shopId);
-                      const sku =
-                        product.skus.find((s) => s.size === "L" && s.stock > 0) ??
-                        product.skus.find((s) => s.stock > 0);
                       return (
                         <div key={product.id} className={styles.recCard}>
                           <img
@@ -549,22 +555,6 @@ export function AiAssistantPanel() {
                               <strong className="num">{formatVnd(product.price)}</strong>
                             </span>
                           </div>
-                          {sku && (
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              onClick={() =>
-                                addToCart({
-                                  productId: product.id,
-                                  colorCode: sku.colorCode,
-                                  size: sku.size,
-                                  quantity: 1,
-                                })
-                              }
-                            >
-                              Thêm vào giỏ
-                            </Button>
-                          )}
                         </div>
                       );
                     })}

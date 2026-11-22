@@ -39,6 +39,13 @@
   color: var(--muted);
 }
 
+.rejectionNote {
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--negative);
+  margin-top: 2px;
+}
+
 .stockWarn {
   color: var(--negative);
   font-weight: 600;
@@ -57,10 +64,31 @@
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
+  cursor: pointer;
 }
 
 .editLink:hover {
   background: var(--surface);
+}
+
+.deleteBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--negative); /* taste-skill-ignore: product delete confirmation button */
+  background: var(--card);
+  color: var(--negative);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.deleteBtn:hover {
+  background: var(--pill-negative-bg);
 }
 
 .actionRow {
@@ -68,6 +96,7 @@
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 .restockBtn {
@@ -90,18 +119,86 @@
   background: var(--surface);
 }
 
-.waitHighlight {
+.restockBtn:disabled,
+.editLink:disabled,
+.deleteBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.conflictBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius-card);
+  background: var(--pill-warning-bg);
+  color: var(--pill-warning-ink);
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.skuDrawerCell {
+  background: var(--bg);
+  padding: 12px 14px !important;
+}
+
+.skuDrawerList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skuDrawerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border); /* taste-skill-ignore: inline SKU stock editor row */
+  background: var(--card);
+  flex-wrap: wrap;
+}
+
+.skuDrawerInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.skuDrawerCode {
+  font-size: 13px;
   font-weight: 600;
   color: var(--ink);
 }
 
-.waitZero {
-  color: var(--muted);
-}
-
-.metaTagLine {
+.skuDrawerMeta {
   font-size: 12px;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.skuStockEditor {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+input.skuStockInput {
+  width: 82px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--control);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .skuThumbSm {
@@ -127,4 +224,13 @@
   color: var(--ink);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+.mobileSkuBox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg);
 }

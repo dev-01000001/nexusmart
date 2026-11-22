@@ -151,6 +151,7 @@ func (p *pgQueries) CreateProduct(ctx context.Context, prod Product) (Product, e
 		RejectionReason: prod.RejectionReason,
 		MinPriceVnd:     prod.MinPriceVND,
 		MaxPriceVnd:     prod.MaxPriceVND,
+		Slug:            prod.Slug,
 	})
 	if err != nil {
 		return Product{}, mapPgError(err)
@@ -160,6 +161,14 @@ func (p *pgQueries) CreateProduct(ctx context.Context, prod Product) (Product, e
 
 func (p *pgQueries) GetProductByID(ctx context.Context, id string) (Product, error) {
 	row, err := p.q.GetProductByID(ctx, id)
+	if err != nil {
+		return Product{}, mapPgError(err)
+	}
+	return fromDBProduct(row), nil
+}
+
+func (p *pgQueries) GetProductBySlug(ctx context.Context, slug string) (Product, error) {
+	row, err := p.q.GetProductBySlug(ctx, slug)
 	if err != nil {
 		return Product{}, mapPgError(err)
 	}
@@ -181,6 +190,7 @@ func (p *pgQueries) UpdateProduct(ctx context.Context, prod Product) (Product, e
 		RejectionReason: prod.RejectionReason,
 		MinPriceVnd:     prod.MinPriceVND,
 		MaxPriceVnd:     prod.MaxPriceVND,
+		Slug:            prod.Slug,
 	})
 	if err != nil {
 		return Product{}, mapPgError(err)
@@ -612,6 +622,7 @@ func fromDBProduct(p db.Product) Product {
 		ShopID:          p.ShopID,
 		CategoryID:      p.CategoryID,
 		Name:            p.Name,
+		Slug:            p.Slug,
 		Description:     p.Description,
 		Images:          unmarshalStringSlice(p.Images),
 		Status:          p.Status,

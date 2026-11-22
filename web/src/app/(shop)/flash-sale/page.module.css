@@ -163,11 +163,19 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Compact 4-slot time selector inside dark band (< 84px tall) */
+/* Compact slot time selector inside dark band (< 84px tall) */
 .slotGrid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
+}
+
+.slotGridThree {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.slotGridTwo {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .slotBtn {
@@ -710,6 +718,10 @@
 }
 
 @media (max-width: 640px) {
+  .slotGridThree {
+    grid-template-columns: 1fr;
+  }
+
   .slotBtn {
     padding: 10px 10px;
     gap: 2px;

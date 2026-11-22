@@ -1,180 +1,251 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { PAYMENT_METHOD_LABELS, SHOPS, getShopById } from "@/data";
-import type { OrderStatus, PaymentMethod } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import type { GatewayOrder, GatewayShop, PaginatedResponse } from "@/lib/gateway-types";
+import { api, getErrorMessage } from "@/lib/api";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconCheck, IconSearch, StateView } from "@/components";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
+import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
 import {
-  advanceOrderTwoWayExchange,
-  advanceOrderVatStatus,
-  applySellerOrderStatusOverride,
-  getNextSellerTransition,
-  getSafeOrderStatusMeta,
-  getUnifiedSellerOrders,
-  parseUiState,
-  resolveOrderAmendment,
-  useSellerSession,
-} from "@/features/seller/sellerStore";
-import type { UnifiedSellerOrder } from "@/features/seller/sellerStore";
+  CARRIER_OPTIONS,
+  PAYMENT_METHOD_TEXT,
+  canSellerConfirmOrder,
+  canSellerShipOrder,
+  computeOrderNetVnd,
+  getOrderStatusMeta,
+} from "@/features/seller/types";
+import { parseUiState } from "@/features/seller/sellerStore";
 import common from "@/features/seller/SellerCommon.module.css";
 import styles from "./page.module.css";
 
-type OrderFilterKey =
-  "all" | "cho_xac_nhan" | "dang_chuan_bi" | "dang_giao" | "da_giao" | "tra_huy";
+type OrderFilterKey = "all" | "CONFIRMED" | "PREPARING" | "SHIPPING" | "DONE" | "OTHER";
 
-type OpsQueueFilter = "all" | "vat" | "amendment" | "exchange" | "complaint" | "gift";
-
-function getOrderSignals(o: UnifiedSellerOrder): Array<{ label: string; warn: boolean }> {
-  const ex = o.wave2Extra;
-  if (!ex) return [];
-  const tags: Array<{ label: string; warn: boolean }> = [];
-  if (ex.giftBagRequested || ex.giftCardMessage) {
-    tags.push({ label: ex.giftCardMessage ? "Túi quà & thiệp" : "Túi quà", warn: false });
-  }
-  if (ex.vatRequest) {
-    if (ex.vatRequest.status === "cho_duyet_nhap") {
-      tags.push({ label: "VAT chờ gửi nháp", warn: true });
-    } else if (ex.vatRequest.status === "da_gui_nhap_24h") {
-      tags.push({ label: "VAT chờ phát hành", warn: true });
-    } else if (ex.vatRequest.status === "da_phat_hanh") {
-      tags.push({ label: "Đã xuất HĐĐT", warn: false });
-    }
-  }
-  if (ex.amendment && ex.amendment.status === "cho_duyet") {
-    tags.push({
-      label: ex.amendment.kind === "huy_muon" ? "Duyệt hủy muộn" : "Duyệt đổi địa chỉ",
-      warn: true,
-    });
-  }
-  if (ex.twoWayExchange && ex.twoWayExchange.courierStatus !== "hoan_tat") {
-    tags.push({ label: "Đổi size 2 chiều", warn: true });
-  }
-  if (ex.tier1Complaint && ex.tier1Complaint.status === "cho_phan_hoi") {
-    tags.push({ label: "KN cấp 1 · SLA 24h", warn: true });
-  }
-  return tags;
+function summarizeItems(order: GatewayOrder): { text: string; totalQty: number } {
+  const items = order.items ?? [];
+  const totalQty = items.reduce((s, item) => s + item.quantity, 0);
+  if (items.length === 0) return { text: "Chưa có dòng sản phẩm", totalQty: 0 };
+  const first = items[0];
+  const rest = items.length - 1;
+  return {
+    text:
+      rest > 0
+        ? `${first.product_name} (+${rest} sản phẩm khác)`
+        : `${first.product_name} · ${first.sku_name}`,
+    totalQty,
+  };
 }
 
-function SellerOrdersContent() {
+function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
   const searchParams = useSearchParams();
   const uiState = parseUiState(searchParams.get("state"));
-  const initialStatus = searchParams.get("status") as OrderFilterKey | null;
+  const rawStatus = searchParams.get("status");
+  const initialFilter: OrderFilterKey =
+    rawStatus === "CONFIRMED" || rawStatus === "cho_xac_nhan"
+      ? "CONFIRMED"
+      : rawStatus === "PREPARING" || rawStatus === "dang_chuan_bi"
+        ? "PREPARING"
+        : rawStatus === "SHIPPING" || rawStatus === "dang_giao"
+          ? "SHIPPING"
+          : rawStatus === "DONE" || rawStatus === "DELIVERED" || rawStatus === "COMPLETED"
+            ? "DONE"
+            : rawStatus === "OTHER" || rawStatus === "CANCELLED"
+              ? "OTHER"
+              : "all";
 
-  const { activeSellerShopId, orders: storeOrders, updateOrderStatus, showToast } = useStore();
-  const session = useSellerSession();
-  const activeShop = getShopById(activeSellerShopId) ?? SHOPS[0];
+  const { showToast } = useMockStore();
+  const { refreshPendingOrders } = useSellerContext();
 
-  const [filter, setFilter] = useState<OrderFilterKey>(
-    initialStatus &&
-      ["all", "cho_xac_nhan", "dang_chuan_bi", "dang_giao", "da_giao", "tra_huy"].includes(
-        initialStatus
-      )
-      ? initialStatus
-      : "all"
-  );
-  const [opsFilter, setOpsFilter] = useState<OpsQueueFilter>("all");
+  const [orders, setOrders] = useState<GatewayOrder[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const [filter, setFilter] = useState<OrderFilterKey>(initialFilter);
   const [query, setQuery] = useState("");
-  const [paymentFilter, setPaymentFilter] = useState<"all" | PaymentMethod>("all");
+  const [paymentFilter, setPaymentFilter] = useState<"all" | "COD" | "VIETQR">("all");
 
-  const orders = useMemo(
-    () => getUnifiedSellerOrders(activeShop.id, storeOrders, session),
-    [activeShop.id, storeOrders, session]
-  );
+  const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
+  const [batchBusy, setBatchBusy] = useState(false);
+
+  // Inline ship form per order
+  const [shippingOrderId, setShippingOrderId] = useState<string | null>(null);
+  const [carrierCode, setCarrierCode] = useState(CARRIER_OPTIONS[0].carrierCode);
+  const [serviceCode, setServiceCode] = useState(CARRIER_OPTIONS[0].services[0].serviceCode);
+
+  const loadOrders = useCallback(async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const res = await api<PaginatedResponse<GatewayOrder>>("seller/orders?page=1&page_size=100");
+      setOrders(res.items ?? []);
+    } catch (err) {
+      setErrorMsg(getErrorMessage(err, "Không thể tải danh sách đơn hàng lúc này."));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!uiState) {
+      void loadOrders();
+    }
+  }, [uiState, loadOrders]);
 
   const counts = useMemo(() => {
     return {
       all: orders.length,
-      cho_xac_nhan: orders.filter((o) => o.status === "cho_xac_nhan").length,
-      dang_chuan_bi: orders.filter((o) => o.status === "dang_chuan_bi").length,
-      dang_giao: orders.filter((o) => o.status === "dang_giao").length,
-      da_giao: orders.filter((o) => o.status === "da_giao").length,
-      tra_huy: orders.filter((o) => o.status === "yeu_cau_tra_hang" || o.status === "da_huy")
-        .length,
+      CONFIRMED: orders.filter((o) => o.status === "CONFIRMED").length,
+      PREPARING: orders.filter((o) => o.status === "PREPARING").length,
+      SHIPPING: orders.filter((o) => o.status === "SHIPPING").length,
+      DONE: orders.filter((o) => o.status === "DELIVERED" || o.status === "COMPLETED").length,
+      OTHER: orders.filter(
+        (o) =>
+          o.status === "PENDING" ||
+          o.status === "CANCELLED" ||
+          o.status === "RETURN_REQUESTED" ||
+          o.status === "RETURNED"
+      ).length,
     };
-  }, [orders]);
-
-  const opsQueueOrders = useMemo(() => {
-    return orders.filter((o) => {
-      const ex = o.wave2Extra;
-      if (!ex) return false;
-      const pendingVat =
-        ex.vatRequest &&
-        (ex.vatRequest.status === "cho_duyet_nhap" || ex.vatRequest.status === "da_gui_nhap_24h");
-      const pendingAmend = ex.amendment && ex.amendment.status === "cho_duyet";
-      const activeEx = ex.twoWayExchange && ex.twoWayExchange.courierStatus !== "hoan_tat";
-      const openCmp =
-        ex.tier1Complaint &&
-        (ex.tier1Complaint.status === "cho_phan_hoi" || ex.tier1Complaint.status === "da_phan_hoi");
-      return Boolean(pendingVat || pendingAmend || activeEx || openCmp);
-    });
   }, [orders]);
 
   const filteredOrders = useMemo(() => {
     const q = query.trim().toLowerCase();
     return orders.filter((o) => {
-      if (filter === "tra_huy") {
-        if (o.status !== "yeu_cau_tra_hang" && o.status !== "da_huy") return false;
+      if (filter === "DONE") {
+        if (o.status !== "DELIVERED" && o.status !== "COMPLETED") return false;
+      } else if (filter === "OTHER") {
+        if (
+          o.status !== "PENDING" &&
+          o.status !== "CANCELLED" &&
+          o.status !== "RETURN_REQUESTED" &&
+          o.status !== "RETURNED"
+        ) {
+          return false;
+        }
       } else if (filter !== "all" && o.status !== filter) {
         return false;
       }
-      if (paymentFilter !== "all" && o.paymentMethod !== paymentFilter) return false;
 
-      const ex = o.wave2Extra;
-      if (opsFilter === "vat" && !ex?.vatRequest) return false;
-      if (opsFilter === "amendment" && !ex?.amendment) return false;
-      if (opsFilter === "exchange" && !ex?.twoWayExchange) return false;
-      if (opsFilter === "complaint" && !ex?.tier1Complaint) return false;
-      if (opsFilter === "gift" && !(ex?.giftBagRequested || ex?.giftCardMessage)) return false;
+      if (paymentFilter !== "all" && o.payment_method !== paymentFilter) return false;
 
       if (q) {
         const hit =
-          o.orderCode.toLowerCase().includes(q) ||
-          o.buyerName.toLowerCase().includes(q) ||
-          o.itemSummary.toLowerCase().includes(q) ||
-          o.provinceName.toLowerCase().includes(q) ||
-          (ex?.vatRequest?.taxCode.toLowerCase().includes(q) ?? false);
+          o.order_code.toLowerCase().includes(q) ||
+          (o.shipping_address?.recipient_name.toLowerCase().includes(q) ?? false) ||
+          (o.shipping_address?.province_name.toLowerCase().includes(q) ?? false) ||
+          (o.tracking_code ?? "").toLowerCase().includes(q) ||
+          (o.items ?? []).some(
+            (item) =>
+              item.product_name.toLowerCase().includes(q) || item.sku_name.toLowerCase().includes(q)
+          );
         if (!hit) return false;
       }
       return true;
     });
-  }, [orders, filter, opsFilter, paymentFilter, query]);
+  }, [orders, filter, paymentFilter, query]);
 
-  const handleAdvance = (orderCode: string, currentStatus: OrderStatus, storeOrderId?: string) => {
-    const action = getNextSellerTransition(currentStatus);
-    if (!action) return;
-    applySellerOrderStatusOverride(orderCode, action.nextStatus, action.note);
-    if (storeOrderId) {
-      updateOrderStatus(storeOrderId, action.nextStatus, action.note);
+  const activeCarrierOption = useMemo(
+    () => CARRIER_OPTIONS.find((c) => c.carrierCode === carrierCode) ?? CARRIER_OPTIONS[0],
+    [carrierCode]
+  );
+
+  const handleCarrierChange = (nextCarrier: string) => {
+    setCarrierCode(nextCarrier);
+    const opt = CARRIER_OPTIONS.find((c) => c.carrierCode === nextCarrier);
+    if (opt && opt.services[0]) {
+      setServiceCode(opt.services[0].serviceCode);
     }
-    showToast(`Đơn ${orderCode}: ${action.label} thành công.`);
   };
 
-  const handleConfirmAllPending = () => {
-    const pending = orders.filter((o) => o.status === "cho_xac_nhan");
-    if (pending.length === 0) return;
-    for (const o of pending) {
-      const action = getNextSellerTransition(o.status);
-      if (!action) continue;
-      applySellerOrderStatusOverride(o.orderCode, action.nextStatus, action.note);
-      if (o.storeOrderId) {
-        updateOrderStatus(o.storeOrderId, action.nextStatus, action.note);
+  const handleConfirmOrder = async (order: GatewayOrder) => {
+    if (!canSellerConfirmOrder(order.status) || busyOrderId) return;
+    setBusyOrderId(order.id);
+    try {
+      const res = await api<{ order: GatewayOrder }>(`seller/orders/${order.id}/confirm`, {
+        method: "POST",
+      });
+      if (res.order) {
+        setOrders((prev) => prev.map((item) => (item.id === order.id ? res.order : item)));
+      } else {
+        await loadOrders();
       }
+      await refreshPendingOrders();
+      showToast(`Đã xác nhận đơn ${order.order_code} sang trạng thái Đang chuẩn bị.`);
+    } catch (err) {
+      showToast(getErrorMessage(err, "Không thể xác nhận đơn hàng lúc này."));
+    } finally {
+      setBusyOrderId(null);
     }
-    showToast(`Đã xác nhận ${formatInt(pending.length)} đơn chờ và chuyển sang đóng gói.`);
+  };
+
+  const handleShipOrder = async (order: GatewayOrder) => {
+    if (!canSellerShipOrder(order.status) || busyOrderId) return;
+    setBusyOrderId(order.id);
+    try {
+      const res = await api<{
+        order: GatewayOrder;
+        tracking_code?: string;
+        label_url?: string;
+      }>(`seller/orders/${order.id}/ship`, {
+        method: "POST",
+        json: {
+          carrier_code: carrierCode,
+          service_code: serviceCode,
+        },
+      });
+      if (res.order) {
+        setOrders((prev) => prev.map((item) => (item.id === order.id ? res.order : item)));
+      } else {
+        await loadOrders();
+      }
+      setShippingOrderId(null);
+      await refreshPendingOrders();
+      showToast(
+        res.tracking_code
+          ? `Đã bàn giao đơn ${order.order_code} · Mã vận đơn ${res.tracking_code}.`
+          : `Đã chuyển đơn ${order.order_code} sang trạng thái Đang giao.`
+      );
+    } catch (err) {
+      showToast(getErrorMessage(err, "Không thể tạo vận đơn giao hàng lúc này."));
+    } finally {
+      setBusyOrderId(null);
+    }
+  };
+
+  const handleConfirmAllPending = async () => {
+    const pending = orders.filter((o) => o.status === "CONFIRMED");
+    if (pending.length === 0 || batchBusy) return;
+    setBatchBusy(true);
+    let okCount = 0;
+    try {
+      for (const order of pending) {
+        try {
+          await api<{ order: GatewayOrder }>(`seller/orders/${order.id}/confirm`, {
+            method: "POST",
+          });
+          okCount += 1;
+        } catch {
+          // Continue confirming remaining orders
+        }
+      }
+      await loadOrders();
+      await refreshPendingOrders();
+      showToast(`Đã xác nhận ${formatInt(okCount)}/${formatInt(pending.length)} đơn chờ xác nhận.`);
+    } finally {
+      setBatchBusy(false);
+    }
   };
 
   const countCards: Array<{ key: OrderFilterKey; label: string; count: number }> = [
     { key: "all", label: "Tất cả", count: counts.all },
-    { key: "cho_xac_nhan", label: "Chờ xác nhận", count: counts.cho_xac_nhan },
-    { key: "dang_chuan_bi", label: "Đang chuẩn bị", count: counts.dang_chuan_bi },
-    { key: "dang_giao", label: "Đang giao", count: counts.dang_giao },
-    { key: "da_giao", label: "Đã giao", count: counts.da_giao },
-    { key: "tra_huy", label: "Trả hàng / Hủy", count: counts.tra_huy },
+    { key: "CONFIRMED", label: "Chờ xác nhận", count: counts.CONFIRMED },
+    { key: "PREPARING", label: "Đang chuẩn bị", count: counts.PREPARING },
+    { key: "SHIPPING", label: "Đang giao", count: counts.SHIPPING },
+    { key: "DONE", label: "Đã giao / Hoàn tất", count: counts.DONE },
+    { key: "OTHER", label: "Chờ TT / Hủy / Trả", count: counts.OTHER },
   ];
 
   const pillCls = (tone: "neutral" | "warn" | "pos" | "neg") =>
@@ -192,21 +263,34 @@ function SellerOrdersContent() {
         <div className={common.headerText}>
           <h1 className={common.title}>Quản lý đơn hàng</h1>
           <p className={common.finding}>
-            {activeShop.name} · {formatInt(counts.cho_xac_nhan)} đơn chờ xác nhận,{" "}
-            {formatInt(opsQueueOrders.length)} đơn có yêu cầu VAT, hủy/đổi hoặc khiếu nại cấp 1
+            {shop.name} · {formatInt(counts.CONFIRMED)} đơn chờ xác nhận,{" "}
+            {formatInt(counts.PREPARING)} đơn đang chuẩn bị giao hàng
           </p>
         </div>
         <div className={common.headerActions}>
-          {counts.cho_xac_nhan > 0 && (
-            <Button variant="ink" size="sm" shape="app" onClick={handleConfirmAllPending}>
+          <Button variant="outline" size="sm" shape="app" onClick={() => void loadOrders()}>
+            Làm mới
+          </Button>
+          {counts.CONFIRMED > 0 && (
+            <Button
+              variant="ink"
+              size="sm"
+              shape="app"
+              disabled={batchBusy}
+              onClick={() => void handleConfirmAllPending()}
+            >
               <IconCheck size={14} />
-              <span>Xác nhận đơn chờ ({formatInt(counts.cho_xac_nhan)})</span>
+              <span>
+                {batchBusy
+                  ? "Đang xác nhận..."
+                  : `Xác nhận đơn chờ (${formatInt(counts.CONFIRMED)})`}
+              </span>
             </Button>
           )}
         </div>
       </header>
 
-      {uiState === "loading" && (
+      {(uiState === "loading" || (!uiState && loading)) && (
         <StateView
           kind="loading"
           surface="app"
@@ -215,15 +299,14 @@ function SellerOrdersContent() {
         />
       )}
 
-      {uiState === "error" && (
+      {(uiState === "error" || (!uiState && !loading && errorMsg)) && (
         <StateView
           kind="error"
           surface="app"
           title="Không thể tải danh sách đơn hàng"
-          message="Kết nối đến hệ thống xử lý đơn hàng tạm thời gián đoạn."
-          lastUpdated="02:18 · 20/11/2026"
+          message={errorMsg ?? "Kết nối đến hệ thống xử lý đơn hàng tạm thời gián đoạn."}
           actionLabel="Thử lại"
-          actionHref="/seller/don-hang"
+          onAction={() => void loadOrders()}
         />
       )}
 
@@ -232,13 +315,13 @@ function SellerOrdersContent() {
           kind="empty"
           surface="app"
           title="Chưa có đơn hàng nào trong giai đoạn này"
-          message="Khi người mua đặt hàng từ gian hàng, đơn sẽ xuất hiện tại đây theo thời gian thực."
+          message="Khi người mua đặt hàng từ gian hàng, đơn sẽ xuất hiện tại đây."
           actionLabel="Xem sản phẩm đang bán"
           actionHref="/seller/san-pham"
         />
       )}
 
-      {!uiState && (
+      {!uiState && !loading && !errorMsg && (
         <>
           <div className={common.countCards6} role="tablist" aria-label="Lọc theo trạng thái đơn">
             {countCards.map((c) => {
@@ -290,35 +373,20 @@ function SellerOrdersContent() {
                     className={common.searchInput}
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder="Tìm mã đơn, tên khách, MST VAT..."
+                    placeholder="Tìm mã đơn, tên khách, mã vận đơn..."
                     aria-label="Tìm kiếm đơn hàng"
                   />
                 </div>
 
                 <select
                   className={common.filterSelect}
-                  value={opsFilter}
-                  onChange={(e) => setOpsFilter(e.target.value as OpsQueueFilter)}
-                  aria-label="Lọc theo yêu cầu vận hành"
-                >
-                  <option value="all">Mọi yêu cầu bổ sung</option>
-                  <option value="vat">Xuất hóa đơn VAT</option>
-                  <option value="amendment">Hủy muộn / Đổi địa chỉ</option>
-                  <option value="exchange">Đổi size 2 chiều tận nơi</option>
-                  <option value="complaint">Khiếu nại cấp 1 (SLA 24h)</option>
-                  <option value="gift">Có lời nhắn thiệp / Túi quà</option>
-                </select>
-
-                <select
-                  className={common.filterSelect}
                   value={paymentFilter}
-                  onChange={(e) => setPaymentFilter(e.target.value as "all" | PaymentMethod)}
+                  onChange={(e) => setPaymentFilter(e.target.value as "all" | "COD" | "VIETQR")}
                   aria-label="Lọc theo phương thức thanh toán"
                 >
                   <option value="all">Mọi hình thức thanh toán</option>
-                  <option value="vietqr">VietQR</option>
-                  <option value="cod">Thu hộ COD</option>
-                  <option value="vi_sandbox">Ví NexusPay</option>
+                  <option value="COD">Thu hộ COD</option>
+                  <option value="VIETQR">Chuyển khoản VietQR</option>
                 </select>
               </div>
               <span className={common.cardMeta}>
@@ -328,7 +396,9 @@ function SellerOrdersContent() {
 
             {filteredOrders.length === 0 ? (
               <div className={common.inlineEmpty}>
-                Không có đơn hàng nào khớp bộ lọc trạng thái và yêu cầu hiện tại.
+                {orders.length === 0
+                  ? "Gian hàng chưa phát sinh đơn hàng nào."
+                  : "Không có đơn hàng nào khớp bộ lọc trạng thái hiện tại."}
               </div>
             ) : (
               <>
@@ -337,10 +407,10 @@ function SellerOrdersContent() {
                     <thead>
                       <tr>
                         <th>Mã đơn</th>
-                        <th>Người mua</th>
-                        <th>Sản phẩm & yêu cầu kèm theo</th>
+                        <th>Người nhận</th>
+                        <th>Sản phẩm & thanh toán</th>
                         <th className={common.numCol}>SL</th>
-                        <th className={common.numCol}>Tổng đơn</th>
+                        <th className={common.numCol}>Tiền hàng</th>
                         <th className={common.numCol}>Thực nhận</th>
                         <th>Trạng thái</th>
                         <th className={common.numCol}>Thao tác</th>
@@ -348,75 +418,132 @@ function SellerOrdersContent() {
                     </thead>
                     <tbody>
                       {filteredOrders.map((o) => {
-                        const meta = getSafeOrderStatusMeta(o.status);
-                        const nextAction = getNextSellerTransition(o.status);
-                        const signals = getOrderSignals(o);
+                        const meta = getOrderStatusMeta(o.status);
+                        const summary = summarizeItems(o);
+                        const netVnd = computeOrderNetVnd(o);
+                        const isBusy = busyOrderId === o.id;
+                        const canConfirm = canSellerConfirmOrder(o.status);
+                        const canShip = canSellerShipOrder(o.status);
+                        const showShipDrawer = shippingOrderId === o.id;
+
                         return (
-                          <tr key={o.id}>
-                            <td className={styles.orderCodeCell}>
-                              <Link href={`/seller/don-hang/${o.id}`} className={common.cellLink}>
-                                {o.orderCode}
-                              </Link>
-                              <span className={common.cellSub}>
-                                {formatDateTimeVi(o.createdAt)}
-                              </span>
-                            </td>
-                            <td>
-                              <span>{o.buyerName}</span>
-                              <span className={common.cellSub}>
-                                {o.wardName}, {o.provinceName}
-                              </span>
-                            </td>
-                            <td>
-                              <div className={styles.itemSummaryCell} title={o.itemSummary}>
-                                {o.itemSummary}
-                              </div>
-                              <span className={common.cellSub}>
-                                {PAYMENT_METHOD_LABELS[o.paymentMethod]}
-                              </span>
-                              {signals.length > 0 && (
-                                <div className={styles.signalList}>
-                                  {signals.map((sig) => (
-                                    <span
-                                      key={sig.label}
-                                      className={`${styles.signalTag} ${sig.warn ? styles.signalTagWarn : ""}`}
-                                    >
-                                      {sig.label}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                            </td>
-                            <td className={common.numCol}>{formatInt(o.quantity)}</td>
-                            <td className={common.numCol}>{formatVnd(o.subtotal)}</td>
-                            <td className={common.numCol}>
-                              <strong>{formatVnd(o.netReceivable)}</strong>
-                            </td>
-                            <td>
-                              <span className={pillCls(meta.tone)}>{meta.label}</span>
-                            </td>
-                            <td className={common.numCol}>
-                              <div className={styles.actionGroup}>
-                                {nextAction && (
-                                  <button
-                                    type="button"
-                                    className={styles.rowAdvanceBtn}
-                                    onClick={() =>
-                                      handleAdvance(o.orderCode, o.status, o.storeOrderId)
-                                    }
-                                  >
-                                    {nextAction.shortLabel}
-                                  </button>
-                                )}
-                                <Link
-                                  href={`/seller/don-hang/${o.id}`}
-                                  className={styles.rowDetailLink}
-                                >
-                                  Chi tiết
+                          <React.Fragment key={o.id}>
+                            <tr>
+                              <td className={styles.orderCodeCell}>
+                                <Link href={`/seller/don-hang/${o.id}`} className={common.cellLink}>
+                                  {o.order_code}
                                 </Link>
-                              </div>
-                            </td>
-                          </tr>
+                                {o.created_at && (
+                                  <span className={common.cellSub}>
+                                    {formatDateTimeVi(o.created_at)}
+                                  </span>
+                                )}
+                              </td>
+                              <td>
+                                <span>{o.shipping_address?.recipient_name || "Người mua"}</span>
+                                <span className={common.cellSub}>
+                                  {o.shipping_address
+                                    ? `${o.shipping_address.ward_name}, ${o.shipping_address.province_name}`
+                                    : "Chưa có địa chỉ"}
+                                </span>
+                              </td>
+                              <td>
+                                <div className={styles.itemSummaryCell} title={summary.text}>
+                                  {summary.text}
+                                </div>
+                                <span className={common.cellSub}>
+                                  {PAYMENT_METHOD_TEXT[o.payment_method] ?? o.payment_method}
+                                  {o.tracking_code ? ` · Vận đơn: ${o.tracking_code}` : ""}
+                                </span>
+                              </td>
+                              <td className={common.numCol}>{formatInt(summary.totalQty)}</td>
+                              <td className={common.numCol}>{formatVnd(o.subtotal_vnd)}</td>
+                              <td className={common.numCol}>
+                                <strong>{formatVnd(netVnd)}</strong>
+                              </td>
+                              <td>
+                                <span className={pillCls(meta.tone)}>{meta.label}</span>
+                              </td>
+                              <td className={common.numCol}>
+                                <div className={styles.actionGroup}>
+                                  {canConfirm && (
+                                    <button
+                                      type="button"
+                                      className={styles.rowAdvanceBtn}
+                                      disabled={isBusy}
+                                      onClick={() => void handleConfirmOrder(o)}
+                                    >
+                                      {isBusy ? "..." : "Xác nhận"}
+                                    </button>
+                                  )}
+                                  {canShip && (
+                                    <button
+                                      type="button"
+                                      className={styles.rowAdvanceBtn}
+                                      disabled={isBusy}
+                                      onClick={() =>
+                                        setShippingOrderId((prev) => (prev === o.id ? null : o.id))
+                                      }
+                                    >
+                                      {showShipDrawer ? "Đóng" : "Giao hàng"}
+                                    </button>
+                                  )}
+                                  <Link
+                                    href={`/seller/don-hang/${o.id}`}
+                                    className={styles.rowDetailLink}
+                                  >
+                                    Chi tiết
+                                  </Link>
+                                </div>
+                              </td>
+                            </tr>
+                            {showShipDrawer && (
+                              <tr>
+                                <td colSpan={8} className={styles.shipDrawer}>
+                                  <div className={styles.shipFormRow}>
+                                    <span className={styles.queueMeta}>
+                                      Tạo vận đơn & bàn giao cho đơn <strong>{o.order_code}</strong>
+                                    </span>
+                                    <div className={styles.shipFormControls}>
+                                      <select
+                                        className={common.filterSelect}
+                                        value={carrierCode}
+                                        onChange={(e) => handleCarrierChange(e.target.value)}
+                                        aria-label="Chọn đơn vị vận chuyển"
+                                      >
+                                        {CARRIER_OPTIONS.map((c) => (
+                                          <option key={c.carrierCode} value={c.carrierCode}>
+                                            {c.carrierLabel}
+                                          </option>
+                                        ))}
+                                      </select>
+                                      <select
+                                        className={common.filterSelect}
+                                        value={serviceCode}
+                                        onChange={(e) => setServiceCode(e.target.value)}
+                                        aria-label="Chọn gói dịch vụ vận chuyển"
+                                      >
+                                        {activeCarrierOption.services.map((s) => (
+                                          <option key={s.serviceCode} value={s.serviceCode}>
+                                            {s.serviceLabel}
+                                          </option>
+                                        ))}
+                                      </select>
+                                      <Button
+                                        variant="ink"
+                                        size="sm"
+                                        shape="app"
+                                        disabled={isBusy}
+                                        onClick={() => void handleShipOrder(o)}
+                                      >
+                                        {isBusy ? "Đang tạo vận đơn..." : "Xác nhận giao hàng"}
+                                      </Button>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
                         );
                       })}
                     </tbody>
@@ -425,9 +552,12 @@ function SellerOrdersContent() {
 
                 <div className={common.mobileList}>
                   {filteredOrders.map((o) => {
-                    const meta = getSafeOrderStatusMeta(o.status);
-                    const nextAction = getNextSellerTransition(o.status);
-                    const signals = getOrderSignals(o);
+                    const meta = getOrderStatusMeta(o.status);
+                    const summary = summarizeItems(o);
+                    const isBusy = busyOrderId === o.id;
+                    const canConfirm = canSellerConfirmOrder(o.status);
+                    const canShip = canSellerShipOrder(o.status);
+                    const showShipDrawer = shippingOrderId === o.id;
                     return (
                       <div key={o.id} className={common.mobileRow}>
                         <div className={common.mobileRowTop}>
@@ -436,37 +566,41 @@ function SellerOrdersContent() {
                               href={`/seller/don-hang/${o.id}`}
                               className={styles.mobileOrderCode}
                             >
-                              {o.orderCode}
+                              {o.order_code}
                             </Link>
                             <span className={common.cellSub}>
-                              {o.buyerName} · {o.provinceName}
+                              {o.shipping_address?.recipient_name || "Người mua"} ·{" "}
+                              {o.shipping_address?.province_name || "Chưa rõ khu vực"}
                             </span>
                           </div>
-                          <span className={styles.mobileOrderTotal}>{formatVnd(o.subtotal)}</span>
+                          <span className={styles.mobileOrderTotal}>
+                            {formatVnd(o.subtotal_vnd)}
+                          </span>
                         </div>
-                        <p className={styles.mobileOrderSummary}>{o.itemSummary}</p>
-                        {signals.length > 0 && (
-                          <div className={styles.signalList}>
-                            {signals.map((sig) => (
-                              <span
-                                key={sig.label}
-                                className={`${styles.signalTag} ${sig.warn ? styles.signalTagWarn : ""}`}
-                              >
-                                {sig.label}
-                              </span>
-                            ))}
-                          </div>
-                        )}
+                        <p className={styles.mobileOrderSummary}>{summary.text}</p>
                         <div className={common.mobileRowMeta}>
                           <span className={pillCls(meta.tone)}>{meta.label}</span>
                           <div className={styles.actionGroup}>
-                            {nextAction && (
+                            {canConfirm && (
                               <button
                                 type="button"
                                 className={styles.rowAdvanceBtn}
-                                onClick={() => handleAdvance(o.orderCode, o.status, o.storeOrderId)}
+                                disabled={isBusy}
+                                onClick={() => void handleConfirmOrder(o)}
                               >
-                                {nextAction.shortLabel}
+                                {isBusy ? "..." : "Xác nhận"}
+                              </button>
+                            )}
+                            {canShip && (
+                              <button
+                                type="button"
+                                className={styles.rowAdvanceBtn}
+                                disabled={isBusy}
+                                onClick={() =>
+                                  setShippingOrderId((prev) => (prev === o.id ? null : o.id))
+                                }
+                              >
+                                Giao hàng
                               </button>
                             )}
                             <Link
@@ -477,6 +611,41 @@ function SellerOrdersContent() {
                             </Link>
                           </div>
                         </div>
+                        {showShipDrawer && (
+                          <div className={styles.shipMobileBox}>
+                            <select
+                              className={common.filterSelect}
+                              value={carrierCode}
+                              onChange={(e) => handleCarrierChange(e.target.value)}
+                            >
+                              {CARRIER_OPTIONS.map((c) => (
+                                <option key={c.carrierCode} value={c.carrierCode}>
+                                  {c.carrierLabel}
+                                </option>
+                              ))}
+                            </select>
+                            <select
+                              className={common.filterSelect}
+                              value={serviceCode}
+                              onChange={(e) => setServiceCode(e.target.value)}
+                            >
+                              {activeCarrierOption.services.map((s) => (
+                                <option key={s.serviceCode} value={s.serviceCode}>
+                                  {s.serviceLabel}
+                                </option>
+                              ))}
+                            </select>
+                            <Button
+                              variant="ink"
+                              size="sm"
+                              shape="app"
+                              disabled={isBusy}
+                              onClick={() => void handleShipOrder(o)}
+                            >
+                              {isBusy ? "Đang tạo vận đơn..." : "Xác nhận giao hàng"}
+                            </Button>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -484,187 +653,17 @@ function SellerOrdersContent() {
               </>
             )}
           </section>
-
-          {/* Actionable Wave-2 queue: VAT, Late Cancel/Address, 2-Way Exchange, Tier-1 Complaints */}
-          {opsQueueOrders.length > 0 && (
-            <section className={common.card} aria-labelledby="ops-queue-heading">
-              <div className={common.cardHeader}>
-                <h2 id="ops-queue-heading" className={common.cardTitle}>
-                  Yêu cầu VAT, hủy/đổi địa chỉ, đổi size 2 chiều và khiếu nại cấp 1
-                </h2>
-                <span className={common.cardMeta}>
-                  {formatInt(opsQueueOrders.length)} đơn cần xử lý đúng mốc SLA gian hàng
-                </span>
-              </div>
-
-              <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
-                <table className={common.dataTable}>
-                  <thead>
-                    <tr>
-                      <th>Đơn hàng</th>
-                      <th>Loại yêu cầu</th>
-                      <th>Thông tin cần kiểm tra</th>
-                      <th className={common.numCol}>Xử lý nhanh</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {opsQueueOrders.map((o) => {
-                      const ex = o.wave2Extra!;
-                      const hasPendingVat =
-                        ex.vatRequest &&
-                        (ex.vatRequest.status === "cho_duyet_nhap" ||
-                          ex.vatRequest.status === "da_gui_nhap_24h");
-                      const hasPendingAmend = ex.amendment && ex.amendment.status === "cho_duyet";
-                      const hasActiveExchange =
-                        ex.twoWayExchange && ex.twoWayExchange.courierStatus !== "hoan_tat";
-                      const hasComplaint =
-                        ex.tier1Complaint && ex.tier1Complaint.status !== "da_xu_ly";
-
-                      const kindLabel = hasPendingAmend
-                        ? ex.amendment?.kind === "huy_muon"
-                          ? "Hủy muộn"
-                          : "Đổi địa chỉ"
-                        : hasActiveExchange
-                          ? "Đổi size 2 chiều"
-                          : hasComplaint
-                            ? "Khiếu nại cấp 1"
-                            : "Xuất hóa đơn VAT";
-
-                      const detailText = hasPendingAmend
-                        ? ex.amendment?.proposedAddress
-                          ? `Địa chỉ mới: ${ex.amendment.proposedAddress}`
-                          : ex.amendment?.reason
-                        : hasActiveExchange
-                          ? `${ex.twoWayExchange?.fromVariant} -> ${ex.twoWayExchange?.toVariant}`
-                          : hasComplaint
-                            ? `${ex.tier1Complaint?.ticketCode} · ${ex.tier1Complaint?.slaRemainingLabel}`
-                            : `MST ${ex.vatRequest?.taxCode} · ${ex.vatRequest?.email}`;
-
-                      return (
-                        <tr key={`ops-${o.id}`}>
-                          <td className={styles.orderCodeCell}>
-                            <Link href={`/seller/don-hang/${o.id}`} className={common.cellLink}>
-                              {o.orderCode}
-                            </Link>
-                            <span className={common.cellSub}>{o.buyerName}</span>
-                          </td>
-                          <td>
-                            <span className={`${common.pill} ${common.pillWarn}`}>{kindLabel}</span>
-                          </td>
-                          <td>
-                            <span>{detailText}</span>
-                          </td>
-                          <td className={common.numCol}>
-                            <div className={styles.actionGroup}>
-                              {hasPendingVat && ex.vatRequest?.status === "cho_duyet_nhap" && (
-                                <button
-                                  type="button"
-                                  className={styles.rowAdvanceBtn}
-                                  onClick={() => {
-                                    advanceOrderVatStatus(o.orderCode, o.status, "da_gui_nhap_24h");
-                                    showToast(`Đã gửi bản nháp VAT 24h cho đơn ${o.orderCode}.`);
-                                  }}
-                                >
-                                  Gửi nháp 24h
-                                </button>
-                              )}
-                              {hasPendingVat && ex.vatRequest?.status === "da_gui_nhap_24h" && (
-                                <button
-                                  type="button"
-                                  className={styles.rowAdvanceBtn}
-                                  onClick={() => {
-                                    advanceOrderVatStatus(o.orderCode, o.status, "da_phat_hanh");
-                                    showToast(`Đã phát hành HĐĐT cho đơn ${o.orderCode}.`);
-                                  }}
-                                >
-                                  Phát hành HĐĐT
-                                </button>
-                              )}
-                              {hasPendingAmend && (
-                                <button
-                                  type="button"
-                                  className={styles.rowAdvanceBtn}
-                                  onClick={() => {
-                                    resolveOrderAmendment(
-                                      o.orderCode,
-                                      o.status,
-                                      "da_duyet",
-                                      "Gian hàng đã xác nhận và cập nhật ngay trước khi bàn giao ĐVVC."
-                                    );
-                                    showToast(
-                                      `Đã duyệt yêu cầu ${ex.amendment?.kind === "huy_muon" ? "hủy muộn" : "đổi địa chỉ"} đơn ${o.orderCode}.`
-                                    );
-                                  }}
-                                >
-                                  Duyệt yêu cầu
-                                </button>
-                              )}
-                              {hasActiveExchange &&
-                                ex.twoWayExchange?.courierStatus === "cho_dieu_phoi" && (
-                                  <button
-                                    type="button"
-                                    className={styles.rowAdvanceBtn}
-                                    onClick={() => {
-                                      advanceOrderTwoWayExchange(
-                                        o.orderCode,
-                                        o.status,
-                                        "da_dat_buu_ta"
-                                      );
-                                      showToast(
-                                        `Đã điều phối bưu tá đổi size 2 chiều cho đơn ${o.orderCode}.`
-                                      );
-                                    }}
-                                  >
-                                    Đặt bưu tá 2 chiều
-                                  </button>
-                                )}
-                              <Link
-                                href={`/seller/don-hang/${o.id}?tab=ops`}
-                                className={styles.rowDetailLink}
-                              >
-                                Mở xử lý
-                              </Link>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className={common.mobileList}>
-                {opsQueueOrders.map((o) => (
-                  <div key={`ops-m-${o.id}`} className={common.mobileRow}>
-                    <div className={common.mobileRowTop}>
-                      <div>
-                        <Link
-                          href={`/seller/don-hang/${o.id}?tab=ops`}
-                          className={styles.mobileOrderCode}
-                        >
-                          {o.orderCode} · {o.buyerName}
-                        </Link>
-                        <span className={common.cellSub}>
-                          {getOrderSignals(o)
-                            .map((s) => s.label)
-                            .join(" · ")}
-                        </span>
-                      </div>
-                      <Link
-                        href={`/seller/don-hang/${o.id}?tab=ops`}
-                        className={styles.rowDetailLink}
-                      >
-                        Mở xử lý
-                      </Link>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
         </>
       )}
     </div>
+  );
+}
+
+function SellerOrdersContent() {
+  return (
+    <SellerShopGate pageTitle="Quản lý đơn hàng">
+      {(shop) => <SellerOrdersInner shop={shop} />}
+    </SellerShopGate>
   );
 }
 

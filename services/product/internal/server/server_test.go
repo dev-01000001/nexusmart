@@ -822,6 +822,156 @@ func TestProductUpdateRejectAndOutOfStockTransitions(t *testing.T) {
 	}
 }
 
+func TestSellerProductStatusTransitionMatrix(t *testing.T) {
+	t.Run("resolveUpdatedProductStatus_matrix", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			current  string
+			req      productv1.ProductStatus
+			isAdmin  bool
+			want     string
+			wantCode codes.Code
+		}{
+			// Seller blocked from hiding unapproved products (prevents PENDING/REJECTED -> HIDDEN -> APPROVED self-approval).
+			{"seller_pending_to_hidden_blocked", store.ProductStatusPending, productv1.ProductStatus_PRODUCT_STATUS_HIDDEN, false, "", codes.PermissionDenied},
+			{"seller_rejected_to_hidden_blocked", store.ProductStatusRejected, productv1.ProductStatus_PRODUCT_STATUS_HIDDEN, false, "", codes.PermissionDenied},
+			{"seller_pending_to_approved_blocked", store.ProductStatusPending, productv1.ProductStatus_PRODUCT_STATUS_APPROVED, false, "", codes.PermissionDenied},
+			{"seller_rejected_to_approved_blocked", store.ProductStatusRejected, productv1.ProductStatus_PRODUCT_STATUS_APPROVED, false, "", codes.PermissionDenied},
+			{"seller_approved_to_pending_blocked", store.ProductStatusApproved, productv1.ProductStatus_PRODUCT_STATUS_PENDING, false, "", codes.InvalidArgument},
+			{"seller_approved_to_rejected_blocked", store.ProductStatusApproved, productv1.ProductStatus_PRODUCT_STATUS_REJECTED, false, "", codes.PermissionDenied},
+			{"seller_approved_to_out_of_stock_blocked", store.ProductStatusApproved, productv1.ProductStatus_PRODUCT_STATUS_OUT_OF_STOCK, false, "", codes.PermissionDenied},
+
+			// Seller allowed transitions on approved / previously-approved products and rejected resubmission.
+			{"seller_approved_to_hidden_ok", store.ProductStatusApproved, productv1.ProductStatus_PRODUCT_STATUS_HIDDEN, false, store.ProductStatusHidden, codes.OK},
+			{"seller_out_of_stock_to_hidden_ok", store.ProductStatusOutOfStock, productv1.ProductStatus_PRODUCT_STATUS_HIDDEN, false, store.ProductStatusHidden, codes.OK},
+			{"seller_hidden_to_approved_ok", store.ProductStatusHidden, productv1.ProductStatus_PRODUCT_STATUS_APPROVED, false, store.ProductStatusApproved, codes.OK},
+			{"seller_out_of_stock_to_approved_ok", store.ProductStatusOutOfStock, productv1.ProductStatus_PRODUCT_STATUS_APPROVED, false, store.ProductStatusApproved, codes.OK},
+			{"seller_rejected_to_pending_ok", store.ProductStatusRejected, productv1.ProductStatus_PRODUCT_STATUS_PENDING, false, store.ProductStatusPending, codes.OK},
+			{"seller_pending_unspecified_noop", store.ProductStatusPending, productv1.ProductStatus_PRODUCT_STATUS_UNSPECIFIED, false, store.ProductStatusPending, codes.OK},
+			{"seller_pending_to_pending_noop", store.ProductStatusPending, productv1.ProductStatus_PRODUCT_STATUS_PENDING, false, store.ProductStatusPending, codes.OK},
+
+			// Admin remains unrestricted across valid statuses.
+			{"admin_pending_to_hidden_ok", store.ProductStatusPending, productv1.ProductStatus_PRODUCT_STATUS_HIDDEN, true, store.ProductStatusHidden, codes.OK},
+			{"admin_rejected_to_hidden_ok", store.ProductStatusRejected, productv1.ProductStatus_PRODUCT_STATUS_HIDDEN, true, store.ProductStatusHidden, codes.OK},
+			{"admin_pending_to_approved_ok", store.ProductStatusPending, productv1.ProductStatus_PRODUCT_STATUS_APPROVED, true, store.ProductStatusApproved, codes.OK},
+			{"admin_approved_to_rejected_ok", store.ProductStatusApproved, productv1.ProductStatus_PRODUCT_STATUS_REJECTED, true, store.ProductStatusRejected, codes.OK},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				got, err := resolveUpdatedProductStatus(tc.current, tc.req, tc.isAdmin)
+				if tc.wantCode == codes.OK {
+					if err != nil {
+						t.Fatalf("expected nil err, got %v", err)
+					}
+					if got != tc.want {
+						t.Fatalf("expected status %q, got %q", tc.want, got)
+					}
+					return
+				}
+				if status.Code(err) != tc.wantCode {
+					t.Fatalf("expected code %v, got %v (err=%v, status=%q)", tc.wantCode, status.Code(err), err, got)
+				}
+			})
+		}
+	})
+
+	t.Run("rpc_update_product_blocks_self_approval_bypass", func(t *testing.T) {
+		st := store.NewMemoryStore()
+		srv := New(st, nil)
+
+		adminCtx := ctxWithRole("admin-1", "admin", "")
+		sellerCtx := ctxWithRole("seller-1", "seller", "shop-1")
+
+		cat, err := srv.CreateCategory(adminCtx, &productv1.CreateCategoryRequest{Name: "Apparel", Slug: "apparel", CommissionRateBps: 500})
+		if err != nil {
+			t.Fatalf("CreateCategory: %v", err)
+		}
+
+		created, err := srv.CreateProduct(sellerCtx, &productv1.CreateProductRequest{
+			CategoryId: cat.Category.Id,
+			Name:       "Unreviewed Tee",
+			Skus:       []*productv1.SKUInput{{SkuCode: "UNREV-1", Name: "M", PriceVnd: 180000, Stock: 10, WeightGrams: 200}},
+		})
+		if err != nil {
+			t.Fatalf("CreateProduct: %v", err)
+		}
+		prodID := created.Product.Id
+
+		// 1. PENDING -> HIDDEN MUST be rejected for seller.
+		if _, err := srv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
+			Id:     prodID,
+			Status: productv1.ProductStatus_PRODUCT_STATUS_HIDDEN,
+		}); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("expected PermissionDenied for PENDING->HIDDEN by seller, got %v", err)
+		}
+		if _, err := srv.GetProduct(context.Background(), &productv1.GetProductRequest{Id: prodID}); status.Code(err) != codes.NotFound {
+			t.Fatalf("pending product must remain invisible publicly, got %v", err)
+		}
+
+		// 2. Admin rejects -> REJECTED -> HIDDEN MUST also be rejected for seller.
+		if _, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+			ProductId: prodID,
+			Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_REJECT,
+			Reason:    "Missing fabric details",
+		}); err != nil {
+			t.Fatalf("AdminReviewProduct reject: %v", err)
+		}
+		if _, err := srv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
+			Id:     prodID,
+			Status: productv1.ProductStatus_PRODUCT_STATUS_HIDDEN,
+		}); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("expected PermissionDenied for REJECTED->HIDDEN by seller, got %v", err)
+		}
+
+		// 3. Admin approves -> seller can hide (APPROVED->HIDDEN) and unhide (HIDDEN->APPROVED).
+		if _, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+			ProductId: prodID,
+			Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
+		}); err != nil {
+			t.Fatalf("AdminReviewProduct approve: %v", err)
+		}
+		hidden, err := srv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
+			Id:     prodID,
+			Status: productv1.ProductStatus_PRODUCT_STATUS_HIDDEN,
+		})
+		if err != nil || hidden.Product.Status != productv1.ProductStatus_PRODUCT_STATUS_HIDDEN {
+			t.Fatalf("expected APPROVED->HIDDEN to succeed, got %+v err=%v", hidden, err)
+		}
+		if _, err := srv.GetProduct(context.Background(), &productv1.GetProductRequest{Id: prodID}); status.Code(err) != codes.NotFound {
+			t.Fatalf("hidden product must not be publicly visible, got %v", err)
+		}
+		unhidden, err := srv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
+			Id:     prodID,
+			Status: productv1.ProductStatus_PRODUCT_STATUS_APPROVED,
+		})
+		if err != nil || unhidden.Product.Status != productv1.ProductStatus_PRODUCT_STATUS_APPROVED {
+			t.Fatalf("expected HIDDEN->APPROVED to succeed, got %+v err=%v", unhidden, err)
+		}
+		if got, err := srv.GetProduct(context.Background(), &productv1.GetProductRequest{Id: prodID}); err != nil || got.Product.Status != productv1.ProductStatus_PRODUCT_STATUS_APPROVED {
+			t.Fatalf("unhidden product should be publicly visible again, got %+v err=%v", got, err)
+		}
+
+		// 4. Admin UpdateProduct on PENDING product is unaffected.
+		pending2, err := srv.CreateProduct(sellerCtx, &productv1.CreateProductRequest{
+			CategoryId: cat.Category.Id,
+			Name:       "Admin Managed Tee",
+			Skus:       []*productv1.SKUInput{{SkuCode: "ADM-1", Name: "L", PriceVnd: 190000, Stock: 5, WeightGrams: 200}},
+		})
+		if err != nil {
+			t.Fatalf("CreateProduct pending2: %v", err)
+		}
+		adminHid, err := srv.UpdateProduct(adminCtx, &productv1.UpdateProductRequest{
+			Id:     pending2.Product.Id,
+			ShopId: "shop-1",
+			Status: productv1.ProductStatus_PRODUCT_STATUS_HIDDEN,
+		})
+		if err != nil || adminHid.Product.Status != productv1.ProductStatus_PRODUCT_STATUS_HIDDEN {
+			t.Fatalf("expected admin PENDING->HIDDEN to succeed, got %+v err=%v", adminHid, err)
+		}
+	})
+}
+
 func TestRestockOrderItems_IdempotentAuthAndOutOfStockRecovery(t *testing.T) {
 	st := store.NewMemoryStore()
 	srv := New(st, nil)

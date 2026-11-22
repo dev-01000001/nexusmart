@@ -3,22 +3,31 @@
 import React, { useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import {
   BADGE_LABELS,
   computeReviewSummary,
   getShopById,
-  getSku,
   type Product,
   type SizeCode,
 } from "@/data";
+import { resolveGatewaySkuId } from "@/lib/api";
+import {
+  findProductSku,
+  isCatalogProduct,
+  isCatalogSku,
+  type CatalogProduct,
+} from "@/lib/catalog-types";
 import { formatDiscountPercent } from "@/lib/format";
-import { useStore } from "@/context/StoreContext";
+import { useCart } from "@/context/CartContext";
+import { useSession } from "@/context/SessionContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { IconHeart, IconStar } from "./Icons";
 import { Price } from "./Price";
 import styles from "./ProductCard.module.css";
 
 export interface ProductCardProps {
-  product: Product;
+  product: Product | CatalogProduct;
   overridePrice?: number;
   overrideOriginalPrice?: number;
   quotaLabel?: string;
@@ -34,26 +43,42 @@ export interface ProductCardProps {
   maxVisibleSwatches?: number;
   isFlashSaleItem?: boolean;
   isShockDeal?: boolean;
+  // Additive props for real backend catalog & flash sale direct checkout
+  shopName?: string;
+  flashSaleItemId?: string;
+  flashSaleSkuId?: string;
+  flashSaleDisabled?: boolean;
 }
 
-type ProductWithOnModel = Product & {
+type ProductWithOnModel = (Product | CatalogProduct) & {
   onModelImage?: string;
 };
 
 /**
- * Deterministic sample rating fallback for products that do not yet have
- * explicit rows in SAMPLE_REVIEWS (listed as sample UI data in DESIGN_REPORT.md).
+ * Deterministic sample rating fallback for editorial products without explicit
+ * rows in SAMPLE_REVIEWS (listed as sample UI data in DESIGN_REPORT.md).
  */
-function getFallbackSampleRating(product: Product): { average: number; count: number } {
+function getFallbackSampleRating(product: Product | CatalogProduct): {
+  average: number;
+  count: number;
+} {
+  const key = isCatalogProduct(product) ? (product.editorialProductId ?? product.slug) : product.id;
   let hash = 0;
-  for (let i = 0; i < product.id.length; i++) {
-    hash = (hash * 31 + product.id.charCodeAt(i)) % 997;
+  for (let i = 0; i < key.length; i++) {
+    hash = (hash * 31 + key.charCodeAt(i)) % 997;
   }
   const averages = [4.7, 4.8, 4.9, 4.8, 4.7, 4.9];
   const average = averages[hash % averages.length];
   const rankBoost = product.salesRank ? Math.max(0, 18 - product.salesRank) : 4;
   const count = 12 + (hash % 19) + rankBoost;
   return { average, count };
+}
+
+function getCurrentReturnPath(fallbackPathname: string): string {
+  if (typeof window !== "undefined") {
+    return `${window.location.pathname}${window.location.search}`;
+  }
+  return fallbackPathname || "/";
 }
 
 export function ProductCard({
@@ -72,17 +97,37 @@ export function ProductCard({
   maxVisibleSwatches = 4,
   isFlashSaleItem = false,
   isShockDeal = false,
+  shopName,
+  flashSaleItemId,
+  flashSaleSkuId,
+  flashSaleDisabled = false,
 }: ProductCardProps) {
-  const { addToCart, toggleWishlist, isWishlisted, reviews } = useStore();
+  const router = useRouter();
+  const pathname = usePathname();
+  const { isAuthenticated } = useSession();
+  const { addToCart } = useCart();
+  const { toggleWishlist, isWishlisted, reviews, showToast } = useMockStore();
+
   const [selectedColorCode, setSelectedColorCode] = useState<string>(product.colors[0]?.code ?? "");
   const [addedSize, setAddedSize] = useState<SizeCode | null>(null);
+  const [addingSize, setAddingSize] = useState<SizeCode | null>(null);
   const [hoverQuickOpen, setHoverQuickOpen] = useState(false);
   const [focusQuickOpen, setFocusQuickOpen] = useState(false);
   const [touchQuickOpen, setTouchQuickOpen] = useState(false);
 
-  const showQuickOverlay = hoverQuickOpen || focusQuickOpen || touchQuickOpen || addedSize !== null;
+  const showQuickOverlay =
+    hoverQuickOpen || focusQuickOpen || touchQuickOpen || addedSize !== null || addingSize !== null;
 
-  const shop = getShopById(product.shopId);
+  const catalogProduct = isCatalogProduct(product) ? product : null;
+  const legacyShop = catalogProduct ? undefined : getShopById(product.shopId);
+  const resolvedShopLabel =
+    shopName ??
+    catalogProduct?.shopShortName ??
+    catalogProduct?.shopName ??
+    legacyShop?.shortName ??
+    legacyShop?.name ??
+    "NexusMart";
+
   const activeColor = useMemo(
     () => product.colors.find((c) => c.code === selectedColorCode) ?? product.colors[0],
     [product.colors, selectedColorCode]
@@ -106,39 +151,103 @@ export function ProductCard({
   const isComboProduct = Boolean(
     product.isCombo || (product.comboSlots && product.comboSlots.length > 0)
   );
+  const isDirectFlashCheckout = Boolean(isFlashSaleItem && flashSaleItemId && flashSaleSkuId);
 
   const ratingInfo = useMemo(() => {
-    const summary = computeReviewSummary(reviews, product.id);
-    if (summary.count > 0) {
-      return { average: summary.average, count: summary.count };
+    const editorialId = catalogProduct?.editorialProductId;
+    const realSummary = computeReviewSummary(reviews, product.id);
+    if (realSummary.count > 0) {
+      return { average: realSummary.average, count: realSummary.count };
+    }
+    if (editorialId && editorialId !== product.id) {
+      const edSummary = computeReviewSummary(reviews, editorialId);
+      if (edSummary.count > 0) {
+        return { average: edSummary.average, count: edSummary.count };
+      }
+    }
+    if (catalogProduct && !catalogProduct.hasEditorialContent) {
+      return null;
     }
     return getFallbackSampleRating(product);
-  }, [reviews, product]);
+  }, [reviews, product, catalogProduct]);
 
   const productHref =
     activeColor && activeColor.code !== product.colors[0]?.code
       ? `/san-pham/${product.slug}?color=${encodeURIComponent(activeColor.code)}`
       : `/san-pham/${product.slug}`;
 
-  const handleQuickAdd = (size: SizeCode) => {
+  const flashCheckoutHref = isDirectFlashCheckout
+    ? `/thanh-toan?sku=${encodeURIComponent(flashSaleSkuId!)}&qty=1&flash=${encodeURIComponent(flashSaleItemId!)}`
+    : productHref;
+
+  const handleFlashBuyNow = () => {
+    if (flashSaleDisabled || !isDirectFlashCheckout) return;
+    if (!isAuthenticated) {
+      router.push(`/dang-nhap?next=${encodeURIComponent(flashCheckoutHref)}`);
+      return;
+    }
+    router.push(flashCheckoutHref);
+  };
+
+  const handleQuickAdd = async (size: SizeCode) => {
     const colorCode = activeColor?.code ?? product.colors[0]?.code;
-    if (!colorCode) return;
-    const ok = addToCart({
-      productId: product.id,
-      colorCode,
-      size,
-      quantity: 1,
-      overridePrice,
-      isFlashSaleItem,
-      isShockDeal,
-    });
-    if (ok) {
-      setAddedSize(size);
-      window.setTimeout(() => {
-        setAddedSize((cur) => (cur === size ? null : cur));
-      }, 1500);
+    if (!colorCode || addingSize !== null) return;
+
+    if (!isAuthenticated) {
+      const nextPath = getCurrentReturnPath(pathname);
+      router.push(`/dang-nhap?next=${encodeURIComponent(nextPath)}`);
+      return;
+    }
+
+    const matchedSku = findProductSku(product, colorCode, size);
+    if (!matchedSku || matchedSku.stock <= 0) {
+      showToast("Phân loại sản phẩm này hiện đã hết hàng.");
+      return;
+    }
+
+    setAddingSize(size);
+    try {
+      let realSkuId: string | null = isCatalogSku(matchedSku) ? matchedSku.id : null;
+
+      // Backward compatibility for mock pages passing static Product objects without backend UUIDs
+      if (!realSkuId) {
+        realSkuId = await resolveGatewaySkuId(product.slug, {
+          skuCode: matchedSku.skuCode,
+          colorCode,
+          size,
+        });
+        if (!realSkuId) {
+          showToast("Phân loại sản phẩm này hiện đã hết hàng.");
+          return;
+        }
+      }
+
+      const res = await addToCart({ skuId: realSkuId, quantity: 1 });
+      if (res.ok) {
+        setAddedSize(size);
+        if (res.clampedToStock) {
+          showToast(res.message ?? "Số lượng trong giỏ đã được điều chỉnh theo tồn kho hiện còn.");
+        } else if (res.message) {
+          showToast(res.message);
+        }
+        window.setTimeout(() => {
+          setAddedSize((cur) => (cur === size ? null : cur));
+        }, 1500);
+      } else {
+        showToast(res.message ?? "Không thể thêm sản phẩm vào giỏ hàng lúc này.");
+      }
+    } catch {
+      showToast("Không thể thêm sản phẩm vào giỏ hàng lúc này.");
+    } finally {
+      setAddingSize(null);
     }
   };
+
+  const specParts = [
+    resolvedShopLabel,
+    product.gsm > 0 ? `${product.gsm}gsm` : "",
+    product.fit || "",
+  ].filter(Boolean);
 
   return (
     <article
@@ -217,14 +326,27 @@ export function ProductCard({
 
         {enableQuickAdd && showQuickOverlay && (
           <div className={styles.quickOverlay}>
-            {isComboProduct ? (
+            {isDirectFlashCheckout ? (
+              <button
+                type="button"
+                className={styles.comboLink}
+                disabled={flashSaleDisabled}
+                onClick={handleFlashBuyNow}
+              >
+                {flashSaleDisabled ? "Đã hết suất" : "Mua ngay ưu đãi"}
+              </button>
+            ) : isComboProduct ? (
               <Link href={productHref} className={styles.comboLink}>
                 Chọn size combo
               </Link>
-            ) : (
+            ) : product.sizes.length > 0 ? (
               <>
                 <p className={styles.quickOverlayLabel}>
-                  {addedSize ? `Đã thêm size ${addedSize}` : "Thêm nhanh theo size"}
+                  {addingSize
+                    ? `Đang thêm size ${addingSize}...`
+                    : addedSize
+                      ? `Đã thêm size ${addedSize}`
+                      : "Thêm nhanh theo size"}
                 </p>
                 <div
                   className={styles.sizeButtons}
@@ -232,16 +354,19 @@ export function ProductCard({
                   aria-label={`Thêm nhanh ${product.shortName}`}
                 >
                   {product.sizes.map((sz) => {
-                    const sku = activeColor ? getSku(product, activeColor.code, sz) : undefined;
+                    const sku = activeColor
+                      ? findProductSku(product, activeColor.code, sz)
+                      : undefined;
                     const outOfStock = !sku || sku.stock <= 0;
                     const justAdded = addedSize === sz;
+                    const isAdding = addingSize === sz;
                     return (
                       <button
                         key={sz}
                         type="button"
-                        disabled={outOfStock}
+                        disabled={outOfStock || addingSize !== null}
                         className={`${styles.sizeBtn} ${justAdded ? styles.sizeBtnAdded : ""}`}
-                        onClick={() => handleQuickAdd(sz)}
+                        onClick={() => void handleQuickAdd(sz)}
                         title={
                           outOfStock
                             ? `Size ${sz} đã hết hàng`
@@ -253,12 +378,16 @@ export function ProductCard({
                             : `Thêm nhanh size ${sz}`
                         }
                       >
-                        {justAdded ? "Đã thêm" : sz}
+                        {isAdding ? "..." : justAdded ? "Đã thêm" : sz}
                       </button>
                     );
                   })}
                 </div>
               </>
+            ) : (
+              <Link href={productHref} className={styles.comboLink}>
+                Xem chi tiết
+              </Link>
             )}
           </div>
         )}
@@ -310,7 +439,7 @@ export function ProductCard({
             </div>
           )}
 
-          {showRating && (
+          {showRating && ratingInfo && (
             <span
               className={`${styles.ratingText} num`}
               title="Điểm đánh giá mẫu minh họa giao diện"
@@ -328,11 +457,9 @@ export function ProductCard({
         </Link>
 
         {showSpec ? (
-          <p className={styles.specLine}>
-            {shop?.shortName ?? "NexusMart"} · {product.gsm}gsm · {product.fit}
-          </p>
+          <p className={styles.specLine}>{specParts.join(" · ")}</p>
         ) : (
-          <p className={styles.shopName}>{shop?.shortName ?? shop?.name ?? "NexusMart"}</p>
+          <p className={styles.shopName}>{resolvedShopLabel}</p>
         )}
 
         {(showSla || showSpec) && product.slaText && (
@@ -351,7 +478,16 @@ export function ProductCard({
 
         {enableQuickAdd && (
           <div className={styles.touchQuickWrap}>
-            {isComboProduct ? (
+            {isDirectFlashCheckout ? (
+              <button
+                type="button"
+                className={styles.touchQuickBtn}
+                disabled={flashSaleDisabled}
+                onClick={handleFlashBuyNow}
+              >
+                {flashSaleDisabled ? "Đã hết suất" : "Mua ngay ưu đãi"}
+              </button>
+            ) : isComboProduct ? (
               <Link href={productHref} className={styles.touchQuickBtn}>
                 Chọn size combo
               </Link>

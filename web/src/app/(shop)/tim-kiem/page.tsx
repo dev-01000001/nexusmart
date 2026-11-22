@@ -1,8 +1,18 @@
 import React, { Suspense } from "react";
 import { StateView } from "@/components";
 import { CatalogExplorer } from "@/features/catalog/CatalogExplorer";
+import { loadCatalogExplorerData } from "@/lib/catalog";
 
-export default function SearchPage() {
+export const dynamic = "force-dynamic";
+
+interface SearchPageProps {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export default async function SearchPage({ searchParams }: SearchPageProps) {
+  const resolvedParams = await searchParams;
+  const data = await loadCatalogExplorerData(resolvedParams);
+
   return (
     <Suspense
       fallback={
@@ -11,7 +21,15 @@ export default function SearchPage() {
         </div>
       }
     >
-      <CatalogExplorer mode="search" />
+      <CatalogExplorer
+        mode="search"
+        categories={data.categories}
+        shops={data.shops}
+        allProducts={data.allProducts}
+        serverFilteredProducts={data.serverFilteredProducts}
+        hasServerFilter={data.hasServerFilter}
+        error={data.error}
+      />
     </Suspense>
   );
 }

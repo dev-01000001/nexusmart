@@ -63,6 +63,7 @@ message Shop {
   string rejection_reason = 9;
   google.protobuf.Timestamp created_at = 10;
   google.protobuf.Timestamp updated_at = 11;
+  string slug = 12;
 }
 
 message Address {
@@ -233,6 +234,7 @@ message RegisterShopRequest {
   string pickup_address_id = 4;
   string contact_phone = 5;
   string business_license_doc = 6;
+  string slug = 7;
 }
 
 message RegisterShopResponse {
@@ -242,10 +244,21 @@ message RegisterShopResponse {
 message GetShopRequest {
   string shop_id = 1;
   string owner_user_id = 2;
+  string slug = 3;
 }
 
 message GetShopResponse {
   Shop shop = 1;
+}
+
+message ListPublicShopsRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+}
+
+message ListPublicShopsResponse {
+  repeated Shop shops = 1;
+  int64 total = 2;
 }
 
 message AdminListShopsRequest {
@@ -378,6 +391,7 @@ service UserService {
   rpc AdminUpdateUserRole(AdminUpdateUserRoleRequest) returns (AdminUpdateUserRoleResponse);
   rpc RegisterShop(RegisterShopRequest) returns (RegisterShopResponse);
   rpc GetShop(GetShopRequest) returns (GetShopResponse);
+  rpc ListPublicShops(ListPublicShopsRequest) returns (ListPublicShopsResponse);
   rpc AdminListShops(AdminListShopsRequest) returns (AdminListShopsResponse);
   rpc AdminReviewShop(AdminReviewShopRequest) returns (AdminReviewShopResponse);
   rpc CreateAddress(CreateAddressRequest) returns (CreateAddressResponse);

@@ -3,7 +3,7 @@
 import React, { Suspense, useMemo, useState } from "react";
 import { computeCsrProgress } from "@/data";
 import type { AdminEditorialSubmission, AdminBadgeRequest, AdminSearchRankingConfig } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button } from "@/components";
 import { formatDateVi, formatInt, formatPercent, formatVnd } from "@/lib/format";
 import {
@@ -13,11 +13,7 @@ import {
   formatNowHHMM,
   formatShortTimeDateVi,
 } from "@/features/admin/adminMeta";
-import {
-  appendAdminAuditLog,
-  updateAdminContentState,
-  useAdminContentState,
-} from "@/features/admin/auditStore";
+import { updateAdminContentState, useAdminContentState } from "@/features/admin/auditStore";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { StatusPill } from "@/features/admin/StatusPill";
 import { ToggleSwitch } from "@/features/admin/ToggleSwitch";
@@ -74,7 +70,7 @@ const SAMPLE_MULTI_SHOP_SKUS = [
 
 function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
   const content = useAdminContentState();
-  const { showToast } = useStore();
+  const { showToast } = useMockStore();
 
   const initialTab: ContentTab = initialQuery.toUpperCase().startsWith("BV-")
     ? "chien_dich"
@@ -157,13 +153,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
       ...prev,
       announcement: { ...announceDraft },
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Cập nhật thanh thông báo toàn site",
-      module: "Nội dung",
-      target: "SITE-ANNOUNCE",
-      changeSummary: `${announceDraft.enabled ? "Hiển thị" : "Ẩn"}: "${announceDraft.message}"`,
-    });
     markSaved("announce");
     showToast("Đã lưu cấu hình thanh thông báo toàn site.");
   };
@@ -176,13 +165,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
       ...prev,
       megaMenu: prev.megaMenu.map((b) => (b.id === id ? { ...b, active: nextActive } : b)),
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Cập nhật nhánh Mega-menu 3 cấp",
-      module: "Nội dung",
-      target: branch.slug,
-      changeSummary: `${nextActive ? "Bật" : "Tắt"} nhánh "${branch.label}" trên điều hướng toàn sàn.`,
-    });
   };
 
   const handleMoveMegaMenu = (idx: number, delta: -1 | 1) => {
@@ -197,13 +179,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
         megaMenu: next.map((b, i) => ({ ...b, priority: i + 1 })),
       };
     });
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Đổi thứ tự nhánh Mega-menu",
-      module: "Nội dung",
-      target: content.megaMenu[idx].slug,
-      changeSummary: `Di chuyển nhánh "${content.megaMenu[idx].label}" sang vị trí ${targetIdx + 1}.`,
-    });
   };
 
   const handleToggleTaxonomy = (id: string) => {
@@ -214,13 +189,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
       ...prev,
       taxonomy: prev.taxonomy.map((t) => (t.id === id ? { ...t, active: nextActive } : t)),
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Cập nhật trạng thái Taxonomy 3 cấp",
-      module: "Nội dung",
-      target: node.code,
-      changeSummary: `${nextActive ? "Kích hoạt" : "Tạm ẩn"} nhóm ${node.level1} / ${node.level2}.`,
-    });
   };
 
   const handleAddFabric = (e: React.FormEvent) => {
@@ -245,13 +213,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
         ...prev.fabrics,
       ],
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Thêm chất liệu mới vào từ điển sàn",
-      module: "Nội dung",
-      target: cleanCode,
-      changeSummary: `Bổ sung chất liệu "${cleanName}" (${fabricGsm.trim() || "180–210 gsm"}).`,
-    });
     setFabricCode("");
     setFabricName("");
     setFabricComp("");
@@ -269,13 +230,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
         r.categorySlug === slug ? { ...r, enforceBeforePublish: nextEnforce } : r
       ),
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Cập nhật quy tắc thuộc tính bắt buộc",
-      module: "Nội dung",
-      target: slug,
-      changeSummary: `${nextEnforce ? "Bắt buộc" : "Tùy chọn"} đủ thuộc tính khi đăng SKU ngành ${rule.categoryName}.`,
-    });
   };
 
   const handleSaveSizeTemplate = () => {
@@ -289,13 +243,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
         t.id === activeSizeTemplate.id ? { ...t, toleranceNote: nextNote || t.toleranceNote } : t
       ),
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Cập nhật mẫu bảng size chuẩn sàn",
-      module: "Nội dung",
-      target: activeSizeTemplate.id,
-      changeSummary: `Cập nhật ghi chú dung sai bảng size ${activeSizeTemplate.groupName}.`,
-    });
     markSaved("size");
     showToast("Đã cập nhật mẫu bảng size chuẩn sàn.");
   };
@@ -325,13 +272,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
         ...prev.trendingKeywords,
       ],
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: isBlock ? "Chặn từ khóa tìm kiếm vi phạm" : "Ghim từ khóa xu hướng chiến dịch",
-      module: "Nội dung",
-      target: accentless,
-      changeSummary: `${isBlock ? "Chặn" : "Ghim"} từ khóa "${term}" trên thanh tìm kiếm sàn.`,
-    });
     setKwTerm("");
     showToast(isBlock ? `Đã chặn từ khóa "${term}".` : `Đã ghim từ khóa "${term}".`);
   };
@@ -346,13 +286,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
         k.id === id ? { ...k, pinnedCampaign: nextPin } : k
       ),
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: nextPin ? "Ghim từ khóa xu hướng" : "Bỏ ghim từ khóa xu hướng",
-      module: "Nội dung",
-      target: kw.accentless,
-      changeSummary: `${nextPin ? "Ghim" : "Bỏ ghim"} "${kw.term}" trong danh sách gợi ý nhanh.`,
-    });
   };
 
   const handleToggleKeywordBlock = (id: string) => {
@@ -371,13 +304,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
           : k
       ),
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: nextStatus === "bi_chan" ? "Chặn từ khóa vi phạm" : "Khôi phục từ khóa tìm kiếm",
-      module: "Nội dung",
-      target: kw.accentless,
-      changeSummary: `Đổi trạng thái từ khóa "${kw.term}" sang ${nextStatus === "bi_chan" ? "Bị chặn" : "Đang hiển thị"}.`,
-    });
   };
 
   const handleAddSynonym = (e: React.FormEvent) => {
@@ -401,13 +327,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
         ...prev.synonyms,
       ],
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Thêm nhóm đồng nghĩa tìm kiếm không dấu",
-      module: "Nội dung",
-      target: normalizeAccentless(canonical),
-      changeSummary: `Ánh xạ "${canonical}" với ${list.join(", ")}.`,
-    });
     setSynCanonical("");
     setSynList("");
     showToast(`Đã thêm đồng nghĩa cho "${canonical}".`);
@@ -424,13 +343,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
       ...prev,
       rankingConfig: { ...rankingDraft },
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Cập nhật công thức xếp hạng tìm kiếm đa shop",
-      module: "Nội dung",
-      target: "SEARCH-RANKING",
-      changeSummary: `Trọng số ${rankingDraft.relevanceWeight}/${rankingDraft.reviewFitWeight}/${rankingDraft.slaOnTimeWeight}/${rankingDraft.sales30dWeight}/${rankingDraft.shopTrustWeight}%; phạt nâng giá ảo: ${rankingDraft.penalizeInflatedListPrice ? "Bật" : "Tắt"}.`,
-    });
     markSaved("ranking");
     showToast("Đã cập nhật công thức xếp hạng đa shop.");
   };
@@ -448,13 +360,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
         homepageBlocks: next.map((b, i) => ({ ...b, order: i + 1 })),
       };
     });
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Sắp xếp lại khối trang chủ",
-      module: "Nội dung",
-      target: content.homepageBlocks[idx].code,
-      changeSummary: `Di chuyển khối "${content.homepageBlocks[idx].title}" tới thứ tự ${targetIdx + 1}.`,
-    });
   };
 
   const handleToggleBlock = (id: string) => {
@@ -467,13 +372,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
         b.id === id ? { ...b, active: nextActive } : b
       ),
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: nextActive ? "Bật khối trang chủ" : "Tạm ẩn khối trang chủ",
-      module: "Nội dung",
-      target: blk.code,
-      changeSummary: `${nextActive ? "Hiển thị" : "Ẩn"} khối "${blk.title}" trên trang chủ.`,
-    });
   };
 
   const handleToggleFabricTab = (id: string) => {
@@ -489,13 +387,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
         ),
       },
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action: "Cập nhật tab chiến dịch công nghệ vải",
-      module: "Nội dung",
-      target: tab.fabricCode,
-      changeSummary: `${nextPub ? "Xuất bản" : "Tạm ẩn"} tab "${tab.title}" trên trang chiến dịch Sợi Xanh Nexus.`,
-    });
   };
 
   const handleAddCsrStatement = (e: React.FormEvent) => {
@@ -522,13 +413,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
         ],
       },
     }));
-    appendAdminAuditLog({
-      role: "Đối soát tài chính",
-      action: "Ghi nhận sao kê đóng góp Sợi Xanh Nexus",
-      module: "Nội dung",
-      target: code,
-      changeSummary: `Cộng ${formatVnd(cleanVnd)} (${formatInt(cleanOrders)} đơn) từ ${csrShop} vào quỹ CSR.`,
-    });
     showToast(`Đã ghi nhận sao kê ${code} (${formatVnd(cleanVnd)}).`);
   };
 
@@ -542,16 +426,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
         e.id === item.id ? { ...e, status: nextStatus } : e
       ),
     }));
-    appendAdminAuditLog({
-      role: "Vận hành sàn",
-      action:
-        nextStatus === "da_dang"
-          ? "Duyệt đăng bài Sổ tay vải & Phối đồ"
-          : "Yêu cầu chỉnh sửa bài Lookbook Seller",
-      module: "Nội dung",
-      target: item.code,
-      changeSummary: `"${item.title}" (${item.shopName}) chuyển sang ${EDITORIAL_STATUS_META[nextStatus].label}.`,
-    });
     showToast(
       nextStatus === "da_dang"
         ? `Đã xuất bản bài "${item.title}".`
@@ -566,16 +440,6 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
         b.id === item.id ? { ...b, status: nextStatus } : b
       ),
     }));
-    appendAdminAuditLog({
-      role: "Quản trị viên",
-      action:
-        nextStatus === "da_cap"
-          ? `Cấp nhãn ${BADGE_KIND_LABELS[item.badgeKind]}`
-          : `Từ chối cấp nhãn ${BADGE_KIND_LABELS[item.badgeKind]}`,
-      module: "Nội dung",
-      target: item.code,
-      changeSummary: `${item.shopName} (${item.targetScope}): ${BADGE_STATUS_META[nextStatus].label}.`,
-    });
     showToast(
       nextStatus === "da_cap"
         ? `Đã cấp nhãn ${BADGE_KIND_LABELS[item.badgeKind]} cho ${item.shopName}.`

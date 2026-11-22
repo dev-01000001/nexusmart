@@ -2,80 +2,88 @@
 
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import type { SizeCode } from "@/data";
 import {
-  PRODUCTS,
-  getProductById,
-  getShopById,
-  getSku,
-  type CartComboSelection,
-  type Product,
-  type Shop,
-  type SizeCode,
-} from "@/data";
-import { useStore } from "@/context/StoreContext";
+  findProductSku,
+  isCatalogSku,
+  type CatalogProduct,
+  type CatalogShop,
+} from "@/lib/catalog-types";
+import { useCart } from "@/context/CartContext";
+import { useSession } from "@/context/SessionContext";
+import { useMockStore } from "@/mock/MockStoreContext";
+import { getEditorialProductSlugById } from "@/mock/productEditorial";
 import { Button, Price, ProductCard } from "@/components";
 import { formatVnd } from "@/lib/format";
 import styles from "./PdpCrossSell.module.css";
 
 export interface PdpBundleSectionProps {
-  product: Product;
-  shop: Shop;
+  product: CatalogProduct;
+  shop: CatalogShop;
+  bundleProducts: CatalogProduct[];
   selectedColorCode: string;
   selectedSize: SizeCode;
-  comboSelections?: CartComboSelection[];
 }
 
-function getDefaultInStockSize(p: Product): SizeCode {
+function getDefaultInStockSize(p: CatalogProduct): SizeCode {
   const firstColor = p.colors[0]?.code ?? "";
   for (const preferred of ["L", "M", ...p.sizes] as SizeCode[]) {
     if (!p.sizes.includes(preferred)) continue;
-    const sku = getSku(p, firstColor, preferred);
+    const sku = findProductSku(p, firstColor, preferred);
     if (sku && sku.stock > 0) return preferred;
   }
   return p.sizes[0] ?? "M";
 }
 
+function getCurrentReturnPath(fallbackPathname: string): string {
+  if (typeof window !== "undefined") {
+    return `${window.location.pathname}${window.location.search}`;
+  }
+  return fallbackPathname || "/";
+}
+
 export function PdpBundleSection({
   product,
   shop,
+  bundleProducts,
   selectedColorCode,
   selectedSize,
-  comboSelections,
 }: PdpBundleSectionProps) {
-  const { addToCart, showToast } = useStore();
-
-  const bundleProducts = useMemo(() => {
-    const ids = product.bundleIds ?? [];
-    const list: Product[] = [];
-    for (const id of ids) {
-      if (id === product.id) continue;
-      const found = getProductById(id);
-      if (found) list.push(found);
-    }
-    return list;
-  }, [product]);
+  const router = useRouter();
+  const pathname = usePathname();
+  const { isAuthenticated } = useSession();
+  const { addToCart } = useCart();
+  const { showToast } = useMockStore();
 
   const [checkedIds, setCheckedIds] = useState<Record<string, boolean>>(() => {
     const init: Record<string, boolean> = {};
-    for (const id of product.bundleIds ?? []) {
-      init[id] = true;
+    for (const item of bundleProducts) {
+      init[item.id] = true;
     }
     return init;
   });
 
   const [pickedSizes, setPickedSizes] = useState<Record<string, SizeCode>>({});
+  const [submitting, setSubmitting] = useState(false);
 
   if (bundleProducts.length === 0) return null;
 
   const isChecked = (id: string) => (id in checkedIds ? checkedIds[id] : true);
-  const getSizeFor = (p: Product): SizeCode => pickedSizes[p.id] ?? getDefaultInStockSize(p);
+  const getSizeFor = (p: CatalogProduct): SizeCode => pickedSizes[p.id] ?? getDefaultInStockSize(p);
 
   const selectedBundleItems = bundleProducts.filter((p) => isChecked(p.id));
-  const currentSku = getSku(product, selectedColorCode, selectedSize);
+  const currentSku = findProductSku(product, selectedColorCode, selectedSize);
   const currentPrice = currentSku?.price ?? product.price;
   const totalSelectedCount = 1 + selectedBundleItems.length;
   const combinedTotal =
-    currentPrice + selectedBundleItems.reduce((sum, item) => sum + item.price, 0);
+    currentPrice +
+    selectedBundleItems.reduce((sum, item) => {
+      const sz = getSizeFor(item);
+      const colorCode = item.colors[0]?.code ?? "";
+      const sku = findProductSku(item, colorCode, sz);
+      return sum + (sku?.price ?? item.price);
+    }, 0);
   const sameShopCount = selectedBundleItems.filter((item) => item.shopId === product.shopId).length;
 
   const handleToggleItem = (id: string) => {
@@ -85,32 +93,38 @@ export function PdpBundleSection({
     }));
   };
 
-  const handleAddBundle = () => {
-    let addedCount = 0;
-    const okMain = addToCart({
-      productId: product.id,
-      colorCode: selectedColorCode,
-      size: selectedSize,
-      quantity: 1,
-      comboSelections,
-    });
-    if (okMain) addedCount += 1;
+  const handleAddBundle = async () => {
+    if (submitting || !currentSku || currentSku.stock <= 0 || !isCatalogSku(currentSku)) return;
 
-    for (const item of selectedBundleItems) {
-      const sz = getSizeFor(item);
-      const colorCode = item.colors[0]?.code;
-      if (!colorCode) continue;
-      const ok = addToCart({
-        productId: item.id,
-        colorCode,
-        size: sz,
-        quantity: 1,
-      });
-      if (ok) addedCount += 1;
+    if (!isAuthenticated) {
+      router.push(`/dang-nhap?next=${encodeURIComponent(getCurrentReturnPath(pathname))}`);
+      return;
     }
 
-    if (addedCount > 1) {
-      showToast(`Đã thêm bộ ${addedCount} sản phẩm vào giỏ hàng.`);
+    setSubmitting(true);
+    try {
+      let addedCount = 0;
+      const mainRes = await addToCart({ skuId: currentSku.id, quantity: 1 });
+      if (mainRes.ok) {
+        addedCount += 1;
+      }
+
+      for (const item of selectedBundleItems) {
+        const sz = getSizeFor(item);
+        const colorCode = item.colors[0]?.code ?? "";
+        const itemSku = findProductSku(item, colorCode, sz);
+        if (!itemSku || itemSku.stock <= 0 || !isCatalogSku(itemSku)) continue;
+        const res = await addToCart({ skuId: itemSku.id, quantity: 1 });
+        if (res.ok) addedCount += 1;
+      }
+
+      if (addedCount > 0) {
+        showToast(`Đã thêm bộ ${addedCount} sản phẩm vào giỏ hàng.`);
+      } else {
+        showToast("Không thể thêm bộ sản phẩm vào giỏ hàng lúc này.");
+      }
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -156,7 +170,6 @@ export function PdpBundleSection({
           </div>
 
           {bundleProducts.map((item) => {
-            const itemShop = getShopById(item.shopId);
             const checked = isChecked(item.id);
             const chosenSize = getSizeFor(item);
             const sameShop = item.shopId === product.shopId;
@@ -188,9 +201,7 @@ export function PdpBundleSection({
 
                 <div className={styles.bundleInfo}>
                   <span className={styles.bundleTag}>
-                    {sameShop
-                      ? `Cùng xưởng ${shop.shortName} · Gộp ship`
-                      : (itemShop?.shortName ?? "NexusMart")}
+                    {sameShop ? `Cùng xưởng ${shop.shortName} · Gộp ship` : item.shopShortName}
                   </span>
                   <Link href={`/san-pham/${item.slug}`} className={styles.bundleTitleLink}>
                     {item.name}
@@ -237,10 +248,10 @@ export function PdpBundleSection({
             variant="primary"
             size="lg"
             fullWidth
-            disabled={currentSku ? currentSku.stock <= 0 : true}
-            onClick={handleAddBundle}
+            disabled={submitting || !currentSku || currentSku.stock <= 0}
+            onClick={() => void handleAddBundle()}
           >
-            Thêm {totalSelectedCount} món vào giỏ
+            {submitting ? "Đang thêm..." : `Thêm ${totalSelectedCount} món vào giỏ`}
           </Button>
         </aside>
       </div>
@@ -249,45 +260,40 @@ export function PdpBundleSection({
 }
 
 export interface PdpRecommendationsSectionProps {
-  product: Product;
-  shop: Shop;
+  product: CatalogProduct;
+  shop: CatalogShop;
+  sameShopProducts: CatalogProduct[];
+  similarProducts: CatalogProduct[];
+  allProducts: CatalogProduct[];
 }
 
-export function PdpRecommendationsSection({ product, shop }: PdpRecommendationsSectionProps) {
-  const { recentlyViewed, clearRecentlyViewed } = useStore();
-
-  const sameShopProducts = useMemo(
-    () => PRODUCTS.filter((p) => p.id !== product.id && p.shopId === product.shopId).slice(0, 4),
-    [product.id, product.shopId]
-  );
-
-  const similarOnPlatform = useMemo(() => {
-    const others = PRODUCTS.filter((p) => p.id !== product.id && p.shopId !== product.shopId);
-    const scored = others.map((candidate) => {
-      let score = 0;
-      if (candidate.categorySlug === product.categorySlug) score += 4;
-      if (candidate.material && candidate.material === product.material) score += 4;
-      if (Math.abs(candidate.price - product.price) <= 90000) score += 2;
-      const sharedFeatures = (candidate.fabricFeatures ?? []).filter((f) =>
-        (product.fabricFeatures ?? []).includes(f)
-      ).length;
-      score += sharedFeatures;
-      return { candidate, score };
-    });
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, 4).map((x) => x.candidate);
-  }, [product]);
+export function PdpRecommendationsSection({
+  product,
+  shop,
+  sameShopProducts,
+  similarProducts,
+  allProducts,
+}: PdpRecommendationsSectionProps) {
+  const { recentlyViewed, clearRecentlyViewed } = useMockStore();
 
   const recentProducts = useMemo(() => {
-    const list: Product[] = [];
-    for (const id of recentlyViewed) {
-      if (id === product.id) continue;
-      const found = getProductById(id);
-      if (found) list.push(found);
+    const byId = new Map(allProducts.map((p) => [p.id, p]));
+    const bySlug = new Map(allProducts.map((p) => [p.slug, p]));
+    const seen = new Set<string>([product.id]);
+    const list: CatalogProduct[] = [];
+
+    for (const key of recentlyViewed) {
+      const legacySlug = getEditorialProductSlugById(key);
+      const found =
+        byId.get(key) ?? bySlug.get(key) ?? (legacySlug ? bySlug.get(legacySlug) : undefined);
+      if (found && !seen.has(found.id)) {
+        seen.add(found.id);
+        list.push(found);
+      }
       if (list.length >= 4) break;
     }
     return list;
-  }, [recentlyViewed, product.id]);
+  }, [allProducts, recentlyViewed, product.id]);
 
   const gridClassFor = (count: number) => {
     if (count === 3) return `${styles.cardGrid} ${styles.cardGridThree}`;
@@ -303,9 +309,11 @@ export function PdpRecommendationsSection({ product, shop }: PdpRecommendationsS
             <h2 id="pdp-same-shop-heading" className={styles.sectionHeading}>
               {`Cùng gian hàng ${shop.shortName}`}
             </h2>
-            <Link href={`/gian-hang/${shop.slug}`} className={styles.viewAllLink}>
-              Xem toàn bộ {shop.shortName}
-            </Link>
+            {shop.slug && (
+              <Link href={`/gian-hang/${shop.slug}`} className={styles.viewAllLink}>
+                Xem toàn bộ {shop.shortName}
+              </Link>
+            )}
           </div>
 
           <div className={gridClassFor(sameShopProducts.length)}>
@@ -318,19 +326,19 @@ export function PdpRecommendationsSection({ product, shop }: PdpRecommendationsS
         </section>
       )}
 
-      {similarOnPlatform.length > 0 && (
+      {similarProducts.length > 0 && (
         <section className={styles.recoSection} aria-labelledby="pdp-similar-heading">
           <div className={styles.sectionHead}>
             <h2 id="pdp-similar-heading" className={styles.sectionHeading}>
               Tương tự trên sàn NexusMart
             </h2>
-            <Link href={`/danh-muc?cat=${product.categorySlug}`} className={styles.viewAllLink}>
+            <Link href={`/danh-muc?cat=${product.rawCategorySlug}`} className={styles.viewAllLink}>
               Khám phá thêm {product.categoryName}
             </Link>
           </div>
 
-          <div className={gridClassFor(similarOnPlatform.length)}>
-            {similarOnPlatform.map((rel) => (
+          <div className={gridClassFor(similarProducts.length)}>
+            {similarProducts.map((rel) => (
               <div key={rel.id}>
                 <ProductCard product={rel} showSpec={true} showSla={true} />
               </div>
@@ -358,7 +366,7 @@ export function PdpRecommendationsSection({ product, shop }: PdpRecommendationsS
               theo sẽ tự động xuất hiện tại đây để dễ so sánh chất liệu và giá.
             </p>
             <Button variant="secondary" size="md" href="/danh-muc">
-              Xem toàn bộ 18 mẫu cơ bản
+              Xem toàn bộ {allProducts.length || 18} mẫu cơ bản
             </Button>
           </div>
         ) : (

@@ -3,32 +3,30 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import type {
+  FabricFeatureCode,
+  FitCode,
+  GenderCode,
+  MaterialCode,
+  OccasionCode,
+  PatternCode,
+  SizeCode,
+  SportCode,
+} from "@/data";
+import type { CatalogCategory, CatalogProduct, CatalogShop } from "@/lib/catalog-types";
 import {
   CARE_GUIDE_LIBRARY,
-  CATEGORIES,
   FABRIC_FEATURE_LABELS,
   FIT_LABELS,
   GENDER_LABELS,
   MATERIAL_LABELS,
   OCCASION_LABELS,
   PATTERN_LABELS,
-  PRODUCTS,
-  SHOPS,
   SPORT_LABELS,
   TRENDING_KEYWORDS,
-  getShopById,
+  getLegacyShopSlugById,
   matchesGenderFilter,
-  type CategorySlug,
-  type FabricFeatureCode,
-  type FitCode,
-  type GenderCode,
-  type MaterialCode,
-  type OccasionCode,
-  type PatternCode,
-  type Product,
-  type SizeCode,
-  type SportCode,
-} from "@/data";
+} from "@/mock/productEditorial";
 import { searchProducts, suggestSpelling } from "@/lib/search";
 import { Button, IconClose, IconSearch, IconSliders, ProductCard, StateView } from "@/components";
 import { useRevealObserver } from "./useRevealObserver";
@@ -36,9 +34,15 @@ import styles from "./CatalogExplorer.module.css";
 
 export interface CatalogExplorerProps {
   mode: "catalog" | "search";
+  categories: CatalogCategory[];
+  shops: CatalogShop[];
+  allProducts: CatalogProduct[];
+  serverFilteredProducts: CatalogProduct[];
+  hasServerFilter: boolean;
+  error: string | null;
 }
 
-type SortKey = "bestseller" | "newest" | "price-asc" | "price-desc";
+type SortKey = "bestseller" | "newest" | "price-asc" | "price-desc" | "name-asc";
 type PriceBucket =
   "all" | "under-180" | "180-250" | "250-350" | "over-350" | "under-200" | "200-300" | "over-300";
 
@@ -136,7 +140,7 @@ const SUBCATEGORY_FILTER_MAP: Record<string, Record<string, string | null>> = {
 interface ActiveFilters {
   q: string;
   gender: GenderCode | "";
-  cat: CategorySlug | "";
+  cat: string;
   shop: string;
   origin: string;
   size: string;
@@ -151,22 +155,30 @@ interface ActiveFilters {
 }
 
 function matchPriceBucket(price: number, bucket: PriceBucket): boolean {
-  if (bucket === "under-180") return price < 180000;
-  if (bucket === "180-250") return price >= 180000 && price <= 250000;
-  if (bucket === "250-350") return price > 250000 && price <= 350000;
-  if (bucket === "over-350") return price > 350000;
-  // Backward-compatible legacy URL buckets
-  if (bucket === "under-200") return price < 200000;
-  if (bucket === "200-300") return price >= 200000 && price <= 300000;
-  if (bucket === "over-300") return price > 300000;
+  if (bucket === "under-180") return price < 180_000;
+  if (bucket === "180-250") return price >= 180_000 && price <= 250_000;
+  if (bucket === "250-350") return price > 250_000 && price <= 350_000;
+  if (bucket === "over-350") return price > 350_000;
+  if (bucket === "under-200") return price < 200_000;
+  if (bucket === "200-300") return price >= 200_000 && price <= 300_000;
+  if (bucket === "over-300") return price > 300_000;
   return true;
 }
 
+function matchesShopParam(product: CatalogProduct, shopFilter: string): boolean {
+  if (!shopFilter) return true;
+  if (product.shopId === shopFilter || product.shopSlug === shopFilter) return true;
+  const legacySlug = getLegacyShopSlugById(shopFilter);
+  if (legacySlug && product.shopSlug === legacySlug) return true;
+  return false;
+}
+
 function applyStructuredFilters(
-  basePool: Product[],
+  basePool: CatalogProduct[],
   filters: ActiveFilters,
+  shopsById: Map<string, CatalogShop>,
   omitKey?: keyof ActiveFilters
-): Product[] {
+): CatalogProduct[] {
   const activeColorGroup =
     omitKey === "color" ? undefined : COLOR_GROUPS.find((g) => g.id === filters.color);
 
@@ -174,15 +186,16 @@ function applyStructuredFilters(
     if (omitKey !== "gender" && filters.gender) {
       if (!matchesGenderFilter(product, filters.gender)) return false;
     }
-    if (omitKey !== "cat" && filters.cat && product.categorySlug !== filters.cat) {
+    if (omitKey !== "cat" && filters.cat && product.rawCategorySlug !== filters.cat) {
       return false;
     }
-    if (omitKey !== "shop" && filters.shop && product.shopId !== filters.shop) {
+    if (omitKey !== "shop" && filters.shop && !matchesShopParam(product, filters.shop)) {
       return false;
     }
     if (omitKey !== "origin" && filters.origin) {
-      const shop = getShopById(product.shopId);
-      if (shop?.provinceCode !== filters.origin) return false;
+      const shop = shopsById.get(product.shopId);
+      const provCode = shop?.provinceCode ?? product.shopProvinceCode;
+      if (provCode !== filters.origin) return false;
     }
     if (omitKey !== "size" && filters.size) {
       const hasStock = product.skus.some(
@@ -219,7 +232,15 @@ function applyStructuredFilters(
   });
 }
 
-export function CatalogExplorer({ mode }: CatalogExplorerProps) {
+export function CatalogExplorer({
+  mode,
+  categories,
+  shops,
+  allProducts,
+  serverFilteredProducts,
+  hasServerFilter,
+  error,
+}: CatalogExplorerProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -227,7 +248,7 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
 
   const qParam = searchParams.get("q") ?? "";
   const genderParam = (searchParams.get("gender") ?? "") as GenderCode | "";
-  const catParam = (searchParams.get("cat") ?? "") as CategorySlug | "";
+  const catParam = searchParams.get("cat") ?? "";
   const shopParam = searchParams.get("shop") ?? "";
   const originParam = searchParams.get("origin") ?? "";
   const sizeParam = searchParams.get("size") ?? "";
@@ -246,6 +267,8 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_STEP);
+
+  const shopsById = useMemo(() => new Map(shops.map((s) => [s.id, s])), [shops]);
 
   // Primary groups open by default (Danh mục, Kích cỡ, Mức giá);
   // secondary groups collapsed by default unless active in URL.
@@ -380,20 +403,69 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
     router.replace(pathname, { scroll: false });
   };
 
-  // Query search pool (supports non-diacritic input & Vietnamese apparel synonyms)
-  const searchPool = useMemo(() => {
+  // ponytail: backend `GET /products?keyword=...` dùng ILIKE chưa bỏ dấu tiếng Việt / chưa đồng nghĩa;
+  // gộp kết quả từ gateway với tìm bỏ dấu/đồng nghĩa phía client trên tập sản phẩm thật (tối đa 100 SP).
+  // Khi có Search service sẽ chuyển toàn bộ tìm kiếm & 13 nhóm facet lên server.
+  const searchPool = useMemo<CatalogProduct[]>(() => {
     const trimmed = qParam.trim();
-    if (!trimmed) return PRODUCTS;
-    return searchProducts(trimmed, PRODUCTS);
-  }, [qParam]);
+    if (!trimmed) return allProducts;
 
-  const filteredProducts = useMemo<Product[]>(() => {
-    const list = applyStructuredFilters(searchPool, filters);
+    const clientMatched = searchProducts(trimmed, allProducts) as CatalogProduct[];
+    if (!hasServerFilter || serverFilteredProducts.length === 0) {
+      return clientMatched;
+    }
+
+    const seen = new Set<string>();
+    const merged: CatalogProduct[] = [];
+    for (const item of serverFilteredProducts) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id);
+        merged.push(item);
+      }
+    }
+    for (const item of clientMatched) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id);
+        merged.push(item);
+      }
+    }
+    return merged;
+  }, [allProducts, hasServerFilter, qParam, serverFilteredProducts]);
+
+  const hasClientOnlyAttributeFilter = Boolean(
+    genderParam ||
+    originParam ||
+    sizeParam ||
+    colorParam ||
+    materialParam ||
+    fitParam ||
+    occasionParam ||
+    sportParam ||
+    featureParam ||
+    patternParam
+  );
+
+  const isBackendSort =
+    sortParam === "newest" ||
+    sortParam === "price-asc" ||
+    sortParam === "price-desc" ||
+    sortParam === "name-asc";
+
+  const filteredProducts = useMemo<CatalogProduct[]>(() => {
+    // When only gateway-supported filters/sorts are active without Vietnamese synonym search,
+    // display the authoritative gateway-filtered & sorted list directly.
+    if (hasServerFilter && !qParam.trim() && !hasClientOnlyAttributeFilter && isBackendSort) {
+      return serverFilteredProducts;
+    }
+
+    const list = applyStructuredFilters(searchPool, filters, shopsById);
     const sorted = [...list];
     if (sortParam === "price-asc") {
       sorted.sort((a, b) => a.price - b.price);
     } else if (sortParam === "price-desc") {
       sorted.sort((a, b) => b.price - a.price);
+    } else if (sortParam === "name-asc") {
+      sorted.sort((a, b) => a.name.localeCompare(b.name, "vi"));
     } else if (sortParam === "newest") {
       sorted.sort((a, b) => {
         const aTime = a.createdAt ? Date.parse(a.createdAt) : 0;
@@ -401,32 +473,44 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
         return bTime - aTime || Number(Boolean(b.isNew)) - Number(Boolean(a.isNew));
       });
     } else {
-      // bestseller
+      // ponytail: sắp xếp bán chạy dựa vào editorial salesRank tới khi có bảng xếp hạng doanh số từ backend.
       sorted.sort((a, b) => (a.salesRank ?? 99) - (b.salesRank ?? 99));
     }
     return sorted;
-  }, [filters, searchPool, sortParam]);
+  }, [
+    filters,
+    hasClientOnlyAttributeFilter,
+    hasServerFilter,
+    isBackendSort,
+    qParam,
+    searchPool,
+    serverFilteredProducts,
+    shopsById,
+    sortParam,
+  ]);
 
   const visibleProducts = useMemo(
     () => filteredProducts.slice(0, visibleCount),
     [filteredProducts, visibleCount]
   );
 
-  // Live faceted counts for each filter group
+  // Live faceted counts computed across real backend products loaded from gateway
+  // ponytail: 13 nhóm facet chạy phía client trên tập sản phẩm thật đã tải (<= 100 SP);
+  // chuyển lên Search service khi triển khai Tháng 4–6.
   const facets = useMemo(() => {
-    const poolGender = applyStructuredFilters(searchPool, filters, "gender");
-    const poolCat = applyStructuredFilters(searchPool, filters, "cat");
-    const poolSize = applyStructuredFilters(searchPool, filters, "size");
-    const poolColor = applyStructuredFilters(searchPool, filters, "color");
-    const poolPrice = applyStructuredFilters(searchPool, filters, "price");
-    const poolMaterial = applyStructuredFilters(searchPool, filters, "material");
-    const poolFit = applyStructuredFilters(searchPool, filters, "fit");
-    const poolOccasion = applyStructuredFilters(searchPool, filters, "occasion");
-    const poolSport = applyStructuredFilters(searchPool, filters, "sport");
-    const poolFeature = applyStructuredFilters(searchPool, filters, "feature");
-    const poolPattern = applyStructuredFilters(searchPool, filters, "pattern");
-    const poolShop = applyStructuredFilters(searchPool, filters, "shop");
-    const poolOrigin = applyStructuredFilters(searchPool, filters, "origin");
+    const poolGender = applyStructuredFilters(searchPool, filters, shopsById, "gender");
+    const poolCat = applyStructuredFilters(searchPool, filters, shopsById, "cat");
+    const poolSize = applyStructuredFilters(searchPool, filters, shopsById, "size");
+    const poolColor = applyStructuredFilters(searchPool, filters, shopsById, "color");
+    const poolPrice = applyStructuredFilters(searchPool, filters, shopsById, "price");
+    const poolMaterial = applyStructuredFilters(searchPool, filters, shopsById, "material");
+    const poolFit = applyStructuredFilters(searchPool, filters, shopsById, "fit");
+    const poolOccasion = applyStructuredFilters(searchPool, filters, shopsById, "occasion");
+    const poolSport = applyStructuredFilters(searchPool, filters, shopsById, "sport");
+    const poolFeature = applyStructuredFilters(searchPool, filters, shopsById, "feature");
+    const poolPattern = applyStructuredFilters(searchPool, filters, shopsById, "pattern");
+    const poolShop = applyStructuredFilters(searchPool, filters, shopsById, "shop");
+    const poolOrigin = applyStructuredFilters(searchPool, filters, shopsById, "origin");
 
     const gender: Record<GenderCode, number> = {
       nam: poolGender.filter((p) => matchesGenderFilter(p, "nam")).length,
@@ -435,8 +519,8 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
     };
 
     const cat: Record<string, number> = {};
-    for (const c of CATEGORIES) {
-      cat[c.slug] = poolCat.filter((p) => p.categorySlug === c.slug).length;
+    for (const c of categories) {
+      cat[c.slug] = poolCat.filter((p) => p.rawCategorySlug === c.slug).length;
     }
 
     const size: Record<QuickSizeChip, number> = {
@@ -498,15 +582,16 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
     }
 
     const shop: Record<string, number> = {};
-    for (const s of SHOPS) {
+    for (const s of shops) {
       shop[s.id] = poolShop.filter((p) => p.shopId === s.id).length;
     }
 
     const origin: Record<string, number> = {};
     for (const o of ORIGIN_OPTIONS) {
-      origin[o.code] = poolOrigin.filter(
-        (p) => getShopById(p.shopId)?.provinceCode === o.code
-      ).length;
+      origin[o.code] = poolOrigin.filter((p) => {
+        const s = shopsById.get(p.shopId);
+        return (s?.provinceCode ?? p.shopProvinceCode) === o.code;
+      }).length;
     }
 
     return {
@@ -525,13 +610,13 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
       origin,
       allCatTotal: poolCat.length,
     };
-  }, [filters, searchPool]);
+  }, [categories, filters, searchPool, shops, shopsById]);
 
   // Marketplace-wide matches if currently filtered by a single shop with 0 results
   const marketplaceFallbackCount = useMemo(() => {
     if (!shopParam || filteredProducts.length > 0) return 0;
-    return applyStructuredFilters(searchPool, filters, "shop").length;
-  }, [filteredProducts.length, filters, searchPool, shopParam]);
+    return applyStructuredFilters(searchPool, filters, shopsById, "shop").length;
+  }, [filteredProducts.length, filters, searchPool, shopParam, shopsById]);
 
   const spellingSuggestion = useMemo(() => {
     if (!qParam.trim() || filteredProducts.length > 0) return null;
@@ -540,11 +625,17 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
 
   useRevealObserver(rootRef, `${filterSignature}|${visibleCount}|${stateParam ?? ""}`);
 
-  const activeCategory = CATEGORIES.find((c) => c.slug === catParam);
-  const activeShop = SHOPS.find((s) => s.id === shopParam);
+  const activeCategory = categories.find((c) => c.slug === catParam);
+  const resolvedShopSlugParam = shopParam ? (getLegacyShopSlugById(shopParam) ?? shopParam) : "";
+  const activeShop = shops.find((s) => s.slug === resolvedShopSlugParam || s.id === shopParam);
   const activeColor = COLOR_GROUPS.find((c) => c.id === colorParam);
   const activePrice = PRICE_OPTIONS.find((p) => p.id === priceParam && p.id !== "all");
   const activeOrigin = ORIGIN_OPTIONS.find((o) => o.code === originParam);
+
+  const shopsWithProductsOrActive = useMemo(
+    () => shops.filter((s) => (facets.shop[s.id] ?? 0) > 0 || activeShop?.id === s.id),
+    [shops, facets.shop, activeShop?.id]
+  );
 
   const activeFilterChips = [
     qParam ? { key: "q", label: `Từ khóa: ${qParam}` } : null,
@@ -575,7 +666,7 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
       ? "Tìm nhanh theo tên sản phẩm, chất liệu vải, phom dáng hoặc xưởng dệt."
       : activeCategory
         ? activeCategory.description
-        : "18 mẫu đồ basic nam nữ từ bốn xưởng dệt Việt Nam, cập nhật còn hàng theo màu và size.";
+        : `${allProducts.length} mẫu đồ basic nam nữ từ các xưởng dệt Việt Nam, cập nhật còn hàng theo màu và size.`;
 
   const shownRatio =
     filteredProducts.length > 0
@@ -637,12 +728,12 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
             <span>Tất cả sản phẩm</span>
             <span className={styles.optionCount}>{facets.allCatTotal}</span>
           </button>
-          {CATEGORIES.map((cat) => {
+          {categories.map((cat) => {
             const active = catParam === cat.slug;
             const count = facets.cat[cat.slug] ?? 0;
             return (
               <button
-                key={cat.slug}
+                key={cat.id}
                 type="button"
                 className={`${styles.optionBtn} ${active ? styles.optionBtnActive : ""}`}
                 onClick={() => updateParams({ cat: active ? null : cat.slug })}
@@ -757,20 +848,20 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
             onClick={() => updateParams({ shop: null })}
             aria-pressed={!shopParam}
           >
-            <span>Tất cả 4 xưởng</span>
+            <span>Tất cả xưởng</span>
             <span className={styles.optionCount}>
               {Object.values(facets.shop).reduce((s, n) => s + n, 0)}
             </span>
           </button>
-          {SHOPS.map((shop) => {
-            const active = shopParam === shop.id;
+          {shopsWithProductsOrActive.map((shop) => {
+            const active = activeShop?.id === shop.id;
             const count = facets.shop[shop.id] ?? 0;
             return (
               <button
                 key={shop.id}
                 type="button"
                 className={`${styles.optionBtn} ${active ? styles.optionBtnActive : ""}`}
-                onClick={() => updateParams({ shop: active ? null : shop.id })}
+                onClick={() => updateParams({ shop: active ? null : shop.slug })}
                 aria-pressed={active}
               >
                 <span>{shop.shortName}</span>
@@ -1025,7 +1116,7 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
 
             <div className={styles.searchMetaRow}>
               <span className={styles.countText}>
-                Khớp {filteredProducts.length} / {PRODUCTS.length} sản phẩm
+                Khớp {filteredProducts.length} / {allProducts.length} sản phẩm
               </span>
               <div className={styles.desktopControls}>
                 <button
@@ -1051,6 +1142,7 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
                     <option value="newest">Mới nhất</option>
                     <option value="price-asc">Giá tăng dần</option>
                     <option value="price-desc">Giá giảm dần</option>
+                    <option value="name-asc">Tên A–Z</option>
                   </select>
                 </div>
               </div>
@@ -1093,12 +1185,12 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
             <span>Tất cả</span>
             <span className={styles.catCount}>{facets.allCatTotal}</span>
           </button>
-          {CATEGORIES.map((cat) => {
+          {categories.map((cat) => {
             const count = facets.cat[cat.slug] ?? 0;
             const active = catParam === cat.slug;
             return (
               <button
-                key={cat.slug}
+                key={cat.id}
                 type="button"
                 className={`${styles.catBtn} ${active ? styles.catBtnActive : ""}`}
                 onClick={() => updateParams({ cat: active ? null : cat.slug })}
@@ -1184,6 +1276,7 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
             <option value="newest">Mới nhất</option>
             <option value="price-asc">Giá tăng dần</option>
             <option value="price-desc">Giá giảm dần</option>
+            <option value="name-asc">Tên A–Z</option>
           </select>
         </div>
 
@@ -1221,13 +1314,21 @@ export function CatalogExplorer({ mode }: CatalogExplorerProps) {
 
             {stateParam === "loading" ? (
               <StateView kind="loading" title="Đang tải danh mục sản phẩm..." rows={6} />
-            ) : stateParam === "error" ? (
+            ) : stateParam === "error" || error ? (
               <StateView
                 kind="error"
                 title="Không thể tải danh mục lúc này"
-                message="Kết nối danh mục tạm thời gián đoạn. Vui lòng thử tải lại danh sách."
+                message={
+                  error ?? "Kết nối danh mục tạm thời gián đoạn. Vui lòng thử tải lại danh sách."
+                }
                 actionLabel="Tải lại danh mục"
-                onAction={() => updateParams({ state: null })}
+                onAction={() => {
+                  if (stateParam === "error") {
+                    updateParams({ state: null });
+                  } else {
+                    router.refresh();
+                  }
+                }}
               />
             ) : stateParam === "empty" || filteredProducts.length === 0 ? (
               <div className={styles.emptyBox}>

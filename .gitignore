@@ -1,6 +1,7 @@
 # deps and build output
 node_modules/
 .next/
+.next-*/
 out/
 target/
 bin/

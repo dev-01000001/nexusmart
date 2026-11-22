@@ -5,11 +5,11 @@ import { ShopHeader } from "@/components/ShopHeader";
 import { ShopFooter } from "@/components/ShopFooter";
 import { BuyerChatPanel } from "@/features/commerce/BuyerChatPanel";
 import { AiAssistantPanel } from "@/features/commerce/AiAssistantPanel";
-import { useStore } from "@/context/StoreContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import styles from "./layout.module.css";
 
 export default function ShopLayout({ children }: { children: React.ReactNode }) {
-  const { toastMessage, dismissToast } = useStore();
+  const { toastMessage, dismissToast } = useMockStore();
 
   useEffect(() => {
     if (!toastMessage) return;

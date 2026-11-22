@@ -57,17 +57,23 @@ ORDER BY sort_order ASC, name ASC, id ASC;
 -- name: CreateProduct :one
 INSERT INTO products (
     id, shop_id, category_id, name, description, images, status,
-    rejection_reason, min_price_vnd, max_price_vnd
+    rejection_reason, min_price_vnd, max_price_vnd, slug
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at;
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug;
 
 -- name: GetProductByID :one
 SELECT id, shop_id, category_id, name, description, images, status,
-       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
 FROM products
 WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: GetProductBySlug :one
+SELECT id, shop_id, category_id, name, description, images, status,
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
+FROM products
+WHERE slug = $1 AND deleted_at IS NULL;
 
 -- name: UpdateProduct :one
 UPDATE products
@@ -79,10 +85,11 @@ SET category_id = $2,
     rejection_reason = $7,
     min_price_vnd = $8,
     max_price_vnd = $9,
+    slug = $10,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at;
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug;
 
 -- name: UpdateProductReview :one
 UPDATE products
@@ -91,7 +98,7 @@ SET status = $2,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at;
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug;
 
 -- name: UpdateProductStatus :exec
 UPDATE products
@@ -128,7 +135,7 @@ WHERE p.deleted_at IS NULL
 
 -- name: ListProductsFiltered :many
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
-       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at
+       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug
 FROM products p
 WHERE p.deleted_at IS NULL
   AND (sqlc.arg(category_id)::text = '' OR p.category_id = sqlc.arg(category_id)::text OR p.category_id IN (SELECT c.id FROM categories c WHERE c.parent_id = sqlc.arg(category_id)::text))

@@ -2,25 +2,38 @@
 
 import React, { useMemo, useState } from "react";
 import type { Product, Shop } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import { isCatalogProduct, type CatalogProduct, type CatalogShop } from "@/lib/catalog-types";
+import { useSession } from "@/context/SessionContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconChat, IconSpark } from "@/components";
 import { formatDateVi } from "@/lib/format";
 import styles from "./PdpQuestions.module.css";
 
 export interface PdpQuestionsProps {
-  product: Product;
-  shop: Shop;
+  product: Product | CatalogProduct;
+  shop: Shop | CatalogShop;
 }
 
 export function PdpQuestions({ product, shop }: PdpQuestionsProps) {
-  const { productQAs, submitProductQA, openChat, openAi, user } = useStore();
-  const [askerName, setAskerName] = useState<string>(user.fullName);
+  const { user } = useSession();
+  const { productQAs, submitProductQA, openChat, openAi } = useMockStore();
+  const [askerName, setAskerName] = useState<string>(user?.full_name ?? "");
   const [question, setQuestion] = useState<string>("");
   const [error, setError] = useState<string>("");
 
+  const editorialProductId = isCatalogProduct(product) ? product.editorialProductId : undefined;
+  const qaKeyId = editorialProductId ?? product.id;
+  const chatShopId =
+    "editorialShopId" in shop && shop.editorialShopId ? shop.editorialShopId : shop.id;
+
   const qaList = useMemo(
-    () => productQAs.filter((q) => q.productId === product.id),
-    [productQAs, product.id]
+    () =>
+      productQAs.filter(
+        (q) =>
+          q.productId === product.id ||
+          (editorialProductId ? q.productId === editorialProductId : false)
+      ),
+    [productQAs, product.id, editorialProductId]
   );
 
   const faqs = useMemo(() => {
@@ -48,8 +61,8 @@ export function PdpQuestions({ product, shop }: PdpQuestionsProps) {
       return;
     }
     submitProductQA({
-      productId: product.id,
-      askerName: askerName.trim() || user.fullName,
+      productId: qaKeyId,
+      askerName: askerName.trim() || user?.full_name || "Khách hàng",
       question: question.trim(),
     });
     setQuestion("");
@@ -85,7 +98,7 @@ export function PdpQuestions({ product, shop }: PdpQuestionsProps) {
               nhanh kích cỡ theo số đo và hỗ trợ tra cứu đơn hàng của bạn.
             </p>
             <div className={styles.directHelpBtns}>
-              <Button variant="ink" size="md" onClick={() => openChat(shop.id)}>
+              <Button variant="ink" size="md" onClick={() => openChat(chatShopId)}>
                 <IconChat size={15} />
                 <span>Chat với xưởng</span>
               </Button>

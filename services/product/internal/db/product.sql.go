@@ -186,11 +186,11 @@ const createProduct = `-- name: CreateProduct :one
 
 INSERT INTO products (
     id, shop_id, category_id, name, description, images, status,
-    rejection_reason, min_price_vnd, max_price_vnd
+    rejection_reason, min_price_vnd, max_price_vnd, slug
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
 `
 
 type CreateProductParams struct {
@@ -204,6 +204,7 @@ type CreateProductParams struct {
 	RejectionReason string
 	MinPriceVnd     int64
 	MaxPriceVnd     int64
+	Slug            string
 }
 
 // Products
@@ -219,6 +220,7 @@ func (q *Queries) CreateProduct(ctx context.Context, arg CreateProductParams) (P
 		arg.RejectionReason,
 		arg.MinPriceVnd,
 		arg.MaxPriceVnd,
+		arg.Slug,
 	)
 	var i Product
 	err := row.Scan(
@@ -235,6 +237,7 @@ func (q *Queries) CreateProduct(ctx context.Context, arg CreateProductParams) (P
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }
@@ -394,7 +397,7 @@ func (q *Queries) GetCategoryByID(ctx context.Context, id string) (Category, err
 
 const getProductByID = `-- name: GetProductByID :one
 SELECT id, shop_id, category_id, name, description, images, status,
-       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
 FROM products
 WHERE id = $1 AND deleted_at IS NULL
 `
@@ -416,6 +419,36 @@ func (q *Queries) GetProductByID(ctx context.Context, id string) (Product, error
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
+	)
+	return i, err
+}
+
+const getProductBySlug = `-- name: GetProductBySlug :one
+SELECT id, shop_id, category_id, name, description, images, status,
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
+FROM products
+WHERE slug = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) GetProductBySlug(ctx context.Context, slug string) (Product, error) {
+	row := q.db.QueryRow(ctx, getProductBySlug, slug)
+	var i Product
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.CategoryID,
+		&i.Name,
+		&i.Description,
+		&i.Images,
+		&i.Status,
+		&i.RejectionReason,
+		&i.MinPriceVnd,
+		&i.MaxPriceVnd,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }
@@ -727,7 +760,7 @@ func (q *Queries) ListCategoriesByParent(ctx context.Context, parentID pgtype.Te
 
 const listProductsFiltered = `-- name: ListProductsFiltered :many
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
-       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at
+       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug
 FROM products p
 WHERE p.deleted_at IS NULL
   AND ($1::text = '' OR p.category_id = $1::text OR p.category_id IN (SELECT c.id FROM categories c WHERE c.parent_id = $1::text))
@@ -803,6 +836,7 @@ func (q *Queries) ListProductsFiltered(ctx context.Context, arg ListProductsFilt
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Slug,
 		); err != nil {
 			return nil, err
 		}
@@ -1253,10 +1287,11 @@ SET category_id = $2,
     rejection_reason = $7,
     min_price_vnd = $8,
     max_price_vnd = $9,
+    slug = $10,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
 `
 
 type UpdateProductParams struct {
@@ -1269,6 +1304,7 @@ type UpdateProductParams struct {
 	RejectionReason string
 	MinPriceVnd     int64
 	MaxPriceVnd     int64
+	Slug            string
 }
 
 func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (Product, error) {
@@ -1282,6 +1318,7 @@ func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (P
 		arg.RejectionReason,
 		arg.MinPriceVnd,
 		arg.MaxPriceVnd,
+		arg.Slug,
 	)
 	var i Product
 	err := row.Scan(
@@ -1298,6 +1335,7 @@ func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (P
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }
@@ -1309,7 +1347,7 @@ SET status = $2,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
 `
 
 type UpdateProductReviewParams struct {
@@ -1335,6 +1373,7 @@ func (q *Queries) UpdateProductReview(ctx context.Context, arg UpdateProductRevi
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }

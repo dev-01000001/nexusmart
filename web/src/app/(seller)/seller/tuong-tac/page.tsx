@@ -5,10 +5,11 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { SHOPS, getShopById } from "@/data";
 import type { FitFeedbackKind, LookbookStatus } from "@/data";
-import { useStore } from "@/context/StoreContext";
+import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconPlus, StateView } from "@/components";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
+import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
 import {
   answerSellerQuestion,
   createSellerFaqItem,
@@ -50,13 +51,23 @@ const FAQ_TOPICS = [
 ];
 
 function SellerInteractionContent() {
+  return (
+    <SellerShopGate pageTitle="Tương tác & Nội dung gian hàng">
+      {() => <SellerInteractionInner />}
+    </SellerShopGate>
+  );
+}
+
+function SellerInteractionInner() {
   const searchParams = useSearchParams();
   const uiState = parseUiState(searchParams.get("state"));
   const initialTab = searchParams.get("tab") as InteractionTab | null;
 
-  const { activeSellerShopId, showToast } = useStore();
+  const { showToast } = useMockStore();
+  const { shop, mockShopKey } = useSellerContext();
   const session = useSellerSession();
-  const activeShop = getShopById(activeSellerShopId) ?? SHOPS[0];
+  const activeShop = getShopById(mockShopKey) ?? SHOPS[0];
+  const displayShopName = shop?.name ?? activeShop.name;
 
   const [tab, setTab] = useState<InteractionTab>(
     initialTab && ["reviews", "qa", "lookbook", "waiting"].includes(initialTab)
@@ -277,7 +288,7 @@ function SellerInteractionContent() {
         <div className={common.headerText}>
           <h1 className={common.title}>Tương tác & Nội dung gian hàng</h1>
           <p className={common.finding}>
-            {activeShop.name} · {formatInt(unrepliedReviewsCount)} đánh giá chưa phản hồi,{" "}
+            {displayShopName} · {formatInt(unrepliedReviewsCount)} đánh giá chưa phản hồi,{" "}
             {formatInt(unansweredQuestionsCount)} câu hỏi sản phẩm chờ trả lời ·{" "}
             {formatInt(totalWaitingCustomers)} khách đang chờ báo có hàng
           </p>

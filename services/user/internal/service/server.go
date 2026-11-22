@@ -875,10 +875,34 @@ func (s *Server) RegisterShop(ctx context.Context, req *userv1.RegisterShopReque
 		}
 	}
 
+	shopID := uuid.NewString()
+	rawSlug := strings.TrimSpace(req.GetSlug())
+	var shopSlug string
+	if rawSlug != "" {
+		shopSlug = normalizeShopSlug(rawSlug)
+		if shopSlug == "" {
+			return nil, status.Error(codes.InvalidArgument, "shop slug must contain letters or digits")
+		}
+		if _, err := s.store.GetShopBySlug(ctx, shopSlug); err == nil {
+			return nil, status.Error(codes.AlreadyExists, "shop slug is already taken")
+		} else if !isNotFoundErr(err) {
+			return nil, status.Error(codes.Internal, "failed to check shop slug uniqueness")
+		}
+	} else {
+		base := slugifyShop(shopName, "shop-"+shopID[:8])
+		shopSlug = base
+		if _, err := s.store.GetShopBySlug(ctx, shopSlug); err == nil {
+			shopSlug = base + "-" + shopID[:8]
+		} else if !isNotFoundErr(err) {
+			return nil, status.Error(codes.Internal, "failed to check shop slug uniqueness")
+		}
+	}
+
 	created, err := s.store.CreateShop(ctx, db.CreateShopParams{
-		ID:                 uuid.NewString(),
+		ID:                 shopID,
 		OwnerUserID:        ownerID,
 		Name:               shopName,
+		Slug:               shopSlug,
 		Description:        strings.TrimSpace(req.GetDescription()),
 		PickupAddressID:    pickupAddressID,
 		ContactPhone:       strings.TrimSpace(req.GetContactPhone()),
@@ -887,7 +911,7 @@ func (s *Server) RegisterShop(ctx context.Context, req *userv1.RegisterShopReque
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
-			return nil, status.Error(codes.AlreadyExists, "shop name is already taken")
+			return nil, status.Error(codes.AlreadyExists, "shop name or slug is already taken")
 		}
 		return nil, status.Error(codes.Internal, "failed to register shop")
 	}
@@ -897,21 +921,25 @@ func (s *Server) RegisterShop(ctx context.Context, req *userv1.RegisterShopReque
 
 func (s *Server) GetShop(ctx context.Context, req *userv1.GetShopRequest) (*userv1.GetShopResponse, error) {
 	shopID := strings.TrimSpace(req.GetShopId())
+	slug := strings.ToLower(strings.TrimSpace(req.GetSlug()))
 	ownerID := strings.TrimSpace(req.GetOwnerUserId())
-	if shopID == "" && ownerID == "" {
-		return nil, status.Error(codes.InvalidArgument, "shop_id or owner_user_id is required")
+	if shopID == "" && slug == "" && ownerID == "" {
+		return nil, status.Error(codes.InvalidArgument, "shop_id, slug, or owner_user_id is required")
 	}
 
 	var (
 		shop db.Shop
 		err  error
 	)
-	if shopID != "" {
+	switch {
+	case shopID != "":
 		if !isValidUUID(shopID) {
 			return nil, status.Error(codes.NotFound, "shop not found")
 		}
 		shop, err = s.store.GetShopByID(ctx, shopID)
-	} else {
+	case slug != "":
+		shop, err = s.store.GetShopBySlug(ctx, slug)
+	default:
 		if !isValidUUID(ownerID) {
 			return nil, status.Error(codes.NotFound, "shop not found")
 		}
@@ -925,6 +953,32 @@ func (s *Server) GetShop(ctx context.Context, req *userv1.GetShopRequest) (*user
 	}
 
 	return &userv1.GetShopResponse{Shop: toProtoShop(shop)}, nil
+}
+
+func (s *Server) ListPublicShops(ctx context.Context, req *userv1.ListPublicShopsRequest) (*userv1.ListPublicShopsResponse, error) {
+	page, pageSize := normalizePagination(req.GetPage(), req.GetPageSize())
+
+	shops, err := s.store.ListShops(ctx, db.ListShopsParams{
+		Status:     ShopStatusActive,
+		PageLimit:  pageSize,
+		PageOffset: (page - 1) * pageSize,
+	})
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to list public shops")
+	}
+	total, err := s.store.CountShops(ctx, ShopStatusActive)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to count public shops")
+	}
+
+	out := make([]*userv1.Shop, 0, len(shops))
+	for _, sh := range shops {
+		out = append(out, toPublicProtoShop(sh))
+	}
+	return &userv1.ListPublicShopsResponse{
+		Shops: out,
+		Total: total,
+	}, nil
 }
 
 func (s *Server) AdminListShops(ctx context.Context, req *userv1.AdminListShopsRequest) (*userv1.AdminListShopsResponse, error) {

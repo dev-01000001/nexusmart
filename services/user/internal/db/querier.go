@@ -25,6 +25,7 @@ type Querier interface {
 	GetShopByID(ctx context.Context, id string) (Shop, error)
 	GetShopByName(ctx context.Context, lower string) (Shop, error)
 	GetShopByOwnerID(ctx context.Context, ownerUserID string) (Shop, error)
+	GetShopBySlug(ctx context.Context, slug string) (Shop, error)
 	GetUserByEmail(ctx context.Context, lower string) (User, error)
 	GetUserByID(ctx context.Context, id string) (User, error)
 	GetUserByPhone(ctx context.Context, phone string) (User, error)

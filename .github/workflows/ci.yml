@@ -86,6 +86,32 @@ jobs:
         working-directory: services/payment
         run: cargo test
 
+  web:
+    name: Web Frontend (lint, format, data, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: ESLint
+        run: npm run lint
+      - name: Prettier check
+        run: npm run format:check
+      - name: Data integrity check
+        run: npm run check:data
+      - name: Production build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+
   docker-build:
     name: Docker Image Build (${{ matrix.service }})
     runs-on: ubuntu-latest

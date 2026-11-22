@@ -14,7 +14,8 @@ import {
 import { FABRIC_MEDIA, WORKSHOP_MEDIA } from "@/data/media";
 import { normalizeVietnamese } from "@/lib/search";
 import { formatDateTimeVi } from "@/lib/format";
-import { useStore, type SupportTicket } from "@/context/StoreContext";
+import { useSession } from "@/context/SessionContext";
+import { useMockStore, type SupportTicket } from "@/mock/MockStoreContext";
 import { Button, IconChat, IconPhone, IconSpark, StateView } from "@/components";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
 import { useRevealObserver } from "@/features/catalog/useRevealObserver";
@@ -35,7 +36,8 @@ function HelpCenterContent() {
   const viewState =
     rawState === "loading" || rawState === "empty" || rawState === "error" ? rawState : null;
 
-  const { user, supportTickets, submitSupportTicket, openChat, openAi } = useStore();
+  const { user } = useSession();
+  const { supportTickets, submitSupportTicket, openChat, openAi } = useMockStore();
 
   // FAQ search & filter state
   const [faqQuery, setFaqQuery] = useState("");
@@ -43,17 +45,17 @@ function HelpCenterContent() {
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>("all");
 
   // 15-min missed-call callback form
-  const [cbName, setCbName] = useState(user.fullName);
-  const [cbPhone, setCbPhone] = useState(user.phone);
+  const [cbName, setCbName] = useState(user?.full_name ?? "");
+  const [cbPhone, setCbPhone] = useState(user?.phone ?? "");
   const [cbNote, setCbNote] = useState("");
   const [cbError, setCbError] = useState<string | null>(null);
 
   // Formal complaint / missing-sock ticket form
   const [ticketKind, setTicketKind] = useState<"khieu_nai" | "bu_le_tat">("khieu_nai");
   const [tkOrderCode, setTkOrderCode] = useState("");
-  const [tkName, setTkName] = useState(user.fullName);
-  const [tkPhone, setTkPhone] = useState(user.phone);
-  const [tkEmail, setTkEmail] = useState(user.email);
+  const [tkName, setTkName] = useState(user?.full_name ?? "");
+  const [tkPhone, setTkPhone] = useState(user?.phone ?? "");
+  const [tkEmail, setTkEmail] = useState(user?.email ?? "");
   const [tkSubject, setTkSubject] = useState("");
   const [tkDetail, setTkDetail] = useState("");
   const [tkVulnerable, setTkVulnerable] = useState(false);

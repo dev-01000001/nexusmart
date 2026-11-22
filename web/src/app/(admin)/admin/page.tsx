@@ -1,19 +1,27 @@
 "use client";
 
-import React, { Suspense, useMemo, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { computeAdminDailySeries, computeReconciliationSummary } from "@/data";
-import { useStore } from "@/context/StoreContext";
-import { BarChart, Button, LineChart } from "@/components";
-import { formatCompactVnd, formatInt, formatSignedVnd, formatVnd } from "@/lib/format";
+import type {
+  GatewayAuditLog,
+  GatewayLedgerSummary,
+  GatewayOrder,
+  GatewayProduct,
+  GatewayShop,
+  GatewayUser,
+  PaginatedResponse,
+} from "@/lib/gateway-types";
+import { api, getErrorMessage } from "@/lib/api";
+import { BarChart, Button, LineChart, StateView } from "@/components";
 import {
-  computeChannelBreakdown,
-  formatShortTimeDateVi,
-  RANGE_LABELS,
-  SHOP_APPROVAL_META,
-} from "@/features/admin/adminMeta";
-import type { AdminRangeKey } from "@/features/admin/adminMeta";
-import { useAdminAuditLogs } from "@/features/admin/auditStore";
+  formatCompactVnd,
+  formatDateTimeVi,
+  formatDayMonthVi,
+  formatInt,
+  formatVnDayKey,
+  formatVnd,
+} from "@/lib/format";
+import { getAdminProductStatusMeta, getAdminShopStatusMeta } from "@/features/admin/types";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { StatusPill } from "@/features/admin/StatusPill";
 import shared from "@/features/admin/adminShared.module.css";
@@ -23,77 +31,144 @@ type OverviewScope = "toan_san" | "thanh_toan" | "van_hanh";
 
 const SCOPE_TABS: Array<{ id: OverviewScope; label: string }> = [
   { id: "toan_san", label: "Toàn sàn" },
-  { id: "thanh_toan", label: "Thanh toán" },
-  { id: "van_hanh", label: "Vận hành" },
+  { id: "thanh_toan", label: "Sổ cái" },
+  { id: "van_hanh", label: "Đơn hàng" },
 ];
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 function AdminOverviewContent() {
-  const { shopApprovals, disputes, reconciliationRows } = useStore();
-  const auditLogs = useAdminAuditLogs();
-
   const [scope, setScope] = useState<OverviewScope>("toan_san");
-  const [range, setRange] = useState<AdminRangeKey>("7d");
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const summary = useMemo(
-    () => computeReconciliationSummary(reconciliationRows),
-    [reconciliationRows]
-  );
-  const dailySeries = useMemo(
-    () => computeAdminDailySeries(reconciliationRows),
-    [reconciliationRows]
-  );
-  const channelBreakdown = useMemo(
-    () => computeChannelBreakdown(reconciliationRows),
-    [reconciliationRows]
+  const [pendingShops, setPendingShops] = useState<GatewayShop[]>([]);
+  const [pendingShopsTotal, setPendingShopsTotal] = useState(0);
+  const [pendingProducts, setPendingProducts] = useState<GatewayProduct[]>([]);
+  const [pendingProductsTotal, setPendingProductsTotal] = useState(0);
+  const [ledger, setLedger] = useState<GatewayLedgerSummary | null>(null);
+  const [orders, setOrders] = useState<GatewayOrder[]>([]);
+  const [ordersTotal, setOrdersTotal] = useState(0);
+  const [usersTotal, setUsersTotal] = useState(0);
+  const [auditLogs, setAuditLogs] = useState<GatewayAuditLog[]>([]);
+  const [auditTotal, setAuditTotal] = useState(0);
+
+  const loadOverview = useCallback(async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const [shopsRes, prodsRes, ledgerRes, ordersRes, usersRes, auditRes] = await Promise.all([
+        api<PaginatedResponse<GatewayShop>>("admin/shops?status=PENDING&page=1&page_size=5"),
+        api<PaginatedResponse<GatewayProduct>>("admin/products?status=PENDING&page=1&page_size=5"),
+        api<GatewayLedgerSummary>("admin/ledger/summary"),
+        api<PaginatedResponse<GatewayOrder>>("admin/orders?page=1&page_size=50"),
+        api<PaginatedResponse<GatewayUser>>("admin/users?page=1&page_size=1"),
+        api<PaginatedResponse<GatewayAuditLog>>("admin/audit-logs?page=1&page_size=5"),
+      ]);
+      setPendingShops(shopsRes.items ?? []);
+      setPendingShopsTotal(shopsRes.total ?? (shopsRes.items ?? []).length);
+      setPendingProducts(prodsRes.items ?? []);
+      setPendingProductsTotal(prodsRes.total ?? (prodsRes.items ?? []).length);
+      setLedger(ledgerRes);
+      setOrders(ordersRes.items ?? []);
+      setOrdersTotal(ordersRes.total ?? (ordersRes.items ?? []).length);
+      setUsersTotal(usersRes.total ?? 0);
+      setAuditLogs(auditRes.items ?? []);
+      setAuditTotal(auditRes.total ?? (auditRes.items ?? []).length);
+    } catch (err) {
+      setErrorMsg(getErrorMessage(err, "Không thể tải số liệu tổng quan quản trị lúc này."));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadOverview();
+  }, [loadOverview]);
+
+  const activeOrders = useMemo(
+    () => orders.filter((o) => o.status !== "CANCELLED" && o.status !== "RETURNED"),
+    [orders]
   );
 
-  const pendingApprovals = useMemo(
-    () => shopApprovals.filter((a) => a.status === "cho_duyet"),
-    [shopApprovals]
+  const totalGmvVnd = useMemo(
+    () => activeOrders.reduce((sum, o) => sum + o.subtotal_vnd, 0),
+    [activeOrders]
   );
-  const supplementApprovals = useMemo(
-    () => shopApprovals.filter((a) => a.status === "bo_sung_ho_so"),
-    [shopApprovals]
-  );
-  const openDisputes = useMemo(() => disputes.filter((d) => d.status !== "da_xu_ly"), [disputes]);
-  const openDisputeAmount = useMemo(
-    () => openDisputes.reduce((sum, d) => sum + d.amount, 0),
-    [openDisputes]
+  const totalCommissionVnd = useMemo(
+    () => activeOrders.reduce((sum, o) => sum + o.commission_vnd, 0),
+    [activeOrders]
   );
 
-  const priorityShopQueue = useMemo(() => {
-    const rank = (status: string) =>
-      status === "cho_duyet" ? 0 : status === "bo_sung_ho_so" ? 1 : 2;
-    return [...shopApprovals]
-      .sort((a, b) => rank(a.status) - rank(b.status) || a.slaHoursLeft - b.slaHoursLeft)
-      .slice(0, 4);
-  }, [shopApprovals]);
+  const dailySeries = useMemo(() => {
+    const nowMs = Date.now();
+    const days: Array<{ key: string; label: string; gmv: number; orders: number }> = [];
+    const idxMap = new Map<string, number>();
 
-  const recentAuditLogs = useMemo(() => auditLogs.slice(0, 4), [auditLogs]);
+    for (let offset = 6; offset >= 0; offset--) {
+      const ts = nowMs - offset * DAY_MS;
+      const key = formatVnDayKey(ts);
+      idxMap.set(key, days.length);
+      days.push({ key, label: formatDayMonthVi(new Date(ts).toISOString()), gmv: 0, orders: 0 });
+    }
 
-  const peakIndex = useMemo(() => {
-    let bestIdx = 0;
-    for (let i = 1; i < dailySeries.length; i++) {
-      if (dailySeries[i].grossCollected > dailySeries[bestIdx].grossCollected) {
-        bestIdx = i;
+    for (const o of activeOrders) {
+      if (!o.created_at) continue;
+      const idx = idxMap.get(formatVnDayKey(o.created_at));
+      if (idx !== undefined) {
+        days[idx].gmv += o.subtotal_vnd;
+        days[idx].orders += 1;
       }
     }
-    return bestIdx;
-  }, [dailySeries]);
+    return days;
+  }, [activeOrders]);
 
-  const peakDay = dailySeries[peakIndex];
+  if (loading) {
+    return (
+      <div className={shared.page}>
+        <header className={shared.titleRow}>
+          <div className={shared.titleBlock}>
+            <h1 className={shared.pageTitle}>Tổng quan sàn</h1>
+          </div>
+        </header>
+        <div className={shared.stateWrap}>
+          <StateView
+            kind="loading"
+            surface="app"
+            title="Đang tổng hợp số liệu vận hành toàn sàn..."
+            rows={5}
+          />
+        </div>
+      </div>
+    );
+  }
 
-  const findingLine =
-    summary.totalDiscrepancy > 0
-      ? `Hiện có ${pendingApprovals.length} gian hàng chờ duyệt, ${openDisputes.length} khiếu nại đang mở và ${summary.flaggedBatches} lô COD lệch ${formatVnd(summary.totalDiscrepancy)} cần đối chiếu.`
-      : `Toàn bộ ${reconciliationRows.length} lô thanh toán đã khớp sổ cái; còn ${pendingApprovals.length} gian hàng chờ duyệt và ${openDisputes.length} khiếu nại đang mở.`;
+  if (errorMsg) {
+    return (
+      <div className={shared.page}>
+        <header className={shared.titleRow}>
+          <div className={shared.titleBlock}>
+            <h1 className={shared.pageTitle}>Tổng quan sàn</h1>
+          </div>
+        </header>
+        <div className={shared.stateWrap}>
+          <StateView
+            kind="error"
+            surface="app"
+            title="Không thể tải số liệu tổng quan quản trị"
+            message={errorMsg}
+            actionLabel="Tải lại"
+            onAction={() => void loadOverview()}
+          />
+        </div>
+      </div>
+    );
+  }
 
-  const rangeCaption =
-    range === "7d"
-      ? `${formatInt(summary.totalTxCount)} gd · 15/11–19/11`
-      : `15/11–19/11 (${RANGE_LABELS[range].toLowerCase()})`;
+  const isBalanced = ledger ? ledger.is_balanced : true;
+  const ledgerDiff = ledger ? ledger.total_debits_vnd - ledger.total_credits_vnd : 0;
 
-  const totalSettledVnd = summary.totalGross - summary.totalDiscrepancy;
+  const findingLine = `Hiện có ${formatInt(pendingShopsTotal)} gian hàng chờ duyệt, ${formatInt(pendingProductsTotal)} sản phẩm chờ kiểm duyệt, ${formatInt(ordersTotal)} đơn hàng và ${formatInt(usersTotal)} tài khoản người dùng trên sàn.`;
 
   return (
     <div className={shared.page}>
@@ -103,8 +178,11 @@ function AdminOverviewContent() {
           <p className={shared.pageSubtitle}>{findingLine}</p>
         </div>
         <div className={shared.titleActions}>
-          <Button variant="primary" size="sm" shape="app" href="/admin/gian-hang">
-            Duyệt gian hàng
+          <Button variant="outline" size="sm" shape="app" onClick={() => void loadOverview()}>
+            Làm mới
+          </Button>
+          <Button variant="primary" size="sm" shape="app" href="/admin/kiem-duyet">
+            Kiểm duyệt sản phẩm
           </Button>
         </div>
       </header>
@@ -127,19 +205,10 @@ function AdminOverviewContent() {
             );
           })}
         </div>
-
         <div className={shared.tabsMeta}>
-          <span className={styles.freshness}>Cập nhật 01:12 · 20/11</span>
-          <select
-            className={shared.toolbarSelect}
-            value={range}
-            onChange={(e) => setRange(e.target.value as AdminRangeKey)}
-            aria-label="Chọn khoảng thời gian thống kê"
-          >
-            <option value="7d">7 ngày qua</option>
-            <option value="14d">14 ngày qua</option>
-            <option value="30d">30 ngày qua</option>
-          </select>
+          <span className={styles.freshness}>
+            Sổ cái: {isBalanced ? "Cân bằng" : "Có chênh lệch"}
+          </span>
         </div>
       </div>
 
@@ -147,40 +216,43 @@ function AdminOverviewContent() {
         <div className={styles.mainCol}>
           <section className={shared.kpiStrip} aria-label="Chỉ số vận hành chính">
             <div className={shared.kpiCell}>
-              <span className={shared.kpiLabel}>GMV kỳ chọn</span>
-              <span className={shared.kpiValue}>{formatVnd(summary.totalGross)}</span>
-              <span className={shared.kpiCaption}>{rangeCaption}</span>
+              <span className={shared.kpiLabel}>GMV đơn gần nhất</span>
+              <span className={shared.kpiValue}>{formatVnd(totalGmvVnd)}</span>
+              <span className={shared.kpiCaption}>
+                {formatInt(ordersTotal)} đơn · {formatInt(usersTotal)} người dùng
+              </span>
             </div>
 
             <div className={shared.kpiCell}>
               <span className={shared.kpiLabel}>Gian hàng chờ duyệt</span>
-              <span className={shared.kpiValue}>{formatInt(pendingApprovals.length)}</span>
+              <span className={shared.kpiValue}>{formatInt(pendingShopsTotal)}</span>
               <span className={shared.kpiCaption}>
-                {supplementApprovals.length > 0
-                  ? `Hạn 24h · +${supplementApprovals.length} bổ sung`
-                  : "Cần xử lý trong 24h"}
+                {pendingShopsTotal > 0 ? "Cần thẩm định hồ sơ" : "Đã xử lý toàn bộ hàng đợi"}
               </span>
             </div>
 
             <div className={shared.kpiCell}>
-              <span className={shared.kpiLabel}>Khiếu nại đang mở</span>
-              <span className={shared.kpiValue}>{formatInt(openDisputes.length)}</span>
-              <span className={shared.kpiCaption}>Tạm giữ {formatVnd(openDisputeAmount)}</span>
+              <span className={shared.kpiLabel}>Sản phẩm chờ duyệt</span>
+              <span className={shared.kpiValue}>{formatInt(pendingProductsTotal)}</span>
+              <span className={shared.kpiCaption}>
+                {pendingProductsTotal > 0
+                  ? "Chờ duyệt hiển thị công khai"
+                  : "Không có sản phẩm tồn đọng"}
+              </span>
             </div>
 
             <div className={shared.kpiCell}>
-              <span className={shared.kpiLabel}>Lệch đối soát</span>
+              <span className={shared.kpiLabel}>Trạng thái sổ cái</span>
               <span
                 className={`${shared.kpiValue} ${
-                  summary.totalDiscrepancy > 0 ? shared.kpiValueNegative : ""
+                  !isBalanced ? shared.kpiValueNegative : shared.kpiValuePositive
                 }`}
               >
-                {summary.totalDiscrepancy > 0 ? formatSignedVnd(-summary.totalDiscrepancy) : "0₫"}
+                {isBalanced ? "Cân bằng" : "Lệch sổ"}
               </span>
               <span className={shared.kpiCaption}>
-                {summary.flaggedBatches > 0
-                  ? `${summary.flaggedBatches} phiên COD lệch`
-                  : `${summary.matchedBatches}/${reconciliationRows.length} phiên đã khớp`}
+                Nợ {formatCompactVnd(ledger?.total_debits_vnd ?? 0)} · Có{" "}
+                {formatCompactVnd(ledger?.total_credits_vnd ?? 0)}
               </span>
             </div>
           </section>
@@ -189,17 +261,13 @@ function AdminOverviewContent() {
             <div className={shared.panelHeader}>
               <h2 id="admin-chart-heading" className={shared.panelTitle}>
                 {scope === "toan_san"
-                  ? "Tổng thu GMV theo ngày"
+                  ? "Tổng giá trị đơn hàng 7 ngày gần nhất"
                   : scope === "thanh_toan"
-                    ? "Tổng thu theo ngày đối soát"
-                    : "Số giao dịch đã đối soát theo ngày"}
+                    ? "Số dư các tài khoản sổ cái"
+                    : "Số đơn hàng hợp lệ 7 ngày gần nhất"}
               </h2>
               <span className={shared.panelMeta}>
-                {scope === "toan_san" && peakDay
-                  ? `Đỉnh ${peakDay.label}: ${formatVnd(peakDay.grossCollected)}`
-                  : scope === "thanh_toan"
-                    ? `Thực trả gian hàng: ${formatVnd(summary.totalSellerPayable)}`
-                    : `Tổng ${formatInt(summary.totalTxCount)} giao dịch`}
+                Hoa hồng ghi nhận: {formatVnd(totalCommissionVnd)}
               </span>
             </div>
 
@@ -208,8 +276,8 @@ function AdminOverviewContent() {
                 labels={dailySeries.map((p) => p.label)}
                 series={[
                   {
-                    name: "GMV đã ghi nhận",
-                    values: dailySeries.map((p) => p.grossCollected),
+                    name: "GMV ghi nhận",
+                    values: dailySeries.map((p) => p.gmv),
                     color: "var(--chart-1)",
                   },
                 ]}
@@ -217,168 +285,170 @@ function AdminOverviewContent() {
                 showArea
                 formatValue={formatVnd}
                 formatTick={formatCompactVnd}
-                annotations={
-                  peakDay ? [{ index: peakIndex, label: `Flash sale ${peakDay.label}` }] : undefined
-                }
-                ariaLabel="Biểu đồ tổng thu GMV toàn sàn theo ngày"
+                ariaLabel="Biểu đồ GMV toàn sàn 7 ngày gần nhất"
               />
             )}
 
             {scope === "thanh_toan" && (
               <BarChart
-                labels={dailySeries.map((p) => p.label)}
-                values={dailySeries.map((p) => p.grossCollected)}
+                labels={(ledger?.accounts ?? []).map((a) => a.account_code)}
+                values={(ledger?.accounts ?? []).map((a) => Math.abs(a.balance_vnd))}
                 height={208}
                 formatValue={formatVnd}
                 formatTick={formatCompactVnd}
-                ariaLabel="Biểu đồ tổng thu thanh toán theo ngày"
+                ariaLabel="Biểu đồ số dư tài khoản sổ cái"
               />
             )}
 
             {scope === "van_hanh" && (
               <BarChart
                 labels={dailySeries.map((p) => p.label)}
-                values={dailySeries.map((p) => p.txCount)}
+                values={dailySeries.map((p) => p.orders)}
                 height={208}
-                formatValue={(v) => `${formatInt(v)} giao dịch`}
+                formatValue={(v) => `${formatInt(v)} đơn`}
                 formatTick={(v) => formatInt(v)}
-                ariaLabel="Biểu đồ số giao dịch đối soát theo ngày"
+                ariaLabel="Biểu đồ số đơn hàng 7 ngày gần nhất"
               />
             )}
 
             <div className={styles.chartFooter}>
+              <span>Tổng Ghi nợ: {formatVnd(ledger?.total_debits_vnd ?? 0)}</span>
               <span>
-                Phí hoa hồng sàn thu được: {formatVnd(summary.totalCommission)} (5,0% trên tổng thu)
-              </span>
-              <span>
-                Hoàn tiền trong kỳ: {formatVnd(summary.totalRefunded)} · {summary.matchedBatches}/
-                {reconciliationRows.length} lô khớp
+                Tổng Ghi có: {formatVnd(ledger?.total_credits_vnd ?? 0)} · Chênh lệch:{" "}
+                {formatVnd(ledgerDiff)}
               </span>
             </div>
           </section>
 
-          <section className={shared.panel} aria-labelledby="channel-recon-heading">
+          <section className={shared.panel} aria-labelledby="ledger-summary-heading">
             <div className={shared.panelHeader}>
-              <h2 id="channel-recon-heading" className={shared.panelTitle}>
-                Đối soát theo cổng thanh toán
+              <h2 id="ledger-summary-heading" className={shared.panelTitle}>
+                Tóm tắt tài khoản sổ cái ghi kép
               </h2>
               <Link href="/admin/doi-soat" className={shared.panelLink}>
                 Mở sổ đối soát
               </Link>
             </div>
 
-            <div className={styles.channelTableWrap}>
-              <table className={styles.channelTable}>
-                <thead>
-                  <tr>
-                    <th>Cổng thanh toán</th>
-                    <th className={shared.colNum}>Kỳ vọng</th>
-                    <th className={shared.colNum}>Đã về sổ cái</th>
-                    <th className={shared.colNum}>Chênh lệch</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {channelBreakdown.map((ch) => (
-                    <tr key={ch.channel}>
-                      <td>
-                        <span>{ch.channelLabel}</span>
-                        <span className={styles.channelMeta}>
-                          {ch.batchCount} lô · {formatInt(ch.txCount)} gd
-                        </span>
-                      </td>
-                      <td className={shared.colNum}>{formatVnd(ch.expectedVnd)}</td>
-                      <td className={shared.colNum}>{formatVnd(ch.settledVnd)}</td>
-                      <td
-                        className={`${shared.colNum} ${
-                          ch.discrepancyVnd > 0 ? shared.numNegative : shared.numMuted
-                        }`}
-                      >
-                        {ch.discrepancyVnd > 0 ? formatSignedVnd(-ch.discrepancyVnd) : "0₫"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr>
-                    <td>
-                      Tổng cộng
-                      <span className={styles.channelMeta}>
-                        {reconciliationRows.length} lô · {formatInt(summary.totalTxCount)} gd
-                      </span>
-                    </td>
-                    <td className={shared.colNum}>{formatVnd(summary.totalGross)}</td>
-                    <td className={shared.colNum}>{formatVnd(totalSettledVnd)}</td>
-                    <td
-                      className={`${shared.colNum} ${
-                        summary.totalDiscrepancy > 0 ? shared.numNegative : ""
-                      }`}
-                    >
-                      {summary.totalDiscrepancy > 0
-                        ? formatSignedVnd(-summary.totalDiscrepancy)
-                        : "0₫"}
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-
-            <div className={styles.channelMobileList}>
-              {channelBreakdown.map((ch) => (
-                <div key={ch.channel} className={styles.channelMobileRow}>
-                  <div className={styles.channelMobileLine}>
-                    <span className={shared.cellPrimary}>{ch.channelLabel}</span>
-                    <span className={shared.cellPrimary}>{formatVnd(ch.settledVnd)}</span>
-                  </div>
-                  <div className={styles.channelMobileLine}>
-                    <span className={shared.cellSub}>
-                      {ch.batchCount} lô · Kỳ vọng {formatVnd(ch.expectedVnd)}
-                    </span>
-                    <span
-                      className={`${shared.cellSub} ${
-                        ch.discrepancyVnd > 0 ? shared.numNegative : ""
-                      }`}
-                    >
-                      {ch.discrepancyVnd > 0
-                        ? `Lệch ${formatSignedVnd(-ch.discrepancyVnd)}`
-                        : "Khớp 0₫"}
-                    </span>
-                  </div>
+            {!ledger || ledger.accounts.length === 0 ? (
+              <p className={shared.emptyRow}>Chưa có bút toán nào phát sinh trên sổ cái.</p>
+            ) : (
+              <>
+                <div className={styles.channelTableWrap}>
+                  <table className={styles.channelTable}>
+                    <thead>
+                      <tr>
+                        <th>Tài khoản</th>
+                        <th className={shared.colNum}>Tổng Nợ</th>
+                        <th className={shared.colNum}>Tổng Có</th>
+                        <th className={shared.colNum}>Số dư</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ledger.accounts.map((acc) => (
+                        <tr key={acc.account_code}>
+                          <td>
+                            <span>{acc.account_code}</span>
+                            <span className={styles.channelMeta}>{acc.account_type}</span>
+                          </td>
+                          <td className={shared.colNum}>{formatVnd(acc.debit_total_vnd)}</td>
+                          <td className={shared.colNum}>{formatVnd(acc.credit_total_vnd)}</td>
+                          <td className={shared.colNum}>{formatVnd(acc.balance_vnd)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              ))}
-            </div>
+
+                <div className={styles.channelMobileList}>
+                  {ledger.accounts.map((acc) => (
+                    <div key={acc.account_code} className={styles.channelMobileRow}>
+                      <div className={styles.channelMobileLine}>
+                        <span className={shared.cellPrimary}>{acc.account_code}</span>
+                        <span className={shared.cellPrimary}>{formatVnd(acc.balance_vnd)}</span>
+                      </div>
+                      <div className={styles.channelMobileLine}>
+                        <span className={shared.cellSub}>{acc.account_type}</span>
+                        <span className={shared.cellSub}>
+                          Nợ {formatVnd(acc.debit_total_vnd)} · Có {formatVnd(acc.credit_total_vnd)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </section>
         </div>
 
         <aside className={styles.rightRail} aria-label="Hàng đợi và nhật ký gần đây">
           <section className={styles.railSection} aria-labelledby="rail-shops-heading">
             <h2 id="rail-shops-heading" className={styles.railHeading}>
-              Hàng đợi duyệt gian hàng
+              Gian hàng chờ duyệt ({formatInt(pendingShopsTotal)})
             </h2>
             <div className={styles.railCard}>
-              <ul className={styles.railList}>
-                {priorityShopQueue.map((app) => {
-                  const meta = SHOP_APPROVAL_META[app.status];
-                  return (
-                    <li key={app.id} className={styles.railRow}>
-                      <Link
-                        href={`/admin/gian-hang?selected=${encodeURIComponent(app.id)}`}
-                        className={styles.railItemLink}
-                      >
-                        <div className={styles.railTopLine}>
-                          <span className={styles.railPrimary}>{app.shopName}</span>
-                          <StatusPill label={meta.label} tone={meta.tone} />
-                        </div>
-                        <span className={styles.railSub}>
-                          {app.applicationCode} · {app.primaryCategory} · {app.initialSkuCount} SKU
-                          {app.slaHoursLeft > 0 ? ` · Còn ${app.slaHoursLeft}h` : ""}
-                        </span>
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
+              {pendingShops.length === 0 ? (
+                <p className={shared.emptyRow}>Không có gian hàng nào chờ duyệt.</p>
+              ) : (
+                <ul className={styles.railList}>
+                  {pendingShops.map((shop) => {
+                    const meta = getAdminShopStatusMeta(shop.status);
+                    return (
+                      <li key={shop.id} className={styles.railRow}>
+                        <Link
+                          href={`/admin/gian-hang?selected=${encodeURIComponent(shop.id)}`}
+                          className={styles.railItemLink}
+                        >
+                          <div className={styles.railTopLine}>
+                            <span className={styles.railPrimary}>{shop.name}</span>
+                            <StatusPill label={meta.label} tone={meta.tone} />
+                          </div>
+                          <span className={styles.railSub}>
+                            {shop.contact_phone || "Chưa có SĐT"} ·{" "}
+                            {shop.created_at ? formatDateTimeVi(shop.created_at) : ""}
+                          </span>
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
               <Link href="/admin/gian-hang" className={shared.viewAllBtn}>
-                Xem tất cả ({shopApprovals.length})
+                Xem hàng đợi gian hàng
+              </Link>
+            </div>
+          </section>
+
+          <section className={styles.railSection} aria-labelledby="rail-products-heading">
+            <h2 id="rail-products-heading" className={styles.railHeading}>
+              Sản phẩm chờ duyệt ({formatInt(pendingProductsTotal)})
+            </h2>
+            <div className={styles.railCard}>
+              {pendingProducts.length === 0 ? (
+                <p className={shared.emptyRow}>Không có sản phẩm nào chờ duyệt.</p>
+              ) : (
+                <ul className={styles.railList}>
+                  {pendingProducts.map((prod) => {
+                    const meta = getAdminProductStatusMeta(prod.status);
+                    return (
+                      <li key={prod.id} className={styles.railRow}>
+                        <Link href="/admin/kiem-duyet" className={styles.railItemLink}>
+                          <div className={styles.railTopLine}>
+                            <span className={styles.railPrimary}>{prod.name}</span>
+                            <StatusPill label={meta.label} tone={meta.tone} />
+                          </div>
+                          <span className={styles.railSub}>
+                            {formatVnd(prod.min_price_vnd)} · {formatInt(prod.skus?.length ?? 0)}{" "}
+                            SKU
+                          </span>
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              <Link href="/admin/kiem-duyet" className={shared.viewAllBtn}>
+                Mở hàng đợi kiểm duyệt
               </Link>
             </div>
           </section>
@@ -388,25 +458,29 @@ function AdminOverviewContent() {
               Nhật ký kiểm toán gần đây
             </h2>
             <div className={styles.railCard}>
-              <ul className={styles.railList}>
-                {recentAuditLogs.map((log) => (
-                  <li key={log.id} className={styles.railRow}>
-                    <div className={styles.railItemStatic}>
-                      <div className={styles.railTopLine}>
-                        <span className={styles.railPrimary}>{log.action}</span>
-                        <span className={styles.railTime}>
-                          {formatShortTimeDateVi(log.timestamp)}
+              {auditLogs.length === 0 ? (
+                <p className={shared.emptyRow}>Chưa có bản ghi kiểm toán nào.</p>
+              ) : (
+                <ul className={styles.railList}>
+                  {auditLogs.map((log) => (
+                    <li key={log.id} className={styles.railRow}>
+                      <div className={styles.railItemStatic}>
+                        <div className={styles.railTopLine}>
+                          <span className={styles.railPrimary}>{log.action}</span>
+                          <span className={styles.railTime}>
+                            {log.created_at ? formatDateTimeVi(log.created_at) : ""}
+                          </span>
+                        </div>
+                        <span className={styles.railSub}>
+                          {log.actor_role} · {log.target_type} · {log.reason || log.target_id}
                         </span>
                       </div>
-                      <span className={styles.railSub}>
-                        {log.actor} · {log.module} · {log.target}
-                      </span>
-                    </div>
-                  </li>
-                ))}
-              </ul>
+                    </li>
+                  ))}
+                </ul>
+              )}
               <Link href="/admin/audit-log" className={shared.viewAllBtn}>
-                Xem tất cả ({auditLogs.length})
+                Xem tất cả ({formatInt(auditTotal)})
               </Link>
             </div>
           </section>
@@ -420,9 +494,9 @@ function AdminOverviewRoute() {
   return (
     <AdminStateGate
       title="Tổng quan sàn"
-      subtitle="Theo dõi GMV, đối soát cổng thanh toán, hàng đợi duyệt gian hàng và nhật ký kiểm toán."
+      subtitle="Theo dõi GMV, sổ cái ghi kép, hàng đợi duyệt gian hàng/sản phẩm và nhật ký kiểm toán."
       emptyTitle="Chưa có dữ liệu tổng quan trong kỳ chọn"
-      emptyMessage="Không có giao dịch hoặc lô đối soát nào được ghi nhận trong khoảng thời gian này."
+      emptyMessage="Không có giao dịch hoặc hàng đợi nào được ghi nhận trong khoảng thời gian này."
       errorTitle="Không thể tải số liệu tổng quan quản trị"
       errorMessage="Dịch vụ đối soát và thống kê tạm thời gián đoạn. Thử tải lại để đồng bộ bản ghi mới nhất."
       loadingRows={5}

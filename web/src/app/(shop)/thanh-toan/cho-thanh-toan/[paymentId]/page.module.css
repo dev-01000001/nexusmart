@@ -1,0 +1,141 @@
+/* Dedicated VietQR payment waiting page — Frost & Slate flat white sheet + dark total band */
+
+.waitGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 1fr);
+  gap: clamp(24px, 3vw, 40px);
+  align-items: start;
+}
+
+.mainSheet {
+  background: var(--surface-white);
+  padding: clamp(20px, 2.6vw, 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+
+.stepsList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 20px;
+  border-top: 2px solid var(--surface-subtle);
+}
+
+.stepsTitle {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+
+.stepItem {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 62ch;
+}
+
+.asideSheet {
+  background: var(--surface-white);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.asideInner {
+  padding: clamp(20px, 2.4vw, 28px);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.asideHeading {
+  font-size: var(--step-lead);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--ink-strong);
+}
+
+.orderList {
+  display: flex;
+  flex-direction: column;
+}
+
+.orderRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 2px solid var(--surface-subtle);
+  flex-wrap: wrap;
+}
+
+.orderRow:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.orderLink {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink-strong);
+  transition: color var(--t-hover) ease;
+}
+
+.orderLink:hover {
+  color: var(--accent);
+}
+
+.orderMeta {
+  font-size: var(--step-small);
+  color: var(--ink-secondary);
+}
+
+.orderTotal {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+
+.darkBand {
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  padding: clamp(20px, 2.4vw, 28px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.totalRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.totalLabel {
+  font-size: 16px;
+  color: var(--band-dark-muted);
+}
+
+.totalVal {
+  font-size: var(--step-lead);
+  font-weight: 600;
+  color: var(--band-dark-ink);
+}
+
+.darkNote {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--band-dark-muted);
+}
+
+@media (max-width: 1024px) {
+  .waitGrid {
+    grid-template-columns: 1fr;
+  }
+}

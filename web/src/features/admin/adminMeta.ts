@@ -14,6 +14,10 @@ import type {
   VulnerablePriorityGroup,
 } from "@/data";
 
+import { formatShortTimeDateVi, formatTimeHmVn } from "@/lib/format";
+
+export { formatShortTimeDateVi };
+
 export type PillTone = "positive" | "negative" | "warning" | "neutral";
 
 export type AdminViewState = "loading" | "empty" | "error";
@@ -106,21 +110,8 @@ export const RANGE_LABELS: Record<AdminRangeKey, string> = {
   "30d": "30 ngày qua",
 };
 
-export function formatShortTimeDateVi(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const hh = d.getHours() < 10 ? `0${d.getHours()}` : String(d.getHours());
-  const mm = d.getMinutes() < 10 ? `0${d.getMinutes()}` : String(d.getMinutes());
-  const dd = d.getDate() < 10 ? `0${d.getDate()}` : String(d.getDate());
-  const mo = d.getMonth() + 1 < 10 ? `0${d.getMonth() + 1}` : String(d.getMonth() + 1);
-  return `${hh}:${mm} · ${dd}/${mo}`;
-}
-
 export function formatNowHHMM(): string {
-  const now = new Date();
-  const hh = now.getHours() < 10 ? `0${now.getHours()}` : String(now.getHours());
-  const mm = now.getMinutes() < 10 ? `0${now.getMinutes()}` : String(now.getMinutes());
-  return `${hh}:${mm}`;
+  return formatTimeHmVn(new Date().toISOString());
 }
 
 export const MODERATION_STATUS_META: Record<ModerationStatus, { label: string; tone: PillTone }> = {
