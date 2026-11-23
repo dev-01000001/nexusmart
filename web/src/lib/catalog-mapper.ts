@@ -1,7 +1,9 @@
 import type { CategorySlug, ProductColor, SizeCode } from "@/data";
 import type {
+  GatewayActiveShopDiscount,
   GatewayCategory,
   GatewayFlashSale,
+  GatewayFlashSaleItem,
   GatewayProduct,
   GatewayPublicShop,
   GatewaySKU,
@@ -36,6 +38,53 @@ const KNOWN_CATEGORY_SLUGS = new Set<CategorySlug>([
   "do-lot",
   "tat-phu-kien",
 ]);
+
+/**
+ * Returns top-level (root) categories only (no parentId), falling back to all if none are roots.
+ */
+export function getRootCategories<T extends { parentId?: string | null }>(
+  categories: readonly T[]
+): T[] {
+  const roots = categories.filter((c) => !c.parentId);
+  return roots.length > 0 ? roots : [...categories];
+}
+
+/**
+ * Maps each category slug to the set of itself plus all descendant category slugs (children,
+ * grandchildren, etc.), with cycle protection.
+ */
+export function buildCategoryDescendantSlugMap(
+  categories: ReadonlyArray<{ id: string; slug: string; parentId?: string | null }>
+): Map<string, Set<string>> {
+  const childrenByParentId = new Map<string, Array<{ id: string; slug: string }>>();
+  for (const cat of categories) {
+    const pid = cat.parentId?.trim();
+    if (!pid) continue;
+    const list = childrenByParentId.get(pid);
+    if (list) {
+      list.push(cat);
+    } else {
+      childrenByParentId.set(pid, [cat]);
+    }
+  }
+
+  const out = new Map<string, Set<string>>();
+  for (const cat of categories) {
+    const slugs = new Set<string>([cat.slug]);
+    const visited = new Set<string>([cat.id]);
+    const stack = [...(childrenByParentId.get(cat.id) ?? [])];
+    while (stack.length > 0) {
+      const child = stack.pop()!;
+      if (visited.has(child.id)) continue;
+      visited.add(child.id);
+      slugs.add(child.slug);
+      const grand = childrenByParentId.get(child.id);
+      if (grand) stack.push(...grand);
+    }
+    out.set(cat.slug, slugs);
+  }
+  return out;
+}
 
 const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL"];
 
@@ -171,7 +220,7 @@ export function mapGatewayShop(raw: GatewayPublicShop): CatalogShop {
     story,
     accentDot: "#0d7480",
     commissionRate: 0.05,
-    returnDays: 45,
+    returnDays: 7,
     twoWayExchange: false,
     status: raw.status,
     createdAt: raw.created_at,
@@ -193,7 +242,6 @@ export function mapGatewayCategory(raw: GatewayCategory): CatalogCategory {
     categorySlug,
     name: raw.name,
     parentId: raw.parent_id ?? "",
-    commissionRateBps: raw.commission_rate_bps ?? 0,
     sortOrder: raw.sort_order ?? 0,
     description: editorial?.description ?? `Sản phẩm thuộc danh mục ${raw.name} tại NexusMart.`,
     subtitle: editorial?.subtitle ?? raw.name,
@@ -210,6 +258,8 @@ export function mapGatewayProduct(
     categoriesById: Map<string, CatalogCategory>;
     shopsById: Map<string, CatalogShop>;
     flashSkuIds?: Set<string>;
+    liveFlashItemsBySkuId?: Map<string, GatewayFlashSaleItem>;
+    activeShopDiscountsBySkuId?: Map<string, GatewayActiveShopDiscount>;
   }
 ): CatalogProduct {
   const rawSlug = raw.slug ?? raw.id;
@@ -227,6 +277,21 @@ export function mapGatewayProduct(
     const parsed = parseSkuColorAndSize(sku);
     const availableStock = Math.max(0, Math.trunc(sku.available_stock ?? sku.stock ?? 0));
     const edColor = editorialColorByCode.get(parsed.colorCode);
+    const regularPriceVnd = Math.max(0, Math.trunc(sku.price_vnd));
+    const liveFlash = context.liveFlashItemsBySkuId?.get(sku.id);
+    const hasValidFlash =
+      Boolean(liveFlash) &&
+      (liveFlash!.remaining_slots ?? 0) > 0 &&
+      Math.trunc(liveFlash!.flash_price_vnd) > 0 &&
+      Math.trunc(liveFlash!.flash_price_vnd) < regularPriceVnd;
+    const shopDiscount = !hasValidFlash
+      ? context.activeShopDiscountsBySkuId?.get(sku.id)
+      : undefined;
+    const hasValidShopDiscount =
+      Boolean(shopDiscount) &&
+      Math.trunc(shopDiscount!.discounted_price_vnd) > 0 &&
+      Math.trunc(shopDiscount!.discounted_price_vnd) < regularPriceVnd;
+
     return {
       id: sku.id,
       skuCode: sku.sku_code,
@@ -236,7 +301,13 @@ export function mapGatewayProduct(
       size: parsed.size,
       stock: availableStock,
       reservedStock: Math.max(0, Math.trunc(sku.reserved_stock ?? 0)),
-      price: Math.trunc(sku.price_vnd),
+      price: regularPriceVnd,
+      regularPriceVnd,
+      activeFlashItemId: hasValidFlash ? liveFlash!.id : undefined,
+      activeShopDiscountItemId: hasValidShopDiscount ? shopDiscount!.item_id : undefined,
+      activeShopDiscountName: hasValidShopDiscount
+        ? shopDiscount!.program_name || "Giảm giá gian hàng"
+        : undefined,
       version: sku.version ?? 1,
       weightGrams: sku.weight_grams ?? 0,
       imageUrl: sku.image_url?.trim() || "",
@@ -294,19 +365,56 @@ export function mapGatewayProduct(
   const uniqueSizes = Array.from(new Set(mappedSkus.map((s) => s.size)));
   const sizes = sortSizes(uniqueSizes);
 
-  // Integer VND min/max price derived from real backend SKUs
-  const skuPrices = mappedSkus.map((s) => s.price).filter((p) => p > 0);
+  // Integer VND min/max price & real strikethrough derived strictly from real SKUs + live flash / active shop discount.
+  // Single-price rule: live flash sale > active shop discount program > regular SKU price.
+  // NEVER use mock editorial.originalPrice for strikethrough pricing.
+  const effectiveEntries = mappedSkus
+    .filter((s) => s.price > 0)
+    .map((s) => {
+      const regular = s.price;
+      const liveFlash = context.liveFlashItemsBySkuId?.get(s.id);
+      if (
+        liveFlash &&
+        (liveFlash.remaining_slots ?? 0) > 0 &&
+        Math.trunc(liveFlash.flash_price_vnd) > 0 &&
+        Math.trunc(liveFlash.flash_price_vnd) < regular
+      ) {
+        const orig =
+          liveFlash.original_price_vnd &&
+          Math.trunc(liveFlash.original_price_vnd) > Math.trunc(liveFlash.flash_price_vnd)
+            ? Math.trunc(liveFlash.original_price_vnd)
+            : regular;
+        return { effective: Math.trunc(liveFlash.flash_price_vnd), original: orig };
+      }
+      const shopDisc = context.activeShopDiscountsBySkuId?.get(s.id);
+      if (
+        shopDisc &&
+        Math.trunc(shopDisc.discounted_price_vnd) > 0 &&
+        Math.trunc(shopDisc.discounted_price_vnd) < regular
+      ) {
+        const orig =
+          shopDisc.original_price_vnd > Math.trunc(shopDisc.discounted_price_vnd)
+            ? Math.trunc(shopDisc.original_price_vnd)
+            : regular;
+        return { effective: Math.trunc(shopDisc.discounted_price_vnd), original: orig };
+      }
+      return { effective: regular, original: undefined as number | undefined };
+    });
+
+  const effectivePrices = effectiveEntries.map((e) => e.effective);
   const minPriceVnd =
-    skuPrices.length > 0 ? Math.min(...skuPrices) : Math.max(0, Math.trunc(raw.min_price_vnd ?? 0));
+    effectivePrices.length > 0
+      ? Math.min(...effectivePrices)
+      : Math.max(0, Math.trunc(raw.min_price_vnd ?? 0));
   const maxPriceVnd =
-    skuPrices.length > 0
-      ? Math.max(...skuPrices)
+    effectivePrices.length > 0
+      ? Math.max(...effectivePrices)
       : Math.max(minPriceVnd, Math.trunc(raw.max_price_vnd ?? 0));
 
-  // Only show editorial strikethrough originalPrice when strictly greater than live backend price
+  const cheapestEntry = effectiveEntries.find((e) => e.effective === minPriceVnd);
   const originalPrice =
-    editorial?.originalPrice && editorial.originalPrice > minPriceVnd
-      ? editorial.originalPrice
+    cheapestEntry?.original && cheapestEntry.original > minPriceVnd
+      ? cheapestEntry.original
       : undefined;
 
   const rawCategorySlug = category?.slug ?? "ao-thun";
@@ -316,7 +424,9 @@ export function mapGatewayProduct(
   const categoryName = category?.name ?? "Đồ cơ bản";
 
   const isFlashSale = Boolean(
-    context.flashSkuIds && mappedSkus.some((s) => context.flashSkuIds!.has(s.id))
+    (context.flashSkuIds && mappedSkus.some((s) => context.flashSkuIds!.has(s.id))) ||
+    (context.liveFlashItemsBySkuId &&
+      mappedSkus.some((s) => context.liveFlashItemsBySkuId!.has(s.id)))
   );
 
   const shopName = shop?.name ?? "Gian hàng NexusMart";
@@ -501,8 +611,11 @@ export function mapGatewayFlashSales(
       if (!match) continue;
       const { product, sku } = match;
       const flashPriceVnd = Math.max(0, Math.trunc(rawItem.flash_price_vnd));
-      const basePrice = Math.max(sku.price, product.originalPrice ?? 0);
-      const originalPriceVnd = basePrice > flashPriceVnd ? basePrice : sku.price;
+      const realOriginal =
+        rawItem.original_price_vnd && Math.trunc(rawItem.original_price_vnd) > flashPriceVnd
+          ? Math.trunc(rawItem.original_price_vnd)
+          : (sku.regularPriceVnd ?? sku.price);
+      const originalPriceVnd = realOriginal > flashPriceVnd ? realOriginal : sku.price;
 
       items.push({
         id: rawItem.id,

@@ -2,11 +2,18 @@
 
 // Dữ liệu mẫu cho các tính năng chưa có backend.
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ADMIN_DISPUTES,
   COMPLAINT_SLA,
-  DEMO_USER,
   EDU_DISCOUNT_CONFIG,
   GIFT_CARD_POLICY,
   INITIAL_CHAT_THREADS,
@@ -31,13 +38,24 @@ import type {
 import { formatVnd } from "@/lib/format";
 import { DEFAULT_BODY_PROFILE, type BodyProfile } from "@/lib/sizing";
 import { useSession } from "@/context/SessionContext";
+import { clearCheckoutWarnings, shouldClearUserClientState } from "@/features/checkout/helpers";
 
 const STORAGE_KEY = "nexusmart_store_v2";
+
+export interface WishlistProductSnapshot {
+  name: string;
+  slug: string;
+  price: number;
+  originalPrice?: number;
+  image: string;
+  shopName?: string;
+}
 
 export interface WishlistEntry {
   productId: string;
   skuCode?: string;
   addedAt: string;
+  snapshot?: WishlistProductSnapshot;
 }
 
 export interface BackInStockAlert {
@@ -107,7 +125,11 @@ export interface MockStoreContextValue {
   bodyProfile: BodyProfile;
   updateBodyProfile: (next: BodyProfile) => void;
   wishlist: WishlistEntry[];
-  toggleWishlist: (productId: string, skuCode?: string) => boolean;
+  toggleWishlist: (
+    productId: string,
+    skuCode?: string,
+    snapshot?: WishlistProductSnapshot
+  ) => boolean;
   isWishlisted: (productId: string, skuCode?: string) => boolean;
   recentlyViewed: string[];
   recordProductView: (productId: string) => void;
@@ -143,7 +165,6 @@ export interface MockStoreContextValue {
     recipientEmail?: string;
     message?: string;
   }) => GiftCardItem;
-  applyGiftCardCode: (code: string | null) => { ok: boolean; message: string };
   verifyEduEmail: (email: string) => { ok: boolean; message: string };
 
   // Buyer-seller chat & AI assistant overlays
@@ -175,44 +196,25 @@ const INITIAL_COOKIE_PREFS: CookiePreferences = {
   personalization: true,
 };
 
-const INITIAL_WISHLIST: WishlistEntry[] = [
-  { productId: "prod-at-dryfit", addedAt: "2026-11-18T10:00:00+07:00" },
-  { productId: "prod-polo-detkim", addedAt: "2026-11-19T15:30:00+07:00" },
-];
+const INITIAL_WISHLIST: string[] = [];
+const INITIAL_WISHLIST_ENTRIES: WishlistEntry[] = INITIAL_WISHLIST.map((productId) => ({
+  productId,
+  addedAt: "",
+}));
 
-const INITIAL_RECENTLY_VIEWED: string[] = [
-  "prod-at-trang",
-  "prod-polo-kem",
-  "prod-short-daily",
-  "prod-jogger-terry",
-];
+const INITIAL_RECENTLY_VIEWED: string[] = [];
 
-const INITIAL_SUPPORT_TICKETS: SupportTicket[] = [
-  {
-    id: "tk-261119-01",
-    kind: "bu_le_tat",
-    orderCode: "NM-261117-082",
-    fullName: DEMO_USER.fullName,
-    phone: DEMO_USER.phone,
-    email: DEMO_USER.email,
-    subject: "Đề nghị bù lẻ 1 chiếc tất màu xám sáng",
-    detail:
-      "Bị thất lạc 1 chiếc tất sau lần giặt đầu, đề nghị gửi kèm đơn kế tiếp từ Dệt Kim Hà Nội.",
-    isVulnerablePriority: false,
-    slaLabel: "Xác nhận trong 24h · Xử lý 5-7 ngày làm việc",
-    status: "dang_xu_ly",
-    createdAt: "2026-11-19T10:30:00+07:00",
-  },
-];
+const INITIAL_SUPPORT_TICKETS: SupportTicket[] = [];
 
 const MockStoreContext = createContext<MockStoreContextValue | null>(null);
 
 export function MockStoreProvider({ children }: { children: React.ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
-  const { user: sessionUser } = useSession();
+  const { user: sessionUser, loading: sessionLoading } = useSession();
+  const prevUserIdRef = useRef<string | null>(null);
 
   const [bodyProfile, setBodyProfile] = useState<BodyProfile>(DEFAULT_BODY_PROFILE);
-  const [wishlist, setWishlist] = useState<WishlistEntry[]>(INITIAL_WISHLIST);
+  const [wishlist, setWishlist] = useState<WishlistEntry[]>(INITIAL_WISHLIST_ENTRIES);
   const [recentlyViewed, setRecentlyViewed] = useState<string[]>(INITIAL_RECENTLY_VIEWED);
   const [backInStockAlerts, setBackInStockAlerts] = useState<BackInStockAlert[]>([]);
   const [reviews, setReviews] = useState<ProductReview[]>(SAMPLE_REVIEWS);
@@ -282,6 +284,27 @@ export function MockStoreProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (sessionLoading) return;
+    const nextUserId = sessionUser?.id ?? null;
+    const mustClear = shouldClearUserClientState(prevUserIdRef.current, nextUserId);
+    prevUserIdRef.current = nextUserId;
+    if (!mustClear) return;
+
+    clearCheckoutWarnings();
+    try {
+      window.localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // Ignore storage restrictions
+    }
+    setBodyProfile(DEFAULT_BODY_PROFILE);
+    setWishlist(INITIAL_WISHLIST_ENTRIES);
+    setRecentlyViewed(INITIAL_RECENTLY_VIEWED);
+    setBackInStockAlerts([]);
+    setMembership(INITIAL_MEMBERSHIP_STATE);
+    setChatThreads(INITIAL_CHAT_THREADS);
+  }, [sessionLoading, sessionUser?.id]);
+
+  useEffect(() => {
     if (!hydrated) return;
     try {
       // Lý do dùng localStorage: chỉ lưu tiện ích theo người xem (số đo, yêu thích, đã xem, báo có hàng, cookie, hội viên mẫu); không lưu token/giỏ/đơn.
@@ -321,7 +344,7 @@ export function MockStoreProvider({ children }: { children: React.ReactNode }) {
   );
 
   const toggleWishlist = useCallback(
-    (productId: string, skuCode?: string): boolean => {
+    (productId: string, skuCode?: string, snapshot?: WishlistProductSnapshot): boolean => {
       let added = false;
       setWishlist((prev) => {
         const exists = prev.some(
@@ -334,7 +357,15 @@ export function MockStoreProvider({ children }: { children: React.ReactNode }) {
           );
         }
         added = true;
-        return [{ productId, skuCode, addedAt: new Date().toISOString() }, ...prev];
+        return [
+          {
+            productId,
+            skuCode,
+            addedAt: new Date().toISOString(),
+            ...(snapshot ? { snapshot } : {}),
+          },
+          ...prev,
+        ];
       });
       showToast(
         added ? "Đã lưu sản phẩm vào danh sách yêu thích." : "Đã bỏ khỏi danh sách yêu thích."
@@ -553,27 +584,6 @@ export function MockStoreProvider({ children }: { children: React.ReactNode }) {
     [showToast]
   );
 
-  const applyGiftCardCode = useCallback(
-    (code: string | null): { ok: boolean; message: string } => {
-      if (!code) {
-        setMembership((prev) => ({ ...prev, appliedGiftCardCode: null }));
-        return { ok: true, message: "Đã gỡ mã thẻ quà tặng." };
-      }
-      const clean = code.trim().toUpperCase();
-      const found = membership.giftCards.find((gc) => gc.code.toUpperCase() === clean);
-      if (!found) {
-        return { ok: false, message: `Không tìm thấy thẻ quà tặng ${clean}.` };
-      }
-      if (found.remainingVnd <= 0) {
-        return { ok: false, message: `Thẻ quà tặng ${clean} đã sử dụng hết số dư.` };
-      }
-      setMembership((prev) => ({ ...prev, appliedGiftCardCode: found.code }));
-      showToast(`Đã áp dụng thẻ quà tặng ${found.code} vào giỏ hàng.`);
-      return { ok: true, message: `Áp dụng thành công thẻ ${found.code}.` };
-    },
-    [membership.giftCards, showToast]
-  );
-
   const verifyEduEmail = useCallback(
     (email: string): { ok: boolean; message: string } => {
       const clean = email.trim().toLowerCase();
@@ -692,7 +702,6 @@ export function MockStoreProvider({ children }: { children: React.ReactNode }) {
     claimBirthdayGift,
     inviteFriendMock,
     purchaseGiftCard,
-    applyGiftCardCode,
     verifyEduEmail,
     chatOpen,
     chatShopId,

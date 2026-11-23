@@ -10,16 +10,18 @@ import { Button, IconCheck, IconPlus, StateView } from "@/components";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
-import { CARRIER_OPTIONS, getShopStatusMeta } from "@/features/seller/types";
+import {
+  CARRIER_OPTIONS,
+  getShopStatusMeta,
+  parseSellerFreeshipSettings,
+} from "@/features/seller/types";
 import {
   addShopCollectionItem,
   getShopFactoryProfileWithSession,
-  getShopOperationsConfigWithSession,
   getShopSizeChartsWithSession,
   parseUiState,
   toggleShopMenuLinkVisibility,
   updateShopFactoryProfile,
-  updateShopOperationsConfig,
   updateShopSizeCharts,
   useSellerSession,
 } from "@/features/seller/sellerStore";
@@ -87,12 +89,13 @@ function SellerProfileOpsLoader({ realShop }: { realShop: GatewayShop }) {
   const session = useSellerSession();
 
   const [tab, setTab] = useState<ProfileTab>(
-    initialTab && ["factory", "sizechart", "shipping"].includes(initialTab) ? initialTab : "factory"
+    initialTab && ["factory", "sizechart", "shipping"].includes(initialTab)
+      ? initialTab
+      : "shipping"
   );
 
   const profile = getShopFactoryProfileWithSession(mockShopKey, session);
   const sizeCharts = getShopSizeChartsWithSession(mockShopKey, session);
-  const opsConfig = getShopOperationsConfigWithSession(mockShopKey, session);
 
   return (
     <SellerProfileOpsInner
@@ -106,7 +109,6 @@ function SellerProfileOpsLoader({ realShop }: { realShop: GatewayShop }) {
       setTab={setTab}
       profile={profile}
       sizeCharts={sizeCharts}
-      opsConfig={opsConfig}
       onNotify={showToast}
     />
   );
@@ -122,7 +124,6 @@ interface InnerProps {
   setTab: (t: ProfileTab) => void;
   profile: ReturnType<typeof getShopFactoryProfileWithSession>;
   sizeCharts: ReturnType<typeof getShopSizeChartsWithSession>;
-  opsConfig: ReturnType<typeof getShopOperationsConfigWithSession>;
   onNotify: (msg: string) => void;
 }
 
@@ -136,7 +137,6 @@ function SellerProfileOpsInner({
   setTab,
   profile,
   sizeCharts,
-  opsConfig,
   onNotify,
 }: InnerProps) {
   // Tab 1: Factory profile drafts
@@ -170,6 +170,9 @@ function SellerProfileOpsInner({
   const [defaultLengthStr, setDefaultLengthStr] = useState("25");
   const [defaultWidthStr, setDefaultWidthStr] = useState("20");
   const [defaultHeightStr, setDefaultHeightStr] = useState("10");
+  const [freeShipEnabled, setFreeShipEnabled] = useState(false);
+  const [freeShipMinOrderStr, setFreeShipMinOrderStr] = useState("250000");
+  const [freeShipMaxStr, setFreeShipMaxStr] = useState("25000");
 
   const loadShippingSettings = useCallback(async () => {
     setShipSettingsLoading(true);
@@ -186,6 +189,9 @@ function SellerProfileOpsInner({
         setDefaultLengthStr(String(res.settings.default_length_cm || 25));
         setDefaultWidthStr(String(res.settings.default_width_cm || 20));
         setDefaultHeightStr(String(res.settings.default_height_cm || 10));
+        setFreeShipEnabled(Boolean(res.settings.free_ship_enabled));
+        setFreeShipMinOrderStr(String(res.settings.free_ship_min_order_vnd ?? 0));
+        setFreeShipMaxStr(String(res.settings.free_ship_max_vnd ?? 0));
         setShipSettingsUpdatedAt(res.settings.updated_at);
       }
     } catch (err) {
@@ -237,6 +243,16 @@ function SellerProfileOpsInner({
       setShipSettingsError("Khối lượng và kích thước kiện hàng mặc định phải lớn hơn 0.");
       return;
     }
+    const freeshipParsed = parseSellerFreeshipSettings({
+      enabled: freeShipEnabled,
+      minOrderRaw: freeShipMinOrderStr,
+      maxVndRaw: freeShipMaxStr,
+    });
+    if (!freeshipParsed.ok) {
+      setShipSettingsError(freeshipParsed.message);
+      return;
+    }
+    const { minOrderVnd: freeShipMinOrderVnd, maxVnd: freeShipMaxVnd } = freeshipParsed;
     setShipSettingsError(null);
     setShipSettingsSaving(true);
     try {
@@ -248,13 +264,19 @@ function SellerProfileOpsInner({
           default_length_cm: length,
           default_width_cm: width,
           default_height_cm: height,
+          free_ship_enabled: freeShipEnabled,
+          free_ship_min_order_vnd: freeShipMinOrderVnd,
+          free_ship_max_vnd: freeShipMaxVnd,
         },
       });
       if (res?.settings) {
         setEnabledCarriers(res.settings.enabled_carrier_codes ?? enabledCarriers);
+        setFreeShipEnabled(Boolean(res.settings.free_ship_enabled));
+        setFreeShipMinOrderStr(String(res.settings.free_ship_min_order_vnd ?? 0));
+        setFreeShipMaxStr(String(res.settings.free_ship_max_vnd ?? 0));
         setShipSettingsUpdatedAt(res.settings.updated_at);
       }
-      onNotify("Đã lưu cấu hình hãng vận chuyển và kích thước kiện hàng mặc định.");
+      onNotify("Đã lưu cấu hình hãng vận chuyển, kích thước kiện hàng và Freeship gian hàng.");
     } catch (err) {
       setShipSettingsError(
         getErrorMessage(err, "Không thể lưu cấu hình vận chuyển gian hàng lúc này.")
@@ -263,17 +285,6 @@ function SellerProfileOpsInner({
       setShipSettingsSaving(false);
     }
   };
-
-  // Tab 3: Shipping & Return 45 days drafts
-  const [freeShipStr, setFreeShipStr] = useState(String(opsConfig.freeShipThresholdVnd));
-  const [shipFeeStr, setShipFeeStr] = useState(String(opsConfig.standardShipFeeVnd));
-  const [prepHoursStr, setPrepHoursStr] = useState(String(opsConfig.prepSlaHours));
-  const [fastEnabled, setFastEnabled] = useState(opsConfig.fastDeliveryEnabled);
-  const [fastArea, setFastArea] = useState(opsConfig.fastDeliveryArea);
-  const [fastCutoff, setFastCutoff] = useState(opsConfig.fastDeliveryCutoff);
-  const [return45, setReturn45] = useState(opsConfig.return45DaysEnabled);
-  const [twoWayEx, setTwoWayEx] = useState(opsConfig.twoWayExchangeEnabled);
-  const [exceptionNote, setExceptionNote] = useState(opsConfig.returnExceptionNote);
 
   const activeRows = sizeGroup === "tops" ? topsRows : bottomsRows;
   const activeSizeNote = sizeGroup === "tops" ? topsNote : bottomsNote;
@@ -343,39 +354,19 @@ function SellerProfileOpsInner({
     );
   };
 
-  const handleSaveOps = (e: React.FormEvent) => {
-    e.preventDefault();
-    const freeShipThresholdVnd = Math.max(99000, Math.trunc(Number(freeShipStr) || 199000));
-    const standardShipFeeVnd = Math.max(0, Math.trunc(Number(shipFeeStr) || 25000));
-    const prepSlaHours = Math.max(2, Math.min(48, Math.trunc(Number(prepHoursStr) || 12)));
-    updateShopOperationsConfig(shopId, {
-      freeShipThresholdVnd,
-      standardShipFeeVnd,
-      prepSlaHours,
-      fastDeliveryEnabled: fastEnabled,
-      fastDeliveryArea: fastArea.trim() || opsConfig.fastDeliveryArea,
-      fastDeliveryCutoff: fastCutoff.trim() || opsConfig.fastDeliveryCutoff,
-      return45DaysEnabled: return45,
-      twoWayExchangeEnabled: twoWayEx,
-      returnExceptionNote: exceptionNote.trim(),
-    });
-    onNotify(
-      `Đã cập nhật cấu hình giao hàng (freeship từ ${formatVnd(freeShipThresholdVnd)}) và huy hiệu đổi trả 45 ngày.`
-    );
-  };
-
-  const liveFreeShip = Math.max(0, Math.trunc(Number(freeShipStr) || 0));
-  const liveShipFee = Math.max(0, Math.trunc(Number(shipFeeStr) || 0));
-
   return (
     <div className={common.page}>
       <header className={common.pageHeader}>
         <div className={common.headerText}>
-          <h1 className={common.title}>Hồ sơ xưởng, Bảng size & Vận hành</h1>
+          <h1 className={common.title}>Hồ sơ gian hàng & Vận hành</h1>
           <p className={common.finding}>
-            {shopName} · Freeship xưởng từ {formatVnd(opsConfig.freeShipThresholdVnd)} ·{" "}
-            {opsConfig.return45DaysEnabled ? "Đổi trả 45 ngày tận nơi" : "Đổi trả chuẩn sàn"} ·{" "}
-            {opsConfig.fastDeliveryEnabled ? "Đang bật giao nhanh nội thành" : "Giao tiêu chuẩn"}
+            {shopName} ·{" "}
+            {freeShipEnabled
+              ? Math.max(0, Math.trunc(Number(freeShipMinOrderStr) || 0)) === 0
+                ? "Freeship shop cho mọi đơn hàng"
+                : `Freeship shop từ ${formatVnd(Math.max(0, Math.trunc(Number(freeShipMinOrderStr) || 0)))}`
+              : "Chưa bật Freeship gian hàng"}{" "}
+            · Chính sách đổi trả chuẩn sàn 7 ngày
           </p>
         </div>
         <div className={common.headerActions}>
@@ -476,11 +467,20 @@ function SellerProfileOpsInner({
             <button
               type="button"
               role="tab"
+              aria-selected={tab === "shipping"}
+              className={`${common.underlineTab} ${tab === "shipping" ? common.underlineTabActive : ""}`}
+              onClick={() => setTab("shipping")}
+            >
+              Vận chuyển & Freeship shop
+            </button>
+            <button
+              type="button"
+              role="tab"
               aria-selected={tab === "factory"}
               className={`${common.underlineTab} ${tab === "factory" ? common.underlineTabActive : ""}`}
               onClick={() => setTab("factory")}
             >
-              Hồ sơ xưởng & QC
+              Hồ sơ xưởng & QC (mẫu)
             </button>
             <button
               type="button"
@@ -489,241 +489,252 @@ function SellerProfileOpsInner({
               className={`${common.underlineTab} ${tab === "sizechart" ? common.underlineTabActive : ""}`}
               onClick={() => setTab("sizechart")}
             >
-              Bảng quy đổi size
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "shipping"}
-              className={`${common.underlineTab} ${tab === "shipping" ? common.underlineTabActive : ""}`}
-              onClick={() => setTab("shipping")}
-            >
-              Giao hàng & Đổi trả
+              Bảng quy đổi size (mẫu)
             </button>
           </div>
 
           {/* TAB 1: Factory profile, Yarn sources, QC standards, Shop menu & Collections */}
           {tab === "factory" && (
-            <div className={styles.twoCol}>
-              <form
-                className={common.card}
-                onSubmit={handleSaveFactory}
-                aria-labelledby="factory-info-heading"
-              >
-                <div className={common.cardHeader}>
-                  <h2 id="factory-info-heading" className={common.cardTitle}>
-                    Thông tin nhà máy & nguồn sợi
-                  </h2>
-                  <span className={`${common.pill} ${common.pillPos}`}>Đã kiểm định QC</span>
-                </div>
-
-                <div className={styles.fieldStack}>
-                  <div className={common.field}>
-                    <label htmlFor="fac-name" className={common.fieldLabel}>
-                      Tên xưởng / nhà máy hợp tác
-                    </label>
-                    <input
-                      id="fac-name"
-                      type="text"
-                      className={common.textInput}
-                      value={factoryName}
-                      onChange={(e) => setFactoryName(e.target.value)}
-                    />
-                  </div>
-
-                  <div className={styles.fields2}>
-                    <div className={common.field}>
-                      <label htmlFor="fac-year" className={common.fieldLabel}>
-                        Năm thành lập
-                      </label>
-                      <input
-                        id="fac-year"
-                        type="number"
-                        className={common.textInput}
-                        value={establishedYear}
-                        onChange={(e) => setEstablishedYear(e.target.value)}
-                      />
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="fac-cap" className={common.fieldLabel}>
-                        Công suất trung bình
-                      </label>
-                      <input
-                        id="fac-cap"
-                        type="text"
-                        className={common.textInput}
-                        value={monthlyCapacity}
-                        onChange={(e) => setMonthlyCapacity(e.target.value)}
-                      />
-                    </div>
-                  </div>
-
-                  <div className={common.field}>
-                    <label htmlFor="fac-addr" className={common.fieldLabel}>
-                      Địa chỉ nhà máy sản xuất
-                    </label>
-                    <input
-                      id="fac-addr"
-                      type="text"
-                      className={common.textInput}
-                      value={factoryAddress}
-                      onChange={(e) => setFactoryAddress(e.target.value)}
-                    />
-                  </div>
-
-                  <div className={common.field}>
-                    <label htmlFor="fac-yarn" className={common.fieldLabel}>
-                      Nguồn sợi & vật liệu chủ lực (mỗi dòng một mục)
-                    </label>
-                    <textarea
-                      id="fac-yarn"
-                      className={common.textArea}
-                      value={yarnText}
-                      onChange={(e) => setYarnText(e.target.value)}
-                    />
-                  </div>
-
-                  <div className={styles.formActions}>
-                    <Button type="submit" variant="ink" size="sm" shape="app">
-                      Lưu hồ sơ xưởng
-                    </Button>
-                  </div>
-                </div>
-              </form>
-
-              <section className={common.card} aria-labelledby="qc-heading">
-                <div className={common.cardHeader}>
-                  <h2 id="qc-heading" className={common.cardTitle}>
-                    Quy chuẩn kiểm định QC tại xưởng
-                  </h2>
-                  <span className={common.cardMeta}>Hiển thị tại mục Minh bạch xưởng</span>
-                </div>
-                <div className={styles.qcList}>
-                  {profile.qcStandards.map((qc) => (
-                    <div key={qc.code} className={styles.qcRow}>
-                      <div className={styles.qcHead}>
-                        <span className={styles.qcTitle}>{qc.title}</span>
-                        <span className={`${common.pill} ${common.pillPos}`}>{qc.code}</span>
-                      </div>
-                      <p className={styles.qcDesc}>{qc.detail}</p>
-                    </div>
-                  ))}
-                  <div className={styles.qcRow}>
-                    <div className={styles.qcHead}>
-                      <span className={styles.qcTitle}>Chính sách đối chiếu & hậu kiểm sàn</span>
-                      <span className={common.pill}>Định kỳ quý</span>
-                    </div>
-                    <p className={styles.qcDesc}>
-                      Mọi lô sản xuất lưu mẫu đối chứng tại kho và cho phép đồng kiểm khi giao hàng
-                      theo quy chuẩn NexusMart.
-                    </p>
-                  </div>
-                </div>
+            <div className={styles.colStack}>
+              <section className={common.card} role="note" aria-label="Thông báo dữ liệu mẫu">
+                <span className={`${common.pill} ${common.pillWarn}`}>
+                  Bản xem trước, dữ liệu mẫu
+                </span>
+                <p className={common.cardMeta} style={{ marginTop: 8 }}>
+                  Phần thông tin nhà máy, tiêu chuẩn QC và bộ sưu tập riêng bên dưới chỉ lưu tạm
+                  trên trình duyệt để xem trước bố cục.
+                </p>
               </section>
+              <div className={styles.twoCol}>
+                <form
+                  className={common.card}
+                  onSubmit={handleSaveFactory}
+                  aria-labelledby="factory-info-heading"
+                >
+                  <div className={common.cardHeader}>
+                    <h2 id="factory-info-heading" className={common.cardTitle}>
+                      Thông tin nhà máy & nguồn sợi
+                    </h2>
+                    <span className={`${common.pill} ${common.pillPos}`}>Đã kiểm định QC</span>
+                  </div>
 
-              <section className={common.card} aria-labelledby="shop-menu-heading">
-                <div className={common.cardHeader}>
-                  <h2 id="shop-menu-heading" className={common.cardTitle}>
-                    Menu nội bộ gian hàng
-                  </h2>
-                  <span className={common.cardMeta}>Giữ header sàn, cấu hình dải mục shop</span>
-                </div>
-                <div className={styles.menuList}>
-                  {profile.shopMenu.map((item) => (
-                    <div key={item.id} className={styles.menuRow}>
-                      <div>
-                        <span className={styles.menuLabel}>{item.label}</span>
-                        <span className={styles.menuSlug}>/bst/{item.targetCollection}</span>
+                  <div className={styles.fieldStack}>
+                    <div className={common.field}>
+                      <label htmlFor="fac-name" className={common.fieldLabel}>
+                        Tên xưởng / nhà máy hợp tác
+                      </label>
+                      <input
+                        id="fac-name"
+                        type="text"
+                        className={common.textInput}
+                        value={factoryName}
+                        onChange={(e) => setFactoryName(e.target.value)}
+                      />
+                    </div>
+
+                    <div className={styles.fields2}>
+                      <div className={common.field}>
+                        <label htmlFor="fac-year" className={common.fieldLabel}>
+                          Năm thành lập
+                        </label>
+                        <input
+                          id="fac-year"
+                          type="number"
+                          className={common.textInput}
+                          value={establishedYear}
+                          onChange={(e) => setEstablishedYear(e.target.value)}
+                        />
                       </div>
-                      <input
-                        type="checkbox"
-                        className={common.toggleSwitch}
-                        checked={item.visible}
-                        onChange={(e) => {
-                          toggleShopMenuLinkVisibility(shopId, item.id, e.target.checked);
-                          onNotify(
-                            e.target.checked
-                              ? `Đã hiển thị mục "${item.label}" trên menu gian hàng.`
-                              : `Đã ẩn mục "${item.label}" khỏi menu gian hàng.`
-                          );
-                        }}
-                        aria-label={`Hiển thị mục menu ${item.label}`}
-                      />
+                      <div className={common.field}>
+                        <label htmlFor="fac-cap" className={common.fieldLabel}>
+                          Công suất trung bình
+                        </label>
+                        <input
+                          id="fac-cap"
+                          type="text"
+                          className={common.textInput}
+                          value={monthlyCapacity}
+                          onChange={(e) => setMonthlyCapacity(e.target.value)}
+                        />
+                      </div>
                     </div>
-                  ))}
-                </div>
-              </section>
 
-              <section className={common.card} aria-labelledby="shop-cols-heading">
-                <div className={common.cardHeader}>
-                  <h2 id="shop-cols-heading" className={common.cardTitle}>
-                    Bộ sưu tập (BST) riêng của shop ({formatInt(profile.collections.length)})
-                  </h2>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    shape="app"
-                    onClick={() => setShowColForm((prev) => !prev)}
-                  >
-                    <IconPlus size={14} />
-                    <span>{showColForm ? "Đóng" : "Tạo BST"}</span>
-                  </Button>
-                </div>
-
-                {showColForm && (
-                  <form className={styles.addCollectionForm} onSubmit={handleAddCollection}>
                     <div className={common.field}>
-                      <label htmlFor="col-name" className={common.fieldLabel}>
-                        Tên bộ sưu tập mới
+                      <label htmlFor="fac-addr" className={common.fieldLabel}>
+                        Địa chỉ nhà máy sản xuất
                       </label>
                       <input
-                        id="col-name"
+                        id="fac-addr"
                         type="text"
                         className={common.textInput}
-                        value={colName}
-                        onChange={(e) => setColName(e.target.value)}
-                        placeholder="Ví dụ: Đồ mặc nhà Cotton Mùa Thu"
+                        value={factoryAddress}
+                        onChange={(e) => setFactoryAddress(e.target.value)}
                       />
                     </div>
+
                     <div className={common.field}>
-                      <label htmlFor="col-desc" className={common.fieldLabel}>
-                        Mô tả ngắn lợi ích BST
+                      <label htmlFor="fac-yarn" className={common.fieldLabel}>
+                        Nguồn sợi & vật liệu chủ lực (mỗi dòng một mục)
                       </label>
-                      <input
-                        id="col-desc"
-                        type="text"
-                        className={common.textInput}
-                        value={colDesc}
-                        onChange={(e) => setColDesc(e.target.value)}
-                        placeholder="Thoáng nhẹ, ít nhăn, giữ phom giặt máy"
+                      <textarea
+                        id="fac-yarn"
+                        className={common.textArea}
+                        value={yarnText}
+                        onChange={(e) => setYarnText(e.target.value)}
                       />
                     </div>
+
                     <div className={styles.formActions}>
                       <Button type="submit" variant="ink" size="sm" shape="app">
-                        Lưu bộ sưu tập
+                        Lưu hồ sơ xưởng
                       </Button>
                     </div>
-                  </form>
-                )}
+                  </div>
+                </form>
 
-                <div className={styles.qcList}>
-                  {profile.collections.map((col) => (
-                    <div key={col.id} className={styles.qcRow}>
-                      <div className={styles.qcHead}>
-                        <span className={styles.qcTitle}>{col.name}</span>
-                        <span className={common.pill}>{formatInt(col.productCount)} SP</span>
+                <section className={common.card} aria-labelledby="qc-heading">
+                  <div className={common.cardHeader}>
+                    <h2 id="qc-heading" className={common.cardTitle}>
+                      Quy chuẩn kiểm định QC tại xưởng
+                    </h2>
+                    <span className={common.cardMeta}>Hiển thị tại mục Minh bạch xưởng</span>
+                  </div>
+                  <div className={styles.qcList}>
+                    {profile.qcStandards.map((qc) => (
+                      <div key={qc.code} className={styles.qcRow}>
+                        <div className={styles.qcHead}>
+                          <span className={styles.qcTitle}>{qc.title}</span>
+                          <span className={`${common.pill} ${common.pillPos}`}>{qc.code}</span>
+                        </div>
+                        <p className={styles.qcDesc}>{qc.detail}</p>
                       </div>
-                      <p className={styles.qcDesc}>{col.description}</p>
+                    ))}
+                    <div className={styles.qcRow}>
+                      <div className={styles.qcHead}>
+                        <span className={styles.qcTitle}>Chính sách đối chiếu & hậu kiểm sàn</span>
+                        <span className={common.pill}>Định kỳ quý</span>
+                      </div>
+                      <p className={styles.qcDesc}>
+                        Mọi lô sản xuất lưu mẫu đối chứng tại kho và cho phép đồng kiểm khi giao
+                        hàng theo quy chuẩn NexusMart.
+                      </p>
                     </div>
-                  ))}
-                </div>
-              </section>
+                  </div>
+                </section>
+
+                <section className={common.card} aria-labelledby="shop-menu-heading">
+                  <div className={common.cardHeader}>
+                    <h2 id="shop-menu-heading" className={common.cardTitle}>
+                      Menu nội bộ gian hàng
+                    </h2>
+                    <span className={common.cardMeta}>Giữ header sàn, cấu hình dải mục shop</span>
+                  </div>
+                  <div className={styles.menuList}>
+                    {profile.shopMenu.map((item) => (
+                      <div key={item.id} className={styles.menuRow}>
+                        <div>
+                          <span className={styles.menuLabel}>{item.label}</span>
+                          <span className={styles.menuSlug}>/bst/{item.targetCollection}</span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          className={common.toggleSwitch}
+                          checked={item.visible}
+                          onChange={(e) => {
+                            toggleShopMenuLinkVisibility(shopId, item.id, e.target.checked);
+                            onNotify(
+                              e.target.checked
+                                ? `Đã hiển thị mục "${item.label}" trên menu gian hàng.`
+                                : `Đã ẩn mục "${item.label}" khỏi menu gian hàng.`
+                            );
+                          }}
+                          aria-label={`Hiển thị mục menu ${item.label}`}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                <section className={common.card} aria-labelledby="shop-cols-heading">
+                  <div className={common.cardHeader}>
+                    <h2 id="shop-cols-heading" className={common.cardTitle}>
+                      Bộ sưu tập (BST) riêng của shop ({formatInt(profile.collections.length)})
+                    </h2>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      shape="app"
+                      onClick={() => setShowColForm((prev) => !prev)}
+                    >
+                      <IconPlus size={14} />
+                      <span>{showColForm ? "Đóng" : "Tạo BST"}</span>
+                    </Button>
+                  </div>
+
+                  {showColForm && (
+                    <form className={styles.addCollectionForm} onSubmit={handleAddCollection}>
+                      <div className={common.field}>
+                        <label htmlFor="col-name" className={common.fieldLabel}>
+                          Tên bộ sưu tập mới
+                        </label>
+                        <input
+                          id="col-name"
+                          type="text"
+                          className={common.textInput}
+                          value={colName}
+                          onChange={(e) => setColName(e.target.value)}
+                          placeholder="Ví dụ: Đồ mặc nhà Cotton Mùa Thu"
+                        />
+                      </div>
+                      <div className={common.field}>
+                        <label htmlFor="col-desc" className={common.fieldLabel}>
+                          Mô tả ngắn lợi ích BST
+                        </label>
+                        <input
+                          id="col-desc"
+                          type="text"
+                          className={common.textInput}
+                          value={colDesc}
+                          onChange={(e) => setColDesc(e.target.value)}
+                          placeholder="Thoáng nhẹ, ít nhăn, giữ phom giặt máy"
+                        />
+                      </div>
+                      <div className={styles.formActions}>
+                        <Button type="submit" variant="ink" size="sm" shape="app">
+                          Lưu bộ sưu tập
+                        </Button>
+                      </div>
+                    </form>
+                  )}
+
+                  <div className={styles.qcList}>
+                    {profile.collections.map((col) => (
+                      <div key={col.id} className={styles.qcRow}>
+                        <div className={styles.qcHead}>
+                          <span className={styles.qcTitle}>{col.name}</span>
+                          <span className={common.pill}>{formatInt(col.productCount)} SP</span>
+                        </div>
+                        <p className={styles.qcDesc}>{col.description}</p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </div>
             </div>
           )}
 
           {/* TAB 2: Editable Shop Size Charts + Live Recommendation Widget Preview */}
           {tab === "sizechart" && (
             <div className={styles.colStack}>
+              <section className={common.card} role="note" aria-label="Thông báo dữ liệu mẫu">
+                <span className={`${common.pill} ${common.pillWarn}`}>
+                  Bản xem trước, dữ liệu mẫu
+                </span>
+                <p className={common.cardMeta} style={{ marginTop: 8 }}>
+                  Bảng quy đổi thông số size và mô phỏng gợi ý cỡ chỉ lưu tạm trên phiên trình duyệt
+                  hiện tại.
+                </p>
+              </section>
               <section className={common.card} aria-labelledby="size-chart-heading">
                 <div className={common.cardHeader}>
                   <div>
@@ -1128,6 +1139,89 @@ function SellerProfileOpsInner({
                       </div>
                     </div>
 
+                    <div>
+                      <div className={styles.switchRow}>
+                        <div className={styles.switchText}>
+                          <span className={styles.switchTitle}>
+                            Hỗ trợ miễn phí vận chuyển của gian hàng (Freeship shop)
+                          </span>
+                          <span className={styles.switchDesc}>
+                            Tự động trừ phí vận chuyển cho đơn đạt ngưỡng tại bước thanh toán; phần
+                            hỗ trợ được tính vào chi phí khuyến mãi của gian hàng và có thể gộp với
+                            mã Freeship sàn.
+                          </span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          className={common.toggleSwitch}
+                          checked={freeShipEnabled}
+                          onChange={(e) => {
+                            const next = e.target.checked;
+                            setFreeShipEnabled(next);
+                            if (next) {
+                              if (
+                                freeShipMinOrderStr.trim() === "" ||
+                                Math.trunc(Number(freeShipMinOrderStr)) < 0
+                              ) {
+                                setFreeShipMinOrderStr("199000");
+                              }
+                              if (Math.trunc(Number(freeShipMaxStr) || 0) <= 0) {
+                                setFreeShipMaxStr("25000");
+                              }
+                            }
+                          }}
+                          aria-label="Bật hoặc tắt Freeship gian hàng"
+                          disabled={shipSettingsSaving}
+                        />
+                      </div>
+
+                      {freeShipEnabled && (
+                        <div className={styles.fields2} style={{ marginTop: 10 }}>
+                          <div className={common.field}>
+                            <label htmlFor="ship-fs-min" className={common.fieldLabel}>
+                              Đơn tối thiểu áp dụng Freeship (VND)
+                            </label>
+                            <input
+                              id="ship-fs-min"
+                              type="number"
+                              min={0}
+                              step={10000}
+                              className={common.textInput}
+                              value={freeShipMinOrderStr}
+                              onChange={(e) => setFreeShipMinOrderStr(e.target.value)}
+                              disabled={shipSettingsSaving}
+                              required
+                            />
+                            <span className={common.fieldHint}>
+                              {Math.max(0, Math.trunc(Number(freeShipMinOrderStr) || 0)) === 0
+                                ? `Áp dụng cho mọi đơn hàng tại ${shopName} (0₫ = không yêu cầu giá trị tối thiểu).`
+                                : `Áp dụng cho tổng tiền hàng tại ${shopName} đạt từ ${formatVnd(Math.max(0, Math.trunc(Number(freeShipMinOrderStr) || 0)))}.`}
+                            </span>
+                          </div>
+                          <div className={common.field}>
+                            <label htmlFor="ship-fs-max" className={common.fieldLabel}>
+                              Hỗ trợ phí ship tối đa / đơn (VND)
+                            </label>
+                            <input
+                              id="ship-fs-max"
+                              type="number"
+                              min={1}
+                              step={1000}
+                              className={common.textInput}
+                              value={freeShipMaxStr}
+                              onChange={(e) => setFreeShipMaxStr(e.target.value)}
+                              disabled={shipSettingsSaving}
+                              required
+                            />
+                            <span className={common.fieldHint}>
+                              Mức hỗ trợ tối đa gian hàng chịu cho mỗi đơn đạt ngưỡng (bắt buộc lớn
+                              hơn 0₫, VD 25.000₫).
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
                     {shipSettingsError && (
                       <p className={common.fieldError} role="alert">
                         {shipSettingsError}
@@ -1151,220 +1245,6 @@ function SellerProfileOpsInner({
                   </div>
                 )}
               </form>
-
-              <div className={styles.twoCol}>
-                <form
-                  className={common.card}
-                  onSubmit={handleSaveOps}
-                  aria-labelledby="shipping-ops-heading"
-                >
-                  <div className={common.cardHeader}>
-                    <h2 id="shipping-ops-heading" className={common.cardTitle}>
-                      Cấu hình vận chuyển và cam kết đổi trả
-                    </h2>
-                    <span className={common.cardMeta}>
-                      Áp dụng trên giỏ hàng, bước thanh toán và huy hiệu trang sản phẩm
-                    </span>
-                  </div>
-
-                  <div className={styles.fieldStack}>
-                    <div className={styles.fields3}>
-                      <div className={common.field}>
-                        <label htmlFor="ops-freeship" className={common.fieldLabel}>
-                          Ngưỡng freeship riêng của shop (VND)
-                        </label>
-                        <input
-                          id="ops-freeship"
-                          type="number"
-                          step={10000}
-                          min={99000}
-                          className={common.textInput}
-                          value={freeShipStr}
-                          onChange={(e) => setFreeShipStr(e.target.value)}
-                        />
-                        <span className={common.fieldHint}>
-                          Ngưỡng toàn sàn: 249.000₫ (hiển thị {formatVnd(liveFreeShip)})
-                        </span>
-                      </div>
-
-                      <div className={common.field}>
-                        <label htmlFor="ops-shipfee" className={common.fieldLabel}>
-                          Cước giao chuẩn (VND)
-                        </label>
-                        <input
-                          id="ops-shipfee"
-                          type="number"
-                          step={1000}
-                          min={0}
-                          className={common.textInput}
-                          value={shipFeeStr}
-                          onChange={(e) => setShipFeeStr(e.target.value)}
-                        />
-                      </div>
-
-                      <div className={common.field}>
-                        <label htmlFor="ops-sla" className={common.fieldLabel}>
-                          Hạn chuẩn bị hàng (giờ)
-                        </label>
-                        <input
-                          id="ops-sla"
-                          type="number"
-                          min={2}
-                          max={48}
-                          className={common.textInput}
-                          value={prepHoursStr}
-                          onChange={(e) => setPrepHoursStr(e.target.value)}
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className={styles.switchRow}>
-                        <div className={styles.switchText}>
-                          <span className={styles.switchTitle}>Giao nhanh nội thành (2-4 giờ)</span>
-                          <span className={styles.switchDesc}>
-                            Cho phép khách cùng tỉnh thành chọn giao gấp ngay tại bước thanh toán.
-                          </span>
-                        </div>
-                        <input
-                          type="checkbox"
-                          className={common.toggleSwitch}
-                          checked={fastEnabled}
-                          onChange={(e) => setFastEnabled(e.target.checked)}
-                          aria-label="Bật hoặc tắt giao nhanh nội thành"
-                        />
-                      </div>
-
-                      {fastEnabled && (
-                        <div className={styles.fields2} style={{ marginBottom: 12 }}>
-                          <div className={common.field}>
-                            <label htmlFor="ops-fast-area" className={common.fieldLabel}>
-                              Khu vực giao nhanh
-                            </label>
-                            <input
-                              id="ops-fast-area"
-                              type="text"
-                              className={common.textInput}
-                              value={fastArea}
-                              onChange={(e) => setFastArea(e.target.value)}
-                            />
-                          </div>
-                          <div className={common.field}>
-                            <label htmlFor="ops-fast-cutoff" className={common.fieldLabel}>
-                              Khung giờ cắt đơn trong ngày
-                            </label>
-                            <input
-                              id="ops-fast-cutoff"
-                              type="text"
-                              className={common.textInput}
-                              value={fastCutoff}
-                              onChange={(e) => setFastCutoff(e.target.value)}
-                            />
-                          </div>
-                        </div>
-                      )}
-
-                      <div className={styles.switchRow}>
-                        <div className={styles.switchText}>
-                          <span className={styles.switchTitle}>
-                            Cam kết đổi trả miễn phí 45 ngày (Huy hiệu xưởng)
-                          </span>
-                          <span className={styles.switchDesc}>
-                            Hiển thị huy hiệu Đổi trả 45 ngày trên trang gian hàng và các sản phẩm
-                            áp dụng.
-                          </span>
-                        </div>
-                        <input
-                          type="checkbox"
-                          className={common.toggleSwitch}
-                          checked={return45}
-                          onChange={(e) => setReturn45(e.target.checked)}
-                          aria-label="Bật cam kết đổi trả 45 ngày"
-                        />
-                      </div>
-
-                      <div className={styles.switchRow}>
-                        <div className={styles.switchText}>
-                          <span className={styles.switchTitle}>
-                            Hỗ trợ đổi size 2 chiều tận nơi
-                          </span>
-                          <span className={styles.switchDesc}>
-                            Bưu tá giao size mới và thu hồi hàng đổi trong cùng 1 chuyến tại nhà
-                            khách.
-                          </span>
-                        </div>
-                        <input
-                          type="checkbox"
-                          className={common.toggleSwitch}
-                          checked={twoWayEx}
-                          onChange={(e) => setTwoWayEx(e.target.checked)}
-                          aria-label="Bật đổi size 2 chiều tận nơi"
-                        />
-                      </div>
-                    </div>
-
-                    <div className={common.field}>
-                      <label htmlFor="ops-exc" className={common.fieldLabel}>
-                        Ghi chú ngoại lệ đổi trả (theo khung sàn)
-                      </label>
-                      <textarea
-                        id="ops-exc"
-                        className={common.textArea}
-                        value={exceptionNote}
-                        onChange={(e) => setExceptionNote(e.target.value)}
-                      />
-                    </div>
-
-                    <div className={styles.formActions}>
-                      <Button type="submit" variant="ink" size="sm" shape="app">
-                        <IconCheck size={14} />
-                        <span>Lưu cấu hình vận hành</span>
-                      </Button>
-                    </div>
-                  </div>
-                </form>
-
-                {/* Right preview showing buyer-facing badges & cart freeship bar */}
-                <section className={common.card} aria-labelledby="badge-preview-heading">
-                  <div className={common.cardHeader}>
-                    <h2 id="badge-preview-heading" className={common.cardTitle}>
-                      Xem trước huy hiệu xưởng trên trang mua hàng
-                    </h2>
-                  </div>
-
-                  <div className={styles.badgePreviewList}>
-                    {opsConfig.verifiedWorkshopBadge && (
-                      <span className={`${common.pill} ${common.pillPos}`}>Xưởng chuẩn QC</span>
-                    )}
-                    {return45 && (
-                      <span className={`${common.pill} ${common.pillPos}`}>Đổi trả 45 ngày</span>
-                    )}
-                    {twoWayEx && (
-                      <span className={`${common.pill} ${common.pillPos}`}>
-                        Đổi size 2 chiều tận nơi
-                      </span>
-                    )}
-                    {fastEnabled && <span className={common.pill}>Giao nhanh nội thành</span>}
-                  </div>
-
-                  <div className={styles.previewWell}>
-                    <span className={styles.previewHeading}>Thanh tiến độ Freeship gian hàng</span>
-                    <p className={styles.previewLine}>
-                      Miễn phí vận chuyển cho đơn từ <strong>{formatVnd(liveFreeShip)}</strong> tại{" "}
-                      {shopShortName} (tiết kiệm {formatVnd(liveShipFee)} phí giao tiêu chuẩn).
-                    </p>
-                    <p className={styles.previewLine}>
-                      Thời gian chuẩn bị tại kho: tối đa {prepHoursStr || "12"} giờ làm việc.
-                    </p>
-                    {fastEnabled && (
-                      <p className={styles.previewLine}>
-                        Giao nhanh nội thành: {fastArea} ({fastCutoff}).
-                      </p>
-                    )}
-                    <p className={styles.previewLine}>{exceptionNote}</p>
-                  </div>
-                </section>
-              </div>
             </div>
           )}
         </>

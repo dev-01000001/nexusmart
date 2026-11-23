@@ -208,7 +208,12 @@ async function handleProxy(
   if (upstreamContentType) {
     resHeaders.set("Content-Type", upstreamContentType);
   }
-  for (const h of ["x-trace-id", "x-ratelimit-limit", "x-ratelimit-remaining"]) {
+  for (const h of [
+    "x-trace-id",
+    "x-ratelimit-limit",
+    "x-ratelimit-remaining",
+    "content-disposition",
+  ]) {
     const val = upstream.headers.get(h);
     if (val) resHeaders.set(h, val);
   }

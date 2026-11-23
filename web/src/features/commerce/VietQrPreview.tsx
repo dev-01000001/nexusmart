@@ -14,9 +14,9 @@ export interface VietQrPreviewProps {
 }
 
 interface ParsedBankMeta {
-  bankName: string;
-  accountNo: string;
-  accountName: string;
+  bankName: string | null;
+  accountNo: string | null;
+  accountName: string | null;
   transferNote: string;
 }
 
@@ -32,23 +32,24 @@ const BANK_BIN_NAMES: Record<string, string> = {
 };
 
 function parseQrUrlMeta(qrUrl: string | undefined, fallbackRef: string): ParsedBankMeta {
-  const defaults: ParsedBankMeta = {
-    bankName: "ACB · Ngân hàng Á Châu",
-    accountNo: "2026 8841 9001",
-    accountName: "Công ty TNHH NexusMart Việt Nam",
+  const empty: ParsedBankMeta = {
+    bankName: null,
+    accountNo: null,
+    accountName: null,
     transferNote: fallbackRef,
   };
-  if (!qrUrl) return defaults;
+  if (!qrUrl) return empty;
 
   try {
     const parsed = new URL(qrUrl);
-    const accParam = parsed.searchParams.get("acc");
-    const bankParam = parsed.searchParams.get("bank");
-    const addInfo = parsed.searchParams.get("addInfo") || parsed.searchParams.get("des");
-    const accountName = parsed.searchParams.get("accountName");
+    const accParam = parsed.searchParams.get("acc")?.trim() || null;
+    const bankParam = parsed.searchParams.get("bank")?.trim() || null;
+    const addInfo =
+      parsed.searchParams.get("addInfo")?.trim() || parsed.searchParams.get("des")?.trim() || "";
+    const rawAccountName = parsed.searchParams.get("accountName")?.trim() || "";
 
-    let bankName = bankParam || defaults.bankName;
-    let accountNo = accParam || defaults.accountNo;
+    let bankName = bankParam;
+    let accountNo = accParam;
 
     // Parse standard img.vietqr.io/image/<BIN>-<ACC>-compact2.png path
     const imgMatch = parsed.pathname.match(/\/image\/([^-]+)-([^-/.]+)/i);
@@ -58,13 +59,8 @@ function parseQrUrlMeta(qrUrl: string | undefined, fallbackRef: string): ParsedB
       accountNo = imgMatch[2];
     }
 
-    let safeAccountName = defaults.accountName;
-    if (accountName) {
-      const decoded = decodeURIComponent(accountName).trim();
-      if (decoded && !/(sandbox|mock)/i.test(decoded)) {
-        safeAccountName = decoded;
-      }
-    }
+    const safeAccountName =
+      rawAccountName && !/(sandbox|mock)/i.test(rawAccountName) ? rawAccountName : null;
 
     return {
       bankName,
@@ -73,63 +69,32 @@ function parseQrUrlMeta(qrUrl: string | undefined, fallbackRef: string): ParsedB
       transferNote: addInfo || fallbackRef,
     };
   } catch {
-    return defaults;
+    return empty;
   }
 }
 
 /**
- * Displays the real VietQR image when available and falls back to a crisp flat SVG QR
- * in Frost & Slate palette (zero card forms).
+ * Displays the real VietQR image when available and falls back to an explicit error + reload state
+ * with real transfer metadata (never shows fake hardcoded bank accounts or unscannable noise QR).
  */
 export function VietQrPreview({ amount, reference, qrUrl, qrCode, expiresAt }: VietQrPreviewProps) {
   const [imgFailed, setImgFailed] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
   const [copiedField, setCopiedField] = useState<"ref" | "qr" | null>(null);
 
   const bankMeta = useMemo(() => parseQrUrlMeta(qrUrl, reference), [qrUrl, reference]);
 
-  const modules = useMemo(() => {
-    const size = 21;
-    const grid: boolean[][] = Array.from({ length: size }, () => Array(size).fill(false));
-
-    const drawFinder = (ox: number, oy: number) => {
-      for (let y = 0; y < 7; y++) {
-        for (let x = 0; x < 7; x++) {
-          const border = x === 0 || x === 6 || y === 0 || y === 6;
-          const core = x >= 2 && x <= 4 && y >= 2 && y <= 4;
-          grid[oy + y][ox + x] = border || core;
-        }
-      }
-    };
-
-    drawFinder(0, 0);
-    drawFinder(size - 7, 0);
-    drawFinder(0, size - 7);
-
-    let hash = 2166136261;
-    const seedStr = `${qrCode || reference}-${amount}`;
-    for (let i = 0; i < seedStr.length; i++) {
-      hash ^= seedStr.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
+  const effectiveQrUrl = useMemo(() => {
+    if (!qrUrl) return "";
+    if (reloadNonce === 0) return qrUrl;
+    try {
+      const u = new URL(qrUrl);
+      u.searchParams.set("_r", String(reloadNonce));
+      return u.toString();
+    } catch {
+      return qrUrl;
     }
-
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const inTopLeft = x < 8 && y < 8;
-        const inTopRight = x >= size - 8 && y < 8;
-        const inBottomLeft = x < 8 && y >= size - 8;
-        if (inTopLeft || inTopRight || inBottomLeft) continue;
-        if (x === 6 || y === 6) {
-          grid[y][x] = (x + y) % 2 === 0;
-          continue;
-        }
-        hash ^= (x * 31 + y * 17) & 0xff;
-        hash = Math.imul(hash, 16777619);
-        grid[y][x] = (hash >>> 28) % 2 === 0;
-      }
-    }
-
-    return grid;
-  }, [amount, qrCode, reference]);
+  }, [qrUrl, reloadNonce]);
 
   const copyText = async (value: string, field: "ref" | "qr") => {
     try {
@@ -143,14 +108,14 @@ export function VietQrPreview({ amount, reference, qrUrl, qrCode, expiresAt }: V
     }
   };
 
-  const showRemoteQr = Boolean(qrUrl) && !imgFailed;
+  const showRemoteQr = Boolean(effectiveQrUrl) && !imgFailed;
 
   return (
     <div className={styles.qrWrap}>
       <div className={styles.qrBox}>
         {showRemoteQr ? (
           <img
-            src={qrUrl}
+            src={effectiveQrUrl}
             alt={`Mã VietQR thanh toán ${formatVnd(amount)}`}
             width={148}
             height={148}
@@ -158,45 +123,48 @@ export function VietQrPreview({ amount, reference, qrUrl, qrCode, expiresAt }: V
             onError={() => setImgFailed(true)}
           />
         ) : (
-          <svg
-            viewBox="0 0 21 21"
-            width="148"
-            height="148"
-            role="img"
-            aria-label={`Mã VietQR thanh toán ${formatVnd(amount)}`}
-          >
-            <rect width="21" height="21" fill="var(--surface-white)" />
-            {modules.map((row, y) =>
-              row.map((on, x) =>
-                on ? (
-                  <rect
-                    key={`${x}-${y}`}
-                    x={x}
-                    y={y}
-                    width="1"
-                    height="1"
-                    fill={x >= 8 && x <= 12 && y >= 8 && y <= 12 ? "var(--accent)" : "var(--ink)"}
-                  />
-                ) : null
-              )
+          <div role="status" className={styles.qrFallbackBox}>
+            <span className={styles.qrFallbackText}>
+              {qrUrl
+                ? "Không tải được ảnh mã VietQR."
+                : "Chưa có ảnh mã VietQR từ cổng thanh toán."}
+            </span>
+            {qrUrl && (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setImgFailed(false);
+                  setReloadNonce((n) => n + 1);
+                }}
+              >
+                Tải lại ảnh QR
+              </Button>
             )}
-          </svg>
+          </div>
         )}
       </div>
 
       <div className={styles.qrInfo}>
-        <div className={styles.qrRow}>
-          <span className={styles.qrLabel}>Ngân hàng thụ hưởng</span>
-          <span className={styles.qrVal}>{bankMeta.bankName}</span>
-        </div>
-        <div className={styles.qrRow}>
-          <span className={styles.qrLabel}>Số tài khoản</span>
-          <span className={`${styles.qrVal} num`}>{bankMeta.accountNo}</span>
-        </div>
-        <div className={styles.qrRow}>
-          <span className={styles.qrLabel}>Chủ tài khoản</span>
-          <span className={styles.qrVal}>{bankMeta.accountName}</span>
-        </div>
+        {bankMeta.bankName && (
+          <div className={styles.qrRow}>
+            <span className={styles.qrLabel}>Ngân hàng thụ hưởng</span>
+            <span className={styles.qrVal}>{bankMeta.bankName}</span>
+          </div>
+        )}
+        {bankMeta.accountNo && (
+          <div className={styles.qrRow}>
+            <span className={styles.qrLabel}>Số tài khoản</span>
+            <span className={`${styles.qrVal} num`}>{bankMeta.accountNo}</span>
+          </div>
+        )}
+        {bankMeta.accountName && (
+          <div className={styles.qrRow}>
+            <span className={styles.qrLabel}>Chủ tài khoản</span>
+            <span className={styles.qrVal}>{bankMeta.accountName}</span>
+          </div>
+        )}
         <div className={styles.qrRow}>
           <span className={styles.qrLabel}>Số tiền chuyển khoản</span>
           <span className={`${styles.qrAmount} num`}>{formatVnd(amount)}</span>

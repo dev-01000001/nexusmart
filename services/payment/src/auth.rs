@@ -16,8 +16,15 @@ use tonic::Status;
 use crate::domain::PaymentWithAllocations;
 use crate::error::PaymentError;
 
-/// RPCs on which an internal service token (order saga / expiry watchdog) is accepted.
-const SERVICE_METHODS: &[&str] = &["GetPayment", "CancelPayment", "CreateRefund"];
+/// RPCs on which an internal service token (order saga / expiry watchdog / checkout forward
+/// recovery) is accepted.
+const SERVICE_METHODS: &[&str] = &[
+    "CreatePayment",
+    "GetPayment",
+    "CancelPayment",
+    "CreateRefund",
+    "GetFeeConfig",
+];
 
 /// Authenticated caller as seen by handlers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -25,42 +32,106 @@ pub struct Caller {
     pub role: String,
     pub user_id: String,
     pub shop_id: String,
+    pub is_service: bool,
 }
 
 impl Caller {
     pub fn is_admin(&self) -> bool {
         matches!(self.role.as_str(), "admin" | "super_admin")
     }
+
+    pub fn is_admin_or_service(&self) -> bool {
+        self.is_admin() || self.is_service
+    }
 }
 
-/// Enforces object-level read access for a payment (buyer owner, seller with a matching shop
-/// allocation or buyer ownership, or admin/super_admin). Shared by gRPC `GetPayment` and HTTP SSE.
+/// Caller-scoped visibility for a payment record and its shop allocations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaymentViewScope {
+    /// Admin, super_admin, or verified internal service token: full payment and allocations.
+    Full,
+    /// Buyer owner (including a seller purchasing as a buyer): all allocations with
+    /// `commission_vnd = 0`; buyer QR/provider_ref and full amount preserved.
+    BuyerOwner,
+    /// Seller who only owns one or more shop allocations (not the buyer owner):
+    /// restricted to `shop_id`, with buyer QR/provider_ref redacted and shop-scoped amount.
+    SellerAllocation { shop_id: String },
+}
+
+/// Enforces object-level read access for a payment and resolves the caller's visibility scope
+/// (admin/super_admin/service token, buyer owner including seller-as-buyer, or seller with a
+/// matching shop allocation). Shared by gRPC `GetPayment` and HTTP SSE.
+pub fn resolve_payment_read_scope(
+    caller: &Caller,
+    pwa: &PaymentWithAllocations,
+) -> crate::error::Result<PaymentViewScope> {
+    if caller.is_admin_or_service() {
+        return Ok(PaymentViewScope::Full);
+    }
+    let owns_as_buyer = !caller.user_id.is_empty() && pwa.payment.user_id == caller.user_id;
+    match caller.role.as_str() {
+        "buyer" if owns_as_buyer => Ok(PaymentViewScope::BuyerOwner),
+        "seller" => {
+            if owns_as_buyer {
+                return Ok(PaymentViewScope::BuyerOwner);
+            }
+            if !caller.shop_id.is_empty()
+                && pwa.allocations.iter().any(|a| a.shop_id == caller.shop_id)
+            {
+                return Ok(PaymentViewScope::SellerAllocation {
+                    shop_id: caller.shop_id.clone(),
+                });
+            }
+            Err(PaymentError::Forbidden(
+                "cannot access another user's payment".to_string(),
+            ))
+        }
+        _ => Err(PaymentError::Forbidden(
+            "cannot access another user's payment".to_string(),
+        )),
+    }
+}
+
+/// Enforces object-level read access for a payment. Shared by gRPC `GetPayment` and HTTP SSE.
 pub fn require_payment_read_access(
     caller: &Caller,
     pwa: &PaymentWithAllocations,
 ) -> crate::error::Result<()> {
-    if caller.is_admin() {
-        return Ok(());
+    resolve_payment_read_scope(caller, pwa).map(|_| ())
+}
+
+/// Computes a seller's payable portion across their own allocations in a payment:
+/// `sum(subtotal_vnd + shipping_fee_vnd - platform_discount_vnd)` clamped to `>= 0`.
+pub fn seller_scoped_amount_vnd(pwa: &PaymentWithAllocations, shop_id: &str) -> i64 {
+    pwa.allocations
+        .iter()
+        .filter(|a| a.shop_id == shop_id)
+        .fold(0_i64, |acc, a| {
+            let alloc_payable = a
+                .subtotal_vnd
+                .saturating_add(a.shipping_fee_vnd)
+                .saturating_sub(a.platform_discount_vnd);
+            acc.saturating_add(alloc_payable)
+        })
+        .max(0)
+}
+
+/// Resolves a safe top-level `order_id` for a seller-allocation-only view without leaking
+/// another shop's sub-order ID.
+pub fn seller_scoped_order_id(pwa: &PaymentWithAllocations, shop_id: &str) -> String {
+    if pwa.payment.order_id == pwa.payment.order_group_id
+        || pwa
+            .allocations
+            .iter()
+            .any(|a| a.shop_id == shop_id && a.order_id == pwa.payment.order_id)
+    {
+        return pwa.payment.order_id.clone();
     }
-    match caller.role.as_str() {
-        "buyer" => {
-            if !caller.user_id.is_empty() && pwa.payment.user_id == caller.user_id {
-                return Ok(());
-            }
-        }
-        "seller" => {
-            let owns_as_buyer = !caller.user_id.is_empty() && pwa.payment.user_id == caller.user_id;
-            let owns_shop_alloc = !caller.shop_id.is_empty()
-                && pwa.allocations.iter().any(|a| a.shop_id == caller.shop_id);
-            if owns_as_buyer || owns_shop_alloc {
-                return Ok(());
-            }
-        }
-        _ => {}
-    }
-    Err(PaymentError::Forbidden(
-        "cannot access another user's payment".to_string(),
-    ))
+    pwa.allocations
+        .iter()
+        .find(|a| a.shop_id == shop_id)
+        .map(|a| a.order_id.clone())
+        .unwrap_or_default()
 }
 
 #[derive(Deserialize)]
@@ -111,7 +182,7 @@ impl GrpcAuth {
             .ok_or_else(|| PaymentError::Unauthorized("authentication required".to_string()))?;
 
         if let Some(c) = verify_hs256(token, &self.user_key).filter(|c| c.service.is_empty()) {
-            return to_caller(c);
+            return to_caller(c, false);
         }
         if let Some(c) = verify_hs256(token, &self.service_key).filter(|c| !c.service.is_empty()) {
             if !SERVICE_METHODS.contains(&method) {
@@ -119,7 +190,7 @@ impl GrpcAuth {
                     "service identity not allowed for this RPC".to_string(),
                 ));
             }
-            return to_caller(c);
+            return to_caller(c, true);
         }
         Err(PaymentError::Unauthorized(
             "invalid access token".to_string(),
@@ -135,7 +206,7 @@ impl GrpcAuth {
     }
 }
 
-fn to_caller(c: Claims) -> crate::error::Result<Caller> {
+fn to_caller(c: Claims, is_service: bool) -> crate::error::Result<Caller> {
     let role = c.role.trim().to_ascii_lowercase();
     if role.is_empty() {
         return Err(PaymentError::Unauthorized("token has no role".to_string()));
@@ -144,6 +215,7 @@ fn to_caller(c: Claims) -> crate::error::Result<Caller> {
         role,
         user_id: c.sub.trim().to_string(),
         shop_id: c.shop_id.trim().to_string(),
+        is_service,
     })
 }
 
@@ -218,7 +290,14 @@ mod tests {
             ("x-user-role", "admin".into()),
             ("x-shop-id", "shop-b".into()),
         ]);
-        for method in ["GetLedgerSummary", "GetSellerBalance", "GetPayment"] {
+        for method in [
+            "GetLedgerSummary",
+            "GetSellerBalance",
+            "GetPayment",
+            "GetFeeConfig",
+            "SetFeeConfig",
+            "ListSellerLedger",
+        ] {
             let err = auth().authenticate(&m, method).unwrap_err();
             assert_eq!(err.code(), tonic::Code::Unauthenticated, "{method}");
         }
@@ -241,7 +320,8 @@ mod tests {
             Caller {
                 role: "seller".into(),
                 user_id: "seller-a".into(),
-                shop_id: "shop-a".into()
+                shop_id: "shop-a".into(),
+                is_service: false,
             }
         );
     }
@@ -255,11 +335,18 @@ mod tests {
             )
         };
         let a = auth();
-        for method in ["GetPayment", "CancelPayment", "CreateRefund"] {
+        for method in [
+            "CreatePayment",
+            "GetPayment",
+            "CancelPayment",
+            "CreateRefund",
+            "GetFeeConfig",
+        ] {
             let ok = a
                 .authenticate(&md(&[bearer(svc(SVC_KEY, exp_in(60)))]), method)
                 .unwrap();
             assert_eq!(ok.role, "admin", "{method}");
+            assert!(ok.is_service, "{method}");
         }
 
         for method in [
@@ -270,6 +357,8 @@ mod tests {
             "SettleRefund",
             "ListReconciliationQueue",
             "ResolveReconciliationItem",
+            "SetFeeConfig",
+            "ListSellerLedger",
         ] {
             let denied = a
                 .authenticate(&md(&[bearer(svc(SVC_KEY, exp_in(60)))]), method)
@@ -370,14 +459,17 @@ mod tests {
         let buyer_owner = Caller {
             role: "buyer".into(),
             user_id: "buyer-owner".into(),
-            shop_id: String::new(),
+            ..Default::default()
         };
-        assert!(require_payment_read_access(&buyer_owner, &pwa).is_ok());
+        assert_eq!(
+            resolve_payment_read_scope(&buyer_owner, &pwa).unwrap(),
+            PaymentViewScope::BuyerOwner
+        );
 
         let other_buyer = Caller {
             role: "buyer".into(),
             user_id: "buyer-other".into(),
-            shop_id: String::new(),
+            ..Default::default()
         };
         assert!(matches!(
             require_payment_read_access(&other_buyer, &pwa),
@@ -388,13 +480,20 @@ mod tests {
             role: "seller".into(),
             user_id: "seller-u1".into(),
             shop_id: "shop-a".into(),
+            ..Default::default()
         };
-        assert!(require_payment_read_access(&seller_with_alloc, &pwa).is_ok());
+        assert_eq!(
+            resolve_payment_read_scope(&seller_with_alloc, &pwa).unwrap(),
+            PaymentViewScope::SellerAllocation {
+                shop_id: "shop-a".into(),
+            }
+        );
 
         let seller_without_alloc = Caller {
             role: "seller".into(),
             user_id: "seller-u2".into(),
             shop_id: "shop-b".into(),
+            ..Default::default()
         };
         assert!(matches!(
             require_payment_read_access(&seller_without_alloc, &pwa),
@@ -405,22 +504,43 @@ mod tests {
             role: "seller".into(),
             user_id: "buyer-owner".into(),
             shop_id: "shop-other".into(),
+            ..Default::default()
         };
-        assert!(require_payment_read_access(&seller_as_buyer, &pwa).is_ok());
+        assert_eq!(
+            resolve_payment_read_scope(&seller_as_buyer, &pwa).unwrap(),
+            PaymentViewScope::BuyerOwner
+        );
 
         let admin = Caller {
             role: "admin".into(),
             user_id: "admin-1".into(),
-            shop_id: String::new(),
+            ..Default::default()
         };
-        assert!(require_payment_read_access(&admin, &pwa).is_ok());
+        assert_eq!(
+            resolve_payment_read_scope(&admin, &pwa).unwrap(),
+            PaymentViewScope::Full
+        );
 
         let super_admin = Caller {
             role: "super_admin".into(),
             user_id: "sadmin-1".into(),
-            shop_id: String::new(),
+            ..Default::default()
         };
-        assert!(require_payment_read_access(&super_admin, &pwa).is_ok());
+        assert_eq!(
+            resolve_payment_read_scope(&super_admin, &pwa).unwrap(),
+            PaymentViewScope::Full
+        );
+
+        let service_caller = Caller {
+            role: "service".into(),
+            user_id: "order-service".into(),
+            is_service: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_payment_read_scope(&service_caller, &pwa).unwrap(),
+            PaymentViewScope::Full
+        );
 
         assert!(matches!(
             require_payment_read_access(&Caller::default(), &pwa),

@@ -7,10 +7,8 @@ import { useMockStore } from "@/mock/MockStoreContext";
 import type { GatewayUser } from "@/lib/gateway-types";
 import {
   IconArrowUpRight,
-  IconChat,
   IconClose,
   IconDashboard,
-  IconFileText,
   IconMenu,
   IconPackage,
   IconRefresh,
@@ -20,7 +18,6 @@ import {
   IconWallet,
   NexusMark,
 } from "@/components/Icons";
-import { getPendingInteractionCount, useSellerSession } from "@/features/seller/sellerStore";
 import { SellerProvider, useSellerContext } from "@/features/seller/SellerContext";
 import { getShopStatusMeta } from "@/features/seller/types";
 import styles from "./layout.module.css";
@@ -34,11 +31,9 @@ interface SellerNavItem {
 
 function SellerShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { user, shop, shopState, pendingOrdersCount, pendingReturnsCount, mockShopKey } =
-    useSellerContext();
-  const { chatThreads, toastMessage, dismissToast } = useMockStore();
+  const { user, shop, shopState, pendingOrdersCount, pendingReturnsCount } = useSellerContext();
+  const { toastMessage, dismissToast } = useMockStore();
   const [menuOpen, setMenuOpen] = useState(false);
-  const session = useSellerSession();
 
   useEffect(() => {
     setMenuOpen(false);
@@ -49,11 +44,6 @@ function SellerShellInner({ children }: { children: React.ReactNode }) {
     const t = window.setTimeout(() => dismissToast(), 3400);
     return () => window.clearTimeout(t);
   }, [toastMessage, dismissToast]);
-
-  const pendingInteractionCount = getPendingInteractionCount(mockShopKey, session);
-  const unreadChatCount = chatThreads
-    .filter((t) => t.shopId === mockShopKey)
-    .reduce((sum, t) => sum + t.unreadBySeller, 0);
 
   const navItems: SellerNavItem[] = [
     { href: "/seller", label: "Tổng quan", icon: <IconDashboard size={16} /> },
@@ -71,20 +61,8 @@ function SellerShellInner({ children }: { children: React.ReactNode }) {
       badge: pendingReturnsCount > 0 ? pendingReturnsCount : undefined,
     },
     { href: "/seller/khuyen-mai", label: "Khuyến mãi", icon: <IconTag size={16} /> },
-    {
-      href: "/seller/tuong-tac",
-      label: "Tương tác",
-      icon: <IconFileText size={16} />,
-      badge: pendingInteractionCount > 0 ? pendingInteractionCount : undefined,
-    },
     { href: "/seller/ho-so", label: "Hồ sơ & Vận hành", icon: <IconSliders size={16} /> },
     { href: "/seller/tai-chinh", label: "Tài chính", icon: <IconWallet size={16} /> },
-    {
-      href: "/seller/chat",
-      label: "Tin nhắn",
-      icon: <IconChat size={16} />,
-      badge: unreadChatCount > 0 ? unreadChatCount : undefined,
-    },
   ];
 
   const isActive = (href: string) =>

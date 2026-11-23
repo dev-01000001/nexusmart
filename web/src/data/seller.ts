@@ -1910,11 +1910,11 @@ export const SELLER_ORDER_EXTRAS: Record<string, SellerOrderWave2Extra> = {
       requestedAt: "2026-11-19T15:10:00+07:00",
       fromVariant: "Áo thun Cotton Trắng · Size 2XL (BD-AT01-TRANG-2XL)",
       toVariant: "Áo thun Cotton Trắng · Size XL (BD-AT01-TRANG-XL)",
-      reason: "Mặc hơi rộng vai, áo còn nguyên tem mác chưa giặt (trong hạn đổi trả 45 ngày).",
+      reason: "Mặc hơi rộng vai, áo còn nguyên tem mác chưa giặt (trong hạn đổi trả 7 ngày).",
       courierStatus: "cho_dieu_phoi",
       courierPartner: "NexusLogistics Đổi 2 chiều",
       pickupWindow: "14:00 - 17:30 · 20/11/2026",
-      policyNote: "Miễn phí vận chuyển 2 chiều theo cam kết đổi trả 45 ngày tận nơi.",
+      policyNote: "Miễn phí vận chuyển 2 chiều theo cam kết đổi trả 7 ngày tận nơi.",
     },
     tier1Complaint: {
       id: "cmp-bd-053",
@@ -1973,7 +1973,7 @@ export const SELLER_ORDER_EXTRAS: Record<string, SellerOrderWave2Extra> = {
       courierPartner: "NexusLogistics Đổi 2 chiều",
       exchangeWaybill: "NMLOG-EX-88412",
       pickupWindow: "09:00 - 12:00 · 20/11/2026",
-      policyNote: "Miễn phí đổi size 2 chiều tận nơi trong 45 ngày.",
+      policyNote: "Miễn phí đổi size 2 chiều tận nơi trong 7 ngày.",
     },
   },
 };
@@ -2487,7 +2487,7 @@ export const INITIAL_SELLER_REVIEWS: SellerSampleReview[] = [
     rating: 4,
     fitFeedback: "rong",
     comment:
-      "Vải dày mịn nhưng chọn 2XL bị hơi rộng thân áo, mình đã tạo yêu cầu đổi 2 chiều xuống XL theo chính sách 45 ngày.",
+      "Vải dày mịn nhưng chọn 2XL bị hơi rộng thân áo, mình đã tạo yêu cầu đổi 2 chiều xuống XL theo chính sách 7 ngày.",
     verifiedOrderCode: "NM-261115-053",
     createdAt: "2026-11-19T15:02:00+07:00",
     hasPhoto: false,
@@ -2624,10 +2624,10 @@ export const INITIAL_SELLER_FAQS: SellerShopFaqItem[] = [
   {
     id: "faq-bd-2",
     shopId: "shop-bach-dang",
-    topic: "Giao hàng & đổi trả 45 ngày",
+    topic: "Giao hàng & đổi trả 7 ngày",
     question: "Xưởng hỗ trợ đổi size tận nơi ra sao?",
     answer:
-      "Xưởng tham gia cam kết đổi trả 45 ngày và đổi size 2 chiều tận nơi trên NexusMart. Bưu tá mang size mới tới và thu hồi áo nguyên tem trong cùng một chuyến, miễn phí cước vận chuyển.",
+      "Xưởng tham gia cam kết đổi trả 7 ngày và đổi size 2 chiều tận nơi trên NexusMart. Bưu tá mang size mới tới và thu hồi áo nguyên tem trong cùng một chuyến, miễn phí cước vận chuyển.",
     updatedAt: "2026-11-18",
     active: true,
   },
@@ -2664,7 +2664,7 @@ export const INITIAL_SELLER_FAQS: SellerShopFaqItem[] = [
   {
     id: "faq-hn-1",
     shopId: "shop-ha-noi",
-    topic: "Giao hàng & đổi trả 45 ngày",
+    topic: "Giao hàng & đổi trả 7 ngày",
     question: "Đơn nội thành Hà Nội có hỗ trợ giao nhanh trong ngày không?",
     answer:
       "Các đơn đặt trước 15:00 tại khu vực nội thành Hà Nội đều hỗ trợ giao nhanh 2-4 giờ qua đội ngũ đối tác vận chuyển.",
@@ -3215,7 +3215,7 @@ export const INITIAL_OPERATIONS_CONFIG: Record<string, SellerOperationsConfig> =
     return45DaysEnabled: true,
     twoWayExchangeEnabled: true,
     verifiedWorkshopBadge: true,
-    returnExceptionNote: "Áp dụng cam kết đổi trả 45 ngày miễn phí trừ sản phẩm Outlet xả kho.",
+    returnExceptionNote: "Áp dụng cam kết đổi trả 7 ngày miễn phí trừ sản phẩm Outlet xả kho.",
   },
   "shop-da-nang": {
     shopId: "shop-da-nang",
@@ -3241,6 +3241,6 @@ export const INITIAL_OPERATIONS_CONFIG: Record<string, SellerOperationsConfig> =
     return45DaysEnabled: true,
     twoWayExchangeEnabled: true,
     verifiedWorkshopBadge: true,
-    returnExceptionNote: "Hỗ trợ bù lẻ chiếc tất thất lạc và đổi size jogger tận nơi 45 ngày.",
+    returnExceptionNote: "Hỗ trợ bù lẻ chiếc tất thất lạc và đổi size jogger tận nơi 7 ngày.",
   },
 };

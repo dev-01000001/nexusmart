@@ -223,3 +223,65 @@ func TestConsumerRedactsResetTokenInDLQAndLogs(t *testing.T) {
 		t.Fatalf("SECURITY: reset_token leaked into consumer logs: %s", logBuf.String())
 	}
 }
+
+func TestConsumerRedactsShopBankAccountOTPInDLQAndLogs(t *testing.T) {
+	var logBuf bytes.Buffer
+	dlq := &stubDLQ{}
+	c := NewTestableConsumer(
+		stubProcessor{fn: func(_ context.Context, _ string, _ service.Envelope) (bool, error) {
+			return false, errors.New("smtp connection refused")
+		}},
+		dlq,
+		dlq,
+		2,
+		slog.New(slog.NewJSONHandler(&logBuf, nil)),
+	)
+
+	secretOTP := "837462"
+	raw, _ := json.Marshal(service.Envelope{
+		EventID:   "evt-bank-otp-dlq-1",
+		EventType: "user.shop_bank_account_otp",
+		Payload: json.RawMessage(
+			`{"user_id":"seller-1","shop_id":"shop-1","email":"s1@nexusmart.local","full_name":"Chủ Shop","otp":"` + secretOTP + `","expires_at":"2026-11-23T11:00:00Z","bank_code":"VCB","account_number_masked":"******4321"}`,
+		),
+	})
+
+	// 1. Valid JSON routed to DLQ after max attempts must redact OTP everywhere.
+	msg := &fakeMsg{subject: "user.shop_bank_account_otp", data: raw, delivered: 2}
+	c.HandleMessage(context.Background(), msg)
+
+	if !msg.acked || len(dlq.records) != 1 || len(dlq.pubData) != 1 {
+		t.Fatalf("expected Ack and 1 DLQ record/publish, acked=%v records=%d pub=%d", msg.acked, len(dlq.records), len(dlq.pubData))
+	}
+	if strings.Contains(string(dlq.records[0].payload), secretOTP) {
+		t.Fatalf("SECURITY: bank OTP leaked into dead_letter_events payload: %s", string(dlq.records[0].payload))
+	}
+	if strings.Contains(string(dlq.pubData[0]), secretOTP) {
+		t.Fatalf("SECURITY: bank OTP leaked into NEXUSMART_DLQ payload: %s", string(dlq.pubData[0]))
+	}
+	if strings.Contains(logBuf.String(), secretOTP) {
+		t.Fatalf("SECURITY: bank OTP leaked into consumer logs: %s", logBuf.String())
+	}
+
+	// 2. Malformed JSON on user.shop_bank_account_otp containing OTP must ALSO be completely redacted in DLQ.
+	malformedOTP := "651920"
+	badMsg := &fakeMsg{
+		subject:   "user.shop_bank_account_otp",
+		data:      []byte(`{"event_id":"evt-bad","payload":{"otp":"` + malformedOTP + `" broken`),
+		delivered: 1,
+	}
+	c.HandleMessage(context.Background(), badMsg)
+
+	if !badMsg.acked || len(dlq.records) != 2 || len(dlq.pubData) != 2 {
+		t.Fatalf("expected malformed bank OTP message Acked and DLQ'd, acked=%v records=%d pub=%d", badMsg.acked, len(dlq.records), len(dlq.pubData))
+	}
+	if strings.Contains(string(dlq.records[1].payload), malformedOTP) {
+		t.Fatalf("SECURITY: malformed bank OTP leaked into dead_letter_events payload: %s", string(dlq.records[1].payload))
+	}
+	if strings.Contains(string(dlq.pubData[1]), malformedOTP) {
+		t.Fatalf("SECURITY: malformed bank OTP leaked into NEXUSMART_DLQ payload: %s", string(dlq.pubData[1]))
+	}
+	if strings.Contains(logBuf.String(), malformedOTP) {
+		t.Fatalf("SECURITY: malformed bank OTP leaked into consumer logs: %s", logBuf.String())
+	}
+}

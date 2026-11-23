@@ -100,6 +100,7 @@ export default async function ProductDetailPage({ params, searchParams }: Produc
         similarProducts={data.similarProducts}
         allProducts={data.allProducts}
         liveFlashBySkuId={data.liveFlashBySkuId}
+        activeShopDiscountBySkuId={data.activeShopDiscountBySkuId}
         provinces={data.provinces}
         initialColorQuery={colorQuery}
         initialSizeQuery={sizeQuery}

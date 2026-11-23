@@ -753,11 +753,43 @@ table.dataTable tbody tr:last-child td {
 
 /* Checkout & VietQR payment waiting additions */
 .qrImage {
-  width: 148px;
-  height: 148px;
+  width: var(--qr-size);
+  height: var(--qr-size);
   display: block;
   object-fit: contain;
   background: var(--surface-white);
+}
+
+.qrFallbackBox {
+  width: var(--qr-size);
+  min-height: var(--qr-size);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  text-align: center;
+  background: var(--surface-white);
+  border: var(--border-dashed);
+}
+
+.qrFallbackText {
+  font-size: var(--fs-small);
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.noticeSpacer {
+  margin-bottom: var(--space-4);
+}
+
+.noticeItem {
+  margin-top: var(--space-1);
+}
+
+.noticeSubtle {
+  margin-top: var(--space-2);
 }
 
 .paymentTitleGroup {

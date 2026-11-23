@@ -11,6 +11,20 @@ import React, {
 } from "react";
 import type { GatewayUser, SessionResponse } from "@/lib/gateway-types";
 import { SESSION_EXPIRED_EVENT, authApi, refreshSessionOnce, sanitizeNextPath } from "@/lib/api";
+import { clearCheckoutWarnings } from "@/features/checkout/helpers";
+
+const MOCK_STORE_STORAGE_KEY = "nexusmart_store_v2";
+
+function clearBrowserUserCaches() {
+  clearCheckoutWarnings();
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.removeItem(MOCK_STORE_STORAGE_KEY);
+    } catch {
+      // Ignore storage access restrictions
+    }
+  }
+}
 
 const AUTH_PUBLIC_PATHS = new Set([
   "/dang-nhap",
@@ -46,6 +60,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const performCleanExpiredLogout = useCallback(async (redirectToLogin: boolean) => {
     if (handlingExpiryRef.current) return;
     handlingExpiryRef.current = true;
+    clearBrowserUserCaches();
     setUser(null);
     setLoading(false);
     try {
@@ -144,6 +159,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     try {
       await authApi<{ ok: boolean }>("logout", { method: "POST" });
     } finally {
+      clearBrowserUserCaches();
       setUser(null);
       setLoading(false);
     }

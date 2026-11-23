@@ -3,10 +3,14 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type {
+  GatewayActiveShopDiscount,
+  GatewayActiveShopDiscountsResponse,
   GatewayAddress,
   GatewayCalculateFeeResponse,
   GatewayCoinBalance,
   GatewayDiscountBreakdown,
+  GatewayFlashSale,
+  GatewayFlashSalesResponse,
   GatewayPreviewDiscountsResponse,
   GatewayProduct,
   GatewayPublicShop,
@@ -32,7 +36,15 @@ import {
 } from "@/components";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import { formatVoucherCondition, translateVoucherReason } from "@/features/checkout/messages";
-import { buildCalculateFeePayload } from "@/features/checkout/helpers";
+import {
+  buildCalculateFeePayload,
+  evaluateShopFlashLines,
+  fetchActiveShopDiscountsWithFetcher,
+  inspectFlashSaleStatusForSku,
+  isShopProgramItemApplied,
+  resolveLiveFlashSaleForSku,
+  resolveSkuEffectivePromotion,
+} from "@/features/checkout/helpers";
 import { CheckoutSuggestionStrip } from "@/features/checkout/CheckoutSuggestionStrip";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./page.module.css";
@@ -65,6 +77,9 @@ function CartPageContent() {
     setPlatformVoucher,
     setFreeshipVoucher,
     setUseCoins,
+    optedOutFlashSkuIds,
+    optOutFlashForSku,
+    restoreFlashForSku,
   } = useCart();
   const { openChat, showToast } = useMockStore();
 
@@ -88,6 +103,10 @@ function CartPageContent() {
   const [platformVouchers, setPlatformVouchers] = useState<GatewayVoucher[]>([]);
   const [freeshipVouchers, setFreeshipVouchers] = useState<GatewayVoucher[]>([]);
   const [coinBalance, setCoinBalance] = useState<number>(0);
+  const [flashSales, setFlashSales] = useState<GatewayFlashSale[]>([]);
+  const [activeShopDiscountsBySkuId, setActiveShopDiscountsBySkuId] = useState<
+    Record<string, GatewayActiveShopDiscount>
+  >({});
 
   const [preview, setPreview] = useState<GatewayDiscountBreakdown | null>(null);
   const [previewLoading, setPreviewLoading] = useState<boolean>(false);
@@ -163,13 +182,19 @@ function CartPageContent() {
     };
   }, [isAuthenticated]);
 
-  // Estimate shipping per selected shop using default address so freeship preview is accurate
+  // Estimate shipping per selected shop via authoritative items + payment_method (gateway r6)
   const selectedShopShippingKey = useMemo(
     () =>
-      selectedShopGroups
-        .map((g) => `${g.shopId}:${g.selectedSubtotalVnd}:${g.selectedWeightGrams}`)
-        .join("|"),
-    [selectedShopGroups]
+      `${defaultAddress?.id ?? ""}|${selectedShopGroups
+        .map(
+          (g) =>
+            `${g.shopId}:${g.items
+              .map((it) => `${it.skuId}x${it.quantity}`)
+              .sort()
+              .join("+")}`
+        )
+        .join("|")}`,
+    [defaultAddress?.id, selectedShopGroups]
   );
 
   useEffect(() => {
@@ -187,8 +212,11 @@ function CartPageContent() {
               shopId: g.shopId,
               toProvinceCode: defaultAddress.province_code,
               toWardCode: defaultAddress.ward_code,
-              weightGrams: Math.max(100, g.selectedWeightGrams),
-              codAmountVnd: 0,
+              items: g.items.map((it) => ({
+                skuId: it.skuId,
+                quantity: it.quantity,
+              })),
+              paymentMethod: "VIETQR",
             }),
           });
           const quotes = res?.quotes ?? [];
@@ -215,13 +243,41 @@ function CartPageContent() {
     };
   }, [isAuthenticated, defaultAddress, selectedShopShippingKey, selectedShopGroups]);
 
-  // Load real vouchers from GET /vouchers (by scope, shop_id, order_amount_vnd)
+  // Compute effective (post-flash / post-shop-discount) subtotals so GET /vouchers?order_amount_vnd matches server min_order_vnd
+  const effectiveSubtotalByShop = useMemo(() => {
+    const out: Record<string, number> = {};
+    const nowMs = Date.now();
+    for (const g of shopGroups) {
+      let sum = 0;
+      for (const it of g.items) {
+        if (!it.selected || it.availableStock <= 0) continue;
+        const liveFlash = resolveLiveFlashSaleForSku(flashSales, it.skuId, it.priceVnd, nowMs);
+        const shopDiscount = activeShopDiscountsBySkuId[it.skuId] ?? null;
+        const promo = resolveSkuEffectivePromotion({
+          regularPriceVnd: it.priceVnd,
+          liveFlash,
+          activeShopDiscount: shopDiscount,
+          optOutFlash: optedOutFlashSkuIds.has(it.skuId),
+        });
+        sum += promo.effectiveUnitPriceVnd * it.quantity;
+      }
+      out[g.shopId] = sum;
+    }
+    return out;
+  }, [shopGroups, flashSales, activeShopDiscountsBySkuId, optedOutFlashSkuIds]);
+
+  const effectiveSelectedSubtotalVnd = useMemo(
+    () => Object.values(effectiveSubtotalByShop).reduce((acc, v) => acc + v, 0),
+    [effectiveSubtotalByShop]
+  );
+
+  // Load real vouchers from GET /vouchers (by scope, shop_id, post-discount order_amount_vnd)
   const voucherQueryKey = useMemo(
     () =>
-      `${selectedSubtotalVnd}|${shopGroups
-        .map((g) => `${g.shopId}:${g.selectedSubtotalVnd}`)
+      `${effectiveSelectedSubtotalVnd}|${shopGroups
+        .map((g) => `${g.shopId}:${effectiveSubtotalByShop[g.shopId] ?? 0}`)
         .join(",")}`,
-    [selectedSubtotalVnd, shopGroups]
+    [effectiveSelectedSubtotalVnd, shopGroups, effectiveSubtotalByShop]
   );
 
   useEffect(() => {
@@ -235,13 +291,15 @@ function CartPageContent() {
     const timer = window.setTimeout(() => {
       const loadVouchers = async () => {
         const orderAmountQuery =
-          selectedSubtotalVnd > 0 ? `&order_amount_vnd=${selectedSubtotalVnd}` : "";
+          effectiveSelectedSubtotalVnd > 0
+            ? `&order_amount_vnd=${effectiveSelectedSubtotalVnd}`
+            : "";
         const [platformRes, freeshipRes, ...shopResults] = await Promise.allSettled([
           api<GatewayVouchersResponse>(`vouchers?scope=PLATFORM${orderAmountQuery}`),
           api<GatewayVouchersResponse>(`vouchers?scope=FREESHIP${orderAmountQuery}`),
           ...shopGroups.map((g) => {
-            const shopAmount =
-              g.selectedSubtotalVnd > 0 ? `&order_amount_vnd=${g.selectedSubtotalVnd}` : "";
+            const effShop = effectiveSubtotalByShop[g.shopId] ?? 0;
+            const shopAmount = effShop > 0 ? `&order_amount_vnd=${effShop}` : "";
             return api<GatewayVouchersResponse>(
               `vouchers?scope=SHOP&shop_id=${encodeURIComponent(g.shopId)}${shopAmount}`
             ).then((res) => ({ shopId: g.shopId, vouchers: res?.vouchers ?? [] }));
@@ -269,20 +327,145 @@ function CartPageContent() {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [isAuthenticated, voucherQueryKey, shopGroups, selectedSubtotalVnd]);
+  }, [
+    isAuthenticated,
+    voucherQueryKey,
+    shopGroups,
+    effectiveSelectedSubtotalVnd,
+    effectiveSubtotalByShop,
+  ]);
+
+  // Load real live flash sales & active shop discount programs for SKUs in cart (batched <= 200)
+  const cartSkuIds = useMemo(
+    () => Array.from(new Set(cartItems.map((it) => it.skuId))).sort(),
+    [cartItems]
+  );
+  const cartSkuIdsKey = cartSkuIds.join(",");
+
+  useEffect(() => {
+    if (cartSkuIds.length === 0) {
+      setFlashSales([]);
+      setActiveShopDiscountsBySkuId({});
+      return;
+    }
+    let active = true;
+    const loadPromos = async () => {
+      const [fsRes, discRes] = await Promise.allSettled([
+        api<GatewayFlashSalesResponse>("flash-sales?include_upcoming=true"),
+        fetchActiveShopDiscountsWithFetcher({ skuIds: cartSkuIds }, async (batch) => {
+          const qs = new URLSearchParams();
+          if (batch.skuIds && batch.skuIds.length > 0) {
+            qs.set("sku_ids", batch.skuIds.join(","));
+          }
+          if (batch.shopId) {
+            qs.set("shop_id", batch.shopId);
+          }
+          const res = await api<GatewayActiveShopDiscountsResponse>(
+            `shop-discounts/active?${qs.toString()}`
+          );
+          return Array.isArray(res?.discounts) ? res.discounts : [];
+        }),
+      ]);
+      if (!active) return;
+      if (fsRes.status === "fulfilled" && Array.isArray(fsRes.value?.flash_sales)) {
+        setFlashSales(fsRes.value.flash_sales);
+      }
+      if (discRes.status === "fulfilled") {
+        const next: Record<string, GatewayActiveShopDiscount> = {};
+        for (const d of discRes.value) {
+          if (d.sku_id && !next[d.sku_id]) {
+            next[d.sku_id] = d;
+          }
+        }
+        setActiveShopDiscountsBySkuId(next);
+      }
+    };
+    void loadPromos();
+    return () => {
+      active = false;
+    };
+  }, [cartSkuIdsKey, cartSkuIds]);
+
+  const promoBySkuId = useMemo(() => {
+    const out: Record<
+      string,
+      {
+        promo: ReturnType<typeof resolveSkuEffectivePromotion>;
+        liveFlash: ReturnType<typeof resolveLiveFlashSaleForSku>;
+        flashInspect: ReturnType<typeof inspectFlashSaleStatusForSku>;
+        hasActiveShopDiscount: boolean;
+        optedOutFlash: boolean;
+      }
+    > = {};
+    const nowMs = Date.now();
+    for (const it of cartItems) {
+      const liveFlash = resolveLiveFlashSaleForSku(flashSales, it.skuId, it.priceVnd, nowMs);
+      const flashInspect = inspectFlashSaleStatusForSku(flashSales, it.skuId, undefined, nowMs);
+      const shopDiscount = activeShopDiscountsBySkuId[it.skuId] ?? null;
+      const hasActiveShopDiscount = Boolean(
+        shopDiscount &&
+        shopDiscount.discounted_price_vnd > 0 &&
+        shopDiscount.discounted_price_vnd < it.priceVnd
+      );
+      const optedOutFlash = optedOutFlashSkuIds.has(it.skuId);
+      out[it.skuId] = {
+        promo: resolveSkuEffectivePromotion({
+          regularPriceVnd: it.priceVnd,
+          liveFlash,
+          activeShopDiscount: shopDiscount,
+          optOutFlash: optedOutFlash,
+        }),
+        liveFlash,
+        flashInspect,
+        hasActiveShopDiscount,
+        optedOutFlash,
+      };
+    }
+    return out;
+  }, [cartItems, flashSales, activeShopDiscountsBySkuId, optedOutFlashSkuIds]);
+
+  const flashEvalBySkuId = useMemo(() => {
+    const merged: Record<string, ReturnType<typeof evaluateShopFlashLines>[string]> = {};
+    for (const group of shopGroups) {
+      const shopBreakdown = preview?.shops.find((s) => s.shop_id === group.shopId);
+      const evals = evaluateShopFlashLines({
+        lines: group.items
+          .filter((it) => it.selected && it.availableStock > 0)
+          .map((it) => {
+            const info = promoBySkuId[it.skuId];
+            return {
+              skuId: it.skuId,
+              quantity: it.quantity,
+              regularUnitPriceVnd: it.priceVnd,
+              flashSaleItemId: info?.promo.flashSaleItemId,
+              flashUnitPriceVnd:
+                info?.promo.kind === "flash" ? info.promo.effectiveUnitPriceVnd : undefined,
+              flashPerUserLimit: info?.promo.perUserLimit,
+              hasActiveShopDiscount: info?.hasActiveShopDiscount,
+            };
+          }),
+        previewShopFlashDiscountVnd: shopBreakdown ? shopBreakdown.flash_sale_discount_vnd : null,
+        previewWarnings: preview?.warnings,
+      });
+      Object.assign(merged, evals);
+    }
+    return merged;
+  }, [shopGroups, promoBySkuId, preview]);
 
   const buildShopDiscountInputs = useCallback(() => {
     return selectedShopGroups.map((g) => ({
       shop_id: g.shopId,
-      subtotal_vnd: g.selectedSubtotalVnd,
       shipping_fee_vnd: shippingFeeByShop[g.shopId] ?? 0,
-      items: g.items.map((it) => ({
-        sku_id: it.skuId,
-        quantity: it.quantity,
-        unit_price_vnd: it.priceVnd,
-      })),
+      items: g.items.map((it) => {
+        const promo = promoBySkuId[it.skuId]?.promo;
+        return {
+          sku_id: it.skuId,
+          quantity: it.quantity,
+          ...(promo?.flashSaleItemId ? { flash_sale_item_id: promo.flashSaleItemId } : {}),
+        };
+      }),
     }));
-  }, [selectedShopGroups, shippingFeeByShop]);
+  }, [selectedShopGroups, shippingFeeByShop, promoBySkuId]);
 
   const activeShopVoucherMap = useMemo(() => {
     const out: Record<string, string> = {};
@@ -493,7 +676,10 @@ function CartPageContent() {
   );
 
   const subtotalDisplay = preview?.total_subtotal_vnd ?? selectedSubtotalVnd;
+  const flashDiscountDisplay = preview?.total_flash_sale_discount_vnd ?? 0;
+  const shopProgramDiscountDisplay = preview?.total_shop_program_discount_vnd ?? 0;
   const shopVoucherDisplay = preview?.total_shop_voucher_discount_vnd ?? 0;
+  const shopFreeshipDisplay = preview?.total_shop_freeship_discount_vnd ?? 0;
   const platformVoucherDisplay = preview?.total_platform_voucher_discount_vnd ?? 0;
   const shippingDisplay = preview?.total_shipping_fee_vnd ?? estimatedShippingTotal;
   const freeshipDisplay = preview?.total_freeship_discount_vnd ?? 0;
@@ -714,6 +900,9 @@ function CartPageContent() {
                   selectableItems.length > 0 && selectableItems.every((it) => it.selected);
                 const chosenShopCode = selectedShopVouchers[group.shopId] ?? null;
                 const shopBreakdown = preview?.shops.find((s) => s.shop_id === group.shopId);
+                const hasAmbiguousFlashShortfall = group.items.some(
+                  (it) => it.selected && flashEvalBySkuId[it.skuId]?.ambiguousShopShortfall
+                );
 
                 return (
                   <article
@@ -751,9 +940,42 @@ function CartPageContent() {
                       </button>
                     </div>
 
+                    {hasAmbiguousFlashShortfall && (
+                      <div className={styles.promoActionNotice} role="status">
+                        <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+                          Một số sản phẩm Flash sale của gian hàng này đã hết suất hoặc vượt giới
+                          hạn mỗi tài khoản. Vui lòng kiểm tra lại số lượng hoặc chuyển sang giá
+                          thường cho dòng bạn muốn mua.
+                        </span>
+                      </div>
+                    )}
+
                     <ul className={styles.itemList}>
                       {group.items.map((item, itemIdx) => {
-                        const lineTotal = item.priceVnd * item.quantity;
+                        const skuPromoInfo = promoBySkuId[item.skuId];
+                        const flashEval = flashEvalBySkuId[item.skuId];
+                        const isShopDisc = skuPromoInfo?.promo.kind === "shop_discount";
+                        const shopProgramApplied = isShopDisc
+                          ? isShopProgramItemApplied({
+                              shopProgramItemId: skuPromoInfo?.promo.shopProgramItemId,
+                              shopBreakdown: item.selected ? (shopBreakdown ?? null) : null,
+                            })
+                          : false;
+                        const shopProgramLimitExceeded =
+                          isShopDisc &&
+                          Boolean(item.selected && shopBreakdown && !shopProgramApplied);
+                        const flashShortfall = Boolean(flashEval?.previewShortfall);
+                        const effectiveUnit =
+                          skuPromoInfo?.promo.kind === "flash" && !flashShortfall
+                            ? skuPromoInfo.promo.effectiveUnitPriceVnd
+                            : isShopDisc && !shopProgramLimitExceeded
+                              ? skuPromoInfo.promo.effectiveUnitPriceVnd
+                              : item.priceVnd;
+                        const originalUnit =
+                          effectiveUnit < item.priceVnd
+                            ? (skuPromoInfo?.promo.originalUnitPriceVnd ?? item.priceVnd)
+                            : undefined;
+                        const lineTotal = effectiveUnit * item.quantity;
                         const outOfStock = item.availableStock <= 0;
                         const isBusy = Boolean(busySkuIds[item.skuId]);
                         const clampedNote = clampedSkuNotices[item.skuId];
@@ -819,6 +1041,63 @@ function CartPageContent() {
                                     Hết hàng
                                   </span>
                                 )}
+                                {skuPromoInfo?.promo.kind === "flash" && (
+                                  <span className={`${shared.statusTag} ${shared.tonePos}`}>
+                                    Flash sale · Chỉ VietQR (hạn 5 phút)
+                                  </span>
+                                )}
+                                {skuPromoInfo?.promo.kind === "flash" &&
+                                  flashEval?.needsRegularPriceChoice && (
+                                    <div className={styles.promoActionNotice} role="status">
+                                      <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+                                        {flashEval.reason}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        className={styles.regularPriceBtn}
+                                        onClick={() => optOutFlashForSku(item.skuId)}
+                                      >
+                                        {skuPromoInfo.hasActiveShopDiscount
+                                          ? "Bỏ Flash (dùng giá chương trình gian hàng)"
+                                          : "Mua giá thường"}
+                                      </button>
+                                    </div>
+                                  )}
+                                {skuPromoInfo?.optedOutFlash && skuPromoInfo.liveFlash && (
+                                  <div className={styles.promoActionNotice}>
+                                    <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
+                                      {isShopDisc && !shopProgramLimitExceeded
+                                        ? "Đang áp dụng giá chương trình gian hàng (đã bỏ suất Flash sale)"
+                                        : "Đang chọn mua giá thường (bỏ suất Flash sale)"}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className={styles.regularPriceBtn}
+                                      onClick={() => restoreFlashForSku(item.skuId)}
+                                    >
+                                      Dùng lại giá Flash
+                                    </button>
+                                  </div>
+                                )}
+                                {isShopDisc && !shopProgramLimitExceeded && (
+                                  <span className={`${shared.statusTag} ${shared.tonePos}`}>
+                                    {skuPromoInfo.promo.programName || "Giảm giá gian hàng"}
+                                  </span>
+                                )}
+                                {shopProgramLimitExceeded && (
+                                  <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+                                    Vượt giới hạn chương trình giảm giá của gian hàng — áp dụng giá
+                                    thường.
+                                  </span>
+                                )}
+                                {skuPromoInfo?.promo.kind === "none" &&
+                                  !skuPromoInfo.optedOutFlash &&
+                                  (skuPromoInfo.flashInspect.state === "sold_out" ||
+                                    skuPromoInfo.flashInspect.state === "upcoming") && (
+                                    <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+                                      {skuPromoInfo.flashInspect.message}
+                                    </span>
+                                  )}
                                 {item.priceChanged && (
                                   <span className={`${shared.statusTag} ${shared.toneWarn}`}>
                                     Giá vừa cập nhật (trước đó {formatVnd(item.addedPriceVnd)})
@@ -832,8 +1111,13 @@ function CartPageContent() {
                               </div>
 
                               <div className={styles.priceChangedRow}>
-                                <Price amount={item.priceVnd} size="sm" />
-                                {item.priceChanged && item.addedPriceVnd > 0 && (
+                                <Price
+                                  amount={effectiveUnit}
+                                  originalAmount={originalUnit}
+                                  size="sm"
+                                  showDiscount={Boolean(originalUnit)}
+                                />
+                                {!originalUnit && item.priceChanged && item.addedPriceVnd > 0 && (
                                   <span className={`${styles.oldPriceStrike} num`}>
                                     {formatVnd(item.addedPriceVnd)}
                                   </span>
@@ -1156,6 +1440,24 @@ function CartPageContent() {
                   <dd className="num">{formatVnd(subtotalDisplay)}</dd>
                 </div>
 
+                {flashDiscountDisplay > 0 && (
+                  <div className={styles.breakdownRow}>
+                    <dt className={styles.breakdownLabel}>Ưu đãi Flash sale</dt>
+                    <dd className={`${styles.breakdownDiscount} num`}>
+                      {formatSignedVnd(-flashDiscountDisplay)}
+                    </dd>
+                  </div>
+                )}
+
+                {shopProgramDiscountDisplay > 0 && (
+                  <div className={styles.breakdownRow}>
+                    <dt className={styles.breakdownLabel}>Giảm giá chương trình gian hàng</dt>
+                    <dd className={`${styles.breakdownDiscount} num`}>
+                      {formatSignedVnd(-shopProgramDiscountDisplay)}
+                    </dd>
+                  </div>
+                )}
+
                 <div className={styles.breakdownRow}>
                   <dt className={styles.breakdownLabel}>Ưu đãi gian hàng</dt>
                   <dd className={`${styles.breakdownDiscount} num`}>
@@ -1176,6 +1478,15 @@ function CartPageContent() {
                     {defaultAddress ? formatVnd(shippingDisplay) : "Tính ở bước thanh toán"}
                   </dd>
                 </div>
+
+                {shopFreeshipDisplay > 0 && (
+                  <div className={styles.breakdownRow}>
+                    <dt className={styles.breakdownLabel}>Gian hàng hỗ trợ phí ship</dt>
+                    <dd className={`${styles.breakdownDiscount} num`}>
+                      {formatSignedVnd(-shopFreeshipDisplay)}
+                    </dd>
+                  </div>
+                )}
 
                 <div className={styles.breakdownRow}>
                   <dt className={styles.breakdownLabel}>Giảm phí vận chuyển</dt>

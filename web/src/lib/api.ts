@@ -151,6 +151,56 @@ export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
 }
 
 /**
+ * Downloads a binary/CSV response from `/api/gw/<path>` with single-flight 401 refresh retry.
+ */
+export async function apiBlob(path: string, init?: ApiRequestInit): Promise<Blob> {
+  const cleanPath = path.replace(/^\/+/, "");
+  const url = `/api/gw/${cleanPath}`;
+  const headers = new Headers(init?.headers);
+  if (!headers.has("Accept")) {
+    headers.set("Accept", "*/*");
+  }
+  const reqInit: RequestInit = {
+    ...init,
+    method: init?.method ?? "GET",
+    headers,
+    credentials: "same-origin",
+  };
+  const genBefore = refreshGeneration;
+
+  let res: Response;
+  try {
+    res = await fetch(url, reqInit);
+  } catch {
+    throw new ApiError(503, "UNAVAILABLE", "Hệ thống đang tạm bận, vui lòng thử lại sau ít phút.");
+  }
+
+  if (res.status === 401 && init?.retryOn401 !== false) {
+    const refreshed = refreshGeneration > genBefore ? true : await refreshSessionOnce();
+    if (refreshed) {
+      try {
+        res = await fetch(url, reqInit);
+      } catch {
+        throw new ApiError(
+          503,
+          "UNAVAILABLE",
+          "Hệ thống đang tạm bận, vui lòng thử lại sau ít phút."
+        );
+      }
+    }
+    if (res.status === 401) {
+      notifySessionExpired();
+    }
+  }
+
+  if (!res.ok) {
+    throw await parseErrorResponse(res);
+  }
+
+  return res.blob();
+}
+
+/**
  * Calls same-origin `/api/auth/<endpoint>` routes.
  */
 export async function authApi<T>(

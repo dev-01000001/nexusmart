@@ -23,6 +23,7 @@ type Config struct {
 	OTPMaxResends          int
 	LoginMaxFailedAttempts int
 	LoginLockoutDuration   time.Duration
+	BankPayoutLockDuration time.Duration
 	AdminBootstrapEmail    string
 	AdminBootstrapPassword string
 	ShippingGRPCAddr       string
@@ -49,6 +50,7 @@ func Load() Config {
 		OTPMaxResends:          env.EnvInt("OTP_MAX_RESENDS", 3),
 		LoginMaxFailedAttempts: env.EnvInt("LOGIN_MAX_FAILED_ATTEMPTS", 5),
 		LoginLockoutDuration:   env.EnvDuration("LOGIN_LOCKOUT_DURATION", 15*time.Minute),
+		BankPayoutLockDuration: time.Duration(env.EnvInt("USER_BANK_PAYOUT_LOCK_HOURS", 24)) * time.Hour,
 		AdminBootstrapEmail:    env.EnvString("ADMIN_BOOTSTRAP_EMAIL", "admin@nexusmart.local"),
 		AdminBootstrapPassword: env.EnvString("ADMIN_BOOTSTRAP_PASSWORD", "AdminDevPassword123!"),
 		ShippingGRPCAddr:       env.EnvString("SHIPPING_GRPC_ADDR", "localhost:50057"),

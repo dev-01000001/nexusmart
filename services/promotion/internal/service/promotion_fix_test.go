@@ -502,7 +502,7 @@ func TestService_ReleasePromotionShop_LegacyFlashItemWithoutShopID(t *testing.T)
 			{FlashSaleItemID: fi1Resp.Item.Id, SKUID: "sku-legacy", Quantity: 2},
 		},
 		BreakdownJSON: bdBytes,
-	}); err != nil {
+	}, now); err != nil {
 		t.Fatalf("commit legacy reservation: %v", err)
 	}
 
@@ -678,6 +678,7 @@ func TestService_PRM_B8_ListAvailableVouchers_FiltersUnavailableAndMatchesPrevie
 		OrderId:           "b8-quota-use",
 		UserId:            "buyer-1",
 		PlatformVoucherId: vQuota.Voucher.Id,
+		ShopItems:         []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 100000}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -725,6 +726,7 @@ func TestService_PRM_B8_ListAvailableVouchers_FiltersUnavailableAndMatchesPrevie
 		OrderId:           "b8-peruser-use",
 		UserId:            "buyer-1",
 		PlatformVoucherId: vPerUser.Voucher.Id,
+		ShopItems:         []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 100000}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -953,6 +955,7 @@ func TestService_ReviewA_P1_5_SellerManageViewIncludesAllOwnShopVouchers(t *test
 	if _, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
 		OrderId: "p15-use-quota", UserId: "buyer-1",
 		ShopVoucherIds: map[string]string{"shop-1": vQuota.Voucher.Id},
+		ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 100000}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1070,6 +1073,7 @@ func TestService_ReviewA_P1_6_ListAvailableVouchers_RejectsSpoofedUserID(t *test
 	}
 	if _, err := svc.ReservePromotion(buyer1Ctx, &promotionv1.ReservePromotionRequest{
 		OrderId: "p16-use-lim1", UserId: "buyer-1", PlatformVoucherId: vLimit1.Voucher.Id,
+		ShopItems: []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 100000}},
 	}); err != nil {
 		t.Fatal(err)
 	}

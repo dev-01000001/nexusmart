@@ -27,6 +27,7 @@ import {
   getLegacyShopSlugById,
   matchesGenderFilter,
 } from "@/mock/productEditorial";
+import { buildCategoryDescendantSlugMap } from "@/lib/catalog-mapper";
 import { searchProducts, suggestSpelling } from "@/lib/search";
 import { Button, IconClose, IconSearch, IconSliders, ProductCard, StateView } from "@/components";
 import { useRevealObserver } from "./useRevealObserver";
@@ -177,17 +178,26 @@ function applyStructuredFilters(
   basePool: CatalogProduct[],
   filters: ActiveFilters,
   shopsById: Map<string, CatalogShop>,
+  categoryDescendantsBySlug: Map<string, Set<string>>,
   omitKey?: keyof ActiveFilters
 ): CatalogProduct[] {
   const activeColorGroup =
     omitKey === "color" ? undefined : COLOR_GROUPS.find((g) => g.id === filters.color);
+  const allowedCategorySlugs =
+    omitKey === "cat" || !filters.cat ? undefined : categoryDescendantsBySlug.get(filters.cat);
 
   return basePool.filter((product) => {
     if (omitKey !== "gender" && filters.gender) {
       if (!matchesGenderFilter(product, filters.gender)) return false;
     }
-    if (omitKey !== "cat" && filters.cat && product.rawCategorySlug !== filters.cat) {
-      return false;
+    if (omitKey !== "cat" && filters.cat) {
+      if (
+        allowedCategorySlugs
+          ? !allowedCategorySlugs.has(product.rawCategorySlug)
+          : product.rawCategorySlug !== filters.cat
+      ) {
+        return false;
+      }
     }
     if (omitKey !== "shop" && filters.shop && !matchesShopParam(product, filters.shop)) {
       return false;
@@ -451,6 +461,11 @@ export function CatalogExplorer({
     sortParam === "price-desc" ||
     sortParam === "name-asc";
 
+  const categoryDescendantsBySlug = useMemo(
+    () => buildCategoryDescendantSlugMap(categories),
+    [categories]
+  );
+
   const filteredProducts = useMemo<CatalogProduct[]>(() => {
     // When only gateway-supported filters/sorts are active without Vietnamese synonym search,
     // display the authoritative gateway-filtered & sorted list directly.
@@ -458,7 +473,7 @@ export function CatalogExplorer({
       return serverFilteredProducts;
     }
 
-    const list = applyStructuredFilters(searchPool, filters, shopsById);
+    const list = applyStructuredFilters(searchPool, filters, shopsById, categoryDescendantsBySlug);
     const sorted = [...list];
     if (sortParam === "price-asc") {
       sorted.sort((a, b) => a.price - b.price);
@@ -478,6 +493,7 @@ export function CatalogExplorer({
     }
     return sorted;
   }, [
+    categoryDescendantsBySlug,
     filters,
     hasClientOnlyAttributeFilter,
     hasServerFilter,
@@ -498,19 +514,97 @@ export function CatalogExplorer({
   // ponytail: 13 nhóm facet chạy phía client trên tập sản phẩm thật đã tải (<= 100 SP);
   // chuyển lên Search service khi triển khai Tháng 4–6.
   const facets = useMemo(() => {
-    const poolGender = applyStructuredFilters(searchPool, filters, shopsById, "gender");
-    const poolCat = applyStructuredFilters(searchPool, filters, shopsById, "cat");
-    const poolSize = applyStructuredFilters(searchPool, filters, shopsById, "size");
-    const poolColor = applyStructuredFilters(searchPool, filters, shopsById, "color");
-    const poolPrice = applyStructuredFilters(searchPool, filters, shopsById, "price");
-    const poolMaterial = applyStructuredFilters(searchPool, filters, shopsById, "material");
-    const poolFit = applyStructuredFilters(searchPool, filters, shopsById, "fit");
-    const poolOccasion = applyStructuredFilters(searchPool, filters, shopsById, "occasion");
-    const poolSport = applyStructuredFilters(searchPool, filters, shopsById, "sport");
-    const poolFeature = applyStructuredFilters(searchPool, filters, shopsById, "feature");
-    const poolPattern = applyStructuredFilters(searchPool, filters, shopsById, "pattern");
-    const poolShop = applyStructuredFilters(searchPool, filters, shopsById, "shop");
-    const poolOrigin = applyStructuredFilters(searchPool, filters, shopsById, "origin");
+    const poolGender = applyStructuredFilters(
+      searchPool,
+      filters,
+      shopsById,
+      categoryDescendantsBySlug,
+      "gender"
+    );
+    const poolCat = applyStructuredFilters(
+      searchPool,
+      filters,
+      shopsById,
+      categoryDescendantsBySlug,
+      "cat"
+    );
+    const poolSize = applyStructuredFilters(
+      searchPool,
+      filters,
+      shopsById,
+      categoryDescendantsBySlug,
+      "size"
+    );
+    const poolColor = applyStructuredFilters(
+      searchPool,
+      filters,
+      shopsById,
+      categoryDescendantsBySlug,
+      "color"
+    );
+    const poolPrice = applyStructuredFilters(
+      searchPool,
+      filters,
+      shopsById,
+      categoryDescendantsBySlug,
+      "price"
+    );
+    const poolMaterial = applyStructuredFilters(
+      searchPool,
+      filters,
+      shopsById,
+      categoryDescendantsBySlug,
+      "material"
+    );
+    const poolFit = applyStructuredFilters(
+      searchPool,
+      filters,
+      shopsById,
+      categoryDescendantsBySlug,
+      "fit"
+    );
+    const poolOccasion = applyStructuredFilters(
+      searchPool,
+      filters,
+      shopsById,
+      categoryDescendantsBySlug,
+      "occasion"
+    );
+    const poolSport = applyStructuredFilters(
+      searchPool,
+      filters,
+      shopsById,
+      categoryDescendantsBySlug,
+      "sport"
+    );
+    const poolFeature = applyStructuredFilters(
+      searchPool,
+      filters,
+      shopsById,
+      categoryDescendantsBySlug,
+      "feature"
+    );
+    const poolPattern = applyStructuredFilters(
+      searchPool,
+      filters,
+      shopsById,
+      categoryDescendantsBySlug,
+      "pattern"
+    );
+    const poolShop = applyStructuredFilters(
+      searchPool,
+      filters,
+      shopsById,
+      categoryDescendantsBySlug,
+      "shop"
+    );
+    const poolOrigin = applyStructuredFilters(
+      searchPool,
+      filters,
+      shopsById,
+      categoryDescendantsBySlug,
+      "origin"
+    );
 
     const gender: Record<GenderCode, number> = {
       nam: poolGender.filter((p) => matchesGenderFilter(p, "nam")).length,
@@ -520,7 +614,10 @@ export function CatalogExplorer({
 
     const cat: Record<string, number> = {};
     for (const c of categories) {
-      cat[c.slug] = poolCat.filter((p) => p.rawCategorySlug === c.slug).length;
+      const allowed = categoryDescendantsBySlug.get(c.slug);
+      cat[c.slug] = poolCat.filter((p) =>
+        allowed ? allowed.has(p.rawCategorySlug) : p.rawCategorySlug === c.slug
+      ).length;
     }
 
     const size: Record<QuickSizeChip, number> = {
@@ -610,13 +707,21 @@ export function CatalogExplorer({
       origin,
       allCatTotal: poolCat.length,
     };
-  }, [categories, filters, searchPool, shops, shopsById]);
+  }, [categories, categoryDescendantsBySlug, filters, searchPool, shops, shopsById]);
 
   // Marketplace-wide matches if currently filtered by a single shop with 0 results
   const marketplaceFallbackCount = useMemo(() => {
     if (!shopParam || filteredProducts.length > 0) return 0;
-    return applyStructuredFilters(searchPool, filters, shopsById, "shop").length;
-  }, [filteredProducts.length, filters, searchPool, shopParam, shopsById]);
+    return applyStructuredFilters(searchPool, filters, shopsById, categoryDescendantsBySlug, "shop")
+      .length;
+  }, [
+    categoryDescendantsBySlug,
+    filteredProducts.length,
+    filters,
+    searchPool,
+    shopParam,
+    shopsById,
+  ]);
 
   const spellingSuggestion = useMemo(() => {
     if (!qParam.trim() || filteredProducts.length > 0) return null;

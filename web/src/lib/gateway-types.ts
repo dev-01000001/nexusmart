@@ -53,6 +53,7 @@ export interface GatewayShop {
   business_license_doc: string;
   status: ShopStatus | string;
   rejection_reason: string;
+  bank_review_pending?: boolean;
   created_at?: string;
   updated_at?: string;
 }
@@ -180,6 +181,7 @@ export interface GatewaySKU {
   name: string;
   attributes: Record<string, string>;
   price_vnd: number;
+  min_price_30d_vnd?: number;
   stock: number;
   reserved_stock: number;
   available_stock: number;
@@ -285,6 +287,7 @@ export interface GatewayOrderItem {
   line_total_vnd: number;
   weight_grams: number;
   flash_sale_item_id: string;
+  shop_program_item_id?: string;
 }
 
 export interface GatewayOrderTimelineEvent {
@@ -371,12 +374,17 @@ export interface GatewayOrder {
   payment_status: string;
   subtotal_vnd: number;
   flash_sale_discount_vnd: number;
+  shop_program_discount_vnd?: number;
   shop_voucher_discount_vnd: number;
+  shop_freeship_discount_vnd?: number;
   platform_voucher_discount_vnd: number;
   freeship_discount_vnd: number;
   coins_discount_vnd: number;
   shipping_fee_vnd: number;
   commission_vnd: number;
+  payment_fee_vnd?: number;
+  payment_fee_bps?: number;
+  needs_manual_review?: boolean;
   total_payable_vnd: number;
   carrier_code: string;
   service_code: string;
@@ -398,6 +406,7 @@ export interface GatewayOrder {
 
 export type VoucherScope = "PLATFORM" | "SHOP" | "FREESHIP";
 export type DiscountType = "FIXED" | "PERCENT";
+export type VoucherStatus = "ACTIVE" | "PAUSED" | "DELETED";
 
 export interface GatewayVoucher {
   id: string;
@@ -419,6 +428,8 @@ export interface GatewayVoucher {
   starts_at?: string;
   ends_at?: string;
   is_active: boolean;
+  status?: VoucherStatus | string;
+  category_ids?: string[];
   saved?: boolean;
   eligible?: boolean;
   ineligible_reason?: string;
@@ -439,11 +450,13 @@ export interface GatewayFlashSaleItem {
   shop_id: string;
   sku_id: string;
   flash_price_vnd: number;
+  original_price_vnd?: number;
   total_slots: number;
   remaining_slots: number;
   per_user_limit: number;
   status: "PENDING" | "APPROVED" | "REJECTED" | string;
   rejection_reason: string;
+  created_at?: string;
 }
 
 export interface GatewayFlashSale {
@@ -451,11 +464,62 @@ export interface GatewayFlashSale {
   name: string;
   starts_at?: string;
   ends_at?: string;
+  min_discount_percent?: number;
+  category_ids?: string[];
   items: GatewayFlashSaleItem[];
 }
 
 export interface GatewayFlashSalesResponse {
   flash_sales: GatewayFlashSale[];
+}
+
+export type ShopDiscountProgramStatus = "SCHEDULED" | "ACTIVE" | "ENDED" | "CANCELLED";
+
+export interface GatewayShopDiscountProgramItem {
+  id: string;
+  program_id: string;
+  sku_id: string;
+  original_price_vnd: number;
+  discounted_price_vnd: number;
+  discount_percent: number;
+  per_user_limit: number;
+  min_price_30d_vnd?: number;
+  price_inflation_flagged?: boolean;
+}
+
+export interface GatewayShopDiscountProgram {
+  id: string;
+  shop_id: string;
+  name: string;
+  starts_at?: string;
+  ends_at?: string;
+  status: ShopDiscountProgramStatus | string;
+  items: GatewayShopDiscountProgramItem[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface GatewayShopDiscountProgramResponse {
+  program: GatewayShopDiscountProgram;
+  warnings?: string[];
+}
+
+export interface GatewayActiveShopDiscount {
+  item_id: string;
+  program_id: string;
+  program_name?: string;
+  shop_id: string;
+  sku_id: string;
+  original_price_vnd: number;
+  discounted_price_vnd: number;
+  discount_percent: number;
+  per_user_limit: number;
+  starts_at?: string;
+  ends_at?: string;
+}
+
+export interface GatewayActiveShopDiscountsResponse {
+  discounts: GatewayActiveShopDiscount[];
 }
 
 export interface GatewayCoinTransaction {
@@ -482,13 +546,11 @@ export interface GatewayCreditCoinsResponse {
 export interface GatewayDiscountLineItem {
   sku_id: string;
   quantity: number;
-  unit_price_vnd: number;
   flash_sale_item_id?: string;
 }
 
 export interface GatewayShopDiscountInput {
   shop_id: string;
-  subtotal_vnd: number;
   shipping_fee_vnd: number;
   items: GatewayDiscountLineItem[];
 }
@@ -505,21 +567,26 @@ export interface GatewayShopDiscountBreakdown {
   shop_id: string;
   subtotal_vnd: number;
   flash_sale_discount_vnd: number;
+  shop_program_discount_vnd?: number;
   shop_voucher_id: string;
   shop_voucher_discount_vnd: number;
+  shop_freeship_discount_vnd?: number;
   platform_voucher_discount_vnd: number;
   freeship_discount_vnd: number;
   coins_discount_vnd: number;
   shipping_fee_vnd: number;
   final_shipping_fee_vnd: number;
   final_payable_vnd: number;
+  applied_shop_program_item_ids?: string[];
 }
 
 export interface GatewayDiscountBreakdown {
   shops: GatewayShopDiscountBreakdown[];
   total_subtotal_vnd: number;
   total_flash_sale_discount_vnd: number;
+  total_shop_program_discount_vnd?: number;
   total_shop_voucher_discount_vnd: number;
+  total_shop_freeship_discount_vnd?: number;
   total_platform_voucher_discount_vnd: number;
   total_freeship_discount_vnd: number;
   total_coins_discount_vnd: number;
@@ -572,6 +639,7 @@ export interface GatewayCheckoutResponse {
   payment_expires_at?: string;
   total_payable_vnd: number;
   idempotent_replay: boolean;
+  warnings?: string[];
 }
 
 // --- Section 4.6: Payments, Ledger, Reconciliation, Refunds & Seller Balance ---
@@ -787,6 +855,9 @@ export interface GatewayShopShippingSettings {
   default_length_cm: number;
   default_width_cm: number;
   default_height_cm: number;
+  free_ship_enabled?: boolean;
+  free_ship_min_order_vnd?: number;
+  free_ship_max_vnd?: number;
   updated_at?: string;
 }
 
@@ -844,4 +915,157 @@ export interface GatewayAuditLog {
   reason: string;
   ip_address: string;
   created_at?: string;
+}
+
+// --- Wave 2b: Shop Bank Accounts, Seller Ledger, Fee Schedules & Reports ---
+
+export type ShopBankAccountStatus =
+  "PENDING_OTP" | "PENDING_ADMIN_REVIEW" | "VERIFIED" | "REJECTED";
+
+export interface GatewayShopBankAccount {
+  id: string;
+  shop_id: string;
+  bank_code: string;
+  bank_name: string;
+  account_number_masked: string;
+  account_holder_name: string;
+  status: ShopBankAccountStatus | string;
+  holder_name_matched: boolean;
+  review_note?: string;
+  verified_at?: string;
+  payout_locked_until?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface GatewayShopBankAccountResponse {
+  bank_account: GatewayShopBankAccount | null;
+}
+
+export interface GatewaySellerLedgerEntry {
+  id: string;
+  transaction_id: string;
+  account_code: string;
+  debit_vnd: number;
+  credit_vnd: number;
+  delta_vnd: number;
+  reference_type: string;
+  reference_id: string;
+  description: string;
+  created_at?: string;
+}
+
+export interface GatewayCategoryFeeSchedule {
+  id: string;
+  category_id: string;
+  category_name?: string;
+  commission_rate_bps: number;
+  effective_from: string;
+  created_by?: string;
+  note?: string;
+  created_at?: string;
+}
+
+export interface GatewayPaymentFeeConfigItem {
+  id: string;
+  payment_method: GatewayPaymentMethod | string;
+  fee_bps: number;
+  effective_from: string;
+  created_by?: string;
+  note?: string;
+  created_at?: string;
+}
+
+export interface GatewayPaymentFeeConfigResponse {
+  active_configs?: GatewayPaymentFeeConfigItem[];
+  history?: GatewayPaymentFeeConfigItem[];
+}
+
+export interface GatewayOrderStatusCount {
+  status: GatewayOrderStatus | string;
+  count: number;
+}
+
+export interface GatewayDailyReportPoint {
+  date: string;
+  gmv_vnd: number;
+  net_revenue_vnd: number;
+  order_count: number;
+  completed_count?: number;
+  cancelled_count?: number;
+  returned_count?: number;
+  commission_vnd: number;
+  payment_fee_vnd: number;
+}
+
+export interface GatewayTopProductStat {
+  product_id: string;
+  product_name: string;
+  units_sold: number;
+  revenue_vnd: number;
+  order_count?: number;
+}
+
+export interface GatewaySellerReport {
+  shop_id: string;
+  from_date: string;
+  to_date: string;
+  gmv_vnd: number;
+  net_revenue_vnd: number;
+  commission_vnd: number;
+  payment_fee_vnd: number;
+  total_orders: number;
+  completed_orders: number;
+  cancelled_orders: number;
+  returned_orders: number;
+  cancel_rate_bps: number;
+  return_rate_bps: number;
+  orders_by_status: GatewayOrderStatusCount[];
+  daily: GatewayDailyReportPoint[];
+  top_products: GatewayTopProductStat[];
+}
+
+export interface GatewaySellerReportResponse {
+  report: GatewaySellerReport;
+}
+
+export interface GatewayDailyUserShopPoint {
+  date: string;
+  new_users: number;
+  new_shops: number;
+}
+
+export interface GatewayPlatformUserStats {
+  total_users: number;
+  active_users: number;
+  new_users: number;
+  total_shops: number;
+  active_shops: number;
+  pending_shops?: number;
+  new_shops: number;
+  daily: GatewayDailyUserShopPoint[];
+}
+
+export interface GatewayPlatformReport {
+  from_date: string;
+  to_date: string;
+  gmv_vnd: number;
+  net_revenue_vnd: number;
+  commission_vnd: number;
+  payment_fee_vnd: number;
+  platform_subsidy_vnd: number;
+  total_orders: number;
+  completed_orders: number;
+  cancelled_orders: number;
+  returned_orders: number;
+  cancel_rate_bps: number;
+  return_rate_bps: number;
+  orders_by_status: GatewayOrderStatusCount[];
+  daily: GatewayDailyReportPoint[];
+  top_products: GatewayTopProductStat[];
+  user_stats?: GatewayPlatformUserStats | null;
+}
+
+export interface GatewayPlatformReportResponse {
+  report: GatewayPlatformReport;
 }

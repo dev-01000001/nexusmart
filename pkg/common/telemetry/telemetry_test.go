@@ -95,3 +95,30 @@ func TestHTTPMiddlewareSupportsSSEFlush(t *testing.T) {
 		t.Fatalf("expected ResponseRecorder to be flushed")
 	}
 }
+
+func TestStartConsumerSpanLinksParentTrace(t *testing.T) {
+	shutdown, err := Init(context.Background(), Config{
+		ServiceName: "notification",
+		SampleRatio: 1.0,
+	})
+	if err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+
+	const (
+		traceID      = "4bf92f3577b34da6a3ce929d0e0e4736"
+		parentSpanID = "00f067aa0ba902b7"
+	)
+	ctx, span := StartConsumerSpan(context.Background(), "notification", "order.created", map[string]string{
+		"traceparent": "00-" + traceID + "-" + parentSpanID + "-01",
+	})
+	defer span.End()
+
+	if got := TraceIDFromContext(ctx); got != traceID {
+		t.Fatalf("TraceIDFromContext = %q, want %q", got, traceID)
+	}
+	if got := SpanIDFromContext(ctx); got == "" || got == parentSpanID {
+		t.Fatalf("SpanIDFromContext = %q, want new child span_id != %q", got, parentSpanID)
+	}
+}

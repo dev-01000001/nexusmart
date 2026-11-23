@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -208,10 +209,11 @@ func TestE2E_FlashSale_1000Concurrent_100Slots(t *testing.T) {
 
 		buyer := env.registerVerifyAndLogin(t, "buyer-flash")
 		addr := env.addAddress(t, buyer)
-		quote := env.calculateShippingQuote(t, buyer.AccessToken, seller1.ShopID, 250, flashPrice)
+		quote := env.calculateShippingQuote(t, buyer.AccessToken, seller1.ShopID, 250, 0)
 
-		checkoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
-			"Idempotency-Key": "fs-checkout-" + uuid.NewString(),
+		// Wave 2b (w2b-plan §2): orders containing flash sale items must reject COD.
+		codResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
+			"Idempotency-Key": "fs-checkout-cod-" + uuid.NewString(),
 		}, CheckoutRequest{
 			AddressID: addr.ID,
 			FromCart:  false,
@@ -226,7 +228,31 @@ func TestE2E_FlashSale_1000Concurrent_100Slots(t *testing.T) {
 			ShippingChoices: []ShopShippingChoiceDTO{
 				{ShopID: seller1.ShopID, CarrierCode: quote.CarrierCode, ServiceCode: quote.ServiceCode},
 			},
+		}, http.StatusConflict)
+		if !strings.Contains(string(codResp.Body), "FLASH_SALE_COD_NOT_ALLOWED") {
+			t.Fatalf("expected FLASH_SALE_COD_NOT_ALLOWED when checking out flash item with COD, got body=%s", string(codResp.Body))
+		}
+
+		// Real flash-sale checkout via VIETQR: awaiting payment with short expiry <= 5 minutes.
+		beforeCheckout := time.Now().UTC()
+		checkoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
+			"Idempotency-Key": "fs-checkout-" + uuid.NewString(),
+		}, CheckoutRequest{
+			AddressID: addr.ID,
+			FromCart:  false,
+			Items: []CheckoutItemInputDTO{
+				{
+					SKUID:           sku.ID,
+					Quantity:        1,
+					FlashSaleItemID: itemID,
+				},
+			},
+			PaymentMethod: "VIETQR",
+			ShippingChoices: []ShopShippingChoiceDTO{
+				{ShopID: seller1.ShopID, CarrierCode: quote.CarrierCode, ServiceCode: quote.ServiceCode},
+			},
 		}, http.StatusCreated, http.StatusOK)
+		afterCheckout := time.Now().UTC()
 
 		var checkout CheckoutResponse
 		if err := DecodeJSON(checkoutResp, &checkout); err != nil {
@@ -235,9 +261,26 @@ func TestE2E_FlashSale_1000Concurrent_100Slots(t *testing.T) {
 		if len(checkout.Orders) != 1 {
 			t.Fatalf("expected 1 order for flash checkout, got %d", len(checkout.Orders))
 		}
+		if checkout.PaymentID == "" {
+			t.Fatalf("expected non-empty payment_id for VIETQR flash checkout: %s", string(checkoutResp.Body))
+		}
 		ord := checkout.Orders[0]
-		if !StatusEquals(ord.Status, "CONFIRMED") {
-			t.Fatalf("expected COD flash order status CONFIRMED, got %q", ord.Status)
+		if !StatusEquals(ord.Status, "PENDING") {
+			t.Fatalf("expected VIETQR flash order status PENDING (awaiting payment), got %q", ord.Status)
+		}
+		if !StatusEquals(ord.PaymentStatus, "PENDING") || !StatusEquals(checkout.PaymentStatus, "PENDING") {
+			t.Fatalf("expected VIETQR flash payment status PENDING, got order=%q checkout=%q", ord.PaymentStatus, checkout.PaymentStatus)
+		}
+		if checkout.PaymentExpiresAt == "" {
+			t.Fatalf("expected non-empty payment_expires_at for VIETQR flash checkout")
+		}
+		expiresAt, err := time.Parse(time.RFC3339, checkout.PaymentExpiresAt)
+		if err != nil {
+			t.Fatalf("parse payment_expires_at %q: %v", checkout.PaymentExpiresAt, err)
+		}
+		if !expiresAt.After(beforeCheckout) || expiresAt.After(afterCheckout.Add(5*time.Minute)) {
+			t.Fatalf("expected flash payment_expires_at within (0, 5m] from checkout, got expires_at=%s (checkout window [%s, %s])",
+				expiresAt.Format(time.RFC3339), beforeCheckout.Format(time.RFC3339), afterCheckout.Format(time.RFC3339))
 		}
 
 		expectedDiscount := normalPrice - flashPrice

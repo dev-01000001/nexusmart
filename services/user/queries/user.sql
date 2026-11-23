@@ -17,6 +17,12 @@ WHERE id = $1
 LIMIT 1
 FOR SHARE;
 
+-- name: GetUserByIDForUpdate :one
+SELECT * FROM users
+WHERE id = $1
+LIMIT 1
+FOR UPDATE;
+
 -- name: GetUserByEmail :one
 SELECT * FROM users
 WHERE LOWER(email) = LOWER($1)
@@ -211,6 +217,50 @@ LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 SELECT COUNT(*)::bigint FROM shops
 WHERE (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text);
 
+-- name: AdminListShops :many
+SELECT
+    s.id,
+    s.owner_user_id,
+    s.name,
+    s.description,
+    s.pickup_address_id,
+    s.contact_phone,
+    s.business_license_doc,
+    s.status,
+    s.rejection_reason,
+    s.created_at,
+    s.updated_at,
+    s.slug,
+    EXISTS (
+        SELECT 1 FROM shop_bank_accounts sba
+        WHERE sba.shop_id = s.id
+          AND sba.status = 'PENDING_ADMIN_REVIEW'
+    )::boolean AS bank_review_pending
+FROM shops s
+WHERE (sqlc.arg(status)::text = '' OR s.status = sqlc.arg(status)::text)
+  AND (
+      NOT sqlc.arg(bank_review_pending_only)::boolean
+      OR EXISTS (
+          SELECT 1 FROM shop_bank_accounts sba
+          WHERE sba.shop_id = s.id
+            AND sba.status = 'PENDING_ADMIN_REVIEW'
+      )
+  )
+ORDER BY s.created_at DESC
+LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
+
+-- name: AdminCountShops :one
+SELECT COUNT(*)::bigint FROM shops s
+WHERE (sqlc.arg(status)::text = '' OR s.status = sqlc.arg(status)::text)
+  AND (
+      NOT sqlc.arg(bank_review_pending_only)::boolean
+      OR EXISTS (
+          SELECT 1 FROM shop_bank_accounts sba
+          WHERE sba.shop_id = s.id
+            AND sba.status = 'PENDING_ADMIN_REVIEW'
+      )
+  );
+
 -- name: ResubmitShop :one
 UPDATE shops
 SET name = $2,
@@ -221,6 +271,7 @@ SET name = $2,
     business_license_doc = $7,
     status = 'PENDING',
     rejection_reason = '',
+    verified_owner_name = '',
     updated_at = NOW()
 WHERE id = $1
   AND (status = 'REJECTED' OR (status = 'PENDING' AND btrim(rejection_reason) <> ''))
@@ -230,10 +281,18 @@ RETURNING *;
 UPDATE shops
 SET status = $2,
     rejection_reason = $3,
+    verified_owner_name = CASE WHEN $2 = 'ACTIVE' THEN $4 ELSE verified_owner_name END,
     updated_at = NOW()
 WHERE id = $1
   AND status = 'PENDING'
 RETURNING *;
+
+-- name: ExistsPendingBankReviewByShopID :one
+SELECT EXISTS (
+    SELECT 1 FROM shop_bank_accounts
+    WHERE shop_id = $1
+      AND status = 'PENDING_ADMIN_REVIEW'
+)::boolean AS pending;
 
 -- name: ExistsActiveShopByPickupAddressID :one
 SELECT EXISTS (
@@ -317,3 +376,178 @@ WHERE (sqlc.arg(actor_id)::text = '' OR actor_id = sqlc.arg(actor_id)::text)
   AND (sqlc.arg(target_id)::text = '' OR target_id = sqlc.arg(target_id)::text)
   AND (sqlc.narg(from_time)::timestamptz IS NULL OR created_at >= sqlc.narg(from_time)::timestamptz)
   AND (sqlc.narg(to_time)::timestamptz IS NULL OR created_at <= sqlc.narg(to_time)::timestamptz);
+
+-- name: GetShopByIDForUpdate :one
+SELECT * FROM shops
+WHERE id = $1
+LIMIT 1
+FOR UPDATE;
+
+-- name: SupersedePendingOTPShopBankAccounts :exec
+UPDATE shop_bank_accounts
+SET status = 'SUPERSEDED',
+    otp_hash = '',
+    otp_expires_at = NULL,
+    updated_at = $2
+WHERE shop_id = $1
+  AND status IN ('PENDING_OTP', 'REJECTED');
+
+-- name: SupersedePendingAdminReviewShopBankAccounts :exec
+UPDATE shop_bank_accounts
+SET status = 'SUPERSEDED',
+    otp_hash = '',
+    otp_expires_at = NULL,
+    updated_at = $2
+WHERE shop_id = $1
+  AND status IN ('PENDING_ADMIN_REVIEW', 'REJECTED');
+
+-- name: CreateShopBankAccount :one
+INSERT INTO shop_bank_accounts (
+    id, shop_id, bank_code, bank_name, account_number, account_number_masked,
+    account_holder_name, holder_name_matched, status, review_note,
+    otp_hash, otp_expires_at, otp_attempts, created_at, updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10,
+    $11, $12, $13, $14, $15
+)
+RETURNING *;
+
+-- name: CountShopBankAccountsCreatedSince :one
+SELECT COUNT(*)::bigint FROM shop_bank_accounts
+WHERE shop_id = $1
+  AND created_at > $2
+  AND NOT otp_publish_failed;
+
+-- name: MarkShopBankAccountPublishFailed :exec
+UPDATE shop_bank_accounts
+SET status = 'SUPERSEDED',
+    otp_hash = '',
+    otp_expires_at = NULL,
+    otp_publish_failed = TRUE,
+    updated_at = $2
+WHERE id = $1
+  AND status = 'PENDING_OTP';
+
+-- name: GetPendingOTPShopBankAccountForUpdate :one
+SELECT * FROM shop_bank_accounts
+WHERE shop_id = $1
+  AND status = 'PENDING_OTP'
+ORDER BY created_at DESC
+LIMIT 1
+FOR UPDATE;
+
+-- name: RecordShopBankAccountOTPFailure :one
+UPDATE shop_bank_accounts
+SET status = $2,
+    otp_attempts = $3,
+    otp_hash = $4,
+    otp_expires_at = $5,
+    updated_at = $6
+WHERE id = $1
+RETURNING *;
+
+-- name: GetVerifiedShopBankAccountByShopID :one
+SELECT * FROM shop_bank_accounts
+WHERE shop_id = $1
+  AND status = 'VERIFIED'
+LIMIT 1;
+
+-- name: SupersedeShopBankAccount :exec
+UPDATE shop_bank_accounts
+SET status = 'SUPERSEDED',
+    otp_hash = '',
+    otp_expires_at = NULL,
+    updated_at = $2
+WHERE id = $1
+  AND status <> 'SUPERSEDED';
+
+-- name: CompleteShopBankAccountOTPVerification :one
+UPDATE shop_bank_accounts
+SET status = $2,
+    holder_name_matched = $3,
+    otp_hash = '',
+    otp_expires_at = NULL,
+    payout_locked_until = $4,
+    verified_at = $5,
+    updated_at = $6
+WHERE id = $1
+  AND status = 'PENDING_OTP'
+RETURNING *;
+
+-- name: GetLatestShopBankAccountByShopID :one
+SELECT * FROM shop_bank_accounts
+WHERE shop_id = $1
+  AND status <> 'SUPERSEDED'
+  AND (
+      status <> 'PENDING_OTP'
+      OR (otp_expires_at IS NOT NULL AND otp_expires_at > sqlc.arg(now_time)::timestamptz)
+  )
+ORDER BY
+    CASE WHEN sqlc.arg(prefer_admin_review)::boolean AND status = 'PENDING_ADMIN_REVIEW' THEN 0 ELSE 1 END ASC,
+    created_at DESC,
+    CASE status
+        WHEN 'PENDING_OTP' THEN 0
+        WHEN 'PENDING_ADMIN_REVIEW' THEN 1
+        WHEN 'REJECTED' THEN 2
+        ELSE 3
+    END ASC
+LIMIT 1;
+
+-- name: GetShopBankAccountByIDForUpdate :one
+SELECT * FROM shop_bank_accounts
+WHERE id = $1
+LIMIT 1
+FOR UPDATE;
+
+-- name: GetPendingAdminReviewShopBankAccountByShopIDForUpdate :one
+SELECT * FROM shop_bank_accounts
+WHERE shop_id = $1
+  AND status = 'PENDING_ADMIN_REVIEW'
+ORDER BY created_at DESC
+LIMIT 1
+FOR UPDATE;
+
+-- name: UpdateShopBankAccountAdminReview :one
+UPDATE shop_bank_accounts
+SET status = $2,
+    review_note = $3,
+    payout_locked_until = $4,
+    verified_at = $5,
+    updated_at = $6
+WHERE id = $1
+  AND status = 'PENDING_ADMIN_REVIEW'
+RETURNING *;
+
+-- name: GetUserPlatformCounts :one
+SELECT
+    COUNT(*)::bigint AS total_users,
+    COUNT(*) FILTER (WHERE status = 'ACTIVE')::bigint AS active_users
+FROM users;
+
+-- name: GetShopPlatformCounts :one
+SELECT
+    COUNT(*)::bigint AS total_shops,
+    COUNT(*) FILTER (WHERE status = 'ACTIVE')::bigint AS active_shops,
+    COUNT(*) FILTER (WHERE status = 'PENDING')::bigint AS pending_shops
+FROM shops;
+
+-- name: ListDailyNewUsersVN :many
+SELECT
+    to_char(created_at AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY-MM-DD')::text AS vn_date,
+    COUNT(*)::bigint AS cnt
+FROM users
+WHERE created_at >= sqlc.arg(start_time)::timestamptz
+  AND created_at < sqlc.arg(end_time)::timestamptz
+GROUP BY 1
+ORDER BY 1 ASC;
+
+-- name: ListDailyNewShopsVN :many
+SELECT
+    to_char(created_at AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY-MM-DD')::text AS vn_date,
+    COUNT(*)::bigint AS cnt
+FROM shops
+WHERE created_at >= sqlc.arg(start_time)::timestamptz
+  AND created_at < sqlc.arg(end_time)::timestamptz
+GROUP BY 1
+ORDER BY 1 ASC;

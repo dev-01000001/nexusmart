@@ -275,7 +275,15 @@ function AuditLogContent({ initialQuery }: { initialQuery: string }) {
                     <React.Fragment key={log.id}>
                       <tr
                         className={`${shared.rowInteractive} ${isOpen ? shared.rowSelected : ""}`}
+                        tabIndex={0}
+                        aria-expanded={isOpen}
                         onClick={() => setExpandedId((prev) => (prev === log.id ? null : log.id))}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setExpandedId((prev) => (prev === log.id ? null : log.id));
+                          }
+                        }}
                       >
                         <td className={styles.timeCol}>
                           {log.created_at ? formatDateTimeVi(log.created_at) : "—"}
@@ -335,26 +343,56 @@ function AuditLogContent({ initialQuery }: { initialQuery: string }) {
           </div>
 
           <div className={shared.mobileList}>
-            {logs.map((log) => (
-              <article key={log.id} className={shared.mobileItem}>
-                <div className={shared.mobileLine1}>
-                  <span className={shared.mobileIdentity}>{log.action}</span>
-                  <span className={shared.mobileMetric}>
-                    {log.created_at ? formatDateTimeVi(log.created_at) : "—"}
-                  </span>
-                </div>
-                <div className={shared.mobileLine2}>
-                  <span className={shared.mobileMetaText}>
-                    {log.actor_role} · {log.target_id}
-                  </span>
-                  <StatusPill
-                    label={getAdminAuditTargetTypeLabel(log.target_type)}
-                    tone="neutral"
-                  />
-                </div>
-                {log.reason && <p className={styles.mobileAuditSummary}>{log.reason}</p>}
-              </article>
-            ))}
+            {logs.map((log) => {
+              const isOpen = expandedId === log.id;
+              return (
+                <article key={log.id} className={shared.mobileItem}>
+                  <div className={shared.mobileLine1}>
+                    <span className={shared.mobileIdentity}>{log.action}</span>
+                    <span className={shared.mobileMetric}>
+                      {log.created_at ? formatDateTimeVi(log.created_at) : "—"}
+                    </span>
+                  </div>
+                  <div className={shared.mobileLine2}>
+                    <span className={shared.mobileMetaText}>
+                      {log.actor_role} · {log.target_id}
+                    </span>
+                    <StatusPill
+                      label={getAdminAuditTargetTypeLabel(log.target_type)}
+                      tone="neutral"
+                    />
+                  </div>
+                  {log.reason && <p className={styles.mobileAuditSummary}>{log.reason}</p>}
+                  <div className={shared.mobileLine2}>
+                    <span className={shared.mobileMetaText}>
+                      IP: {log.ip_address || "Không ghi nhận"}
+                    </span>
+                    <button
+                      type="button"
+                      className={shared.rowActionBtn}
+                      aria-expanded={isOpen}
+                      onClick={() => setExpandedId((prev) => (prev === log.id ? null : log.id))}
+                    >
+                      {isOpen ? "Thu gọn" : "Xem chi tiết trước/sau"}
+                    </button>
+                  </div>
+                  {isOpen && (
+                    <div className={`${shared.detailWell} ${styles.mobileDetailWell}`}>
+                      <div className={shared.detailGrid}>
+                        <div className={shared.detailField}>
+                          <span className={shared.detailKey}>Trạng thái trước</span>
+                          <span className={shared.detailValPlain}>{log.before_json || "{}"}</span>
+                        </div>
+                        <div className={shared.detailField}>
+                          <span className={shared.detailKey}>Trạng thái sau</span>
+                          <span className={shared.detailValPlain}>{log.after_json || "{}"}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
           </div>
 
           <div

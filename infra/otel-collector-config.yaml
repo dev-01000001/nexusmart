@@ -1,3 +1,7 @@
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
 receivers:
   otlp:
     protocols:
@@ -5,6 +9,23 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: nexusmart-services
+          scrape_interval: 15s
+          metrics_path: /metrics
+          static_configs:
+            - targets:
+                - gateway:8080
+                - user:8081
+                - product:8082
+                - cart:8083
+                - promotion:8084
+                - order:8085
+                - payment:8086
+                - shipping:8087
+                - notification:8088
 
 processors:
   batch:
@@ -18,12 +39,13 @@ exporters:
     endpoint: 0.0.0.0:8889
 
 service:
+  extensions: [health_check]
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
       exporters: [debug]
     metrics:
-      receivers: [otlp]
+      receivers: [otlp, prometheus]
       processors: [batch]
       exporters: [prometheus, debug]

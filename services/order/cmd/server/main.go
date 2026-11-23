@@ -148,11 +148,12 @@ func run() error {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	// gRPC server with OTel, RED metrics, and JWT/metadata auth interceptors.
+	// gRPC server with OTel, RED metrics, structured request logging, and JWT/metadata auth interceptors.
 	grpcSrv := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			telemetry.GRPCUnaryServerInterceptor(cfg.ServiceName),
 			red.GRPCUnaryServerInterceptor(),
+			logger.GRPCUnaryServerInterceptor(log),
 			auth.GRPCUnaryServerInterceptor(jwtMgr, svcMgr),
 		),
 	)

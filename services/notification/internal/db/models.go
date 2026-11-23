@@ -28,6 +28,7 @@ type Notification struct {
 	EventID   string
 	IsRead    bool
 	CreatedAt pgtype.Timestamptz
+	DedupKey  string
 }
 
 type NotificationEmailDedup struct {

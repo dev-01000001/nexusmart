@@ -16,6 +16,14 @@ export interface CatalogSku extends ProductSku {
   imageUrl: string;
   isActive: boolean;
   attributes: Record<string, string>;
+  /** Real base SKU price before any active flash sale or shop discount program. */
+  regularPriceVnd?: number;
+  /** Active live flash sale item ID if this SKU currently has an approved live slot. */
+  activeFlashItemId?: string;
+  /** Active shop discount program item ID when no live flash sale supersedes it. */
+  activeShopDiscountItemId?: string;
+  /** Active shop discount program name (if active and not superseded by flash sale). */
+  activeShopDiscountName?: string;
 }
 
 export interface CatalogProduct extends Omit<Product, "skus"> {
@@ -72,7 +80,6 @@ export interface CatalogCategory {
   categorySlug?: CategorySlug;
   name: string;
   parentId: string;
-  commissionRateBps: number;
   sortOrder: number;
   description: string;
   subtitle: string;

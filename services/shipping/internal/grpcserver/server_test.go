@@ -605,9 +605,20 @@ func TestShippingGRPC_W2A_ShopSettingsAndAdminCarriers(t *testing.T) {
 	adminCtx := ctxWithRole("admin-1", "admin", "")
 	svcCtx := ctxWithService("order-service")
 
-	// Buyer cannot read/update shop shipping settings or admin carriers.
-	if _, err := srv.GetShopShippingSettings(buyerCtx, &shippingv1.GetShopShippingSettingsRequest{ShopId: "shop-1"}); status.Code(err) != codes.PermissionDenied {
-		t.Fatalf("expected PermissionDenied for buyer GetShopShippingSettings, got %v", err)
+	// Buyer reading GetShopShippingSettings gets only public fields (shop_id, default_weight_grams, free_ship_*);
+	// carriers, parcel dimensions, and updated_at stay empty; missing shop_id returns InvalidArgument;
+	// mutations and admin RPCs remain denied.
+	if _, err := srv.GetShopShippingSettings(buyerCtx, &shippingv1.GetShopShippingSettingsRequest{ShopId: ""}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for buyer GetShopShippingSettings with empty shop_id, got %v", err)
+	}
+	buyerPubResp, err := srv.GetShopShippingSettings(buyerCtx, &shippingv1.GetShopShippingSettingsRequest{ShopId: "shop-1"})
+	if err != nil {
+		t.Fatalf("expected buyer GetShopShippingSettings to return public shop projection, got %v", err)
+	}
+	if pub := buyerPubResp.GetSettings(); pub.GetShopId() != "shop-1" || pub.GetDefaultWeightGrams() != 500 ||
+		len(pub.GetEnabledCarrierCodes()) != 0 || pub.GetDefaultLengthCm() != 0 || pub.GetDefaultWidthCm() != 0 ||
+		pub.GetDefaultHeightCm() != 0 || pub.GetUpdatedAt() != nil {
+		t.Fatalf("buyer GetShopShippingSettings unexpected public projection: %+v", pub)
 	}
 	if _, err := srv.UpdateShopShippingSettings(buyerCtx, &shippingv1.UpdateShopShippingSettingsRequest{EnabledCarrierCodes: []string{"ghn"}}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("expected PermissionDenied for buyer UpdateShopShippingSettings, got %v", err)
@@ -836,4 +847,183 @@ func TestReview_GRPCMapsCarrierRejectedVsUnavailable(t *testing.T) {
 			t.Fatalf("expected new RETURN after returned, got resp=%+v err=%v", resp, err)
 		}
 	})
+}
+
+func TestShippingGRPC_W2B_ShopFreeshipSettingsAndOrderAccess(t *testing.T) {
+	repo := newStubRepo()
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)),
+		carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock", Token: "sandbox-ghn-token"}),
+		carrier.NewMockExpressAdapter(),
+	)
+	svc := service.NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := New(svc)
+
+	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
+	sellerCtx := ctxWithRole("seller-1", "seller", "shop-w2b-1")
+	otherSellerCtx := ctxWithRole("seller-2", "seller", "shop-w2b-2")
+	adminCtx := ctxWithRole("admin-1", "admin", "")
+	orderSvcCtx := ctxWithService("order-service")
+
+	// 1. Order service reading unconfigured shop gets default freeship=false, 0, 0 and default_weight_grams=500.
+	defResp, err := srv.GetShopShippingSettings(orderSvcCtx, &shippingv1.GetShopShippingSettingsRequest{ShopId: "shop-w2b-1"})
+	if err != nil {
+		t.Fatalf("order GetShopShippingSettings default: %v", err)
+	}
+	defSt := defResp.GetSettings()
+	if defSt.GetFreeShipEnabled() || defSt.GetFreeShipMinOrderVnd() != 0 || defSt.GetFreeShipMaxVnd() != 0 || defSt.GetDefaultWeightGrams() != 500 {
+		t.Fatalf("unexpected default settings: %+v", defSt)
+	}
+
+	// 2. Invalid freeship inputs map to codes.InvalidArgument.
+	for _, bad := range []*shippingv1.UpdateShopShippingSettingsRequest{
+		{EnabledCarrierCodes: []string{"ghn"}, DefaultWeightGrams: 500, FreeShipEnabled: true, FreeShipMinOrderVnd: 200000, FreeShipMaxVnd: 0},
+		{EnabledCarrierCodes: []string{"ghn"}, DefaultWeightGrams: 500, FreeShipEnabled: true, FreeShipMinOrderVnd: -1, FreeShipMaxVnd: 30000},
+		{EnabledCarrierCodes: []string{"ghn"}, DefaultWeightGrams: 500, FreeShipEnabled: false, FreeShipMinOrderVnd: 0, FreeShipMaxVnd: -100},
+	} {
+		if _, err := srv.UpdateShopShippingSettings(sellerCtx, bad); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("expected InvalidArgument for %+v, got %v", bad, err)
+		}
+	}
+
+	// 3. RBAC: buyer, other seller, and service token cannot mutate shop shipping settings.
+	validUpd := &shippingv1.UpdateShopShippingSettingsRequest{
+		ShopId:              "shop-w2b-1",
+		EnabledCarrierCodes: []string{"ghn"},
+		DefaultWeightGrams:  1200,
+		DefaultLengthCm:     25,
+		DefaultWidthCm:      20,
+		DefaultHeightCm:     15,
+		FreeShipEnabled:     true,
+		FreeShipMinOrderVnd: 200000,
+		FreeShipMaxVnd:      30000,
+	}
+	if _, err := srv.UpdateShopShippingSettings(buyerCtx, validUpd); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for buyer UpdateShopShippingSettings, got %v", err)
+	}
+	if _, err := srv.UpdateShopShippingSettings(otherSellerCtx, validUpd); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for other seller UpdateShopShippingSettings, got %v", err)
+	}
+	if _, err := srv.UpdateShopShippingSettings(orderSvcCtx, validUpd); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for service token UpdateShopShippingSettings, got %v", err)
+	}
+
+	// Baseline quote before freeship.
+	baseQ, err := srv.CalculateFee(buyerCtx, &shippingv1.CalculateFeeRequest{
+		ShopId: "shop-w2b-1", FromProvinceCode: "79", FromWardCode: "79001",
+		ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 1200,
+	})
+	if err != nil || len(baseQ.GetQuotes()) == 0 {
+		t.Fatalf("baseline CalculateFee: resp=%+v err=%v", baseQ, err)
+	}
+	var baseGHNStd int64
+	for _, q := range baseQ.GetQuotes() {
+		if q.GetCarrierCode() == "ghn" && q.GetServiceCode() == "STANDARD" {
+			baseGHNStd = q.GetFeeVnd()
+		}
+	}
+	if baseGHNStd <= 0 {
+		t.Fatalf("expected positive ghn STANDARD baseline quote, got %+v", baseQ.GetQuotes())
+	}
+
+	// 4. Seller saves freeship settings; seller, admin, and order service token all read back exact freeship fields.
+	updResp, err := srv.UpdateShopShippingSettings(sellerCtx, &shippingv1.UpdateShopShippingSettingsRequest{
+		EnabledCarrierCodes: []string{"ghn"},
+		DefaultWeightGrams:  1200,
+		DefaultLengthCm:     25,
+		DefaultWidthCm:      20,
+		DefaultHeightCm:     15,
+		FreeShipEnabled:     true,
+		FreeShipMinOrderVnd: 200000,
+		FreeShipMaxVnd:      30000,
+	})
+	if err != nil {
+		t.Fatalf("seller UpdateShopShippingSettings: %v", err)
+	}
+	st := updResp.GetSettings()
+	if st.GetShopId() != "shop-w2b-1" || !st.GetFreeShipEnabled() || st.GetFreeShipMinOrderVnd() != 200000 || st.GetFreeShipMaxVnd() != 30000 {
+		t.Fatalf("unexpected UpdateShopShippingSettings response: %+v", st)
+	}
+
+	for name, tc := range map[string]struct {
+		ctx    context.Context
+		shopID string
+	}{
+		"order-service":         {ctx: orderSvcCtx, shopID: "shop-w2b-1"},
+		"seller-owner":          {ctx: sellerCtx, shopID: "shop-w2b-1"},
+		"seller-owner-no-param": {ctx: sellerCtx, shopID: ""},
+		"admin":                 {ctx: adminCtx, shopID: "shop-w2b-1"},
+	} {
+		got, err := srv.GetShopShippingSettings(tc.ctx, &shippingv1.GetShopShippingSettingsRequest{ShopId: tc.shopID})
+		if err != nil {
+			t.Fatalf("%s GetShopShippingSettings: %v", name, err)
+		}
+		gs := got.GetSettings()
+		if gs.GetShopId() != "shop-w2b-1" || !gs.GetFreeShipEnabled() || gs.GetFreeShipMinOrderVnd() != 200000 ||
+			gs.GetFreeShipMaxVnd() != 30000 || len(gs.GetEnabledCarrierCodes()) != 1 || gs.GetEnabledCarrierCodes()[0] != "ghn" ||
+			gs.GetDefaultWeightGrams() != 1200 || gs.GetDefaultLengthCm() != 25 || gs.GetDefaultWidthCm() != 20 ||
+			gs.GetDefaultHeightCm() != 15 || gs.GetUpdatedAt() == nil {
+			t.Fatalf("%s expected full shop shipping settings, got %+v", name, gs)
+		}
+	}
+
+	// Anonymous caller must be rejected with Unauthenticated.
+	if _, err := srv.GetShopShippingSettings(context.Background(), &shippingv1.GetShopShippingSettingsRequest{ShopId: "shop-w2b-1"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated for anonymous GetShopShippingSettings, got %v", err)
+	}
+
+	// Buyer, another seller, and demoted buyer with stale shop_id see ONLY shop_id + default_weight_grams + free_ship_*
+	// (no carrier/dimensions/updated_at leakage).
+	demotedBuyerCtx := ctxWithRole("demoted-1", "buyer", "shop-w2b-1")
+	for name, ctx := range map[string]context.Context{
+		"buyer":         buyerCtx,
+		"other-seller":  otherSellerCtx,
+		"demoted-buyer": demotedBuyerCtx,
+	} {
+		if _, err := srv.GetShopShippingSettings(ctx, &shippingv1.GetShopShippingSettingsRequest{ShopId: "   "}); status.Code(err) != codes.InvalidArgument && name != "other-seller" {
+			t.Fatalf("%s expected InvalidArgument for empty shop_id, got %v", name, err)
+		}
+		got, err := srv.GetShopShippingSettings(ctx, &shippingv1.GetShopShippingSettingsRequest{ShopId: "shop-w2b-1"})
+		if err != nil {
+			t.Fatalf("%s GetShopShippingSettings(shop-w2b-1): %v", name, err)
+		}
+		gs := got.GetSettings()
+		if gs.GetShopId() != "shop-w2b-1" || gs.GetDefaultWeightGrams() != 1200 ||
+			!gs.GetFreeShipEnabled() || gs.GetFreeShipMinOrderVnd() != 200000 || gs.GetFreeShipMaxVnd() != 30000 {
+			t.Fatalf("%s expected default_weight_grams=1200 and freeship (true, 200000, 30000), got %+v", name, gs)
+		}
+		if len(gs.GetEnabledCarrierCodes()) != 0 || gs.GetDefaultLengthCm() != 0 ||
+			gs.GetDefaultWidthCm() != 0 || gs.GetDefaultHeightCm() != 0 || gs.GetUpdatedAt() != nil {
+			t.Fatalf("%s MUST NOT receive private carrier/dimensions/updated_at fields, got %+v", name, gs)
+		}
+	}
+	// Seller with empty shop_id claim reading without req.shop_id gets InvalidArgument; reading explicit shop_id gets public projection only.
+	sellerEmptyShopCtx := ctxWithRole("seller-empty", "seller", "")
+	if _, err := srv.GetShopShippingSettings(sellerEmptyShopCtx, &shippingv1.GetShopShippingSettingsRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for seller with empty claims.shop_id and empty req.shop_id, got %v", err)
+	}
+	if got, err := srv.GetShopShippingSettings(sellerEmptyShopCtx, &shippingv1.GetShopShippingSettingsRequest{ShopId: "shop-w2b-1"}); err != nil ||
+		!got.GetSettings().GetFreeShipEnabled() || got.GetSettings().GetDefaultWeightGrams() != 1200 ||
+		len(got.GetSettings().GetEnabledCarrierCodes()) != 0 || got.GetSettings().GetDefaultLengthCm() != 0 ||
+		got.GetSettings().GetDefaultWidthCm() != 0 || got.GetSettings().GetDefaultHeightCm() != 0 ||
+		got.GetSettings().GetUpdatedAt() != nil {
+		t.Fatalf("expected public projection (default_weight_grams + freeship) for seller with empty claims.shop_id, got resp=%+v err=%v", got, err)
+	}
+
+	// 5. CalculateFee MUST NOT deduct shop freeship (returns full raw carrier fee).
+	afterQ, err := srv.CalculateFee(buyerCtx, &shippingv1.CalculateFeeRequest{
+		ShopId: "shop-w2b-1", FromProvinceCode: "79", FromWardCode: "79001",
+		ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 0, // uses default_weight_grams=1200
+	})
+	if err != nil || len(afterQ.GetQuotes()) == 0 {
+		t.Fatalf("after freeship CalculateFee: resp=%+v err=%v", afterQ, err)
+	}
+	var afterGHNStd int64
+	for _, q := range afterQ.GetQuotes() {
+		if q.GetCarrierCode() == "ghn" && q.GetServiceCode() == "STANDARD" {
+			afterGHNStd = q.GetFeeVnd()
+		}
+	}
+	if afterGHNStd != baseGHNStd {
+		t.Fatalf("CalculateFee must return unmodified carrier fee %d even with shop freeship enabled, got %d", baseGHNStd, afterGHNStd)
+	}
 }

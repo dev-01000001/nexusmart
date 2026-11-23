@@ -240,17 +240,64 @@ func isPreviousReturnTracking(rawJSON []byte, tracking string) bool {
 }
 
 var (
-	ErrNotFound                  = errors.New("record not found")
-	ErrDuplicateIdempotencyKey   = errors.New("duplicate active idempotency key")
-	ErrDuplicateReturnRequest    = errors.New("return request already exists for order")
-	ErrAlreadyProcessed          = errors.New("event already processed")
-	ErrRetryPrecondition         = errors.New("order group is not eligible for payment retry")
-	ErrReturnDeadlineNotReached  = errors.New("return deadline has not expired")
-	ErrOrderHasTracking          = errors.New("order already has tracking code")
-	ErrOrphanShipmentNeedsCancel = fmt.Errorf("%w: order was cancelled while creating shipment", statemachine.ErrInvalidTransition)
-	ErrStaleShipmentAttempt      = fmt.Errorf("%w: shipment creation attempt expired or superseded", statemachine.ErrInvalidTransition)
-	ErrReturnTrackingPending     = errors.New("return shipment tracking code not yet persisted; retry event")
+	ErrNotFound                   = errors.New("record not found")
+	ErrDuplicateIdempotencyKey    = errors.New("duplicate active idempotency key")
+	ErrCheckoutGroupNotInProgress = errors.New("checkout group is not in progress")
+	ErrDuplicateReturnRequest     = errors.New("return request already exists for order")
+	ErrAlreadyProcessed           = errors.New("event already processed")
+	ErrRetryPrecondition          = errors.New("order group is not eligible for payment retry")
+	ErrReturnDeadlineNotReached   = errors.New("return deadline has not expired")
+	ErrOrderHasTracking           = errors.New("order already has tracking code")
+	ErrOrphanShipmentNeedsCancel  = fmt.Errorf("%w: order was cancelled while creating shipment", statemachine.ErrInvalidTransition)
+	ErrStaleShipmentAttempt       = fmt.Errorf("%w: shipment creation attempt expired or superseded", statemachine.ErrInvalidTransition)
+	ErrReturnTrackingPending      = errors.New("return shipment tracking code not yet persisted; retry event")
+	ErrOrderNotNeedingReview      = errors.New("order does not require manual review")
 )
+
+// OrderReportParams configures a seller (ShopID != "") or platform (ShopID == "") report query.
+// StartTS (inclusive) and EndTS (exclusive) represent Asia/Ho_Chi_Minh calendar day bounds in UTC.
+type OrderReportParams struct {
+	ShopID   string
+	StartTS  time.Time
+	EndTS    time.Time
+	TopLimit int32
+}
+
+// CreatedDailyStat aggregates orders created on a single Vietnam calendar date (YYYY-MM-DD).
+type CreatedDailyStat struct {
+	Date           string
+	OrderCount     int64
+	CancelledCount int64
+	ReturnedCount  int64
+	GMVVND         int64
+}
+
+// CompletedDailyStat aggregates orders completed on a single Vietnam calendar date (YYYY-MM-DD).
+type CompletedDailyStat struct {
+	Date               string
+	CompletedCount     int64
+	NetRevenueVND      int64
+	CommissionVND      int64
+	PaymentFeeVND      int64
+	PlatformSubsidyVND int64
+}
+
+// TopProductRow aggregates sales for one product across COMPLETED orders in the reporting window.
+type TopProductRow struct {
+	ProductID   string
+	ProductName string
+	UnitsSold   int64
+	RevenueVND  int64
+	OrderCount  int64
+}
+
+// OrderReportData holds raw aggregated metrics returned by Store.QueryOrderReport.
+type OrderReportData struct {
+	StatusCounts   map[string]int64
+	CreatedDaily   []CreatedDailyStat
+	CompletedDaily []CompletedDailyStat
+	TopProducts    []TopProductRow
+}
 
 // OrderAggregate groups a persisted order with its line items, timeline history, and return summary.
 type OrderAggregate struct {
@@ -279,7 +326,8 @@ type NewOrderRecord struct {
 type CheckoutBatch struct {
 	CheckoutGroupID     string
 	Orders              []NewOrderRecord
-	PendingStockConfirm bool // Set true atomically for COD / 0-VND checkouts starting CONFIRMED.
+	PendingStockConfirm bool   // Set true atomically for COD / 0-VND checkouts starting CONFIRMED.
+	WarningsJSON        []byte // Persisted onto checkout_groups atomically so forward recovery keeps warnings (N7).
 	Now                 time.Time
 }
 
@@ -293,6 +341,87 @@ type UpdateCheckoutPaymentParams struct {
 	PaymentExpiresAt     *time.Time
 	TotalPayableVND      int64
 	ResponseSnapshotJSON []byte
+	// BuildSnapshot, when non-nil, is invoked inside the transaction after locking orders and
+	// applying non-downgrading payment updates so response_snapshot_json reflects real current state.
+	BuildSnapshot func(grp db.CheckoutGroup, aggs []OrderAggregate) ([]byte, error)
+}
+
+func isPendingOrEmptyPaymentStatus(st string) bool {
+	s := strings.ToUpper(strings.TrimSpace(st))
+	return s == "" || s == "PENDING"
+}
+
+// resolveNonDowngradingGroupPaymentStatus chooses the checkout_group payment_status without ever
+// downgrading a terminal/settled status or prematurely marking a multi-shop group SUCCEEDED/REFUNDED
+// while any live sibling sub-order is still unpaid (N8).
+func resolveNonDowngradingGroupPaymentStatus(curGroupStatus, requestedStatus string, orders []db.Order) string {
+	if !isPendingOrEmptyPaymentStatus(curGroupStatus) {
+		return curGroupStatus
+	}
+	if len(orders) == 0 {
+		return requestedStatus
+	}
+	if shouldMarkGroupRefunded(orders, "", "", "") {
+		return "REFUNDED"
+	}
+	allCancelled := true
+	allActivePaid := true
+	hasActive := false
+	cancelledPayStatus := ""
+	for _, o := range orders {
+		st := statemachine.StringToStatus(o.Status)
+		if st == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+			if !isPendingOrEmptyPaymentStatus(o.PaymentStatus) && cancelledPayStatus == "" {
+				cancelledPayStatus = o.PaymentStatus
+			}
+			continue
+		}
+		allCancelled = false
+		if st == orderv1.OrderStatus_ORDER_STATUS_RETURNED {
+			continue
+		}
+		hasActive = true
+		if !strings.EqualFold(o.PaymentStatus, "SUCCEEDED") && !strings.EqualFold(o.PaymentStatus, "REFUNDED") {
+			allActivePaid = false
+		}
+	}
+	if allCancelled {
+		if cancelledPayStatus != "" {
+			return cancelledPayStatus
+		}
+		return "CANCELLED"
+	}
+	if hasActive && allActivePaid {
+		return "SUCCEEDED"
+	}
+	return requestedStatus
+}
+
+// isOrderPaymentTerminalProtected reports whether an order's payment_status is already settled
+// (SUCCEEDED or REFUNDED) and must never be overwritten with FAILED.
+func isOrderPaymentTerminalProtected(ord db.Order) bool {
+	return strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") || strings.EqualFold(ord.PaymentStatus, "REFUNDED")
+}
+
+// canCancelGroupOrder reports whether an order inside a checkout group is eligible for group-level
+// cancellation (CreatePayment failure or orphan PENDING recovery). Never cancels already-paid orders
+// (SUCCEEDED/REFUNDED with positive payable), orders with a tracking code or pending shipment creation,
+// or orders that cannot legally transition to CANCELLED (N2, N3).
+func canCancelGroupOrder(ord db.Order, onlyPending bool) bool {
+	cur := statemachine.StringToStatus(ord.Status)
+	if onlyPending && (cur != orderv1.OrderStatus_ORDER_STATUS_PENDING || strings.TrimSpace(ord.PaymentID) != "") {
+		return false
+	}
+	if statemachine.ValidateTransition(cur, orderv1.OrderStatus_ORDER_STATUS_CANCELLED) != nil {
+		return false
+	}
+	if isOrderPaymentTerminalProtected(ord) && ord.TotalPayableVND > 0 {
+		return false
+	}
+	if strings.TrimSpace(ord.TrackingCode) != "" || ord.PendingShipmentCancel {
+		return false
+	}
+	return true
 }
 
 // RetryPaymentUpdateParams atomically updates payment_id and payment_expires_at on a pending group.
@@ -308,15 +437,22 @@ type RetryPaymentUpdateParams struct {
 	Now                 time.Time
 }
 
-// CancelGroupOrdersParams cancels all orders in a checkout group (e.g. CreatePayment failure compensation).
+// CancelGroupOrdersParams cancels eligible orders in a checkout group (e.g. CreatePayment failure compensation).
 type CancelGroupOrdersParams struct {
 	CheckoutGroupID string
 	Reason          string
 	ActorID         string
 	ActorRole       string
 	PaymentStatus   string
+	OnlyPending     bool // When true, only orders currently in PENDING status may be cancelled (N3).
 	TraceID         string
 	Traceparent     string
+}
+
+// CancelGroupOrdersResult reports which orders were cancelled and whether any live orders remain in the group.
+type CancelGroupOrdersResult struct {
+	Cancelled     []db.Order
+	HasLiveOrders bool
 }
 
 // OutboxBuilder creates an outbox event payload for a given transitioned order.
@@ -553,12 +689,16 @@ type Store interface {
 	GetCheckoutGroupByPaymentID(ctx context.Context, paymentID string) (*db.CheckoutGroup, error)
 	CreateCheckoutGroup(ctx context.Context, arg db.CreateCheckoutGroupParams) (*db.CheckoutGroup, error)
 	FailCheckoutGroup(ctx context.Context, id, paymentStatus string) error
+	MarkCheckoutGroupNeedsCleanup(ctx context.Context, id, reason string) error
+	ClaimStaleCheckoutGroupForCleanup(ctx context.Context, id, reason string) (bool, error)
+	ClearCheckoutGroupNeedsCleanup(ctx context.Context, id string) error
 
 	PersistCheckoutBatch(ctx context.Context, batch CheckoutBatch) ([]OrderAggregate, error)
+	InspectCheckoutGroupOrdersLocked(ctx context.Context, checkoutGroupID string) (*db.CheckoutGroup, []OrderAggregate, error)
 	CompleteCheckoutWithPayment(ctx context.Context, arg UpdateCheckoutPaymentParams) error
 	WithCheckoutGroupRetryLock(ctx context.Context, checkoutGroupID string, fn func() error) error
 	UpdateGroupPaymentOnRetry(ctx context.Context, params RetryPaymentUpdateParams) error
-	CancelCheckoutGroupOrders(ctx context.Context, params CancelGroupOrdersParams) ([]db.Order, error)
+	CancelCheckoutGroupOrders(ctx context.Context, params CancelGroupOrdersParams) (*CancelGroupOrdersResult, error)
 
 	GetOrderWithDetails(ctx context.Context, orderID string) (*OrderAggregate, error)
 	ListOrdersByCheckoutGroup(ctx context.Context, checkoutGroupID string) ([]OrderAggregate, error)
@@ -573,6 +713,7 @@ type Store interface {
 	ClearStaleOrderPendingShipmentCancel(ctx context.Context, orderID, expectedToken string, cutoff time.Time) (bool, error)
 	MarkOrderOrphanShipmentManualReview(ctx context.Context, orderID, note string) error
 	ClearCheckoutGroupPendingStockConfirm(ctx context.Context, checkoutGroupID string) error
+	MarkOrderPendingCancelCompensation(ctx context.Context, orderID string) error
 	ClearOrderPendingCancelCompensation(ctx context.Context, orderID string) error
 	ClearOrderPendingReturnCompensation(ctx context.Context, orderID string) error
 	TransitionOrderPreparedForShipment(ctx context.Context, params ShipOrderParams) (*OrderAggregate, error)
@@ -595,6 +736,7 @@ type Store interface {
 	ProcessPendingOutbox(ctx context.Context, limit int32, publishFn func(ctx context.Context, ev db.OutboxEvent) error) (int, error)
 	FindExpiredPendingGroups(ctx context.Context, limit int32) ([]ExpiredGroupCandidate, error)
 	FindStaleInProgressCheckoutGroups(ctx context.Context, olderThan time.Duration, limit int32) ([]string, error)
+	FindIncompleteCheckoutGroupsWithOrders(ctx context.Context, olderThan time.Duration, limit int32) ([]string, error)
 	FindConfirmedOrdersForAutoCancel(ctx context.Context, cutoff time.Time, limit int32) ([]string, error)
 	FindDeliveredOrdersForAutoComplete(ctx context.Context, cutoff time.Time, limit int32) ([]string, error)
 	FindExpiredReturnRequests(ctx context.Context, now time.Time, limit int32) ([]string, error)
@@ -606,10 +748,28 @@ type Store interface {
 	FindCancelledOrdersPendingCompensation(ctx context.Context, limit int32) ([]string, error)
 	FindReturnedOrdersPendingCompensation(ctx context.Context, limit int32) ([]string, error)
 
+	ListOrdersNeedingManualReview(ctx context.Context, limit, offset int32) ([]OrderAggregate, int64, error)
+	ResolveOrderManualReview(ctx context.Context, orderID, actorID, actorRole, note string, now time.Time) (*OrderAggregate, error)
+	QueryOrderReport(ctx context.Context, params OrderReportParams) (*OrderReportData, error)
+
 	Ping(ctx context.Context) error
 }
 
 // MarshalJSONBytes marshals v into JSON bytes cleanly.
 func MarshalJSONBytes(v any) ([]byte, error) {
 	return json.Marshal(v)
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func min64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }

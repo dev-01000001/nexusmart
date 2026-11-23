@@ -1,42 +1,42 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type {
   GatewayOrder,
   GatewayProduct,
   GatewaySellerBalance,
+  GatewaySellerReport,
   GatewayShop,
   PaginatedResponse,
 } from "@/lib/gateway-types";
-import { api, getErrorMessage } from "@/lib/api";
+import { api, apiBlob, getErrorMessage } from "@/lib/api";
 import { useMockStore } from "@/mock/MockStoreContext";
-import { Button, IconChevronRight, StateView } from "@/components";
+import { BarList, Button, IconChevronRight, IconDownload, StateView } from "@/components";
 import {
+  formatBpsPercent,
   formatCompactVnd,
   formatDateTimeVi,
   formatDayMonthVi,
   formatInt,
-  formatSignedInt,
-  formatSignedVnd,
-  formatVnDayKey,
+  formatVnDateOffset,
   formatVnd,
+  validateReportDateRange,
 } from "@/lib/format";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
 import { SellerTrendChart } from "@/features/seller/SellerTrendChart";
 import {
   canSellerConfirmOrder,
-  computeOrderNetVnd,
   getOrderStatusMeta,
   getProductCoverImage,
 } from "@/features/seller/types";
-import { formatDeltaPct, parseUiState } from "@/features/seller/sellerStore";
+import { parseUiState } from "@/features/seller/sellerStore";
 import common from "@/features/seller/SellerCommon.module.css";
 import styles from "./page.module.css";
 
-type MetricTabKey = "netRevenue" | "orders" | "avgOrder";
+type MetricTabKey = "netRevenue" | "gmv" | "orders";
 
 const PRIORITY_STATUS_RANK: Record<string, number> = {
   CONFIRMED: 0,
@@ -50,14 +50,6 @@ const PRIORITY_STATUS_RANK: Record<string, number> = {
   RETURNED: 8,
 };
 
-interface DayBucket {
-  key: string;
-  label: string;
-  gmv: number;
-  netRevenue: number;
-  orders: number;
-}
-
 interface LowStockRow {
   skuId: string;
   skuCode: string;
@@ -70,12 +62,6 @@ interface LowStockRow {
   totalStock: number;
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-function isRevenueOrder(status: string): boolean {
-  return status !== "CANCELLED" && status !== "RETURNED";
-}
-
 function summarizeOrderItems(order: GatewayOrder): string {
   if (!order.items || order.items.length === 0) return "Chưa có dòng sản phẩm";
   const first = order.items[0];
@@ -85,6 +71,14 @@ function summarizeOrderItems(order: GatewayOrder): string {
     : `${first.product_name} · ${first.sku_name}`;
 }
 
+function formatShortIsoDay(isoDate: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
+    const [, mm, dd] = isoDate.split("-");
+    return `${dd}/${mm}`;
+  }
+  return formatDayMonthVi(isoDate);
+}
+
 function SellerOverviewInner({ shop }: { shop: GatewayShop }) {
   const searchParams = useSearchParams();
   const uiState = parseUiState(searchParams.get("state"));
@@ -92,6 +86,15 @@ function SellerOverviewInner({ shop }: { shop: GatewayShop }) {
   const { refreshPendingOrders } = useSellerContext();
 
   const [activeTab, setActiveTab] = useState<MetricTabKey>("netRevenue");
+  const [fromDate, setFromDate] = useState(() => formatVnDateOffset(-29));
+  const [toDate, setToDate] = useState(() => formatVnDateOffset(0));
+  const [rangeError, setRangeError] = useState<string | null>(null);
+  const [exportingCsv, setExportingCsv] = useState(false);
+
+  const [report, setReport] = useState<GatewaySellerReport | null>(null);
+  const [reportLoading, setReportLoading] = useState(true);
+  const [reportError, setReportError] = useState<string | null>(null);
+
   const [orders, setOrders] = useState<GatewayOrder[]>([]);
   const [products, setProducts] = useState<GatewayProduct[]>([]);
   const [balance, setBalance] = useState<GatewaySellerBalance | null>(null);
@@ -104,7 +107,7 @@ function SellerOverviewInner({ shop }: { shop: GatewayShop }) {
     setErrorMsg(null);
     try {
       const [ordersRes, productsRes, balanceRes] = await Promise.all([
-        api<PaginatedResponse<GatewayOrder>>("seller/orders?page=1&page_size=100"),
+        api<PaginatedResponse<GatewayOrder>>("seller/orders?page=1&page_size=50"),
         api<PaginatedResponse<GatewayProduct>>("seller/products?page=1&page_size=100"),
         api<GatewaySellerBalance>("seller/balance").catch(() => null),
       ]);
@@ -118,11 +121,83 @@ function SellerOverviewInner({ shop }: { shop: GatewayShop }) {
     }
   }, []);
 
+  const reportSeqRef = useRef(0);
+
+  const loadReport = useCallback(async (from: string, to: string) => {
+    const check = validateReportDateRange(from, to);
+    if (!check.ok) {
+      setRangeError(check.message);
+      return;
+    }
+    const seq = ++reportSeqRef.current;
+    setRangeError(null);
+    setReportLoading(true);
+    setReportError(null);
+    try {
+      const qs = new URLSearchParams({
+        from_date: from,
+        to_date: to,
+        top_limit: "10",
+      });
+      const res = await api<GatewaySellerReport | { report: GatewaySellerReport }>(
+        `seller/reports?${qs.toString()}`
+      );
+      if (reportSeqRef.current !== seq) return;
+      setReport(res && "report" in res ? res.report : res);
+    } catch (err) {
+      if (reportSeqRef.current !== seq) return;
+      setReportError(getErrorMessage(err, "Chưa thể tải báo cáo doanh thu gian hàng."));
+    } finally {
+      if (reportSeqRef.current === seq) {
+        setReportLoading(false);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     if (!uiState) {
       void loadOverview();
     }
   }, [uiState, loadOverview]);
+
+  useEffect(() => {
+    if (!uiState) {
+      void loadReport(fromDate, toDate);
+    }
+  }, [uiState, fromDate, toDate, loadReport]);
+
+  const applyPresetDays = (days: number) => {
+    const nextTo = formatVnDateOffset(0);
+    const nextFrom = formatVnDateOffset(-(days - 1));
+    setFromDate(nextFrom);
+    setToDate(nextTo);
+  };
+
+  const handleExportCsv = async () => {
+    const check = validateReportDateRange(fromDate, toDate);
+    if (!check.ok) {
+      setRangeError(check.message);
+      return;
+    }
+    setExportingCsv(true);
+    try {
+      const qs = new URLSearchParams({ from_date: fromDate, to_date: toDate });
+      const blob = await apiBlob(`seller/reports/export?${qs.toString()}`);
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `bao-cao-gian-hang-${fromDate}-${toDate}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      showToast(`Đã tải xuống báo cáo CSV (${fromDate} đến ${toDate}).`);
+    } catch (err) {
+      showToast(getErrorMessage(err, "Không thể xuất tệp CSV báo cáo lúc này."));
+    } finally {
+      setExportingCsv(false);
+    }
+  };
 
   const lowStockAlerts = useMemo<LowStockRow[]>(() => {
     const rows: LowStockRow[] = [];
@@ -158,106 +233,36 @@ function SellerOverviewInner({ shop }: { shop: GatewayShop }) {
   );
   const actionableCount = pendingConfirmCount + preparingCount;
 
-  const periodStats = useMemo(() => {
-    const nowMs = Date.now();
-    const currentDays: DayBucket[] = [];
-    const currentIndexByKey = new Map<string, number>();
-
-    for (let offset = 6; offset >= 0; offset--) {
-      const ts = nowMs - offset * DAY_MS;
-      const key = formatVnDayKey(ts);
-      currentIndexByKey.set(key, currentDays.length);
-      currentDays.push({
-        key,
-        label: formatDayMonthVi(new Date(ts).toISOString()),
-        gmv: 0,
-        netRevenue: 0,
-        orders: 0,
-      });
-    }
-
-    const priorKeys = new Set<string>();
-    for (let offset = 13; offset >= 7; offset--) {
-      priorKeys.add(formatVnDayKey(nowMs - offset * DAY_MS));
-    }
-
-    let priorGmv = 0;
-    let priorNet = 0;
-    let priorOrders = 0;
-
-    for (const order of orders) {
-      if (!isRevenueOrder(order.status) || !order.created_at) continue;
-      const key = formatVnDayKey(order.created_at);
-      const net = computeOrderNetVnd(order);
-      const curIdx = currentIndexByKey.get(key);
-      if (curIdx !== undefined) {
-        currentDays[curIdx].gmv += order.subtotal_vnd;
-        currentDays[curIdx].netRevenue += net;
-        currentDays[curIdx].orders += 1;
-      } else if (priorKeys.has(key)) {
-        priorGmv += order.subtotal_vnd;
-        priorNet += net;
-        priorOrders += 1;
-      }
-    }
-
-    const total7dGmv = currentDays.reduce((s, d) => s + d.gmv, 0);
-    const total7dNetRevenue = currentDays.reduce((s, d) => s + d.netRevenue, 0);
-    const total7dOrders = currentDays.reduce((s, d) => s + d.orders, 0);
-    const avgOrderValue = total7dOrders > 0 ? Math.trunc(total7dGmv / total7dOrders) : 0;
-    const priorAvgOrder = priorOrders > 0 ? Math.trunc(priorGmv / priorOrders) : 0;
-
-    return {
-      daily7d: currentDays,
-      periodLabel: `${currentDays[0]?.label ?? ""} - ${currentDays[currentDays.length - 1]?.label ?? ""}`,
-      total7dGmv,
-      total7dNetRevenue,
-      total7dOrders,
-      avgOrderValue,
-      prior7dGmv: priorGmv,
-      prior7dNetRevenue: priorNet,
-      prior7dOrders: priorOrders,
-      priorAvgOrder,
-      gmvDelta: total7dGmv - priorGmv,
-      netDelta: total7dNetRevenue - priorNet,
-      ordersDelta: total7dOrders - priorOrders,
-      avgOrderDelta: avgOrderValue - priorAvgOrder,
-    };
-  }, [orders]);
-
-  const netPct = formatDeltaPct(periodStats.total7dNetRevenue, periodStats.prior7dNetRevenue);
-  const ordersPct = formatDeltaPct(periodStats.total7dOrders, periodStats.prior7dOrders);
-  const aovPct = formatDeltaPct(periodStats.avgOrderValue, periodStats.priorAvgOrder);
-  const gmvPct = formatDeltaPct(periodStats.total7dGmv, periodStats.prior7dGmv);
+  const dailyPoints = useMemo(() => report?.daily ?? [], [report]);
 
   const chartConfig = useMemo(() => {
-    const labels = periodStats.daily7d.map((d) => d.label);
+    const labels = dailyPoints.map((d) => formatShortIsoDay(d.date));
     if (activeTab === "orders") {
       return {
         labels,
-        values: periodStats.daily7d.map((d) => d.orders),
-        metricName: "Số đơn hợp lệ theo ngày (7 ngày gần nhất)",
+        values: dailyPoints.map((d) => d.order_count),
+        metricName: `Số đơn hàng theo ngày (${fromDate} → ${toDate})`,
         formatValue: (v: number) => `${formatInt(v)} đơn`,
         formatTick: (v: number) => formatInt(v),
       };
     }
-    if (activeTab === "avgOrder") {
+    if (activeTab === "gmv") {
       return {
         labels,
-        values: periodStats.daily7d.map((d) => (d.orders > 0 ? Math.trunc(d.gmv / d.orders) : 0)),
-        metricName: "Giá trị đơn trung bình theo ngày",
+        values: dailyPoints.map((d) => d.gmv_vnd),
+        metricName: `Tổng giá trị đơn hàng (GMV) theo ngày (${fromDate} → ${toDate})`,
         formatValue: formatVnd,
         formatTick: formatCompactVnd,
       };
     }
     return {
       labels,
-      values: periodStats.daily7d.map((d) => d.netRevenue),
-      metricName: "Doanh thu thuần sau phí 7 ngày gần nhất",
+      values: dailyPoints.map((d) => d.net_revenue_vnd),
+      metricName: `Doanh thu thuần sau phí theo ngày (${fromDate} → ${toDate})`,
       formatValue: formatVnd,
       formatTick: formatCompactVnd,
     };
-  }, [periodStats.daily7d, activeTab]);
+  }, [dailyPoints, activeTab, fromDate, toDate]);
 
   const topOrders = useMemo(() => {
     return [...orders]
@@ -292,9 +297,6 @@ function SellerOverviewInner({ shop }: { shop: GatewayShop }) {
     }
   };
 
-  const deltaClass = (dir: "up" | "down" | "flat") =>
-    dir === "up" ? common.deltaPos : dir === "down" ? common.deltaNeg : common.deltaFlat;
-
   const statusPillClass = (tone: "neutral" | "warn" | "pos" | "neg") =>
     tone === "pos"
       ? `${common.pill} ${common.pillPos}`
@@ -306,16 +308,17 @@ function SellerOverviewInner({ shop }: { shop: GatewayShop }) {
 
   const availableVnd = balance?.available_vnd ?? 0;
   const pendingVnd = balance?.pending_vnd ?? 0;
+  const totalFeesVnd = (report?.commission_vnd ?? 0) + (report?.payment_fee_vnd ?? 0);
 
   return (
     <div className={common.page}>
       <header className={common.pageHeader}>
         <div className={common.headerText}>
-          <h1 className={common.title}>Tổng quan gian hàng</h1>
+          <h1 className={common.title}>Tổng quan & Báo cáo gian hàng</h1>
           <p className={common.finding}>
             {shop.name} · {formatInt(pendingConfirmCount)} đơn chờ xác nhận,{" "}
-            {formatInt(lowStockAlerts.length)} SKU tồn khả dụng từ 5 chiếc trở xuống · Kỳ{" "}
-            {periodStats.periodLabel}
+            {formatInt(lowStockAlerts.length)} SKU tồn khả dụng từ 5 chiếc trở xuống · Kỳ {fromDate}{" "}
+            đến {toDate}
           </p>
         </div>
         <div className={common.headerActions}>
@@ -361,8 +364,8 @@ function SellerOverviewInner({ shop }: { shop: GatewayShop }) {
         <StateView
           kind="empty"
           surface="app"
-          title="Gian hàng chưa phát sinh đơn hàng trong 7 ngày qua"
-          message="Đăng sản phẩm có đủ biến thể size và đăng ký suất Flash sale để bắt đầu ghi nhận doanh thu."
+          title="Gian hàng chưa phát sinh đơn hàng trong kỳ chọn"
+          message="Đăng sản phẩm có đủ biến thể size và tạo chương trình khuyến mãi để bắt đầu ghi nhận doanh thu."
           actionLabel="Thêm sản phẩm đầu tiên"
           actionHref="/seller/san-pham/moi"
         />
@@ -394,7 +397,7 @@ function SellerOverviewInner({ shop }: { shop: GatewayShop }) {
               >
                 {formatVnd(pendingVnd)}
               </span>
-              <span className={common.balanceCaption}>Giữ an toàn cho tới khi đơn hoàn tất</span>
+              <span className={common.balanceCaption}>Giữ an toàn 72 giờ sau khi hoàn tất</span>
             </div>
 
             <div className={common.balanceCell}>
@@ -426,166 +429,252 @@ function SellerOverviewInner({ shop }: { shop: GatewayShop }) {
             </div>
           </section>
 
-          <section className={common.cardFlush} aria-label="Biểu đồ hiệu suất 7 ngày">
-            <div className={styles.kpiTabs} role="tablist" aria-label="Chỉ số theo ngày">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === "netRevenue"}
-                className={`${styles.kpiTab} ${activeTab === "netRevenue" ? styles.kpiTabActive : ""}`}
-                onClick={() => setActiveTab("netRevenue")}
-              >
-                <span className={styles.kpiTabLabel}>Doanh thu thuần (7 ngày)</span>
-                <span className={styles.kpiTabRow}>
-                  <span className={styles.kpiTabValue}>
-                    {formatVnd(periodStats.total7dNetRevenue)}
-                  </span>
-                  <span className={`${styles.kpiTabDelta} ${deltaClass(netPct.direction)}`}>
-                    {netPct.label}
-                  </span>
-                </span>
-              </button>
-
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === "orders"}
-                className={`${styles.kpiTab} ${activeTab === "orders" ? styles.kpiTabActive : ""}`}
-                onClick={() => setActiveTab("orders")}
-              >
-                <span className={styles.kpiTabLabel}>Số đơn hợp lệ (7 ngày)</span>
-                <span className={styles.kpiTabRow}>
-                  <span className={styles.kpiTabValue}>{formatInt(periodStats.total7dOrders)}</span>
-                  <span className={`${styles.kpiTabDelta} ${deltaClass(ordersPct.direction)}`}>
-                    {ordersPct.label}
-                  </span>
-                </span>
-              </button>
-
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === "avgOrder"}
-                className={`${styles.kpiTab} ${activeTab === "avgOrder" ? styles.kpiTabActive : ""}`}
-                onClick={() => setActiveTab("avgOrder")}
-              >
-                <span className={styles.kpiTabLabel}>Giá trị đơn trung bình</span>
-                <span className={styles.kpiTabRow}>
-                  <span className={styles.kpiTabValue}>{formatVnd(periodStats.avgOrderValue)}</span>
-                  <span className={`${styles.kpiTabDelta} ${deltaClass(aovPct.direction)}`}>
-                    {aovPct.label}
-                  </span>
-                </span>
-              </button>
-            </div>
-
-            <div className={styles.chartBody}>
-              <div className={styles.chartCaption}>
-                <h2 className={styles.chartHeading}>{chartConfig.metricName}</h2>
-                <span className={styles.chartPeriod}>
-                  Di chuột trên biểu đồ để xem từng ngày · Đơn vị VND
-                </span>
-              </div>
-
-              <SellerTrendChart
-                labels={chartConfig.labels}
-                values={chartConfig.values}
-                metricName={chartConfig.metricName}
-                formatValue={chartConfig.formatValue}
-                formatTick={chartConfig.formatTick}
-                annotation={null}
-                desktopHeight={194}
-                mobileHeight={180}
-              />
-
-              <div className={styles.compareWrap}>
-                <table className={styles.compareTable}>
-                  <thead>
-                    <tr>
-                      <th>So với 7 ngày trước đó</th>
-                      <th className={common.numCol}>7 ngày trước</th>
-                      <th className={common.numCol}>7 ngày gần nhất</th>
-                      <th className={common.numCol}>Chênh lệch</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td>Tổng giá trị đơn hàng (GMV)</td>
-                      <td className={`${common.numCol} ${styles.comparePrior}`}>
-                        {formatVnd(periodStats.prior7dGmv)}
-                      </td>
-                      <td className={common.numCol}>{formatVnd(periodStats.total7dGmv)}</td>
-                      <td className={`${common.numCol} ${deltaClass(gmvPct.direction)}`}>
-                        {formatSignedVnd(periodStats.gmvDelta)} ({gmvPct.label})
-                      </td>
-                    </tr>
-                    <tr>
-                      <td>Doanh thu thuần sau chiết khấu & phí sàn</td>
-                      <td className={`${common.numCol} ${styles.comparePrior}`}>
-                        {formatVnd(periodStats.prior7dNetRevenue)}
-                      </td>
-                      <td className={common.numCol}>{formatVnd(periodStats.total7dNetRevenue)}</td>
-                      <td className={`${common.numCol} ${deltaClass(netPct.direction)}`}>
-                        {formatSignedVnd(periodStats.netDelta)} ({netPct.label})
-                      </td>
-                    </tr>
-                    <tr>
-                      <td>Số đơn hợp lệ và giá trị trung bình</td>
-                      <td className={`${common.numCol} ${styles.comparePrior}`}>
-                        {formatInt(periodStats.prior7dOrders)} đơn
-                      </td>
-                      <td className={common.numCol}>
-                        {formatInt(periodStats.total7dOrders)} đơn (
-                        {formatVnd(periodStats.avgOrderValue)})
-                      </td>
-                      <td className={`${common.numCol} ${deltaClass(ordersPct.direction)}`}>
-                        {formatSignedInt(periodStats.ordersDelta)} đơn (
-                        {formatSignedVnd(periodStats.avgOrderDelta)})
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-
-                <div className={styles.compareMobile}>
-                  <div className={styles.compareMobileHead}>So với 7 ngày trước đó</div>
-                  <div className={styles.compareMobileRow}>
-                    <span className={styles.compareMobileLabel}>Tổng giá trị đơn hàng (GMV)</span>
-                    <div className={styles.compareMobileFigs}>
-                      <span className={styles.compareMobileVal}>
-                        {formatVnd(periodStats.total7dGmv)}
-                      </span>
-                      <span className={deltaClass(gmvPct.direction)}>
-                        {formatSignedVnd(periodStats.gmvDelta)} ({gmvPct.label})
-                      </span>
-                    </div>
-                  </div>
-                  <div className={styles.compareMobileRow}>
-                    <span className={styles.compareMobileLabel}>Doanh thu thuần sau phí sàn</span>
-                    <div className={styles.compareMobileFigs}>
-                      <span className={styles.compareMobileVal}>
-                        {formatVnd(periodStats.total7dNetRevenue)}
-                      </span>
-                      <span className={deltaClass(netPct.direction)}>
-                        {formatSignedVnd(periodStats.netDelta)} ({netPct.label})
-                      </span>
-                    </div>
-                  </div>
-                  <div className={styles.compareMobileRow}>
-                    <span className={styles.compareMobileLabel}>Số đơn và giá trị trung bình</span>
-                    <div className={styles.compareMobileFigs}>
-                      <span className={styles.compareMobileVal}>
-                        {formatInt(periodStats.total7dOrders)} đơn (
-                        {formatVnd(periodStats.avgOrderValue)})
-                      </span>
-                      <span className={deltaClass(ordersPct.direction)}>
-                        {formatSignedInt(periodStats.ordersDelta)} đơn ({ordersPct.label})
-                      </span>
-                    </div>
-                  </div>
+          {/* Report date filter bar & CSV export */}
+          <section className={common.card} aria-label="Bộ lọc kỳ báo cáo gian hàng">
+            <div className={common.toolbar}>
+              <div className={common.toolbarLeft}>
+                <div className={common.segmented} role="group" aria-label="Chọn nhanh kỳ báo cáo">
+                  <button
+                    type="button"
+                    className={common.segmentedBtn}
+                    onClick={() => applyPresetDays(7)}
+                  >
+                    7 ngày
+                  </button>
+                  <button
+                    type="button"
+                    className={common.segmentedBtn}
+                    onClick={() => applyPresetDays(30)}
+                  >
+                    30 ngày
+                  </button>
+                  <button
+                    type="button"
+                    className={common.segmentedBtn}
+                    onClick={() => applyPresetDays(90)}
+                  >
+                    90 ngày
+                  </button>
                 </div>
+
+                <label className={common.fieldLabel} htmlFor="rep-from">
+                  Từ ngày
+                </label>
+                <input
+                  id="rep-from"
+                  type="date"
+                  className={common.textInput}
+                  style={{ width: 152, height: 34 }}
+                  value={fromDate}
+                  onChange={(e) => setFromDate(e.target.value)}
+                />
+                <label className={common.fieldLabel} htmlFor="rep-to">
+                  Đến ngày
+                </label>
+                <input
+                  id="rep-to"
+                  type="date"
+                  className={common.textInput}
+                  style={{ width: 152, height: 34 }}
+                  value={toDate}
+                  onChange={(e) => setToDate(e.target.value)}
+                />
               </div>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                shape="app"
+                disabled={exportingCsv}
+                onClick={() => void handleExportCsv()}
+              >
+                <IconDownload size={14} />
+                <span>{exportingCsv ? "Đang xuất..." : "Xuất CSV"}</span>
+              </Button>
             </div>
+            {rangeError && (
+              <p className={common.fieldError} role="alert" style={{ marginTop: 8 }}>
+                {rangeError}
+              </p>
+            )}
           </section>
+
+          {reportLoading ? (
+            <StateView
+              kind="loading"
+              surface="app"
+              title="Đang tổng hợp báo cáo doanh thu gian hàng..."
+              rows={4}
+            />
+          ) : reportError ? (
+            <StateView
+              kind="error"
+              surface="app"
+              title="Không thể tải báo cáo doanh thu gian hàng"
+              message={reportError}
+              actionLabel="Thử lại"
+              onAction={() => void loadReport(fromDate, toDate)}
+            />
+          ) : (
+            report && (
+              <>
+                <section className={common.balanceStrip} aria-label="Tổng hợp báo cáo kỳ chọn">
+                  <div className={common.balanceCell}>
+                    <span className={common.balanceLabel}>Tổng giá trị đơn hàng (GMV)</span>
+                    <span className={common.balanceValue}>{formatVnd(report.gmv_vnd)}</span>
+                    <span className={common.balanceCaption}>
+                      {formatInt(report.total_orders)} đơn trong kỳ
+                    </span>
+                  </div>
+                  <div className={common.balanceCell}>
+                    <span className={common.balanceLabel}>Doanh thu thuần sau phí</span>
+                    <span className={common.balanceValue}>{formatVnd(report.net_revenue_vnd)}</span>
+                    <span className={common.balanceCaption}>
+                      {formatInt(report.completed_orders)} đơn hoàn tất
+                    </span>
+                  </div>
+                  <div className={common.balanceCell}>
+                    <span className={common.balanceLabel}>Phí sàn & phí thanh toán</span>
+                    <span className={common.balanceValue}>{formatVnd(totalFeesVnd)}</span>
+                    <span className={common.balanceCaption}>
+                      Hoa hồng {formatVnd(report.commission_vnd)} · Thanh toán{" "}
+                      {formatVnd(report.payment_fee_vnd)}
+                    </span>
+                  </div>
+                  <div className={common.balanceCell}>
+                    <span className={common.balanceLabel}>Tỷ lệ hủy / trả hàng</span>
+                    <span className={common.balanceValue}>
+                      {formatBpsPercent(report.cancel_rate_bps)} /{" "}
+                      {formatBpsPercent(report.return_rate_bps)}
+                    </span>
+                    <span className={common.balanceCaption}>
+                      {formatInt(report.cancelled_orders)} hủy · {formatInt(report.returned_orders)}{" "}
+                      trả hàng
+                    </span>
+                  </div>
+                </section>
+
+                <section className={common.cardFlush} aria-label="Biểu đồ báo cáo doanh thu">
+                  <div className={styles.kpiTabs} role="tablist" aria-label="Chỉ số theo ngày">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeTab === "netRevenue"}
+                      className={`${styles.kpiTab} ${activeTab === "netRevenue" ? styles.kpiTabActive : ""}`}
+                      onClick={() => setActiveTab("netRevenue")}
+                    >
+                      <span className={styles.kpiTabLabel}>Doanh thu thuần</span>
+                      <span className={styles.kpiTabRow}>
+                        <span className={styles.kpiTabValue}>
+                          {formatVnd(report.net_revenue_vnd)}
+                        </span>
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeTab === "gmv"}
+                      className={`${styles.kpiTab} ${activeTab === "gmv" ? styles.kpiTabActive : ""}`}
+                      onClick={() => setActiveTab("gmv")}
+                    >
+                      <span className={styles.kpiTabLabel}>Tổng GMV</span>
+                      <span className={styles.kpiTabRow}>
+                        <span className={styles.kpiTabValue}>{formatVnd(report.gmv_vnd)}</span>
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeTab === "orders"}
+                      className={`${styles.kpiTab} ${activeTab === "orders" ? styles.kpiTabActive : ""}`}
+                      onClick={() => setActiveTab("orders")}
+                    >
+                      <span className={styles.kpiTabLabel}>Số đơn hàng</span>
+                      <span className={styles.kpiTabRow}>
+                        <span className={styles.kpiTabValue}>{formatInt(report.total_orders)}</span>
+                      </span>
+                    </button>
+                  </div>
+
+                  <div className={styles.chartBody}>
+                    <div className={styles.chartCaption}>
+                      <h2 className={styles.chartHeading}>{chartConfig.metricName}</h2>
+                      <span className={styles.chartPeriod}>
+                        Di chuột trên biểu đồ để xem từng ngày · Tối đa 366 ngày
+                      </span>
+                    </div>
+
+                    {dailyPoints.length > 0 ? (
+                      <SellerTrendChart
+                        labels={chartConfig.labels}
+                        values={chartConfig.values}
+                        metricName={chartConfig.metricName}
+                        formatValue={chartConfig.formatValue}
+                        formatTick={chartConfig.formatTick}
+                        annotation={null}
+                        desktopHeight={194}
+                        mobileHeight={180}
+                      />
+                    ) : (
+                      <div className={common.inlineEmpty}>
+                        Chưa có dữ liệu doanh thu theo ngày trong khoảng thời gian đã chọn.
+                      </div>
+                    )}
+
+                    {(report.orders_by_status ?? []).length > 0 && (
+                      <div
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          gap: 8,
+                          paddingTop: 10,
+                          borderTop: "1px solid var(--rule)",
+                        }}
+                      >
+                        {report.orders_by_status.map((row) => {
+                          const meta = getOrderStatusMeta(row.status);
+                          return (
+                            <span key={row.status} className={statusPillClass(meta.tone)}>
+                              {meta.label}: {formatInt(row.count)}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                <section className={common.card} aria-labelledby="seller-top-products-heading">
+                  <div className={common.cardHeader}>
+                    <h2 id="seller-top-products-heading" className={common.cardTitle}>
+                      Top sản phẩm bán chạy trong kỳ ({formatInt(report.top_products?.length ?? 0)})
+                    </h2>
+                    <span className={common.cardMeta}>
+                      Kỳ {report.from_date} → {report.to_date}
+                    </span>
+                  </div>
+
+                  {(report.top_products ?? []).length === 0 ? (
+                    <div className={common.inlineEmpty}>
+                      Chưa có sản phẩm nào phát sinh doanh số trong kỳ báo cáo này.
+                    </div>
+                  ) : (
+                    <BarList
+                      rows={report.top_products.map((item) => ({
+                        label: item.product_name,
+                        subLabel: `${formatInt(item.units_sold)} sản phẩm đã bán`,
+                        value: item.revenue_vnd,
+                      }))}
+                      formatValue={formatVnd}
+                    />
+                  )}
+                </section>
+              </>
+            )
+          )}
 
           <div className={styles.pairedGrid}>
             <section className={styles.opCard} aria-labelledby="op-orders-heading">

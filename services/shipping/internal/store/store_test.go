@@ -24,8 +24,8 @@ func TestEmbeddedMigrationsPresentAndIdempotentGuards(t *testing.T) {
 	for _, e := range entries {
 		found[e.Name()] = true
 	}
-	if !found["000001_init.sql"] || !found["000002_shipping_ops.sql"] || !found["000003_return_recreate_index.sql"] {
-		t.Fatalf("expected 000001, 000002, and 000003 migrations, got %v", found)
+	if !found["000001_init.sql"] || !found["000002_shipping_ops.sql"] || !found["000003_return_recreate_index.sql"] || !found["000004_shop_freeship_settings.sql"] {
+		t.Fatalf("expected 000001, 000002, 000003, and 000004 migrations, got %v", found)
 	}
 
 	raw, err := fs.ReadFile(migrations.FS, "000002_shipping_ops.sql")
@@ -62,6 +62,22 @@ func TestEmbeddedMigrationsPresentAndIdempotentGuards(t *testing.T) {
 	} {
 		if !strings.Contains(sql3, mustContain) {
 			t.Fatalf("000003_return_recreate_index.sql missing %q", mustContain)
+		}
+	}
+
+	raw4, err := fs.ReadFile(migrations.FS, "000004_shop_freeship_settings.sql")
+	if err != nil {
+		t.Fatalf("read 000004_shop_freeship_settings.sql: %v", err)
+	}
+	sql4 := string(raw4)
+	for _, mustContain := range []string{
+		"ADD COLUMN IF NOT EXISTS free_ship_enabled",
+		"ADD COLUMN IF NOT EXISTS free_ship_min_order_vnd",
+		"ADD COLUMN IF NOT EXISTS free_ship_max_vnd",
+		"chk_shop_shipping_free_ship_max_positive",
+	} {
+		if !strings.Contains(sql4, mustContain) {
+			t.Fatalf("000004_shop_freeship_settings.sql missing %q", mustContain)
 		}
 	}
 }
@@ -334,5 +350,50 @@ func TestPGStoreMigrateAndSeedIdempotent(t *testing.T) {
 		if err != nil || outcome != WebhookOutcomeStale {
 			t.Fatalf("returning -> %s must return WebhookOutcomeStale, got outcome=%s err=%v", bad, outcome, err)
 		}
+	}
+
+	// Wave 2b: verify shop_shipping_settings freeship columns, persistence, DB CHECK constraint, and idempotent re-migration.
+	shopID := "pgtest-shop-" + suffix
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM shop_shipping_settings WHERE shop_id = $1`, shopID)
+	})
+	savedCfg, err := st.UpsertShopShippingSettings(ctx, &ShopShippingSettings{
+		ShopID:              shopID,
+		EnabledCarrierCodes: []string{"ghn"},
+		DefaultWeightGrams:  1200,
+		DefaultLengthCM:     25,
+		DefaultWidthCM:      20,
+		DefaultHeightCM:     12,
+		FreeShipEnabled:     true,
+		FreeShipMinOrderVND: 250000,
+		FreeShipMaxVND:      30000,
+	})
+	if err != nil {
+		t.Fatalf("UpsertShopShippingSettings freeship: %v", err)
+	}
+	if !savedCfg.FreeShipEnabled || savedCfg.FreeShipMinOrderVND != 250000 || savedCfg.FreeShipMaxVND != 30000 {
+		t.Fatalf("unexpected saved freeship settings: %+v", savedCfg)
+	}
+	fetchedCfg, err := st.GetShopShippingSettings(ctx, shopID)
+	if err != nil {
+		t.Fatalf("GetShopShippingSettings freeship: %v", err)
+	}
+	if !fetchedCfg.FreeShipEnabled || fetchedCfg.FreeShipMinOrderVND != 250000 || fetchedCfg.FreeShipMaxVND != 30000 {
+		t.Fatalf("unexpected fetched freeship settings: %+v", fetchedCfg)
+	}
+	// DB CHECK constraint must reject free_ship_enabled=true with free_ship_max_vnd=0 even on direct write.
+	if _, err := st.UpsertShopShippingSettings(ctx, &ShopShippingSettings{
+		ShopID:              shopID,
+		EnabledCarrierCodes: []string{"ghn"},
+		DefaultWeightGrams:  1200,
+		FreeShipEnabled:     true,
+		FreeShipMinOrderVND: 250000,
+		FreeShipMaxVND:      0,
+	}); err == nil {
+		t.Fatalf("expected DB CHECK constraint error for free_ship_enabled=true with free_ship_max_vnd=0")
+	}
+	// Re-running MigrateAndSeed with populated freeship rows must remain idempotent.
+	if err := st.MigrateAndSeed(ctx); err != nil {
+		t.Fatalf("MigrateAndSeed after freeship rows failed: %v", err)
 	}
 }

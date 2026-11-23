@@ -19,22 +19,25 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ProductService_CreateCategory_FullMethodName     = "/nexusmart.product.v1.ProductService/CreateCategory"
-	ProductService_UpdateCategory_FullMethodName     = "/nexusmart.product.v1.ProductService/UpdateCategory"
-	ProductService_DeleteCategory_FullMethodName     = "/nexusmart.product.v1.ProductService/DeleteCategory"
-	ProductService_ListCategories_FullMethodName     = "/nexusmart.product.v1.ProductService/ListCategories"
-	ProductService_CreateProduct_FullMethodName      = "/nexusmart.product.v1.ProductService/CreateProduct"
-	ProductService_UpdateProduct_FullMethodName      = "/nexusmart.product.v1.ProductService/UpdateProduct"
-	ProductService_DeleteProduct_FullMethodName      = "/nexusmart.product.v1.ProductService/DeleteProduct"
-	ProductService_AdminReviewProduct_FullMethodName = "/nexusmart.product.v1.ProductService/AdminReviewProduct"
-	ProductService_GetProduct_FullMethodName         = "/nexusmart.product.v1.ProductService/GetProduct"
-	ProductService_ListProducts_FullMethodName       = "/nexusmart.product.v1.ProductService/ListProducts"
-	ProductService_GetSKUsBatch_FullMethodName       = "/nexusmart.product.v1.ProductService/GetSKUsBatch"
-	ProductService_UpdateStock_FullMethodName        = "/nexusmart.product.v1.ProductService/UpdateStock"
-	ProductService_ReserveStock_FullMethodName       = "/nexusmart.product.v1.ProductService/ReserveStock"
-	ProductService_ReleaseStock_FullMethodName       = "/nexusmart.product.v1.ProductService/ReleaseStock"
-	ProductService_ConfirmStock_FullMethodName       = "/nexusmart.product.v1.ProductService/ConfirmStock"
-	ProductService_RestockOrderItems_FullMethodName  = "/nexusmart.product.v1.ProductService/RestockOrderItems"
+	ProductService_CreateCategory_FullMethodName           = "/nexusmart.product.v1.ProductService/CreateCategory"
+	ProductService_UpdateCategory_FullMethodName           = "/nexusmart.product.v1.ProductService/UpdateCategory"
+	ProductService_DeleteCategory_FullMethodName           = "/nexusmart.product.v1.ProductService/DeleteCategory"
+	ProductService_ListCategories_FullMethodName           = "/nexusmart.product.v1.ProductService/ListCategories"
+	ProductService_GetCategoryDescendants_FullMethodName   = "/nexusmart.product.v1.ProductService/GetCategoryDescendants"
+	ProductService_SetCategoryFeeSchedule_FullMethodName   = "/nexusmart.product.v1.ProductService/SetCategoryFeeSchedule"
+	ProductService_ListCategoryFeeSchedules_FullMethodName = "/nexusmart.product.v1.ProductService/ListCategoryFeeSchedules"
+	ProductService_CreateProduct_FullMethodName            = "/nexusmart.product.v1.ProductService/CreateProduct"
+	ProductService_UpdateProduct_FullMethodName            = "/nexusmart.product.v1.ProductService/UpdateProduct"
+	ProductService_DeleteProduct_FullMethodName            = "/nexusmart.product.v1.ProductService/DeleteProduct"
+	ProductService_AdminReviewProduct_FullMethodName       = "/nexusmart.product.v1.ProductService/AdminReviewProduct"
+	ProductService_GetProduct_FullMethodName               = "/nexusmart.product.v1.ProductService/GetProduct"
+	ProductService_ListProducts_FullMethodName             = "/nexusmart.product.v1.ProductService/ListProducts"
+	ProductService_GetSKUsBatch_FullMethodName             = "/nexusmart.product.v1.ProductService/GetSKUsBatch"
+	ProductService_UpdateStock_FullMethodName              = "/nexusmart.product.v1.ProductService/UpdateStock"
+	ProductService_ReserveStock_FullMethodName             = "/nexusmart.product.v1.ProductService/ReserveStock"
+	ProductService_ReleaseStock_FullMethodName             = "/nexusmart.product.v1.ProductService/ReleaseStock"
+	ProductService_ConfirmStock_FullMethodName             = "/nexusmart.product.v1.ProductService/ConfirmStock"
+	ProductService_RestockOrderItems_FullMethodName        = "/nexusmart.product.v1.ProductService/RestockOrderItems"
 )
 
 // ProductServiceClient is the client API for ProductService service.
@@ -45,6 +48,9 @@ type ProductServiceClient interface {
 	UpdateCategory(ctx context.Context, in *UpdateCategoryRequest, opts ...grpc.CallOption) (*UpdateCategoryResponse, error)
 	DeleteCategory(ctx context.Context, in *DeleteCategoryRequest, opts ...grpc.CallOption) (*DeleteCategoryResponse, error)
 	ListCategories(ctx context.Context, in *ListCategoriesRequest, opts ...grpc.CallOption) (*ListCategoriesResponse, error)
+	GetCategoryDescendants(ctx context.Context, in *GetCategoryDescendantsRequest, opts ...grpc.CallOption) (*GetCategoryDescendantsResponse, error)
+	SetCategoryFeeSchedule(ctx context.Context, in *SetCategoryFeeScheduleRequest, opts ...grpc.CallOption) (*SetCategoryFeeScheduleResponse, error)
+	ListCategoryFeeSchedules(ctx context.Context, in *ListCategoryFeeSchedulesRequest, opts ...grpc.CallOption) (*ListCategoryFeeSchedulesResponse, error)
 	CreateProduct(ctx context.Context, in *CreateProductRequest, opts ...grpc.CallOption) (*CreateProductResponse, error)
 	UpdateProduct(ctx context.Context, in *UpdateProductRequest, opts ...grpc.CallOption) (*UpdateProductResponse, error)
 	DeleteProduct(ctx context.Context, in *DeleteProductRequest, opts ...grpc.CallOption) (*DeleteProductResponse, error)
@@ -101,6 +107,36 @@ func (c *productServiceClient) ListCategories(ctx context.Context, in *ListCateg
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListCategoriesResponse)
 	err := c.cc.Invoke(ctx, ProductService_ListCategories_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) GetCategoryDescendants(ctx context.Context, in *GetCategoryDescendantsRequest, opts ...grpc.CallOption) (*GetCategoryDescendantsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCategoryDescendantsResponse)
+	err := c.cc.Invoke(ctx, ProductService_GetCategoryDescendants_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) SetCategoryFeeSchedule(ctx context.Context, in *SetCategoryFeeScheduleRequest, opts ...grpc.CallOption) (*SetCategoryFeeScheduleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetCategoryFeeScheduleResponse)
+	err := c.cc.Invoke(ctx, ProductService_SetCategoryFeeSchedule_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) ListCategoryFeeSchedules(ctx context.Context, in *ListCategoryFeeSchedulesRequest, opts ...grpc.CallOption) (*ListCategoryFeeSchedulesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListCategoryFeeSchedulesResponse)
+	err := c.cc.Invoke(ctx, ProductService_ListCategoryFeeSchedules_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -235,6 +271,9 @@ type ProductServiceServer interface {
 	UpdateCategory(context.Context, *UpdateCategoryRequest) (*UpdateCategoryResponse, error)
 	DeleteCategory(context.Context, *DeleteCategoryRequest) (*DeleteCategoryResponse, error)
 	ListCategories(context.Context, *ListCategoriesRequest) (*ListCategoriesResponse, error)
+	GetCategoryDescendants(context.Context, *GetCategoryDescendantsRequest) (*GetCategoryDescendantsResponse, error)
+	SetCategoryFeeSchedule(context.Context, *SetCategoryFeeScheduleRequest) (*SetCategoryFeeScheduleResponse, error)
+	ListCategoryFeeSchedules(context.Context, *ListCategoryFeeSchedulesRequest) (*ListCategoryFeeSchedulesResponse, error)
 	CreateProduct(context.Context, *CreateProductRequest) (*CreateProductResponse, error)
 	UpdateProduct(context.Context, *UpdateProductRequest) (*UpdateProductResponse, error)
 	DeleteProduct(context.Context, *DeleteProductRequest) (*DeleteProductResponse, error)
@@ -268,6 +307,15 @@ func (UnimplementedProductServiceServer) DeleteCategory(context.Context, *Delete
 }
 func (UnimplementedProductServiceServer) ListCategories(context.Context, *ListCategoriesRequest) (*ListCategoriesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListCategories not implemented")
+}
+func (UnimplementedProductServiceServer) GetCategoryDescendants(context.Context, *GetCategoryDescendantsRequest) (*GetCategoryDescendantsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetCategoryDescendants not implemented")
+}
+func (UnimplementedProductServiceServer) SetCategoryFeeSchedule(context.Context, *SetCategoryFeeScheduleRequest) (*SetCategoryFeeScheduleResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetCategoryFeeSchedule not implemented")
+}
+func (UnimplementedProductServiceServer) ListCategoryFeeSchedules(context.Context, *ListCategoryFeeSchedulesRequest) (*ListCategoryFeeSchedulesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListCategoryFeeSchedules not implemented")
 }
 func (UnimplementedProductServiceServer) CreateProduct(context.Context, *CreateProductRequest) (*CreateProductResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateProduct not implemented")
@@ -394,6 +442,60 @@ func _ProductService_ListCategories_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ProductServiceServer).ListCategories(ctx, req.(*ListCategoriesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_GetCategoryDescendants_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCategoryDescendantsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).GetCategoryDescendants(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_GetCategoryDescendants_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).GetCategoryDescendants(ctx, req.(*GetCategoryDescendantsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_SetCategoryFeeSchedule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetCategoryFeeScheduleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).SetCategoryFeeSchedule(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_SetCategoryFeeSchedule_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).SetCategoryFeeSchedule(ctx, req.(*SetCategoryFeeScheduleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_ListCategoryFeeSchedules_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListCategoryFeeSchedulesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).ListCategoryFeeSchedules(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_ListCategoryFeeSchedules_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).ListCategoryFeeSchedules(ctx, req.(*ListCategoryFeeSchedulesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -636,6 +738,18 @@ var ProductService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListCategories",
 			Handler:    _ProductService_ListCategories_Handler,
+		},
+		{
+			MethodName: "GetCategoryDescendants",
+			Handler:    _ProductService_GetCategoryDescendants_Handler,
+		},
+		{
+			MethodName: "SetCategoryFeeSchedule",
+			Handler:    _ProductService_SetCategoryFeeSchedule_Handler,
+		},
+		{
+			MethodName: "ListCategoryFeeSchedules",
+			Handler:    _ProductService_ListCategoryFeeSchedules_Handler,
 		},
 		{
 			MethodName: "CreateProduct",

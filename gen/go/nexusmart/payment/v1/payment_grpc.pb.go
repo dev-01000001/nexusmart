@@ -32,6 +32,9 @@ const (
 	PaymentService_SettleRefund_FullMethodName              = "/nexusmart.payment.v1.PaymentService/SettleRefund"
 	PaymentService_ListReconciliationQueue_FullMethodName   = "/nexusmart.payment.v1.PaymentService/ListReconciliationQueue"
 	PaymentService_ResolveReconciliationItem_FullMethodName = "/nexusmart.payment.v1.PaymentService/ResolveReconciliationItem"
+	PaymentService_GetFeeConfig_FullMethodName              = "/nexusmart.payment.v1.PaymentService/GetFeeConfig"
+	PaymentService_SetFeeConfig_FullMethodName              = "/nexusmart.payment.v1.PaymentService/SetFeeConfig"
+	PaymentService_ListSellerLedger_FullMethodName          = "/nexusmart.payment.v1.PaymentService/ListSellerLedger"
 )
 
 // PaymentServiceClient is the client API for PaymentService service.
@@ -51,6 +54,9 @@ type PaymentServiceClient interface {
 	SettleRefund(ctx context.Context, in *SettleRefundRequest, opts ...grpc.CallOption) (*SettleRefundResponse, error)
 	ListReconciliationQueue(ctx context.Context, in *ListReconciliationQueueRequest, opts ...grpc.CallOption) (*ListReconciliationQueueResponse, error)
 	ResolveReconciliationItem(ctx context.Context, in *ResolveReconciliationItemRequest, opts ...grpc.CallOption) (*ResolveReconciliationItemResponse, error)
+	GetFeeConfig(ctx context.Context, in *GetFeeConfigRequest, opts ...grpc.CallOption) (*GetFeeConfigResponse, error)
+	SetFeeConfig(ctx context.Context, in *SetFeeConfigRequest, opts ...grpc.CallOption) (*SetFeeConfigResponse, error)
+	ListSellerLedger(ctx context.Context, in *ListSellerLedgerRequest, opts ...grpc.CallOption) (*ListSellerLedgerResponse, error)
 }
 
 type paymentServiceClient struct {
@@ -191,6 +197,36 @@ func (c *paymentServiceClient) ResolveReconciliationItem(ctx context.Context, in
 	return out, nil
 }
 
+func (c *paymentServiceClient) GetFeeConfig(ctx context.Context, in *GetFeeConfigRequest, opts ...grpc.CallOption) (*GetFeeConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetFeeConfigResponse)
+	err := c.cc.Invoke(ctx, PaymentService_GetFeeConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) SetFeeConfig(ctx context.Context, in *SetFeeConfigRequest, opts ...grpc.CallOption) (*SetFeeConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetFeeConfigResponse)
+	err := c.cc.Invoke(ctx, PaymentService_SetFeeConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) ListSellerLedger(ctx context.Context, in *ListSellerLedgerRequest, opts ...grpc.CallOption) (*ListSellerLedgerResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSellerLedgerResponse)
+	err := c.cc.Invoke(ctx, PaymentService_ListSellerLedger_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PaymentServiceServer is the server API for PaymentService service.
 // All implementations must embed UnimplementedPaymentServiceServer
 // for forward compatibility.
@@ -208,6 +244,9 @@ type PaymentServiceServer interface {
 	SettleRefund(context.Context, *SettleRefundRequest) (*SettleRefundResponse, error)
 	ListReconciliationQueue(context.Context, *ListReconciliationQueueRequest) (*ListReconciliationQueueResponse, error)
 	ResolveReconciliationItem(context.Context, *ResolveReconciliationItemRequest) (*ResolveReconciliationItemResponse, error)
+	GetFeeConfig(context.Context, *GetFeeConfigRequest) (*GetFeeConfigResponse, error)
+	SetFeeConfig(context.Context, *SetFeeConfigRequest) (*SetFeeConfigResponse, error)
+	ListSellerLedger(context.Context, *ListSellerLedgerRequest) (*ListSellerLedgerResponse, error)
 	mustEmbedUnimplementedPaymentServiceServer()
 }
 
@@ -256,6 +295,15 @@ func (UnimplementedPaymentServiceServer) ListReconciliationQueue(context.Context
 }
 func (UnimplementedPaymentServiceServer) ResolveReconciliationItem(context.Context, *ResolveReconciliationItemRequest) (*ResolveReconciliationItemResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ResolveReconciliationItem not implemented")
+}
+func (UnimplementedPaymentServiceServer) GetFeeConfig(context.Context, *GetFeeConfigRequest) (*GetFeeConfigResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetFeeConfig not implemented")
+}
+func (UnimplementedPaymentServiceServer) SetFeeConfig(context.Context, *SetFeeConfigRequest) (*SetFeeConfigResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetFeeConfig not implemented")
+}
+func (UnimplementedPaymentServiceServer) ListSellerLedger(context.Context, *ListSellerLedgerRequest) (*ListSellerLedgerResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListSellerLedger not implemented")
 }
 func (UnimplementedPaymentServiceServer) mustEmbedUnimplementedPaymentServiceServer() {}
 func (UnimplementedPaymentServiceServer) testEmbeddedByValue()                        {}
@@ -512,6 +560,60 @@ func _PaymentService_ResolveReconciliationItem_Handler(srv interface{}, ctx cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PaymentService_GetFeeConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetFeeConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).GetFeeConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_GetFeeConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).GetFeeConfig(ctx, req.(*GetFeeConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_SetFeeConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetFeeConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).SetFeeConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_SetFeeConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).SetFeeConfig(ctx, req.(*SetFeeConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_ListSellerLedger_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSellerLedgerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).ListSellerLedger(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_ListSellerLedger_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).ListSellerLedger(ctx, req.(*ListSellerLedgerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PaymentService_ServiceDesc is the grpc.ServiceDesc for PaymentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -570,6 +672,18 @@ var PaymentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResolveReconciliationItem",
 			Handler:    _PaymentService_ResolveReconciliationItem_Handler,
+		},
+		{
+			MethodName: "GetFeeConfig",
+			Handler:    _PaymentService_GetFeeConfig_Handler,
+		},
+		{
+			MethodName: "SetFeeConfig",
+			Handler:    _PaymentService_SetFeeConfig_Handler,
+		},
+		{
+			MethodName: "ListSellerLedger",
+			Handler:    _PaymentService_ListSellerLedger_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -459,6 +459,11 @@ func (s *NotificationService) putCachedShopOwner(so store.ShopOwner) {
 	}
 	s.shopCacheMu.Lock()
 	defer s.shopCacheMu.Unlock()
+	if strings.TrimSpace(so.ShopName) == "" {
+		if existing, ok := s.shopCache[so.ShopID]; ok && existing.ShopName != "" {
+			so.ShopName = existing.ShopName
+		}
+	}
 	s.shopCache[so.ShopID] = so
 }
 
@@ -664,6 +669,173 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 				},
 				email: &mailer.Message{
 					Subject: fmt.Sprintf("NexusMart - Kết quả duyệt gian hàng %s: %s", p.ShopName, decisionLabel),
+					Body:    body + "\n",
+				},
+			}},
+		}, nil
+
+	case "user.shop_bank_account_otp":
+		var p struct {
+			UserID              string `json:"user_id"`
+			ShopID              string `json:"shop_id"`
+			Email               string `json:"email"`
+			FullName            string `json:"full_name"`
+			OTP                 string `json:"otp"`
+			ExpiresAt           string `json:"expires_at"`
+			BankCode            string `json:"bank_code"`
+			AccountNumberMasked string `json:"account_number_masked"`
+		}
+		if err := json.Unmarshal(env.Payload, &p); err != nil ||
+			strings.TrimSpace(p.UserID) == "" ||
+			strings.TrimSpace(p.Email) == "" ||
+			strings.TrimSpace(p.OTP) == "" {
+			return nil, fmt.Errorf("%w: invalid user.shop_bank_account_otp payload", ErrMalformedPayload)
+		}
+		userID := strings.TrimSpace(p.UserID)
+		emailAddr := strings.TrimSpace(p.Email)
+		otpMsg := mailer.FormatShopBankAccountOTPEmail(
+			emailAddr,
+			p.FullName,
+			p.OTP,
+			p.ExpiresAt,
+			p.BankCode,
+			p.AccountNumberMasked,
+		)
+		var cacheShop *store.ShopOwner
+		if shopID := strings.TrimSpace(p.ShopID); shopID != "" {
+			cacheShop = &store.ShopOwner{
+				ShopID:      shopID,
+				OwnerUserID: userID,
+			}
+		}
+		return &eventPlan{
+			cacheContact: &store.UserContact{
+				UserID:   userID,
+				Email:    emailAddr,
+				FullName: strings.TrimSpace(p.FullName),
+			},
+			cacheShop: cacheShop,
+			deliveries: []recipientDelivery{{
+				role:       "user",
+				userID:     userID,
+				category:   store.CategorySystem,
+				forceEmail: true, // Security OTP email always sends; never stored in-app or logged
+				inApp:      nil,
+				email:      &otpMsg,
+			}},
+		}, nil
+
+	case "product.reviewed":
+		var p struct {
+			ProductID   string `json:"product_id"`
+			ProductName string `json:"product_name"`
+			ShopID      string `json:"shop_id"`
+			Decision    string `json:"decision"`
+			Reason      string `json:"reason"`
+			OccurredAt  string `json:"occurred_at"`
+		}
+		if err := json.Unmarshal(env.Payload, &p); err != nil ||
+			strings.TrimSpace(p.ProductID) == "" ||
+			strings.TrimSpace(p.ShopID) == "" {
+			return nil, fmt.Errorf("%w: invalid product.reviewed payload", ErrMalformedPayload)
+		}
+		productID := strings.TrimSpace(p.ProductID)
+		shopID := strings.TrimSpace(p.ShopID)
+		productName := strings.TrimSpace(p.ProductName)
+		if productName == "" {
+			productName = productID
+		}
+		if env.OccurredAt == "" && strings.TrimSpace(p.OccurredAt) != "" {
+			if parsed, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(p.OccurredAt)); parseErr == nil {
+				now = parsed.UTC()
+			}
+		}
+		decision := strings.ToUpper(strings.TrimSpace(p.Decision))
+		reason := strings.TrimSpace(p.Reason)
+		var title, body, emailSubject string
+		switch decision {
+		case "APPROVE", "APPROVED":
+			title = fmt.Sprintf("Sản phẩm %s đã được duyệt", productName)
+			body = fmt.Sprintf("Sản phẩm %s đã được phê duyệt và sẵn sàng hiển thị trên NexusMart.", productName)
+			if reason != "" {
+				body += fmt.Sprintf(" Ghi chú: %s.", strings.TrimSuffix(reason, "."))
+			}
+			emailSubject = fmt.Sprintf("NexusMart - Sản phẩm %s đã được duyệt", productName)
+		case "REJECT", "REJECTED":
+			title = fmt.Sprintf("Sản phẩm %s bị từ chối duyệt", productName)
+			body = fmt.Sprintf("Sản phẩm %s chưa được phê duyệt.", productName)
+			if reason != "" {
+				body += fmt.Sprintf(" Lý do: %s.", strings.TrimSuffix(reason, "."))
+			}
+			body += " Vui lòng kiểm tra, chỉnh sửa thông tin sản phẩm và gửi duyệt lại."
+			emailSubject = fmt.Sprintf("NexusMart - Sản phẩm %s bị từ chối duyệt", productName)
+		default:
+			title = fmt.Sprintf("Cập nhật kiểm duyệt sản phẩm %s", productName)
+			body = fmt.Sprintf("Sản phẩm %s vừa có cập nhật trạng thái kiểm duyệt.", productName)
+			if reason != "" {
+				body += fmt.Sprintf(" Ghi chú: %s.", strings.TrimSuffix(reason, "."))
+			}
+			emailSubject = fmt.Sprintf("NexusMart - Cập nhật kiểm duyệt sản phẩm %s", productName)
+		}
+		return &eventPlan{
+			deliveries: []recipientDelivery{{
+				role:     "seller",
+				shopID:   shopID,
+				category: store.CategorySystem,
+				inApp: &store.Notification{
+					Category:  store.CategorySystem,
+					Title:     title,
+					Body:      body,
+					Link:      sellerProductLink(productID),
+					CreatedAt: now,
+				},
+				email: &mailer.Message{
+					Subject: emailSubject,
+					Body:    body + "\n",
+				},
+			}},
+		}, nil
+
+	case "promotion.voucher_expiring":
+		var p struct {
+			UserID    string `json:"user_id"`
+			VoucherID string `json:"voucher_id"`
+			Code      string `json:"code"`
+			EndsAt    string `json:"ends_at"`
+		}
+		if err := json.Unmarshal(env.Payload, &p); err != nil ||
+			strings.TrimSpace(p.UserID) == "" ||
+			strings.TrimSpace(p.VoucherID) == "" ||
+			strings.TrimSpace(p.Code) == "" {
+			return nil, fmt.Errorf("%w: invalid promotion.voucher_expiring payload", ErrMalformedPayload)
+		}
+		userID := strings.TrimSpace(p.UserID)
+		voucherID := strings.TrimSpace(p.VoucherID)
+		code := strings.TrimSpace(p.Code)
+		dedupKey := voucherExpiringDedupKey(userID, voucherID)
+		title := fmt.Sprintf("Voucher %s sắp hết hạn", code)
+		var body string
+		if endsAt := formatVietnamTime(p.EndsAt); endsAt != "" {
+			body = fmt.Sprintf("Mã giảm giá %s trong ví của bạn sẽ hết hạn vào %s. Hãy sử dụng trước khi ưu đãi kết thúc.", code, endsAt)
+		} else {
+			body = fmt.Sprintf("Mã giảm giá %s trong ví của bạn sắp hết hạn trong vòng 24 giờ tới. Hãy sử dụng trước khi ưu đãi kết thúc.", code)
+		}
+		return &eventPlan{
+			deliveries: []recipientDelivery{{
+				role:          "user",
+				userID:        userID,
+				category:      store.CategoryPromotion,
+				emailDedupKey: dedupKey,
+				inApp: &store.Notification{
+					Category:  store.CategoryPromotion,
+					Title:     title,
+					Body:      body,
+					Link:      "/tai-khoan?tab=voucher",
+					DedupKey:  dedupKey,
+					CreatedAt: now,
+				},
+				email: &mailer.Message{
+					Subject: fmt.Sprintf("NexusMart - Voucher %s sắp hết hạn", code),
 					Body:    body + "\n",
 				},
 			}},
@@ -1680,6 +1852,15 @@ func deliveredEmailDedupKey(orderID string) string {
 	return "order_delivered:" + orderID
 }
 
+func voucherExpiringDedupKey(userID, voucherID string) string {
+	userID = strings.TrimSpace(userID)
+	voucherID = strings.TrimSpace(voucherID)
+	if userID == "" || voucherID == "" {
+		return ""
+	}
+	return "voucher_expiring:" + userID + ":" + voucherID
+}
+
 func sentEmailDedupKey(eventID, userID string) string {
 	return "event_sent:" + strings.TrimSpace(eventID) + ":" + strings.TrimSpace(userID)
 }
@@ -1936,4 +2117,12 @@ func sellerOrderLink(orderID string) string {
 		return "/seller/don-hang"
 	}
 	return "/seller/don-hang/" + orderID
+}
+
+func sellerProductLink(productID string) string {
+	productID = strings.TrimSpace(productID)
+	if productID == "" {
+		return "/seller/san-pham"
+	}
+	return "/seller/san-pham/" + productID
 }

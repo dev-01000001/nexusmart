@@ -19,19 +19,29 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PromotionService_CreateVoucher_FullMethodName         = "/nexusmart.promotion.v1.PromotionService/CreateVoucher"
-	PromotionService_ListAvailableVouchers_FullMethodName = "/nexusmart.promotion.v1.PromotionService/ListAvailableVouchers"
-	PromotionService_SaveVoucher_FullMethodName           = "/nexusmart.promotion.v1.PromotionService/SaveVoucher"
-	PromotionService_CreateFlashSale_FullMethodName       = "/nexusmart.promotion.v1.PromotionService/CreateFlashSale"
-	PromotionService_RegisterFlashSaleItem_FullMethodName = "/nexusmart.promotion.v1.PromotionService/RegisterFlashSaleItem"
-	PromotionService_ApproveFlashSaleItem_FullMethodName  = "/nexusmart.promotion.v1.PromotionService/ApproveFlashSaleItem"
-	PromotionService_ListActiveFlashSales_FullMethodName  = "/nexusmart.promotion.v1.PromotionService/ListActiveFlashSales"
-	PromotionService_GetCoinBalance_FullMethodName        = "/nexusmart.promotion.v1.PromotionService/GetCoinBalance"
-	PromotionService_CreditCoins_FullMethodName           = "/nexusmart.promotion.v1.PromotionService/CreditCoins"
-	PromotionService_PreviewDiscounts_FullMethodName      = "/nexusmart.promotion.v1.PromotionService/PreviewDiscounts"
-	PromotionService_ReservePromotion_FullMethodName      = "/nexusmart.promotion.v1.PromotionService/ReservePromotion"
-	PromotionService_ReleasePromotion_FullMethodName      = "/nexusmart.promotion.v1.PromotionService/ReleasePromotion"
-	PromotionService_ReleasePromotionShop_FullMethodName  = "/nexusmart.promotion.v1.PromotionService/ReleasePromotionShop"
+	PromotionService_CreateVoucher_FullMethodName             = "/nexusmart.promotion.v1.PromotionService/CreateVoucher"
+	PromotionService_UpdateVoucher_FullMethodName             = "/nexusmart.promotion.v1.PromotionService/UpdateVoucher"
+	PromotionService_SetVoucherStatus_FullMethodName          = "/nexusmart.promotion.v1.PromotionService/SetVoucherStatus"
+	PromotionService_DeleteVoucher_FullMethodName             = "/nexusmart.promotion.v1.PromotionService/DeleteVoucher"
+	PromotionService_ListAvailableVouchers_FullMethodName     = "/nexusmart.promotion.v1.PromotionService/ListAvailableVouchers"
+	PromotionService_SaveVoucher_FullMethodName               = "/nexusmart.promotion.v1.PromotionService/SaveVoucher"
+	PromotionService_CreateFlashSale_FullMethodName           = "/nexusmart.promotion.v1.PromotionService/CreateFlashSale"
+	PromotionService_RegisterFlashSaleItem_FullMethodName     = "/nexusmart.promotion.v1.PromotionService/RegisterFlashSaleItem"
+	PromotionService_ApproveFlashSaleItem_FullMethodName      = "/nexusmart.promotion.v1.PromotionService/ApproveFlashSaleItem"
+	PromotionService_ListActiveFlashSales_FullMethodName      = "/nexusmart.promotion.v1.PromotionService/ListActiveFlashSales"
+	PromotionService_ListFlashSaleItems_FullMethodName        = "/nexusmart.promotion.v1.PromotionService/ListFlashSaleItems"
+	PromotionService_ListAllFlashSales_FullMethodName         = "/nexusmart.promotion.v1.PromotionService/ListAllFlashSales"
+	PromotionService_CreateShopDiscountProgram_FullMethodName = "/nexusmart.promotion.v1.PromotionService/CreateShopDiscountProgram"
+	PromotionService_UpdateShopDiscountProgram_FullMethodName = "/nexusmart.promotion.v1.PromotionService/UpdateShopDiscountProgram"
+	PromotionService_EndShopDiscountProgram_FullMethodName    = "/nexusmart.promotion.v1.PromotionService/EndShopDiscountProgram"
+	PromotionService_ListShopDiscountPrograms_FullMethodName  = "/nexusmart.promotion.v1.PromotionService/ListShopDiscountPrograms"
+	PromotionService_ListActiveShopDiscounts_FullMethodName   = "/nexusmart.promotion.v1.PromotionService/ListActiveShopDiscounts"
+	PromotionService_GetCoinBalance_FullMethodName            = "/nexusmart.promotion.v1.PromotionService/GetCoinBalance"
+	PromotionService_CreditCoins_FullMethodName               = "/nexusmart.promotion.v1.PromotionService/CreditCoins"
+	PromotionService_PreviewDiscounts_FullMethodName          = "/nexusmart.promotion.v1.PromotionService/PreviewDiscounts"
+	PromotionService_ReservePromotion_FullMethodName          = "/nexusmart.promotion.v1.PromotionService/ReservePromotion"
+	PromotionService_ReleasePromotion_FullMethodName          = "/nexusmart.promotion.v1.PromotionService/ReleasePromotion"
+	PromotionService_ReleasePromotionShop_FullMethodName      = "/nexusmart.promotion.v1.PromotionService/ReleasePromotionShop"
 )
 
 // PromotionServiceClient is the client API for PromotionService service.
@@ -39,12 +49,22 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type PromotionServiceClient interface {
 	CreateVoucher(ctx context.Context, in *CreateVoucherRequest, opts ...grpc.CallOption) (*CreateVoucherResponse, error)
+	UpdateVoucher(ctx context.Context, in *UpdateVoucherRequest, opts ...grpc.CallOption) (*UpdateVoucherResponse, error)
+	SetVoucherStatus(ctx context.Context, in *SetVoucherStatusRequest, opts ...grpc.CallOption) (*SetVoucherStatusResponse, error)
+	DeleteVoucher(ctx context.Context, in *DeleteVoucherRequest, opts ...grpc.CallOption) (*DeleteVoucherResponse, error)
 	ListAvailableVouchers(ctx context.Context, in *ListAvailableVouchersRequest, opts ...grpc.CallOption) (*ListAvailableVouchersResponse, error)
 	SaveVoucher(ctx context.Context, in *SaveVoucherRequest, opts ...grpc.CallOption) (*SaveVoucherResponse, error)
 	CreateFlashSale(ctx context.Context, in *CreateFlashSaleRequest, opts ...grpc.CallOption) (*CreateFlashSaleResponse, error)
 	RegisterFlashSaleItem(ctx context.Context, in *RegisterFlashSaleItemRequest, opts ...grpc.CallOption) (*RegisterFlashSaleItemResponse, error)
 	ApproveFlashSaleItem(ctx context.Context, in *ApproveFlashSaleItemRequest, opts ...grpc.CallOption) (*ApproveFlashSaleItemResponse, error)
 	ListActiveFlashSales(ctx context.Context, in *ListActiveFlashSalesRequest, opts ...grpc.CallOption) (*ListActiveFlashSalesResponse, error)
+	ListFlashSaleItems(ctx context.Context, in *ListFlashSaleItemsRequest, opts ...grpc.CallOption) (*ListFlashSaleItemsResponse, error)
+	ListAllFlashSales(ctx context.Context, in *ListAllFlashSalesRequest, opts ...grpc.CallOption) (*ListAllFlashSalesResponse, error)
+	CreateShopDiscountProgram(ctx context.Context, in *CreateShopDiscountProgramRequest, opts ...grpc.CallOption) (*CreateShopDiscountProgramResponse, error)
+	UpdateShopDiscountProgram(ctx context.Context, in *UpdateShopDiscountProgramRequest, opts ...grpc.CallOption) (*UpdateShopDiscountProgramResponse, error)
+	EndShopDiscountProgram(ctx context.Context, in *EndShopDiscountProgramRequest, opts ...grpc.CallOption) (*EndShopDiscountProgramResponse, error)
+	ListShopDiscountPrograms(ctx context.Context, in *ListShopDiscountProgramsRequest, opts ...grpc.CallOption) (*ListShopDiscountProgramsResponse, error)
+	ListActiveShopDiscounts(ctx context.Context, in *ListActiveShopDiscountsRequest, opts ...grpc.CallOption) (*ListActiveShopDiscountsResponse, error)
 	GetCoinBalance(ctx context.Context, in *GetCoinBalanceRequest, opts ...grpc.CallOption) (*GetCoinBalanceResponse, error)
 	CreditCoins(ctx context.Context, in *CreditCoinsRequest, opts ...grpc.CallOption) (*CreditCoinsResponse, error)
 	PreviewDiscounts(ctx context.Context, in *PreviewDiscountsRequest, opts ...grpc.CallOption) (*PreviewDiscountsResponse, error)
@@ -65,6 +85,36 @@ func (c *promotionServiceClient) CreateVoucher(ctx context.Context, in *CreateVo
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateVoucherResponse)
 	err := c.cc.Invoke(ctx, PromotionService_CreateVoucher_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *promotionServiceClient) UpdateVoucher(ctx context.Context, in *UpdateVoucherRequest, opts ...grpc.CallOption) (*UpdateVoucherResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateVoucherResponse)
+	err := c.cc.Invoke(ctx, PromotionService_UpdateVoucher_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *promotionServiceClient) SetVoucherStatus(ctx context.Context, in *SetVoucherStatusRequest, opts ...grpc.CallOption) (*SetVoucherStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetVoucherStatusResponse)
+	err := c.cc.Invoke(ctx, PromotionService_SetVoucherStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *promotionServiceClient) DeleteVoucher(ctx context.Context, in *DeleteVoucherRequest, opts ...grpc.CallOption) (*DeleteVoucherResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteVoucherResponse)
+	err := c.cc.Invoke(ctx, PromotionService_DeleteVoucher_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +175,76 @@ func (c *promotionServiceClient) ListActiveFlashSales(ctx context.Context, in *L
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListActiveFlashSalesResponse)
 	err := c.cc.Invoke(ctx, PromotionService_ListActiveFlashSales_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *promotionServiceClient) ListFlashSaleItems(ctx context.Context, in *ListFlashSaleItemsRequest, opts ...grpc.CallOption) (*ListFlashSaleItemsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListFlashSaleItemsResponse)
+	err := c.cc.Invoke(ctx, PromotionService_ListFlashSaleItems_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *promotionServiceClient) ListAllFlashSales(ctx context.Context, in *ListAllFlashSalesRequest, opts ...grpc.CallOption) (*ListAllFlashSalesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAllFlashSalesResponse)
+	err := c.cc.Invoke(ctx, PromotionService_ListAllFlashSales_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *promotionServiceClient) CreateShopDiscountProgram(ctx context.Context, in *CreateShopDiscountProgramRequest, opts ...grpc.CallOption) (*CreateShopDiscountProgramResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateShopDiscountProgramResponse)
+	err := c.cc.Invoke(ctx, PromotionService_CreateShopDiscountProgram_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *promotionServiceClient) UpdateShopDiscountProgram(ctx context.Context, in *UpdateShopDiscountProgramRequest, opts ...grpc.CallOption) (*UpdateShopDiscountProgramResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateShopDiscountProgramResponse)
+	err := c.cc.Invoke(ctx, PromotionService_UpdateShopDiscountProgram_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *promotionServiceClient) EndShopDiscountProgram(ctx context.Context, in *EndShopDiscountProgramRequest, opts ...grpc.CallOption) (*EndShopDiscountProgramResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EndShopDiscountProgramResponse)
+	err := c.cc.Invoke(ctx, PromotionService_EndShopDiscountProgram_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *promotionServiceClient) ListShopDiscountPrograms(ctx context.Context, in *ListShopDiscountProgramsRequest, opts ...grpc.CallOption) (*ListShopDiscountProgramsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListShopDiscountProgramsResponse)
+	err := c.cc.Invoke(ctx, PromotionService_ListShopDiscountPrograms_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *promotionServiceClient) ListActiveShopDiscounts(ctx context.Context, in *ListActiveShopDiscountsRequest, opts ...grpc.CallOption) (*ListActiveShopDiscountsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListActiveShopDiscountsResponse)
+	err := c.cc.Invoke(ctx, PromotionService_ListActiveShopDiscounts_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -196,12 +316,22 @@ func (c *promotionServiceClient) ReleasePromotionShop(ctx context.Context, in *R
 // for forward compatibility.
 type PromotionServiceServer interface {
 	CreateVoucher(context.Context, *CreateVoucherRequest) (*CreateVoucherResponse, error)
+	UpdateVoucher(context.Context, *UpdateVoucherRequest) (*UpdateVoucherResponse, error)
+	SetVoucherStatus(context.Context, *SetVoucherStatusRequest) (*SetVoucherStatusResponse, error)
+	DeleteVoucher(context.Context, *DeleteVoucherRequest) (*DeleteVoucherResponse, error)
 	ListAvailableVouchers(context.Context, *ListAvailableVouchersRequest) (*ListAvailableVouchersResponse, error)
 	SaveVoucher(context.Context, *SaveVoucherRequest) (*SaveVoucherResponse, error)
 	CreateFlashSale(context.Context, *CreateFlashSaleRequest) (*CreateFlashSaleResponse, error)
 	RegisterFlashSaleItem(context.Context, *RegisterFlashSaleItemRequest) (*RegisterFlashSaleItemResponse, error)
 	ApproveFlashSaleItem(context.Context, *ApproveFlashSaleItemRequest) (*ApproveFlashSaleItemResponse, error)
 	ListActiveFlashSales(context.Context, *ListActiveFlashSalesRequest) (*ListActiveFlashSalesResponse, error)
+	ListFlashSaleItems(context.Context, *ListFlashSaleItemsRequest) (*ListFlashSaleItemsResponse, error)
+	ListAllFlashSales(context.Context, *ListAllFlashSalesRequest) (*ListAllFlashSalesResponse, error)
+	CreateShopDiscountProgram(context.Context, *CreateShopDiscountProgramRequest) (*CreateShopDiscountProgramResponse, error)
+	UpdateShopDiscountProgram(context.Context, *UpdateShopDiscountProgramRequest) (*UpdateShopDiscountProgramResponse, error)
+	EndShopDiscountProgram(context.Context, *EndShopDiscountProgramRequest) (*EndShopDiscountProgramResponse, error)
+	ListShopDiscountPrograms(context.Context, *ListShopDiscountProgramsRequest) (*ListShopDiscountProgramsResponse, error)
+	ListActiveShopDiscounts(context.Context, *ListActiveShopDiscountsRequest) (*ListActiveShopDiscountsResponse, error)
 	GetCoinBalance(context.Context, *GetCoinBalanceRequest) (*GetCoinBalanceResponse, error)
 	CreditCoins(context.Context, *CreditCoinsRequest) (*CreditCoinsResponse, error)
 	PreviewDiscounts(context.Context, *PreviewDiscountsRequest) (*PreviewDiscountsResponse, error)
@@ -221,6 +351,15 @@ type UnimplementedPromotionServiceServer struct{}
 func (UnimplementedPromotionServiceServer) CreateVoucher(context.Context, *CreateVoucherRequest) (*CreateVoucherResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateVoucher not implemented")
 }
+func (UnimplementedPromotionServiceServer) UpdateVoucher(context.Context, *UpdateVoucherRequest) (*UpdateVoucherResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateVoucher not implemented")
+}
+func (UnimplementedPromotionServiceServer) SetVoucherStatus(context.Context, *SetVoucherStatusRequest) (*SetVoucherStatusResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetVoucherStatus not implemented")
+}
+func (UnimplementedPromotionServiceServer) DeleteVoucher(context.Context, *DeleteVoucherRequest) (*DeleteVoucherResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteVoucher not implemented")
+}
 func (UnimplementedPromotionServiceServer) ListAvailableVouchers(context.Context, *ListAvailableVouchersRequest) (*ListAvailableVouchersResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListAvailableVouchers not implemented")
 }
@@ -238,6 +377,27 @@ func (UnimplementedPromotionServiceServer) ApproveFlashSaleItem(context.Context,
 }
 func (UnimplementedPromotionServiceServer) ListActiveFlashSales(context.Context, *ListActiveFlashSalesRequest) (*ListActiveFlashSalesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListActiveFlashSales not implemented")
+}
+func (UnimplementedPromotionServiceServer) ListFlashSaleItems(context.Context, *ListFlashSaleItemsRequest) (*ListFlashSaleItemsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListFlashSaleItems not implemented")
+}
+func (UnimplementedPromotionServiceServer) ListAllFlashSales(context.Context, *ListAllFlashSalesRequest) (*ListAllFlashSalesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListAllFlashSales not implemented")
+}
+func (UnimplementedPromotionServiceServer) CreateShopDiscountProgram(context.Context, *CreateShopDiscountProgramRequest) (*CreateShopDiscountProgramResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateShopDiscountProgram not implemented")
+}
+func (UnimplementedPromotionServiceServer) UpdateShopDiscountProgram(context.Context, *UpdateShopDiscountProgramRequest) (*UpdateShopDiscountProgramResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateShopDiscountProgram not implemented")
+}
+func (UnimplementedPromotionServiceServer) EndShopDiscountProgram(context.Context, *EndShopDiscountProgramRequest) (*EndShopDiscountProgramResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method EndShopDiscountProgram not implemented")
+}
+func (UnimplementedPromotionServiceServer) ListShopDiscountPrograms(context.Context, *ListShopDiscountProgramsRequest) (*ListShopDiscountProgramsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListShopDiscountPrograms not implemented")
+}
+func (UnimplementedPromotionServiceServer) ListActiveShopDiscounts(context.Context, *ListActiveShopDiscountsRequest) (*ListActiveShopDiscountsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListActiveShopDiscounts not implemented")
 }
 func (UnimplementedPromotionServiceServer) GetCoinBalance(context.Context, *GetCoinBalanceRequest) (*GetCoinBalanceResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetCoinBalance not implemented")
@@ -292,6 +452,60 @@ func _PromotionService_CreateVoucher_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(PromotionServiceServer).CreateVoucher(ctx, req.(*CreateVoucherRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PromotionService_UpdateVoucher_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateVoucherRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromotionServiceServer).UpdateVoucher(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromotionService_UpdateVoucher_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromotionServiceServer).UpdateVoucher(ctx, req.(*UpdateVoucherRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PromotionService_SetVoucherStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetVoucherStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromotionServiceServer).SetVoucherStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromotionService_SetVoucherStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromotionServiceServer).SetVoucherStatus(ctx, req.(*SetVoucherStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PromotionService_DeleteVoucher_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteVoucherRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromotionServiceServer).DeleteVoucher(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromotionService_DeleteVoucher_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromotionServiceServer).DeleteVoucher(ctx, req.(*DeleteVoucherRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -400,6 +614,132 @@ func _PromotionService_ListActiveFlashSales_Handler(srv interface{}, ctx context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(PromotionServiceServer).ListActiveFlashSales(ctx, req.(*ListActiveFlashSalesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PromotionService_ListFlashSaleItems_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListFlashSaleItemsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromotionServiceServer).ListFlashSaleItems(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromotionService_ListFlashSaleItems_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromotionServiceServer).ListFlashSaleItems(ctx, req.(*ListFlashSaleItemsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PromotionService_ListAllFlashSales_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAllFlashSalesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromotionServiceServer).ListAllFlashSales(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromotionService_ListAllFlashSales_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromotionServiceServer).ListAllFlashSales(ctx, req.(*ListAllFlashSalesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PromotionService_CreateShopDiscountProgram_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateShopDiscountProgramRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromotionServiceServer).CreateShopDiscountProgram(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromotionService_CreateShopDiscountProgram_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromotionServiceServer).CreateShopDiscountProgram(ctx, req.(*CreateShopDiscountProgramRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PromotionService_UpdateShopDiscountProgram_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateShopDiscountProgramRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromotionServiceServer).UpdateShopDiscountProgram(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromotionService_UpdateShopDiscountProgram_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromotionServiceServer).UpdateShopDiscountProgram(ctx, req.(*UpdateShopDiscountProgramRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PromotionService_EndShopDiscountProgram_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EndShopDiscountProgramRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromotionServiceServer).EndShopDiscountProgram(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromotionService_EndShopDiscountProgram_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromotionServiceServer).EndShopDiscountProgram(ctx, req.(*EndShopDiscountProgramRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PromotionService_ListShopDiscountPrograms_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListShopDiscountProgramsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromotionServiceServer).ListShopDiscountPrograms(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromotionService_ListShopDiscountPrograms_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromotionServiceServer).ListShopDiscountPrograms(ctx, req.(*ListShopDiscountProgramsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PromotionService_ListActiveShopDiscounts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListActiveShopDiscountsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromotionServiceServer).ListActiveShopDiscounts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromotionService_ListActiveShopDiscounts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromotionServiceServer).ListActiveShopDiscounts(ctx, req.(*ListActiveShopDiscountsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -524,6 +864,18 @@ var PromotionService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _PromotionService_CreateVoucher_Handler,
 		},
 		{
+			MethodName: "UpdateVoucher",
+			Handler:    _PromotionService_UpdateVoucher_Handler,
+		},
+		{
+			MethodName: "SetVoucherStatus",
+			Handler:    _PromotionService_SetVoucherStatus_Handler,
+		},
+		{
+			MethodName: "DeleteVoucher",
+			Handler:    _PromotionService_DeleteVoucher_Handler,
+		},
+		{
 			MethodName: "ListAvailableVouchers",
 			Handler:    _PromotionService_ListAvailableVouchers_Handler,
 		},
@@ -546,6 +898,34 @@ var PromotionService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListActiveFlashSales",
 			Handler:    _PromotionService_ListActiveFlashSales_Handler,
+		},
+		{
+			MethodName: "ListFlashSaleItems",
+			Handler:    _PromotionService_ListFlashSaleItems_Handler,
+		},
+		{
+			MethodName: "ListAllFlashSales",
+			Handler:    _PromotionService_ListAllFlashSales_Handler,
+		},
+		{
+			MethodName: "CreateShopDiscountProgram",
+			Handler:    _PromotionService_CreateShopDiscountProgram_Handler,
+		},
+		{
+			MethodName: "UpdateShopDiscountProgram",
+			Handler:    _PromotionService_UpdateShopDiscountProgram_Handler,
+		},
+		{
+			MethodName: "EndShopDiscountProgram",
+			Handler:    _PromotionService_EndShopDiscountProgram_Handler,
+		},
+		{
+			MethodName: "ListShopDiscountPrograms",
+			Handler:    _PromotionService_ListShopDiscountPrograms_Handler,
+		},
+		{
+			MethodName: "ListActiveShopDiscounts",
+			Handler:    _PromotionService_ListActiveShopDiscounts_Handler,
 		},
 		{
 			MethodName: "GetCoinBalance",

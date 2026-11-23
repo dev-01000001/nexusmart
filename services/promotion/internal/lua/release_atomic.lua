@@ -1,5 +1,6 @@
 -- release_atomic.lua
 -- Strictly idempotent atomic compensation for a reserved promotion by order_id.
+-- Backward-compatible with legacy reservations containing only F| and V| lines.
 --
 -- KEYS[1] = promo:res:<order_id>
 -- ARGV[1] = ttl_seconds for RELEASED tombstone (0 = no TTL)
@@ -8,7 +9,15 @@ local resKey = KEYS[1]
 local ttlSeconds = tonumber(ARGV[1]) or 0
 
 local val = redis.call("GET", resKey)
-if not val or val == "RELEASED" then
+if not val then
+  if ttlSeconds and ttlSeconds > 0 then
+    redis.call("SET", resKey, "RELEASED", "EX", ttlSeconds)
+  else
+    redis.call("SET", resKey, "RELEASED")
+  end
+  return {"ALREADY_RELEASED"}
+end
+if val == "RELEASED" then
   return {"ALREADY_RELEASED"}
 end
 
@@ -50,6 +59,15 @@ for line in string.gmatch(val, "[^\n]+") do
       end
       if hasBudget == 1 and discountVND > 0 then
         redis.call("INCRBY", budgetKey, discountVND)
+      end
+    elseif parts[1] == "P" and #parts >= 3 then
+      local userKey = parts[2]
+      local qty = tonumber(parts[3]) or 0
+      if qty > 0 then
+        local newUsed = redis.call("DECRBY", userKey, qty)
+        if newUsed <= 0 then
+          redis.call("DEL", userKey)
+        end
       end
     end
   end

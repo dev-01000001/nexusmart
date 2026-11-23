@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -91,6 +92,80 @@ type reconciliationItemDTO struct {
 	Note              string `json:"note"`
 }
 
+type sellerLedgerEntryDTO struct {
+	ID            string `json:"id"`
+	TransactionID string `json:"transaction_id"`
+	AccountCode   string `json:"account_code"`
+	ReferenceType string `json:"reference_type"`
+	ReferenceID   string `json:"reference_id"`
+	Description   string `json:"description"`
+	DebitVND      int64  `json:"debit_vnd"`
+	CreditVND     int64  `json:"credit_vnd"`
+	DeltaVND      int64  `json:"delta_vnd"`
+	CreatedAt     string `json:"created_at,omitempty"`
+}
+
+type paymentFeeConfigDTO struct {
+	ID            string `json:"id"`
+	PaymentMethod string `json:"payment_method"`
+	FeeBps        int32  `json:"fee_bps"`
+	EffectiveFrom string `json:"effective_from,omitempty"`
+	CreatedBy     string `json:"created_by"`
+	Note          string `json:"note"`
+	CreatedAt     string `json:"created_at,omitempty"`
+}
+
+func mapPaymentFeeConfig(c *paymentv1.PaymentFeeConfigItem) *paymentFeeConfigDTO {
+	if c == nil {
+		return nil
+	}
+	return &paymentFeeConfigDTO{
+		ID:            c.GetId(),
+		PaymentMethod: paymentMethodString(c.GetPaymentMethod()),
+		FeeBps:        c.GetFeeBps(),
+		EffectiveFrom: httpx.FormatTimestamp(c.GetEffectiveFrom()),
+		CreatedBy:     c.GetCreatedBy(),
+		Note:          c.GetNote(),
+		CreatedAt:     httpx.FormatTimestamp(c.GetCreatedAt()),
+	}
+}
+
+func parsePaymentMethod(s string) paymentv1.PaymentMethod {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "COD", "PAYMENT_METHOD_COD":
+		return paymentv1.PaymentMethod_PAYMENT_METHOD_COD
+	case "VIETQR", "PAYMENT_METHOD_VIETQR":
+		return paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR
+	default:
+		return paymentv1.PaymentMethod_PAYMENT_METHOD_UNSPECIFIED
+	}
+}
+
+func paymentHasShopAllocation(p *paymentv1.Payment, shopID string) bool {
+	if p == nil || shopID == "" {
+		return false
+	}
+	for _, a := range p.GetShopAllocations() {
+		if a.GetShopId() == shopID {
+			return true
+		}
+	}
+	return false
+}
+
+func canAccessPayment(claims *auth.Claims, p *paymentv1.Payment) bool {
+	if auth.HasRole(claims, "admin", "super_admin") {
+		return true
+	}
+	if claims == nil || p == nil || strings.TrimSpace(p.GetUserId()) == "" {
+		return false
+	}
+	if p.GetUserId() == claims.UserID() {
+		return true
+	}
+	return auth.HasRole(claims, "seller") && claims.ShopID != "" && paymentHasShopAllocation(p, claims.ShopID)
+}
+
 func mapPayment(p *paymentv1.Payment) *paymentDTO {
 	if p == nil {
 		return nil
@@ -123,6 +198,45 @@ func mapPayment(p *paymentv1.Payment) *paymentDTO {
 		CreatedAt:       httpx.FormatTimestamp(p.GetCreatedAt()),
 		UpdatedAt:       httpx.FormatTimestamp(p.GetUpdatedAt()),
 	}
+}
+
+// mapPaymentForCaller enforces role-scoped allocation and payment-credential privacy as
+// defense-in-depth: admins see full details; buyers see their payment allocations with
+// commission_vnd zeroed; non-buyer sellers see only their own shop's allocation with
+// qr_url, qr_code, and provider_ref cleared.
+func mapPaymentForCaller(ctx context.Context, p *paymentv1.Payment) *paymentDTO {
+	dto := mapPayment(p)
+	if dto == nil {
+		return nil
+	}
+	claims, _ := auth.ClaimsFromContext(ctx)
+	if auth.HasRole(claims, "admin", "super_admin") {
+		return dto
+	}
+	if claims != nil && claims.UserID() != "" && p.GetUserId() == claims.UserID() {
+		for _, a := range dto.ShopAllocations {
+			a.CommissionVND = 0
+		}
+		return dto
+	}
+	if auth.HasRole(claims, "seller") && claims.ShopID != "" {
+		filtered := make([]*shopAllocationDTO, 0, len(dto.ShopAllocations))
+		for _, a := range dto.ShopAllocations {
+			if a.ShopID == claims.ShopID {
+				filtered = append(filtered, a)
+			}
+		}
+		dto.ShopAllocations = filtered
+		dto.QRURL = ""
+		dto.QRCode = ""
+		dto.ProviderRef = ""
+		return dto
+	}
+	dto.ShopAllocations = []*shopAllocationDTO{}
+	dto.QRURL = ""
+	dto.QRCode = ""
+	dto.ProviderRef = ""
+	return dto
 }
 
 func mapRefund(rf *paymentv1.Refund, includeFullBankAccount bool) *refundDTO {
@@ -272,14 +386,12 @@ func (h *handler) handleGetPayment(w http.ResponseWriter, r *http.Request) {
 
 	claims, _ := auth.ClaimsFromContext(r.Context())
 	payment := resp.GetPayment()
-	if payment != nil && payment.GetUserId() != "" &&
-		!auth.HasRole(claims, "admin", "super_admin") &&
-		payment.GetUserId() != claims.UserID() {
+	if !canAccessPayment(claims, payment) {
 		httpx.WriteError(w, r, http.StatusForbidden, "PERMISSION_DENIED", "cannot access another user's payment")
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"payment": mapPayment(payment)})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"payment": mapPaymentForCaller(r.Context(), payment)})
 }
 
 func (h *handler) handleRetryPayment(w http.ResponseWriter, r *http.Request) {
@@ -333,7 +445,7 @@ func (h *handler) handleRetryPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"payment": mapPayment(getResp.GetPayment())})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"payment": mapPaymentForCaller(r.Context(), getResp.GetPayment())})
 }
 
 func (h *handler) handleSellerBalance(w http.ResponseWriter, r *http.Request) {
@@ -390,11 +502,15 @@ func (h *handler) handleAdminRefundPayment(w http.ResponseWriter, r *http.Reques
 	}
 	var body struct {
 		OrderID   string `json:"order_id"`
-		AmountVND int64  `json:"amount_vnd"`
+		AmountVND *int64 `json:"amount_vnd"`
 		Reason    string `json:"reason"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	if body.AmountVND == nil || *body.AmountVND <= 0 {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "amount_vnd is required and must be > 0")
 		return
 	}
 
@@ -404,7 +520,7 @@ func (h *handler) handleAdminRefundPayment(w http.ResponseWriter, r *http.Reques
 	resp, err := h.clients.Payment.CreateRefund(ctx, &paymentv1.CreateRefundRequest{
 		PaymentId:      chi.URLParam(r, "id"),
 		OrderId:        body.OrderID,
-		AmountVnd:      body.AmountVND,
+		AmountVnd:      *body.AmountVND,
 		Reason:         body.Reason,
 		IdempotencyKey: idemKey,
 	})
@@ -658,5 +774,127 @@ func (h *handler) handleAdminResolveReconciliationItem(w http.ResponseWriter, r 
 		"item":             mapReconciliationQueueItem(resp.GetItem()),
 		"refund":           mapRefund(resp.GetRefund(), true),
 		"already_resolved": resp.GetAlreadyResolved(),
+	})
+}
+
+func (h *handler) handleSellerLedger(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := httpx.ParsePagination(r)
+	q := r.URL.Query()
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	// Always enforce shop_id from verified seller claims.
+	resp, err := h.clients.Payment.ListSellerLedger(ctx, &paymentv1.ListSellerLedgerRequest{
+		ShopId:        auth.ShopIDFromContext(r.Context()),
+		AccountFilter: strings.TrimSpace(q.Get("account_filter")),
+		ReferenceType: strings.TrimSpace(q.Get("reference_type")),
+		Page:          page,
+		PageSize:      pageSize,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	items := make([]*sellerLedgerEntryDTO, 0, len(resp.GetEntries()))
+	for _, e := range resp.GetEntries() {
+		items = append(items, &sellerLedgerEntryDTO{
+			ID:            e.GetId(),
+			TransactionID: e.GetTransactionId(),
+			AccountCode:   e.GetAccountCode(),
+			ReferenceType: e.GetReferenceType(),
+			ReferenceID:   e.GetReferenceId(),
+			Description:   e.GetDescription(),
+			DebitVND:      e.GetDebitVnd(),
+			CreditVND:     e.GetCreditVnd(),
+			DeltaVND:      e.GetDeltaVnd(),
+			CreatedAt:     httpx.FormatTimestamp(e.GetCreatedAt()),
+		})
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"page":      page,
+		"page_size": pageSize,
+		"total":     resp.GetTotal(),
+	})
+}
+
+func (h *handler) handleAdminGetPaymentFeeConfig(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	rawMethod := strings.TrimSpace(q.Get("payment_method"))
+	pm := parsePaymentMethod(rawMethod)
+	if rawMethod != "" && pm == paymentv1.PaymentMethod_PAYMENT_METHOD_UNSPECIFIED {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "payment_method must be COD or VIETQR")
+		return
+	}
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Payment.GetFeeConfig(ctx, &paymentv1.GetFeeConfigRequest{
+		PaymentMethod:  pm,
+		IncludeHistory: httpx.ParseBoolQuery(r, "include_history"),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	active := make([]*paymentFeeConfigDTO, 0, len(resp.GetActiveConfigs()))
+	for _, c := range resp.GetActiveConfigs() {
+		active = append(active, mapPaymentFeeConfig(c))
+	}
+	history := make([]*paymentFeeConfigDTO, 0, len(resp.GetHistory()))
+	for _, c := range resp.GetHistory() {
+		history = append(history, mapPaymentFeeConfig(c))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"active_configs": active,
+		"history":        history,
+	})
+}
+
+func (h *handler) handleAdminSetPaymentFeeConfig(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		PaymentMethod string `json:"payment_method"`
+		FeeBps        *int32 `json:"fee_bps"`
+		EffectiveFrom string `json:"effective_from"`
+		Note          string `json:"note"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	pm := parsePaymentMethod(body.PaymentMethod)
+	if pm == paymentv1.PaymentMethod_PAYMENT_METHOD_UNSPECIFIED {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "payment_method must be COD or VIETQR")
+		return
+	}
+	if body.FeeBps == nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "fee_bps is required")
+		return
+	}
+	if *body.FeeBps < 0 {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "fee_bps must be non-negative")
+		return
+	}
+	effFrom, err := httpx.ParseTimestamp(body.EffectiveFrom)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid effective_from timestamp")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Payment.SetFeeConfig(ctx, &paymentv1.SetFeeConfigRequest{
+		PaymentMethod: pm,
+		FeeBps:        *body.FeeBps,
+		EffectiveFrom: effFrom,
+		Note:          body.Note,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+		"config": mapPaymentFeeConfig(resp.GetConfig()),
 	})
 }

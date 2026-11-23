@@ -54,26 +54,6 @@ type ProductWithOnModel = (Product | CatalogProduct) & {
   onModelImage?: string;
 };
 
-/**
- * Deterministic sample rating fallback for editorial products without explicit
- * rows in SAMPLE_REVIEWS (listed as sample UI data in DESIGN_REPORT.md).
- */
-function getFallbackSampleRating(product: Product | CatalogProduct): {
-  average: number;
-  count: number;
-} {
-  const key = isCatalogProduct(product) ? (product.editorialProductId ?? product.slug) : product.id;
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) {
-    hash = (hash * 31 + key.charCodeAt(i)) % 997;
-  }
-  const averages = [4.7, 4.8, 4.9, 4.8, 4.7, 4.9];
-  const average = averages[hash % averages.length];
-  const rankBoost = product.salesRank ? Math.max(0, 18 - product.salesRank) : 4;
-  const count = 12 + (hash % 19) + rankBoost;
-  return { average, count };
-}
-
 function getCurrentReturnPath(fallbackPathname: string): string {
   if (typeof window !== "undefined") {
     return `${window.location.pathname}${window.location.search}`;
@@ -140,6 +120,10 @@ export function ProductCard({
     candidateHoverImage && candidateHoverImage !== displayImage ? candidateHoverImage : null;
 
   const displayPrice = overridePrice ?? product.price;
+  const displayMaxPrice =
+    overridePrice == null && catalogProduct && catalogProduct.maxPriceVnd > displayPrice
+      ? catalogProduct.maxPriceVnd
+      : undefined;
   const displayOriginal = overrideOriginalPrice ?? product.originalPrice;
   const hasDiscount = displayOriginal != null && displayOriginal > displayPrice;
   const discountLabel = hasDiscount ? formatDiscountPercent(displayOriginal, displayPrice) : null;
@@ -151,22 +135,21 @@ export function ProductCard({
   const isDirectFlashCheckout = Boolean(isFlashSaleItem && flashSaleItemId && flashSaleSkuId);
 
   const ratingInfo = useMemo(() => {
-    const editorialId = catalogProduct?.editorialProductId;
+    // Only show real reviews submitted for this product — never fabricate sample ratings on real catalog cards.
+    if (catalogProduct) {
+      const realSummary = computeReviewSummary(
+        reviews.filter((r) => !r.isSampleData),
+        product.id
+      );
+      return realSummary.count > 0
+        ? { average: realSummary.average, count: realSummary.count }
+        : null;
+    }
     const realSummary = computeReviewSummary(reviews, product.id);
-    if (realSummary.count > 0) {
-      return { average: realSummary.average, count: realSummary.count };
-    }
-    if (editorialId && editorialId !== product.id) {
-      const edSummary = computeReviewSummary(reviews, editorialId);
-      if (edSummary.count > 0) {
-        return { average: edSummary.average, count: edSummary.count };
-      }
-    }
-    if (catalogProduct && !catalogProduct.hasEditorialContent) {
-      return null;
-    }
-    return getFallbackSampleRating(product);
-  }, [reviews, product, catalogProduct]);
+    return realSummary.count > 0
+      ? { average: realSummary.average, count: realSummary.count }
+      : null;
+  }, [reviews, product.id, catalogProduct]);
 
   const productHref =
     activeColor && activeColor.code !== product.colors[0]?.code
@@ -309,7 +292,16 @@ export function ProductCard({
           <button
             type="button"
             className={`${styles.wishlistBtn} ${wishlisted ? styles.wishlistActive : ""}`}
-            onClick={() => toggleWishlist(product.id)}
+            onClick={() =>
+              toggleWishlist(product.id, undefined, {
+                name: product.name,
+                slug: product.slug,
+                price: product.price,
+                originalPrice: product.originalPrice,
+                image: product.image,
+                shopName: resolvedShopLabel,
+              })
+            }
             aria-label={
               wishlisted
                 ? `Bỏ ${product.shortName} khỏi yêu thích`
@@ -462,6 +454,7 @@ export function ProductCard({
         <div className={styles.footerRow}>
           <Price
             amount={displayPrice}
+            maxAmount={displayMaxPrice}
             originalAmount={displayOriginal}
             size="sm"
             showDiscount={false}

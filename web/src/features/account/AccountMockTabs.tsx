@@ -6,7 +6,6 @@
 import React, { useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { REFERRAL_CONFIG, SAMPLE_DATA_NOTICE, SHOPS, getProductById, getShopById } from "@/data";
 import { MODEL_SHOTS } from "@/data/media";
 import { BODY_SHAPE_LABELS, recommendSize, type BodyShape, type FitPreference } from "@/lib/sizing";
@@ -23,7 +22,6 @@ const FIT_PREF_LABELS: Record<FitPreference, string> = {
 };
 
 export function AccountMockOverviewPanels() {
-  const router = useRouter();
   const { membership, membershipTier, updateBirthday, claimBirthdayGift, showToast } =
     useMockStore();
   const [birthdayDraft, setBirthdayDraft] = useState(membership.birthday || "1996-11-24");
@@ -31,9 +29,9 @@ export function AccountMockOverviewPanels() {
   const handleCopyVipCode = async () => {
     try {
       await navigator.clipboard.writeText("NEXUSVIP12");
-      showToast("Đã sao chép mã NEXUSVIP12.");
+      showToast("Đã sao chép mã minh họa NEXUSVIP12.");
     } catch {
-      showToast("Mã tri ân của bạn: NEXUSVIP12.");
+      showToast("Mã minh họa: NEXUSVIP12.");
     }
   };
 
@@ -42,13 +40,13 @@ export function AccountMockOverviewPanels() {
       <div className={styles.birthdayBand} data-reveal="">
         <div className={shared.sectionHead} style={{ marginBottom: 0 }}>
           <h2 className={shared.sectionTitle}>Ưu đãi sinh nhật Hội viên</h2>
-          <span className={`${shared.statusTag} ${shared.tonePos}`}>
-            Hạng {membershipTier.name}
+          <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
+            Bản xem trước, dữ liệu mẫu
           </span>
         </div>
         <p className={styles.bodyCopy}>
-          Cập nhật ngày sinh để nhận quà sinh nhật Hội viên Nexus cùng mã giảm{" "}
-          <strong>SINHNHAT50</strong> (50.000₫).
+          Bản xem trước, dữ liệu mẫu cho tính năng quà sinh nhật theo hạng ({membershipTier.name}).
+          Chức năng này chưa gắn với đơn hàng thực tế.
         </p>
         <div className={shared.formGrid}>
           <div className={shared.field}>
@@ -65,23 +63,20 @@ export function AccountMockOverviewPanels() {
           </div>
           <div className={shared.field} style={{ justifyContent: "flex-end" }}>
             <Button variant="secondary" size="md" onClick={() => updateBirthday(birthdayDraft)}>
-              Lưu ngày sinh
+              Lưu ngày sinh (mẫu)
             </Button>
           </div>
         </div>
         <div className={shared.formActions}>
           <Button
-            variant="primary"
+            variant="secondary"
             size="md"
             disabled={membershipTier.id === "thanh_vien" || membership.birthdayGiftClaimed}
-            onClick={() => {
-              claimBirthdayGift();
-              router.push("/gio-hang");
-            }}
+            onClick={() => claimBirthdayGift()}
           >
             {membership.birthdayGiftClaimed
-              ? "Đã nhận quà sinh nhật"
-              : "Nhận quà sinh nhật vào giỏ"}
+              ? "Đã đánh dấu xem thử quà sinh nhật"
+              : "Xem thử ưu đãi sinh nhật"}
           </Button>
         </div>
       </div>
@@ -89,7 +84,9 @@ export function AccountMockOverviewPanels() {
       <div className={styles.yirPanel} data-reveal="">
         <div className={shared.sectionHead} style={{ marginBottom: 0 }}>
           <h2 className={shared.sectionTitle}>Tổng kết năm 2026</h2>
-          <span className={`${shared.statusTag} ${shared.toneNeutral}`}>Xem thử</span>
+          <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
+            Bản xem trước, dữ liệu mẫu
+          </span>
         </div>
         <p className={styles.bodyCopy}>{SAMPLE_DATA_NOTICE}</p>
 
@@ -330,8 +327,34 @@ export function AccountMockWishlistTab() {
     () =>
       wishlist
         .map((entry) => {
-          const prod = getProductById(entry.productId);
-          return prod ? { entry, prod } : null;
+          const mockProd = getProductById(entry.productId);
+          if (mockProd) {
+            const shop = getShopById(mockProd.shopId);
+            const shot = MODEL_SHOTS[mockProd.id];
+            return {
+              entry,
+              id: mockProd.id,
+              name: mockProd.name,
+              slug: mockProd.slug,
+              price: mockProd.price,
+              originalPrice: mockProd.originalPrice,
+              image: shot?.src ?? mockProd.image,
+              metaLabel: `${shop?.shortName ?? "NexusMart"} · ${mockProd.gsm}gsm`,
+            };
+          }
+          if (entry.snapshot) {
+            return {
+              entry,
+              id: entry.productId,
+              name: entry.snapshot.name,
+              slug: entry.snapshot.slug,
+              price: entry.snapshot.price,
+              originalPrice: entry.snapshot.originalPrice,
+              image: entry.snapshot.image || "/products/ao-thun-cotton-trang.png",
+              metaLabel: entry.snapshot.shopName || "Gian hàng NexusMart",
+            };
+          }
+          return null;
         })
         .filter((x): x is NonNullable<typeof x> => x !== null),
     [wishlist]
@@ -368,32 +391,28 @@ export function AccountMockWishlistTab() {
           />
         ) : (
           <div className={styles.wishlistGrid}>
-            {wishlistedProducts.map(({ entry, prod }) => {
-              const shop = getShopById(prod.shopId);
-              const isDiscounted = prod.originalPrice != null && prod.originalPrice > prod.price;
-              const shot = MODEL_SHOTS[prod.id];
+            {wishlistedProducts.map((item) => {
+              const isDiscounted = item.originalPrice != null && item.originalPrice > item.price;
 
               return (
-                <article key={entry.productId} className={styles.wishlistCard}>
-                  <Link href={`/san-pham/${prod.slug}`} className={styles.wishlistThumbLink}>
+                <article key={item.entry.productId} className={styles.wishlistCard}>
+                  <Link href={`/san-pham/${item.slug}`} className={styles.wishlistThumbLink}>
                     <Image
-                      src={shot?.src ?? prod.image}
-                      alt={prod.name}
+                      src={item.image}
+                      alt={item.name}
                       width={92}
                       height={123}
                       className={styles.wishlistImg}
                     />
                   </Link>
                   <div className={styles.wishlistBody}>
-                    <span className={styles.metaNote}>
-                      {shop?.shortName} · {prod.gsm}gsm
-                    </span>
-                    <Link href={`/san-pham/${prod.slug}`} className={styles.addressRecipient}>
-                      {prod.name}
+                    <span className={styles.metaNote}>{item.metaLabel}</span>
+                    <Link href={`/san-pham/${item.slug}`} className={styles.addressRecipient}>
+                      {item.name}
                     </Link>
                     <Price
-                      amount={prod.price}
-                      originalAmount={prod.originalPrice}
+                      amount={item.price}
+                      originalAmount={item.originalPrice}
                       showDiscount
                       size="sm"
                     />
@@ -405,10 +424,10 @@ export function AccountMockWishlistTab() {
                       )}
                     </div>
                     <div className={styles.addressActions}>
-                      <Button variant="ink" size="sm" href={`/san-pham/${prod.slug}`}>
+                      <Button variant="ink" size="sm" href={`/san-pham/${item.slug}`}>
                         Chọn màu & size
                       </Button>
-                      <Button variant="ghost" size="sm" onClick={() => toggleWishlist(prod.id)}>
+                      <Button variant="ghost" size="sm" onClick={() => toggleWishlist(item.id)}>
                         Bỏ yêu thích
                       </Button>
                     </div>
@@ -440,11 +459,17 @@ export function AccountMockWishlistTab() {
 }
 
 export function AccountMockGiftCardsPanel() {
-  const router = useRouter();
-  const { membership, applyGiftCardCode } = useMockStore();
+  const { membership } = useMockStore();
 
   return (
     <div>
+      <div
+        className={`${shared.feedbackBox} ${shared.feedbackWarn} ${shared.noticeSpacer}`}
+        role="note"
+      >
+        <strong>Bản xem trước, dữ liệu mẫu:</strong> Tính năng thẻ quà tặng và ưu đãi .edu hiện là
+        bản xem trước minh họa, chưa kết nối thanh toán thực tế.
+      </div>
       <div className={shared.sectionHead}>
         <h2 className={shared.sectionTitle}>Thẻ quà tặng & Ưu đãi .edu</h2>
         <Button variant="ink" size="sm" href="/the-qua-tang">
@@ -453,40 +478,27 @@ export function AccountMockGiftCardsPanel() {
       </div>
 
       <div className={styles.voucherList}>
-        {membership.giftCards.map((gc) => {
-          const isApplied = membership.appliedGiftCardCode === gc.code;
-          return (
-            <div key={gc.id} className={styles.voucherRow}>
-              <div className={styles.voucherInfo}>
-                <div className={styles.voucherHeadLine}>
-                  <span className={`${styles.voucherCode} num`}>{gc.code}</span>
-                  <span
-                    className={`${shared.statusTag} ${
-                      gc.remainingVnd > 0 ? shared.tonePos : shared.toneNeutral
-                    }`}
-                  >
-                    Còn {formatVnd(gc.remainingVnd)}
-                  </span>
-                </div>
-                <span className={styles.metaNote}>
-                  Mệnh giá {formatVnd(gc.amountVnd)} · HSD{" "}
-                  <span className="num">{formatDateVi(gc.expiresAt)}</span>
+        {membership.giftCards.map((gc) => (
+          <div key={gc.id} className={styles.voucherRow}>
+            <div className={styles.voucherInfo}>
+              <div className={styles.voucherHeadLine}>
+                <span className={`${styles.voucherCode} num`}>{gc.code}</span>
+                <span
+                  className={`${shared.statusTag} ${
+                    gc.remainingVnd > 0 ? shared.tonePos : shared.toneNeutral
+                  }`}
+                >
+                  Còn {formatVnd(gc.remainingVnd)}
                 </span>
               </div>
-              <Button
-                variant={isApplied ? "primary" : "secondary"}
-                size="sm"
-                disabled={gc.remainingVnd <= 0}
-                onClick={() => {
-                  applyGiftCardCode(isApplied ? null : gc.code);
-                  if (!isApplied) router.push("/gio-hang");
-                }}
-              >
-                {isApplied ? "Đang áp dụng" : "Áp vào giỏ"}
-              </Button>
+              <span className={styles.metaNote}>
+                Mệnh giá {formatVnd(gc.amountVnd)} · HSD{" "}
+                <span className="num">{formatDateVi(gc.expiresAt)}</span>
+              </span>
             </div>
-          );
-        })}
+            <span className={`${shared.statusTag} ${shared.toneNeutral}`}>Mẫu xem trước</span>
+          </div>
+        ))}
       </div>
 
       <div className={styles.birthdayBand} style={{ marginTop: 20 }}>
@@ -531,93 +543,99 @@ export function AccountMockReferralTab() {
   };
 
   return (
-    <div className={styles.accountGrid}>
-      <div className={styles.colStack}>
-        <div className={styles.referralBanner}>
-          <span className={styles.xuCaption}>Mã mời cá nhân của bạn</span>
-          <p className={`${styles.referralCodeDisplay} num`}>{membership.referralCode}</p>
-          <p className={styles.referralBody}>{REFERRAL_CONFIG.ruleSummary}</p>
-          <div className={shared.formActions}>
-            <Button variant="primary" size="md" onClick={() => void handleCopyReferral()}>
-              Sao chép liên kết mời
-            </Button>
-            <Button variant="secondary" size="md" href="/hoi-vien">
-              Xem chi tiết tại trang Hội viên
-            </Button>
-          </div>
-        </div>
-
-        <form className={styles.yirPanel} onSubmit={handleInviteSubmit} noValidate>
-          <h2 className={shared.sectionTitle}>Thử gửi lời mời bạn bè</h2>
-          <div className={shared.codeInputRow}>
-            <input
-              type="text"
-              className={shared.input}
-              value={friendName}
-              onChange={(e) => setFriendName(e.target.value)}
-              placeholder="Nhập tên người bạn muốn mời (ví dụ: Phạm Minh Khôi)"
-              aria-label="Tên người bạn được mời"
-            />
-            <Button type="submit" variant="ink" size="md" className={shared.wrapBtn}>
-              Gửi lời mời thử
-            </Button>
-          </div>
-        </form>
+    <div className={styles.colStack}>
+      <div className={`${shared.feedbackBox} ${shared.feedbackWarn}`} role="note">
+        <strong>Bản xem trước, dữ liệu mẫu:</strong> Chương trình giới thiệu bạn bè và lịch sử
+        thưởng Xu bên dưới là dữ liệu mẫu minh họa.
       </div>
+      <div className={styles.accountGrid}>
+        <div className={styles.colStack}>
+          <div className={styles.referralBanner}>
+            <span className={styles.xuCaption}>Mã mời cá nhân của bạn</span>
+            <p className={`${styles.referralCodeDisplay} num`}>{membership.referralCode}</p>
+            <p className={styles.referralBody}>{REFERRAL_CONFIG.ruleSummary}</p>
+            <div className={shared.formActions}>
+              <Button variant="primary" size="md" onClick={() => void handleCopyReferral()}>
+                Sao chép liên kết mời
+              </Button>
+              <Button variant="secondary" size="md" href="/hoi-vien">
+                Xem chi tiết tại trang Hội viên
+              </Button>
+            </div>
+          </div>
 
-      <div className={styles.colStack}>
-        <div className={shared.sectionHead} style={{ marginBottom: 0 }}>
-          <h2 className={shared.sectionTitle}>Lịch sử giới thiệu bạn bè</h2>
-          <span className={`${shared.sectionNote} num`}>
-            {membership.referrals.length} lượt mời
-          </span>
+          <form className={styles.yirPanel} onSubmit={handleInviteSubmit} noValidate>
+            <h2 className={shared.sectionTitle}>Thử gửi lời mời bạn bè</h2>
+            <div className={shared.codeInputRow}>
+              <input
+                type="text"
+                className={shared.input}
+                value={friendName}
+                onChange={(e) => setFriendName(e.target.value)}
+                placeholder="Nhập tên người bạn muốn mời (ví dụ: Phạm Minh Khôi)"
+                aria-label="Tên người bạn được mời"
+              />
+              <Button type="submit" variant="ink" size="md" className={shared.wrapBtn}>
+                Gửi lời mời thử
+              </Button>
+            </div>
+          </form>
         </div>
-        <div className={shared.tableWrap}>
-          <table className={shared.dataTable}>
-            <thead>
-              <tr>
-                <th>Bạn được mời</th>
-                <th>Ngày mời</th>
-                <th>Thưởng 10%</th>
-                <th>Trạng thái</th>
-              </tr>
-            </thead>
-            <tbody>
-              {membership.referrals.map((ref) => (
-                <tr key={ref.id}>
-                  <td data-label="Bạn được mời">
-                    <strong>{ref.friendName}</strong>
-                    {ref.orderCode && (
-                      <div className={`${styles.orderSub} num`}>Đơn {ref.orderCode}</div>
-                    )}
-                  </td>
-                  <td data-label="Ngày mời" className="num">
-                    {formatDateVi(ref.invitedAt)}
-                  </td>
-                  <td data-label="Thưởng 10%" className="num">
-                    {ref.rewardCoins > 0 ? `+${formatInt(ref.rewardCoins)} Xu` : "Chờ đơn"}
-                  </td>
-                  <td data-label="Trạng thái">
-                    <span
-                      className={`${shared.statusTag} ${
-                        ref.status === "da_cong_xu"
-                          ? shared.tonePos
-                          : ref.status === "cho_het_han_45_ngay"
-                            ? shared.toneWarn
-                            : shared.toneNeutral
-                      }`}
-                    >
-                      {ref.status === "da_cong_xu"
-                        ? "Đã cộng Xu"
-                        : ref.status === "cho_het_han_45_ngay"
-                          ? "Chờ hết hạn 45 ngày"
-                          : "Chờ đặt đơn"}
-                    </span>
-                  </td>
+
+        <div className={styles.colStack}>
+          <div className={shared.sectionHead} style={{ marginBottom: 0 }}>
+            <h2 className={shared.sectionTitle}>Lịch sử giới thiệu bạn bè</h2>
+            <span className={`${shared.sectionNote} num`}>
+              {membership.referrals.length} lượt mời
+            </span>
+          </div>
+          <div className={shared.tableWrap}>
+            <table className={shared.dataTable}>
+              <thead>
+                <tr>
+                  <th>Bạn được mời</th>
+                  <th>Ngày mời</th>
+                  <th>Thưởng 10%</th>
+                  <th>Trạng thái</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {membership.referrals.map((ref) => (
+                  <tr key={ref.id}>
+                    <td data-label="Bạn được mời">
+                      <strong>{ref.friendName}</strong>
+                      {ref.orderCode && (
+                        <div className={`${styles.orderSub} num`}>Đơn {ref.orderCode}</div>
+                      )}
+                    </td>
+                    <td data-label="Ngày mời" className="num">
+                      {formatDateVi(ref.invitedAt)}
+                    </td>
+                    <td data-label="Thưởng 10%" className="num">
+                      {ref.rewardCoins > 0 ? `+${formatInt(ref.rewardCoins)} Xu` : "Chờ đơn"}
+                    </td>
+                    <td data-label="Trạng thái">
+                      <span
+                        className={`${shared.statusTag} ${
+                          ref.status === "da_cong_xu"
+                            ? shared.tonePos
+                            : ref.status === "cho_het_han_45_ngay"
+                              ? shared.toneWarn
+                              : shared.toneNeutral
+                        }`}
+                      >
+                        {ref.status === "da_cong_xu"
+                          ? "Đã cộng Xu"
+                          : ref.status === "cho_het_han_45_ngay"
+                            ? "Chờ hết hạn 7 ngày"
+                            : "Chờ đặt đơn"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>

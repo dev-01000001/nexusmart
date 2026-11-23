@@ -12,21 +12,24 @@ import (
 )
 
 type ordW2OrderDTO struct {
-	ID              string `json:"id"`
-	OrderCode       string `json:"order_code"`
-	CheckoutGroupID string `json:"checkout_group_id"`
-	Status          string `json:"status"`
-	PaymentMethod   string `json:"payment_method"`
-	PaymentID       string `json:"payment_id"`
-	PaymentStatus   string `json:"payment_status"`
-	SubtotalVND     int64  `json:"subtotal_vnd"`
-	CommissionVND   int64  `json:"commission_vnd"`
-	TotalPayableVND int64  `json:"total_payable_vnd"`
-	CarrierCode     string `json:"carrier_code"`
-	TrackingCode    string `json:"tracking_code"`
-	DeliveredAt     string `json:"delivered_at"`
-	ReturnRequestID string `json:"return_request_id"`
-	ReturnStatus    string `json:"return_status"`
+	ID              string         `json:"id"`
+	OrderCode       string         `json:"order_code"`
+	CheckoutGroupID string         `json:"checkout_group_id"`
+	Status          string         `json:"status"`
+	PaymentMethod   string         `json:"payment_method"`
+	PaymentID       string         `json:"payment_id"`
+	PaymentStatus   string         `json:"payment_status"`
+	SubtotalVND     int64          `json:"subtotal_vnd"`
+	CommissionVND   int64          `json:"commission_vnd"`
+	PaymentFeeVND   int64          `json:"payment_fee_vnd"`
+	PaymentFeeBps   int32          `json:"payment_fee_bps"`
+	TotalPayableVND int64          `json:"total_payable_vnd"`
+	Items           []OrderItemDTO `json:"items"`
+	CarrierCode     string         `json:"carrier_code"`
+	TrackingCode    string         `json:"tracking_code"`
+	DeliveredAt     string         `json:"delivered_at"`
+	ReturnRequestID string         `json:"return_request_id"`
+	ReturnStatus    string         `json:"return_status"`
 }
 
 type ordW2OrderResponse struct {
@@ -389,7 +392,19 @@ func TestE2E_OrderW2AReturnsAndShipments(t *testing.T) {
 				fmt.Sprintf("ord=%s ret=%s", ord.Status, rr.Status)
 		})
 
-		wantPending := delivered.SubtotalVND - delivered.CommissionVND
+		// Wave 2b buyer fee privacy: buyer order view masks fees to 0; read seller order for authoritative commission.
+		if delivered.CommissionVND != 0 || delivered.PaymentFeeVND != 0 || delivered.PaymentFeeBps != 0 {
+			t.Fatalf("buyer order view must mask fees to 0, got comm=%d pay_fee=%d pay_fee_bps=%d",
+				delivered.CommissionVND, delivered.PaymentFeeVND, delivered.PaymentFeeBps)
+		}
+		for _, it := range delivered.Items {
+			if it.CommissionBps != 0 {
+				t.Fatalf("buyer order view must mask item commission_bps to 0, got %d", it.CommissionBps)
+			}
+		}
+		sellerOrd := ordW2GetOrder(t, env, seller.AccessToken, delivered.ID)
+		// Wave 2b (docs/contracts.md §3/§6): seller net = R - (C_cat + C_pay).
+		wantPending := sellerOrd.SubtotalVND - sellerOrd.CommissionVND - sellerOrd.PaymentFeeVND
 		env.pollUntil(t, env.cfg.PollTimeout, 400*time.Millisecond, "seller_pending credited after CLOSED", func() (bool, string) {
 			bal := ordW2GetSellerBalance(t, env, seller.AccessToken)
 			return bal.PendingVND == wantPending && bal.AvailableVND == 0,

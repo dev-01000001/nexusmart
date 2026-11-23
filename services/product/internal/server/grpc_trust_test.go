@@ -90,9 +90,14 @@ func TestGRPCTrust_SpoofedMetadataAndServiceTokens(t *testing.T) {
 		t.Fatalf("shop-A JWT creating in shop-b: want PermissionDenied, got %v", err)
 	}
 
-	// 4. Service tokens.
+	// 4. Service tokens & caller RBAC on ReleaseStock and ConfirmStock.
+	buyerTok, _, _, _ := users.SignAccessToken("buyer-1", "buyer", "")
 	release := func(ctx context.Context) error {
 		_, err := client.ReleaseStock(ctx, &productv1.ReleaseStockRequest{OrderId: "grp-trust-1"})
+		return err
+	}
+	confirm := func(ctx context.Context) error {
+		_, err := client.ConfirmStock(ctx, &productv1.ConfirmStockRequest{OrderId: "grp-trust-missing"})
 		return err
 	}
 	wrongKey, _ := auth.NewManager("attacker-guessed-key", auth.ServiceTokenTTL)
@@ -108,10 +113,33 @@ func TestGRPCTrust_SpoofedMetadataAndServiceTokens(t *testing.T) {
 		if err := release(ctx); status.Code(err) != codes.Unauthenticated {
 			t.Fatalf("ReleaseStock with %s: want Unauthenticated, got %v", name, err)
 		}
+		if err := confirm(ctx); status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("ConfirmStock with %s: want Unauthenticated, got %v", name, err)
+		}
+	}
+	for name, ctx := range map[string]context.Context{
+		"buyer JWT":  bearer(buyerTok),
+		"seller JWT": bearer(sellerATok),
+	} {
+		if err := release(ctx); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("ReleaseStock with %s: want PermissionDenied, got %v", name, err)
+		}
+		if err := confirm(ctx); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("ConfirmStock with %s: want PermissionDenied, got %v", name, err)
+		}
 	}
 	good, _ := svc.SignServiceToken("order-service")
 	if err := release(bearer(good)); status.Code(err) == codes.Unauthenticated || status.Code(err) == codes.PermissionDenied {
 		t.Fatalf("ReleaseStock with valid service token rejected: %v", err)
+	}
+	if err := release(bearer(adminTok)); status.Code(err) == codes.Unauthenticated || status.Code(err) == codes.PermissionDenied {
+		t.Fatalf("ReleaseStock with admin JWT rejected: %v", err)
+	}
+	if err := confirm(bearer(good)); status.Code(err) == codes.Unauthenticated || status.Code(err) == codes.PermissionDenied {
+		t.Fatalf("ConfirmStock with valid service token rejected: %v", err)
+	}
+	if err := confirm(bearer(adminTok)); status.Code(err) == codes.Unauthenticated || status.Code(err) == codes.PermissionDenied {
+		t.Fatalf("ConfirmStock with admin JWT rejected: %v", err)
 	}
 	// Service identity is not an admin outside the internal RPC allowlist.
 	if _, err = client.CreateCategory(bearer(good), &productv1.CreateCategoryRequest{Name: "Svc", CommissionRateBps: 1}); status.Code(err) != codes.PermissionDenied {

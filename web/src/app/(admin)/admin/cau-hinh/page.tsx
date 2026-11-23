@@ -14,6 +14,7 @@ import {
 } from "@/features/admin/auditStore";
 import { AdminCarriersPanel } from "@/features/admin/AdminCarriersPanel";
 import { AdminCategoriesPanel } from "@/features/admin/AdminCategoriesPanel";
+import { AdminFeesPanel } from "@/features/admin/AdminFeesPanel";
 import { AdminUsersPanel } from "@/features/admin/AdminUsersPanel";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { StatusPill } from "@/features/admin/StatusPill";
@@ -22,7 +23,14 @@ import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
 
 type ConfigTab =
-  "danh_muc" | "nguoi_dung" | "van_chuyen" | "dat_hang" | "doi_tra" | "thanh_toan" | "thong_bao";
+  | "phi_san"
+  | "danh_muc"
+  | "nguoi_dung"
+  | "van_chuyen"
+  | "dat_hang"
+  | "doi_tra"
+  | "thanh_toan"
+  | "thong_bao";
 
 function renderNotificationPreview(template: string): string {
   return template
@@ -46,7 +54,7 @@ function PlatformConfigContent() {
   const extraConfig = useAdminExtraConfig();
   const extendedConfig = useAdminExtendedConfig();
 
-  const [activeTab, setActiveTab] = useState<ConfigTab>("danh_muc");
+  const [activeTab, setActiveTab] = useState<ConfigTab>("phi_san");
   const [savedNotice, setSavedNotice] = useState<Record<string, string>>({});
 
   // Tab 1: Guest checkout, freeship, coins, shipping carriers
@@ -171,7 +179,7 @@ function PlatformConfigContent() {
       {
         id: `exc-${Date.now()}`,
         label,
-        reason: newExcReason.trim() || "Ngoại lệ không áp dụng đổi trả chuẩn 45 ngày.",
+        reason: newExcReason.trim() || "Ngoại lệ không áp dụng đổi trả chuẩn 7 ngày.",
         active: true,
       },
     ]);
@@ -291,11 +299,20 @@ function PlatformConfigContent() {
           <button
             type="button"
             role="tab"
+            aria-selected={activeTab === "phi_san"}
+            className={`${shared.tabBtn} ${activeTab === "phi_san" ? shared.tabBtnActive : ""}`}
+            onClick={() => setActiveTab("phi_san")}
+          >
+            Phí sàn & Thanh toán
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={activeTab === "danh_muc"}
             className={`${shared.tabBtn} ${activeTab === "danh_muc" ? shared.tabBtnActive : ""}`}
             onClick={() => setActiveTab("danh_muc")}
           >
-            Danh mục & Hoa hồng
+            Danh mục ngành hàng
           </button>
           <button
             type="button"
@@ -322,7 +339,7 @@ function PlatformConfigContent() {
             className={`${shared.tabBtn} ${activeTab === "dat_hang" ? shared.tabBtnActive : ""}`}
             onClick={() => setActiveTab("dat_hang")}
           >
-            Đặt hàng & Freeship
+            Đặt hàng & Freeship (mẫu)
           </button>
           <button
             type="button"
@@ -331,7 +348,7 @@ function PlatformConfigContent() {
             className={`${shared.tabBtn} ${activeTab === "doi_tra" ? shared.tabBtnActive : ""}`}
             onClick={() => setActiveTab("doi_tra")}
           >
-            Đổi trả & Hoa hồng mẫu
+            Đổi trả & Hoa hồng (mẫu)
           </button>
           <button
             type="button"
@@ -340,7 +357,7 @@ function PlatformConfigContent() {
             className={`${shared.tabBtn} ${activeTab === "thanh_toan" ? shared.tabBtnActive : ""}`}
             onClick={() => setActiveTab("thanh_toan")}
           >
-            Thanh toán & Đối soát
+            Cổng thanh toán (mẫu)
           </button>
           <button
             type="button"
@@ -349,14 +366,29 @@ function PlatformConfigContent() {
             className={`${shared.tabBtn} ${activeTab === "thong_bao" ? shared.tabBtnActive : ""}`}
             onClick={() => setActiveTab("thong_bao")}
           >
-            Email & Zalo ZNS
+            Email & Zalo ZNS (mẫu)
           </button>
         </div>
       </div>
 
+      {activeTab === "phi_san" && <AdminFeesPanel />}
       {activeTab === "danh_muc" && <AdminCategoriesPanel />}
       {activeTab === "nguoi_dung" && <AdminUsersPanel />}
       {activeTab === "van_chuyen" && <AdminCarriersPanel />}
+
+      {(activeTab === "dat_hang" ||
+        activeTab === "doi_tra" ||
+        activeTab === "thanh_toan" ||
+        activeTab === "thong_bao") && (
+        <section className={shared.panel} role="note" style={{ marginTop: 16 }}>
+          <StatusPill label="Bản xem trước, dữ liệu mẫu" tone="warning" />
+          <p className={shared.pageSubtitle} style={{ marginTop: 8 }}>
+            Mục cấu hình này hiện chỉ lưu tạm trên phiên trình duyệt. Các cấu hình đang đồng bộ máy
+            chủ thật nằm tại 4 tab đầu: Phí sàn &amp; Thanh toán, Danh mục ngành hàng, Quản trị
+            người dùng và Hãng vận chuyển.
+          </p>
+        </section>
+      )}
 
       {/* TAB 1: ĐẶT HÀNG VÃNG LAI, FREESHIP & HÃNG VẬN CHUYỂN */}
       {activeTab === "dat_hang" && (
@@ -519,13 +551,13 @@ function PlatformConfigContent() {
         </div>
       )}
 
-      {/* TAB 2: CHUẨN ĐỔI TRẢ 45 NGÀY, NGOẠI LỆ & HOA HỒNG */}
+      {/* TAB 2: CHUẨN ĐỔI TRẢ 7 NGÀY, NGOẠI LỆ & HOA HỒNG */}
       {activeTab === "doi_tra" && (
         <div className={styles.sectionList}>
           <section className={styles.sectionRow} aria-labelledby="cfg-return-heading">
             <div className={styles.labelCol}>
               <h2 id="cfg-return-heading" className={styles.sectionTitle}>
-                Chuẩn đổi trả sàn 45 ngày & danh sách ngoại lệ
+                Chuẩn đổi trả sàn 7 ngày & danh sách ngoại lệ
               </h2>
               <p className={styles.sectionDesc}>
                 Định nghĩa chính sách đổi size 2 chiều tận nơi của NexusMart, lịch hoàn chuyển khoản
@@ -648,7 +680,7 @@ function PlatformConfigContent() {
                       />
                     </div>
                     <p className={styles.switchDesc}>
-                      Áp dụng cho gian hàng mang huy hiệu Đổi trả 45 ngày trên dòng Tất cơ bản.
+                      Áp dụng cho gian hàng mang huy hiệu Đổi trả 7 ngày trên dòng Tất cơ bản.
                     </p>
                   </div>
                   <ToggleSwitch
@@ -686,7 +718,7 @@ function PlatformConfigContent() {
 
               <div className={styles.switchList}>
                 <span className={styles.fieldLabel}>
-                  Danh sách ngoại lệ không áp dụng đổi trả 45 ngày
+                  Danh sách ngoại lệ không áp dụng đổi trả 7 ngày
                 </span>
                 {exceptionsDraft.map((exc) => (
                   <div key={exc.id} className={styles.switchRow}>
@@ -1342,7 +1374,7 @@ function PlatformConfigRoute() {
   return (
     <AdminStateGate
       title="Cấu hình hệ thống"
-      subtitle="Quản lý đặt hàng vãng lai, hãng vận chuyển, chuẩn đổi trả 45 ngày, cổng thanh toán và mẫu Email/Zalo ZNS."
+      subtitle="Quản lý đặt hàng vãng lai, hãng vận chuyển, chuẩn đổi trả 7 ngày, cổng thanh toán và mẫu Email/Zalo ZNS."
       emptyTitle="Chưa có bản ghi cấu hình hệ thống"
       emptyMessage="Không tải được tập cấu hình vận hành mặc định cho sàn."
       errorTitle="Không thể tải cấu hình hệ thống"

@@ -26,6 +26,9 @@ type ordFixPaymentDTO struct {
 	AmountVND       int64                     `json:"amount_vnd"`
 	Method          string                    `json:"method"`
 	Status          string                    `json:"status"`
+	QRURL           string                    `json:"qr_url"`
+	QRCode          string                    `json:"qr_code"`
+	ProviderRef     string                    `json:"provider_ref"`
 	ShopAllocations []ordFixShopAllocationDTO `json:"shop_allocations"`
 }
 
@@ -122,9 +125,31 @@ func TestE2E_OrderMoneyAndLifecycleFixes(t *testing.T) {
 		if al.PlatformDiscountVND != wantD {
 			t.Fatalf("allocation platform_discount_vnd (D) = %d, want %d (note: requires payment+gateway platform_discount_vnd support)", al.PlatformDiscountVND, wantD)
 		}
+		if al.CommissionVND != 0 {
+			t.Fatalf("buyer GET /payments/{id} must mask allocation commission_vnd to 0, got %d", al.CommissionVND)
+		}
 		if gotNet := al.SubtotalVND + al.ShippingFeeVND - al.PlatformDiscountVND; gotNet != pay.AmountVND {
 			t.Fatalf("R+Ship-D = %d != payment amount_vnd %d", gotNet, pay.AmountVND)
 		}
+
+		// Role-based GET /payments/{id} visibility (payment r4 / contracts §4.6):
+		// admin sees full allocation + commission_vnd; owning seller sees only own shop allocation with qr/provider_ref cleared; unrelated seller -> 403.
+		adminPay := ordFixGetPaymentDetail(t, env, env.adminLogin(t), checkout.PaymentID)
+		if len(adminPay.ShopAllocations) != 1 || adminPay.ShopAllocations[0].CommissionVND <= 0 ||
+			adminPay.ShopAllocations[0].SubtotalVND != wantR || adminPay.ShopAllocations[0].PlatformDiscountVND != wantD {
+			t.Fatalf("admin GET /payments/{id} allocation mismatch: %+v", adminPay)
+		}
+		sellerPay := ordFixGetPaymentDetail(t, env, seller1.AccessToken, checkout.PaymentID)
+		if len(sellerPay.ShopAllocations) != 1 || sellerPay.ShopAllocations[0].ShopID != seller1.ShopID ||
+			sellerPay.ShopAllocations[0].CommissionVND != adminPay.ShopAllocations[0].CommissionVND {
+			t.Fatalf("seller1 GET /payments/{id} allocation mismatch: got=%+v want comm=%d", sellerPay, adminPay.ShopAllocations[0].CommissionVND)
+		}
+		if sellerPay.QRURL != "" || sellerPay.QRCode != "" || sellerPay.ProviderRef != "" {
+			t.Fatalf("non-buyer seller GET /payments/{id} must hide qr_url/qr_code/provider_ref, got qr_url=%q qr_code=%q provider_ref=%q",
+				sellerPay.QRURL, sellerPay.QRCode, sellerPay.ProviderRef)
+		}
+		env.mustDoJSON(t, http.MethodGet, fmt.Sprintf("/api/v1/payments/%s", url.PathEscape(checkout.PaymentID)),
+			seller2.AccessToken, nil, nil, http.StatusForbidden)
 	})
 
 	// (b) 0 VND order still creates a real payment (status SUCCEEDED, non-empty payment_id).

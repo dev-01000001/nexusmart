@@ -1,14 +1,20 @@
 package router
 
 import (
+	"context"
+	"math"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
+	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	shippingv1 "github.com/nexusmart/core/gen/go/nexusmart/shipping/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/gateway/internal/httpx"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type provinceDTO struct {
@@ -57,6 +63,9 @@ type shopShippingSettingsDTO struct {
 	DefaultLengthCM     int32    `json:"default_length_cm"`
 	DefaultWidthCM      int32    `json:"default_width_cm"`
 	DefaultHeightCM     int32    `json:"default_height_cm"`
+	FreeShipEnabled     bool     `json:"free_ship_enabled"`
+	FreeShipMinOrderVND int64    `json:"free_ship_min_order_vnd"`
+	FreeShipMaxVND      int64    `json:"free_ship_max_vnd"`
 	UpdatedAt           string   `json:"updated_at,omitempty"`
 }
 
@@ -194,6 +203,9 @@ func mapShopShippingSettings(s *shippingv1.ShopShippingSettings) *shopShippingSe
 		DefaultLengthCM:     s.GetDefaultLengthCm(),
 		DefaultWidthCM:      s.GetDefaultWidthCm(),
 		DefaultHeightCM:     s.GetDefaultHeightCm(),
+		FreeShipEnabled:     s.GetFreeShipEnabled(),
+		FreeShipMinOrderVND: s.GetFreeShipMinOrderVnd(),
+		FreeShipMaxVND:      s.GetFreeShipMaxVnd(),
 		UpdatedAt:           httpx.FormatTimestamp(s.GetUpdatedAt()),
 	}
 }
@@ -299,31 +311,188 @@ func (h *handler) handleMapLegacyAddress(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+const (
+	defaultShopWeightGrams int64 = 500
+	maxCalculateFeeItems         = 100
+	maxCalculateFeeItemQty int32 = 999
+)
+
+type calculateFeeItemInput struct {
+	SKUID    string `json:"sku_id"`
+	Quantity int32  `json:"quantity"`
+}
+
+// fetchShopShippingSettings loads a shop's shipping settings using the caller's forwarded JWT
+// (gateway does not hold SERVICE_JWT_SECRET).
+func (h *handler) fetchShopShippingSettings(ctx context.Context, shopID string) (*shippingv1.ShopShippingSettings, error) {
+	resp, err := h.clients.Shipping.GetShopShippingSettings(ctx, &shippingv1.GetShopShippingSettingsRequest{
+		ShopId: shopID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetSettings(), nil
+}
+
 func (h *handler) handleCalculateShippingFee(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ShopID           string `json:"shop_id"`
-		FromProvinceCode string `json:"from_province_code"`
-		FromWardCode     string `json:"from_ward_code"`
-		ToProvinceCode   string `json:"to_province_code"`
-		ToWardCode       string `json:"to_ward_code"`
-		WeightGrams      int32  `json:"weight_grams"`
-		CODAmountVND     int64  `json:"cod_amount_vnd"`
+		ShopID           string                  `json:"shop_id"`
+		FromProvinceCode string                  `json:"from_province_code"`
+		FromWardCode     string                  `json:"from_ward_code"`
+		ToProvinceCode   string                  `json:"to_province_code"`
+		ToWardCode       string                  `json:"to_ward_code"`
+		WeightGrams      int32                   `json:"weight_grams"`
+		CODAmountVND     int64                   `json:"cod_amount_vnd"`
+		Items            []calculateFeeItemInput `json:"items"`
+		PaymentMethod    string                  `json:"payment_method"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteDecodeError(w, r, err)
 		return
 	}
+
+	shopID := strings.TrimSpace(body.ShopID)
+	weightGrams := body.WeightGrams
+	codAmountVND := body.CODAmountVND
+
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
+	if len(body.Items) > 0 {
+		if shopID == "" {
+			httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "shop_id is required when items are provided")
+			return
+		}
+		if len(body.Items) > maxCalculateFeeItems {
+			httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "items exceed maximum limit of 100")
+			return
+		}
+		isCOD := false
+		if rawPM := strings.TrimSpace(body.PaymentMethod); rawPM != "" {
+			pm := parseOrderPaymentMethod(rawPM)
+			if pm == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED {
+				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "payment_method must be COD or VIETQR")
+				return
+			}
+			isCOD = pm == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD
+		}
+		qtyBySKU := make(map[string]int64, len(body.Items))
+		for _, it := range body.Items {
+			skuID := strings.TrimSpace(it.SKUID)
+			if skuID == "" {
+				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "sku_id is required for every item")
+				return
+			}
+			if it.Quantity < 1 || it.Quantity > maxCalculateFeeItemQty {
+				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "quantity must be between 1 and 999")
+				return
+			}
+			qtyBySKU[skuID] += int64(it.Quantity)
+		}
+		if h.clients.Product == nil || h.clients.Shipping == nil {
+			httpx.WriteError(w, r, http.StatusServiceUnavailable, "UNAVAILABLE", "required upstream service unavailable")
+			return
+		}
+
+		skuIDs := make([]string, 0, len(qtyBySKU))
+		for id := range qtyBySKU {
+			skuIDs = append(skuIDs, id)
+		}
+		sort.Strings(skuIDs)
+
+		skuResp, err := h.clients.Product.GetSKUsBatch(ctx, &productv1.GetSKUsBatchRequest{SkuIds: skuIDs})
+		if err != nil {
+			httpx.WriteGRPCError(w, r, err)
+			return
+		}
+		skuByID := make(map[string]*productv1.SKU, len(skuResp.GetSkus()))
+		for _, sk := range skuResp.GetSkus() {
+			if sk != nil {
+				skuByID[sk.GetId()] = sk
+			}
+		}
+		for _, skuID := range skuIDs {
+			sk, ok := skuByID[skuID]
+			// Uniform 400 error so cross-shop SKUs and unknown SKUs are indistinguishable.
+			if !ok || strings.TrimSpace(sk.GetShopId()) != shopID {
+				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "one or more SKUs are invalid for this shop")
+				return
+			}
+			if sk.GetPriceVnd() < 0 {
+				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "one or more SKUs have an invalid price")
+				return
+			}
+		}
+
+		defaultWeight := defaultShopWeightGrams
+		st, err := h.fetchShopShippingSettings(ctx, shopID)
+		if err != nil {
+			if status.Code(err) != codes.NotFound {
+				httpx.WriteGRPCError(w, r, err)
+				return
+			}
+		} else if st != nil && st.GetDefaultWeightGrams() > 0 {
+			defaultWeight = int64(st.GetDefaultWeightGrams())
+		}
+
+		var (
+			totalWeightGrams int64
+			subtotalVND      int64
+		)
+		for _, skuID := range skuIDs {
+			sk := skuByID[skuID]
+			qty := qtyBySKU[skuID]
+
+			unitWeight := int64(sk.GetWeightGrams())
+			if unitWeight <= 0 {
+				unitWeight = defaultWeight
+			}
+			if qty > math.MaxInt64/unitWeight {
+				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "total weight exceeds maximum supported value")
+				return
+			}
+			lineWeight := unitWeight * qty
+			if totalWeightGrams > math.MaxInt64-lineWeight {
+				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "total weight exceeds maximum supported value")
+				return
+			}
+			totalWeightGrams += lineWeight
+
+			unitPrice := sk.GetPriceVnd()
+			if unitPrice > 0 && qty > math.MaxInt64/unitPrice {
+				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "order subtotal overflow")
+				return
+			}
+			lineSubtotal := unitPrice * qty
+			if subtotalVND > math.MaxInt64-lineSubtotal {
+				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "order subtotal overflow")
+				return
+			}
+			subtotalVND += lineSubtotal
+		}
+		if totalWeightGrams <= 0 {
+			totalWeightGrams = defaultWeight
+		}
+		if totalWeightGrams > math.MaxInt32 {
+			httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "total weight exceeds maximum supported value")
+			return
+		}
+		weightGrams = int32(totalWeightGrams)
+		if isCOD {
+			codAmountVND = subtotalVND
+		} else {
+			codAmountVND = 0
+		}
+	}
+
 	resp, err := h.clients.Shipping.CalculateFee(ctx, &shippingv1.CalculateFeeRequest{
-		ShopId:           body.ShopID,
+		ShopId:           shopID,
 		FromProvinceCode: body.FromProvinceCode,
 		FromWardCode:     body.FromWardCode,
 		ToProvinceCode:   body.ToProvinceCode,
 		ToWardCode:       body.ToWardCode,
-		WeightGrams:      body.WeightGrams,
-		CodAmountVnd:     body.CODAmountVND,
+		WeightGrams:      weightGrams,
+		CodAmountVnd:     codAmountVND,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -445,10 +614,38 @@ func (h *handler) handleSellerUpdateShippingSettings(w http.ResponseWriter, r *h
 		DefaultLengthCM     int32    `json:"default_length_cm"`
 		DefaultWidthCM      int32    `json:"default_width_cm"`
 		DefaultHeightCM     int32    `json:"default_height_cm"`
+		FreeShipEnabled     bool     `json:"free_ship_enabled"`
+		FreeShipMinOrderVND *int64   `json:"free_ship_min_order_vnd"`
+		FreeShipMaxVND      *int64   `json:"free_ship_max_vnd"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteDecodeError(w, r, err)
 		return
+	}
+	var freeShipMin, freeShipMax int64
+	if body.FreeShipMinOrderVND != nil {
+		if *body.FreeShipMinOrderVND < 0 {
+			httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "free_ship_min_order_vnd must be non-negative")
+			return
+		}
+		freeShipMin = *body.FreeShipMinOrderVND
+	}
+	if body.FreeShipMaxVND != nil {
+		if *body.FreeShipMaxVND < 0 {
+			httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "free_ship_max_vnd must be non-negative")
+			return
+		}
+		freeShipMax = *body.FreeShipMaxVND
+	}
+	if body.FreeShipEnabled {
+		if body.FreeShipMinOrderVND == nil {
+			httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "free_ship_min_order_vnd is required when free_ship_enabled is true")
+			return
+		}
+		if body.FreeShipMaxVND == nil || freeShipMax <= 0 {
+			httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "free_ship_max_vnd is required and must be > 0 when free_ship_enabled is true")
+			return
+		}
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
@@ -461,6 +658,9 @@ func (h *handler) handleSellerUpdateShippingSettings(w http.ResponseWriter, r *h
 		DefaultLengthCm:     body.DefaultLengthCM,
 		DefaultWidthCm:      body.DefaultWidthCM,
 		DefaultHeightCm:     body.DefaultHeightCM,
+		FreeShipEnabled:     body.FreeShipEnabled,
+		FreeShipMinOrderVnd: freeShipMin,
+		FreeShipMaxVnd:      freeShipMax,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -491,12 +691,16 @@ func (h *handler) handleAdminListCarriers(w http.ResponseWriter, r *http.Request
 
 func (h *handler) handleAdminUpdateCarrier(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Enabled       bool              `json:"enabled"`
+		Enabled       *bool             `json:"enabled"`
 		APIToken      string            `json:"api_token"`
 		FallbackRates []fallbackRateDTO `json:"fallback_rates"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	if body.Enabled == nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "enabled is required")
 		return
 	}
 	rates := make([]*shippingv1.FallbackRate, 0, len(body.FallbackRates))
@@ -514,7 +718,7 @@ func (h *handler) handleAdminUpdateCarrier(w http.ResponseWriter, r *http.Reques
 
 	resp, err := h.clients.Shipping.AdminUpdateCarrier(ctx, &shippingv1.AdminUpdateCarrierRequest{
 		CarrierCode:   chi.URLParam(r, "code"),
-		Enabled:       body.Enabled,
+		Enabled:       *body.Enabled,
 		ApiToken:      body.APIToken,
 		FallbackRates: rates,
 	})

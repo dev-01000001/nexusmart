@@ -45,7 +45,7 @@ export function PdpQuestions({ product, shop }: PdpQuestionsProps) {
           product.returnEligible === false
             ? (product.returnExclusionReason ??
               "Sản phẩm thuộc nhóm ngoại lệ không áp dụng đổi trả sau khi mở niêm phong.")
-            : "Có. NexusMart hỗ trợ đổi trả miễn phí 45 ngày, shipper giao size mới và thu hồi hàng cũ tận nơi.",
+            : "Có. NexusMart hỗ trợ đổi trả miễn phí 7 ngày, shipper giao size mới và thu hồi hàng cũ tận nơi.",
       },
       {
         question: "Thời gian giao hàng từ kho xưởng mất bao lâu?",

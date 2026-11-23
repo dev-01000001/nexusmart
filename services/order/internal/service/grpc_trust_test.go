@@ -162,6 +162,18 @@ func (s *trustDownstreamStub) CalculateFee(ctx context.Context, _ *shippingv1.Ca
 	}, nil
 }
 
+func (s *trustDownstreamStub) GetShopShippingSettings(ctx context.Context, req *shippingv1.GetShopShippingSettingsRequest) (*shippingv1.GetShopShippingSettingsResponse, error) {
+	if err := s.requireServiceClaims(ctx, "Shipping.GetShopShippingSettings"); err != nil {
+		return nil, err
+	}
+	return &shippingv1.GetShopShippingSettingsResponse{
+		Settings: &shippingv1.ShopShippingSettings{
+			ShopId:             req.GetShopId(),
+			DefaultWeightGrams: 500,
+		},
+	}, nil
+}
+
 // --- ProductService ---
 
 func (s *trustDownstreamStub) GetSKUsBatch(ctx context.Context, _ *productv1.GetSKUsBatchRequest) (*productv1.GetSKUsBatchResponse, error) {
@@ -227,6 +239,13 @@ func (s *trustDownstreamStub) ReleasePromotionShop(ctx context.Context, _ *promo
 		return nil, err
 	}
 	return &promotionv1.ReleasePromotionShopResponse{Released: true}, nil
+}
+
+func (s *trustDownstreamStub) ListActiveShopDiscounts(ctx context.Context, _ *promotionv1.ListActiveShopDiscountsRequest) (*promotionv1.ListActiveShopDiscountsResponse, error) {
+	if c, ok := auth.ClaimsFromContext(ctx); ok && c.Service != "" {
+		return nil, status.Error(codes.PermissionDenied, "service token forbidden on public RPC")
+	}
+	return &promotionv1.ListActiveShopDiscountsResponse{}, nil
 }
 
 // --- UserService ---
@@ -351,7 +370,6 @@ func TestGRPCTrust_OrderJobsAndConsumersRealAuthInterceptor(t *testing.T) {
 		GRPCCallTimeout:          5 * time.Second,
 		CODMaxVND:                20000000,
 		CODMaxRejectedCount:      3,
-		DefaultCommissionBPS:     500,
 		RewardCoinsBPS:           100,
 		ReturnSellerResponseDays: 2,
 		ReturnShipDays:           5,
@@ -599,6 +617,9 @@ func TestGRPCTrust_OrderJobsAndConsumersRealAuthInterceptor(t *testing.T) {
 		}
 		if stub.countService("Product.ConfirmStock") < 1 {
 			t.Fatalf("expected service-token Product.ConfirmStock from HandlePaymentSucceeded")
+		}
+		if stub.countService("Shipping.GetShopShippingSettings") < 1 {
+			t.Fatalf("expected service-token Shipping.GetShopShippingSettings from CreateCheckout")
 		}
 
 		co2, err := svc.CreateCheckout(buyerCtx, &orderv1.CreateCheckoutRequest{

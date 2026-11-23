@@ -198,10 +198,10 @@ export const AI_SUGGESTED_PROMPTS: AiPromptSuggestion[] = [
   },
   {
     id: "ai-return",
-    label: "Chính sách đổi trả 45 ngày",
+    label: "Chính sách đổi trả 7 ngày",
     prompt: "NexusMart hỗ trợ đổi size và hoàn tiền như thế nào?",
     response:
-      "NexusMart hỗ trợ đổi trả miễn phí trong 45 ngày (tối đa 3 lần), bưu tá đổi size 2 chiều tận nơi và hoàn chuyển khoản vào Thứ 2 & Thứ 5 hằng tuần. Riêng hàng Outlet, săn deal sốc và pack niêm phong không áp dụng đổi trả.",
+      "NexusMart hỗ trợ đổi trả miễn phí trong 7 ngày (tối đa 3 lần), bưu tá đổi size 2 chiều tận nơi và hoàn chuyển khoản vào Thứ 2 & Thứ 5 hằng tuần. Riêng hàng Outlet, săn deal sốc và pack niêm phong không áp dụng đổi trả.",
   },
   {
     id: "ai-membership",

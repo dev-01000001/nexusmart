@@ -25,6 +25,7 @@ import { ProductCard, StateView } from "@/components";
 import { SizeFinder } from "@/features/catalog/SizeFinder";
 import { useRevealObserver } from "@/features/catalog/useRevealObserver";
 import { formatVnd } from "@/lib/format";
+import { getRootCategories } from "@/lib/catalog-mapper";
 import styles from "./page.module.css";
 
 export interface HomeClientProps {
@@ -116,22 +117,22 @@ const FABRIC_STANDARDS: FabricStandard[] = [
 
 const COMMITMENT_ITEMS = [
   {
-    id: "return-45",
-    title: "Đổi trả miễn phí 45 ngày",
+    id: "return-7",
+    title: "Hỗ trợ trả hàng trong 7 ngày",
     detail:
-      "Hỗ trợ đổi size hai chiều tận nhà hoặc hoàn trả linh hoạt trong 45 ngày đối với sản phẩm nguyên tem mác.",
+      "Tạo yêu cầu trả hàng, gửi bằng chứng trực tiếp trên trang đơn hàng và nhận hoàn tiền minh bạch trong vòng 7 ngày kể từ khi nhận hàng.",
   },
   {
-    id: "freeship-249",
-    title: "Freeship đơn từ 249.000₫",
+    id: "freeship-shop",
+    title: "Ưu đãi vận chuyển theo gian hàng & sàn",
     detail:
-      "Tự động miễn phí vận chuyển toàn quốc cho đơn đạt mốc, thoải mái gộp đồ từ nhiều xưởng trong một giỏ.",
+      "Áp dụng đồng thời hỗ trợ freeship của từng gian hàng và mã vận chuyển toàn sàn trên một màn hình thanh toán.",
   },
   {
     id: "cod-check",
-    title: "Thanh toán COD đồng kiểm",
+    title: "Thanh toán VietQR hoặc COD linh hoạt",
     detail:
-      "Kiểm tra đúng màu sắc, đúng cỡ và chất vải ngay khi nhận hàng trước khi trả tiền mặt hoặc quét mã VietQR.",
+      "Chuyển khoản nhanh qua mã VietQR xác nhận tự động hoặc thanh toán tiền mặt khi nhận hàng (COD) cho các đơn đủ điều kiện.",
   },
   {
     id: "direct-4-workshops",
@@ -144,7 +145,7 @@ const COMMITMENT_ITEMS = [
 const FAQ_ITEMS = [
   {
     q: "Tôi có thể mua sản phẩm từ nhiều xưởng trong cùng một đơn không?",
-    a: "Có. Giỏ hàng tự sắp xếp sản phẩm theo từng xưởng, áp riêng ưu đãi của mỗi xưởng rồi gộp chung mã giảm giá toàn sàn, ưu đãi vận chuyển và Xu hội viên trên một màn hình thanh toán.",
+    a: "Có. Giỏ hàng tự sắp xếp sản phẩm theo từng xưởng, áp riêng ưu đãi của mỗi xưởng rồi gộp chung mã giảm giá toàn sàn, ưu đãi vận chuyển và Xu trên một màn hình thanh toán.",
   },
   {
     q: "Làm sao chọn đúng size giữa dáng vừa và dáng rộng?",
@@ -156,15 +157,15 @@ const FAQ_ITEMS = [
   },
   {
     q: "Khung giờ Flash sale diễn ra khi nào?",
-    a: "Các khung giờ mở bán trong ngày được cập nhật trực tiếp cùng số suất ưu đãi còn lại trên từng sản phẩm, tối đa ba sản phẩm Flash sale trong một đơn.",
+    a: "Các khung giờ mở bán trong ngày được cập nhật trực tiếp cùng số suất ưu đãi còn lại trên từng sản phẩm. Đơn hàng có sản phẩm Flash sale thanh toán qua VietQR trong 5 phút.",
   },
   {
     q: "NexusMart hỗ trợ những hình thức thanh toán và giao hàng nào?",
-    a: "Bạn có thể trả tiền mặt khi nhận hàng kèm đồng kiểm (COD) hoặc chuyển khoản nhanh qua VietQR; giao hàng toàn quốc đủ 34 tỉnh thành với cước cơ bản từ 22.000₫.",
+    a: "Bạn có thể trả tiền mặt khi nhận hàng (COD) hoặc chuyển khoản nhanh qua VietQR; giao hàng toàn quốc đủ 34 tỉnh thành với cước vận chuyển tính trực tiếp theo địa chỉ nhận.",
   },
   {
-    q: "Chính sách đổi size hoặc trả hàng trong 45 ngày áp dụng ra sao?",
-    a: "Các xưởng dệt hỗ trợ đổi trả miễn phí trong 45 ngày với bưu tá mang cỡ mới đến tận nơi, trừ sản phẩm xả kho Outlet, deal sốc và hộp đồ lót đã mở niêm phong.",
+    q: "Chính sách trả hàng và hoàn tiền trong 7 ngày áp dụng ra sao?",
+    a: "Trong vòng 7 ngày kể từ khi nhận hàng, bạn có thể gửi yêu cầu trả hàng ngay trên trang chi tiết đơn hàng để gian hàng và bộ phận hỗ trợ sàn xử lý hoàn tiền.",
   },
 ];
 
@@ -192,7 +193,12 @@ function computeRemainingSeconds(slot: CatalogFlashSaleSlot | undefined, nowMs: 
 }
 
 function buildRingGeometry(products: CatalogProduct[]): RingFrameGeom[] {
-  const ringProducts = products.slice(0, 18);
+  const withLocalImageFirst = [...products].sort((a, b) => {
+    const aLocal = a.image.startsWith("/") ? 0 : 1;
+    const bLocal = b.image.startsWith("/") ? 0 : 1;
+    return aLocal - bLocal;
+  });
+  const ringProducts = withLocalImageFirst.slice(0, 18);
   const total = ringProducts.length;
   if (total === 0) return [];
   const mobileIndices = ringProducts.map((_, idx) => idx).filter((idx) => idx % 3 !== 2);
@@ -355,7 +361,7 @@ export function HomeClient({
   );
 
   const categoryTiles = useMemo(() => {
-    const mapped = categories.map((cat) => ({
+    const mapped = getRootCategories(categories).map((cat) => ({
       slug: cat.slug,
       label: cat.name,
       subtitle: cat.subtitle,
@@ -949,25 +955,25 @@ export function HomeClient({
       </section>
 
       {/* =====================================================================
-          8. MEMBERSHIP BAND: Deep slate --band-dark highlighting 4 tiers
+          8. MEMBERSHIP BAND: Preview notice for upcoming loyalty program
           ===================================================================== */}
       <section className={styles.membershipSection} aria-labelledby="home-membership-heading">
         <div className={styles.membershipTop}>
           <div className={styles.membershipIntro}>
             <h2 id="home-membership-heading" className={styles.membershipTitle}>
-              Hội viên Nexus hoàn Xu đến 6%
+              Chương trình Xu &amp; Hội viên Nexus (Bản xem trước)
             </h2>
             <p className={styles.membershipLead}>
-              Tích Xu tự động trên mọi đơn hoàn tất, nhân đôi tỷ lệ hoàn mỗi Thứ Sáu và dùng chéo cả
-              bốn xưởng dệt. 1 Xu tương đương 1₫, kèm quà sinh nhật và mã đặc quyền theo từng hạng.
+              Bản xem trước, dữ liệu mẫu cho hệ thống phân hạng sắp ra mắt. Hiện tại bạn đã có thể
+              dùng Xu NexusMart (1 Xu = 1₫) trừ trực tiếp khi thanh toán đơn hàng.
             </p>
           </div>
           <div className={styles.membershipActions}>
-            <Link href="/hoi-vien" className={styles.membershipCtaPrimary}>
-              Xem đặc quyền hội viên
+            <Link href="/danh-muc" className={styles.membershipCtaPrimary}>
+              Khám phá danh mục
             </Link>
-            <Link href="/the-qua-tang" className={styles.membershipCtaSecondary}>
-              Mua thẻ quà tặng
+            <Link href="/flash-sale" className={styles.membershipCtaSecondary}>
+              Săn Flash sale hôm nay
             </Link>
           </div>
         </div>

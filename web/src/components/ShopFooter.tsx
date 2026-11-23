@@ -84,7 +84,7 @@ export function ShopFooter() {
               </Link>
               <p className={styles.brandLead}>
                 Đồ basic may trực tiếp từ các xưởng dệt Việt Nam. Chất liệu rõ định lượng, giá bán
-                minh bạch và đổi trả tận nơi trong 45 ngày.
+                minh bạch và hỗ trợ trả hàng hoàn tiền trong 7 ngày.
               </p>
               <div className={styles.contactList}>
                 <p className={styles.contactItem}>
@@ -186,8 +186,8 @@ export function ShopFooter() {
                   </Link>
                 </li>
                 <li>
-                  <Link href="/tro-giup#doi-tra-45-ngay" className={styles.colLink}>
-                    Chính sách đổi trả 45 ngày
+                  <Link href="/tro-giup#doi-tra" className={styles.colLink}>
+                    Chính sách đổi trả 7 ngày
                   </Link>
                 </li>
               </ul>

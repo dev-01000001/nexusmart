@@ -16,14 +16,59 @@ import (
 )
 
 type stubRepo struct {
-	prefs map[string]store.Preferences
+	prefs  map[string]store.Preferences
+	notifs []store.Notification
 }
 
-func (r *stubRepo) ListNotifications(_ context.Context, _, _ string, _ bool, _, _ int32) ([]store.Notification, int64, int64, error) {
-	return nil, 0, 0, nil
+func (r *stubRepo) ListNotifications(_ context.Context, userID, category string, unreadOnly bool, limit, offset int32) ([]store.Notification, int64, int64, error) {
+	var filtered []store.Notification
+	var unread int64
+	for _, n := range r.notifs {
+		if n.UserID != userID {
+			continue
+		}
+		if !n.IsRead {
+			unread++
+		}
+		if category != "" && n.Category != category {
+			continue
+		}
+		if unreadOnly && n.IsRead {
+			continue
+		}
+		filtered = append(filtered, n)
+	}
+	total := int64(len(filtered))
+	start := int(offset)
+	if start > len(filtered) {
+		start = len(filtered)
+	}
+	end := start + int(limit)
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	return filtered[start:end], unread, total, nil
 }
-func (r *stubRepo) MarkRead(_ context.Context, _ string, _ []string, _ bool) (int32, int64, error) {
-	return 0, 0, nil
+func (r *stubRepo) MarkRead(_ context.Context, userID string, ids []string, markAll bool) (int32, int64, error) {
+	idSet := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		idSet[id] = true
+	}
+	var updated int32
+	var unread int64
+	for i := range r.notifs {
+		if r.notifs[i].UserID != userID {
+			continue
+		}
+		if !r.notifs[i].IsRead && (markAll || idSet[r.notifs[i].ID]) {
+			r.notifs[i].IsRead = true
+			updated++
+		}
+		if !r.notifs[i].IsRead {
+			unread++
+		}
+	}
+	return updated, unread, nil
 }
 func (r *stubRepo) GetPreferences(_ context.Context, userID string) (store.Preferences, error) {
 	if p, ok := r.prefs[userID]; ok {
@@ -150,5 +195,64 @@ func TestNotificationGRPCAuthAndOwnershipRBAC(t *testing.T) {
 	}
 	if !gotPrefs.GetPreferences().GetOrderInApp() || !gotPrefs.GetPreferences().GetSystemInApp() {
 		t.Fatalf("UC-B23: GetPreferences must enforce order_in_app & system_in_app true, got %+v", gotPrefs.GetPreferences())
+	}
+}
+
+func TestHeaderUnreadCountOverGRPC(t *testing.T) {
+	repo := &stubRepo{
+		notifs: []store.Notification{
+			{ID: "n-1", UserID: "user-1", Category: store.CategoryOrder, Title: "Đơn mới", IsRead: false},
+			{ID: "n-2", UserID: "user-1", Category: store.CategoryPromotion, Title: "Voucher sắp hết hạn", IsRead: false},
+			{ID: "n-3", UserID: "user-1", Category: store.CategorySystem, Title: "Duyệt sản phẩm", IsRead: true},
+			{ID: "n-other", UserID: "user-2", Category: store.CategoryOrder, Title: "Của người khác", IsRead: false},
+		},
+	}
+	svc := service.NewNotificationService(repo, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := New(svc)
+	ctx := ctxWithUser("user-1", "buyer")
+
+	// Header badge query (page=1, page_size=5) returns unread_count=2 across all categories for user-1 only.
+	resp, err := srv.ListNotifications(ctx, &notificationv1.ListNotificationsRequest{
+		Page:     1,
+		PageSize: 5,
+	})
+	if err != nil {
+		t.Fatalf("ListNotifications failed: %v", err)
+	}
+	if resp.GetUnreadCount() != 2 || resp.GetTotal() != 3 || len(resp.GetNotifications()) != 3 {
+		t.Fatalf("header ListNotifications mismatch: unread=%d total=%d len=%d", resp.GetUnreadCount(), resp.GetTotal(), len(resp.GetNotifications()))
+	}
+
+	// Category-filtered query still reports global unread_count=2.
+	promoResp, err := srv.ListNotifications(ctx, &notificationv1.ListNotificationsRequest{
+		Category: notificationv1.NotificationCategory_NOTIFICATION_CATEGORY_PROMOTION,
+		Page:     1,
+		PageSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("category ListNotifications failed: %v", err)
+	}
+	if promoResp.GetUnreadCount() != 2 || promoResp.GetTotal() != 1 || len(promoResp.GetNotifications()) != 1 {
+		t.Fatalf("category-filtered header unread mismatch: unread=%d total=%d len=%d", promoResp.GetUnreadCount(), promoResp.GetTotal(), len(promoResp.GetNotifications()))
+	}
+
+	// Mark single notification read -> unread_count decrements to 1.
+	mark1, err := srv.MarkRead(ctx, &notificationv1.MarkReadRequest{
+		NotificationIds: []string{"n-2"},
+	})
+	if err != nil {
+		t.Fatalf("MarkRead single failed: %v", err)
+	}
+	if mark1.GetUpdatedCount() != 1 || mark1.GetUnreadCount() != 1 {
+		t.Fatalf("expected updated=1 unread=1, got updated=%d unread=%d", mark1.GetUpdatedCount(), mark1.GetUnreadCount())
+	}
+
+	// Mark all read -> unread_count becomes 0.
+	markAll, err := srv.MarkRead(ctx, &notificationv1.MarkReadRequest{MarkAll: true})
+	if err != nil {
+		t.Fatalf("MarkRead all failed: %v", err)
+	}
+	if markAll.GetUpdatedCount() != 1 || markAll.GetUnreadCount() != 0 {
+		t.Fatalf("expected updated=1 unread=0, got updated=%d unread=%d", markAll.GetUpdatedCount(), markAll.GetUnreadCount())
 	}
 }

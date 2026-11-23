@@ -1,27 +1,32 @@
 use std::convert::Infallible;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, StatusCode};
-use axum::middleware;
+use axum::extract::{MatchedPath, Path, Request, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use chrono::Utc;
 use futures_util::stream::{self, Stream, StreamExt};
 use serde_json::json;
 use tokio_stream::wrappers::BroadcastStream;
-use tracing::{info, warn};
+use tracing::{debug, error, info, warn, Instrument};
 use uuid::Uuid;
 
-use crate::auth::{require_payment_read_access, Caller, GrpcAuth};
-use crate::domain::vn_today;
+use crate::auth::{
+    resolve_payment_read_scope, seller_scoped_amount_vnd, seller_scoped_order_id, Caller, GrpcAuth,
+    PaymentViewScope,
+};
+use crate::domain::{vn_today, PaymentSseEvent, PaymentWithAllocations};
 use crate::error::PaymentError;
 use crate::metrics::red_metrics_middleware;
 use crate::service::PaymentService;
-use crate::telemetry::{extract_or_generate_trace_id, mask_secret};
+use crate::telemetry::{
+    attach_parent_context, extract_context_from_http, extract_or_generate_trace_id, mask_secret,
+};
 use crate::webhook_security::{verify_webhook_request, IncomingWebhookPayload};
 
 #[derive(Clone)]
@@ -54,7 +59,93 @@ pub fn build_router(service: PaymentService, auth: GrpcAuth) -> Router {
             metrics,
             red_metrics_middleware,
         ))
+        .layer(middleware::from_fn(http_trace_middleware))
         .with_state(state)
+}
+
+#[derive(Clone, Debug)]
+struct RequestTraceId(String);
+
+async fn http_trace_middleware(mut req: Request, next: Next) -> Response {
+    let start = Instant::now();
+    let method = req.method().as_str().to_string();
+    let route = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|mp| mp.as_str().to_string())
+        .unwrap_or_else(|| req.uri().path().to_string());
+
+    let parent_cx = extract_context_from_http(req.headers());
+    let x_trace_id = header_str(req.headers(), "x-trace-id").map(ToString::to_string);
+
+    let span = tracing::info_span!(
+        "http.request",
+        otel.name = %format!("{method} {route}"),
+        otel.kind = "server",
+        http.method = %method,
+        http.route = %route,
+        trace_id = tracing::field::Empty,
+    );
+    let trace_id = attach_parent_context(&span, parent_cx, x_trace_id.as_deref());
+    span.record("trace_id", trace_id.as_str());
+    req.extensions_mut()
+        .insert(RequestTraceId(trace_id.clone()));
+
+    let mut resp = next.run(req).instrument(span.clone()).await;
+
+    if let Ok(val) = HeaderValue::from_str(&trace_id) {
+        resp.headers_mut().insert("x-trace-id", val);
+    }
+
+    let status = resp.status();
+    let duration_ms = (start.elapsed().as_secs_f64() * 1000.0 * 1000.0).round() / 1000.0;
+    let is_ops_probe = matches!(route.as_str(), "/healthz" | "/readyz" | "/metrics");
+
+    span.in_scope(|| {
+        if is_ops_probe && status.is_success() {
+            debug!(
+                service = "payment",
+                method = %method,
+                route = %route,
+                status = status.as_u16(),
+                duration_ms = duration_ms,
+                trace_id = %trace_id,
+                "http request"
+            );
+        } else if status.is_server_error() {
+            error!(
+                service = "payment",
+                method = %method,
+                route = %route,
+                status = status.as_u16(),
+                duration_ms = duration_ms,
+                trace_id = %trace_id,
+                "http request"
+            );
+        } else if status.is_client_error() {
+            warn!(
+                service = "payment",
+                method = %method,
+                route = %route,
+                status = status.as_u16(),
+                duration_ms = duration_ms,
+                trace_id = %trace_id,
+                "http request"
+            );
+        } else {
+            info!(
+                service = "payment",
+                method = %method,
+                route = %route,
+                status = status.as_u16(),
+                duration_ms = duration_ms,
+                trace_id = %trace_id,
+                "http request"
+            );
+        }
+    });
+
+    resp
 }
 
 async fn healthz() -> impl IntoResponse {
@@ -100,31 +191,38 @@ async fn metrics_handler(State(state): State<HttpState>) -> impl IntoResponse {
 
 async fn handle_payment_webhook(
     State(state): State<HttpState>,
+    trace_ext: Option<Extension<RequestTraceId>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, PaymentError> {
-    process_webhook_http(state, headers, body, "payment_gateway").await
+    process_webhook_http(state, trace_ext, headers, body, "payment_gateway").await
 }
 
 async fn handle_vietqr_webhook(
     State(state): State<HttpState>,
+    trace_ext: Option<Extension<RequestTraceId>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, PaymentError> {
     let default_provider = state.service.vietqr().mode().as_str();
-    process_webhook_http(state, headers, body, default_provider).await
+    process_webhook_http(state, trace_ext, headers, body, default_provider).await
 }
 
 async fn process_webhook_http(
     state: HttpState,
+    trace_ext: Option<Extension<RequestTraceId>>,
     headers: HeaderMap,
     body: Bytes,
     default_provider: &str,
 ) -> Result<impl IntoResponse, PaymentError> {
-    let trace_id = extract_or_generate_trace_id(
-        header_str(&headers, "traceparent"),
-        header_str(&headers, "x-trace-id"),
-    );
+    let trace_id = trace_ext
+        .map(|Extension(RequestTraceId(id))| id)
+        .unwrap_or_else(|| {
+            extract_or_generate_trace_id(
+                header_str(&headers, "traceparent"),
+                header_str(&headers, "x-trace-id"),
+            )
+        });
 
     let signature = header_str(&headers, "x-signature");
     let timestamp = header_str(&headers, "x-timestamp");
@@ -185,27 +283,30 @@ async fn payment_events_sse(
             .await?
     };
 
-    require_payment_read_access(&caller, &pwa)?;
+    let scope = resolve_payment_read_scope(&caller, &pwa)?;
+    let sse_projection = SseEventProjection::from_scope(&scope, &pwa);
 
     let p = pwa.payment;
     let payment_id = p.id;
-    let event_name = status_to_sse_event_name(&p.status);
-    let data = json!({
-        "payment_id": p.id,
-        "order_group_id": p.order_group_id,
-        "order_id": p.order_id,
-        "status": p.status,
-        "amount_vnd": p.amount_vnd,
-        "provider_tx_id": p.provider_tx_id,
-        "updated_at": p.updated_at,
+    let initial_evt = sse_projection.project(PaymentSseEvent {
+        payment_id: p.id,
+        order_group_id: p.order_group_id,
+        order_id: p.order_id,
+        status: p.status,
+        amount_vnd: p.amount_vnd,
+        provider_tx_id: p.provider_tx_id,
+        updated_at: p.updated_at,
     });
-    let initial_event = Event::default().event(event_name).data(data.to_string());
+    let event_name = status_to_sse_event_name(&initial_evt.status);
+    let initial_data = serde_json::to_string(&initial_evt).unwrap_or_default();
+    let initial_event = Event::default().event(event_name).data(initial_data);
 
     let rx = state.service.subscribe_sse();
     let filter_id = id.clone();
 
     let live_stream = BroadcastStream::new(rx).filter_map(move |msg| {
         let filter_id = filter_id.clone();
+        let sse_projection = sse_projection.clone();
         async move {
             match msg {
                 Ok(evt) => {
@@ -213,8 +314,9 @@ async fn payment_events_sse(
                     let matches_order =
                         evt.order_id == filter_id || evt.order_group_id == filter_id;
                     if matches_payment || matches_order {
-                        let event_name = status_to_sse_event_name(&evt.status);
-                        let data = serde_json::to_string(&evt).unwrap_or_default();
+                        let projected = sse_projection.project(evt);
+                        let event_name = status_to_sse_event_name(&projected.status);
+                        let data = serde_json::to_string(&projected).unwrap_or_default();
                         Some(Ok::<Event, Infallible>(
                             Event::default().event(event_name).data(data),
                         ))
@@ -241,6 +343,44 @@ async fn payment_events_sse(
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
     ))
+}
+
+#[derive(Clone, Debug)]
+struct SseEventProjection {
+    seller_scope: Option<(i64, String)>,
+}
+
+impl SseEventProjection {
+    fn from_scope(scope: &PaymentViewScope, pwa: &PaymentWithAllocations) -> Self {
+        match scope {
+            PaymentViewScope::Full | PaymentViewScope::BuyerOwner => Self { seller_scope: None },
+            PaymentViewScope::SellerAllocation { shop_id } => Self {
+                seller_scope: Some((
+                    seller_scoped_amount_vnd(pwa, shop_id),
+                    seller_scoped_order_id(pwa, shop_id),
+                )),
+            },
+        }
+    }
+
+    fn project(&self, mut evt: PaymentSseEvent) -> PaymentSseEvent {
+        if let Some((shop_amount_vnd, scoped_order_id)) = &self.seller_scope {
+            evt.amount_vnd = *shop_amount_vnd;
+            evt.order_id = scoped_order_id.clone();
+            evt.provider_tx_id = None;
+        }
+        evt
+    }
+}
+
+#[cfg(test)]
+fn project_sse_event_for_caller(
+    evt: PaymentSseEvent,
+    caller: &Caller,
+    pwa: &PaymentWithAllocations,
+) -> PaymentSseEvent {
+    let scope = resolve_payment_read_scope(caller, pwa).expect("caller must have read access");
+    SseEventProjection::from_scope(&scope, pwa).project(evt)
 }
 
 fn status_to_sse_event_name(status: &str) -> &'static str {
@@ -329,6 +469,7 @@ mod tests {
     const TEST_SERVICE_JWT_SECRET: &str = "http-unit-test-service-jwt-secret";
 
     fn test_router() -> (Router, Config) {
+        crate::telemetry::init_test_tracing();
         let mut cfg = Config::from_env();
         cfg.webhook_secret = "unit-test-secret".to_string();
         cfg.vietqr_mode = VietQrMode::Mock;
@@ -651,5 +792,276 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp_stale.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_http_trace_middleware_echoes_x_trace_id_from_traceparent() {
+        let (app, _) = test_router();
+        const TRACE_ID: &str = "aa11bb22cc33dd44ee55ff6677889900";
+        let tp = format!("00-{TRACE_ID}-1122334455667788-01");
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .header("traceparent", tp)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("x-trace-id")
+                .and_then(|v| v.to_str().ok()),
+            Some(TRACE_ID)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_w2b_r3_webhook_without_traceparent_reuses_middleware_trace_id() {
+        crate::telemetry::init_test_tracing();
+
+        use std::io;
+        use std::sync::{Arc, Mutex};
+        use tracing::instrument::WithSubscriber;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        #[derive(Clone, Default)]
+        struct BufWriter(Arc<Mutex<Vec<u8>>>);
+
+        struct BufGuard(Arc<Mutex<Vec<u8>>>);
+        impl io::Write for BufGuard {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufWriter {
+            type Writer = BufGuard;
+            fn make_writer(&'a self) -> Self::Writer {
+                BufGuard(self.0.clone())
+            }
+        }
+
+        let buf = BufWriter::default();
+        let captured = buf.0.clone();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .flatten_event(true)
+                .with_writer(buf),
+        );
+
+        let (app, _) = test_router();
+        // No traceparent and no x-trace-id -> middleware generates one; webhook handler MUST reuse it.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/vietqr")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"provider_tx_id":"TX-TRACE"}"#))
+                    .unwrap(),
+            )
+            .with_subscriber(subscriber)
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let resp_tid = resp
+            .headers()
+            .get("x-trace-id")
+            .and_then(|v| v.to_str().ok())
+            .expect("middleware must echo x-trace-id")
+            .to_string();
+        assert!(!resp_tid.is_empty());
+
+        let raw_logs = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        let webhook_tid = raw_logs
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|v| {
+                v.get("message")
+                    .and_then(|m| m.as_str())
+                    .map(|m| m.contains("rejected webhook"))
+                    .unwrap_or(false)
+            })
+            .and_then(|v| v.get("trace_id").and_then(|t| t.as_str()).map(String::from))
+            .expect("expected webhook rejection log line with trace_id");
+
+        assert_eq!(
+            webhook_tid, resp_tid,
+            "process_webhook_http must reuse http_trace_middleware trace_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_w2b_r3_http_errors_total_counts_only_5xx_not_4xx() {
+        let (app, _) = test_router();
+
+        // Trigger 401 client errors (must NOT increment http_errors_total)
+        let r401 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/internal/ledger/summary")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r401.status(), StatusCode::UNAUTHORIZED);
+
+        // Trigger 503 server error (/readyz against unreachable lazy DB -> MUST increment http_errors_total)
+        let r503 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r503.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let metrics_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = metrics_resp.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8_lossy(&bytes);
+
+        assert!(
+            text.contains(r#"http_requests_total{method="GET",route="/internal/ledger/summary",service="payment",status="401"} 1"#),
+            "401 should be counted in http_requests_total:\n{text}"
+        );
+        assert!(
+            !text.contains(r#"http_errors_total{method="GET",route="/internal/ledger/summary",service="payment",status="401"}"#),
+            "4xx must NOT be counted in http_errors_total:\n{text}"
+        );
+        assert!(
+            text.contains(r#"http_errors_total{method="GET",route="/readyz",service="payment",status="503"} 1"#),
+            "5xx MUST be counted in http_errors_total:\n{text}"
+        );
+    }
+
+    #[test]
+    fn test_w2b_r4_sse_event_projection_redacts_seller_allocation_only() {
+        use crate::domain::{
+            PaymentRecord, PaymentSseEvent, PaymentWithAllocations, ShopAllocationRecord,
+        };
+
+        let now = Utc::now();
+        let payment_id = Uuid::new_v4();
+        let pwa = PaymentWithAllocations {
+            payment: PaymentRecord {
+                id: payment_id,
+                order_group_id: "grp-sse-1".into(),
+                order_id: "ord-shop-b".into(),
+                user_id: "buyer-owner".into(),
+                method: "VIETQR".into(),
+                provider: "vietqr_mock".into(),
+                amount_vnd: 740_000,
+                status: "succeeded".into(),
+                provider_tx_id: Some("TX-SSE-SECRET".into()),
+                provider_order_code: "NM-SSE-1".into(),
+                qr_code: None,
+                qr_url: None,
+                idempotency_key: None,
+                expires_at: None,
+                paid_at: Some(now),
+                trace_id: "trace-sse".into(),
+                created_at: now,
+                updated_at: now,
+            },
+            allocations: vec![
+                ShopAllocationRecord {
+                    id: Uuid::new_v4(),
+                    payment_id,
+                    order_id: "ord-shop-a".into(),
+                    shop_id: "shop-a".into(),
+                    subtotal_vnd: 200_000,
+                    commission_vnd: 12_000,
+                    shipping_fee_vnd: 20_000,
+                    platform_discount_vnd: 10_000,
+                    escrow_status: "held".into(),
+                    settled_at: Some(now),
+                    released_at: None,
+                    created_at: now,
+                },
+                ShopAllocationRecord {
+                    id: Uuid::new_v4(),
+                    payment_id,
+                    order_id: "ord-shop-b".into(),
+                    shop_id: "shop-b".into(),
+                    subtotal_vnd: 500_000,
+                    commission_vnd: 35_000,
+                    shipping_fee_vnd: 30_000,
+                    platform_discount_vnd: 0,
+                    escrow_status: "held".into(),
+                    settled_at: Some(now),
+                    released_at: None,
+                    created_at: now,
+                },
+            ],
+        };
+        let base_evt = PaymentSseEvent {
+            payment_id,
+            order_group_id: "grp-sse-1".into(),
+            order_id: "ord-shop-b".into(),
+            status: "succeeded".into(),
+            amount_vnd: 740_000,
+            provider_tx_id: Some("TX-SSE-SECRET".into()),
+            updated_at: now,
+        };
+
+        // Admin, buyer owner, and seller-as-buyer see full SSE payload.
+        for caller in [
+            Caller {
+                role: "admin".into(),
+                user_id: "admin-1".into(),
+                ..Default::default()
+            },
+            Caller {
+                role: "buyer".into(),
+                user_id: "buyer-owner".into(),
+                ..Default::default()
+            },
+            Caller {
+                role: "seller".into(),
+                user_id: "buyer-owner".into(),
+                shop_id: "shop-other".into(),
+                ..Default::default()
+            },
+        ] {
+            let out = project_sse_event_for_caller(base_evt.clone(), &caller, &pwa);
+            assert_eq!(out.amount_vnd, 740_000);
+            assert_eq!(out.provider_tx_id.as_deref(), Some("TX-SSE-SECRET"));
+            assert_eq!(out.order_id, "ord-shop-b");
+        }
+
+        // Seller owning only shop-a allocation MUST NOT receive provider_tx_id,
+        // cross-shop total amount_vnd, or shop-b's order_id.
+        let seller_a = Caller {
+            role: "seller".into(),
+            user_id: "seller-u1".into(),
+            shop_id: "shop-a".into(),
+            ..Default::default()
+        };
+        let out_seller = project_sse_event_for_caller(base_evt, &seller_a, &pwa);
+        assert_eq!(out_seller.amount_vnd, 210_000);
+        assert!(out_seller.provider_tx_id.is_none());
+        assert_eq!(out_seller.order_id, "ord-shop-a");
     }
 }

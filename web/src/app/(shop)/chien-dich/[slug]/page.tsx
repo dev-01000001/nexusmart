@@ -1,4 +1,5 @@
 import React, { Suspense } from "react";
+import { notFound } from "next/navigation";
 import { CAMPAIGNS } from "@/data";
 import { StateView } from "@/components";
 import { CampaignDetailClient } from "./CampaignDetailClient";
@@ -13,6 +14,9 @@ export default async function CampaignDetailPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
+  if (!CAMPAIGNS.some((c) => c.slug === slug)) {
+    notFound();
+  }
 
   return (
     <Suspense

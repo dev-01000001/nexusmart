@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -17,6 +19,8 @@ import (
 
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
+	"github.com/nexusmart/core/pkg/common/telemetry"
+	"github.com/nexusmart/core/services/product/internal/events"
 	"github.com/nexusmart/core/services/product/internal/store"
 )
 
@@ -30,8 +34,11 @@ const (
 // Server implements productv1.ProductServiceServer.
 type Server struct {
 	productv1.UnimplementedProductServiceServer
-	store  store.Store
-	logger *slog.Logger
+	store         store.Store
+	logger        *slog.Logger
+	clockMu       sync.RWMutex
+	nowFn         func() time.Time
+	outboxTrigger chan struct{}
 }
 
 // New constructs a ProductService gRPC server.
@@ -40,15 +47,58 @@ func New(st store.Store, logger *slog.Logger) *Server {
 		logger = slog.Default()
 	}
 	return &Server{
-		store:  st,
-		logger: logger,
+		store:         st,
+		logger:        logger,
+		nowFn:         func() time.Time { return time.Now().UTC() },
+		outboxTrigger: make(chan struct{}, 1),
 	}
+}
+
+// SetClock overrides the server clock (used in unit tests for deterministic time-based logic).
+func (s *Server) SetClock(fn func() time.Time) {
+	s.clockMu.Lock()
+	defer s.clockMu.Unlock()
+	if fn == nil {
+		s.nowFn = func() time.Time { return time.Now().UTC() }
+		return
+	}
+	s.nowFn = fn
+}
+
+func (s *Server) now() time.Time {
+	s.clockMu.RLock()
+	fn := s.nowFn
+	s.clockMu.RUnlock()
+	if fn == nil {
+		return time.Now().UTC()
+	}
+	return fn().UTC()
+}
+
+// OutboxTrigger returns a signal channel notified whenever a new outbox event is committed.
+func (s *Server) OutboxTrigger() <-chan struct{} {
+	return s.outboxTrigger
+}
+
+func (s *Server) triggerOutbox() {
+	select {
+	case s.outboxTrigger <- struct{}{}:
+	default:
+	}
+}
+
+func traceMetaFromContext(ctx context.Context) (string, string) {
+	traceID := telemetry.TraceIDFromContext(ctx)
+	carrier := map[string]string{}
+	telemetry.InjectTraceHeaders(ctx, carrier)
+	return traceID, carrier["traceparent"]
 }
 
 // --- Categories ---
 
 func (s *Server) CreateCategory(ctx context.Context, req *productv1.CreateCategoryRequest) (*productv1.CreateCategoryResponse, error) {
-	if _, err := requireAdmin(ctx); err != nil {
+	claims, err := requireAdmin(ctx)
+	if err != nil {
 		return nil, err
 	}
 	name := strings.TrimSpace(req.GetName())
@@ -59,96 +109,216 @@ func (s *Server) CreateCategory(ctx context.Context, req *productv1.CreateCatego
 		return nil, status.Error(codes.InvalidArgument, "commission_rate_bps must be between 0 and 10000")
 	}
 
-	parentID := strings.TrimSpace(req.GetParentId())
-	if parentID != "" {
-		if _, err := s.store.GetCategoryByID(ctx, parentID); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				return nil, status.Error(codes.NotFound, "parent category not found")
-			}
-			return nil, status.Errorf(codes.Internal, "lookup parent category: %v", err)
+	rawSlug := strings.TrimSpace(req.GetSlug())
+	var explicitSlug string
+	if rawSlug != "" {
+		explicitSlug = normalizeSlug(rawSlug)
+		if explicitSlug == "" {
+			return nil, status.Error(codes.InvalidArgument, "slug must contain letters or digits")
 		}
 	}
 
-	id := uuid.NewString()
-	slug := strings.TrimSpace(req.GetSlug())
-	if slug == "" {
-		slug = slugify(name, id[:8])
-	}
+	parentID := strings.TrimSpace(req.GetParentId())
+	now := s.now()
+	ctx = store.WithAsOf(ctx, now)
 
-	cat, err := s.store.CreateCategory(ctx, store.Category{
-		ID:                id,
-		Name:              name,
-		Slug:              slug,
-		ParentID:          parentID,
-		CommissionRateBps: req.GetCommissionRateBps(),
-		SortOrder:         req.GetSortOrder(),
+	var created store.Category
+	err = s.store.WithTx(ctx, func(q store.Queries) error {
+		if parentID != "" {
+			if lockErr := q.LockCategoryTree(ctx); lockErr != nil {
+				return lockErr
+			}
+			if _, pErr := q.GetCategoryByID(ctx, parentID); pErr != nil {
+				if errors.Is(pErr, store.ErrNotFound) {
+					return status.Error(codes.NotFound, "parent category not found")
+				}
+				return pErr
+			}
+		}
+
+		id := uuid.NewString()
+		slug := explicitSlug
+		if slug == "" {
+			base := slugify(name, id[:8])
+			slug = base
+			if _, lookupErr := q.GetCategoryBySlug(ctx, slug); lookupErr == nil {
+				slug = base + "-" + id[:8]
+			} else if !errors.Is(lookupErr, store.ErrNotFound) {
+				return lookupErr
+			}
+		}
+
+		cat, createErr := q.CreateCategory(ctx, store.Category{
+			ID:                id,
+			Name:              name,
+			Slug:              slug,
+			ParentID:          parentID,
+			CommissionRateBps: req.GetCommissionRateBps(),
+			SortOrder:         req.GetSortOrder(),
+		})
+		if createErr != nil {
+			return createErr
+		}
+
+		if _, schedErr := q.InsertCategoryFeeSchedule(ctx, store.CategoryFeeSchedule{
+			ID:                uuid.NewString(),
+			CategoryID:        cat.ID,
+			CommissionRateBps: cat.CommissionRateBps,
+			EffectiveFrom:     now,
+			CreatedBy:         claims.UserID(),
+			Note:              "initial category commission rate",
+			CreatedAt:         now,
+		}); schedErr != nil {
+			return schedErr
+		}
+
+		created = cat
+		return nil
 	})
 	if err != nil {
-		if errors.Is(err, store.ErrAlreadyExists) {
-			return nil, status.Error(codes.AlreadyExists, "category slug already exists")
+		if _, ok := status.FromError(err); ok {
+			return nil, err
 		}
-		return nil, status.Errorf(codes.Internal, "create category: %v", err)
+		switch {
+		case errors.Is(err, store.ErrAlreadyExists):
+			return nil, status.Error(codes.AlreadyExists, "category slug already exists")
+		case errors.Is(err, store.ErrForeignKeyViolation):
+			return nil, status.Error(codes.NotFound, "parent category not found")
+		default:
+			return nil, status.Errorf(codes.Internal, "create category: %v", err)
+		}
 	}
-	return &productv1.CreateCategoryResponse{Category: toProtoCategory(cat)}, nil
+	return &productv1.CreateCategoryResponse{Category: toProtoCategory(created)}, nil
 }
 
 func (s *Server) UpdateCategory(ctx context.Context, req *productv1.UpdateCategoryRequest) (*productv1.UpdateCategoryResponse, error) {
-	if _, err := requireAdmin(ctx); err != nil {
+	claims, err := requireAdmin(ctx)
+	if err != nil {
 		return nil, err
 	}
 	id := strings.TrimSpace(req.GetId())
 	if id == "" {
 		return nil, status.Error(codes.InvalidArgument, "category id is required")
 	}
-	if req.GetCommissionRateBps() < 0 || req.GetCommissionRateBps() > 10000 {
+
+	commissionExplicit := req.GetHasCommissionRateBps() || req.GetCommissionRateBps() != 0
+	if commissionExplicit && (req.GetCommissionRateBps() < 0 || req.GetCommissionRateBps() > 10000) {
 		return nil, status.Error(codes.InvalidArgument, "commission_rate_bps must be between 0 and 10000")
 	}
 
-	existing, err := s.store.GetCategoryByID(ctx, id)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, status.Error(codes.NotFound, "category not found")
+	var explicitSlug string
+	if rawSlug := strings.TrimSpace(req.GetSlug()); rawSlug != "" {
+		normalized := normalizeSlug(rawSlug)
+		if normalized == "" {
+			return nil, status.Error(codes.InvalidArgument, "slug must contain letters or digits")
 		}
-		return nil, status.Errorf(codes.Internal, "get category: %v", err)
+		explicitSlug = normalized
 	}
 
-	name := strings.TrimSpace(req.GetName())
-	if name == "" {
-		name = existing.Name
-	}
-	slug := strings.TrimSpace(req.GetSlug())
-	if slug == "" {
-		slug = existing.Slug
-	}
-	parentID := strings.TrimSpace(req.GetParentId())
-	if parentID == id {
-		return nil, status.Error(codes.InvalidArgument, "category cannot be its own parent")
-	}
-	if parentID != "" {
-		if _, err := s.store.GetCategoryByID(ctx, parentID); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				return nil, status.Error(codes.NotFound, "parent category not found")
+	now := s.now()
+	ctx = store.WithAsOf(ctx, now)
+
+	var updated store.Category
+	err = s.store.WithTx(ctx, func(q store.Queries) error {
+		if lockErr := q.LockCategoryTree(ctx); lockErr != nil {
+			return lockErr
+		}
+
+		existing, getErr := q.GetCategoryByID(ctx, id)
+		if getErr != nil {
+			return getErr
+		}
+
+		name := strings.TrimSpace(req.GetName())
+		if name == "" {
+			name = existing.Name
+		}
+		slug := existing.Slug
+		if explicitSlug != "" {
+			slug = explicitSlug
+		}
+
+		parentID := existing.ParentID
+		if req.GetHasParentId() {
+			parentID = strings.TrimSpace(req.GetParentId())
+		} else if rawParent := strings.TrimSpace(req.GetParentId()); rawParent != "" {
+			parentID = rawParent
+		}
+
+		if parentID == id {
+			return status.Error(codes.InvalidArgument, "category cannot be its own parent")
+		}
+		if parentID != "" {
+			if _, pErr := q.GetCategoryByID(ctx, parentID); pErr != nil {
+				if errors.Is(pErr, store.ErrNotFound) {
+					return status.Error(codes.NotFound, "parent category not found")
+				}
+				return pErr
 			}
-			return nil, status.Errorf(codes.Internal, "lookup parent category: %v", err)
+			hasCycle, cycErr := q.CategoryHasAncestor(ctx, parentID, id)
+			if cycErr != nil {
+				return cycErr
+			}
+			if hasCycle {
+				return status.Error(codes.InvalidArgument, "category parent_id would create a cycle")
+			}
 		}
-	}
 
-	updated, err := s.store.UpdateCategory(ctx, store.Category{
-		ID:                id,
-		Name:              name,
-		Slug:              slug,
-		ParentID:          parentID,
-		CommissionRateBps: req.GetCommissionRateBps(),
-		SortOrder:         req.GetSortOrder(),
+		commissionRateBps := existing.CommissionRateBps
+		if commissionExplicit {
+			commissionRateBps = req.GetCommissionRateBps()
+		}
+
+		sortOrder := existing.SortOrder
+		if req.GetHasSortOrder() || req.GetSortOrder() != 0 {
+			sortOrder = req.GetSortOrder()
+		}
+
+		cat, updErr := q.UpdateCategory(ctx, store.Category{
+			ID:                id,
+			Name:              name,
+			Slug:              slug,
+			ParentID:          parentID,
+			CommissionRateBps: commissionRateBps,
+			SortOrder:         sortOrder,
+		})
+		if updErr != nil {
+			return updErr
+		}
+
+		if commissionExplicit && commissionRateBps != existing.CommissionRateBps {
+			if _, schedErr := q.InsertCategoryFeeSchedule(ctx, store.CategoryFeeSchedule{
+				ID:                uuid.NewString(),
+				CategoryID:        id,
+				CommissionRateBps: commissionRateBps,
+				EffectiveFrom:     now,
+				CreatedBy:         claims.UserID(),
+				Note:              "updated via category edit",
+				CreatedAt:         now,
+			}); schedErr != nil {
+				return schedErr
+			}
+		}
+
+		updated = cat
+		return nil
 	})
 	if err != nil {
-		if errors.Is(err, store.ErrAlreadyExists) {
+		if _, ok := status.FromError(err); ok {
+			return nil, err
+		}
+		switch {
+		case errors.Is(err, store.ErrCategoryCycle):
+			return nil, status.Error(codes.InvalidArgument, "category parent_id would create a cycle")
+		case errors.Is(err, store.ErrAlreadyExists):
 			return nil, status.Error(codes.AlreadyExists, "category slug already exists")
-		}
-		if errors.Is(err, store.ErrNotFound) {
+		case errors.Is(err, store.ErrNotFound):
 			return nil, status.Error(codes.NotFound, "category not found")
+		case errors.Is(err, store.ErrForeignKeyViolation):
+			return nil, status.Error(codes.NotFound, "parent category not found")
+		default:
+			return nil, status.Errorf(codes.Internal, "update category: %v", err)
 		}
-		return nil, status.Errorf(codes.Internal, "update category: %v", err)
 	}
 	return &productv1.UpdateCategoryResponse{Category: toProtoCategory(updated)}, nil
 }
@@ -162,40 +332,61 @@ func (s *Server) DeleteCategory(ctx context.Context, req *productv1.DeleteCatego
 		return nil, status.Error(codes.InvalidArgument, "category id is required")
 	}
 
-	if _, err := s.store.GetCategoryByID(ctx, id); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, status.Error(codes.NotFound, "category not found")
+	ctx = store.WithAsOf(ctx, s.now())
+	err := s.store.WithTx(ctx, func(q store.Queries) error {
+		if lockErr := q.LockCategoryTree(ctx); lockErr != nil {
+			return lockErr
 		}
-		return nil, status.Errorf(codes.Internal, "get category: %v", err)
-	}
+		if _, getErr := q.GetCategoryByID(ctx, id); getErr != nil {
+			return getErr
+		}
 
-	prodCount, err := s.store.CountProductsInCategory(ctx, id)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "count products in category: %v", err)
-	}
-	if prodCount > 0 {
-		return nil, status.Errorf(codes.FailedPrecondition, "category still has %d products; reassign products before deleting", prodCount)
-	}
+		counts, cntErr := q.CountProductsInCategory(ctx, id)
+		if cntErr != nil {
+			return cntErr
+		}
+		if counts.Active > 0 {
+			return status.Errorf(codes.FailedPrecondition, "category still has %d active products; reassign products before deleting", counts.Active)
+		}
+		if counts.Total > 0 {
+			return status.Errorf(codes.FailedPrecondition, "category is still referenced by %d soft-deleted products and cannot be deleted", counts.Total)
+		}
 
-	childCount, err := s.store.CountChildCategories(ctx, id)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "count child categories: %v", err)
-	}
-	if childCount > 0 {
-		return nil, status.Errorf(codes.FailedPrecondition, "category still has %d child categories", childCount)
-	}
+		childCount, childErr := q.CountChildCategories(ctx, id)
+		if childErr != nil {
+			return childErr
+		}
+		if childCount > 0 {
+			return status.Errorf(codes.FailedPrecondition, "category still has %d child categories", childCount)
+		}
 
-	deleted, err := s.store.DeleteCategory(ctx, id)
+		deleted, delErr := q.DeleteCategory(ctx, id)
+		if delErr != nil {
+			return delErr
+		}
+		if !deleted {
+			return store.ErrNotFound
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "delete category: %v", err)
-	}
-	if !deleted {
-		return nil, status.Error(codes.NotFound, "category not found")
+		if _, ok := status.FromError(err); ok {
+			return nil, err
+		}
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			return nil, status.Error(codes.NotFound, "category not found")
+		case errors.Is(err, store.ErrForeignKeyViolation):
+			return nil, status.Error(codes.FailedPrecondition, "category is still referenced by products or child categories and cannot be deleted")
+		default:
+			return nil, status.Errorf(codes.Internal, "delete category: %v", err)
+		}
 	}
 	return &productv1.DeleteCategoryResponse{Ok: true}, nil
 }
 
 func (s *Server) ListCategories(ctx context.Context, req *productv1.ListCategoriesRequest) (*productv1.ListCategoriesResponse, error) {
+	ctx = store.WithAsOf(ctx, s.now())
 	cats, err := s.store.ListCategories(ctx, strings.TrimSpace(req.GetParentId()))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list categories: %v", err)
@@ -207,10 +398,134 @@ func (s *Server) ListCategories(ctx context.Context, req *productv1.ListCategori
 	return &productv1.ListCategoriesResponse{Categories: out}, nil
 }
 
+func (s *Server) GetCategoryDescendants(ctx context.Context, req *productv1.GetCategoryDescendantsRequest) (*productv1.GetCategoryDescendantsResponse, error) {
+	if _, ok := auth.ClaimsFromContext(ctx); !ok {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	rawIDs := req.GetCategoryIds()
+	if len(rawIDs) == 0 {
+		return &productv1.GetCategoryDescendantsResponse{CategoryIds: []string{}}, nil
+	}
+	seen := make(map[string]struct{}, len(rawIDs))
+	uniqueIDs := make([]string, 0, len(rawIDs))
+	for _, raw := range rawIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; !exists {
+			seen[id] = struct{}{}
+			uniqueIDs = append(uniqueIDs, id)
+		}
+	}
+	if len(uniqueIDs) == 0 {
+		return &productv1.GetCategoryDescendantsResponse{CategoryIds: []string{}}, nil
+	}
+
+	ids, err := s.store.GetCategoryDescendants(ctx, uniqueIDs)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get category descendants: %v", err)
+	}
+	return &productv1.GetCategoryDescendantsResponse{CategoryIds: ids}, nil
+}
+
+func (s *Server) SetCategoryFeeSchedule(ctx context.Context, req *productv1.SetCategoryFeeScheduleRequest) (*productv1.SetCategoryFeeScheduleResponse, error) {
+	claims, err := requireAdmin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	categoryID := strings.TrimSpace(req.GetCategoryId())
+	if categoryID == "" {
+		return nil, status.Error(codes.InvalidArgument, "category_id is required")
+	}
+	bps := req.GetCommissionRateBps()
+	if bps < 0 || bps > 10000 {
+		return nil, status.Error(codes.InvalidArgument, "commission_rate_bps must be between 0 and 10000")
+	}
+
+	now := s.now()
+	effectiveFrom := now
+	if req.GetEffectiveFrom() != nil {
+		if err := req.GetEffectiveFrom().CheckValid(); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid effective_from timestamp: %v", err)
+		}
+		effectiveFrom = req.GetEffectiveFrom().AsTime().UTC()
+		if effectiveFrom.Before(now) {
+			return nil, status.Error(codes.InvalidArgument, "effective_from must be >= current time; past fee schedules cannot be created or modified")
+		}
+	}
+
+	ctx = store.WithAsOf(ctx, now)
+	var created store.CategoryFeeSchedule
+	err = s.store.WithTx(ctx, func(q store.Queries) error {
+		if _, getErr := q.GetCategoryByID(ctx, categoryID); getErr != nil {
+			return getErr
+		}
+		sched, insErr := q.InsertCategoryFeeSchedule(ctx, store.CategoryFeeSchedule{
+			ID:                uuid.NewString(),
+			CategoryID:        categoryID,
+			CommissionRateBps: bps,
+			EffectiveFrom:     effectiveFrom,
+			CreatedBy:         claims.UserID(),
+			Note:              strings.TrimSpace(req.GetNote()),
+			CreatedAt:         now,
+		})
+		if insErr != nil {
+			return insErr
+		}
+		if !effectiveFrom.After(now) {
+			if updErr := q.UpdateCategoryCommissionRate(ctx, categoryID, bps); updErr != nil {
+				return updErr
+			}
+		}
+		created = sched
+		return nil
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrForeignKeyViolation):
+			return nil, status.Error(codes.NotFound, "category not found")
+		default:
+			return nil, status.Errorf(codes.Internal, "set category fee schedule: %v", err)
+		}
+	}
+	return &productv1.SetCategoryFeeScheduleResponse{Schedule: toProtoCategoryFeeSchedule(created)}, nil
+}
+
+func (s *Server) ListCategoryFeeSchedules(ctx context.Context, req *productv1.ListCategoryFeeSchedulesRequest) (*productv1.ListCategoryFeeSchedulesResponse, error) {
+	if _, err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
+	page := req.GetPage()
+	if page <= 0 {
+		page = 1
+	}
+	pageSize := req.GetPageSize()
+	if pageSize <= 0 {
+		pageSize = defaultPageSize
+	}
+	if pageSize > maxPageSize {
+		pageSize = maxPageSize
+	}
+
+	schedules, total, err := s.store.ListCategoryFeeSchedules(ctx, strings.TrimSpace(req.GetCategoryId()), pageSize, (page-1)*pageSize)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list category fee schedules: %v", err)
+	}
+	out := make([]*productv1.CategoryFeeSchedule, 0, len(schedules))
+	for _, sc := range schedules {
+		out = append(out, toProtoCategoryFeeSchedule(sc))
+	}
+	return &productv1.ListCategoryFeeSchedulesResponse{
+		Schedules: out,
+		Total:     total,
+	}, nil
+}
+
 // --- Products ---
 
 func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProductRequest) (*productv1.CreateProductResponse, error) {
-	shopID, _, _, err := resolveSellerOrAdminShop(ctx, req.GetShopId())
+	shopID, claims, _, err := resolveSellerOrAdminShop(ctx, req.GetShopId())
 	if err != nil {
 		return nil, err
 	}
@@ -229,6 +544,9 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 	if len(req.GetSkus()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "at least one SKU is required")
 	}
+
+	now := s.now()
+	ctx = store.WithAsOf(ctx, now)
 
 	cat, err := s.store.GetCategoryByID(ctx, categoryID)
 	if err != nil {
@@ -256,6 +574,7 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 		createdProd store.Product
 		createdSKUs []store.SKU
 	)
+	actorID := claims.UserID()
 
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
 		prodID := uuid.NewString()
@@ -308,6 +627,7 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 				Name:              in.Name,
 				Attributes:        in.Attributes,
 				PriceVND:          in.PriceVND,
+				MinPrice30dVND:    in.PriceVND,
 				Stock:             in.Stock,
 				WeightGrams:       in.WeightGrams,
 				ImageURL:          in.ImageURL,
@@ -319,6 +639,16 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 			if skuErr != nil {
 				return skuErr
 			}
+			if phErr := q.InsertSKUPriceHistory(ctx, store.SKUPriceHistoryEntry{
+				ID:         uuid.NewString(),
+				SKUID:      sk.ID,
+				PriceVND:   sk.PriceVND,
+				ActorID:    actorID,
+				Reason:     "create sku",
+				RecordedAt: now,
+			}); phErr != nil {
+				return phErr
+			}
 			createdSKUs = append(createdSKUs, sk)
 		}
 		return nil
@@ -327,10 +657,14 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 		if _, ok := status.FromError(err); ok {
 			return nil, err
 		}
-		if errors.Is(err, store.ErrAlreadyExists) {
+		switch {
+		case errors.Is(err, store.ErrAlreadyExists):
 			return nil, status.Error(codes.AlreadyExists, "duplicate product slug or sku_code")
+		case errors.Is(err, store.ErrForeignKeyViolation):
+			return nil, status.Error(codes.NotFound, "category not found")
+		default:
+			return nil, status.Errorf(codes.Internal, "create product: %v", err)
 		}
-		return nil, status.Errorf(codes.Internal, "create product: %v", err)
 	}
 
 	return &productv1.CreateProductResponse{
@@ -348,6 +682,9 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 	if id == "" {
 		return nil, status.Error(codes.InvalidArgument, "product id is required")
 	}
+
+	now := s.now()
+	ctx = store.WithAsOf(ctx, now)
 
 	existing, err := s.store.GetProductByID(ctx, id)
 	if err != nil {
@@ -485,6 +822,18 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 					}); updErr != nil {
 						return updErr
 					}
+					if in.PriceVND != cur.PriceVND {
+						if phErr := q.InsertSKUPriceHistory(ctx, store.SKUPriceHistoryEntry{
+							ID:         uuid.NewString(),
+							SKUID:      cur.ID,
+							PriceVND:   in.PriceVND,
+							ActorID:    actorID,
+							Reason:     "update sku price",
+							RecordedAt: now,
+						}); phErr != nil {
+							return phErr
+						}
+					}
 				} else if old, ok := inactiveByCode[in.SKUCode]; ok {
 					if in.Stock < old.ReservedStock {
 						return store.ErrInvalidStock
@@ -507,6 +856,18 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 					if reactErr != nil {
 						return reactErr
 					}
+					if in.PriceVND != old.PriceVND {
+						if phErr := q.InsertSKUPriceHistory(ctx, store.SKUPriceHistoryEntry{
+							ID:         uuid.NewString(),
+							SKUID:      old.ID,
+							PriceVND:   in.PriceVND,
+							ActorID:    actorID,
+							Reason:     "reactivate sku price",
+							RecordedAt: now,
+						}); phErr != nil {
+							return phErr
+						}
+					}
 					if in.Stock != old.Stock {
 						if histErr := q.InsertStockHistory(ctx, store.StockHistoryEntry{
 							ID:             uuid.NewString(),
@@ -525,7 +886,7 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 					}
 					delete(inactiveByCode, in.SKUCode)
 				} else {
-					_, createErr := q.CreateSKU(ctx, store.SKU{
+					createdSKU, createErr := q.CreateSKU(ctx, store.SKU{
 						ID:                uuid.NewString(),
 						ProductID:         id,
 						ShopID:            existing.ShopID,
@@ -534,6 +895,7 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 						Name:              in.Name,
 						Attributes:        in.Attributes,
 						PriceVND:          in.PriceVND,
+						MinPrice30dVND:    in.PriceVND,
 						Stock:             in.Stock,
 						WeightGrams:       in.WeightGrams,
 						ImageURL:          in.ImageURL,
@@ -544,6 +906,16 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 					})
 					if createErr != nil {
 						return createErr
+					}
+					if phErr := q.InsertSKUPriceHistory(ctx, store.SKUPriceHistoryEntry{
+						ID:         uuid.NewString(),
+						SKUID:      createdSKU.ID,
+						PriceVND:   createdSKU.PriceVND,
+						ActorID:    actorID,
+						Reason:     "create sku",
+						RecordedAt: now,
+					}); phErr != nil {
+						return phErr
 					}
 				}
 			}
@@ -617,6 +989,8 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 			return nil, status.Error(codes.FailedPrecondition, "cannot update stock of inactive SKU")
 		case errors.Is(err, store.ErrNotFound):
 			return nil, status.Error(codes.NotFound, "sku not found")
+		case errors.Is(err, store.ErrForeignKeyViolation):
+			return nil, status.Error(codes.NotFound, "category not found")
 		default:
 			return nil, status.Errorf(codes.Internal, "update product: %v", err)
 		}
@@ -636,6 +1010,9 @@ func (s *Server) DeleteProduct(ctx context.Context, req *productv1.DeleteProduct
 	if id == "" {
 		return nil, status.Error(codes.InvalidArgument, "product id is required")
 	}
+
+	now := s.now()
+	ctx = store.WithAsOf(ctx, now)
 
 	existing, err := s.store.GetProductByID(ctx, id)
 	if err != nil {
@@ -676,13 +1053,15 @@ func (s *Server) AdminReviewProduct(ctx context.Context, req *productv1.AdminRev
 		return nil, status.Error(codes.InvalidArgument, "product_id is required")
 	}
 
-	var targetStatus, reason string
+	var decisionStr, reason string
+	isApprove := false
 	switch req.GetDecision() {
 	case productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE:
-		targetStatus = store.ProductStatusApproved
+		isApprove = true
+		decisionStr = "APPROVE"
 		reason = ""
 	case productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_REJECT:
-		targetStatus = store.ProductStatusRejected
+		decisionStr = "REJECT"
 		reason = strings.TrimSpace(req.GetReason())
 		if reason == "" {
 			return nil, status.Error(codes.InvalidArgument, "rejection reason is required")
@@ -691,17 +1070,141 @@ func (s *Server) AdminReviewProduct(ctx context.Context, req *productv1.AdminRev
 		return nil, status.Error(codes.InvalidArgument, "review decision must be APPROVE or REJECT")
 	}
 
-	updated, err := s.store.UpdateProductReview(ctx, productID, targetStatus, reason)
+	now := s.now()
+	ctx = store.WithAsOf(ctx, now)
+	traceID, traceparent := traceMetaFromContext(ctx)
+
+	var (
+		updated       store.Product
+		skus          []store.SKU
+		emittedOutbox bool
+	)
+	err := s.store.WithTx(ctx, func(q store.Queries) error {
+		// Lock product row (excludes soft-deleted rows -> ErrNotFound).
+		cur, getErr := q.GetProductByIDForUpdate(ctx, productID)
+		if getErr != nil {
+			return getErr
+		}
+
+		if isApprove {
+			// Seller-hidden product must not be silently re-opened by admin APPROVE.
+			if cur.Status == store.ProductStatusHidden {
+				return status.Error(codes.FailedPrecondition, "cannot approve a product hidden by seller; seller must unhide or resubmit it")
+			}
+			// Idempotent no-op when already APPROVED or OUT_OF_STOCK: do not emit duplicate product.reviewed.
+			if cur.Status == store.ProductStatusApproved || cur.Status == store.ProductStatusOutOfStock {
+				loadedSKUs, skuErr := q.ListSKUsByProductIDs(ctx, []string{productID})
+				if skuErr != nil {
+					return skuErr
+				}
+				updated = cur
+				skus = loadedSKUs
+				return nil
+			}
+
+			p, updErr := q.UpdateProductReview(ctx, productID, store.ProductStatusApproved, "")
+			if updErr != nil {
+				return updErr
+			}
+			// Transition to OUT_OF_STOCK immediately if all active SKUs have zero stock.
+			if syncErr := syncProductStockStatus(ctx, q, productID, p.Status, 0); syncErr != nil {
+				return syncErr
+			}
+			refreshed, refErr := q.GetProductByID(ctx, productID)
+			if refErr != nil {
+				return refErr
+			}
+			p = refreshed
+
+			payloadBytes, mErr := json.Marshal(events.ProductReviewedPayload{
+				ProductID:   p.ID,
+				ProductName: p.Name,
+				ShopID:      p.ShopID,
+				Decision:    decisionStr,
+				Reason:      reason,
+				OccurredAt:  now.Format(time.RFC3339),
+			})
+			if mErr != nil {
+				return fmt.Errorf("marshal product.reviewed payload: %w", mErr)
+			}
+			if obErr := q.InsertOutboxEvent(ctx, store.OutboxEvent{
+				ID:          uuid.NewString(),
+				EventType:   events.SubjectProductReviewed,
+				TraceID:     traceID,
+				Traceparent: traceparent,
+				PayloadJSON: payloadBytes,
+				CreatedAt:   now,
+			}); obErr != nil {
+				return obErr
+			}
+			loadedSKUs, skuErr := q.ListSKUsByProductIDs(ctx, []string{productID})
+			if skuErr != nil {
+				return skuErr
+			}
+			updated = p
+			skus = loadedSKUs
+			emittedOutbox = true
+			return nil
+		}
+
+		// Decision == REJECT: idempotent no-op when already REJECTED with the same reason.
+		// Admin takedown from APPROVED / OUT_OF_STOCK / HIDDEN -> REJECTED remains permitted.
+		if cur.Status == store.ProductStatusRejected && cur.RejectionReason == reason {
+			loadedSKUs, skuErr := q.ListSKUsByProductIDs(ctx, []string{productID})
+			if skuErr != nil {
+				return skuErr
+			}
+			updated = cur
+			skus = loadedSKUs
+			return nil
+		}
+
+		p, updErr := q.UpdateProductReview(ctx, productID, store.ProductStatusRejected, reason)
+		if updErr != nil {
+			return updErr
+		}
+		payloadBytes, mErr := json.Marshal(events.ProductReviewedPayload{
+			ProductID:   p.ID,
+			ProductName: p.Name,
+			ShopID:      p.ShopID,
+			Decision:    decisionStr,
+			Reason:      reason,
+			OccurredAt:  now.Format(time.RFC3339),
+		})
+		if mErr != nil {
+			return fmt.Errorf("marshal product.reviewed payload: %w", mErr)
+		}
+		if obErr := q.InsertOutboxEvent(ctx, store.OutboxEvent{
+			ID:          uuid.NewString(),
+			EventType:   events.SubjectProductReviewed,
+			TraceID:     traceID,
+			Traceparent: traceparent,
+			PayloadJSON: payloadBytes,
+			CreatedAt:   now,
+		}); obErr != nil {
+			return obErr
+		}
+		loadedSKUs, skuErr := q.ListSKUsByProductIDs(ctx, []string{productID})
+		if skuErr != nil {
+			return skuErr
+		}
+		updated = p
+		skus = loadedSKUs
+		emittedOutbox = true
+		return nil
+	})
 	if err != nil {
+		if _, ok := status.FromError(err); ok {
+			return nil, err
+		}
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, status.Error(codes.NotFound, "product not found")
 		}
 		return nil, status.Errorf(codes.Internal, "review product: %v", err)
 	}
 
-	skus, err := s.store.ListSKUsByProductIDs(ctx, []string{productID})
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "load product skus: %v", err)
+	if emittedOutbox {
+		s.triggerOutbox()
 	}
 
 	return &productv1.AdminReviewProductResponse{
@@ -716,6 +1219,7 @@ func (s *Server) GetProduct(ctx context.Context, req *productv1.GetProductReques
 		return nil, status.Error(codes.InvalidArgument, "product id or slug is required")
 	}
 
+	ctx = store.WithAsOf(ctx, s.now())
 	var (
 		prod store.Product
 		err  error
@@ -744,6 +1248,7 @@ func (s *Server) GetProduct(ctx context.Context, req *productv1.GetProductReques
 }
 
 func (s *Server) ListProducts(ctx context.Context, req *productv1.ListProductsRequest) (*productv1.ListProductsResponse, error) {
+	ctx = store.WithAsOf(ctx, s.now())
 	page := req.GetPage()
 	if page <= 0 {
 		page = 1
@@ -816,6 +1321,7 @@ func (s *Server) ListProducts(ctx context.Context, req *productv1.ListProductsRe
 }
 
 func (s *Server) GetSKUsBatch(ctx context.Context, req *productv1.GetSKUsBatchRequest) (*productv1.GetSKUsBatchResponse, error) {
+	ctx = store.WithAsOf(ctx, s.now())
 	rawIDs := req.GetSkuIds()
 	if len(rawIDs) == 0 {
 		return &productv1.GetSKUsBatchResponse{Skus: []*productv1.SKU{}}, nil
@@ -868,6 +1374,7 @@ func (s *Server) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequ
 		return nil, status.Error(codes.InvalidArgument, "expected_version must be > 0")
 	}
 
+	ctx = store.WithAsOf(ctx, s.now())
 	var updatedSKU store.SKU
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
 		cur, getErr := q.GetSKUWithContext(ctx, skuID)
@@ -938,6 +1445,17 @@ func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRe
 
 		var resp *productv1.ReserveStockResponse
 		txErr := s.store.WithTx(ctx, func(q store.Queries) error {
+			if lockErr := q.LockStockOrder(ctx, orderID); lockErr != nil {
+				return lockErr
+			}
+			tombstoned, tErr := q.HasStockReleaseTombstone(ctx, orderID)
+			if tErr != nil {
+				return tErr
+			}
+			if tombstoned {
+				return status.Error(codes.FailedPrecondition, "stock reservation for this order was already released")
+			}
+
 			existing, listErr := q.ListReservationsByOrderID(ctx, orderID, false)
 			if listErr != nil {
 				return listErr
@@ -1027,6 +1545,9 @@ func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRe
 		if errors.Is(txErr, store.ErrInsufficientStock) {
 			return nil, status.Error(codes.FailedPrecondition, "INSUFFICIENT_STOCK: not enough available stock")
 		}
+		if errors.Is(txErr, store.ErrOrderAlreadyReleased) {
+			return nil, status.Error(codes.FailedPrecondition, "stock reservation for this order was already released")
+		}
 		if errors.Is(txErr, store.ErrVersionConflict) || errors.Is(txErr, store.ErrDuplicateReservation) {
 			s.logger.DebugContext(ctx, "retrying stock reservation after concurrent conflict",
 				slog.String("order_id", orderID),
@@ -1042,6 +1563,9 @@ func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRe
 }
 
 func (s *Server) ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRequest) (*productv1.ReleaseStockResponse, error) {
+	if _, err := requireServiceOrAdmin(ctx); err != nil {
+		return nil, err
+	}
 	orderID := strings.TrimSpace(req.GetOrderId())
 	if orderID == "" {
 		return nil, status.Error(codes.InvalidArgument, "order_id is required")
@@ -1056,14 +1580,24 @@ func (s *Server) ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRe
 
 		var resp *productv1.ReleaseStockResponse
 		txErr := s.store.WithTx(ctx, func(q store.Queries) error {
+			if lockErr := q.LockStockOrder(ctx, orderID); lockErr != nil {
+				return lockErr
+			}
 			rows, listErr := q.ListReservationsByOrderID(ctx, orderID, true)
 			if listErr != nil {
 				return listErr
 			}
 			if len(rows) == 0 {
+				// Record release tombstone so any delayed ReserveStock for this order_id cannot leak stuck stock.
+				// First tombstone insert reports Released=false, AlreadyReleased=false; repeat hits on an
+				// existing tombstone report Released=true, AlreadyReleased=true (matching the allReleased branch).
+				inserted, tErr := q.InsertStockReleaseTombstone(ctx, orderID)
+				if tErr != nil {
+					return tErr
+				}
 				resp = &productv1.ReleaseStockResponse{
-					Released:        false,
-					AlreadyReleased: false,
+					Released:        !inserted,
+					AlreadyReleased: !inserted,
 				}
 				return nil
 			}
@@ -1142,6 +1676,9 @@ func (s *Server) ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRe
 }
 
 func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRequest) (*productv1.ConfirmStockResponse, error) {
+	if _, err := requireServiceOrAdmin(ctx); err != nil {
+		return nil, err
+	}
 	orderID := strings.TrimSpace(req.GetOrderId())
 	if orderID == "" {
 		return nil, status.Error(codes.InvalidArgument, "order_id is required")
@@ -1156,11 +1693,21 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 
 		var resp *productv1.ConfirmStockResponse
 		txErr := s.store.WithTx(ctx, func(q store.Queries) error {
+			if lockErr := q.LockStockOrder(ctx, orderID); lockErr != nil {
+				return lockErr
+			}
 			rows, listErr := q.ListReservationsByOrderID(ctx, orderID, true)
 			if listErr != nil {
 				return listErr
 			}
 			if len(rows) == 0 {
+				tombstoned, tErr := q.HasStockReleaseTombstone(ctx, orderID)
+				if tErr != nil {
+					return tErr
+				}
+				if tombstoned {
+					return status.Error(codes.FailedPrecondition, "cannot confirm stock reservation that was already released")
+				}
 				return status.Error(codes.NotFound, "stock reservation not found for order")
 			}
 
@@ -1679,10 +2226,26 @@ func toProtoCategory(c store.Category) *productv1.Category {
 	}
 }
 
+func toProtoCategoryFeeSchedule(sc store.CategoryFeeSchedule) *productv1.CategoryFeeSchedule {
+	return &productv1.CategoryFeeSchedule{
+		Id:                sc.ID,
+		CategoryId:        sc.CategoryID,
+		CommissionRateBps: sc.CommissionRateBps,
+		EffectiveFrom:     timestamppb.New(sc.EffectiveFrom),
+		CreatedBy:         sc.CreatedBy,
+		Note:              sc.Note,
+		CreatedAt:         timestamppb.New(sc.CreatedAt),
+	}
+}
+
 func toProtoSKU(s store.SKU) *productv1.SKU {
 	attrs := make(map[string]string, len(s.Attributes))
 	for k, v := range s.Attributes {
 		attrs[k] = v
+	}
+	minPrice30d := s.MinPrice30dVND
+	if minPrice30d <= 0 {
+		minPrice30d = s.PriceVND
 	}
 	return &productv1.SKU{
 		Id:                s.ID,
@@ -1693,6 +2256,7 @@ func toProtoSKU(s store.SKU) *productv1.SKU {
 		Name:              s.Name,
 		Attributes:        attrs,
 		PriceVnd:          s.PriceVND,
+		MinPrice_30DVnd:   minPrice30d,
 		Stock:             s.Stock,
 		ReservedStock:     s.ReservedStock,
 		AvailableStock:    s.AvailableStock(),

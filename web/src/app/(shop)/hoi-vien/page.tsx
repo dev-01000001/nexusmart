@@ -1,22 +1,14 @@
 "use client";
 
-import React, { Suspense, useMemo, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
-import { useRouter } from "next/navigation";
-import {
-  INITIAL_USER_COINS,
-  MEMBERSHIP_TIERS,
-  PRODUCTS,
-  REFERRAL_CONFIG,
-  SAMPLE_DATA_NOTICE,
-  XU_POLICY,
-  getNextTierInfo,
-} from "@/data";
+import { MEMBERSHIP_TIERS, PRODUCTS, REFERRAL_CONFIG, SAMPLE_DATA_NOTICE, XU_POLICY } from "@/data";
 import type { MembershipTierId } from "@/data";
 import { MEDIA_BANNERS } from "@/data/media";
+import { api } from "@/lib/api";
+import type { GatewayCoinBalance } from "@/lib/gateway-types";
 import { formatDateVi, formatInt, formatVnd } from "@/lib/format";
 import { useSession } from "@/context/SessionContext";
-import { useCart } from "@/context/CartContext";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, ProductCard, StateView } from "@/components";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
@@ -24,10 +16,8 @@ import shared from "@/features/commerce/commerce.module.css";
 import styles from "./page.module.css";
 
 function MembershipPageContent() {
-  const router = useRouter();
   const viewState = usePageStateParam();
-  const { user } = useSession();
-  const { saveVoucherCode } = useCart();
+  const { user, isAuthenticated } = useSession();
   const {
     membership,
     membershipTier,
@@ -36,7 +26,27 @@ function MembershipPageContent() {
     inviteFriendMock,
     showToast,
   } = useMockStore();
-  const coins = INITIAL_USER_COINS;
+  const [realCoinBalance, setRealCoinBalance] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setRealCoinBalance(null);
+      return;
+    }
+    let active = true;
+    void api<GatewayCoinBalance>("/coins/balance")
+      .then((res) => {
+        if (active && typeof res?.balance === "number") {
+          setRealCoinBalance(Math.max(0, Math.trunc(res.balance)));
+        }
+      })
+      .catch(() => {
+        if (active) setRealCoinBalance(0);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isAuthenticated]);
 
   const [birthdayDraft, setBirthdayDraft] = useState(membership.birthday || "1996-11-24");
   const [friendName, setFriendName] = useState("");
@@ -46,7 +56,6 @@ function MembershipPageContent() {
     `${viewState ?? "live"}-${membershipTier.id}-${membership.referrals.length}-${membership.xuHistory.length}`
   );
 
-  const nextTier = useMemo(() => getNextTierInfo(membership.spend4Q), [membership.spend4Q]);
   const suggestedProducts = useMemo(() => PRODUCTS.slice(0, 4), []);
 
   const selectedTier = useMemo(
@@ -155,15 +164,21 @@ function MembershipPageContent() {
     );
   }
 
-  const spendDeltaToSelected = Math.max(0, selectedTier.minSpend4Q - membership.spend4Q);
-
   return (
     <div className={shared.page}>
       {renderHeader(
-        "Hoàn 1–6% Xu cho mỗi đơn hoàn tất, nhân đôi vào Thứ Sáu và dùng trừ trực tiếp trên cả 4 xưởng dệt."
+        "Bản xem trước, dữ liệu mẫu cho chương trình phân hạng Hội viên Nexus. Số dư Xu của tài khoản đăng nhập được đọc trực tiếp từ hệ thống."
       )}
 
-      {/* Section 1: Dark Membership Status Card + Primary White Editorial Xu Policy */}
+      <section className={shared.section}>
+        <p className={`${shared.feedbackBox} ${shared.feedbackWarn}`} role="note">
+          <strong>Bản xem trước, dữ liệu mẫu:</strong> Hệ thống phân hạng 4 quý, quà sinh nhật và
+          giới thiệu bạn bè trên trang này đang dùng dữ liệu minh họa, không phản ánh chi tiêu thật
+          của tài khoản. Số dư Xu của bạn được lấy trực tiếp từ ví Xu NexusMart.
+        </p>
+      </section>
+
+      {/* Section 1: Real Xu Balance Card + Primary White Editorial Xu Policy */}
       <section className={shared.section}>
         <div className={styles.twoColGrid}>
           <div
@@ -173,75 +188,43 @@ function MembershipPageContent() {
           >
             <div className={styles.tierTopRow}>
               <div>
-                <h2 className={styles.tierNameBig}>Hạng {membershipTier.name}</h2>
+                <h2 className={styles.tierNameBig}>Ví Xu NexusMart</h2>
                 <p className={styles.memberSub}>
-                  Hội viên Nexus · {user?.full_name ?? "Thành viên"}
+                  {isAuthenticated && user
+                    ? `Tài khoản: ${user.full_name}`
+                    : "Đăng nhập để xem số dư Xu thật của tài khoản"}
                 </p>
               </div>
-              <span className={styles.tierRateBadge}>
-                Hoàn {membershipTier.cashbackPercentLabel} Xu · Thứ Sáu x2
-              </span>
+              <span className={styles.tierRateBadge}>1 Xu = 1₫</span>
             </div>
 
-            <div className={styles.darkProgressBlock}>
-              <div className={styles.darkProgressMeta}>
-                <span>
-                  Chi tiêu 4 quý: <strong className="num">{formatVnd(membership.spend4Q)}</strong>
-                </span>
-                <span className="num">
-                  {nextTier.next
-                    ? `Còn ${formatVnd(nextTier.remainingVnd)} lên hạng ${nextTier.next.name}`
-                    : "Đã đạt hạng cao nhất"}
-                </span>
-              </div>
-              <div className={styles.darkTrack} aria-hidden="true">
-                <div
-                  className={styles.darkFill}
-                  style={{ width: `${nextTier.progressPercent}%` }}
-                />
-              </div>
-            </div>
-
-            {/* Unboxed prominent Xu figures (zero nested boxes) */}
             <div className={styles.xuStatsRow}>
               <div
                 className={styles.xuStatItem}
                 data-rise=""
                 style={{ "--i": 3 } as React.CSSProperties}
               >
-                <span className={`${styles.xuStatBig} num`}>{formatInt(coins)} Xu</span>
-                <span className={styles.xuStatLabel}>Xu khả dụng (1 Xu = 1₫)</span>
+                <span className={`${styles.xuStatBig} num`}>
+                  {isAuthenticated ? `${formatInt(realCoinBalance ?? 0)} Xu` : "0 Xu"}
+                </span>
+                <span className={styles.xuStatLabel}>
+                  {isAuthenticated ? "Số dư Xu thật khả dụng" : "Chưa đăng nhập"}
+                </span>
               </div>
               <div
                 className={styles.xuStatItem}
                 data-rise=""
                 style={{ "--i": 4 } as React.CSSProperties}
               >
-                <span className={`${styles.xuStatMed} num`}>
-                  {formatInt(membership.pendingCoins)} Xu
-                </span>
-                <span className={styles.xuStatLabel}>Đang chờ duyệt</span>
-              </div>
-              <div
-                className={styles.xuStatItem}
-                data-rise=""
-                style={{ "--i": 5 } as React.CSSProperties}
-              >
-                <span className={`${styles.xuStatMed} num`}>
-                  {formatInt(membership.expiringCoins)} Xu
-                </span>
-                <span className={styles.xuStatLabel}>
-                  Sắp hết hạn ({membership.expiringDateLabel})
-                </span>
+                <span className={`${styles.xuStatMed} num`}>Chưa mở</span>
+                <span className={styles.xuStatLabel}>Phân hạng 4 quý (xem trước)</span>
               </div>
             </div>
 
             <div className={styles.retentionStrip}>
               <p className={styles.retentionCopy}>
-                <strong>Nhắc giữ hạng:</strong> Chi tiêu thêm{" "}
-                <strong className="num">{formatVnd(membership.retentionTargetVnd)}</strong> trước{" "}
-                <strong className="num">{membership.retentionDeadline}</strong> để giữ vững quyền
-                lợi hạng {membershipTier.name} cho chu kỳ 4 quý kế tiếp.
+                Số dư Xu khả dụng có thể áp dụng trực tiếp tại giỏ hàng và màn hình thanh toán. Các
+                bảng hạng thành viên và lịch sử mẫu bên dưới chỉ phục vụ xem trước giao diện.
               </p>
             </div>
           </div>
@@ -320,15 +303,11 @@ function MembershipPageContent() {
                 Hạng {selectedTier.name} · Hoàn {selectedTier.cashbackPercentLabel} Xu
               </h3>
               <p className={styles.bodyCopy}>
-                Ngưỡng xét hạng từ{" "}
+                Ngưỡng xét hạng dự kiến từ{" "}
                 <strong className="num">{formatVnd(selectedTier.minSpend4Q)}</strong> / 4 quý, nhân
                 đôi vào Thứ Sáu lên{" "}
-                <strong className="num">{Math.round(selectedTier.cashbackRate * 200)}%</strong>.{" "}
-                {selectedTier.id === membershipTier.id
-                  ? "Đây là hạng hiện tại của bạn."
-                  : spendDeltaToSelected > 0
-                    ? `Cần thêm ${formatVnd(spendDeltaToSelected)} chi tiêu để đạt hạng này.`
-                    : "Bạn đã vượt qua ngưỡng chi tiêu của hạng này."}
+                <strong className="num">{Math.round(selectedTier.cashbackRate * 200)}%</strong> (dữ
+                liệu minh họa).
               </p>
             </div>
             <ul className={styles.spotlightPerks}>
@@ -423,17 +402,14 @@ function MembershipPageContent() {
             </div>
             <div className={shared.formActions}>
               <Button
-                variant="primary"
+                variant="secondary"
                 size="md"
-                disabled={membershipTier.id === "thanh_vien" || membership.birthdayGiftClaimed}
-                onClick={() => {
-                  claimBirthdayGift();
-                  router.push("/gio-hang");
-                }}
+                disabled={membership.birthdayGiftClaimed}
+                onClick={() => claimBirthdayGift()}
               >
                 {membership.birthdayGiftClaimed
-                  ? "Đã kích hoạt quà sinh nhật & SINHNHAT50"
-                  : "Nhận quà sinh nhật vào giỏ"}
+                  ? "Đã xem thử ưu đãi sinh nhật"
+                  : "Xem thử ưu đãi sinh nhật"}
               </Button>
             </div>
           </div>
@@ -478,16 +454,13 @@ function MembershipPageContent() {
               đồng hành nhiều nhất: <strong>{membership.yearInReview.favoriteShopName}</strong>.
             </p>
             <div className={shared.formActions}>
-              <Button variant="ink" size="sm" onClick={() => saveVoucherCode("NEXUSVIP12")}>
-                Lưu mã tri ân NEXUSVIP12
-              </Button>
               <Button
                 variant="secondary"
                 size="sm"
                 className={shared.wrapBtn}
                 href="/chien-dich/soi-xanh-nexus"
               >
-                Đóng góp Sợi Xanh ({formatVnd(membership.yearInReview.csrContributedVnd)})
+                Xem chiến dịch Sợi Xanh
               </Button>
             </div>
           </div>
@@ -558,7 +531,7 @@ function MembershipPageContent() {
                           {r.status === "da_cong_xu"
                             ? "Đã cộng Xu"
                             : r.status === "cho_het_han_45_ngay"
-                              ? "Chờ hết hạn 45 ngày"
+                              ? "Chờ hết hạn 7 ngày"
                               : "Chờ đặt đơn"}
                         </span>
                       </td>
@@ -638,7 +611,11 @@ export default function MembershipPage() {
     <Suspense
       fallback={
         <div className={shared.page}>
-          <StateView kind="loading" title="Đang tải chương trình Hội viên Nexus..." rows={4} />
+          <StateView
+            kind="loading"
+            title="Đang tải chương trình Hội viên Nexus (Bản xem trước, dữ liệu mẫu)..."
+            rows={4}
+          />
         </div>
       }
     >

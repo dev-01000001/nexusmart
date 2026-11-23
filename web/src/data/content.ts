@@ -156,7 +156,7 @@ export const ANNOUNCEMENT_BAR: AnnouncementItem[] = [
   },
   {
     id: "ann-return45",
-    text: "Đổi trả miễn phí 45 ngày, bưu tá đổi size 2 chiều tận nơi",
+    text: "Đổi trả miễn phí 7 ngày, bưu tá đổi size 2 chiều tận nơi",
     href: "/tro-giup",
     ctaLabel: "Xem chính sách",
   },
@@ -358,7 +358,7 @@ export const COLLECTIONS: CollectionItem[] = [
     benefitPoints: [
       "Bảng màu trung tính dễ phối lẫn giữa áo thun, quần short và jogger.",
       "Áp dụng giảm thêm theo tầng: mua 2 giảm 10%, mua 3 giảm 15%.",
-      "Hỗ trợ đổi size 2 chiều tận nơi miễn phí trong 45 ngày.",
+      "Hỗ trợ đổi size 2 chiều tận nơi miễn phí trong 7 ngày.",
     ],
     productIds: [
       "prod-at-trang",
@@ -682,7 +682,7 @@ export const JOURNAL_ARTICLES: JournalArticle[] = [
       {
         heading: "Đổi size 2 chiều tận nơi nếu vẫn chưa ưng phom",
         paragraphs: [
-          "Mọi sản phẩm nguyên giá đều được đổi trả miễn phí trong 45 ngày. Khi tạo yêu cầu đổi size trên trang đơn hàng, bưu tá sẽ mang cỡ mới đến đổi trực tiếp tại địa chỉ của bạn.",
+          "Mọi sản phẩm nguyên giá đều được đổi trả miễn phí trong 7 ngày. Khi tạo yêu cầu đổi size trên trang đơn hàng, bưu tá sẽ mang cỡ mới đến đổi trực tiếp tại địa chỉ của bạn.",
         ],
         featuredProductIds: ["prod-polo-kem", "prod-jogger-terry"],
       },
@@ -760,9 +760,9 @@ export const BRAND_STORY_PILLARS = [
   },
   {
     id: "pillar-price",
-    title: "Giá niêm yết rõ ràng và đổi trả miễn phí 45 ngày",
+    title: "Giá niêm yết rõ ràng và đổi trả miễn phí 7 ngày",
     detail:
-      "Không nâng giá ảo trước khuyến mãi, cập nhật còn hàng theo từng màu và size, cùng bưu tá đổi size 2 chiều tận nơi trong 45 ngày.",
+      "Không nâng giá ảo trước khuyến mãi, cập nhật còn hàng theo từng màu và size, cùng bưu tá đổi size 2 chiều tận nơi trong 7 ngày.",
   },
   {
     id: "pillar-fit",
@@ -793,7 +793,7 @@ export const BRAND_TIMELINE: BrandMilestone[] = [
   },
   {
     period: "Quý 4 / 2026",
-    title: "Chuẩn hóa đổi trả 45 ngày và giao hàng 34 tỉnh thành",
+    title: "Chuẩn hóa đổi trả 7 ngày và giao hàng 34 tỉnh thành",
     detail:
       "Triển khai đổi size 2 chiều tận nơi, xuất hóa đơn VAT điện tử theo từng xưởng và trợ lý chọn size theo số đo cá nhân.",
   },
@@ -813,9 +813,9 @@ export const PLATFORM_CHANGELOG: PlatformChangelogEntry[] = [
   {
     version: "v2.1",
     date: "2026-10-28",
-    title: "Nâng chuẩn đổi trả 45 ngày & giao nhanh nội thành",
+    title: "Nâng chuẩn đổi trả 7 ngày & giao nhanh nội thành",
     changes: [
-      "Nâng thời hạn đổi trả tiêu chuẩn lên 45 ngày (tối đa 3 lần), hỗ trợ bưu tá đổi size 2 chiều tại nhà.",
+      "Nâng thời hạn đổi trả tiêu chuẩn lên 7 ngày (tối đa 3 lần), hỗ trợ bưu tá đổi size 2 chiều tại nhà.",
       "Thêm tùy chọn xuất hóa đơn VAT duyệt bản nháp 24 giờ và ghi chú viết thiệp/túi quà tại bước thanh toán.",
     ],
   },
@@ -1001,7 +1001,7 @@ export const CAMPAIGNS: CampaignItem[] = [
 
 export const HELP_TOPIC_LABELS: Record<HelpTopicKey, string> = {
   "giao-hang": "Vận chuyển & Giao nhanh",
-  "doi-tra-45-ngay": "Đổi trả 45 ngày & Đổi size",
+  "doi-tra-45-ngay": "Đổi trả 7 ngày & Đổi size",
   "thanh-toan-vat": "Thanh toán & Hóa đơn VAT",
   "hoi-vien-xu": "Hội viên Nexus & Xu",
   "chon-size": "Chọn size theo xưởng",
@@ -1029,15 +1029,15 @@ export const HELP_FAQ_ITEMS: HelpFaqItem[] = [
     id: "faq-ret-1",
     topic: "doi-tra-45-ngay",
     scope: "san",
-    question: "Chính sách đổi trả 45 ngày và đổi size 2 chiều tận nơi áp dụng ra sao?",
+    question: "Chính sách đổi trả 7 ngày và đổi size 2 chiều tận nơi áp dụng ra sao?",
     answer:
-      "Bạn được đổi trả miễn phí trong 45 ngày (tối đa 3 lần cho mỗi đơn hàng). Khi chọn đổi size 2 chiều tại trang Chi tiết đơn, bưu tá sẽ giao sản phẩm cỡ mới và nhận lại sản phẩm cũ ngay tại nhà. Các khoản hoàn chuyển khoản được thực hiện định kỳ vào Thứ 2 và Thứ 5 hằng tuần.",
+      "Bạn được đổi trả miễn phí trong 7 ngày (tối đa 3 lần cho mỗi đơn hàng). Khi chọn đổi size 2 chiều tại trang Chi tiết đơn, bưu tá sẽ giao sản phẩm cỡ mới và nhận lại sản phẩm cũ ngay tại nhà. Các khoản hoàn chuyển khoản được thực hiện định kỳ vào Thứ 2 và Thứ 5 hằng tuần.",
   },
   {
     id: "faq-ret-2",
     topic: "doi-tra-45-ngay",
     scope: "san",
-    question: "Những sản phẩm nào không áp dụng đổi trả 45 ngày?",
+    question: "Những sản phẩm nào không áp dụng đổi trả 7 ngày?",
     answer:
       "Sản phẩm gắn nhãn Outlet xả kho, suất Săn deal sốc và pack đồ lót niêm phong đã mở túi không áp dụng đổi trả (trừ trường hợp lỗi sản xuất hoặc giao sai mẫu).",
   },
@@ -1047,7 +1047,7 @@ export const HELP_FAQ_ITEMS: HelpFaqItem[] = [
     scope: "gian-hang",
     question: "Chính sách bù lẻ chiếc tất thất lạc hoạt động như thế nào?",
     answer:
-      "Với các combo tất từ Dệt Kim Hà Nội, nếu bạn vô tình thất lạc 1 chiếc tất trong vòng 45 ngày kể từ khi nhận hàng, hãy gửi mã đơn ở mục Hỗ trợ để xưởng gửi kèm 1 chiếc đồng màu miễn phí trong đơn kế tiếp.",
+      "Với các combo tất từ Dệt Kim Hà Nội, nếu bạn vô tình thất lạc 1 chiếc tất trong vòng 7 ngày kể từ khi nhận hàng, hãy gửi mã đơn ở mục Hỗ trợ để xưởng gửi kèm 1 chiếc đồng màu miễn phí trong đơn kế tiếp.",
   },
   {
     id: "faq-pay-1",
@@ -1099,7 +1099,7 @@ export const COMPLAINT_SLA = {
   vulnerablePriorityNote:
     "Ưu tiên tiếp nhận và giải quyết trước cho người cao tuổi, phụ nữ mang thai và người khuyết tật.",
   commitments: [
-    "Cam kết hài lòng 100%: đổi trả miễn phí 45 ngày, tối đa 3 lần đổi size.",
+    "Cam kết hài lòng 100%: đổi trả miễn phí 7 ngày, tối đa 3 lần đổi size.",
     "Hoàn tiền đơn trả trước hủy sớm trong 24 giờ; hoàn trả hàng định kỳ Thứ 2 & Thứ 5.",
     "Gian hàng phản hồi khiếu nại trong 24 giờ; nếu quá hạn, NexusMart trực tiếp tiếp nhận xử lý.",
   ],

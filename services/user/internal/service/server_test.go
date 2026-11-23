@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -31,6 +32,7 @@ type memStore struct {
 	refreshTokens        map[string]db.RefreshToken
 	passwordResets       map[string]db.PasswordReset
 	shops                map[string]db.Shop
+	shopBankAccounts     map[string]db.ShopBankAccount
 	addresses            map[string]db.Address
 	codRejections        map[string]string
 	auditLogs            []db.AuditLog
@@ -40,13 +42,14 @@ type memStore struct {
 
 func newMemStore() *memStore {
 	return &memStore{
-		userLocks:      make(map[string]*sync.RWMutex),
-		users:          make(map[string]db.User),
-		refreshTokens:  make(map[string]db.RefreshToken),
-		passwordResets: make(map[string]db.PasswordReset),
-		shops:          make(map[string]db.Shop),
-		addresses:      make(map[string]db.Address),
-		codRejections:  make(map[string]string),
+		userLocks:        make(map[string]*sync.RWMutex),
+		users:            make(map[string]db.User),
+		refreshTokens:    make(map[string]db.RefreshToken),
+		passwordResets:   make(map[string]db.PasswordReset),
+		shops:            make(map[string]db.Shop),
+		shopBankAccounts: make(map[string]db.ShopBankAccount),
+		addresses:        make(map[string]db.Address),
+		codRejections:    make(map[string]string),
 	}
 }
 
@@ -278,6 +281,101 @@ func (t *memTx) InsertAuditLog(ctx context.Context, arg db.InsertAuditLogParams)
 	return l, err
 }
 
+func (t *memTx) snapshotShopBankAccounts() map[string]db.ShopBankAccount {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	cp := make(map[string]db.ShopBankAccount, len(t.shopBankAccounts))
+	for k, v := range t.shopBankAccounts {
+		cp[k] = v
+	}
+	return cp
+}
+
+func (t *memTx) pushBankAccountUndo(prev map[string]db.ShopBankAccount) {
+	t.undo = append(t.undo, func() {
+		t.mu.Lock()
+		t.shopBankAccounts = prev
+		t.mu.Unlock()
+	})
+}
+
+func (t *memTx) GetUserByIDForUpdate(ctx context.Context, id string) (db.User, error) {
+	t.lockExcl(id)
+	return t.memStore.GetUserByID(ctx, id)
+}
+
+func (t *memTx) SupersedePendingOTPShopBankAccounts(ctx context.Context, arg db.SupersedePendingOTPShopBankAccountsParams) error {
+	prev := t.snapshotShopBankAccounts()
+	err := t.memStore.SupersedePendingOTPShopBankAccounts(ctx, arg)
+	if err == nil {
+		t.pushBankAccountUndo(prev)
+	}
+	return err
+}
+
+func (t *memTx) SupersedePendingAdminReviewShopBankAccounts(ctx context.Context, arg db.SupersedePendingAdminReviewShopBankAccountsParams) error {
+	prev := t.snapshotShopBankAccounts()
+	err := t.memStore.SupersedePendingAdminReviewShopBankAccounts(ctx, arg)
+	if err == nil {
+		t.pushBankAccountUndo(prev)
+	}
+	return err
+}
+
+func (t *memTx) MarkShopBankAccountPublishFailed(ctx context.Context, arg db.MarkShopBankAccountPublishFailedParams) error {
+	prev := t.snapshotShopBankAccounts()
+	err := t.memStore.MarkShopBankAccountPublishFailed(ctx, arg)
+	if err == nil {
+		t.pushBankAccountUndo(prev)
+	}
+	return err
+}
+
+func (t *memTx) CreateShopBankAccount(ctx context.Context, arg db.CreateShopBankAccountParams) (db.ShopBankAccount, error) {
+	prev := t.snapshotShopBankAccounts()
+	acc, err := t.memStore.CreateShopBankAccount(ctx, arg)
+	if err == nil {
+		t.pushBankAccountUndo(prev)
+	}
+	return acc, err
+}
+
+func (t *memTx) RecordShopBankAccountOTPFailure(ctx context.Context, arg db.RecordShopBankAccountOTPFailureParams) (db.ShopBankAccount, error) {
+	prev := t.snapshotShopBankAccounts()
+	acc, err := t.memStore.RecordShopBankAccountOTPFailure(ctx, arg)
+	if err == nil {
+		t.pushBankAccountUndo(prev)
+	}
+	return acc, err
+}
+
+func (t *memTx) SupersedeShopBankAccount(ctx context.Context, arg db.SupersedeShopBankAccountParams) error {
+	prev := t.snapshotShopBankAccounts()
+	err := t.memStore.SupersedeShopBankAccount(ctx, arg)
+	if err == nil {
+		t.pushBankAccountUndo(prev)
+	}
+	return err
+}
+
+func (t *memTx) CompleteShopBankAccountOTPVerification(ctx context.Context, arg db.CompleteShopBankAccountOTPVerificationParams) (db.ShopBankAccount, error) {
+	prev := t.snapshotShopBankAccounts()
+	acc, err := t.memStore.CompleteShopBankAccountOTPVerification(ctx, arg)
+	if err == nil {
+		t.pushBankAccountUndo(prev)
+	}
+	return acc, err
+}
+
+func (t *memTx) UpdateShopBankAccountAdminReview(ctx context.Context, arg db.UpdateShopBankAccountAdminReviewParams) (db.ShopBankAccount, error) {
+	prev := t.snapshotShopBankAccounts()
+	acc, err := t.memStore.UpdateShopBankAccountAdminReview(ctx, arg)
+	if err == nil {
+		t.pushBankAccountUndo(prev)
+	}
+	return acc, err
+}
+
 func (m *memStore) WithTx(_ context.Context, fn func(q db.Querier) error) error {
 	tx := &memTx{
 		memStore: m,
@@ -295,6 +393,10 @@ func (m *memStore) WithTx(_ context.Context, fn func(q db.Querier) error) error 
 }
 
 func (m *memStore) GetUserByIDForShare(ctx context.Context, id string) (db.User, error) {
+	return m.GetUserByID(ctx, id)
+}
+
+func (m *memStore) GetUserByIDForUpdate(ctx context.Context, id string) (db.User, error) {
 	return m.GetUserByID(ctx, id)
 }
 
@@ -719,6 +821,79 @@ func (m *memStore) CountShops(ctx context.Context, st string) (int64, error) {
 	return int64(len(list)), err
 }
 
+func (m *memStore) hasPendingBankReviewLocked(shopID string) bool {
+	for _, acc := range m.shopBankAccounts {
+		if acc.ShopID == shopID && acc.Status == BankAccountStatusPendingAdminReview {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *memStore) AdminListShops(_ context.Context, arg db.AdminListShopsParams) ([]db.AdminListShopsRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rows := make([]db.AdminListShopsRow, 0, len(m.shops))
+	for _, sh := range m.shops {
+		if arg.Status != "" && sh.Status != arg.Status {
+			continue
+		}
+		pending := m.hasPendingBankReviewLocked(sh.ID)
+		if arg.BankReviewPendingOnly && !pending {
+			continue
+		}
+		rows = append(rows, db.AdminListShopsRow{
+			ID:                 sh.ID,
+			OwnerUserID:        sh.OwnerUserID,
+			Name:               sh.Name,
+			Description:        sh.Description,
+			PickupAddressID:    sh.PickupAddressID,
+			ContactPhone:       sh.ContactPhone,
+			BusinessLicenseDoc: sh.BusinessLicenseDoc,
+			Status:             sh.Status,
+			RejectionReason:    sh.RejectionReason,
+			CreatedAt:          sh.CreatedAt,
+			UpdatedAt:          sh.UpdatedAt,
+			Slug:               sh.Slug,
+			BankReviewPending:  pending,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if !rows[i].CreatedAt.Equal(rows[j].CreatedAt) {
+			return rows[i].CreatedAt.After(rows[j].CreatedAt)
+		}
+		return rows[i].ID > rows[j].ID
+	})
+	offset := int(arg.PageOffset)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(rows) {
+		return []db.AdminListShopsRow{}, nil
+	}
+	end := len(rows)
+	if arg.PageLimit > 0 && offset+int(arg.PageLimit) < end {
+		end = offset + int(arg.PageLimit)
+	}
+	return rows[offset:end], nil
+}
+
+func (m *memStore) AdminCountShops(_ context.Context, arg db.AdminCountShopsParams) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var total int64
+	for _, sh := range m.shops {
+		if arg.Status != "" && sh.Status != arg.Status {
+			continue
+		}
+		if arg.BankReviewPendingOnly && !m.hasPendingBankReviewLocked(sh.ID) {
+			continue
+		}
+		total++
+	}
+	return total, nil
+}
+
 func (m *memStore) ResubmitShop(_ context.Context, arg db.ResubmitShopParams) (db.Shop, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -736,6 +911,7 @@ func (m *memStore) ResubmitShop(_ context.Context, arg db.ResubmitShopParams) (d
 	sh.BusinessLicenseDoc = arg.BusinessLicenseDoc
 	sh.Status = ShopStatusPending
 	sh.RejectionReason = ""
+	sh.VerifiedOwnerName = ""
 	sh.UpdatedAt = time.Now().UTC()
 	m.shops[sh.ID] = sh
 	return sh, nil
@@ -750,9 +926,18 @@ func (m *memStore) UpdateShopReview(_ context.Context, arg db.UpdateShopReviewPa
 	}
 	sh.Status = arg.Status
 	sh.RejectionReason = arg.RejectionReason
+	if arg.Status == ShopStatusActive {
+		sh.VerifiedOwnerName = arg.VerifiedOwnerName
+	}
 	sh.UpdatedAt = time.Now().UTC()
 	m.shops[sh.ID] = sh
 	return sh, nil
+}
+
+func (m *memStore) ExistsPendingBankReviewByShopID(_ context.Context, shopID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.hasPendingBankReviewLocked(shopID), nil
 }
 
 func (m *memStore) ExistsActiveShopByPickupAddressID(_ context.Context, pickupAddressID string) (bool, error) {
@@ -898,6 +1083,339 @@ func (m *memStore) CountAuditLogs(ctx context.Context, arg db.CountAuditLogsPara
 		TargetID:   arg.TargetID,
 	})
 	return int64(len(list)), err
+}
+
+func (m *memStore) GetShopByIDForUpdate(ctx context.Context, id string) (db.Shop, error) {
+	return m.GetShopByID(ctx, id)
+}
+
+func (m *memStore) SupersedePendingOTPShopBankAccounts(_ context.Context, arg db.SupersedePendingOTPShopBankAccountsParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, acc := range m.shopBankAccounts {
+		if acc.ShopID == arg.ShopID && (acc.Status == "PENDING_OTP" || acc.Status == "REJECTED") {
+			acc.Status = "SUPERSEDED"
+			acc.OTPHash = ""
+			acc.OTPExpiresAt = nil
+			acc.UpdatedAt = arg.UpdatedAt
+			m.shopBankAccounts[id] = acc
+		}
+	}
+	return nil
+}
+
+func (m *memStore) SupersedePendingAdminReviewShopBankAccounts(_ context.Context, arg db.SupersedePendingAdminReviewShopBankAccountsParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, acc := range m.shopBankAccounts {
+		if acc.ShopID == arg.ShopID && (acc.Status == "PENDING_ADMIN_REVIEW" || acc.Status == "REJECTED") {
+			acc.Status = "SUPERSEDED"
+			acc.OTPHash = ""
+			acc.OTPExpiresAt = nil
+			acc.UpdatedAt = arg.UpdatedAt
+			m.shopBankAccounts[id] = acc
+		}
+	}
+	return nil
+}
+
+func (m *memStore) CreateShopBankAccount(_ context.Context, arg db.CreateShopBankAccountParams) (db.ShopBankAccount, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	acc := db.ShopBankAccount{
+		ID:                  arg.ID,
+		ShopID:              arg.ShopID,
+		BankCode:            arg.BankCode,
+		BankName:            arg.BankName,
+		AccountNumber:       arg.AccountNumber,
+		AccountNumberMasked: arg.AccountNumberMasked,
+		AccountHolderName:   arg.AccountHolderName,
+		HolderNameMatched:   arg.HolderNameMatched,
+		Status:              arg.Status,
+		ReviewNote:          arg.ReviewNote,
+		OTPHash:             arg.OTPHash,
+		OTPExpiresAt:        arg.OTPExpiresAt,
+		OTPAttempts:         arg.OTPAttempts,
+		CreatedAt:           arg.CreatedAt,
+		UpdatedAt:           arg.UpdatedAt,
+	}
+	m.shopBankAccounts[acc.ID] = acc
+	return acc, nil
+}
+
+func (m *memStore) CountShopBankAccountsCreatedSince(_ context.Context, arg db.CountShopBankAccountsCreatedSinceParams) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for _, acc := range m.shopBankAccounts {
+		if acc.ShopID == arg.ShopID && acc.CreatedAt.After(arg.CreatedAt) && !acc.OTPPublishFailed {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *memStore) MarkShopBankAccountPublishFailed(ctx context.Context, arg db.MarkShopBankAccountPublishFailedParams) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	acc, ok := m.shopBankAccounts[arg.ID]
+	if !ok || acc.Status != "PENDING_OTP" {
+		return nil
+	}
+	acc.Status = "SUPERSEDED"
+	acc.OTPHash = ""
+	acc.OTPExpiresAt = nil
+	acc.OTPPublishFailed = true
+	acc.UpdatedAt = arg.UpdatedAt
+	m.shopBankAccounts[acc.ID] = acc
+	return nil
+}
+
+func (m *memStore) GetPendingOTPShopBankAccountForUpdate(_ context.Context, shopID string) (db.ShopBankAccount, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var (
+		found bool
+		best  db.ShopBankAccount
+	)
+	for _, acc := range m.shopBankAccounts {
+		if acc.ShopID == shopID && acc.Status == "PENDING_OTP" {
+			if !found || acc.CreatedAt.After(best.CreatedAt) {
+				best = acc
+				found = true
+			}
+		}
+	}
+	if !found {
+		return db.ShopBankAccount{}, pgx.ErrNoRows
+	}
+	return best, nil
+}
+
+func (m *memStore) RecordShopBankAccountOTPFailure(_ context.Context, arg db.RecordShopBankAccountOTPFailureParams) (db.ShopBankAccount, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	acc, ok := m.shopBankAccounts[arg.ID]
+	if !ok {
+		return db.ShopBankAccount{}, pgx.ErrNoRows
+	}
+	acc.Status = arg.Status
+	acc.OTPAttempts = arg.OTPAttempts
+	acc.OTPHash = arg.OTPHash
+	acc.OTPExpiresAt = arg.OTPExpiresAt
+	acc.UpdatedAt = arg.UpdatedAt
+	m.shopBankAccounts[acc.ID] = acc
+	return acc, nil
+}
+
+func (m *memStore) GetVerifiedShopBankAccountByShopID(_ context.Context, shopID string) (db.ShopBankAccount, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, acc := range m.shopBankAccounts {
+		if acc.ShopID == shopID && acc.Status == "VERIFIED" {
+			return acc, nil
+		}
+	}
+	return db.ShopBankAccount{}, pgx.ErrNoRows
+}
+
+func (m *memStore) SupersedeShopBankAccount(_ context.Context, arg db.SupersedeShopBankAccountParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	acc, ok := m.shopBankAccounts[arg.ID]
+	if !ok || acc.Status == "SUPERSEDED" {
+		return nil
+	}
+	acc.Status = "SUPERSEDED"
+	acc.OTPHash = ""
+	acc.OTPExpiresAt = nil
+	acc.UpdatedAt = arg.UpdatedAt
+	m.shopBankAccounts[acc.ID] = acc
+	return nil
+}
+
+func (m *memStore) CompleteShopBankAccountOTPVerification(_ context.Context, arg db.CompleteShopBankAccountOTPVerificationParams) (db.ShopBankAccount, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	acc, ok := m.shopBankAccounts[arg.ID]
+	if !ok || acc.Status != "PENDING_OTP" {
+		return db.ShopBankAccount{}, pgx.ErrNoRows
+	}
+	acc.Status = arg.Status
+	acc.HolderNameMatched = arg.HolderNameMatched
+	acc.OTPHash = ""
+	acc.OTPExpiresAt = nil
+	acc.PayoutLockedUntil = arg.PayoutLockedUntil
+	acc.VerifiedAt = arg.VerifiedAt
+	acc.UpdatedAt = arg.UpdatedAt
+	m.shopBankAccounts[acc.ID] = acc
+	return acc, nil
+}
+
+func memBankAccountStatusRank(st string) int {
+	switch st {
+	case BankAccountStatusPendingOTP:
+		return 0
+	case BankAccountStatusPendingAdminReview:
+		return 1
+	case BankAccountStatusRejected:
+		return 2
+	default:
+		return 3
+	}
+}
+
+func (m *memStore) GetLatestShopBankAccountByShopID(_ context.Context, arg db.GetLatestShopBankAccountByShopIDParams) (db.ShopBankAccount, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var (
+		found bool
+		best  db.ShopBankAccount
+	)
+	preferScore := func(st string) int {
+		if arg.PreferAdminReview && st == BankAccountStatusPendingAdminReview {
+			return 0
+		}
+		return 1
+	}
+	for _, acc := range m.shopBankAccounts {
+		if acc.ShopID != arg.ShopID || acc.Status == BankAccountStatusSuperseded {
+			continue
+		}
+		if acc.Status == BankAccountStatusPendingOTP && (acc.OTPExpiresAt == nil || !acc.OTPExpiresAt.After(arg.NowTime)) {
+			continue
+		}
+		if !found {
+			best = acc
+			found = true
+			continue
+		}
+		ap, bp := preferScore(acc.Status), preferScore(best.Status)
+		if ap < bp ||
+			(ap == bp && acc.CreatedAt.After(best.CreatedAt)) ||
+			(ap == bp && acc.CreatedAt.Equal(best.CreatedAt) && memBankAccountStatusRank(acc.Status) < memBankAccountStatusRank(best.Status)) {
+			best = acc
+		}
+	}
+	if !found {
+		return db.ShopBankAccount{}, pgx.ErrNoRows
+	}
+	return best, nil
+}
+
+func (m *memStore) GetShopBankAccountByIDForUpdate(_ context.Context, id string) (db.ShopBankAccount, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	acc, ok := m.shopBankAccounts[id]
+	if !ok {
+		return db.ShopBankAccount{}, pgx.ErrNoRows
+	}
+	return acc, nil
+}
+
+func (m *memStore) GetPendingAdminReviewShopBankAccountByShopIDForUpdate(_ context.Context, shopID string) (db.ShopBankAccount, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var (
+		found bool
+		best  db.ShopBankAccount
+	)
+	for _, acc := range m.shopBankAccounts {
+		if acc.ShopID == shopID && acc.Status == "PENDING_ADMIN_REVIEW" {
+			if !found || acc.CreatedAt.After(best.CreatedAt) {
+				best = acc
+				found = true
+			}
+		}
+	}
+	if !found {
+		return db.ShopBankAccount{}, pgx.ErrNoRows
+	}
+	return best, nil
+}
+
+func (m *memStore) UpdateShopBankAccountAdminReview(_ context.Context, arg db.UpdateShopBankAccountAdminReviewParams) (db.ShopBankAccount, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	acc, ok := m.shopBankAccounts[arg.ID]
+	if !ok || acc.Status != "PENDING_ADMIN_REVIEW" {
+		return db.ShopBankAccount{}, pgx.ErrNoRows
+	}
+	acc.Status = arg.Status
+	acc.ReviewNote = arg.ReviewNote
+	acc.PayoutLockedUntil = arg.PayoutLockedUntil
+	acc.VerifiedAt = arg.VerifiedAt
+	acc.UpdatedAt = arg.UpdatedAt
+	m.shopBankAccounts[acc.ID] = acc
+	return acc, nil
+}
+
+func (m *memStore) GetUserPlatformCounts(_ context.Context) (db.GetUserPlatformCountsRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var row db.GetUserPlatformCountsRow
+	for _, u := range m.users {
+		row.TotalUsers++
+		if u.Status == StatusActive {
+			row.ActiveUsers++
+		}
+	}
+	return row, nil
+}
+
+func (m *memStore) GetShopPlatformCounts(_ context.Context) (db.GetShopPlatformCountsRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var row db.GetShopPlatformCountsRow
+	for _, sh := range m.shops {
+		row.TotalShops++
+		switch sh.Status {
+		case ShopStatusActive:
+			row.ActiveShops++
+		case ShopStatusPending:
+			row.PendingShops++
+		}
+	}
+	return row, nil
+}
+
+var memVNZone = time.FixedZone("Asia/Ho_Chi_Minh", 7*3600)
+
+func (m *memStore) ListDailyNewUsersVN(_ context.Context, arg db.ListDailyNewUsersVNParams) ([]db.ListDailyNewUsersVNRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	counts := make(map[string]int64)
+	for _, u := range m.users {
+		if !u.CreatedAt.Before(arg.StartTime) && u.CreatedAt.Before(arg.EndTime) {
+			day := u.CreatedAt.In(memVNZone).Format("2006-01-02")
+			counts[day]++
+		}
+	}
+	rows := make([]db.ListDailyNewUsersVNRow, 0, len(counts))
+	for day, cnt := range counts {
+		rows = append(rows, db.ListDailyNewUsersVNRow{VnDate: day, Cnt: cnt})
+	}
+	return rows, nil
+}
+
+func (m *memStore) ListDailyNewShopsVN(_ context.Context, arg db.ListDailyNewShopsVNParams) ([]db.ListDailyNewShopsVNRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	counts := make(map[string]int64)
+	for _, sh := range m.shops {
+		if !sh.CreatedAt.Before(arg.StartTime) && sh.CreatedAt.Before(arg.EndTime) {
+			day := sh.CreatedAt.In(memVNZone).Format("2006-01-02")
+			counts[day]++
+		}
+	}
+	rows := make([]db.ListDailyNewShopsVNRow, 0, len(counts))
+	for day, cnt := range counts {
+		rows = append(rows, db.ListDailyNewShopsVNRow{VnDate: day, Cnt: cnt})
+	}
+	return rows, nil
 }
 
 type memOTP struct {
@@ -1105,7 +1623,10 @@ type memPublisher struct {
 	userRegistered          []events.UserRegisteredPayload
 	passwordResetRequested  []events.PasswordResetRequestedPayload
 	shopReviewed            []events.ShopReviewedPayload
+	shopBankAccountOTP      []events.ShopBankAccountOTPPayload
 	publishPasswordResetErr error
+	publishBankOTPErr       error
+	onPublishBankOTP        func(ctx context.Context) error
 }
 
 func (p *memPublisher) PublishUserRegistered(_ context.Context, payload events.UserRegisteredPayload) error {
@@ -1129,6 +1650,25 @@ func (p *memPublisher) PublishShopReviewed(_ context.Context, payload events.Sho
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.shopReviewed = append(p.shopReviewed, payload)
+	return nil
+}
+
+func (p *memPublisher) PublishShopBankAccountOTP(ctx context.Context, payload events.ShopBankAccountOTPPayload) error {
+	p.mu.Lock()
+	hook := p.onPublishBankOTP
+	pubErr := p.publishBankOTPErr
+	p.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx); err != nil {
+			return err
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if pubErr != nil {
+		return pubErr
+	}
+	p.shopBankAccountOTP = append(p.shopBankAccountOTP, payload)
 	return nil
 }
 

@@ -420,6 +420,146 @@ export function AdminCategoriesPanel() {
             </tbody>
           </table>
         </div>
+
+        <div className={shared.mobileList}>
+          {categories.map((cat) => {
+            const isEditing = editingId === cat.id;
+            const isBusy = savingId === cat.id;
+            return (
+              <article key={cat.id} className={shared.mobileItem}>
+                {isEditing ? (
+                  <div className={shared.detailGrid}>
+                    <div className={shared.detailField}>
+                      <label htmlFor={`m-cat-name-${cat.id}`} className={shared.fieldLabel}>
+                        Tên danh mục
+                      </label>
+                      <input
+                        id={`m-cat-name-${cat.id}`}
+                        type="text"
+                        className={shared.textInput}
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                      />
+                    </div>
+                    <div className={shared.detailField}>
+                      <label htmlFor={`m-cat-slug-${cat.id}`} className={shared.fieldLabel}>
+                        Đường dẫn (slug)
+                      </label>
+                      <input
+                        id={`m-cat-slug-${cat.id}`}
+                        type="text"
+                        className={shared.textInput}
+                        value={editSlug}
+                        onChange={(e) => setEditSlug(e.target.value)}
+                      />
+                    </div>
+                    <div className={shared.detailField}>
+                      <label htmlFor={`m-cat-bps-${cat.id}`} className={shared.fieldLabel}>
+                        Hoa hồng (bps)
+                      </label>
+                      <input
+                        id={`m-cat-bps-${cat.id}`}
+                        type="number"
+                        min={0}
+                        max={5000}
+                        step={50}
+                        className={shared.textInput}
+                        value={editBps}
+                        onChange={(e) => setEditBps(e.target.value)}
+                      />
+                    </div>
+                    <div className={shared.detailField}>
+                      <label htmlFor={`m-cat-order-${cat.id}`} className={shared.fieldLabel}>
+                        Thứ tự hiển thị
+                      </label>
+                      <input
+                        id={`m-cat-order-${cat.id}`}
+                        type="number"
+                        className={shared.textInput}
+                        value={editSortOrder}
+                        onChange={(e) => setEditSortOrder(e.target.value)}
+                      />
+                    </div>
+                    <div className={shared.detailButtons}>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        shape="app"
+                        disabled={isBusy}
+                        onClick={() => void handleSaveEdit(cat.id)}
+                      >
+                        {isBusy ? "Lưu..." : "Lưu"}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        shape="app"
+                        onClick={() => setEditingId(null)}
+                      >
+                        Hủy
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className={shared.mobileLine1}>
+                      <span className={shared.mobileIdentity}>{cat.name}</span>
+                      <span className={shared.mobileMetric}>
+                        {formatCommissionBps(cat.commission_rate_bps)}
+                      </span>
+                    </div>
+                    <div className={shared.mobileLine2}>
+                      <span className={shared.mobileMetaText}>
+                        /{cat.slug} · {cat.commission_rate_bps} bps · Thứ tự{" "}
+                        {formatInt(cat.sort_order)}
+                      </span>
+                    </div>
+                    <div className={shared.mobileLine2}>
+                      <span className={shared.mobileMetaText} />
+                      <div className={shared.detailButtons}>
+                        <button
+                          type="button"
+                          className={shared.rowActionBtn}
+                          onClick={() => startEdit(cat)}
+                        >
+                          Sửa
+                        </button>
+                        {confirmDeleteId === cat.id ? (
+                          <>
+                            <Button
+                              variant="danger"
+                              size="sm"
+                              shape="app"
+                              disabled={isBusy}
+                              onClick={() => void handleDelete(cat)}
+                            >
+                              Xác nhận xóa
+                            </Button>
+                            <button
+                              type="button"
+                              className={shared.rowActionBtn}
+                              onClick={() => setConfirmDeleteId(null)}
+                            >
+                              Giữ lại
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            className={shared.rowActionBtn}
+                            onClick={() => setConfirmDeleteId(cat.id)}
+                          >
+                            Xóa
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </article>
+            );
+          })}
+        </div>
       </section>
     </div>
   );

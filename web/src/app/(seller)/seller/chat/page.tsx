@@ -28,8 +28,8 @@ const QUICK_REPLIES = [
     text: "Đơn hàng của anh/chị đã đủ tồn kho SKU và sẽ được xưởng đóng gói bàn giao vận chuyển trong chuyến hôm nay ạ.",
   },
   {
-    label: "Chính sách đổi size 45 ngày",
-    text: "Gian hàng hỗ trợ đổi size 2 chiều tận nơi miễn phí trong 45 ngày với sản phẩm còn nguyên tem mác và chưa qua giặt tẩy ạ.",
+    label: "Chính sách đổi trả 7 ngày",
+    text: "Gian hàng hỗ trợ đổi trả theo chính sách 7 ngày của NexusMart với sản phẩm còn nguyên tem mác và chưa qua giặt tẩy ạ.",
   },
 ];
 
@@ -118,11 +118,19 @@ function SellerChatInner() {
         <div className={common.headerText}>
           <h1 className={common.title}>Tin nhắn khách hàng</h1>
           <p className={common.finding}>
-            {displayShopName} · {formatInt(threads.length)} hội thoại đang theo dõi · Phản hồi trung
-            bình {activeShop.responseTime.toLowerCase()}
+            {displayShopName} · Bản xem trước, dữ liệu mẫu ({formatInt(threads.length)} hội thoại
+            minh họa)
           </p>
         </div>
       </header>
+
+      <section className={common.card} role="note" aria-label="Thông báo dữ liệu mẫu">
+        <span className={`${common.pill} ${common.pillWarn}`}>Bản xem trước, dữ liệu mẫu</span>
+        <p className={common.cardMeta} style={{ marginTop: 8 }}>
+          Hộp thư trò chuyện trực tiếp chưa kết nối dịch vụ tin nhắn thật; danh sách hội thoại và mã
+          đơn bên dưới chỉ mang tính minh họa giao diện.
+        </p>
+      </section>
 
       {uiState === "loading" && (
         <StateView
@@ -290,11 +298,8 @@ function SellerChatInner() {
                           Đơn <strong>{matchedOrder.orderCode}</strong> (
                           {formatVnd(matchedOrder.subtotal)})
                         </span>
-                        <Link
-                          href={`/seller/don-hang/${matchedOrder.id}`}
-                          className={styles.contextOrderLink}
-                        >
-                          Mở đơn
+                        <Link href="/seller/don-hang" className={styles.contextOrderLink}>
+                          Danh sách đơn thật
                         </Link>
                       </div>
                     )}

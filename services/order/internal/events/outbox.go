@@ -3,13 +3,12 @@ package events
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nexusmart/core/pkg/common/jetstream"
 	"github.com/nexusmart/core/services/order/internal/db"
 )
 
@@ -23,52 +22,10 @@ type Publisher interface {
 	PublishMsg(m *nats.Msg, opts ...nats.PubOpt) (*nats.PubAck, error)
 }
 
-// EnsureStreams idempotently ensures NEXUSMART and NEXUSMART_DLQ JetStream streams exist.
+// EnsureStreams idempotently ensures NEXUSMART and NEXUSMART_DLQ JetStream streams exist
+// with all canonical subjects union-merged.
 func EnsureStreams(js nats.JetStreamContext, streamName string) error {
-	if strings.TrimSpace(streamName) == "" {
-		streamName = "NEXUSMART"
-	}
-
-	if err := ensureSingleStream(js, &nats.StreamConfig{
-		Name:       streamName,
-		Subjects:   []string{"user.>", "order.>", "payment.>", "shipment.>"},
-		Retention:  nats.LimitsPolicy,
-		Storage:    nats.FileStorage,
-		Duplicates: 2 * time.Minute,
-	}); err != nil {
-		return fmt.Errorf("ensure primary stream %s: %w", streamName, err)
-	}
-
-	if err := ensureSingleStream(js, &nats.StreamConfig{
-		Name:      DLQStreamName,
-		Subjects:  []string{"dlq.>"},
-		Retention: nats.LimitsPolicy,
-		Storage:   nats.FileStorage,
-	}); err != nil {
-		return fmt.Errorf("ensure DLQ stream %s: %w", DLQStreamName, err)
-	}
-
-	return nil
-}
-
-func ensureSingleStream(js nats.JetStreamContext, cfg *nats.StreamConfig) error {
-	if _, err := js.StreamInfo(cfg.Name); err == nil {
-		return nil
-	} else if !errors.Is(err, nats.ErrStreamNotFound) {
-		return err
-	}
-
-	if _, err := js.AddStream(cfg); err != nil {
-		// Handle concurrent startup race with another service creating the stream at the same time.
-		if _, infoErr := js.StreamInfo(cfg.Name); infoErr == nil {
-			return nil
-		}
-		if strings.Contains(strings.ToLower(err.Error()), "already in use") {
-			return nil
-		}
-		return err
-	}
-	return nil
+	return jetstream.EnsureStreams(js, streamName, DLQStreamName)
 }
 
 // OutboxRelay polls outbox_events and publishes canonical JSON envelopes to NATS JetStream.

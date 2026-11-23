@@ -18,6 +18,7 @@ import { Button, IconPackage, StateView } from "@/components";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
 import { RetryPaymentBox } from "@/features/commerce/RetryPaymentBox";
 import { useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
+import { clearCheckoutWarnings, readCheckoutWarnings } from "@/features/checkout/helpers";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "@/app/(shop)/don-hang/page.module.css";
 import type { OrderVisualLookup } from "./types";
@@ -89,6 +90,16 @@ export function OrdersListClient({
   const [confirmCancelTarget, setConfirmCancelTarget] = useState<GatewayOrder | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  const [checkoutWarnings, setCheckoutWarnings] = useState<string[]>([]);
+
+  useEffect(() => {
+    const ids = orderList.map((o) => o.id).filter(Boolean);
+    if (ids.length === 0) return;
+    const found = readCheckoutWarnings({ orderIds: ids });
+    if (found.length > 0) {
+      setCheckoutWarnings(found);
+    }
+  }, [orderList]);
 
   useEffect(() => {
     setOrderList(orders);
@@ -324,6 +335,37 @@ export function OrdersListClient({
       )}
 
       <section className={shared.section}>
+        {checkoutWarnings.length > 0 && (
+          <div
+            className={`${shared.feedbackBox} ${shared.feedbackWarn} ${shared.noticeSpacer}`}
+            role="status"
+          >
+            <div>
+              <strong>Lưu ý về ưu đãi khi tạo đơn:</strong>
+              {checkoutWarnings.map((w, idx) => (
+                <p key={idx} className={shared.noticeItem}>
+                  {w}
+                </p>
+              ))}
+              <p className={shared.noticeSubtle}>
+                Tổng thanh toán trên mỗi đơn là giá cuối cùng đã được hệ thống xác nhận.
+              </p>
+            </div>
+            <div className={shared.formActions}>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  clearCheckoutWarnings();
+                  setCheckoutWarnings([]);
+                }}
+              >
+                Đã hiểu
+              </Button>
+            </div>
+          </div>
+        )}
         <div className={shared.sectionHead}>
           <h2 className={shared.sectionTitle}>Danh sách đơn hàng</h2>
           <p className={shared.sectionNote}>
@@ -478,6 +520,22 @@ export function OrdersListClient({
                           onPaid={() => {
                             setRetryingOrderId(null);
                             showToast(`Đơn ${order.order_code} đã được ghi nhận thanh toán.`);
+                            router.refresh();
+                          }}
+                          onPaymentReplaced={(next) => {
+                            const patchOrder = (o: GatewayOrder): GatewayOrder =>
+                              o.id === order.id ||
+                              (Boolean(order.checkout_group_id) &&
+                                o.checkout_group_id === order.checkout_group_id)
+                                ? {
+                                    ...o,
+                                    payment_id: next.payment_id,
+                                    payment_status: next.status,
+                                    payment_expires_at: next.expires_at,
+                                  }
+                                : o;
+                            setOrderList((prev) => prev.map(patchOrder));
+                            setPendingPool((prev) => prev.map(patchOrder));
                             router.refresh();
                           }}
                         />

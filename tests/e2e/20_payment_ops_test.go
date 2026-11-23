@@ -735,7 +735,19 @@ func TestE2E_PaymentOps_SellerHoldPeriod_And_AdminReleaseEscrow(t *testing.T) {
 
 	co := payW2CreateVietQRCheckout(t, env, buyer, seller, sku, quote, "payw2-hold")
 	ord := co.Orders[0]
-	wantSellerNet := ord.SubtotalVND - ord.CommissionVND
+	// Wave 2b buyer fee privacy: buyer checkout masks fees to 0; read seller order for authoritative commission.
+	if ord.CommissionVND != 0 || ord.PaymentFeeVND != 0 || ord.PaymentFeeBps != 0 {
+		t.Fatalf("buyer checkout must mask fees to 0, got comm=%d pay_fee=%d pay_fee_bps=%d",
+			ord.CommissionVND, ord.PaymentFeeVND, ord.PaymentFeeBps)
+	}
+	for _, it := range ord.Items {
+		if it.CommissionBps != 0 {
+			t.Fatalf("buyer checkout must mask item commission_bps to 0, got %d", it.CommissionBps)
+		}
+	}
+	sellerOrd := env.getOrder(t, seller.AccessToken, ord.ID)
+	// Wave 2b (docs/contracts.md §3/§6): seller net = R - (C_cat + C_pay).
+	wantSellerNet := sellerOrd.SubtotalVND - sellerOrd.CommissionVND - sellerOrd.PaymentFeeVND
 
 	payW2SendVietQRWebhook(t, env, co.PaymentID, co.CheckoutGroupID, "PAYW2-HOLD-"+uuid.NewString(), co.TotalPayableVND)
 	env.pollUntil(t, env.cfg.PollTimeout, 300*time.Millisecond, "order CONFIRMED", func() (bool, string) {

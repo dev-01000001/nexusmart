@@ -18,10 +18,14 @@
 }
 
 .mobileAuditSummary {
-  margin-top: 4px;
+  margin-top: var(--space-1);
   font-size: 13px;
   line-height: 18px;
   color: var(--ink);
+}
+
+.mobileDetailWell {
+  margin-top: var(--space-2);
 }
 
 .dateFilterField {

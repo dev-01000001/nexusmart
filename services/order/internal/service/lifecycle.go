@@ -47,7 +47,7 @@ func (s *OrderService) GetOrder(ctx context.Context, req *orderv1.GetOrderReques
 	}
 
 	return &orderv1.GetOrderResponse{
-		Order: aggregateToProto(*agg),
+		Order: aggregateToProtoForCaller(*agg, caller),
 	}, nil
 }
 
@@ -154,7 +154,7 @@ func (s *OrderService) ListOrders(ctx context.Context, req *orderv1.ListOrdersRe
 
 	orders := make([]*orderv1.Order, 0, len(aggs))
 	for _, agg := range aggs {
-		orders = append(orders, aggregateToProto(agg))
+		orders = append(orders, aggregateToProtoForCaller(agg, caller))
 	}
 
 	return &orderv1.ListOrdersResponse{
@@ -199,7 +199,7 @@ func (s *OrderService) CancelOrder(ctx context.Context, req *orderv1.CancelOrder
 	}
 
 	return &orderv1.CancelOrderResponse{
-		Order: aggregateToProto(*cancelledAgg),
+		Order: aggregateToProtoForCaller(*cancelledAgg, caller),
 	}, nil
 }
 
@@ -393,10 +393,15 @@ func (s *OrderService) compensateCancelledOrder(
 	defer cancel()
 
 	cancelPaymentIgnoreTerminal := func() error {
-		// P1-1: Never call CancelPayment for 0-VND orders (payment already SUCCEEDED) or already-refunded orders.
+		// P1-1: Never call CancelPayment for standalone 0-VND orders (which start CONFIRMED/SUCCEEDED)
+		// or already-refunded orders.
+		// P1 N5: Allow CancelPayment by OrderGroupId even when prevOrd.PaymentID is empty.
+		// P2 M7: When prevStatus == PENDING, the group grand total is > 0, so a 0-VND sub-order in a
+		// multi-shop VietQR group MUST still cancel the group payment.
 		alreadyRefunded := strings.EqualFold(prevOrd.PaymentStatus, "REFUNDED") ||
 			(prevOrd.TotalPayableVND > 0 && prevOrd.RefundedVND >= prevOrd.TotalPayableVND)
-		if prevOrd.PaymentID == "" || s.clients.Payment == nil || prevOrd.TotalPayableVND <= 0 || alreadyRefunded {
+		skipZeroPayable := prevStatus != orderv1.OrderStatus_ORDER_STATUS_PENDING && prevOrd.TotalPayableVND <= 0
+		if (prevOrd.PaymentID == "" && groupID == "") || s.clients.Payment == nil || skipZeroPayable || alreadyRefunded {
 			return nil
 		}
 		return clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
@@ -455,8 +460,8 @@ func (s *OrderService) compensateCancelledOrder(
 		}
 	}
 
-	if s.clients.Payment != nil && prevOrd.PaymentID != "" {
-		if wasPaid {
+	if s.clients.Payment != nil {
+		if wasPaid && prevOrd.PaymentID != "" {
 			// Review-A P0-1: refund only the remaining unrefunded balance.
 			remaining := prevOrd.TotalPayableVND - prevOrd.RefundedVND
 			if remaining > 0 {
@@ -473,7 +478,7 @@ func (s *OrderService) compensateCancelledOrder(
 					return fmt.Errorf("create refund on cancelled paid order %s: %w", prevOrd.ID, err)
 				}
 			}
-		} else if !hasActiveSibling {
+		} else if !wasPaid && !hasActiveSibling {
 			if err := cancelPaymentIgnoreTerminal(); err != nil {
 				return fmt.Errorf("cancel payment on cancelled order %s: %w", prevOrd.ID, err)
 			}
@@ -592,7 +597,7 @@ func (s *OrderService) SellerConfirmOrder(ctx context.Context, req *orderv1.Sell
 	}
 
 	return &orderv1.SellerConfirmOrderResponse{
-		Order: aggregateToProto(*res.Order),
+		Order: aggregateToProtoForCaller(*res.Order, caller),
 	}, nil
 }
 
@@ -622,6 +627,11 @@ func (s *OrderService) SellerShipOrder(ctx context.Context, req *orderv1.SellerS
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"invalid order status transition: cannot create shipment from status %s",
 			statemachine.StatusToString(curStatus))
+	}
+
+	// P0 M1: Do NOT allow creating a shipment while checkout payment initialization is still IN_PROGRESS.
+	if err := s.requireCheckoutPaymentInitialized(ctx, agg.Order.CheckoutGroupID); err != nil {
+		return nil, err
 	}
 
 	reqCarrier := strings.TrimSpace(req.GetCarrierCode())
@@ -731,7 +741,7 @@ func (s *OrderService) SellerShipOrder(ctx context.Context, req *orderv1.SellerS
 	}
 
 	return &orderv1.SellerShipOrderResponse{
-		Order:        aggregateToProto(*updatedAgg),
+		Order:        aggregateToProtoForCaller(*updatedAgg, caller),
 		TrackingCode: updatedAgg.Order.TrackingCode,
 		LabelUrl:     updatedAgg.Order.LabelURL,
 	}, nil
@@ -833,6 +843,10 @@ func (s *OrderService) completeDeliveredOrder(
 	actorID, actorRole, note string,
 	requireNoReturnRequest bool,
 ) (*store.OrderAggregate, error) {
+	// P0 M1: Refuse completion while checkout payment initialization is still IN_PROGRESS.
+	if err := s.requireCheckoutPaymentInitialized(ctx, ord.CheckoutGroupID); err != nil {
+		return nil, err
+	}
 	traceID, traceparent := traceMetaFromContext(ctx)
 	outboxEv, err := s.buildOrderCompletedOutbox(ord, traceID, traceparent)
 	if err != nil {
@@ -896,7 +910,7 @@ func (s *OrderService) BuyerConfirmReceived(ctx context.Context, req *orderv1.Bu
 	}
 
 	return &orderv1.BuyerConfirmReceivedResponse{
-		Order: aggregateToProto(*updatedAgg),
+		Order: aggregateToProtoForCaller(*updatedAgg, caller),
 	}, nil
 }
 
@@ -998,6 +1012,22 @@ func (s *OrderService) RetryPayment(ctx context.Context, req *orderv1.RetryPayme
 			return mapStoreError(gErr)
 		}
 
+		// P2 N10 + P3(b): If CompleteCheckoutWithPayment failed all retries earlier leaving the group IN_PROGRESS
+		// with payment_id == "", recover it from PaymentService before checking lockedGroup.PaymentID.
+		// Propagate recovery errors as codes.Unavailable instead of falling through to FailedPrecondition.
+		if lockedGroup.Status == "IN_PROGRESS" && lockedGroup.PaymentID == "" {
+			if _, _, recErr := s.tryFinalizeInProgressGroupFromPayment(ctx, lockedGroup.ID); recErr != nil {
+				s.logger.WarnContext(ctx, "RetryPayment failed to recover IN_PROGRESS checkout group",
+					"checkout_group_id", lockedGroup.ID, "error", recErr)
+				return status.Errorf(codes.Unavailable, "checkout payment finalization is still recovering; please retry shortly: %v", recErr)
+			}
+			reloaded, rErr := s.store.GetCheckoutGroupByID(ctx, lockedGroup.ID)
+			if rErr != nil {
+				return mapStoreError(rErr)
+			}
+			lockedGroup = reloaded
+		}
+
 		clientKey := strings.TrimSpace(req.GetIdempotencyKey())
 		idemKey := "retry:" + lockedGroup.ID + ":" + paymentID
 		if clientKey != "" {
@@ -1038,12 +1068,28 @@ func (s *OrderService) RetryPayment(ctx context.Context, req *orderv1.RetryPayme
 		if lErr != nil {
 			return mapStoreError(lErr)
 		}
-		allocs, totalPayableVND, _, vErr := validateRetryableGroupOrders(aggs, paymentID, lockedGroup.PaymentExpiresAt, now)
+		allocs, totalPayableVND, currentExp, vErr := validateRetryableGroupOrders(aggs, paymentID, lockedGroup.PaymentExpiresAt, now)
 		if vErr != nil {
 			return vErr
 		}
 
-		newExpiresAt := now.Add(time.Duration(s.cfg.PaymentExpiryMinutes) * time.Minute)
+		hasFlashSale := groupHasFlashSale(aggs)
+		newExpiresAt := now.Add(s.paymentExpiryDuration())
+		if hasFlashSale {
+			// Wave 2b: Flash sale orders keep the short expiry window and RetryPayment
+			// MUST NEVER extend the slot-hold deadline past the original payment window.
+			flashCap := now.Add(s.flashPaymentExpiryDuration())
+			newExpiresAt = *currentExp
+			if lockedGroup.PaymentExpiresAt != nil && lockedGroup.PaymentExpiresAt.Before(newExpiresAt) {
+				newExpiresAt = *lockedGroup.PaymentExpiresAt
+			}
+			if flashCap.Before(newExpiresAt) {
+				newExpiresAt = flashCap
+			}
+			if !newExpiresAt.After(now) {
+				return status.Error(codes.FailedPrecondition, "payment window has expired; please place a new order")
+			}
+		}
 		payResp, pErr := s.clients.Payment.CreatePayment(ctx, &paymentv1.CreatePaymentRequest{
 			OrderGroupId:      lockedGroup.ID,
 			OrderId:           lockedGroup.ID,
@@ -1073,7 +1119,9 @@ func (s *OrderService) RetryPayment(ctx context.Context, req *orderv1.RetryPayme
 		newPaymentStatus := paymentStatusToString(newPay.GetStatus(), "PENDING")
 		if newPay.GetExpiresAt() != nil {
 			exp := newPay.GetExpiresAt().AsTime().UTC()
-			newExpiresAt = exp
+			if !hasFlashSale || exp.Before(newExpiresAt) {
+				newExpiresAt = exp
+			}
 		}
 
 		// Review-A P0-3(b): persist the newly created superseding payment even if the client disconnects.
@@ -1100,11 +1148,20 @@ func (s *OrderService) RetryPayment(ctx context.Context, req *orderv1.RetryPayme
 			if errors.Is(uErr, store.ErrRetryPrecondition) && s.clients.Payment != nil {
 				compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 				defer cancel()
-				_, _ = s.clients.Payment.CancelPayment(compCtx, &paymentv1.CancelPaymentRequest{
-					PaymentId:    newPaymentID,
-					OrderGroupId: lockedGroup.ID,
-					Reason:       "Retry payment DB sync conflict",
-				})
+				if cErr := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
+					_, err := s.clients.Payment.CancelPayment(c, &paymentv1.CancelPaymentRequest{
+						PaymentId:    newPaymentID,
+						OrderGroupId: lockedGroup.ID,
+						Reason:       "Retry payment DB sync conflict",
+					})
+					if code := status.Code(err); code == codes.NotFound || code == codes.FailedPrecondition || code == codes.AlreadyExists {
+						return nil
+					}
+					return err
+				}); cErr != nil {
+					s.logger.WarnContext(ctx, "failed to cancel superseded retry payment after DB precondition conflict",
+						"checkout_group_id", lockedGroup.ID, "payment_id", newPaymentID, "error", cErr)
+				}
 			}
 			return mapStoreError(uErr)
 		}
@@ -1162,11 +1219,25 @@ func validateRetryableGroupOrders(
 		if exp == nil || !exp.After(now) {
 			return nil, 0, nil, status.Error(codes.FailedPrecondition, "payment window has expired; please place a new order")
 		}
-		lastExp = exp
+		if lastExp == nil || exp.Before(*lastExp) {
+			ts := *exp
+			lastExp = &ts
+		}
 		allocs = append(allocs, buildShopAllocation(ord))
 		totalPayableVND += ord.TotalPayableVND
 	}
 	return allocs, totalPayableVND, lastExp, nil
+}
+
+func groupHasFlashSale(aggs []store.OrderAggregate) bool {
+	for _, agg := range aggs {
+		for _, it := range agg.Items {
+			if strings.TrimSpace(it.FlashSaleItemID) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func fallbackStr(v, fb string) string {

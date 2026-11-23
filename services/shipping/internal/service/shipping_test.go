@@ -2639,3 +2639,294 @@ func TestReview4_ConcurrentCreateShipmentAndReturnCallsCarrierOnce(t *testing.T)
 		})
 	})
 }
+
+func TestW2B_ShopFreeshipValidationAndCalculateFeeRaw(t *testing.T) {
+	repo := newMemRepo()
+	ghn := carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock", Token: "sandbox-ghn-token"})
+	mockExp := carrier.NewMockExpressAdapter()
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)), ghn, mockExp)
+	qc := newRecordingQuoteCache()
+	svc := NewShippingService(repo, agg, qc, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	ctx := context.Background()
+
+	// 1. Unconfigured shop returns default freeship disabled (false, 0, 0).
+	defCfg, err := svc.GetShopShippingSettings(ctx, "shop-w2b-unconfigured")
+	if err != nil {
+		t.Fatalf("GetShopShippingSettings default: %v", err)
+	}
+	if defCfg.FreeShipEnabled || defCfg.FreeShipMinOrderVND != 0 || defCfg.FreeShipMaxVND != 0 {
+		t.Fatalf("expected default freeship disabled/0/0, got %+v", defCfg)
+	}
+
+	// 2. Invalid freeship configurations must be rejected with ErrInvalidArgument.
+	invalidCases := []struct {
+		name string
+		in   *store.ShopShippingSettings
+	}{
+		{
+			name: "negative min_order when disabled",
+			in: &store.ShopShippingSettings{
+				ShopID: "shop-w2b-val", EnabledCarrierCodes: []string{"ghn"}, DefaultWeightGrams: 500,
+				FreeShipEnabled: false, FreeShipMinOrderVND: -1, FreeShipMaxVND: 0,
+			},
+		},
+		{
+			name: "negative max_vnd when disabled",
+			in: &store.ShopShippingSettings{
+				ShopID: "shop-w2b-val", EnabledCarrierCodes: []string{"ghn"}, DefaultWeightGrams: 500,
+				FreeShipEnabled: false, FreeShipMinOrderVND: 0, FreeShipMaxVND: -5000,
+			},
+		},
+		{
+			name: "negative min_order when enabled",
+			in: &store.ShopShippingSettings{
+				ShopID: "shop-w2b-val", EnabledCarrierCodes: []string{"ghn"}, DefaultWeightGrams: 500,
+				FreeShipEnabled: true, FreeShipMinOrderVND: -1000, FreeShipMaxVND: 30000,
+			},
+		},
+		{
+			name: "negative max_vnd when enabled",
+			in: &store.ShopShippingSettings{
+				ShopID: "shop-w2b-val", EnabledCarrierCodes: []string{"ghn"}, DefaultWeightGrams: 500,
+				FreeShipEnabled: true, FreeShipMinOrderVND: 200000, FreeShipMaxVND: -1,
+			},
+		},
+		{
+			name: "enabled with max_vnd == 0",
+			in: &store.ShopShippingSettings{
+				ShopID: "shop-w2b-val", EnabledCarrierCodes: []string{"ghn"}, DefaultWeightGrams: 500,
+				FreeShipEnabled: true, FreeShipMinOrderVND: 200000, FreeShipMaxVND: 0,
+			},
+		},
+		{
+			name: "enabled with min_order == 0 and max_vnd == 0",
+			in: &store.ShopShippingSettings{
+				ShopID: "shop-w2b-val", EnabledCarrierCodes: []string{"ghn"}, DefaultWeightGrams: 500,
+				FreeShipEnabled: true, FreeShipMinOrderVND: 0, FreeShipMaxVND: 0,
+			},
+		},
+	}
+	for _, tc := range invalidCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := svc.UpdateShopShippingSettings(ctx, tc.in); !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("case %q: expected ErrInvalidArgument, got %v", tc.name, err)
+			}
+		})
+	}
+
+	// 3. Valid freeship configs persist and round-trip cleanly.
+	// Baseline quotes BEFORE enabling shop freeship (both explicit weight and shop default_weight_grams=1600).
+	if _, err := svc.UpdateShopShippingSettings(ctx, &store.ShopShippingSettings{
+		ShopID:              "shop-w2b-fs",
+		EnabledCarrierCodes: []string{"ghn", "mock_express"},
+		DefaultWeightGrams:  1600,
+		DefaultLengthCM:     25,
+		DefaultWidthCM:      20,
+		DefaultHeightCM:     12,
+		FreeShipEnabled:     false,
+		FreeShipMinOrderVND: 0,
+		FreeShipMaxVND:      0,
+	}); err != nil {
+		t.Fatalf("baseline UpdateShopShippingSettings: %v", err)
+	}
+
+	baseExplicit, err := svc.CalculateFee(ctx, carrier.FeeRequest{
+		ShopID: "shop-w2b-fs", FromProvinceCode: "79", FromWardCode: "79001",
+		ToProvinceCode: "01", ToWardCode: "01001", WeightGrams: 1000,
+	})
+	if err != nil || len(baseExplicit) == 0 {
+		t.Fatalf("baseline explicit CalculateFee: quotes=%+v err=%v", baseExplicit, err)
+	}
+	baseDefaultWt, err := svc.CalculateFee(ctx, carrier.FeeRequest{
+		ShopID: "shop-w2b-fs", FromProvinceCode: "79", FromWardCode: "79001",
+		ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 0,
+	})
+	if err != nil || len(baseDefaultWt) == 0 {
+		t.Fatalf("baseline default-weight CalculateFee: quotes=%+v err=%v", baseDefaultWt, err)
+	}
+
+	// Enable generous shop freeship (min_order=0, max=100000 -> exceeds every carrier fee).
+	saved, err := svc.UpdateShopShippingSettings(ctx, &store.ShopShippingSettings{
+		ShopID:              "shop-w2b-fs",
+		EnabledCarrierCodes: []string{"ghn", "mock_express"},
+		DefaultWeightGrams:  1600,
+		DefaultLengthCM:     25,
+		DefaultWidthCM:      20,
+		DefaultHeightCM:     12,
+		FreeShipEnabled:     true,
+		FreeShipMinOrderVND: 0,
+		FreeShipMaxVND:      100000,
+	})
+	if err != nil {
+		t.Fatalf("enable freeship (min=0, max=100000): %v", err)
+	}
+	if !saved.FreeShipEnabled || saved.FreeShipMinOrderVND != 0 || saved.FreeShipMaxVND != 100000 {
+		t.Fatalf("unexpected saved freeship settings: %+v", saved)
+	}
+
+	// Use fresh service without cache to ensure raw carrier quotes are ALSO unchanged without cache hits.
+	svcNoCache := NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	afterExplicit, err := svcNoCache.CalculateFee(ctx, carrier.FeeRequest{
+		ShopID: "shop-w2b-fs", FromProvinceCode: "79", FromWardCode: "79001",
+		ToProvinceCode: "01", ToWardCode: "01001", WeightGrams: 1000,
+	})
+	if err != nil || len(afterExplicit) != len(baseExplicit) {
+		t.Fatalf("after freeship CalculateFee explicit: quotes=%+v err=%v", afterExplicit, err)
+	}
+	for i := range baseExplicit {
+		if afterExplicit[i].FeeVND <= 0 || afterExplicit[i].FeeVND != baseExplicit[i].FeeVND {
+			t.Fatalf("CalculateFee MUST NOT deduct shop freeship: quote[%d] before=%d after=%d",
+				i, baseExplicit[i].FeeVND, afterExplicit[i].FeeVND)
+		}
+	}
+	afterDefaultWt, err := svcNoCache.CalculateFee(ctx, carrier.FeeRequest{
+		ShopID: "shop-w2b-fs", FromProvinceCode: "79", FromWardCode: "79001",
+		ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 0,
+	})
+	if err != nil || len(afterDefaultWt) != len(baseDefaultWt) {
+		t.Fatalf("after freeship CalculateFee default weight: quotes=%+v err=%v", afterDefaultWt, err)
+	}
+	for i := range baseDefaultWt {
+		if afterDefaultWt[i].FeeVND <= 0 || afterDefaultWt[i].FeeVND != baseDefaultWt[i].FeeVND {
+			t.Fatalf("CalculateFee(weight=0) MUST NOT deduct shop freeship: quote[%d] before=%d after=%d",
+				i, baseDefaultWt[i].FeeVND, afterDefaultWt[i].FeeVND)
+		}
+	}
+
+	// Update threshold to 250,000 VND / max 30,000 VND and verify GetShopShippingSettings returns exact values.
+	if _, err := svc.UpdateShopShippingSettings(ctx, &store.ShopShippingSettings{
+		ShopID:              "shop-w2b-fs",
+		EnabledCarrierCodes: []string{"ghn"},
+		DefaultWeightGrams:  1600,
+		FreeShipEnabled:     true,
+		FreeShipMinOrderVND: 250000,
+		FreeShipMaxVND:      30000,
+	}); err != nil {
+		t.Fatalf("update freeship thresholds: %v", err)
+	}
+	got, err := svc.GetShopShippingSettings(ctx, "shop-w2b-fs")
+	if err != nil {
+		t.Fatalf("GetShopShippingSettings: %v", err)
+	}
+	if !got.FreeShipEnabled || got.FreeShipMinOrderVND != 250000 || got.FreeShipMaxVND != 30000 {
+		t.Fatalf("expected freeship (true, 250000, 30000), got %+v", got)
+	}
+
+	// Disable freeship while keeping stored threshold values -> allowed and persisted.
+	if _, err := svc.UpdateShopShippingSettings(ctx, &store.ShopShippingSettings{
+		ShopID:              "shop-w2b-fs",
+		EnabledCarrierCodes: []string{"ghn"},
+		DefaultWeightGrams:  1600,
+		FreeShipEnabled:     false,
+		FreeShipMinOrderVND: 250000,
+		FreeShipMaxVND:      30000,
+	}); err != nil {
+		t.Fatalf("disable freeship preserving thresholds: %v", err)
+	}
+	disabled, err := svc.GetShopShippingSettings(ctx, "shop-w2b-fs")
+	if err != nil || disabled.FreeShipEnabled || disabled.FreeShipMinOrderVND != 250000 || disabled.FreeShipMaxVND != 30000 {
+		t.Fatalf("unexpected disabled freeship state: %+v err=%v", disabled, err)
+	}
+}
+
+type countingShopSettingsRepo struct {
+	*memRepo
+	getCalls atomic.Int32
+}
+
+func (c *countingShopSettingsRepo) GetShopShippingSettings(ctx context.Context, shopID string) (*store.ShopShippingSettings, error) {
+	c.getCalls.Add(1)
+	return c.memRepo.GetShopShippingSettings(ctx, shopID)
+}
+
+func TestW2B_UpdateShopShippingSettingsPreservesExistingDimensionsAndSingleRead(t *testing.T) {
+	repo := &countingShopSettingsRepo{memRepo: newMemRepo()}
+	ghn := carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock", Token: "sandbox-ghn-token"})
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)), ghn)
+	svc := NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx := context.Background()
+
+	// 1. Negative weight or any negative dimension must still be rejected with ErrInvalidArgument.
+	for name, bad := range map[string]*store.ShopShippingSettings{
+		"negative weight": {ShopID: "shop-dim", EnabledCarrierCodes: []string{"ghn"}, DefaultWeightGrams: -1},
+		"negative length": {ShopID: "shop-dim", EnabledCarrierCodes: []string{"ghn"}, DefaultLengthCM: -1},
+		"negative width":  {ShopID: "shop-dim", EnabledCarrierCodes: []string{"ghn"}, DefaultWidthCM: -1},
+		"negative height": {ShopID: "shop-dim", EnabledCarrierCodes: []string{"ghn"}, DefaultHeightCM: -1},
+	} {
+		if _, err := svc.UpdateShopShippingSettings(ctx, bad); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("%s: expected ErrInvalidArgument, got %v", name, err)
+		}
+	}
+
+	// 2. First save with all 4 parcel fields omitted (0) fills platform defaults (500, 20, 15, 10) in 1 read.
+	repo.getCalls.Store(0)
+	first, err := svc.UpdateShopShippingSettings(ctx, &store.ShopShippingSettings{
+		ShopID:              "shop-dim-default",
+		EnabledCarrierCodes: []string{"ghn"},
+	})
+	if err != nil {
+		t.Fatalf("first UpdateShopShippingSettings: %v", err)
+	}
+	if first.DefaultWeightGrams != 500 || first.DefaultLengthCM != 20 || first.DefaultWidthCM != 15 || first.DefaultHeightCM != 10 {
+		t.Fatalf("expected defaults (500, 20, 15, 10), got (%d, %d, %d, %d)",
+			first.DefaultWeightGrams, first.DefaultLengthCM, first.DefaultWidthCM, first.DefaultHeightCM)
+	}
+	if got := repo.getCalls.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 GetShopShippingSettings read, got %d", got)
+	}
+
+	// 3. Save explicit parcel weight & dimensions (0 extra reads when all 4 > 0).
+	repo.getCalls.Store(0)
+	if _, err := svc.UpdateShopShippingSettings(ctx, &store.ShopShippingSettings{
+		ShopID:              "shop-dim",
+		EnabledCarrierCodes: []string{"ghn"},
+		DefaultWeightGrams:  1600,
+		DefaultLengthCM:     25,
+		DefaultWidthCM:      20,
+		DefaultHeightCM:     12,
+	}); err != nil {
+		t.Fatalf("initial explicit UpdateShopShippingSettings: %v", err)
+	}
+	if got := repo.getCalls.Load(); got != 0 {
+		t.Fatalf("expected 0 GetShopShippingSettings reads when all 4 fields > 0, got %d", got)
+	}
+
+	// 4. Subsequent update sending 0 for weight & all 3 dimensions preserves all 4 existing values with exactly 1 read.
+	repo.getCalls.Store(0)
+	preserved, err := svc.UpdateShopShippingSettings(ctx, &store.ShopShippingSettings{
+		ShopID:              "shop-dim",
+		EnabledCarrierCodes: []string{"ghn"},
+		FreeShipEnabled:     true,
+		FreeShipMinOrderVND: 200000,
+		FreeShipMaxVND:      30000,
+	})
+	if err != nil {
+		t.Fatalf("update preserving weight & dimensions: %v", err)
+	}
+	if preserved.DefaultWeightGrams != 1600 || preserved.DefaultLengthCM != 25 || preserved.DefaultWidthCM != 20 || preserved.DefaultHeightCM != 12 {
+		t.Fatalf("expected preserved (1600, 25, 20, 12), got (%d, %d, %d, %d)",
+			preserved.DefaultWeightGrams, preserved.DefaultLengthCM, preserved.DefaultWidthCM, preserved.DefaultHeightCM)
+	}
+	if got := repo.getCalls.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 GetShopShippingSettings read when reusing all 4 fields, got %d", got)
+	}
+
+	// 5. Partial update (only DefaultWidthCM changed, others 0) preserves weight/length/height in 1 read.
+	repo.getCalls.Store(0)
+	partial, err := svc.UpdateShopShippingSettings(ctx, &store.ShopShippingSettings{
+		ShopID:              "shop-dim",
+		EnabledCarrierCodes: []string{"ghn"},
+		DefaultWidthCM:      30,
+	})
+	if err != nil {
+		t.Fatalf("partial dimension update: %v", err)
+	}
+	if partial.DefaultWeightGrams != 1600 || partial.DefaultLengthCM != 25 || partial.DefaultWidthCM != 30 || partial.DefaultHeightCM != 12 {
+		t.Fatalf("expected (1600, 25, 30, 12), got (%d, %d, %d, %d)",
+			partial.DefaultWeightGrams, partial.DefaultLengthCM, partial.DefaultWidthCM, partial.DefaultHeightCM)
+	}
+	if got := repo.getCalls.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 GetShopShippingSettings read on partial update, got %d", got)
+	}
+}

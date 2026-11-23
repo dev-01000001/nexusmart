@@ -459,7 +459,7 @@ check("Wave 2 product metadata, combos, gallery paths, and shop profiles", () =>
   assert.ok(videoCount >= 4, "At least 4 products with video preview");
 
   for (const s of SHOPS) {
-    assert.equal(s.returnDays, 45, `Shop ${s.id} must have 45-day return policy`);
+    assert.equal(s.returnDays, 7, `Shop ${s.id} must have 7-day return policy`);
     assert.ok(Number.isInteger(s.freeShipThreshold) && s.freeShipThreshold >= 199000);
     assert.ok(s.factoryProfile && s.factoryProfile.qcProcess.length >= 3);
     assert.ok(s.sizeCharts && s.sizeCharts.top.length === 5 && s.sizeCharts.bottom.length === 5);

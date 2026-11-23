@@ -108,7 +108,7 @@ function AboutInner() {
           </h1>
           <p className={styles.lead} data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
             NexusMart kết nối trực tiếp bốn xưởng dệt tại Hải Phòng, Hà Nội, Đà Nẵng và TP. Hồ Chí
-            Minh với định lượng vải GSM công khai, giá niêm yết rõ ràng và đổi trả miễn phí 45 ngày.
+            Minh với định lượng vải GSM công khai, giá niêm yết rõ ràng và đổi trả miễn phí 7 ngày.
           </p>
           <div
             className={styles.heroActions}
@@ -276,7 +276,7 @@ function AboutInner() {
                 >
                   <div className={styles.specRow}>
                     <dt className={styles.specKey}>Chính sách đổi trả toàn sàn</dt>
-                    <dd className={styles.specVal}>45 ngày miễn phí · đổi size 2 chiều tại nhà</dd>
+                    <dd className={styles.specVal}>7 ngày miễn phí · đổi size 2 chiều tại nhà</dd>
                   </div>
                   <div className={styles.specRow}>
                     <dt className={styles.specKey}>Miễn phí vận chuyển</dt>

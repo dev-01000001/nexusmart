@@ -10,19 +10,23 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nats-io/nats.go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/env"
+	"github.com/nexusmart/core/pkg/common/jetstream"
 	"github.com/nexusmart/core/pkg/common/logger"
 	"github.com/nexusmart/core/pkg/common/metrics"
 	"github.com/nexusmart/core/pkg/common/telemetry"
+	"github.com/nexusmart/core/services/product/internal/events"
 	"github.com/nexusmart/core/services/product/internal/server"
 	"github.com/nexusmart/core/services/product/internal/store"
 	"github.com/nexusmart/core/services/product/migrations"
@@ -43,6 +47,8 @@ func run() error {
 	grpcPort := env.EnvString("GRPC_PORT", "50052")
 	httpPort := env.EnvString("HTTP_PORT", "8082")
 	databaseURL := env.EnvString("DATABASE_URL", "")
+	natsURL := env.EnvString("NATS_URL", "nats://nats:4222")
+	natsStream := env.EnvString("NATS_STREAM", jetstream.DefaultPrimaryStream)
 	jwtSecret := env.EnvString("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me")
 	otelEndpoint := env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	logLevel := parseLogLevel(env.EnvString("LOG_LEVEL", "info"))
@@ -88,6 +94,13 @@ func run() error {
 	}
 	log.Info("database migrations applied successfully")
 
+	nc, js, err := connectNATSWithRetry(ctx, natsURL, natsStream, log)
+	if err != nil {
+		return fmt.Errorf("connect nats: %w", err)
+	}
+	defer nc.Close()
+	log.Info("connected to NATS JetStream", slog.String("stream", natsStream))
+
 	pgStore := store.NewPgStore(pool)
 	red := metrics.NewRED(serviceName, nil)
 
@@ -95,12 +108,21 @@ func run() error {
 		grpc.ChainUnaryInterceptor(
 			telemetry.GRPCUnaryServerInterceptor(serviceName),
 			red.GRPCUnaryServerInterceptor(),
+			logger.GRPCUnaryServerInterceptor(log),
 			auth.GRPCUnaryServerInterceptor(jwtMgr, svcMgr),
 		),
 	)
 	productSrv := server.New(pgStore, log)
 	productv1.RegisterProductServiceServer(grpcServer, productSrv)
 	reflection.Register(grpcServer)
+
+	outboxRelay := events.NewOutboxRelay(pgStore, js, log, 250*time.Millisecond, productSrv.OutboxTrigger())
+	var bgWG sync.WaitGroup
+	bgWG.Add(1)
+	go func() {
+		defer bgWG.Done()
+		outboxRelay.Run(ctx)
+	}()
 
 	grpcLis, err := net.Listen("tcp", ":"+grpcPort)
 	if err != nil {
@@ -110,7 +132,13 @@ func run() error {
 	opsHandler := metrics.NewOpsHandler(serviceName, func(rctx context.Context) error {
 		pingCtx, cancel := context.WithTimeout(rctx, 2*time.Second)
 		defer cancel()
-		return pgStore.Ping(pingCtx)
+		if err := pgStore.Ping(pingCtx); err != nil {
+			return fmt.Errorf("postgres not ready: %w", err)
+		}
+		if !nc.IsConnected() {
+			return errors.New("nats not connected")
+		}
+		return nil
 	}, nil)
 	httpHandler := telemetry.HTTPMiddleware(serviceName)(red.HTTPMiddleware()(opsHandler))
 
@@ -139,6 +167,7 @@ func run() error {
 		log.Info("shutting down product service")
 	case serveErr := <-errCh:
 		stop()
+		bgWG.Wait()
 		return serveErr
 	}
 
@@ -146,6 +175,7 @@ func run() error {
 	defer cancel()
 	_ = httpServer.Shutdown(shutCtx)
 	grpcServer.GracefulStop()
+	bgWG.Wait()
 	return nil
 }
 
@@ -183,6 +213,46 @@ func connectPostgresWithRetry(ctx context.Context, databaseURL string, log *slog
 		}
 	}
 	return nil, fmt.Errorf("postgres unavailable after retries: %w", lastErr)
+}
+
+func connectNATSWithRetry(ctx context.Context, natsURL, streamName string, log *slog.Logger) (*nats.Conn, nats.JetStreamContext, error) {
+	var (
+		nc      *nats.Conn
+		lastErr error
+	)
+	for attempt := 1; attempt <= 15; attempt++ {
+		nc, lastErr = nats.Connect(
+			natsURL,
+			nats.Name("nexusmart-product"),
+			nats.MaxReconnects(-1),
+			nats.ReconnectWait(time.Second),
+		)
+		if lastErr == nil {
+			break
+		}
+		log.Warn("waiting for nats", slog.Int("attempt", attempt), slog.String("error", lastErr.Error()))
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	if lastErr != nil {
+		return nil, nil, fmt.Errorf("nats unavailable after retries: %w", lastErr)
+	}
+
+	js, err := nc.JetStream()
+	if err != nil {
+		nc.Close()
+		return nil, nil, fmt.Errorf("init jetstream context: %w", err)
+	}
+	if err := events.EnsureStreams(js, streamName); err != nil {
+		nc.Close()
+		return nil, nil, fmt.Errorf("ensure jetstream streams: %w", err)
+	}
+	return nc, js, nil
 }
 
 func parseLogLevel(raw string) slog.Level {

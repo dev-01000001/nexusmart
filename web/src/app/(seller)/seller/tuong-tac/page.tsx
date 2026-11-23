@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { SHOPS, getShopById } from "@/data";
 import type { FitFeedbackKind, LookbookStatus } from "@/data";
@@ -46,7 +45,7 @@ const LOOKBOOK_CATEGORIES = [
 const FAQ_TOPICS = [
   "Chọn size",
   "Chất liệu & giặt ủi",
-  "Giao hàng & đổi trả 45 ngày",
+  "Giao hàng & đổi trả 7 ngày",
   "Hóa đơn VAT",
 ];
 
@@ -288,9 +287,8 @@ function SellerInteractionInner() {
         <div className={common.headerText}>
           <h1 className={common.title}>Tương tác & Nội dung gian hàng</h1>
           <p className={common.finding}>
-            {displayShopName} · {formatInt(unrepliedReviewsCount)} đánh giá chưa phản hồi,{" "}
-            {formatInt(unansweredQuestionsCount)} câu hỏi sản phẩm chờ trả lời ·{" "}
-            {formatInt(totalWaitingCustomers)} khách đang chờ báo có hàng
+            {displayShopName} · Bản xem trước, dữ liệu mẫu · {formatInt(unrepliedReviewsCount)} đánh
+            giá minh họa, {formatInt(unansweredQuestionsCount)} câu hỏi mẫu
           </p>
         </div>
         <div className={common.headerActions}>
@@ -333,6 +331,14 @@ function SellerInteractionInner() {
           )}
         </div>
       </header>
+
+      <section className={common.card} role="note" aria-label="Thông báo dữ liệu mẫu">
+        <span className={`${common.pill} ${common.pillWarn}`}>Bản xem trước, dữ liệu mẫu</span>
+        <p className={common.cardMeta} style={{ marginTop: 8 }}>
+          Phân hệ đánh giá, hỏi đáp, lookbook và danh sách khách chờ hàng hiện sử dụng dữ liệu mẫu
+          minh họa trên trình duyệt và chưa đồng bộ lên máy chủ.
+        </p>
+      </section>
 
       {uiState === "loading" && (
         <StateView
@@ -566,7 +572,7 @@ function SellerInteractionInner() {
                                     [rev.id]: e.target.value,
                                   }))
                                 }
-                                placeholder="Nhập phản hồi công khai của xưởng (cảm ơn hoặc hướng dẫn đổi size 45 ngày)..."
+                                placeholder="Nhập phản hồi công khai của xưởng (cảm ơn hoặc hướng dẫn đổi trả 7 ngày)..."
                                 aria-label={`Phản hồi đánh giá của ${rev.buyerName}`}
                               />
                               <Button
@@ -1056,13 +1062,9 @@ function SellerInteractionInner() {
                             {lb.taggedProductIds.map((pid) => {
                               const p = shopProducts.find((item) => item.id === pid);
                               return (
-                                <Link
-                                  key={pid}
-                                  href={`/seller/san-pham/${pid}`}
-                                  className={styles.taggedSkuPill}
-                                >
-                                  SKU gắn thẻ: {p?.shortName ?? pid}
-                                </Link>
+                                <span key={pid} className={styles.taggedSkuPill}>
+                                  SKU mẫu gắn thẻ: {p?.shortName ?? pid}
+                                </span>
                               );
                             })}
                           </div>
@@ -1152,12 +1154,7 @@ function SellerInteractionInner() {
                                       height={45}
                                     />
                                     <div>
-                                      <Link
-                                        href={`/seller/san-pham/${row.productId}`}
-                                        className={common.cellLink}
-                                      >
-                                        {row.productName}
-                                      </Link>
+                                      <span className={common.cellLink}>{row.productName}</span>
                                       <span className={common.cellSub}>
                                         {row.colorName} / Size {row.size} · {row.skuCode}
                                       </span>
@@ -1227,12 +1224,7 @@ function SellerInteractionInner() {
                     {wishlistRanking.map((item, idx) => (
                       <div key={item.productId} className={styles.wishRow}>
                         <div className={styles.wishTop}>
-                          <Link
-                            href={`/seller/san-pham/${item.productId}`}
-                            className={common.cellLink}
-                          >
-                            {item.shortName}
-                          </Link>
+                          <span className={common.cellLink}>{item.shortName}</span>
                           <span className={styles.wishCount}>
                             {formatInt(item.wishlistCount)} lượt thích
                           </span>

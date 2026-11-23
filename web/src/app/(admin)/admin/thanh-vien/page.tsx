@@ -330,6 +330,16 @@ function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
       {activeTab === "flash_voucher" && <AdminPromoCoinsPanel mode="promo" />}
       {activeTab === "cong_xu" && <AdminPromoCoinsPanel mode="coins" />}
 
+      {(activeTab === "hoi_vien" || activeTab === "the_qua_tang") && (
+        <section className={shared.panel} role="note" style={{ marginTop: 16 }}>
+          <StatusPill label="Bản xem trước, dữ liệu mẫu" tone="warning" />
+          <p className={shared.pageSubtitle} style={{ marginTop: 8 }}>
+            Mục Hội viên &amp; Thẻ quà tặng hiện là bản xem trước dữ liệu mẫu trên trình duyệt. Quản
+            trị thật đang hoạt động tại tab Mã sàn &amp; Flash sale và Cộng Xu thành viên.
+          </p>
+        </section>
+      )}
+
       {/* TAB 1: HỘI VIÊN NEXUS, GIỚI THIỆU & SINH VIÊN .EDU */}
       {activeTab === "hoi_vien" && (
         <div className={styles.stack}>

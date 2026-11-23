@@ -3,7 +3,6 @@ package events
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/nexusmart/core/pkg/common/jetstream"
 	"github.com/nexusmart/core/pkg/common/telemetry"
 	"github.com/nexusmart/core/services/promotion/internal/store"
 )
@@ -86,42 +86,13 @@ func (c *OrderCompletedConsumer) SetDLQPublisher(pub DLQPublisher) {
 	c.dlq = pub
 }
 
-// EnsureStreams ensures the primary NEXUSMART stream and NEXUSMART_DLQ stream exist on JetStream.
+// EnsureStreams ensures the primary NEXUSMART stream (with canonical subjects union-merged)
+// and NEXUSMART_DLQ stream exist on JetStream.
 func (c *OrderCompletedConsumer) EnsureStreams() error {
 	if c.js == nil {
 		return nil
 	}
-	if _, err := c.js.StreamInfo(c.streamName); err != nil {
-		if !errors.Is(err, nats.ErrStreamNotFound) {
-			return fmt.Errorf("inspect stream %s: %w", c.streamName, err)
-		}
-		_, addErr := c.js.AddStream(&nats.StreamConfig{
-			Name:       c.streamName,
-			Subjects:   []string{"user.>", "order.>", "payment.>", "shipment.>"},
-			Retention:  nats.LimitsPolicy,
-			Storage:    nats.FileStorage,
-			Duplicates: 2 * time.Minute,
-		})
-		if addErr != nil && !errors.Is(addErr, nats.ErrStreamNameAlreadyInUse) {
-			return fmt.Errorf("create stream %s: %w", c.streamName, addErr)
-		}
-	}
-
-	if _, err := c.js.StreamInfo(DefaultDLQStream); err != nil {
-		if !errors.Is(err, nats.ErrStreamNotFound) {
-			return fmt.Errorf("inspect dlq stream: %w", err)
-		}
-		_, addErr := c.js.AddStream(&nats.StreamConfig{
-			Name:      DefaultDLQStream,
-			Subjects:  []string{"dlq.>"},
-			Retention: nats.LimitsPolicy,
-			Storage:   nats.FileStorage,
-		})
-		if addErr != nil && !errors.Is(addErr, nats.ErrStreamNameAlreadyInUse) {
-			return fmt.Errorf("create dlq stream: %w", addErr)
-		}
-	}
-	return nil
+	return jetstream.EnsureStreams(c.js, c.streamName, DefaultDLQStream)
 }
 
 // Start subscribes durably to `order.completed` on JetStream.

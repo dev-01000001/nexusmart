@@ -4,27 +4,26 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import {
-  ANNOUNCEMENT_BAR,
-  CATEGORIES,
-  MEGA_MENU_GROUPS,
-  TRENDING_KEYWORDS,
-  getShopById,
-} from "@/data";
-import { getInstantSearchSuggestions } from "@/lib/search";
+import { ANNOUNCEMENT_BAR, CATEGORIES, MEGA_MENU_GROUPS, TRENDING_KEYWORDS } from "@/data";
+import { api } from "@/lib/api";
+import type {
+  GatewayNotificationsResponse,
+  GatewayProduct,
+  PaginatedResponse,
+} from "@/lib/gateway-types";
+import { normalizeVietnamese, suggestSpelling } from "@/lib/search";
 import { formatVnd } from "@/lib/format";
 import { useSession } from "@/context/SessionContext";
 import { useCart } from "@/context/CartContext";
 import { useMockStore } from "@/mock/MockStoreContext";
 import {
   IconBag,
-  IconChat,
+  IconBell,
   IconChevronDown,
   IconClose,
   IconHeart,
   IconMenu,
   IconSearch,
-  IconSpark,
   IconUser,
   NexusMark,
 } from "./Icons";
@@ -132,7 +131,7 @@ export function ShopHeader() {
   const router = useRouter();
   const { user, isAuthenticated, logout } = useSession();
   const { cartCount } = useCart();
-  const { wishlist, openChat, openAi, openCookieModal, chatThreads } = useMockStore();
+  const { wishlist, openCookieModal } = useMockStore();
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
@@ -145,15 +144,18 @@ export function ShopHeader() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [mobileSearchFocus, setMobileSearchFocus] = useState(false);
+  const [searchResults, setSearchResults] = useState<GatewayProduct[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
 
   const headerRef = useRef<HTMLElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const mobileSearchRef = useRef<HTMLInputElement>(null);
   const megaCloseTimerRef = useRef<number | null>(null);
+  const searchReqSeq = useRef(0);
 
   const isHome = pathname === "/";
   const wishlistCount = wishlist.length;
-  const buyerUnread = chatThreads.reduce((s, t) => s + t.unreadByBuyer, 0);
   const currentAnnouncement = ANNOUNCEMENT_BAR[announcementIdx % ANNOUNCEMENT_BAR.length];
 
   const activeMegaGroup = useMemo(
@@ -170,7 +172,67 @@ export function ShopHeader() {
     };
   }, [activeMegaGroup.id]);
 
-  const instantResult = useMemo(() => getInstantSearchSuggestions(searchQuery, 5), [searchQuery]);
+  // Fetch unread notification count for authenticated users
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setUnreadNotifications(0);
+      return;
+    }
+    let active = true;
+    void api<GatewayNotificationsResponse>("/notifications?page=1&page_size=5")
+      .then((res) => {
+        if (active && typeof res?.unread_count === "number") {
+          setUnreadNotifications(Math.max(0, Math.trunc(res.unread_count)));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [isAuthenticated, pathname]);
+
+  // Debounced real catalog search via GET /api/gw/products?keyword=...
+  useEffect(() => {
+    if (!searchOpen && !(drawerOpen && searchQuery.trim())) return;
+    const trimmed = searchQuery.trim();
+    const seq = ++searchReqSeq.current;
+    setSearchLoading(true);
+    const timer = window.setTimeout(() => {
+      const qs = new URLSearchParams({ page: "1", page_size: "6" });
+      if (trimmed) qs.set("keyword", trimmed);
+      void api<PaginatedResponse<GatewayProduct>>(`/products?${qs.toString()}`)
+        .then((res) => {
+          if (searchReqSeq.current !== seq) return;
+          setSearchResults(Array.isArray(res?.items) ? res.items : []);
+        })
+        .catch(() => {
+          if (searchReqSeq.current !== seq) return;
+          setSearchResults([]);
+        })
+        .finally(() => {
+          if (searchReqSeq.current === seq) {
+            setSearchLoading(false);
+          }
+        });
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery, searchOpen, drawerOpen]);
+
+  const instantKeywords = useMemo(() => {
+    const clean = normalizeVietnamese(searchQuery);
+    if (!clean) return TRENDING_KEYWORDS;
+    const matched = TRENDING_KEYWORDS.filter(
+      (kw) =>
+        normalizeVietnamese(kw.label).includes(clean) ||
+        normalizeVietnamese(kw.query).includes(clean)
+    );
+    return matched.length > 0 ? matched : TRENDING_KEYWORDS.slice(0, 4);
+  }, [searchQuery]);
+
+  const spellingSuggestion = useMemo(() => {
+    if (!searchQuery.trim() || searchLoading || searchResults.length > 0) return null;
+    return suggestSpelling(searchQuery);
+  }, [searchQuery, searchLoading, searchResults.length]);
 
   const clearMegaCloseTimer = () => {
     if (megaCloseTimerRef.current !== null) {
@@ -295,7 +357,7 @@ export function ShopHeader() {
             <p className={styles.announcementText}>
               <span className={styles.announcementDesktop}>{currentAnnouncement.text}</span>
               <span className={styles.announcementMobile}>
-                Freeship từ 249.000₫ · Đổi trả 45 ngày
+                Ưu đãi từ xưởng dệt · Đổi trả trong 7 ngày
               </span>
               <Link href={currentAnnouncement.href} className={styles.announcementLink}>
                 {currentAnnouncement.ctaLabel}
@@ -375,13 +437,6 @@ export function ShopHeader() {
                 >
                   Tạp chí
                 </Link>
-                <Link
-                  href="/hoi-vien"
-                  className={`${styles.navLink} ${isActive("/hoi-vien") ? styles.navLinkActive : ""}`}
-                  onMouseEnter={scheduleMegaClose}
-                >
-                  Hội viên
-                </Link>
               </nav>
             </div>
 
@@ -430,7 +485,7 @@ export function ShopHeader() {
                   <div className={styles.searchSection}>
                     <p className={styles.dropdownHeading}>Tìm kiếm phổ biến</p>
                     <div className={styles.keywordList}>
-                      {instantResult.keywords.slice(0, 6).map((kw) => (
+                      {instantKeywords.slice(0, 6).map((kw) => (
                         <button
                           key={kw.query}
                           type="button"
@@ -447,57 +502,66 @@ export function ShopHeader() {
                     <p className={styles.dropdownHeading}>
                       {searchQuery.trim()
                         ? `Sản phẩm khớp với "${searchQuery.trim()}"`
-                        : "Sản phẩm xem nhiều"}
+                        : "Sản phẩm nổi bật"}
                     </p>
 
-                    {instantResult.products.length === 0 ? (
+                    {searchLoading ? (
+                      <div className={styles.emptySearchBox}>
+                        <p className={styles.emptySearchText}>Đang tìm kiếm sản phẩm...</p>
+                      </div>
+                    ) : searchResults.length === 0 ? (
                       <div className={styles.emptySearchBox}>
                         <p className={styles.emptySearchText}>
                           Chưa thấy sản phẩm khớp trực tiếp với từ khóa này.
                         </p>
-                        {instantResult.spellingSuggestion && (
+                        {spellingSuggestion && (
                           <button
                             type="button"
                             className={styles.spellingBtn}
-                            onClick={() => handleSelectKeyword(instantResult.spellingSuggestion!)}
+                            onClick={() => handleSelectKeyword(spellingSuggestion)}
                           >
-                            Thử tìm: {instantResult.spellingSuggestion}
+                            Thử tìm: {spellingSuggestion}
                           </button>
                         )}
                       </div>
                     ) : (
                       <ul className={styles.resultList}>
-                        {instantResult.products.map((prod) => {
-                          const shop = getShopById(prod.shopId);
+                        {searchResults.map((prod) => {
+                          const thumb =
+                            prod.images?.[0] ||
+                            prod.skus?.[0]?.image_url ||
+                            "/products/ao-thun-cotton-trang.png";
+                          const prodSlug = prod.slug || prod.id;
+                          const minP = Math.max(0, Math.trunc(prod.min_price_vnd || 0));
+                          const maxP = Math.max(minP, Math.trunc(prod.max_price_vnd || 0));
                           return (
                             <li key={prod.id}>
                               <Link
-                                href={`/san-pham/${prod.slug}`}
+                                href={`/san-pham/${encodeURIComponent(prodSlug)}`}
                                 className={styles.resultItem}
                                 onClick={() => setSearchOpen(false)}
                               >
                                 <Image
-                                  src={prod.image}
+                                  src={thumb}
                                   alt={prod.name}
                                   width={44}
                                   height={58}
                                   className={styles.resultThumb}
                                 />
                                 <div className={styles.resultMeta}>
-                                  <span className={styles.resultName}>{prod.shortName}</span>
+                                  <span className={styles.resultName}>{prod.name}</span>
                                   <span className={styles.resultSub}>
-                                    {shop?.shortName ?? "NexusMart"} · {prod.gsm}gsm
+                                    {prod.skus?.length
+                                      ? `${prod.skus.length} phân loại`
+                                      : "NexusMart"}
                                   </span>
                                 </div>
                                 <div className={styles.resultPriceCol}>
                                   <span className={`${styles.resultPrice} num`}>
-                                    {formatVnd(prod.price)}
+                                    {maxP > minP
+                                      ? `${formatVnd(minP)} – ${formatVnd(maxP)}`
+                                      : formatVnd(minP)}
                                   </span>
-                                  {prod.originalPrice && prod.originalPrice > prod.price && (
-                                    <span className={`${styles.resultOldPrice} num`}>
-                                      {formatVnd(prod.originalPrice)}
-                                    </span>
-                                  )}
                                 </div>
                               </Link>
                             </li>
@@ -534,30 +598,22 @@ export function ShopHeader() {
             </div>
 
             <div className={styles.actionsDesktop}>
-              {!isHome && (
-                <button
-                  type="button"
+              {isAuthenticated && (
+                <Link
+                  href="/tai-khoan?tab=thong-bao"
                   className={styles.actionItem}
-                  onClick={() => openChat()}
-                  aria-label="Nhắn tin với gian hàng"
-                  title="Nhắn tin với gian hàng"
+                  aria-label={`Thông báo (${unreadNotifications} chưa đọc)`}
+                  title="Thông báo"
                 >
-                  <IconChat size={16} />
-                  <span className={styles.actionLabelWide}>Chat</span>
-                  {buyerUnread > 0 && <span className={styles.unreadDot} aria-hidden="true" />}
-                </button>
+                  <IconBell size={17} />
+                  <span className={styles.actionLabelWide}>Thông báo</span>
+                  {unreadNotifications > 0 && (
+                    <span className={`${styles.countBadge} num`}>
+                      {unreadNotifications > 99 ? "99+" : unreadNotifications}
+                    </span>
+                  )}
+                </Link>
               )}
-
-              <button
-                type="button"
-                className={styles.actionItem}
-                onClick={openAi}
-                aria-label="Mở trợ lý chọn size"
-                title="Trợ lý AI"
-              >
-                <IconSpark size={16} />
-                <span className={styles.actionLabelWide}>Trợ lý AI</span>
-              </button>
 
               {isAuthenticated && user ? (
                 <div className={styles.accountMenuWrap}>
@@ -687,14 +743,20 @@ export function ShopHeader() {
               >
                 <IconSearch size={18} />
               </button>
-              <Link
-                href="/tai-khoan?tab=yeu-thich"
-                className={styles.mobileCountLink}
-                aria-label={`Yêu thích (${wishlistCount})`}
-              >
-                <IconHeart size={17} />
-                <span className={`${styles.mobileBadge} num`}>{wishlistCount}</span>
-              </Link>
+              {isAuthenticated && (
+                <Link
+                  href="/tai-khoan?tab=thong-bao"
+                  className={styles.mobileCountLink}
+                  aria-label={`Thông báo (${unreadNotifications} chưa đọc)`}
+                >
+                  <IconBell size={17} />
+                  {unreadNotifications > 0 && (
+                    <span className={`${styles.mobileBadge} num`}>
+                      {unreadNotifications > 99 ? "99+" : unreadNotifications}
+                    </span>
+                  )}
+                </Link>
+              )}
               <Link
                 href="/gio-hang"
                 className={styles.mobileCountLink}
@@ -758,18 +820,11 @@ export function ShopHeader() {
                     Tra cứu đơn hàng
                   </Link>
                   <Link
-                    href="/the-qua-tang"
-                    className={styles.megaQuickLink}
-                    onClick={() => setMegaOpen(false)}
-                  >
-                    Thẻ quà tặng & Ưu đãi sinh viên
-                  </Link>
-                  <Link
                     href="/tro-giup"
                     className={styles.megaQuickLink}
                     onClick={() => setMegaOpen(false)}
                   >
-                    Trợ giúp & Đổi trả 45 ngày
+                    Trợ giúp & Đổi trả 7 ngày
                   </Link>
                 </div>
               </div>
@@ -907,32 +962,43 @@ export function ShopHeader() {
               ))}
             </div>
 
-            {searchQuery.trim() && instantResult.products.length > 0 && (
+            {searchQuery.trim() && searchResults.length > 0 && (
               <div className={styles.drawerSection}>
                 <p className={styles.dropdownHeading}>Kết quả nhanh</p>
                 <ul className={styles.resultList}>
-                  {instantResult.products.slice(0, 3).map((prod) => (
-                    <li key={prod.id}>
-                      <Link
-                        href={`/san-pham/${prod.slug}`}
-                        className={styles.resultItem}
-                        onClick={() => setDrawerOpen(false)}
-                      >
-                        <Image
-                          src={prod.image}
-                          alt={prod.name}
-                          width={44}
-                          height={58}
-                          className={styles.resultThumb}
-                        />
-                        <div className={styles.resultMeta}>
-                          <span className={styles.resultName}>{prod.shortName}</span>
-                          <span className={styles.resultSub}>{prod.gsm}gsm</span>
-                        </div>
-                        <span className={`${styles.resultPrice} num`}>{formatVnd(prod.price)}</span>
-                      </Link>
-                    </li>
-                  ))}
+                  {searchResults.slice(0, 3).map((prod) => {
+                    const thumb =
+                      prod.images?.[0] ||
+                      prod.skus?.[0]?.image_url ||
+                      "/products/ao-thun-cotton-trang.png";
+                    const prodSlug = prod.slug || prod.id;
+                    return (
+                      <li key={prod.id}>
+                        <Link
+                          href={`/san-pham/${encodeURIComponent(prodSlug)}`}
+                          className={styles.resultItem}
+                          onClick={() => setDrawerOpen(false)}
+                        >
+                          <Image
+                            src={thumb}
+                            alt={prod.name}
+                            width={44}
+                            height={58}
+                            className={styles.resultThumb}
+                          />
+                          <div className={styles.resultMeta}>
+                            <span className={styles.resultName}>{prod.name}</span>
+                            <span className={styles.resultSub}>
+                              {prod.skus?.length ? `${prod.skus.length} phân loại` : "NexusMart"}
+                            </span>
+                          </div>
+                          <span className={`${styles.resultPrice} num`}>
+                            {formatVnd(prod.min_price_vnd || 0)}
+                          </span>
+                        </Link>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             )}
@@ -1019,17 +1085,11 @@ export function ShopHeader() {
               <Link href="/tra-cuu-don-hang" className={styles.drawerLink}>
                 <span>Tra cứu đơn hàng</span>
               </Link>
-              <Link href="/hoi-vien" className={styles.drawerLink}>
-                <span>Hội viên Nexus</span>
-              </Link>
-              <Link href="/the-qua-tang" className={styles.drawerLink}>
-                <span>Thẻ quà tặng & Ưu đãi sinh viên</span>
-              </Link>
               <Link href="/tap-chi" className={styles.drawerLink}>
                 <span>Sổ tay vải & Phối đồ</span>
               </Link>
               <Link href="/tro-giup" className={styles.drawerLink}>
-                <span>Trợ giúp & Đổi trả 45 ngày</span>
+                <span>Trợ giúp & Đổi trả 7 ngày</span>
               </Link>
               <Link href="/ve-nexusmart" className={styles.drawerLink}>
                 <span>Về NexusMart & Xưởng dệt</span>
@@ -1037,27 +1097,6 @@ export function ShopHeader() {
             </nav>
 
             <div className={styles.drawerSection}>
-              <button
-                type="button"
-                className={styles.drawerAction}
-                onClick={() => {
-                  setDrawerOpen(false);
-                  openChat();
-                }}
-              >
-                <span>Nhắn tin gian hàng</span>
-                {buyerUnread > 0 && <span className="num">{buyerUnread}</span>}
-              </button>
-              <button
-                type="button"
-                className={styles.drawerAction}
-                onClick={() => {
-                  setDrawerOpen(false);
-                  openAi();
-                }}
-              >
-                <span>Trợ lý AI chọn size</span>
-              </button>
               <button
                 type="button"
                 className={styles.drawerAction}

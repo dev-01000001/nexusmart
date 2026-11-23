@@ -5,7 +5,7 @@ export PROTOC := $(HOME)/.local/bin/protoc
 GO_MODULES := pkg/common gen/go \
 	$(wildcard services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification)
 
-.PHONY: proto lint test up down e2e seed e2e-web
+.PHONY: proto lint test coverage up down e2e seed e2e-web
 
 proto:
 	buf lint
@@ -42,6 +42,9 @@ test:
 		echo "==> cargo test services/payment"; \
 		(cd services/payment && cargo test); \
 	fi
+
+coverage:
+	@bash scripts/coverage.sh
 
 up:
 	docker compose up -d --build

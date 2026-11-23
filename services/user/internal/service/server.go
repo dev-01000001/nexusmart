@@ -44,6 +44,10 @@ type Options struct {
 	PasswordResetRateWindow time.Duration
 	LoginMaxFailedAttempts  int
 	LoginLockoutDuration    time.Duration
+	BankPayoutLockDuration  time.Duration
+	BankOTPMaxAttempts      int
+	BankAddMaxPerHour       int
+	BankAddRateWindow       time.Duration
 	AddressCatalog          AddressCatalog
 	Now                     func() time.Time
 }
@@ -75,6 +79,18 @@ func (o Options) withDefaults() Options {
 	}
 	if o.LoginLockoutDuration <= 0 {
 		o.LoginLockoutDuration = 15 * time.Minute
+	}
+	if o.BankPayoutLockDuration <= 0 {
+		o.BankPayoutLockDuration = 24 * time.Hour
+	}
+	if o.BankOTPMaxAttempts <= 0 {
+		o.BankOTPMaxAttempts = 5
+	}
+	if o.BankAddMaxPerHour <= 0 {
+		o.BankAddMaxPerHour = 5
+	}
+	if o.BankAddRateWindow <= 0 {
+		o.BankAddRateWindow = time.Hour
 	}
 	if o.Now == nil {
 		o.Now = func() time.Time { return time.Now().UTC() }
@@ -1342,29 +1358,38 @@ func (s *Server) ListPublicShops(ctx context.Context, req *userv1.ListPublicShop
 }
 
 func (s *Server) AdminListShops(ctx context.Context, req *userv1.AdminListShopsRequest) (*userv1.AdminListShopsResponse, error) {
-	if _, err := s.requireAdminClaims(ctx); err != nil {
+	claims, err := s.requireAdminClaims(ctx)
+	if err != nil {
 		return nil, err
+	}
+	if claims.Service != "" {
+		return nil, status.Error(codes.PermissionDenied, "service identity not allowed for AdminListShops")
 	}
 
 	page, pageSize := normalizePagination(req.GetPage(), req.GetPageSize())
 	st := shopStatusFromProto(req.GetStatus())
+	pendingOnly := req.GetBankReviewPendingOnly()
 
-	shops, err := s.store.ListShops(ctx, db.ListShopsParams{
-		Status:     st,
-		PageLimit:  pageSize,
-		PageOffset: (page - 1) * pageSize,
+	shops, err := s.store.AdminListShops(ctx, db.AdminListShopsParams{
+		Status:                st,
+		BankReviewPendingOnly: pendingOnly,
+		PageLimit:             pageSize,
+		PageOffset:            (page - 1) * pageSize,
 	})
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to list shops")
 	}
-	total, err := s.store.CountShops(ctx, st)
+	total, err := s.store.AdminCountShops(ctx, db.AdminCountShopsParams{
+		Status:                st,
+		BankReviewPendingOnly: pendingOnly,
+	})
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to count shops")
 	}
 
 	out := make([]*userv1.Shop, 0, len(shops))
 	for _, sh := range shops {
-		out = append(out, toProtoShop(sh))
+		out = append(out, toAdminProtoShop(shopFromAdminListRow(sh), sh.BankReviewPending))
 	}
 	return &userv1.AdminListShopsResponse{
 		Shops: out,
@@ -1423,13 +1448,30 @@ func (s *Server) AdminReviewShop(ctx context.Context, req *userv1.AdminReviewSho
 		return nil, status.Error(codes.FailedPrecondition, "only PENDING shops can be reviewed")
 	}
 
-	var updated db.Shop
+	var (
+		updated           db.Shop
+		bankReviewPending bool
+	)
 	err = s.store.WithTx(ctx, func(q db.Querier) error {
-		var txErr error
+		var (
+			txErr             error
+			verifiedOwnerName string
+		)
+		if req.GetDecision() == userv1.ReviewDecision_REVIEW_DECISION_APPROVE {
+			owner, uErr := q.GetUserByIDForUpdate(ctx, existing.OwnerUserID)
+			if uErr != nil {
+				if isNotFoundErr(uErr) {
+					return status.Error(codes.NotFound, "shop owner not found")
+				}
+				return uErr
+			}
+			verifiedOwnerName = strings.TrimSpace(owner.FullName)
+		}
 		updated, txErr = q.UpdateShopReview(ctx, db.UpdateShopReviewParams{
-			ID:              existing.ID,
-			Status:          newStatus,
-			RejectionReason: reason,
+			ID:                existing.ID,
+			Status:            newStatus,
+			RejectionReason:   reason,
+			VerifiedOwnerName: verifiedOwnerName,
 		})
 		if txErr != nil {
 			if isNotFoundErr(txErr) {
@@ -1445,6 +1487,10 @@ func (s *Server) AdminReviewShop(ctx context.Context, req *userv1.AdminReviewSho
 			}); txErr != nil {
 				return txErr
 			}
+		}
+		bankReviewPending, txErr = q.ExistsPendingBankReviewByShopID(ctx, updated.ID)
+		if txErr != nil {
+			return txErr
 		}
 		_, txErr = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
 			ID:         uuid.NewString(),
@@ -1479,7 +1525,7 @@ func (s *Server) AdminReviewShop(ctx context.Context, req *userv1.AdminReviewSho
 		}
 	}
 
-	return &userv1.AdminReviewShopResponse{Shop: toProtoShop(updated)}, nil
+	return &userv1.AdminReviewShopResponse{Shop: toAdminProtoShop(updated, bankReviewPending)}, nil
 }
 
 func (s *Server) validateProvinceWard(ctx context.Context, provinceCode, wardCode, provinceName, wardName string) (string, string, error) {

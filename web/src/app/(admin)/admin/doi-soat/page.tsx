@@ -38,7 +38,7 @@ import { StatusPill } from "@/features/admin/StatusPill";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
 
-type DoiSoatTab = "so_cai" | "hang_doi" | "hoan_tien" | "phien_mau";
+type DoiSoatTab = "so_cai" | "hang_doi" | "hoan_tien" | "can_xu_ly" | "phien_mau";
 
 function todayDateIso(): string {
   return formatVnDayKey(Date.now());
@@ -121,6 +121,33 @@ function ReconciliationContent() {
   const [refundResult, setRefundResult] = useState<GatewayRefundResponse | null>(null);
 
   const [mockChannelFilter, setMockChannelFilter] = useState<"all" | PaymentMethod>("all");
+
+  // Orphan / manual-review orders (GET /api/v1/admin/orders/needs-review)
+  const [needsReviewOrders, setNeedsReviewOrders] = useState<GatewayOrder[]>([]);
+  const [needsReviewTotal, setNeedsReviewTotal] = useState(0);
+  const [needsReviewLoading, setNeedsReviewLoading] = useState(false);
+  const [needsReviewError, setNeedsReviewError] = useState<string | null>(null);
+  const [reviewNoteDrafts, setReviewNoteDrafts] = useState<Record<string, string>>({});
+  const [resolvingOrderId, setResolvingOrderId] = useState<string | null>(null);
+
+  const loadNeedsReviewOrders = useCallback(async () => {
+    setNeedsReviewLoading(true);
+    setNeedsReviewError(null);
+    try {
+      const res = await api<PaginatedResponse<GatewayOrder>>(
+        "admin/orders/needs-review?page=1&page_size=50"
+      );
+      const items = res.items ?? [];
+      setNeedsReviewOrders(items);
+      setNeedsReviewTotal(res.total ?? items.length);
+    } catch (err) {
+      setNeedsReviewError(
+        getErrorMessage(err, "Không thể tải danh sách đơn cần xử lý tay lúc này.")
+      );
+    } finally {
+      setNeedsReviewLoading(false);
+    }
+  }, []);
 
   const loadQueue = useCallback(async () => {
     setQueueLoading(true);
@@ -215,6 +242,35 @@ function ReconciliationContent() {
   useEffect(() => {
     void loadRefundsQueue();
   }, [loadRefundsQueue]);
+
+  useEffect(() => {
+    void loadNeedsReviewOrders();
+  }, [loadNeedsReviewOrders]);
+
+  const handleResolveManualOrder = async (order: GatewayOrder) => {
+    const note = (reviewNoteDrafts[order.id] ?? "").trim();
+    if (note.length < 4) {
+      showToast("Vui lòng nhập ghi chú xử lý tay (tối thiểu 4 ký tự).");
+      return;
+    }
+    setResolvingOrderId(order.id);
+    try {
+      await api<{ order: GatewayOrder }>(
+        `admin/orders/${encodeURIComponent(order.id)}/resolve-review`,
+        {
+          method: "POST",
+          json: { note },
+        }
+      );
+      setReviewNoteDrafts((prev) => ({ ...prev, [order.id]: "" }));
+      showToast(`Đã đánh dấu hoàn tất xử lý tay cho đơn ${order.order_code}.`);
+      await Promise.all([loadNeedsReviewOrders(), loadData()]);
+    } catch (err) {
+      showToast(getErrorMessage(err, "Không thể cập nhật trạng thái xử lý tay cho đơn này."));
+    } finally {
+      setResolvingOrderId(null);
+    }
+  };
 
   const handleRunReconcile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -520,7 +576,14 @@ function ReconciliationContent() {
             variant="outline"
             size="sm"
             shape="app"
-            onClick={() => void Promise.all([loadData(), loadQueue(), loadRefundsQueue()])}
+            onClick={() =>
+              void Promise.all([
+                loadData(),
+                loadQueue(),
+                loadRefundsQueue(),
+                loadNeedsReviewOrders(),
+              ])
+            }
           >
             Làm mới dữ liệu
           </Button>
@@ -568,13 +631,16 @@ function ReconciliationContent() {
           <span className={shared.kpiLabel}>Hàng đợi cần xử lý</span>
           <span
             className={`${shared.kpiValue} ${
-              queuePendingTotal + pendingRefundsCount > 0 ? shared.kpiValueNegative : ""
+              queuePendingTotal + pendingRefundsCount + needsReviewTotal > 0
+                ? shared.kpiValueNegative
+                : ""
             }`}
           >
-            {formatInt(queuePendingTotal + pendingRefundsCount)}
+            {formatInt(queuePendingTotal + pendingRefundsCount + needsReviewTotal)}
           </span>
           <span className={shared.kpiCaption}>
-            {formatInt(queuePendingTotal)} lệch khớp · {formatInt(pendingRefundsCount)} chờ hoàn
+            {formatInt(queuePendingTotal)} lệch khớp · {formatInt(pendingRefundsCount)} chờ hoàn ·{" "}
+            {formatInt(needsReviewTotal)} xử lý tay
           </span>
         </div>
       </section>
@@ -615,11 +681,21 @@ function ReconciliationContent() {
           <button
             type="button"
             role="tab"
+            aria-selected={activeTab === "can_xu_ly"}
+            className={`${shared.tabBtn} ${activeTab === "can_xu_ly" ? shared.tabBtnActive : ""}`}
+            onClick={() => setActiveTab("can_xu_ly")}
+          >
+            <span>Đơn cần xử lý tay</span>
+            {needsReviewTotal > 0 && <span className={shared.tabCount}>{needsReviewTotal}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={activeTab === "phien_mau"}
             className={`${shared.tabBtn} ${activeTab === "phien_mau" ? shared.tabBtnActive : ""}`}
             onClick={() => setActiveTab("phien_mau")}
           >
-            <span>Lịch sử lô tham khảo</span>
+            <span>Lịch sử lô (mẫu)</span>
             <span className={shared.tabCount}>{reconciliationRows.length}</span>
           </button>
         </div>
@@ -695,42 +771,77 @@ function ReconciliationContent() {
                 </div>
 
                 {(reconcileResult.items ?? []).length > 0 && (
-                  <div className={shared.tableWrap}>
-                    <table className={shared.dataTable}>
-                      <thead>
-                        <tr>
-                          <th>Mã thanh toán</th>
-                          <th>Mã đối tác</th>
-                          <th className={shared.colNum}>Trên sàn</th>
-                          <th className={shared.colNum}>Tại đối tác</th>
-                          <th>Kết quả</th>
-                          <th>Ghi chú</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {reconcileResult.items.map((item, idx) => {
-                          const meta = RECONCILE_ITEM_STATUS_META[item.status] ?? {
-                            label: item.status,
-                            tone: "neutral" as const,
-                          };
-                          return (
-                            <tr key={`${item.payment_id}-${idx}`}>
-                              <td>{item.payment_id || "—"}</td>
-                              <td>{item.provider_tx_id || "—"}</td>
-                              <td className={shared.colNum}>{formatVnd(item.local_amount_vnd)}</td>
-                              <td className={shared.colNum}>
-                                {formatVnd(item.provider_amount_vnd)}
-                              </td>
-                              <td>
-                                <StatusPill label={meta.label} tone={meta.tone} />
-                              </td>
-                              <td>{item.note || "—"}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
+                  <>
+                    <div className={shared.tableWrap}>
+                      <table className={shared.dataTable}>
+                        <thead>
+                          <tr>
+                            <th>Mã thanh toán</th>
+                            <th>Mã đối tác</th>
+                            <th className={shared.colNum}>Trên sàn</th>
+                            <th className={shared.colNum}>Tại đối tác</th>
+                            <th>Kết quả</th>
+                            <th>Ghi chú</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {reconcileResult.items.map((item, idx) => {
+                            const meta = RECONCILE_ITEM_STATUS_META[item.status] ?? {
+                              label: item.status,
+                              tone: "neutral" as const,
+                            };
+                            return (
+                              <tr key={`${item.payment_id}-${idx}`}>
+                                <td>{item.payment_id || "—"}</td>
+                                <td>{item.provider_tx_id || "—"}</td>
+                                <td className={shared.colNum}>
+                                  {formatVnd(item.local_amount_vnd)}
+                                </td>
+                                <td className={shared.colNum}>
+                                  {formatVnd(item.provider_amount_vnd)}
+                                </td>
+                                <td>
+                                  <StatusPill label={meta.label} tone={meta.tone} />
+                                </td>
+                                <td>{item.note || "—"}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className={shared.mobileList}>
+                      {reconcileResult.items.map((item, idx) => {
+                        const meta = RECONCILE_ITEM_STATUS_META[item.status] ?? {
+                          label: item.status,
+                          tone: "neutral" as const,
+                        };
+                        return (
+                          <div
+                            key={`m-rec-${item.payment_id}-${idx}`}
+                            className={shared.mobileItem}
+                          >
+                            <div className={shared.mobileLine1}>
+                              <span className={shared.mobileIdentity}>
+                                {item.payment_id || item.provider_tx_id || "—"}
+                              </span>
+                              <span className={shared.mobileMetric}>
+                                {formatVnd(item.local_amount_vnd)}
+                              </span>
+                            </div>
+                            <div className={shared.mobileLine2}>
+                              <span className={shared.mobileMetaText}>
+                                Đối tác: {formatVnd(item.provider_amount_vnd)}{" "}
+                                {item.note ? `· ${item.note}` : ""}
+                              </span>
+                              <StatusPill label={meta.label} tone={meta.tone} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
                 )}
               </div>
             )}
@@ -750,34 +861,53 @@ function ReconciliationContent() {
             {ledger.accounts.length === 0 ? (
               <p className={shared.emptyRow}>Chưa có tài khoản hạch toán nào được khởi tạo.</p>
             ) : (
-              <div className={shared.tableWrap}>
-                <table className={shared.dataTable}>
-                  <thead>
-                    <tr>
-                      <th>Mã tài khoản</th>
-                      <th>Nhóm tài khoản</th>
-                      <th className={shared.colNum}>Tổng Ghi nợ</th>
-                      <th className={shared.colNum}>Tổng Ghi có</th>
-                      <th className={shared.colNum}>Số dư hiện tại</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {ledger.accounts.map((acc) => (
-                      <tr key={acc.account_code}>
-                        <td>
-                          <span className={shared.cellPrimary}>{acc.account_code}</span>
-                        </td>
-                        <td>{acc.account_type}</td>
-                        <td className={shared.colNum}>{formatVnd(acc.debit_total_vnd)}</td>
-                        <td className={shared.colNum}>{formatVnd(acc.credit_total_vnd)}</td>
-                        <td className={shared.colNum}>
-                          <strong>{formatVnd(acc.balance_vnd)}</strong>
-                        </td>
+              <>
+                <div className={shared.tableWrap}>
+                  <table className={shared.dataTable}>
+                    <thead>
+                      <tr>
+                        <th>Mã tài khoản</th>
+                        <th>Nhóm tài khoản</th>
+                        <th className={shared.colNum}>Tổng Ghi nợ</th>
+                        <th className={shared.colNum}>Tổng Ghi có</th>
+                        <th className={shared.colNum}>Số dư hiện tại</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {ledger.accounts.map((acc) => (
+                        <tr key={acc.account_code}>
+                          <td>
+                            <span className={shared.cellPrimary}>{acc.account_code}</span>
+                          </td>
+                          <td>{acc.account_type}</td>
+                          <td className={shared.colNum}>{formatVnd(acc.debit_total_vnd)}</td>
+                          <td className={shared.colNum}>{formatVnd(acc.credit_total_vnd)}</td>
+                          <td className={shared.colNum}>
+                            <strong>{formatVnd(acc.balance_vnd)}</strong>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className={shared.mobileList}>
+                  {ledger.accounts.map((acc) => (
+                    <div key={`m-acc-${acc.account_code}`} className={shared.mobileItem}>
+                      <div className={shared.mobileLine1}>
+                        <span className={shared.mobileIdentity}>{acc.account_code}</span>
+                        <span className={shared.mobileMetric}>{formatVnd(acc.balance_vnd)}</span>
+                      </div>
+                      <div className={shared.mobileLine2}>
+                        <span className={shared.mobileMetaText}>{acc.account_type}</span>
+                        <span className={shared.mobileMetaText}>
+                          Nợ {formatVnd(acc.debit_total_vnd)} · Có {formatVnd(acc.credit_total_vnd)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
           </section>
         </div>
@@ -1520,62 +1650,265 @@ function ReconciliationContent() {
             {orders.length === 0 ? (
               <p className={shared.emptyRow}>Chưa có đơn hàng nào trên hệ thống.</p>
             ) : (
-              <div className={shared.tableWrap}>
-                <table className={shared.dataTable}>
-                  <thead>
-                    <tr>
-                      <th>Mã đơn</th>
-                      <th>Phương thức & mã thanh toán</th>
-                      <th className={shared.colNum}>Tổng thanh toán</th>
-                      <th>Trạng thái</th>
-                      <th className={shared.colAction}>Thao tác</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {orders.slice(0, 20).map((ord) => {
-                      const stMeta = getAdminOrderStatusMeta(ord.status);
-                      return (
-                        <tr key={ord.id}>
-                          <td>
-                            <div className={shared.cellPrimary}>{ord.order_code}</div>
-                            <div className={shared.cellSub}>
-                              {ord.created_at ? formatDateTimeVi(ord.created_at) : ord.id}
-                            </div>
-                          </td>
-                          <td>
-                            <div>{ord.payment_method}</div>
-                            <div className={shared.cellSub}>
-                              {ord.payment_id || "Chưa có mã giao dịch thanh toán"}
-                            </div>
-                          </td>
-                          <td className={shared.colNum}>{formatVnd(ord.total_payable_vnd)}</td>
-                          <td>
+              <>
+                <div className={shared.tableWrap}>
+                  <table className={shared.dataTable}>
+                    <thead>
+                      <tr>
+                        <th>Mã đơn</th>
+                        <th>Phương thức & mã thanh toán</th>
+                        <th className={shared.colNum}>Tổng thanh toán</th>
+                        <th>Trạng thái</th>
+                        <th className={shared.colAction}>Thao tác</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {orders.slice(0, 20).map((ord) => {
+                        const stMeta = getAdminOrderStatusMeta(ord.status);
+                        return (
+                          <tr key={ord.id}>
+                            <td>
+                              <div className={shared.cellPrimary}>{ord.order_code}</div>
+                              <div className={shared.cellSub}>
+                                {ord.created_at ? formatDateTimeVi(ord.created_at) : ord.id}
+                              </div>
+                            </td>
+                            <td>
+                              <div>{ord.payment_method}</div>
+                              <div className={shared.cellSub}>
+                                {ord.payment_id || "Chưa có mã giao dịch thanh toán"}
+                              </div>
+                            </td>
+                            <td className={shared.colNum}>{formatVnd(ord.total_payable_vnd)}</td>
+                            <td>
+                              <StatusPill label={stMeta.label} tone={stMeta.tone} />
+                            </td>
+                            <td className={shared.colAction}>
+                              <button
+                                type="button"
+                                className={shared.rowActionBtn}
+                                onClick={() => handleOpenRefundForm(ord)}
+                              >
+                                Điền phiếu hoàn
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className={shared.mobileList}>
+                  {orders.slice(0, 20).map((ord) => {
+                    const stMeta = getAdminOrderStatusMeta(ord.status);
+                    return (
+                      <div key={`m-ord-${ord.id}`} className={shared.mobileItem}>
+                        <div className={shared.mobileLine1}>
+                          <span className={shared.mobileIdentity}>{ord.order_code}</span>
+                          <span className={shared.mobileMetric}>
+                            {formatVnd(ord.total_payable_vnd)}
+                          </span>
+                        </div>
+                        <div className={shared.mobileLine2}>
+                          <span className={shared.mobileMetaText}>{ord.payment_method}</span>
+                          <div className={shared.detailButtons}>
                             <StatusPill label={stMeta.label} tone={stMeta.tone} />
-                          </td>
-                          <td className={shared.colAction}>
                             <button
                               type="button"
                               className={shared.rowActionBtn}
                               onClick={() => handleOpenRefundForm(ord)}
                             >
-                              Điền phiếu hoàn
+                              Hoàn
                             </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
             )}
           </section>
         </div>
       )}
 
-      {/* TAB 4: Historical Mock Batches (kept separated) */}
+      {/* TAB 4: Orphan / Manual Review Orders */}
+      {activeTab === "can_xu_ly" && (
+        <div className={shared.sectionStack}>
+          <section className={shared.panel} aria-labelledby="needs-review-heading">
+            <div className={shared.panelHeader}>
+              <div>
+                <h2 id="needs-review-heading" className={shared.panelTitle}>
+                  Đơn hàng cần xử lý tay ({formatInt(needsReviewTotal)})
+                </h2>
+                <span className={shared.panelMeta}>
+                  Các đơn phát sinh lỗi hoàn tác / bù trừ tồn kho hoặc sai lệch saga cần vận hành
+                  kiểm tra và xác nhận đã xử lý.
+                </span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                shape="app"
+                onClick={() => void loadNeedsReviewOrders()}
+              >
+                Làm mới
+              </Button>
+            </div>
+
+            {needsReviewLoading ? (
+              <StateView
+                kind="loading"
+                surface="app"
+                title="Đang tải danh sách đơn cần xử lý tay..."
+                rows={4}
+              />
+            ) : needsReviewError ? (
+              <StateView
+                kind="error"
+                surface="app"
+                title="Không thể tải danh sách đơn cần xử lý tay"
+                message={needsReviewError}
+                actionLabel="Thử lại"
+                onAction={() => void loadNeedsReviewOrders()}
+              />
+            ) : needsReviewOrders.length === 0 ? (
+              <p className={shared.emptyRow}>
+                Không có đơn hàng nào bị gắn cờ cần xử lý tay lúc này.
+              </p>
+            ) : (
+              <>
+                <div className={shared.tableWrap}>
+                  <table className={shared.dataTable}>
+                    <thead>
+                      <tr>
+                        <th>Mã đơn & thời gian</th>
+                        <th>Thanh toán & trạng thái</th>
+                        <th className={shared.colNum}>Tổng tiền</th>
+                        <th>Ghi chú & xác nhận xử lý</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {needsReviewOrders.map((ord) => {
+                        const stMeta = getAdminOrderStatusMeta(ord.status);
+                        const busy = resolvingOrderId === ord.id;
+                        return (
+                          <tr key={ord.id}>
+                            <td>
+                              <div className={shared.cellPrimary}>{ord.order_code}</div>
+                              <div className={shared.cellSub}>
+                                ID: {ord.id.slice(0, 8)} ·{" "}
+                                {ord.created_at ? formatDateTimeVi(ord.created_at) : "—"}
+                              </div>
+                            </td>
+                            <td>
+                              <StatusPill label={stMeta.label} tone={stMeta.tone} />
+                              <div className={shared.cellSub}>
+                                {ord.payment_method}
+                                {ord.payment_id ? ` · ${ord.payment_id.slice(0, 8)}` : ""}
+                              </div>
+                            </td>
+                            <td className={shared.colNum}>{formatVnd(ord.total_payable_vnd)}</td>
+                            <td>
+                              <div className={shared.detailButtons}>
+                                <input
+                                  type="text"
+                                  className={shared.textInput}
+                                  style={{ height: 32, minWidth: 200 }}
+                                  value={reviewNoteDrafts[ord.id] ?? ""}
+                                  onChange={(e) =>
+                                    setReviewNoteDrafts((prev) => ({
+                                      ...prev,
+                                      [ord.id]: e.target.value,
+                                    }))
+                                  }
+                                  placeholder="Ghi chú kết quả kiểm tra & xử lý..."
+                                  aria-label={`Ghi chú xử lý đơn ${ord.order_code}`}
+                                />
+                                <Button
+                                  type="button"
+                                  variant="primary"
+                                  size="sm"
+                                  shape="app"
+                                  disabled={busy}
+                                  onClick={() => void handleResolveManualOrder(ord)}
+                                >
+                                  {busy ? "Đang lưu..." : "Đã xử lý"}
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className={shared.mobileList}>
+                  {needsReviewOrders.map((ord) => {
+                    const stMeta = getAdminOrderStatusMeta(ord.status);
+                    const busy = resolvingOrderId === ord.id;
+                    return (
+                      <div key={`m-nr-${ord.id}`} className={shared.mobileItem}>
+                        <div className={shared.mobileLine1}>
+                          <span className={shared.mobileIdentity}>{ord.order_code}</span>
+                          <span className={shared.mobileMetric}>
+                            {formatVnd(ord.total_payable_vnd)}
+                          </span>
+                        </div>
+                        <div className={shared.mobileLine2}>
+                          <span className={shared.mobileMetaText}>{ord.payment_method}</span>
+                          <StatusPill label={stMeta.label} tone={stMeta.tone} />
+                        </div>
+                        <div
+                          style={{
+                            marginTop: 8,
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                          }}
+                        >
+                          <input
+                            type="text"
+                            className={shared.textInput}
+                            value={reviewNoteDrafts[ord.id] ?? ""}
+                            onChange={(e) =>
+                              setReviewNoteDrafts((prev) => ({
+                                ...prev,
+                                [ord.id]: e.target.value,
+                              }))
+                            }
+                            placeholder="Ghi chú kết quả xử lý..."
+                          />
+                          <Button
+                            type="button"
+                            variant="primary"
+                            size="sm"
+                            shape="app"
+                            disabled={busy}
+                            onClick={() => void handleResolveManualOrder(ord)}
+                          >
+                            {busy ? "Đang lưu..." : "Đánh dấu đã xử lý"}
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </section>
+        </div>
+      )}
+
+      {/* TAB 5: Historical Mock Batches (kept separated) */}
       {activeTab === "phien_mau" && (
         <div className={shared.sectionStack}>
           <section className={shared.panel} aria-label="Lịch sử phiên đối soát tham khảo">
+            <div style={{ marginBottom: 12 }}>
+              <StatusPill label="Bản xem trước, dữ liệu mẫu" tone="warning" />
+            </div>
             <div className={shared.panelHeader}>
               <div>
                 <h2 className={shared.panelTitle}>Lịch sử phiên đối soát mẫu (tham khảo)</h2>
@@ -1636,6 +1969,26 @@ function ReconciliationContent() {
                   })}
                 </tbody>
               </table>
+            </div>
+
+            <div className={shared.mobileList}>
+              {filteredMockRows.map((row) => {
+                const meta = RECON_STATUS_META[row.status];
+                return (
+                  <div key={`m-mock-${row.id}`} className={shared.mobileItem}>
+                    <div className={shared.mobileLine1}>
+                      <span className={shared.mobileIdentity}>{row.batchCode}</span>
+                      <span className={shared.mobileMetric}>{formatVnd(row.grossCollected)}</span>
+                    </div>
+                    <div className={shared.mobileLine2}>
+                      <span className={shared.mobileMetaText}>
+                        {CHANNEL_META[row.channel]} · {formatDateVi(row.date)}
+                      </span>
+                      <StatusPill label={meta.label} tone={meta.tone} />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </section>
         </div>

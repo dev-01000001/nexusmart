@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -264,10 +266,39 @@ func TestCartRemoveClearAndOwnership(t *testing.T) {
 	ctxA := buyerCtx("buyer-a")
 	ctxB := buyerCtx("buyer-b")
 
-	// Unauthenticated AddItem rejected
-	_, err := srv.AddItem(context.Background(), &cartv1.AddItemRequest{UserId: "buyer-a", SkuId: "sku-1", Quantity: 1})
-	if status.Code(err) != codes.Unauthenticated {
-		t.Fatalf("expected Unauthenticated, got %v", err)
+	// Unauthenticated requests are rejected across all CartService RPCs (including GetCart & ClearItems).
+	if _, err := srv.GetCart(context.Background(), &cartv1.GetCartRequest{UserId: "buyer-a"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated for anonymous GetCart with user_id, got %v", err)
+	}
+	if _, err := srv.GetCart(context.Background(), &cartv1.GetCartRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated for anonymous GetCart without user_id, got %v", err)
+	}
+	if _, err := srv.AddItem(context.Background(), &cartv1.AddItemRequest{UserId: "buyer-a", SkuId: "sku-1", Quantity: 1}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated for anonymous AddItem, got %v", err)
+	}
+	if _, err := srv.UpdateItemQty(context.Background(), &cartv1.UpdateItemQtyRequest{UserId: "buyer-a", SkuId: "sku-1", Quantity: 2}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated for anonymous UpdateItemQty, got %v", err)
+	}
+	if _, err := srv.RemoveItem(context.Background(), &cartv1.RemoveItemRequest{UserId: "buyer-a", SkuId: "sku-1"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated for anonymous RemoveItem, got %v", err)
+	}
+	if _, err := srv.ClearItems(context.Background(), &cartv1.ClearItemsRequest{UserId: "buyer-a", SkuIds: []string{"sku-1"}}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated for anonymous ClearItems with user_id, got %v", err)
+	}
+
+	// Service tokens are rejected at handler level too (defense-in-depth alongside interceptor internalRPCs=false).
+	svcCtx := auth.WithClaims(context.Background(), &auth.Claims{
+		Role:    auth.ServiceRole,
+		Service: "order-service",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject: "order-service",
+		},
+	})
+	if _, err := srv.GetCart(svcCtx, &cartv1.GetCartRequest{UserId: "buyer-a"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for service-token GetCart, got %v", err)
+	}
+	if _, err := srv.ClearItems(svcCtx, &cartv1.ClearItemsRequest{UserId: "buyer-a", SkuIds: []string{"sku-1"}}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for service-token ClearItems, got %v", err)
 	}
 
 	// Buyer A adds 3 SKUs
@@ -275,7 +306,22 @@ func TestCartRemoveClearAndOwnership(t *testing.T) {
 	_, _ = srv.AddItem(ctxA, &cartv1.AddItemRequest{SkuId: "sku-2", Quantity: 1})
 	_, _ = srv.AddItem(ctxA, &cartv1.AddItemRequest{SkuId: "sku-3", Quantity: 1})
 
-	// Buyer B cannot read, mutate, or clear Buyer A's cart
+	// Buyer A cannot target Buyer B's user_id, and Buyer B cannot read/mutate/clear Buyer A's cart
+	if _, err := srv.GetCart(ctxA, &cartv1.GetCartRequest{UserId: "buyer-b"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for buyer-a GetCart with user_id=buyer-b, got %v", err)
+	}
+	if _, err := srv.AddItem(ctxA, &cartv1.AddItemRequest{UserId: "buyer-b", SkuId: "sku-1", Quantity: 1}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for buyer-a AddItem with user_id=buyer-b, got %v", err)
+	}
+	if _, err := srv.UpdateItemQty(ctxA, &cartv1.UpdateItemQtyRequest{UserId: "buyer-b", SkuId: "sku-1", Quantity: 2}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for buyer-a UpdateItemQty with user_id=buyer-b, got %v", err)
+	}
+	if _, err := srv.RemoveItem(ctxA, &cartv1.RemoveItemRequest{UserId: "buyer-b", SkuId: "sku-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for buyer-a RemoveItem with user_id=buyer-b, got %v", err)
+	}
+	if _, err := srv.ClearItems(ctxA, &cartv1.ClearItemsRequest{UserId: "buyer-b", SkuIds: []string{"sku-1"}}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for buyer-a ClearItems with user_id=buyer-b, got %v", err)
+	}
 	if _, err := srv.GetCart(ctxB, &cartv1.GetCartRequest{UserId: "buyer-a"}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("expected PermissionDenied for cross-user GetCart, got %v", err)
 	}
@@ -292,8 +338,8 @@ func TestCartRemoveClearAndOwnership(t *testing.T) {
 		t.Fatalf("expected 2 items after RemoveItem, got %+v err=%v", remResp, err)
 	}
 
-	// Internal OrderService ClearItems for specific sku-2 (no user claims, passes user_id)
-	clrResp, err := srv.ClearItems(context.Background(), &cartv1.ClearItemsRequest{
+	// OrderService forwards buyer A's JWT claims when clearing ordered sku-2 after checkout
+	clrResp, err := srv.ClearItems(ctxA, &cartv1.ClearItemsRequest{
 		UserId: "buyer-a",
 		SkuIds: []string{"sku-2"},
 	})
@@ -330,5 +376,174 @@ func TestCartProductTransientRetry(t *testing.T) {
 	resp, err := srv.AddItem(ctx, &cartv1.AddItemRequest{SkuId: "sku-retry", Quantity: 1})
 	if err != nil || resp.Cart.TotalItems != 1 {
 		t.Fatalf("expected retry to recover after 2 transient failures, got resp=%+v err=%v", resp, err)
+	}
+}
+
+type rawMemoryStore struct {
+	items map[string]map[string]store.Item
+}
+
+func (m *rawMemoryStore) GetAll(_ context.Context, userID string) (map[string]store.Item, error) {
+	out := make(map[string]store.Item)
+	for k, v := range m.items[userID] {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (m *rawMemoryStore) Get(_ context.Context, userID, skuID string) (store.Item, bool, error) {
+	it, ok := m.items[userID][skuID]
+	return it, ok, nil
+}
+
+func (m *rawMemoryStore) Set(_ context.Context, userID, skuID string, item store.Item) error {
+	if m.items[userID] == nil {
+		m.items[userID] = make(map[string]store.Item)
+	}
+	m.items[userID][skuID] = item
+	return nil
+}
+
+func (m *rawMemoryStore) Delete(_ context.Context, userID string, skuIDs ...string) error {
+	for _, id := range skuIDs {
+		delete(m.items[userID], id)
+	}
+	return nil
+}
+
+func (m *rawMemoryStore) ClearAll(_ context.Context, userID string) error {
+	delete(m.items, userID)
+	return nil
+}
+
+func (m *rawMemoryStore) Ping(_ context.Context) error { return nil }
+
+func TestCartAddItemInt32OverflowAndNonPositiveStoredItems(t *testing.T) {
+	prod := &fakeProductClient{
+		skus: map[string]*productv1.SKU{
+			"sku-1": {
+				Id: "sku-1", ProductId: "p-1", ShopId: "shop-a",
+				ProductName: "Coffee", Name: "Std", PriceVnd: 100000,
+				AvailableStock: 10, WeightGrams: 250, IsActive: true,
+			},
+			"sku-2": {
+				Id: "sku-2", ProductId: "p-2", ShopId: "shop-a",
+				ProductName: "Tea", Name: "Std", PriceVnd: 50000,
+				AvailableStock: 10, WeightGrams: 100, IsActive: true,
+			},
+			"sku-3": {
+				Id: "sku-3", ProductId: "p-3", ShopId: "shop-a",
+				ProductName: "Cup", Name: "Std", PriceVnd: 20000,
+				AvailableStock: 10, WeightGrams: 150, IsActive: true,
+			},
+		},
+	}
+
+	srv, mr := newTestCartServer(t, prod, nil)
+	ctx := buyerCtx("buyer-overflow")
+
+	// 1. Existing qty=1 + MaxInt32 (2147483647) must NOT overflow int32 to negative;
+	// must clamp to available stock (10), persist positive qty in Redis, and return positive totals.
+	first, err := srv.AddItem(ctx, &cartv1.AddItemRequest{SkuId: "sku-1", Quantity: 1})
+	if err != nil || first.ClampedToStock || first.Cart.TotalItems != 1 {
+		t.Fatalf("initial AddItem failed: resp=%+v err=%v", first, err)
+	}
+	overflowResp, err := srv.AddItem(ctx, &cartv1.AddItemRequest{SkuId: "sku-1", Quantity: math.MaxInt32})
+	if err != nil {
+		t.Fatalf("overflow AddItem failed: %v", err)
+	}
+	if !overflowResp.ClampedToStock {
+		t.Fatalf("expected ClampedToStock=true on int32 overflow addition, got false")
+	}
+	if len(overflowResp.Cart.ShopGroups) != 1 || len(overflowResp.Cart.ShopGroups[0].Items) != 1 {
+		t.Fatalf("expected 1 shop group with 1 item, got %+v", overflowResp.Cart)
+	}
+	if got := overflowResp.Cart.ShopGroups[0].Items[0].Quantity; got != 10 {
+		t.Fatalf("item quantity = %d, want 10", got)
+	}
+	if overflowResp.Cart.TotalItems != 10 || overflowResp.Cart.TotalVnd != 1000000 {
+		t.Fatalf("unexpected cart totals after overflow clamp: items=%d total_vnd=%d",
+			overflowResp.Cart.TotalItems, overflowResp.Cart.TotalVnd)
+	}
+	rawRedisVal := mr.HGet("cart:buyer-overflow", "sku-1")
+	var persisted store.Item
+	if err := json.Unmarshal([]byte(rawRedisVal), &persisted); err != nil {
+		t.Fatalf("unmarshal persisted redis cart item %q: %v", rawRedisVal, err)
+	}
+	if persisted.Quantity != 10 {
+		t.Fatalf("persisted redis quantity = %d, want 10 (raw=%s)", persisted.Quantity, rawRedisVal)
+	}
+
+	// 2. Corrupted <= 0 entries already present in Redis must be skipped when reading cart.
+	mr.HSet("cart:buyer-overflow", "sku-2", `{"quantity":0,"added_price_vnd":50000,"selected":true}`)
+	mr.HSet("cart:buyer-overflow", "sku-3", `{"quantity":-5,"added_price_vnd":20000,"selected":true}`)
+
+	gotCart, err := srv.GetCart(ctx, &cartv1.GetCartRequest{})
+	if err != nil {
+		t.Fatalf("GetCart with corrupted Redis items failed: %v", err)
+	}
+	if len(gotCart.Cart.ShopGroups) != 1 || len(gotCart.Cart.ShopGroups[0].Items) != 1 || gotCart.Cart.ShopGroups[0].Items[0].SkuId != "sku-1" {
+		t.Fatalf("expected only valid sku-1 in cart, got %+v", gotCart.Cart)
+	}
+	if gotCart.Cart.TotalItems != 10 || gotCart.Cart.TotalVnd != 1000000 {
+		t.Fatalf("corrupted Redis rows leaked into totals: items=%d total_vnd=%d",
+			gotCart.Cart.TotalItems, gotCart.Cart.TotalVnd)
+	}
+
+	// 3. Even if a Store implementation directly returns <= 0 items to buildCart or AddItem,
+	// buildCart skips non-positive lines and AddItem treats negative existing qty as 0.
+	rawStore := &rawMemoryStore{
+		items: map[string]map[string]store.Item{
+			"buyer-corrupt": {
+				"sku-1": {Quantity: 2, AddedPriceVND: 100000, Selected: true},
+				"sku-2": {Quantity: 0, AddedPriceVND: 50000, Selected: true},
+				"sku-3": {Quantity: -4, AddedPriceVND: 20000, Selected: true},
+			},
+		},
+	}
+	corruptSrv := New(rawStore, prod, nil, nil)
+	corruptCtx := buyerCtx("buyer-corrupt")
+
+	readResp, err := corruptSrv.GetCart(corruptCtx, &cartv1.GetCartRequest{})
+	if err != nil {
+		t.Fatalf("GetCart on rawMemoryStore failed: %v", err)
+	}
+	if len(readResp.Cart.ShopGroups) != 1 || len(readResp.Cart.ShopGroups[0].Items) != 1 || readResp.Cart.ShopGroups[0].Items[0].SkuId != "sku-1" {
+		t.Fatalf("expected buildCart to skip qty<=0 lines, got %+v", readResp.Cart)
+	}
+	if readResp.Cart.TotalItems != 2 || readResp.Cart.TotalVnd != 200000 {
+		t.Fatalf("unexpected totals from rawMemoryStore: items=%d total_vnd=%d",
+			readResp.Cart.TotalItems, readResp.Cart.TotalVnd)
+	}
+
+	// Adding qty=2 onto a corrupted -4 existing item must NOT produce -2; must store +2.
+	addCorrupt, err := corruptSrv.AddItem(corruptCtx, &cartv1.AddItemRequest{SkuId: "sku-3", Quantity: 2})
+	if err != nil {
+		t.Fatalf("AddItem over negative existing qty failed: %v", err)
+	}
+	if rawStore.items["buyer-corrupt"]["sku-3"].Quantity != 2 {
+		t.Fatalf("stored qty after adding 2 to -4 = %d, want 2", rawStore.items["buyer-corrupt"]["sku-3"].Quantity)
+	}
+	if addCorrupt.Cart.TotalItems != 4 || addCorrupt.Cart.TotalVnd != 240000 {
+		t.Fatalf("unexpected totals after recovering sku-3: items=%d total_vnd=%d",
+			addCorrupt.Cart.TotalItems, addCorrupt.Cart.TotalVnd)
+	}
+
+	// 4. Cart containing ONLY non-positive items returns an empty cart cleanly.
+	onlyBadStore := &rawMemoryStore{
+		items: map[string]map[string]store.Item{
+			"buyer-only-bad": {
+				"sku-2": {Quantity: 0, AddedPriceVND: 50000, Selected: true},
+				"sku-3": {Quantity: -9, AddedPriceVND: 20000, Selected: true},
+			},
+		},
+	}
+	onlyBadSrv := New(onlyBadStore, prod, nil, nil)
+	emptyResp, err := onlyBadSrv.GetCart(buyerCtx("buyer-only-bad"), &cartv1.GetCartRequest{})
+	if err != nil {
+		t.Fatalf("GetCart on all-corrupt cart failed: %v", err)
+	}
+	if len(emptyResp.Cart.ShopGroups) != 0 || emptyResp.Cart.TotalItems != 0 || emptyResp.Cart.TotalVnd != 0 {
+		t.Fatalf("expected empty cart when all stored items <= 0, got %+v", emptyResp.Cart)
 	}
 }

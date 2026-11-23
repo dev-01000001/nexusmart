@@ -7,6 +7,47 @@ export { formatVoucherBenefit };
 export const DEFAULT_COD_MAX_VND = 5_000_000;
 export const DEFAULT_COD_MAX_REJECTED = 3;
 
+export const AMBIGUOUS_CHECKOUT_MESSAGE =
+  "Đơn có thể đã được ghi nhận. Vui lòng xem Đơn hàng của tôi trước khi đặt lại.";
+
+const AMBIGUOUS_CHECKOUT_ERROR_CODES = new Set<string>([
+  "UNAVAILABLE",
+  "DEADLINE_EXCEEDED",
+  "ABORTED",
+  "CANCELED",
+  "CANCELLED",
+  "INTERNAL_ERROR",
+]);
+
+/**
+ * Forward-recovery rule for POST /checkout:
+ * Gateway maps gRPC Unavailable -> 503 UNAVAILABLE, DeadlineExceeded -> 504 DEADLINE_EXCEEDED,
+ * Aborted -> 409 ABORTED, Canceled -> 500 INTERNAL_ERROR (BFF -> 503 UNAVAILABLE) or 499 CANCELED.
+ * Together with network/fetch rejections (non-HTTP errors), the order MAY already have been created
+ * and will finish asynchronously. Callers must keep the same Idempotency-Key and guide users to /don-hang.
+ */
+export function isAmbiguousCheckoutSubmitError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return true;
+  const e = err as { status?: unknown; code?: unknown };
+  const hasNumericStatus = typeof e.status === "number" && Number.isFinite(e.status);
+  const code = typeof e.code === "string" ? e.code.trim().toUpperCase() : "";
+
+  if (!hasNumericStatus && !code) {
+    // Raw fetch rejection (TypeError, AbortError, offline network failure)
+    return true;
+  }
+  if (AMBIGUOUS_CHECKOUT_ERROR_CODES.has(code)) {
+    return true;
+  }
+  if (hasNumericStatus) {
+    const status = e.status as number;
+    if (status <= 0 || status === 499 || status >= 500) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function formatVoucherCondition(voucher: GatewayVoucher): string {
   if (voucher.min_order_vnd > 0) {
     return `Đơn tối thiểu ${formatVnd(voucher.min_order_vnd)}`;
@@ -27,8 +68,32 @@ export function translateVoucherReason(rawReason?: string): string {
   if (lower.includes("not found")) {
     return "Mã ưu đãi không tồn tại hoặc chưa được mở áp dụng.";
   }
+  if (lower.includes("paused") || lower.includes("tạm dừng")) {
+    return "Mã ưu đãi hiện đang tạm dừng phát hành.";
+  }
+  if (lower.includes("deleted") || lower.includes("đã xóa")) {
+    return "Mã ưu đãi đã ngưng phát hành.";
+  }
   if (lower.includes("inactive")) {
     return "Mã ưu đãi hiện đang tạm ngưng.";
+  }
+  if (lower.includes("category") || lower.includes("danh mục")) {
+    return "Mã ưu đãi không áp dụng cho danh mục sản phẩm đang chọn.";
+  }
+  if (
+    (lower.includes("shop discount") || lower.includes("discount program")) &&
+    (lower.includes("per-user") || lower.includes("limit"))
+  ) {
+    return "Một sản phẩm đã vượt giới hạn lượt mua của chương trình giảm giá gian hàng và được tính theo giá thường.";
+  }
+  if (lower.includes("shop discount") || lower.includes("discount program")) {
+    return "Chương trình giảm giá của gian hàng không còn hiệu lực cho sản phẩm đang chọn.";
+  }
+  if (
+    lower.includes("flash sale") &&
+    (lower.includes("per-user") || lower.includes("limit") || lower.includes("exhausted"))
+  ) {
+    return "Sản phẩm đã vượt giới hạn suất Flash sale cho mỗi tài khoản. Hãy giảm số lượng hoặc chọn Mua giá thường.";
   }
   if (lower.includes("not started")) {
     return "Mã ưu đãi chưa đến thời gian bắt đầu.";
@@ -88,33 +153,93 @@ export interface CheckoutErrorContext {
 }
 
 export function translateCheckoutError(err: unknown, ctx?: CheckoutErrorContext): string {
-  if (!(err instanceof ApiError)) {
-    return "Không thể hoàn tất đặt hàng lúc này. Vui lòng thử lại sau ít phút.";
-  }
-
-  if (err.status === 401 || err.code === "UNAUTHENTICATED") {
+  if (err instanceof ApiError && (err.status === 401 || err.code === "UNAUTHENTICATED")) {
     return "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại để tiếp tục đặt hàng.";
   }
 
-  if (err.status >= 500 || err.code === "UNAVAILABLE") {
-    return "Hệ thống đặt hàng đang tạm bận. Đơn hàng chưa bị trừ tiền, bạn có thể bấm đặt lại sau ít phút.";
+  if (isAmbiguousCheckoutSubmitError(err)) {
+    return AMBIGUOUS_CHECKOUT_MESSAGE;
+  }
+
+  if (!(err instanceof ApiError)) {
+    return AMBIGUOUS_CHECKOUT_MESSAGE;
   }
 
   if (err.code === "INSUFFICIENT_STOCK") {
     return "Một hoặc nhiều sản phẩm trong đơn vừa hết hàng hoặc không đủ số lượng tồn kho. Vui lòng kiểm tra lại giỏ hàng.";
   }
 
+  if (err.code === "SKU_INACTIVE" || err.code === "SKU_NOT_ACTIVE") {
+    return "Một hoặc nhiều phân loại sản phẩm đã ngừng kinh doanh. Vui lòng kiểm tra lại giỏ hàng.";
+  }
+
+  if (err.code === "STOCK_VERSION_CONFLICT") {
+    return "Tồn kho sản phẩm vừa thay đổi. Vui lòng thử đặt lại.";
+  }
+
+  if (err.code === "IDEMPOTENCY_KEY_CONFLICT") {
+    return "Lần đặt trước có thể đã tạo đơn hàng rồi. Vui lòng kiểm tra mục Đơn hàng của tôi trước khi đặt lại.";
+  }
+
+  if (err.code === "COD_REJECTED_LIMIT_EXCEEDED") {
+    return "Tài khoản tạm không áp dụng thanh toán khi nhận hàng (COD) do vượt giới hạn từ chối nhận hàng. Vui lòng chọn chuyển khoản VietQR.";
+  }
+
+  if (err.code === "COD_LIMIT_EXCEEDED") {
+    return `Đơn hàng vượt quá hạn mức thanh toán khi nhận hàng (tối đa ${formatVnd(DEFAULT_COD_MAX_VND)}). Vui lòng chọn chuyển khoản VietQR.`;
+  }
+
+  if (err.code === "FLASH_SALE_COD_NOT_ALLOWED") {
+    return "Đơn hàng có sản phẩm Flash sale không hỗ trợ COD. Vui lòng chọn chuyển khoản VietQR.";
+  }
+
+  if (
+    err.code === "FLASH_SALE_NOT_ACTIVE" ||
+    err.code === "FLASH_UNAVAILABLE_ON_COMMIT" ||
+    err.code === "FLASH_SALE_PRICE_CHANGED" ||
+    err.code === "FLASH_SALE_SKU_MISMATCH" ||
+    err.code === "FLASH_SALE_SHOP_MISMATCH" ||
+    err.code === "FLASH_SALE_INVALID_PRICE"
+  ) {
+    return "Suất Flash sale đã kết thúc, hết lượt hoặc bạn đã đạt giới hạn mua cho sản phẩm này.";
+  }
+
+  if (err.code === "VOUCHER_UNAVAILABLE_ON_COMMIT") {
+    return "Mã ưu đãi bạn chọn vừa hết lượt hoặc không còn hiệu lực. Vui lòng bỏ chọn mã hoặc chọn mã khác.";
+  }
+
+  if (
+    err.code === "SHOP_PROGRAM_UNAVAILABLE_ON_COMMIT" ||
+    err.code === "SHOP_PROGRAM_PRICE_CHANGED" ||
+    err.code === "SHOP_PROGRAM_ITEM_UNKNOWN"
+  ) {
+    return "Chương trình giảm giá của gian hàng vừa thay đổi hoặc hết lượt. Vui lòng kiểm tra lại tổng tiền và thử đặt lại.";
+  }
+
+  if (err.code === "INSUFFICIENT_COINS") {
+    return "Số dư Xu hiện không đủ để áp dụng cho đơn hàng này. Vui lòng kiểm tra lại mức dùng Xu.";
+  }
+
+  if (err.code === "PROMOTION_BREAKDOWN_MISSING" || err.code === "RESERVATION_ALREADY_RELEASED") {
+    return "Hệ thống khuyến mãi vừa cập nhật lại giá đơn hàng. Vui lòng kiểm tra lại và thử đặt lại.";
+  }
+
   if (err.code === "RESOURCE_EXHAUSTED") {
-    if (ctx?.isFlashSale) {
-      return "Suất ưu đãi Flash sale đã hết lượt. Vui lòng quay lại kiểm tra giá thường hoặc chọn sản phẩm khác.";
+    if (/flash|suất|giới hạn/i.test(err.message)) {
+      return "Suất ưu đãi Flash sale đã hết lượt. Vui lòng bỏ suất Flash hoặc chọn sản phẩm khác.";
     }
-    if (ctx?.hasVouchers) {
+    if (ctx?.hasVouchers && /voucher|mã ưu đãi/i.test(err.message)) {
       return "Mã ưu đãi bạn chọn vừa hết lượt sử dụng. Vui lòng bỏ chọn mã hoặc chọn mã khác.";
     }
-    return "Ưu đãi hoặc suất mua đã hết lượt. Vui lòng thử lại sau ít phút.";
+    return err.message || "Bạn thao tác quá nhanh, vui lòng thử lại sau ít phút.";
   }
 
   if (err.code === "FAILED_PRECONDITION") {
+    const isGeneric =
+      !err.message || err.message === "Không thể thực hiện thao tác ở trạng thái hiện tại.";
+    if (!isGeneric) {
+      return err.message;
+    }
     if (ctx?.paymentMethod === "COD") {
       if ((ctx.codRejectedCount ?? 0) >= DEFAULT_COD_MAX_REJECTED) {
         return "Tài khoản tạm không áp dụng thanh toán khi nhận hàng (COD). Vui lòng chọn chuyển khoản VietQR.";
@@ -124,17 +249,10 @@ export function translateCheckoutError(err: unknown, ctx?: CheckoutErrorContext)
       }
       return "Không thể đặt đơn COD lúc này (có thể do vượt hạn mức COD, tồn kho thay đổi hoặc ưu đãi không còn hiệu lực). Bạn có thể thử chuyển sang VietQR hoặc kiểm tra lại ưu đãi.";
     }
-    if (ctx?.isFlashSale) {
-      return "Suất Flash sale đã kết thúc hoặc bạn đã đạt giới hạn mua cho sản phẩm này.";
-    }
     if (ctx?.hasVouchers) {
       return "Mã ưu đãi hoặc số lượng sản phẩm không còn đủ điều kiện đặt hàng. Vui lòng kiểm tra lại.";
     }
     return "Không thể tạo đơn ở trạng thái hiện tại. Vui lòng kiểm tra lại địa chỉ, tồn kho và ưu đãi.";
-  }
-
-  if (err.code === "ABORTED") {
-    return "Tồn kho hoặc trạng thái đơn hàng vừa thay đổi. Vui lòng thử đặt lại.";
   }
 
   if (err.code === "NOT_FOUND") {

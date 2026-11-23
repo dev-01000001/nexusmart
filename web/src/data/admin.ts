@@ -328,7 +328,7 @@ export const ADMIN_DISPUTES: AdminDispute[] = [
     slaDeadline: "2026-11-23T14:50:00+07:00",
     evidenceNote: "Đã hoàn 349.000₫ về Ví NexusPay người mua và ghi nợ gian hàng.",
     tier: "cap_2_tu_gian_hang",
-    escalatedReason: "Gian hàng từ chối đổi do đã giặt, sàn phân xử lỗi đường may trong 45 ngày.",
+    escalatedReason: "Gian hàng từ chối đổi do đã giặt, sàn phân xử lỗi đường may trong 7 ngày.",
     ackSlaHoursLeft: 0,
     ackConfirmedAt: "2026-11-16T16:15:00+07:00",
     resolveWorkingDaysLeft: 0,
@@ -969,7 +969,7 @@ export interface AdminContentState {
 export const INITIAL_ADMIN_CONTENT: AdminContentState = {
   announcement: {
     enabled: true,
-    message: "Miễn phí vận chuyển toàn sàn từ 249.000₫ · Đổi trả miễn phí 45 ngày tận nơi",
+    message: "Miễn phí vận chuyển toàn sàn từ 249.000₫ · Đổi trả miễn phí 7 ngày tận nơi",
     linkLabel: "Xem chính sách",
     linkHref: "/chinh-sach/doi-tra",
     scheduleLabel: "Hiệu lực đến 31/12/2026",
@@ -1065,7 +1065,7 @@ export const INITIAL_ADMIN_CONTENT: AdminContentState = {
         {
           id: "c-tc-csr",
           title: "Cộng đồng & chuẩn sàn",
-          items: ["Sợi Xanh Nexus", "Đổi trả 45 ngày", "Hồ sơ xưởng đạt chuẩn"],
+          items: ["Sợi Xanh Nexus", "Đổi trả 7 ngày", "Hồ sơ xưởng đạt chuẩn"],
         },
       ],
     },
@@ -1220,7 +1220,7 @@ export const INITIAL_ADMIN_CONTENT: AdminContentState = {
       id: "sz-ao",
       groupName: "Áo cơ bản (Thun & Polo)",
       appliesTo: "XS – 4XL · Chuẩn phom Việt Nam",
-      toleranceNote: "Sai số xưởng cho phép ±1,5 cm; hỗ trợ đổi size 2 chiều trong 45 ngày.",
+      toleranceNote: "Sai số xưởng cho phép ±1,5 cm; hỗ trợ đổi size 2 chiều trong 7 ngày.",
       rows: [
         {
           size: "S",
@@ -1380,8 +1380,8 @@ export const INITIAL_ADMIN_CONTENT: AdminContentState = {
     },
     {
       id: "syn-5",
-      canonical: "đổi size 45 ngày",
-      accentless: "doi size 45 ngay",
+      canonical: "đổi size 7 ngày",
+      accentless: "doi size 7 ngay",
       synonyms: ["doi tra", "bao hanh size", "doi hang tan noi"],
       active: true,
     },
@@ -1729,7 +1729,7 @@ export const INITIAL_ADMIN_MODERATION: AdminModerationState = {
       rating: 4,
       fitFeedback: "Hơi rộng",
       buyerMeasurements: "1m74 · 73 kg · Cỡ XL",
-      content: "Mặc mát nhưng form hơi rộng vai, chắc đổi xuống L qua dịch vụ đổi 45 ngày.",
+      content: "Mặc mát nhưng form hơi rộng vai, chắc đổi xuống L qua dịch vụ đổi 7 ngày.",
       flagReason: "Nghi vấn trùng ảnh với đánh giá trước (kiểm tra thủ công)",
       thumbnail: "/products/ao-polo-pique-kem.png",
       submittedAt: "2026-11-19T15:50:00+07:00",
@@ -1777,7 +1777,7 @@ export const INITIAL_ADMIN_MODERATION: AdminModerationState = {
       askerName: "Đào Thu Trang",
       question: "Bị thất lạc 1 chiếc tất khi giặt có được áp dụng chính sách bù lẻ không?",
       sellerReply:
-        "Có ạ, gian hàng tham gia chuẩn 45 ngày của NexusMart, hỗ trợ gửi bù lẻ 1 chiếc miễn phí.",
+        "Có ạ, gian hàng tham gia chuẩn 7 ngày của NexusMart, hỗ trợ gửi bù lẻ 1 chiếc miễn phí.",
       matchedBannedTerms: [],
       submittedAt: "2026-11-19T17:45:00+07:00",
       status: "cho_duyet",
@@ -2646,7 +2646,7 @@ export const INITIAL_EXTENDED_PLATFORM_CONFIG: AdminExtendedPlatformConfig = {
       title: "Cập nhật hành trình giao & đồng kiểm",
       subjectOrHeader: "Đơn con {{order_code}} đã giao cho {{carrier_name}}",
       bodyTemplate:
-        "Kiện hàng từ {{shop_name}} (mã vận đơn {{tracking_code}}) dự kiến giao ngày {{eta_date}}. Bạn được đồng kiểm khi nhận và đổi size tận nơi trong 45 ngày.",
+        "Kiện hàng từ {{shop_name}} (mã vận đơn {{tracking_code}}) dự kiến giao ngày {{eta_date}}. Bạn được đồng kiểm khi nhận và đổi size tận nơi trong 7 ngày.",
       enabled: true,
     },
     {

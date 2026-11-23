@@ -514,6 +514,7 @@ type OrderItemDTO struct {
 	Quantity              int32  `json:"quantity"`
 	LineTotalVND          int64  `json:"line_total_vnd"`
 	FlashSaleItemID       string `json:"flash_sale_item_id"`
+	CommissionBps         int32  `json:"commission_bps"`
 }
 
 type OrderTimelineEventDTO struct {
@@ -545,6 +546,8 @@ type OrderDTO struct {
 	CoinsDiscountVND         int64                   `json:"coins_discount_vnd"`
 	ShippingFeeVND           int64                   `json:"shipping_fee_vnd"`
 	CommissionVND            int64                   `json:"commission_vnd"`
+	PaymentFeeVND            int64                   `json:"payment_fee_vnd"`
+	PaymentFeeBps            int32                   `json:"payment_fee_bps"`
 	TotalPayableVND          int64                   `json:"total_payable_vnd"`
 	CarrierCode              string                  `json:"carrier_code"`
 	ServiceCode              string                  `json:"service_code"`
@@ -565,6 +568,7 @@ type CheckoutResponse struct {
 	PaymentExpiresAt string     `json:"payment_expires_at"`
 	TotalPayableVND  int64      `json:"total_payable_vnd"`
 	IdempotentReplay bool       `json:"idempotent_replay"`
+	Warnings         []string   `json:"warnings"`
 }
 
 type OrderResponse struct {
@@ -606,6 +610,7 @@ type PaymentDTO struct {
 	Status       string `json:"status"`
 	QRURL        string `json:"qr_url"`
 	QRCode       string `json:"qr_code"`
+	ProviderRef  string `json:"provider_ref"`
 }
 
 type PaymentResponse struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -57,7 +58,7 @@ func New(st store.Store, productClient ProductClient, userClient UserClient, log
 }
 
 func (s *Server) GetCart(ctx context.Context, req *cartv1.GetCartRequest) (*cartv1.GetCartResponse, error) {
-	userID, err := resolveUserID(ctx, req.GetUserId(), false)
+	userID, err := resolveUserID(ctx, req.GetUserId())
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +70,7 @@ func (s *Server) GetCart(ctx context.Context, req *cartv1.GetCartRequest) (*cart
 }
 
 func (s *Server) AddItem(ctx context.Context, req *cartv1.AddItemRequest) (*cartv1.AddItemResponse, error) {
-	userID, err := resolveUserID(ctx, req.GetUserId(), true)
+	userID, err := resolveUserID(ctx, req.GetUserId())
 	if err != nil {
 		return nil, err
 	}
@@ -97,21 +98,28 @@ func (s *Server) AddItem(ctx context.Context, req *cartv1.AddItemRequest) (*cart
 		return nil, status.Errorf(codes.Internal, "read cart item: %v", err)
 	}
 
-	desiredQty := req.GetQuantity()
+	desiredQty := int64(req.GetQuantity())
 	addedPrice := sku.GetPriceVnd()
 	if existed {
-		desiredQty += existing.Quantity
+		if existing.Quantity > 0 {
+			desiredQty += int64(existing.Quantity)
+		}
 		if existing.AddedPriceVND > 0 {
 			addedPrice = existing.AddedPriceVND
 		}
 	}
 
+	avail := int64(sku.GetAvailableStock())
 	clamped := false
-	finalQty := desiredQty
-	if finalQty > sku.GetAvailableStock() {
-		finalQty = sku.GetAvailableStock()
+	if desiredQty > avail {
+		desiredQty = avail
 		clamped = true
 	}
+	if desiredQty > math.MaxInt32 {
+		desiredQty = math.MaxInt32
+		clamped = true
+	}
+	finalQty := int32(desiredQty)
 
 	if err := s.store.Set(ctx, userID, skuID, store.Item{
 		Quantity:      finalQty,
@@ -132,7 +140,7 @@ func (s *Server) AddItem(ctx context.Context, req *cartv1.AddItemRequest) (*cart
 }
 
 func (s *Server) UpdateItemQty(ctx context.Context, req *cartv1.UpdateItemQtyRequest) (*cartv1.UpdateItemQtyResponse, error) {
-	userID, err := resolveUserID(ctx, req.GetUserId(), true)
+	userID, err := resolveUserID(ctx, req.GetUserId())
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +214,7 @@ func (s *Server) UpdateItemQty(ctx context.Context, req *cartv1.UpdateItemQtyReq
 }
 
 func (s *Server) RemoveItem(ctx context.Context, req *cartv1.RemoveItemRequest) (*cartv1.RemoveItemResponse, error) {
-	userID, err := resolveUserID(ctx, req.GetUserId(), true)
+	userID, err := resolveUserID(ctx, req.GetUserId())
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +235,7 @@ func (s *Server) RemoveItem(ctx context.Context, req *cartv1.RemoveItemRequest) 
 }
 
 func (s *Server) ClearItems(ctx context.Context, req *cartv1.ClearItemsRequest) (*cartv1.ClearItemsResponse, error) {
-	userID, err := resolveUserID(ctx, req.GetUserId(), false)
+	userID, err := resolveUserID(ctx, req.GetUserId())
 	if err != nil {
 		return nil, err
 	}
@@ -336,8 +344,19 @@ func (s *Server) buildCart(ctx context.Context, userID string) (*cartv1.Cart, er
 	}
 
 	skuIDs := make([]string, 0, len(storedItems))
-	for skuID := range storedItems {
+	for skuID, stItem := range storedItems {
+		if stItem.Quantity <= 0 {
+			continue
+		}
 		skuIDs = append(skuIDs, skuID)
+	}
+	if len(skuIDs) == 0 {
+		return &cartv1.Cart{
+			UserId:     userID,
+			ShopGroups: []*cartv1.CartShopGroup{},
+			TotalItems: 0,
+			TotalVnd:   0,
+		}, nil
 	}
 	sort.Strings(skuIDs)
 
@@ -416,21 +435,18 @@ func (s *Server) buildCart(ctx context.Context, userID string) (*cartv1.Cart, er
 	}, nil
 }
 
-// resolveUserID enforces authenticated user_id ownership.
-// When requireAuth is true (buyer mutations), missing claims return Unauthenticated.
-// When requireAuth is false (GetCart/ClearItems, also callable internally by OrderService),
-// if claims ARE present, ownership is strictly enforced; otherwise reqUserID is used.
-func resolveUserID(ctx context.Context, reqUserID string, requireAuth bool) (string, error) {
+// resolveUserID enforces authenticated user_id ownership across all CartService RPCs.
+// Missing claims return Unauthenticated and service tokens return PermissionDenied.
+// Non-admin callers may only access their own cart (mismatched reqUserID returns
+// PermissionDenied); admin/super_admin end-user callers may target reqUserID or their own sub.
+func resolveUserID(ctx context.Context, reqUserID string) (string, error) {
 	reqUserID = strings.TrimSpace(reqUserID)
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
-		if requireAuth {
-			return "", status.Error(codes.Unauthenticated, "authentication required")
-		}
-		if reqUserID == "" {
-			return "", status.Error(codes.Unauthenticated, "user_id or authentication required")
-		}
-		return reqUserID, nil
+		return "", status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if claims.Service != "" {
+		return "", status.Error(codes.PermissionDenied, "service identity not allowed for cart operations")
 	}
 
 	if auth.HasRole(claims, "admin", "super_admin") {

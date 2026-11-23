@@ -1,9 +1,11 @@
 import React, { Suspense } from "react";
 import { randomUUID } from "node:crypto";
 import type {
+  GatewayActiveShopDiscount,
   GatewayAddress,
   GatewayCart,
   GatewayCoinBalance,
+  GatewayFlashSale,
   GatewayFlashSalesResponse,
   GatewayProduct,
   GatewayPublicShop,
@@ -14,10 +16,15 @@ import type {
 } from "@/lib/gateway-types";
 import { requireUser } from "@/lib/server/auth";
 import { GatewayError, gatewayFetch } from "@/lib/server/gateway";
+import { fetchActiveShopDiscounts } from "@/lib/catalog";
 import { StateView } from "@/components";
 import shared from "@/features/commerce/commerce.module.css";
 import type { BuyNowResolvedItem } from "@/features/checkout/types";
-import { resolveLiveFlashSaleItem } from "@/features/checkout/helpers";
+import {
+  inspectFlashSaleStatusForSku,
+  resolveLiveFlashSaleForSku,
+  resolveLiveFlashSaleItem,
+} from "@/features/checkout/helpers";
 import { CheckoutClient } from "./CheckoutClient";
 
 export const dynamic = "force-dynamic";
@@ -95,8 +102,8 @@ export default async function CheckoutPage({
   // Server-generated Idempotency-Key per checkout render; reused across retries on network errors.
   const idempotencyKey = `nm-checkout-${randomUUID()}`;
 
-  const [addrRes, coinsRes, vouchersRes, shopsRes, cartRes, productsRes] = await Promise.allSettled(
-    [
+  const [addrRes, coinsRes, vouchersRes, shopsRes, cartRes, productsRes, flashSalesRes] =
+    await Promise.allSettled([
       gatewayFetch<{ addresses: GatewayAddress[] }>("/users/me/addresses", { cache: "no-store" }),
       gatewayFetch<GatewayCoinBalance>("/coins/balance", { cache: "no-store" }),
       gatewayFetch<GatewayVouchersResponse>("/vouchers", { cache: "no-store" }),
@@ -110,8 +117,15 @@ export default async function CheckoutPage({
         skuParam ? "/products?page_size=100" : "/products?page_size=8",
         { cache: "no-store" }
       ),
-    ]
-  );
+      gatewayFetch<GatewayFlashSalesResponse>("/flash-sales?include_upcoming=true", {
+        cache: "no-store",
+      }),
+    ]);
+
+  const initialFlashSales: GatewayFlashSale[] =
+    flashSalesRes.status === "fulfilled" && Array.isArray(flashSalesRes.value?.flash_sales)
+      ? flashSalesRes.value.flash_sales
+      : [];
 
   let initialError: string | null = null;
   let initialAddresses: GatewayAddress[] = [];
@@ -135,6 +149,24 @@ export default async function CheckoutPage({
   ) {
     initialError = initialError ?? cartRes.reason.message;
   }
+
+  // Gateway requires sku_ids (<= 200) or shop_id on GET /shop-discounts/active;
+  // fetch only for the target Buy Now SKU or SKUs present in the loaded cart.
+  const targetDiscountSkuIds: string[] = skuParam
+    ? [skuParam]
+    : Array.from(
+        new Set(
+          (initialCart?.shop_groups ?? [])
+            .flatMap((g) => (g.items ?? []).map((it) => it.sku_id))
+            .filter(Boolean)
+        )
+      );
+  const initialActiveShopDiscounts: GatewayActiveShopDiscount[] =
+    targetDiscountSkuIds.length > 0
+      ? await fetchActiveShopDiscounts({ skuIds: targetDiscountSkuIds }).catch(
+          () => [] as GatewayActiveShopDiscount[]
+        )
+      : [];
 
   const initialCoinBalance =
     coinsRes.status === "fulfilled" && typeof coinsRes.value?.balance === "number"
@@ -161,13 +193,6 @@ export default async function CheckoutPage({
 
   if (skuParam) {
     const parsedQty = Math.max(1, Math.min(99, Number.parseInt(qtyParam || "1", 10) || 1));
-    const [flashRes] = await Promise.allSettled([
-      flashParam
-        ? gatewayFetch<GatewayFlashSalesResponse>("/flash-sales?include_upcoming=true", {
-            cache: "no-store",
-          })
-        : Promise.resolve(null),
-    ]);
 
     if (productsRes.status === "rejected") {
       buyNowError =
@@ -176,11 +201,11 @@ export default async function CheckoutPage({
           : "Chưa thể tải thông tin sản phẩm mua ngay lúc này.";
     } else if (
       flashParam &&
-      flashRes.status === "rejected" &&
-      flashRes.reason instanceof GatewayError &&
-      (flashRes.reason.status === 429 || flashRes.reason.status >= 500)
+      flashSalesRes.status === "rejected" &&
+      flashSalesRes.reason instanceof GatewayError &&
+      (flashSalesRes.reason.status === 429 || flashSalesRes.reason.status >= 500)
     ) {
-      buyNowError = flashRes.reason.message;
+      buyNowError = flashSalesRes.reason.message;
     } else {
       let matched = findSkuInProducts(allProducts, skuParam);
       if (!matched) {
@@ -212,25 +237,46 @@ export default async function CheckoutPage({
       } else {
         let flashPriceVnd: number | undefined;
         let flashRemainingSlots: number | undefined;
+        let flashPerUserLimit: number | undefined;
         let validFlashId: string | undefined;
+        let flashFallbackNotice: string | undefined;
         let maxBuyNowQty = foundSku.available_stock;
 
-        if (flashParam && flashRes.status === "fulfilled" && flashRes.value?.flash_sales) {
-          const resolvedFlash = resolveLiveFlashSaleItem(
-            flashRes.value.flash_sales,
-            flashParam,
-            foundSku.id,
-            foundSku.price_vnd
-          );
-          if (resolvedFlash) {
-            validFlashId = resolvedFlash.flashSaleItemId;
-            flashPriceVnd = resolvedFlash.flashPriceVnd;
-            flashRemainingSlots = resolvedFlash.remainingSlots;
-            maxBuyNowQty = Math.min(maxBuyNowQty, resolvedFlash.remainingSlots);
-            if (resolvedFlash.perUserLimit > 0) {
-              maxBuyNowQty = Math.min(maxBuyNowQty, resolvedFlash.perUserLimit);
-            }
+        const resolvedFlash = flashParam
+          ? resolveLiveFlashSaleItem(initialFlashSales, flashParam, foundSku.id, foundSku.price_vnd)
+          : resolveLiveFlashSaleForSku(initialFlashSales, foundSku.id, foundSku.price_vnd);
+
+        if (resolvedFlash) {
+          validFlashId = resolvedFlash.flashSaleItemId;
+          flashPriceVnd = resolvedFlash.flashPriceVnd;
+          flashRemainingSlots = resolvedFlash.remainingSlots;
+          flashPerUserLimit = resolvedFlash.perUserLimit;
+          maxBuyNowQty = Math.min(maxBuyNowQty, resolvedFlash.remainingSlots);
+          if (resolvedFlash.perUserLimit > 0) {
+            maxBuyNowQty = Math.min(maxBuyNowQty, resolvedFlash.perUserLimit);
           }
+        } else if (flashParam) {
+          const inspect = inspectFlashSaleStatusForSku(initialFlashSales, foundSku.id, flashParam);
+          if (inspect.message) {
+            flashFallbackNotice = inspect.message;
+          }
+        }
+
+        // Retain any active shop discount even when a live flash sale exists:
+        // Flash wins while active, and if buyer explicitly opts out of Flash, server applies the shop discount.
+        let shopProgramItemId: string | undefined;
+        let shopDiscountedPriceVnd: number | undefined;
+        let shopProgramName: string | undefined;
+        const matchedDisc = initialActiveShopDiscounts.find(
+          (d) =>
+            d.sku_id === foundSku.id &&
+            d.discounted_price_vnd > 0 &&
+            d.discounted_price_vnd < foundSku.price_vnd
+        );
+        if (matchedDisc) {
+          shopProgramItemId = matchedDisc.item_id;
+          shopDiscountedPriceVnd = Math.trunc(matchedDisc.discounted_price_vnd);
+          shopProgramName = matchedDisc.program_name || "Giảm giá gian hàng";
         }
 
         const clampedQty = Math.max(1, Math.min(parsedQty, Math.max(1, maxBuyNowQty)));
@@ -249,9 +295,14 @@ export default async function CheckoutPage({
           flashSaleItemId: validFlashId,
           flashPriceVnd,
           flashRemainingSlots,
+          flashPerUserLimit,
+          flashFallbackNotice,
+          shopProgramItemId,
+          shopDiscountedPriceVnd,
+          shopProgramName,
           quantity: clampedQty,
           availableStock: foundSku.available_stock,
-          weightGrams: Math.max(100, foundSku.weight_grams || 300),
+          weightGrams: Math.max(0, Math.trunc(foundSku.weight_grams || 0)),
         };
       }
     }
@@ -275,6 +326,8 @@ export default async function CheckoutPage({
         initialCoinBalance={initialCoinBalance}
         initialVouchers={initialVouchers}
         initialShops={initialShops}
+        initialFlashSales={initialFlashSales}
+        initialActiveShopDiscounts={initialActiveShopDiscounts}
         initialError={initialError}
         buyNowItem={buyNowItem}
         buyNowError={buyNowError}

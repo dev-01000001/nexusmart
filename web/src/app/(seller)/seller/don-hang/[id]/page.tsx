@@ -22,6 +22,7 @@ import {
   PAYMENT_METHOD_TEXT,
   SHIPMENT_STATUS_LABELS,
   buildCarrierSelectOptions,
+  buildSellerOrderBreakdownLines,
   canSellerCancelOrder,
   canSellerConfirmOrder,
   canSellerShipOrder,
@@ -30,6 +31,7 @@ import {
   getOrderStatusMeta,
   getSellerOrderDisplayMeta,
   resolveOrderShippingDefaults,
+  translateSellerShipError,
 } from "@/features/seller/types";
 import { EMPTY_DASH, parseUiState } from "@/features/seller/sellerStore";
 import common from "@/features/seller/SellerCommon.module.css";
@@ -181,7 +183,7 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
           : `Đã tạo vận đơn cho đơn ${order.order_code}. Trạng thái: Chờ hãng lấy hàng.`
       );
     } catch (err) {
-      showToast(getErrorMessage(err, "Không thể tạo vận đơn giao hàng lúc này."));
+      showToast(translateSellerShipError(err));
     } finally {
       setActionBusy(false);
     }
@@ -563,8 +565,17 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
           <span className={styles.kpiTileLabel}>Chiết khấu shop & phí sàn</span>
           <span className={styles.kpiTileVal}>{formatVnd(totalDeductions)}</span>
           <span className={styles.kpiTileSub}>
-            Voucher {formatVnd(order.shop_voucher_discount_vnd)} · Phí sàn{" "}
-            {formatVnd(order.commission_vnd)}
+            Giảm giá shop{" "}
+            {formatVnd(
+              (order.flash_sale_discount_vnd ?? 0) +
+                (order.shop_program_discount_vnd ?? 0) +
+                (order.shop_voucher_discount_vnd ?? 0) +
+                (order.shop_freeship_discount_vnd ?? 0)
+            )}{" "}
+            · Phí sàn {formatVnd(order.commission_vnd)}
+            {(order.payment_fee_vnd ?? 0) > 0
+              ? ` · Phí TT ${formatVnd(order.payment_fee_vnd ?? 0)}`
+              : ""}
           </span>
         </div>
 
@@ -639,30 +650,18 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
               )}
 
               <div className={styles.reconBlock}>
-                <div className={styles.reconRow}>
-                  <span>Tổng tiền hàng</span>
-                  <span>{formatVnd(order.subtotal_vnd)}</span>
-                </div>
-                {order.flash_sale_discount_vnd > 0 && (
-                  <div className={styles.reconRow}>
-                    <span>Giảm giá Flash sale</span>
-                    <span>{`\u2212${formatVnd(order.flash_sale_discount_vnd)}`}</span>
+                {buildSellerOrderBreakdownLines(order).map((line) => (
+                  <div key={line.key} className={styles.reconRow}>
+                    <span>{line.label}</span>
+                    <span>
+                      {line.isDeduction
+                        ? line.amountVnd < 0
+                          ? `\u2212${formatVnd(-line.amountVnd)}`
+                          : "0₫"
+                        : formatVnd(line.amountVnd)}
+                    </span>
                   </div>
-                )}
-                <div className={styles.reconRow}>
-                  <span>Voucher gian hàng tài trợ</span>
-                  <span>
-                    {order.shop_voucher_discount_vnd > 0
-                      ? `\u2212${formatVnd(order.shop_voucher_discount_vnd)}`
-                      : "0₫"}
-                  </span>
-                </div>
-                <div className={styles.reconRow}>
-                  <span>Phí hoa hồng sàn</span>
-                  <span>
-                    {order.commission_vnd > 0 ? `\u2212${formatVnd(order.commission_vnd)}` : "0₫"}
-                  </span>
-                </div>
+                ))}
                 <div className={`${styles.reconRow} ${styles.reconRowTotal}`}>
                   <span>Thực nhận dự kiến về gian hàng</span>
                   <span>{formatVnd(netReceivable)}</span>

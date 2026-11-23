@@ -87,6 +87,34 @@ func requireAuthenticatedCaller(ctx context.Context) (callerIdentity, error) {
 	}, nil
 }
 
+func canViewOrderFees(caller callerIdentity, shopID string) bool {
+	if caller.IsPrivileged {
+		return true
+	}
+	return caller.Role == "seller" && caller.ShopID != "" && caller.ShopID == shopID
+}
+
+// maskProtoOrderForCaller applies caller-scoped visibility rules (seller fee fields and admin
+// needs_manual_review flag) to a deserialized Order proto (e.g. legacy response_snapshot_json replay, N6).
+func maskProtoOrderForCaller(ord *orderv1.Order, caller callerIdentity) {
+	if ord == nil {
+		return
+	}
+	if !caller.IsPrivileged {
+		ord.NeedsManualReview = false
+	}
+	if !canViewOrderFees(caller, ord.GetShopId()) {
+		ord.CommissionVnd = 0
+		ord.PaymentFeeVnd = 0
+		ord.PaymentFeeBps = 0
+		for _, it := range ord.GetItems() {
+			if it != nil {
+				it.CommissionBps = 0
+			}
+		}
+	}
+}
+
 func isAdminRole(role string) bool {
 	r := strings.ToLower(strings.TrimSpace(role))
 	return r == "admin" || r == "super_admin"
@@ -125,6 +153,29 @@ func canActAsBuyer(caller callerIdentity, ord db.Order, reqBuyerID string) bool 
 	return caller.UserID != "" && caller.UserID == ord.BuyerID
 }
 
+const paymentNotInitializedMsg = "PAYMENT_NOT_INITIALIZED: đơn đang khởi tạo thanh toán, vui lòng thử lại sau ít phút"
+
+// requireCheckoutPaymentInitialized blocks shipping / post-shipping transitions while the order's
+// checkout_group is still IN_PROGRESS (payment not yet created & attached). Because checkout_groups
+// never transition back to IN_PROGRESS, a point read without locking is sufficient (P0 M1).
+func (s *OrderService) requireCheckoutPaymentInitialized(ctx context.Context, checkoutGroupID string) error {
+	gid := strings.TrimSpace(checkoutGroupID)
+	if gid == "" {
+		return nil
+	}
+	grp, err := s.store.GetCheckoutGroupByID(ctx, gid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return mapStoreError(err)
+	}
+	if grp.Status == "IN_PROGRESS" {
+		return status.Error(codes.FailedPrecondition, paymentNotInitializedMsg)
+	}
+	return nil
+}
+
 func mapStoreError(err error) error {
 	if err == nil {
 		return nil
@@ -136,13 +187,30 @@ func mapStoreError(err error) error {
 		errors.Is(err, statemachine.ErrInvalidReturnTransition) ||
 		errors.Is(err, store.ErrRetryPrecondition) ||
 		errors.Is(err, store.ErrDuplicateReturnRequest) ||
-		errors.Is(err, store.ErrReturnDeadlineNotReached) {
+		errors.Is(err, store.ErrReturnDeadlineNotReached) ||
+		errors.Is(err, store.ErrOrderNotNeedingReview) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	if _, ok := status.FromError(err); ok {
 		return err
 	}
 	return status.Errorf(codes.Internal, "internal order error: %v", err)
+}
+
+func (s *OrderService) paymentExpiryDuration() time.Duration {
+	mins := s.cfg.PaymentExpiryMinutes
+	if mins <= 0 {
+		mins = 15
+	}
+	return time.Duration(mins) * time.Minute
+}
+
+func (s *OrderService) flashPaymentExpiryDuration() time.Duration {
+	mins := s.cfg.FlashPaymentExpiryMinutes
+	if mins <= 0 {
+		mins = 5
+	}
+	return time.Duration(mins) * time.Minute
 }
 
 func (s *OrderService) autoCompleteDuration() time.Duration {
@@ -194,6 +262,7 @@ func (s *OrderService) buildOrderCompletedOutbox(ord db.Order, traceID, tracepar
 		ShopID:          ord.ShopID,
 		SubtotalVND:     ord.SubtotalVND,
 		CommissionVND:   ord.CommissionVND,
+		PaymentFeeVND:   ord.PaymentFeeVND,
 		TotalPayableVND: ord.TotalPayableVND,
 		CoinsReward:     coinsReward,
 	})
@@ -230,60 +299,32 @@ func generateOrderCode(now time.Time) string {
 	return fmt.Sprintf("NM-%s-%s", now.UTC().Format("20060102"), strings.ToUpper(raw[:8]))
 }
 
-// AllocateProportionalVND splits total across positive weights using exact integer division,
-// assigning any remainder to the last positive-weight bucket so sum(shares) == total.
-func AllocateProportionalVND(total int64, weights []int64) []int64 {
-	shares := make([]int64, len(weights))
-	if total <= 0 || len(weights) == 0 {
-		return shares
-	}
-
-	var sumWeights int64
-	lastPositive := -1
-	for i, w := range weights {
-		if w > 0 {
-			sumWeights += w
-			lastPositive = i
-		}
-	}
-	if sumWeights <= 0 || lastPositive < 0 {
-		shares[0] = total
-		return shares
-	}
-
-	var allocated int64
-	for i, w := range weights {
-		if w <= 0 {
-			continue
-		}
-		if i == lastPositive {
-			shares[i] = total - allocated
-		} else {
-			share := (total * w) / sumWeights
-			shares[i] = share
-			allocated += share
-		}
-	}
-	return shares
+// computeSellerRevenue returns seller net merchandise revenue R = max(0, G - F - P_shop - V_shop - S_shop).
+func computeSellerRevenue(ord db.Order) int64 {
+	return maxInt64(0, ord.SubtotalVND-ord.FlashSaleDiscountVND-ord.ShopProgramDiscountVND-ord.ShopVoucherDiscountVND-ord.ShopFreeshipDiscountVND)
 }
 
 // ComputeOrderRewardCoins calculates reward coins for a completed sub-order based on
-// buyer's actual merchandise payment (R - V_plat - X, clamped >= 0, excluding shipping).
+// buyer's actual merchandise payment: min(P, max(0, (G - F - P_shop - V_shop) - V_plat - X)).
+// Shop freeship S_shop subsidizes shipping rather than reducing merchandise paid by the buyer.
 // Zero-payable orders always earn 0 coins.
 func ComputeOrderRewardCoins(ord db.Order, rewardBPS int32) int64 {
 	if ord.TotalPayableVND <= 0 || rewardBPS <= 0 {
 		return 0
 	}
-	sellerRevenue := maxInt64(0, ord.SubtotalVND-ord.FlashSaleDiscountVND-ord.ShopVoucherDiscountVND)
-	actualMerchPaid := sellerRevenue - maxInt64(0, ord.PlatformVoucherDiscountVND) - maxInt64(0, ord.CoinsDiscountVND)
+	merchAfterShopMerch := maxInt64(0, ord.SubtotalVND-ord.FlashSaleDiscountVND-ord.ShopProgramDiscountVND-ord.ShopVoucherDiscountVND)
+	actualMerchPaid := maxInt64(0, merchAfterShopMerch-maxInt64(0, ord.PlatformVoucherDiscountVND)-maxInt64(0, ord.CoinsDiscountVND))
+	actualMerchPaid = minInt64(ord.TotalPayableVND, actualMerchPaid)
 	if actualMerchPaid <= 0 {
 		return 0
 	}
 	return (actualMerchPaid * int64(rewardBPS)) / 10000
 }
 
-func aggregateToProto(agg store.OrderAggregate) *orderv1.Order {
+func aggregateToProtoForCaller(agg store.OrderAggregate, caller callerIdentity) *orderv1.Order {
 	ord := agg.Order
+	isAdmin := caller.IsPrivileged
+	showFees := canViewOrderFees(caller, ord.ShopID)
 	var addr orderv1.OrderAddressSnapshot
 	if len(ord.ShippingAddressJSON) > 0 {
 		_ = json.Unmarshal(ord.ShippingAddressJSON, &addr)
@@ -291,6 +332,10 @@ func aggregateToProto(agg store.OrderAggregate) *orderv1.Order {
 
 	items := make([]*orderv1.OrderItem, 0, len(agg.Items))
 	for _, it := range agg.Items {
+		var itemCommBPS int32
+		if showFees {
+			itemCommBPS = it.CommissionRateBPS
+		}
 		items = append(items, &orderv1.OrderItem{
 			Id:                    it.ID,
 			OrderId:               it.OrderID,
@@ -304,12 +349,22 @@ func aggregateToProto(agg store.OrderAggregate) *orderv1.Order {
 			LineTotalVnd:          it.LineTotalVND,
 			WeightGrams:           it.WeightGrams,
 			FlashSaleItemId:       it.FlashSaleItemID,
+			CommissionBps:         itemCommBPS,
+			ShopProgramItemId:     it.ShopProgramItemID,
 		})
 	}
 
 	timeline := make([]*orderv1.OrderTimelineEvent, 0, len(agg.Timeline))
 	for _, tl := range agg.Timeline {
 		timeline = append(timeline, timelineToProto(tl))
+	}
+
+	var commVND, payFeeVND int64
+	var payFeeBPS int32
+	if showFees {
+		commVND = ord.CommissionVND
+		payFeeVND = ord.PaymentFeeVND
+		payFeeBPS = ord.PaymentFeeBPS
 	}
 
 	out := &orderv1.Order{
@@ -324,12 +379,16 @@ func aggregateToProto(agg store.OrderAggregate) *orderv1.Order {
 		PaymentStatus:              ord.PaymentStatus,
 		SubtotalVnd:                ord.SubtotalVND,
 		FlashSaleDiscountVnd:       ord.FlashSaleDiscountVND,
+		ShopProgramDiscountVnd:     ord.ShopProgramDiscountVND,
 		ShopVoucherDiscountVnd:     ord.ShopVoucherDiscountVND,
+		ShopFreeshipDiscountVnd:    ord.ShopFreeshipDiscountVND,
 		PlatformVoucherDiscountVnd: ord.PlatformVoucherDiscountVND,
 		FreeshipDiscountVnd:        ord.FreeshipDiscountVND,
 		CoinsDiscountVnd:           ord.CoinsDiscountVND,
 		ShippingFeeVnd:             ord.ShippingFeeVND,
-		CommissionVnd:              ord.CommissionVND,
+		CommissionVnd:              commVND,
+		PaymentFeeVnd:              payFeeVND,
+		PaymentFeeBps:              payFeeBPS,
 		TotalPayableVnd:            ord.TotalPayableVND,
 		CarrierCode:                ord.CarrierCode,
 		ServiceCode:                ord.ServiceCode,
@@ -341,6 +400,7 @@ func aggregateToProto(agg store.OrderAggregate) *orderv1.Order {
 		Timeline:                   timeline,
 		CreatedAt:                  timestamppb.New(ord.CreatedAt),
 		UpdatedAt:                  timestamppb.New(ord.UpdatedAt),
+		NeedsManualReview:          isAdmin && ord.OrphanShipmentNeedsManualReview,
 	}
 	if ord.PaymentExpiresAt != nil {
 		out.PaymentExpiresAt = timestamppb.New(*ord.PaymentExpiresAt)

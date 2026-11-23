@@ -309,7 +309,7 @@ func TestNotificationW2(t *testing.T) {
 
 	t.Run("SellerReceivesReturnRequestNotification", func(t *testing.T) {
 		if deliveredOrder.ID == "" {
-			t.Skip("no delivered order from previous subtest")
+			t.Fatalf("no delivered order from previous subtest")
 		}
 		retPath := fmt.Sprintf("/api/v1/orders/%s/return", url.PathEscape(deliveredOrder.ID))
 		resp, err := env.client.DoJSON(env.ctx(t), http.MethodPost, retPath, buyer.AccessToken, nil, notifW2ReturnRequestBody{
@@ -319,16 +319,13 @@ func TestNotificationW2(t *testing.T) {
 		if err != nil {
 			t.Fatalf("POST %s failed: %v", retPath, err)
 		}
-		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNotImplemented {
-			t.Skipf("DEPENDENCY(order/gateway): %s returned HTTP %d (Wave 2a return flow not deployed yet)", retPath, resp.StatusCode)
-		}
 		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 			t.Fatalf("POST %s returned HTTP %d: %s", retPath, resp.StatusCode, string(resp.Body))
 		}
 		var retOut notifW2ReturnResponse
 		_ = DecodeJSON(resp, &retOut)
 		if retOut.ReturnRequestID == "" {
-			t.Skipf("DEPENDENCY(order): POST %s did not return return_request_id (Wave 2a order.return_updated not deployed yet); body=%s", retPath, string(resp.Body))
+			t.Fatalf("POST %s did not return return_request_id; body=%s", retPath, string(resp.Body))
 		}
 
 		wantSellerLink := "/seller/don-hang/" + deliveredOrder.ID
@@ -352,9 +349,6 @@ func TestNotificationW2(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("POST /api/v1/auth/forgot-password failed: %v", err)
-		}
-		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNotImplemented {
-			t.Skipf("DEPENDENCY(gateway/user): POST /api/v1/auth/forgot-password returned HTTP %d (not deployed yet)", resp.StatusCode)
 		}
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("POST /api/v1/auth/forgot-password returned HTTP %d: %s", resp.StatusCode, string(resp.Body))

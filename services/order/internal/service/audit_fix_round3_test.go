@@ -362,6 +362,14 @@ func (c *supersedingPaymentClient) CancelPayment(_ context.Context, req *payment
 	}, nil
 }
 
+func (c *supersedingPaymentClient) GetFeeConfig(_ context.Context, req *paymentv1.GetFeeConfigRequest, _ ...grpc.CallOption) (*paymentv1.GetFeeConfigResponse, error) {
+	return &paymentv1.GetFeeConfigResponse{
+		ActiveConfigs: []*paymentv1.PaymentFeeConfigItem{
+			{Id: "fee-default", PaymentMethod: req.GetPaymentMethod(), FeeBps: 0},
+		},
+	}, nil
+}
+
 // TestReview2O_P1_3_MultiReplicaRetryPayment_DifferentKeysSerialized reproduces review2-O P1-3.
 func TestReview2O_P1_3_MultiReplicaRetryPayment_DifferentKeysSerialized(t *testing.T) {
 	buyerCtx := ctxWithUser("buyer-1", "buyer", "")
@@ -373,7 +381,6 @@ func TestReview2O_P1_3_MultiReplicaRetryPayment_DifferentKeysSerialized(t *testi
 		CODMaxVND:            5000000,
 		CODMaxRejectedCount:  3,
 		PaymentExpiryMinutes: 15,
-		DefaultCommissionBPS: 500,
 		RewardCoinsBPS:       100,
 		GRPCCallTimeout:      5 * time.Second,
 	}

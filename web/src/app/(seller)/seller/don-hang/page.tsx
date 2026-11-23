@@ -20,6 +20,7 @@ import {
   computeOrderNetVnd,
   getSellerOrderDisplayMeta,
   resolveOrderShippingDefaults,
+  translateSellerShipError,
 } from "@/features/seller/types";
 import { parseUiState } from "@/features/seller/sellerStore";
 import common from "@/features/seller/SellerCommon.module.css";
@@ -230,7 +231,7 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
           : `Đã tạo vận đơn cho đơn ${order.order_code}. Trạng thái: Chờ hãng lấy hàng.`
       );
     } catch (err) {
-      showToast(getErrorMessage(err, "Không thể tạo vận đơn giao hàng lúc này."));
+      showToast(translateSellerShipError(err));
     } finally {
       setBusyOrderId(null);
     }

@@ -559,12 +559,12 @@ func TestService_PostgresCoinFailureCompensatesRedis(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Bare ReservePromotion passes Redis Lua for voucher, then fails coin deduction in Postgres (needs 8000 > 5000)!
-	// Must automatically compensate Redis via release_atomic.lua!
+	// ReservePromotion rejects insufficient coins (needs 8000 > 5000) and leaves Redis quota/budget intact!
 	_, err = svc.ReservePromotion(ctxWithRole("buyer-poor", "buyer", ""), &promotionv1.ReservePromotionRequest{
 		OrderId:        "order-coin-fail",
 		UserId:         "buyer-poor",
 		ShopVoucherIds: map[string]string{"shop-1": vResp.Voucher.Id},
+		ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 100000}},
 		CoinsToUse:     8000,
 	})
 	if status.Code(err) != codes.FailedPrecondition {
@@ -768,6 +768,7 @@ func TestService_ListAvailableVouchers_EligibilityReasons(t *testing.T) {
 		OrderId:           "consume-quota-1",
 		UserId:            "other-buyer",
 		PlatformVoucherId: vOut.Voucher.Id,
+		ShopItems:         []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 100000}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -890,7 +891,7 @@ type failingCommitStore struct {
 	release chan struct{}
 }
 
-func (f *failingCommitStore) CommitReservation(_ context.Context, _ domain.PromotionReservation) (*domain.PromotionReservation, bool, error) {
+func (f *failingCommitStore) CommitReservation(_ context.Context, _ domain.PromotionReservation, _ time.Time) (*domain.PromotionReservation, bool, error) {
 	close(f.entered)
 	<-f.release
 	return nil, false, errors.New("simulated postgres commit failure")
@@ -932,6 +933,7 @@ func TestService_ConcurrentDuplicateOrderID_CommitFailureNeverReturnsReserved(t 
 		OrderId:        "dup-fail-ord-1",
 		UserId:         "buyer-1",
 		ShopVoucherIds: map[string]string{"shop-1": vResp.Voucher.Id},
+		ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 100000}},
 	}
 
 	var (
@@ -1025,16 +1027,16 @@ func TestService_FlashSaleReapprovalPreservesRemainingSlots(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Reject item -> Redis key removed
+	// Strict state machine: APPROVED -> REJECTED is forbidden (FailedPrecondition) and MUST keep Redis slots intact!
 	if _, err := svc.ApproveFlashSaleItem(adminCtx, &promotionv1.ApproveFlashSaleItemRequest{
 		ItemId:  itemID,
 		Approve: false,
-		Reason:  "temporary pause",
-	}); err != nil {
-		t.Fatal(err)
+		Reason:  "cannot revoke approved flash",
+	}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected APPROVED->REJECTED FailedPrecondition, got %v", err)
 	}
 
-	// Re-approve item -> MUST restore 7 remaining slots, NOT reset to 10!
+	// Idempotent re-approve on APPROVED item MUST preserve 7 remaining slots, NOT reset to 10!
 	reApp, err := svc.ApproveFlashSaleItem(adminCtx, &promotionv1.ApproveFlashSaleItemRequest{
 		ItemId:  itemID,
 		Approve: true,
@@ -1043,10 +1045,10 @@ func TestService_FlashSaleReapprovalPreservesRemainingSlots(t *testing.T) {
 		t.Fatal(err)
 	}
 	if reApp.Item.RemainingSlots != 7 {
-		t.Fatalf("expected re-approved item RemainingSlots=7, got %d", reApp.Item.RemainingSlots)
+		t.Fatalf("expected idempotently re-approved item RemainingSlots=7, got %d", reApp.Item.RemainingSlots)
 	}
 	liveRem, exists, err := eng.GetInt64(context.Background(), lua.FlashRemainingKey(itemID))
 	if err != nil || !exists || liveRem != 7 {
-		t.Fatalf("expected Redis remaining slots=7 after re-approval, got val=%d exists=%v err=%v", liveRem, exists, err)
+		t.Fatalf("expected Redis remaining slots=7 after idempotent re-approval, got val=%d exists=%v err=%v", liveRem, exists, err)
 	}
 }

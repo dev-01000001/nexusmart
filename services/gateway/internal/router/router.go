@@ -93,7 +93,7 @@ func New(deps Dependencies) http.Handler {
 					httpx.WriteGRPCError(w, req, err)
 					return
 				}
-				if p := getResp.GetPayment(); p != nil && p.GetUserId() != "" && p.GetUserId() != claims.UserID() {
+				if !canAccessPayment(claims, getResp.GetPayment()) {
 					httpx.WriteError(w, req, http.StatusForbidden, "PERMISSION_DENIED", "cannot subscribe to another user's payment events")
 					return
 				}
@@ -165,6 +165,7 @@ func New(deps Dependencies) http.Handler {
 				fl.Use(middleware.RateLimitFlashSale(deps.RateLimiter, deps.RateLimitFlashPerMin, deps.Logger, deps.TrustedProxies))
 				fl.Get("/flash-sales", h.handleListFlashSales)
 			})
+			api.Get("/shop-discounts/active", h.handleListActiveShopDiscounts)
 
 			// --- Authenticated routes (any valid JWT) ---
 			api.Group(func(authed chi.Router) {
@@ -242,8 +243,11 @@ func New(deps Dependencies) http.Handler {
 					seller.Use(middleware.RequireRoles("seller"))
 					seller.Use(middleware.RequireSellerShop())
 
-					// Section 4.1 Seller Shop
+					// Section 4.1 Seller Shop & Bank Account
 					seller.Get("/shop", h.handleSellerGetShop)
+					seller.Get("/bank-account", h.handleSellerGetBankAccount)
+					seller.Post("/bank-account", h.handleSellerAddBankAccount)
+					seller.Post("/bank-account/verify-otp", h.handleSellerVerifyBankAccountOTP)
 
 					// Section 4.2 Seller Products & Stock
 					seller.Get("/products", h.handleSellerListProducts)
@@ -253,13 +257,22 @@ func New(deps Dependencies) http.Handler {
 					seller.Delete("/products/{id}", h.handleSellerDeleteProduct)
 					seller.Patch("/skus/{sku_id}/stock", h.handleSellerUpdateStock)
 
-					// Section 4.4 Seller Vouchers & Flash Sales
+					// Section 4.4 Seller Vouchers, Flash Sales & Discount Programs
 					seller.Get("/vouchers", h.handleSellerListVouchers)
 					seller.Post("/vouchers", h.handleSellerCreateVoucher)
+					seller.Put("/vouchers/{id}", h.handleSellerUpdateVoucher)
+					seller.Patch("/vouchers/{id}/status", h.handleSetVoucherStatus)
+					seller.Delete("/vouchers/{id}", h.handleDeleteVoucher)
+					seller.Get("/flash-sales", h.handleListAllFlashSales)
+					seller.Get("/flash-sales/items", h.handleSellerListFlashSaleItems)
 					seller.With(middleware.RateLimitFlashSale(deps.RateLimiter, deps.RateLimitFlashPerMin, deps.Logger, deps.TrustedProxies)).
 						Post("/flash-sales/{id}/items", h.handleSellerRegisterFlashSaleItem)
+					seller.Get("/discount-programs", h.handleSellerListDiscountPrograms)
+					seller.Post("/discount-programs", h.handleSellerCreateDiscountProgram)
+					seller.Put("/discount-programs/{id}", h.handleSellerUpdateDiscountProgram)
+					seller.Post("/discount-programs/{id}/end", h.handleSellerEndDiscountProgram)
 
-					// Section 4.5 Seller Orders & Returns
+					// Section 4.5 Seller Orders, Returns & Reports
 					seller.Get("/orders", h.handleSellerListOrders)
 					seller.Get("/orders/{id}", h.handleSellerGetOrder)
 					seller.Post("/orders/{id}/confirm", h.handleSellerConfirmOrder)
@@ -269,9 +282,12 @@ func New(deps Dependencies) http.Handler {
 					seller.Post("/returns/{id}/respond", h.handleSellerRespondReturn)
 					seller.Post("/returns/{id}/confirm-received", h.handleSellerConfirmReturnReceived)
 					seller.Post("/returns/{id}/dispute", h.handleSellerDisputeReturnGoods)
+					seller.Get("/reports", h.handleSellerReports)
+					seller.Get("/reports/export", h.handleSellerReportsExport)
 
-					// Section 4.6 Seller Balance
+					// Section 4.6 Seller Balance & Ledger
 					seller.Get("/balance", h.handleSellerBalance)
+					seller.Get("/ledger", h.handleSellerLedger)
 
 					// Section 4.7 Seller Shipping Settings
 					seller.Get("/shipping-settings", h.handleSellerGetShippingSettings)
@@ -289,35 +305,51 @@ func New(deps Dependencies) http.Handler {
 						}))
 					}
 
-					// Section 4.1 Admin Users, Shops & Audit Logs
+					// Section 4.1 Admin Users, Shops, Bank Accounts & Audit Logs
 					admin.Get("/users", h.handleAdminListUsers)
 					admin.Patch("/users/{id}/status", h.handleAdminUpdateUserStatus)
 					admin.Patch("/users/{id}/role", h.handleAdminUpdateUserRole)
 					admin.Get("/shops", h.handleAdminListShops)
 					admin.Post("/shops/{id}/review", h.handleAdminReviewShop)
+					admin.Get("/shops/{id}/bank-account", h.handleAdminGetShopBankAccount)
+					admin.Post("/shops/{id}/bank-account/review", h.handleAdminReviewShopBankAccount)
 					admin.Get("/audit-logs", h.handleAdminListAuditLogs)
 
-					// Section 4.2 Admin Categories & Product Review
+					// Section 4.2 Admin Categories, Fee Schedules & Product Review
 					admin.Post("/categories", h.handleCreateCategory)
 					admin.Put("/categories/{id}", h.handleUpdateCategory)
 					admin.Delete("/categories/{id}", h.handleDeleteCategory)
+					admin.Get("/fees/categories", h.handleAdminListCategoryFeeSchedules)
+					admin.Post("/fees/categories/{id}", h.handleAdminSetCategoryFeeSchedule)
 					admin.Get("/products", h.handleAdminListProducts)
 					admin.Get("/products/{id}", h.handleAdminGetProduct)
 					admin.Post("/products/{id}/review", h.handleAdminReviewProduct)
 
 					// Section 4.4 Admin Vouchers, Flash Sales & Coins
+					admin.Get("/vouchers", h.handleAdminListVouchers)
 					admin.Post("/vouchers", h.handleAdminCreateVoucher)
+					admin.Put("/vouchers/{id}", h.handleAdminUpdateVoucher)
+					admin.Patch("/vouchers/{id}/status", h.handleSetVoucherStatus)
+					admin.Delete("/vouchers/{id}", h.handleDeleteVoucher)
+					admin.Get("/flash-sales", h.handleListAllFlashSales)
 					admin.Post("/flash-sales", h.handleAdminCreateFlashSale)
+					admin.Get("/flash-sale-items", h.handleAdminListFlashSaleItems)
 					admin.Post("/flash-sale-items/{item_id}/approve", h.handleAdminApproveFlashSaleItem)
 					admin.Post("/coins/credit", h.handleAdminCreditCoins)
 
-					// Section 4.5 Admin Orders & Returns
+					// Section 4.5 Admin Orders, Manual Review, Reports & Returns
 					admin.Get("/orders", h.handleAdminListOrders)
+					admin.Get("/orders/needs-review", h.handleAdminListOrdersNeedingReview)
+					admin.Post("/orders/{id}/resolve-review", h.handleAdminResolveOrderReview)
+					admin.Get("/reports", h.handleAdminReports)
+					admin.Get("/reports/export", h.handleAdminReportsExport)
 					admin.Get("/returns", h.handleAdminListReturns)
 					admin.Get("/returns/{id}", h.handleAdminGetReturn)
 					admin.Post("/returns/{id}/resolve", h.handleAdminResolveReturn)
 
-					// Section 4.6 Admin Ledger, Refunds & Reconciliation
+					// Section 4.6 Admin Fee Config, Ledger, Refunds & Reconciliation
+					admin.Get("/fees/payment", h.handleAdminGetPaymentFeeConfig)
+					admin.Post("/fees/payment", h.handleAdminSetPaymentFeeConfig)
 					admin.Get("/ledger/summary", h.handleAdminLedgerSummary)
 					admin.Post("/payments/{id}/refund", h.handleAdminRefundPayment)
 					admin.Get("/refunds", h.handleAdminListRefunds)

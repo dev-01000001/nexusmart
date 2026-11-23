@@ -26,7 +26,10 @@ impl Metrics {
         let registry = Registry::new();
 
         let http_requests_total = IntCounterVec::new(
-            Opts::new("http_requests_total", "Total HTTP requests processed"),
+            Opts::new(
+                "http_requests_total",
+                "Total number of HTTP requests handled.",
+            ),
             &["service", "method", "route", "status"],
         )
         .expect("http_requests_total metric");
@@ -34,7 +37,7 @@ impl Metrics {
         let http_errors_total = IntCounterVec::new(
             Opts::new(
                 "http_errors_total",
-                "Total HTTP error responses (4xx and 5xx)",
+                "Total number of HTTP 5xx error responses.",
             ),
             &["service", "method", "route", "status"],
         )
@@ -43,7 +46,7 @@ impl Metrics {
         let http_request_duration_seconds = HistogramVec::new(
             HistogramOpts::new(
                 "http_request_duration_seconds",
-                "HTTP request duration in seconds",
+                "HTTP request latency in seconds.",
             )
             .buckets(vec![
                 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
@@ -53,13 +56,19 @@ impl Metrics {
         .expect("http_request_duration_seconds metric");
 
         let grpc_requests_total = IntCounterVec::new(
-            Opts::new("grpc_requests_total", "Total gRPC requests processed"),
+            Opts::new(
+                "grpc_requests_total",
+                "Total number of gRPC unary requests handled.",
+            ),
             &["service", "method", "code"],
         )
         .expect("grpc_requests_total metric");
 
         let grpc_errors_total = IntCounterVec::new(
-            Opts::new("grpc_errors_total", "Total gRPC requests returning non-OK"),
+            Opts::new(
+                "grpc_errors_total",
+                "Total number of gRPC unary requests returning a non-OK status.",
+            ),
             &["service", "method", "code"],
         )
         .expect("grpc_errors_total metric");
@@ -67,7 +76,7 @@ impl Metrics {
         let grpc_request_duration_seconds = HistogramVec::new(
             HistogramOpts::new(
                 "grpc_request_duration_seconds",
-                "gRPC request duration in seconds",
+                "gRPC unary request latency in seconds.",
             )
             .buckets(vec![
                 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
@@ -195,7 +204,7 @@ pub async fn red_metrics_middleware(
         .with_label_values(&["payment", &method, &route, &status_str])
         .inc();
 
-    if status.is_client_error() || status.is_server_error() {
+    if status.is_server_error() {
         metrics
             .http_errors_total
             .with_label_values(&["payment", &method, &route, &status_str])

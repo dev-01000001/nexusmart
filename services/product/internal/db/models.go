@@ -21,6 +21,29 @@ type Category struct {
 	UpdatedAt         time.Time
 }
 
+type CategoryFeeSchedule struct {
+	ID                string
+	Seq               int64
+	CategoryID        string
+	CommissionRateBps int32
+	EffectiveFrom     time.Time
+	CreatedBy         string
+	Note              string
+	CreatedAt         time.Time
+}
+
+type OutboxEvent struct {
+	ID          string
+	EventType   string
+	TraceID     string
+	Traceparent string
+	PayloadJson []byte
+	PublishedAt *time.Time
+	Attempts    int32
+	LastError   string
+	CreatedAt   time.Time
+}
+
 type Product struct {
 	ID              string
 	ShopID          string
@@ -56,6 +79,16 @@ type Sku struct {
 	UpdatedAt     time.Time
 }
 
+type SkuPriceHistory struct {
+	ID         string
+	Seq        int64
+	SkuID      string
+	PriceVnd   int64
+	ActorID    string
+	Reason     string
+	RecordedAt time.Time
+}
+
 type StockHistory struct {
 	ID             string
 	SkuID          string
@@ -69,6 +102,11 @@ type StockHistory struct {
 	ActorID        string
 	Reason         string
 	CreatedAt      time.Time
+}
+
+type StockReleaseTombstone struct {
+	OrderID   string
+	CreatedAt time.Time
 }
 
 type StockReservation struct {

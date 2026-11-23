@@ -436,7 +436,15 @@ function SellerReturnsInner({ shop }: { shop: GatewayShop }) {
                         <div
                           key={ret.id}
                           className={common.mobileRow}
+                          role="button"
+                          tabIndex={0}
                           onClick={() => handleSelectReturn(ret)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              handleSelectReturn(ret);
+                            }
+                          }}
                         >
                           <div className={common.mobileRowTop}>
                             <div>

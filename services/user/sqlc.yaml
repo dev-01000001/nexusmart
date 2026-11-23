@@ -17,6 +17,10 @@ sql:
           ip_address: "IPAddress"
           avatar_url: "AvatarURL"
           cod_rejected_count: "CODRejectedCount"
+          otp_hash: "OTPHash"
+          otp_expires_at: "OTPExpiresAt"
+          otp_attempts: "OTPAttempts"
+          otp_publish_failed: "OTPPublishFailed"
         overrides:
           - db_type: "timestamptz"
             go_type: "time.Time"

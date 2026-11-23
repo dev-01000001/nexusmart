@@ -121,7 +121,7 @@ type ShipmentEvent struct {
 	CreatedAt   time.Time
 }
 
-// ShopShippingSettings represents per-shop carrier and parcel defaults (UC-SHIP06).
+// ShopShippingSettings represents per-shop carrier, parcel defaults, and shop freeship policy (UC-SHIP06).
 type ShopShippingSettings struct {
 	ShopID              string
 	EnabledCarrierCodes []string
@@ -129,6 +129,9 @@ type ShopShippingSettings struct {
 	DefaultLengthCM     int32
 	DefaultWidthCM      int32
 	DefaultHeightCM     int32
+	FreeShipEnabled     bool
+	FreeShipMinOrderVND int64
+	FreeShipMaxVND      int64
 	UpdatedAt           time.Time
 }
 
@@ -1141,7 +1144,9 @@ func (s *PGStore) GetShopShippingSettings(ctx context.Context, shopID string) (*
 	var cfg ShopShippingSettings
 	err := s.pool.QueryRow(ctx, `
 		SELECT shop_id, enabled_carrier_codes, default_weight_grams,
-		       default_length_cm, default_width_cm, default_height_cm, updated_at
+		       default_length_cm, default_width_cm, default_height_cm,
+		       free_ship_enabled, free_ship_min_order_vnd, free_ship_max_vnd,
+		       updated_at
 		FROM shop_shipping_settings
 		WHERE shop_id = $1
 	`, shopID).Scan(
@@ -1151,6 +1156,9 @@ func (s *PGStore) GetShopShippingSettings(ctx context.Context, shopID string) (*
 		&cfg.DefaultLengthCM,
 		&cfg.DefaultWidthCM,
 		&cfg.DefaultHeightCM,
+		&cfg.FreeShipEnabled,
+		&cfg.FreeShipMinOrderVND,
+		&cfg.FreeShipMaxVND,
 		&cfg.UpdatedAt,
 	)
 	if err != nil {
@@ -1169,17 +1177,24 @@ func (s *PGStore) UpsertShopShippingSettings(ctx context.Context, settings *Shop
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO shop_shipping_settings (
 			shop_id, enabled_carrier_codes, default_weight_grams,
-			default_length_cm, default_width_cm, default_height_cm, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+			default_length_cm, default_width_cm, default_height_cm,
+			free_ship_enabled, free_ship_min_order_vnd, free_ship_max_vnd,
+			updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (shop_id) DO UPDATE
 		SET enabled_carrier_codes = EXCLUDED.enabled_carrier_codes,
 		    default_weight_grams = EXCLUDED.default_weight_grams,
 		    default_length_cm = EXCLUDED.default_length_cm,
 		    default_width_cm = EXCLUDED.default_width_cm,
 		    default_height_cm = EXCLUDED.default_height_cm,
+		    free_ship_enabled = EXCLUDED.free_ship_enabled,
+		    free_ship_min_order_vnd = EXCLUDED.free_ship_min_order_vnd,
+		    free_ship_max_vnd = EXCLUDED.free_ship_max_vnd,
 		    updated_at = EXCLUDED.updated_at
 		RETURNING shop_id, enabled_carrier_codes, default_weight_grams,
-		          default_length_cm, default_width_cm, default_height_cm, updated_at
+		          default_length_cm, default_width_cm, default_height_cm,
+		          free_ship_enabled, free_ship_min_order_vnd, free_ship_max_vnd,
+		          updated_at
 	`,
 		settings.ShopID,
 		settings.EnabledCarrierCodes,
@@ -1187,6 +1202,9 @@ func (s *PGStore) UpsertShopShippingSettings(ctx context.Context, settings *Shop
 		settings.DefaultLengthCM,
 		settings.DefaultWidthCM,
 		settings.DefaultHeightCM,
+		settings.FreeShipEnabled,
+		settings.FreeShipMinOrderVND,
+		settings.FreeShipMaxVND,
 		now,
 	).Scan(
 		&saved.ShopID,
@@ -1195,6 +1213,9 @@ func (s *PGStore) UpsertShopShippingSettings(ctx context.Context, settings *Shop
 		&saved.DefaultLengthCM,
 		&saved.DefaultWidthCM,
 		&saved.DefaultHeightCM,
+		&saved.FreeShipEnabled,
+		&saved.FreeShipMinOrderVND,
+		&saved.FreeShipMaxVND,
 		&saved.UpdatedAt,
 	)
 	if err != nil {

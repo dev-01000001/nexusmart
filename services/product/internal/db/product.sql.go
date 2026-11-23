@@ -12,6 +12,33 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const categoryHasAncestor = `-- name: CategoryHasAncestor :one
+WITH RECURSIVE ancestors AS (
+    SELECT c.id, c.parent_id
+    FROM categories c
+    WHERE c.id = $2::text
+    UNION
+    SELECT p.id, p.parent_id
+    FROM categories p
+    JOIN ancestors a ON p.id = a.parent_id
+)
+SELECT EXISTS (
+    SELECT 1 FROM ancestors WHERE id = $1::text
+)::bool AS has_ancestor
+`
+
+type CategoryHasAncestorParams struct {
+	TargetAncestorID string
+	StartID          string
+}
+
+func (q *Queries) CategoryHasAncestor(ctx context.Context, arg CategoryHasAncestorParams) (bool, error) {
+	row := q.db.QueryRow(ctx, categoryHasAncestor, arg.TargetAncestorID, arg.StartID)
+	var has_ancestor bool
+	err := row.Scan(&has_ancestor)
+	return has_ancestor, err
+}
+
 const confirmSKUOptimistic = `-- name: ConfirmSKUOptimistic :one
 UPDATE skus
 SET stock = GREATEST(0, stock - $1),
@@ -70,6 +97,19 @@ func (q *Queries) CountActiveInStockSKUsByProduct(ctx context.Context, productID
 	return cnt, err
 }
 
+const countCategoryFeeSchedules = `-- name: CountCategoryFeeSchedules :one
+SELECT COUNT(*)::bigint AS cnt
+FROM category_fee_schedules
+WHERE ($1::text = '' OR category_id = $1::text)
+`
+
+func (q *Queries) CountCategoryFeeSchedules(ctx context.Context, categoryID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countCategoryFeeSchedules, categoryID)
+	var cnt int64
+	err := row.Scan(&cnt)
+	return cnt, err
+}
+
 const countChildCategories = `-- name: CountChildCategories :one
 SELECT COUNT(*)::bigint AS cnt
 FROM categories
@@ -84,10 +124,19 @@ func (q *Queries) CountChildCategories(ctx context.Context, parentID pgtype.Text
 }
 
 const countProductsFiltered = `-- name: CountProductsFiltered :one
+WITH RECURSIVE cat_tree AS (
+    SELECT c.id
+    FROM categories c
+    WHERE $1::text <> '' AND c.id = $1::text
+    UNION
+    SELECT child.id
+    FROM categories child
+    JOIN cat_tree ct ON child.parent_id = ct.id
+)
 SELECT COUNT(*)::bigint AS cnt
 FROM products p
 WHERE p.deleted_at IS NULL
-  AND ($1::text = '' OR p.category_id = $1::text OR p.category_id IN (SELECT c.id FROM categories c WHERE c.parent_id = $1::text))
+  AND ($1::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
   AND ($2::text = '' OR p.search_text LIKE '%' || $2::text || '%' ESCAPE '\')
   AND ($3::text = '' OR p.shop_id = $3::text)
   AND (NOT $4::bool OR p.status IN ('APPROVED', 'OUT_OF_STOCK'))
@@ -130,20 +179,26 @@ func (q *Queries) CountProductsFiltered(ctx context.Context, arg CountProductsFi
 }
 
 const countProductsInCategory = `-- name: CountProductsInCategory :one
-SELECT COUNT(*)::bigint AS cnt
+SELECT
+    COUNT(*)::bigint AS total_cnt,
+    COUNT(*) FILTER (WHERE deleted_at IS NULL)::bigint AS active_cnt
 FROM products
-WHERE category_id = $1 AND deleted_at IS NULL
+WHERE category_id = $1
 `
 
-func (q *Queries) CountProductsInCategory(ctx context.Context, categoryID string) (int64, error) {
+type CountProductsInCategoryRow struct {
+	TotalCnt  int64
+	ActiveCnt int64
+}
+
+func (q *Queries) CountProductsInCategory(ctx context.Context, categoryID string) (CountProductsInCategoryRow, error) {
 	row := q.db.QueryRow(ctx, countProductsInCategory, categoryID)
-	var cnt int64
-	err := row.Scan(&cnt)
-	return cnt, err
+	var i CountProductsInCategoryRow
+	err := row.Scan(&i.TotalCnt, &i.ActiveCnt)
+	return i, err
 }
 
 const createCategory = `-- name: CreateCategory :one
-
 INSERT INTO categories (id, name, slug, parent_id, commission_rate_bps, sort_order)
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at
@@ -158,7 +213,6 @@ type CreateCategoryParams struct {
 	SortOrder         int32
 }
 
-// Categories
 func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) (Category, error) {
 	row := q.db.QueryRow(ctx, createCategory,
 		arg.ID,
@@ -377,13 +431,64 @@ func (q *Queries) DeleteCategory(ctx context.Context, id string) (int64, error) 
 }
 
 const getCategoryByID = `-- name: GetCategoryByID :one
-SELECT id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at
-FROM categories
-WHERE id = $1
+SELECT
+    c.id, c.name, c.slug, c.parent_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= $1::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    c.sort_order, c.created_at, c.updated_at
+FROM categories c
+WHERE c.id = $2::text
 `
 
-func (q *Queries) GetCategoryByID(ctx context.Context, id string) (Category, error) {
-	row := q.db.QueryRow(ctx, getCategoryByID, id)
+type GetCategoryByIDParams struct {
+	AsOf time.Time
+	ID   string
+}
+
+type GetCategoryByIDRow struct {
+	ID                string
+	Name              string
+	Slug              string
+	ParentID          pgtype.Text
+	CommissionRateBps int32
+	SortOrder         int32
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+func (q *Queries) GetCategoryByID(ctx context.Context, arg GetCategoryByIDParams) (GetCategoryByIDRow, error) {
+	row := q.db.QueryRow(ctx, getCategoryByID, arg.AsOf, arg.ID)
+	var i GetCategoryByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Slug,
+		&i.ParentID,
+		&i.CommissionRateBps,
+		&i.SortOrder,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getCategoryBySlug = `-- name: GetCategoryBySlug :one
+SELECT id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at
+FROM categories
+WHERE slug = $1
+`
+
+func (q *Queries) GetCategoryBySlug(ctx context.Context, slug string) (Category, error) {
+	row := q.db.QueryRow(ctx, getCategoryBySlug, slug)
 	var i Category
 	err := row.Scan(
 		&i.ID,
@@ -398,6 +503,40 @@ func (q *Queries) GetCategoryByID(ctx context.Context, id string) (Category, err
 	return i, err
 }
 
+const getCategoryDescendants = `-- name: GetCategoryDescendants :many
+WITH RECURSIVE cat_tree AS (
+    SELECT DISTINCT id
+    FROM unnest($1::text[]) AS t(id)
+    UNION
+    SELECT child.id
+    FROM categories child
+    JOIN cat_tree ct ON child.parent_id = ct.id
+)
+SELECT id::text AS id
+FROM cat_tree
+ORDER BY id ASC
+`
+
+func (q *Queries) GetCategoryDescendants(ctx context.Context, categoryIds []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, getCategoryDescendants, categoryIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getProductByID = `-- name: GetProductByID :one
 SELECT id, shop_id, category_id, name, description, images, status,
        rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
@@ -407,6 +546,37 @@ WHERE id = $1 AND deleted_at IS NULL
 
 func (q *Queries) GetProductByID(ctx context.Context, id string) (Product, error) {
 	row := q.db.QueryRow(ctx, getProductByID, id)
+	var i Product
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.CategoryID,
+		&i.Name,
+		&i.Description,
+		&i.Images,
+		&i.Status,
+		&i.RejectionReason,
+		&i.MinPriceVnd,
+		&i.MaxPriceVnd,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Slug,
+		&i.SearchText,
+	)
+	return i, err
+}
+
+const getProductByIDForUpdate = `-- name: GetProductByIDForUpdate :one
+SELECT id, shop_id, category_id, name, description, images, status,
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
+FROM products
+WHERE id = $1 AND deleted_at IS NULL
+FOR UPDATE
+`
+
+func (q *Queries) GetProductByIDForUpdate(ctx context.Context, id string) (Product, error) {
+	row := q.db.QueryRow(ctx, getProductByIDForUpdate, id)
 	var i Product
 	err := row.Scan(
 		&i.ID,
@@ -462,13 +632,51 @@ const getSKUWithContext = `-- name: GetSKUWithContext :one
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
     s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
-    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.weight_grams, s.image_url, p.category_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= $1::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    COALESCE(
+        LEAST(
+            s.price_vnd,
+            (
+                SELECT MIN(h.price_vnd)
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at > $2::timestamptz
+                  AND h.recorded_at <= $1::timestamptz
+            ),
+            (
+                SELECT h.price_vnd
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at <= $2::timestamptz
+                ORDER BY h.recorded_at DESC, h.seq DESC
+                LIMIT 1
+            )
+        ),
+        s.price_vnd
+    )::bigint AS min_price_30d_vnd,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
-WHERE s.id = $1
+WHERE s.id = $3::text
 `
+
+type GetSKUWithContextParams struct {
+	AsOf      time.Time
+	Cutoff30d time.Time
+	ID        string
+}
 
 type GetSKUWithContextRow struct {
 	ID                string
@@ -486,13 +694,14 @@ type GetSKUWithContextRow struct {
 	ImageURL          string
 	CategoryID        string
 	CommissionRateBps int32
+	MinPrice30dVnd    int64
 	SkuStatus         string
 	ProductStatus     string
 	ProductDeletedAt  *time.Time
 }
 
-func (q *Queries) GetSKUWithContext(ctx context.Context, id string) (GetSKUWithContextRow, error) {
-	row := q.db.QueryRow(ctx, getSKUWithContext, id)
+func (q *Queries) GetSKUWithContext(ctx context.Context, arg GetSKUWithContextParams) (GetSKUWithContextRow, error) {
+	row := q.db.QueryRow(ctx, getSKUWithContext, arg.AsOf, arg.Cutoff30d, arg.ID)
 	var i GetSKUWithContextRow
 	err := row.Scan(
 		&i.ID,
@@ -510,6 +719,7 @@ func (q *Queries) GetSKUWithContext(ctx context.Context, id string) (GetSKUWithC
 		&i.ImageURL,
 		&i.CategoryID,
 		&i.CommissionRateBps,
+		&i.MinPrice30dVnd,
 		&i.SkuStatus,
 		&i.ProductStatus,
 		&i.ProductDeletedAt,
@@ -521,14 +731,52 @@ const getSKUWithContextForUpdate = `-- name: GetSKUWithContextForUpdate :one
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
     s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
-    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.weight_grams, s.image_url, p.category_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= $1::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    COALESCE(
+        LEAST(
+            s.price_vnd,
+            (
+                SELECT MIN(h.price_vnd)
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at > $2::timestamptz
+                  AND h.recorded_at <= $1::timestamptz
+            ),
+            (
+                SELECT h.price_vnd
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at <= $2::timestamptz
+                ORDER BY h.recorded_at DESC, h.seq DESC
+                LIMIT 1
+            )
+        ),
+        s.price_vnd
+    )::bigint AS min_price_30d_vnd,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
-WHERE s.id = $1
+WHERE s.id = $3::text
 FOR UPDATE OF s
 `
+
+type GetSKUWithContextForUpdateParams struct {
+	AsOf      time.Time
+	Cutoff30d time.Time
+	ID        string
+}
 
 type GetSKUWithContextForUpdateRow struct {
 	ID                string
@@ -546,13 +794,14 @@ type GetSKUWithContextForUpdateRow struct {
 	ImageURL          string
 	CategoryID        string
 	CommissionRateBps int32
+	MinPrice30dVnd    int64
 	SkuStatus         string
 	ProductStatus     string
 	ProductDeletedAt  *time.Time
 }
 
-func (q *Queries) GetSKUWithContextForUpdate(ctx context.Context, id string) (GetSKUWithContextForUpdateRow, error) {
-	row := q.db.QueryRow(ctx, getSKUWithContextForUpdate, id)
+func (q *Queries) GetSKUWithContextForUpdate(ctx context.Context, arg GetSKUWithContextForUpdateParams) (GetSKUWithContextForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getSKUWithContextForUpdate, arg.AsOf, arg.Cutoff30d, arg.ID)
 	var i GetSKUWithContextForUpdateRow
 	err := row.Scan(
 		&i.ID,
@@ -570,6 +819,7 @@ func (q *Queries) GetSKUWithContextForUpdate(ctx context.Context, id string) (Ge
 		&i.ImageURL,
 		&i.CategoryID,
 		&i.CommissionRateBps,
+		&i.MinPrice30dVnd,
 		&i.SkuStatus,
 		&i.ProductStatus,
 		&i.ProductDeletedAt,
@@ -581,14 +831,52 @@ const getSKUsBatch = `-- name: GetSKUsBatch :many
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
     s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
-    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.weight_grams, s.image_url, p.category_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= $1::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    COALESCE(
+        LEAST(
+            s.price_vnd,
+            (
+                SELECT MIN(h.price_vnd)
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at > $2::timestamptz
+                  AND h.recorded_at <= $1::timestamptz
+            ),
+            (
+                SELECT h.price_vnd
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at <= $2::timestamptz
+                ORDER BY h.recorded_at DESC, h.seq DESC
+                LIMIT 1
+            )
+        ),
+        s.price_vnd
+    )::bigint AS min_price_30d_vnd,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
-WHERE s.id = ANY($1::text[])
+WHERE s.id = ANY($3::text[])
 ORDER BY s.id ASC
 `
+
+type GetSKUsBatchParams struct {
+	AsOf      time.Time
+	Cutoff30d time.Time
+	SkuIds    []string
+}
 
 type GetSKUsBatchRow struct {
 	ID                string
@@ -606,13 +894,14 @@ type GetSKUsBatchRow struct {
 	ImageURL          string
 	CategoryID        string
 	CommissionRateBps int32
+	MinPrice30dVnd    int64
 	SkuStatus         string
 	ProductStatus     string
 	ProductDeletedAt  *time.Time
 }
 
-func (q *Queries) GetSKUsBatch(ctx context.Context, dollar_1 []string) ([]GetSKUsBatchRow, error) {
-	rows, err := q.db.Query(ctx, getSKUsBatch, dollar_1)
+func (q *Queries) GetSKUsBatch(ctx context.Context, arg GetSKUsBatchParams) ([]GetSKUsBatchRow, error) {
+	rows, err := q.db.Query(ctx, getSKUsBatch, arg.AsOf, arg.Cutoff30d, arg.SkuIds)
 	if err != nil {
 		return nil, err
 	}
@@ -636,6 +925,7 @@ func (q *Queries) GetSKUsBatch(ctx context.Context, dollar_1 []string) ([]GetSKU
 			&i.ImageURL,
 			&i.CategoryID,
 			&i.CommissionRateBps,
+			&i.MinPrice30dVnd,
 			&i.SkuStatus,
 			&i.ProductStatus,
 			&i.ProductDeletedAt,
@@ -648,6 +938,117 @@ func (q *Queries) GetSKUsBatch(ctx context.Context, dollar_1 []string) ([]GetSKU
 		return nil, err
 	}
 	return items, nil
+}
+
+const hasStockReleaseTombstone = `-- name: HasStockReleaseTombstone :one
+SELECT EXISTS (
+    SELECT 1 FROM stock_release_tombstones WHERE order_id = $1
+)::bool AS exists
+`
+
+func (q *Queries) HasStockReleaseTombstone(ctx context.Context, orderID string) (bool, error) {
+	row := q.db.QueryRow(ctx, hasStockReleaseTombstone, orderID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const insertCategoryFeeSchedule = `-- name: InsertCategoryFeeSchedule :one
+
+INSERT INTO category_fee_schedules (
+    id, category_id, commission_rate_bps, effective_from, created_by, note, created_at
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, seq, category_id, commission_rate_bps, effective_from, created_by, note, created_at
+`
+
+type InsertCategoryFeeScheduleParams struct {
+	ID                string
+	CategoryID        string
+	CommissionRateBps int32
+	EffectiveFrom     time.Time
+	CreatedBy         string
+	Note              string
+	CreatedAt         time.Time
+}
+
+// Category Fee Schedules
+func (q *Queries) InsertCategoryFeeSchedule(ctx context.Context, arg InsertCategoryFeeScheduleParams) (CategoryFeeSchedule, error) {
+	row := q.db.QueryRow(ctx, insertCategoryFeeSchedule,
+		arg.ID,
+		arg.CategoryID,
+		arg.CommissionRateBps,
+		arg.EffectiveFrom,
+		arg.CreatedBy,
+		arg.Note,
+		arg.CreatedAt,
+	)
+	var i CategoryFeeSchedule
+	err := row.Scan(
+		&i.ID,
+		&i.Seq,
+		&i.CategoryID,
+		&i.CommissionRateBps,
+		&i.EffectiveFrom,
+		&i.CreatedBy,
+		&i.Note,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const insertOutboxEvent = `-- name: InsertOutboxEvent :exec
+
+INSERT INTO outbox_events (id, event_type, trace_id, traceparent, payload_json, created_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type InsertOutboxEventParams struct {
+	ID          string
+	EventType   string
+	TraceID     string
+	Traceparent string
+	PayloadJson []byte
+	CreatedAt   time.Time
+}
+
+// Outbox events
+func (q *Queries) InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventParams) error {
+	_, err := q.db.Exec(ctx, insertOutboxEvent,
+		arg.ID,
+		arg.EventType,
+		arg.TraceID,
+		arg.Traceparent,
+		arg.PayloadJson,
+		arg.CreatedAt,
+	)
+	return err
+}
+
+const insertSKUPriceHistory = `-- name: InsertSKUPriceHistory :exec
+INSERT INTO sku_price_history (id, sku_id, price_vnd, actor_id, reason, recorded_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type InsertSKUPriceHistoryParams struct {
+	ID         string
+	SkuID      string
+	PriceVnd   int64
+	ActorID    string
+	Reason     string
+	RecordedAt time.Time
+}
+
+func (q *Queries) InsertSKUPriceHistory(ctx context.Context, arg InsertSKUPriceHistoryParams) error {
+	_, err := q.db.Exec(ctx, insertSKUPriceHistory,
+		arg.ID,
+		arg.SkuID,
+		arg.PriceVnd,
+		arg.ActorID,
+		arg.Reason,
+		arg.RecordedAt,
+	)
+	return err
 }
 
 const insertStockHistory = `-- name: InsertStockHistory :exec
@@ -692,21 +1093,59 @@ func (q *Queries) InsertStockHistory(ctx context.Context, arg InsertStockHistory
 	return err
 }
 
-const listAllCategories = `-- name: ListAllCategories :many
-SELECT id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at
-FROM categories
-ORDER BY sort_order ASC, name ASC, id ASC
+const insertStockReleaseTombstone = `-- name: InsertStockReleaseTombstone :execrows
+INSERT INTO stock_release_tombstones (order_id)
+VALUES ($1)
+ON CONFLICT (order_id) DO NOTHING
 `
 
-func (q *Queries) ListAllCategories(ctx context.Context) ([]Category, error) {
-	rows, err := q.db.Query(ctx, listAllCategories)
+func (q *Queries) InsertStockReleaseTombstone(ctx context.Context, orderID string) (int64, error) {
+	result, err := q.db.Exec(ctx, insertStockReleaseTombstone, orderID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const listAllCategories = `-- name: ListAllCategories :many
+SELECT
+    c.id, c.name, c.slug, c.parent_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= $1::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    c.sort_order, c.created_at, c.updated_at
+FROM categories c
+ORDER BY c.sort_order ASC, c.name ASC, c.id ASC
+`
+
+type ListAllCategoriesRow struct {
+	ID                string
+	Name              string
+	Slug              string
+	ParentID          pgtype.Text
+	CommissionRateBps int32
+	SortOrder         int32
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+func (q *Queries) ListAllCategories(ctx context.Context, asOf time.Time) ([]ListAllCategoriesRow, error) {
+	rows, err := q.db.Query(ctx, listAllCategories, asOf)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Category{}
+	items := []ListAllCategoriesRow{}
 	for rows.Next() {
-		var i Category
+		var i ListAllCategoriesRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
@@ -731,14 +1170,52 @@ const listAllSKUsByProductID = `-- name: ListAllSKUsByProductID :many
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
     s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
-    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.weight_grams, s.image_url, p.category_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= $1::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    COALESCE(
+        LEAST(
+            s.price_vnd,
+            (
+                SELECT MIN(h.price_vnd)
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at > $2::timestamptz
+                  AND h.recorded_at <= $1::timestamptz
+            ),
+            (
+                SELECT h.price_vnd
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at <= $2::timestamptz
+                ORDER BY h.recorded_at DESC, h.seq DESC
+                LIMIT 1
+            )
+        ),
+        s.price_vnd
+    )::bigint AS min_price_30d_vnd,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
-WHERE s.product_id = $1
+WHERE s.product_id = $3::text
 ORDER BY s.created_at ASC, s.id ASC
 `
+
+type ListAllSKUsByProductIDParams struct {
+	AsOf      time.Time
+	Cutoff30d time.Time
+	ProductID string
+}
 
 type ListAllSKUsByProductIDRow struct {
 	ID                string
@@ -756,13 +1233,14 @@ type ListAllSKUsByProductIDRow struct {
 	ImageURL          string
 	CategoryID        string
 	CommissionRateBps int32
+	MinPrice30dVnd    int64
 	SkuStatus         string
 	ProductStatus     string
 	ProductDeletedAt  *time.Time
 }
 
-func (q *Queries) ListAllSKUsByProductID(ctx context.Context, productID string) ([]ListAllSKUsByProductIDRow, error) {
-	rows, err := q.db.Query(ctx, listAllSKUsByProductID, productID)
+func (q *Queries) ListAllSKUsByProductID(ctx context.Context, arg ListAllSKUsByProductIDParams) ([]ListAllSKUsByProductIDRow, error) {
+	rows, err := q.db.Query(ctx, listAllSKUsByProductID, arg.AsOf, arg.Cutoff30d, arg.ProductID)
 	if err != nil {
 		return nil, err
 	}
@@ -786,6 +1264,7 @@ func (q *Queries) ListAllSKUsByProductID(ctx context.Context, productID string) 
 			&i.ImageURL,
 			&i.CategoryID,
 			&i.CommissionRateBps,
+			&i.MinPrice30dVnd,
 			&i.SkuStatus,
 			&i.ProductStatus,
 			&i.ProductDeletedAt,
@@ -801,21 +1280,50 @@ func (q *Queries) ListAllSKUsByProductID(ctx context.Context, productID string) 
 }
 
 const listCategoriesByParent = `-- name: ListCategoriesByParent :many
-SELECT id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at
-FROM categories
-WHERE parent_id = $1
-ORDER BY sort_order ASC, name ASC, id ASC
+SELECT
+    c.id, c.name, c.slug, c.parent_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= $1::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    c.sort_order, c.created_at, c.updated_at
+FROM categories c
+WHERE c.parent_id = $2
+ORDER BY c.sort_order ASC, c.name ASC, c.id ASC
 `
 
-func (q *Queries) ListCategoriesByParent(ctx context.Context, parentID pgtype.Text) ([]Category, error) {
-	rows, err := q.db.Query(ctx, listCategoriesByParent, parentID)
+type ListCategoriesByParentParams struct {
+	AsOf     time.Time
+	ParentID pgtype.Text
+}
+
+type ListCategoriesByParentRow struct {
+	ID                string
+	Name              string
+	Slug              string
+	ParentID          pgtype.Text
+	CommissionRateBps int32
+	SortOrder         int32
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+func (q *Queries) ListCategoriesByParent(ctx context.Context, arg ListCategoriesByParentParams) ([]ListCategoriesByParentRow, error) {
+	rows, err := q.db.Query(ctx, listCategoriesByParent, arg.AsOf, arg.ParentID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Category{}
+	items := []ListCategoriesByParentRow{}
 	for rows.Next() {
-		var i Category
+		var i ListCategoriesByParentRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
@@ -836,12 +1344,65 @@ func (q *Queries) ListCategoriesByParent(ctx context.Context, parentID pgtype.Te
 	return items, nil
 }
 
+const listCategoryFeeSchedules = `-- name: ListCategoryFeeSchedules :many
+SELECT id, seq, category_id, commission_rate_bps, effective_from, created_by, note, created_at
+FROM category_fee_schedules
+WHERE ($1::text = '' OR category_id = $1::text)
+ORDER BY effective_from DESC, seq DESC
+LIMIT $3::int
+OFFSET $2::int
+`
+
+type ListCategoryFeeSchedulesParams struct {
+	CategoryID string
+	OffsetVal  int32
+	LimitVal   int32
+}
+
+func (q *Queries) ListCategoryFeeSchedules(ctx context.Context, arg ListCategoryFeeSchedulesParams) ([]CategoryFeeSchedule, error) {
+	rows, err := q.db.Query(ctx, listCategoryFeeSchedules, arg.CategoryID, arg.OffsetVal, arg.LimitVal)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CategoryFeeSchedule{}
+	for rows.Next() {
+		var i CategoryFeeSchedule
+		if err := rows.Scan(
+			&i.ID,
+			&i.Seq,
+			&i.CategoryID,
+			&i.CommissionRateBps,
+			&i.EffectiveFrom,
+			&i.CreatedBy,
+			&i.Note,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProductsFiltered = `-- name: ListProductsFiltered :many
+WITH RECURSIVE cat_tree AS (
+    SELECT c.id
+    FROM categories c
+    WHERE $1::text <> '' AND c.id = $1::text
+    UNION
+    SELECT child.id
+    FROM categories child
+    JOIN cat_tree ct ON child.parent_id = ct.id
+)
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
        p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug, p.search_text
 FROM products p
 WHERE p.deleted_at IS NULL
-  AND ($1::text = '' OR p.category_id = $1::text OR p.category_id IN (SELECT c.id FROM categories c WHERE c.parent_id = $1::text))
+  AND ($1::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
   AND ($2::text = '' OR p.search_text LIKE '%' || $2::text || '%' ESCAPE '\')
   AND ($3::text = '' OR p.shop_id = $3::text)
   AND (NOT $4::bool OR p.status IN ('APPROVED', 'OUT_OF_STOCK'))
@@ -928,14 +1489,12 @@ func (q *Queries) ListProductsFiltered(ctx context.Context, arg ListProductsFilt
 }
 
 const listReservationsByOrderID = `-- name: ListReservationsByOrderID :many
-
 SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at
 FROM stock_reservations
 WHERE order_id = $1
 ORDER BY sku_id ASC
 `
 
-// Stock reservations
 func (q *Queries) ListReservationsByOrderID(ctx context.Context, orderID string) ([]StockReservation, error) {
 	rows, err := q.db.Query(ctx, listReservationsByOrderID, orderID)
 	if err != nil {
@@ -1003,21 +1562,45 @@ func (q *Queries) ListReservationsByOrderIDForUpdate(ctx context.Context, orderI
 }
 
 const listRootCategories = `-- name: ListRootCategories :many
-SELECT id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at
-FROM categories
-WHERE parent_id IS NULL
-ORDER BY sort_order ASC, name ASC, id ASC
+SELECT
+    c.id, c.name, c.slug, c.parent_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= $1::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    c.sort_order, c.created_at, c.updated_at
+FROM categories c
+WHERE c.parent_id IS NULL
+ORDER BY c.sort_order ASC, c.name ASC, c.id ASC
 `
 
-func (q *Queries) ListRootCategories(ctx context.Context) ([]Category, error) {
-	rows, err := q.db.Query(ctx, listRootCategories)
+type ListRootCategoriesRow struct {
+	ID                string
+	Name              string
+	Slug              string
+	ParentID          pgtype.Text
+	CommissionRateBps int32
+	SortOrder         int32
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+func (q *Queries) ListRootCategories(ctx context.Context, asOf time.Time) ([]ListRootCategoriesRow, error) {
+	rows, err := q.db.Query(ctx, listRootCategories, asOf)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Category{}
+	items := []ListRootCategoriesRow{}
 	for rows.Next() {
-		var i Category
+		var i ListRootCategoriesRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
@@ -1042,15 +1625,53 @@ const listSKUsByProductIDs = `-- name: ListSKUsByProductIDs :many
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
     s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
-    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.weight_grams, s.image_url, p.category_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= $1::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    COALESCE(
+        LEAST(
+            s.price_vnd,
+            (
+                SELECT MIN(h.price_vnd)
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at > $2::timestamptz
+                  AND h.recorded_at <= $1::timestamptz
+            ),
+            (
+                SELECT h.price_vnd
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at <= $2::timestamptz
+                ORDER BY h.recorded_at DESC, h.seq DESC
+                LIMIT 1
+            )
+        ),
+        s.price_vnd
+    )::bigint AS min_price_30d_vnd,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
-WHERE s.product_id = ANY($1::text[])
+WHERE s.product_id = ANY($3::text[])
   AND s.status <> 'INACTIVE'
 ORDER BY s.created_at ASC, s.id ASC
 `
+
+type ListSKUsByProductIDsParams struct {
+	AsOf       time.Time
+	Cutoff30d  time.Time
+	ProductIds []string
+}
 
 type ListSKUsByProductIDsRow struct {
 	ID                string
@@ -1068,13 +1689,14 @@ type ListSKUsByProductIDsRow struct {
 	ImageURL          string
 	CategoryID        string
 	CommissionRateBps int32
+	MinPrice30dVnd    int64
 	SkuStatus         string
 	ProductStatus     string
 	ProductDeletedAt  *time.Time
 }
 
-func (q *Queries) ListSKUsByProductIDs(ctx context.Context, dollar_1 []string) ([]ListSKUsByProductIDsRow, error) {
-	rows, err := q.db.Query(ctx, listSKUsByProductIDs, dollar_1)
+func (q *Queries) ListSKUsByProductIDs(ctx context.Context, arg ListSKUsByProductIDsParams) ([]ListSKUsByProductIDsRow, error) {
+	rows, err := q.db.Query(ctx, listSKUsByProductIDs, arg.AsOf, arg.Cutoff30d, arg.ProductIds)
 	if err != nil {
 		return nil, err
 	}
@@ -1098,6 +1720,7 @@ func (q *Queries) ListSKUsByProductIDs(ctx context.Context, dollar_1 []string) (
 			&i.ImageURL,
 			&i.CategoryID,
 			&i.CommissionRateBps,
+			&i.MinPrice30dVnd,
 			&i.SkuStatus,
 			&i.ProductStatus,
 			&i.ProductDeletedAt,
@@ -1110,6 +1733,97 @@ func (q *Queries) ListSKUsByProductIDs(ctx context.Context, dollar_1 []string) (
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockCategoryTree = `-- name: LockCategoryTree :exec
+
+SELECT pg_advisory_xact_lock(7956455656534110821)
+`
+
+// Categories
+func (q *Queries) LockCategoryTree(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, lockCategoryTree)
+	return err
+}
+
+const lockPendingOutboxEvents = `-- name: LockPendingOutboxEvents :many
+SELECT id, event_type, trace_id, traceparent, payload_json, published_at, attempts, last_error, created_at
+FROM outbox_events
+WHERE published_at IS NULL
+ORDER BY created_at ASC
+LIMIT $1
+FOR UPDATE SKIP LOCKED
+`
+
+func (q *Queries) LockPendingOutboxEvents(ctx context.Context, limit int32) ([]OutboxEvent, error) {
+	rows, err := q.db.Query(ctx, lockPendingOutboxEvents, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OutboxEvent{}
+	for rows.Next() {
+		var i OutboxEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventType,
+			&i.TraceID,
+			&i.Traceparent,
+			&i.PayloadJson,
+			&i.PublishedAt,
+			&i.Attempts,
+			&i.LastError,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockStockOrder = `-- name: LockStockOrder :exec
+
+SELECT pg_advisory_xact_lock(1937010539, hashtext($1))
+`
+
+// Stock reservations
+func (q *Queries) LockStockOrder(ctx context.Context, hashtext string) error {
+	_, err := q.db.Exec(ctx, lockStockOrder, hashtext)
+	return err
+}
+
+const markOutboxEventAttemptFailed = `-- name: MarkOutboxEventAttemptFailed :exec
+UPDATE outbox_events
+SET attempts = attempts + 1,
+    last_error = $2
+WHERE id = $1
+`
+
+type MarkOutboxEventAttemptFailedParams struct {
+	ID        string
+	LastError string
+}
+
+func (q *Queries) MarkOutboxEventAttemptFailed(ctx context.Context, arg MarkOutboxEventAttemptFailedParams) error {
+	_, err := q.db.Exec(ctx, markOutboxEventAttemptFailed, arg.ID, arg.LastError)
+	return err
+}
+
+const markOutboxEventPublished = `-- name: MarkOutboxEventPublished :exec
+UPDATE outbox_events
+SET published_at = NOW(),
+    attempts = attempts + 1,
+    last_error = ''
+WHERE id = $1
+`
+
+func (q *Queries) MarkOutboxEventPublished(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, markOutboxEventPublished, id)
+	return err
 }
 
 const reactivateSKUOptimistic = `-- name: ReactivateSKUOptimistic :one
@@ -1421,6 +2135,23 @@ func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) 
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const updateCategoryCommissionRate = `-- name: UpdateCategoryCommissionRate :exec
+UPDATE categories
+SET commission_rate_bps = $2,
+    updated_at = NOW()
+WHERE id = $1
+`
+
+type UpdateCategoryCommissionRateParams struct {
+	ID                string
+	CommissionRateBps int32
+}
+
+func (q *Queries) UpdateCategoryCommissionRate(ctx context.Context, arg UpdateCategoryCommissionRateParams) error {
+	_, err := q.db.Exec(ctx, updateCategoryCommissionRate, arg.ID, arg.CommissionRateBps)
+	return err
 }
 
 const updateProduct = `-- name: UpdateProduct :one

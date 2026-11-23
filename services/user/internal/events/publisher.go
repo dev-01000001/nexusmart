@@ -3,12 +3,12 @@ package events
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	"github.com/nexusmart/core/pkg/common/jetstream"
 	"github.com/nexusmart/core/pkg/common/telemetry"
 )
 
@@ -50,11 +50,25 @@ type ShopReviewedPayload struct {
 	Reason      string `json:"reason"`
 }
 
+// ShopBankAccountOTPPayload is emitted on `user.shop_bank_account_otp`.
+// SECURITY: OTP must never be logged by publisher or consumer.
+type ShopBankAccountOTPPayload struct {
+	UserID              string `json:"user_id"`
+	ShopID              string `json:"shop_id"`
+	Email               string `json:"email"`
+	FullName            string `json:"full_name"`
+	OTP                 string `json:"otp"`
+	ExpiresAt           string `json:"expires_at"`
+	BankCode            string `json:"bank_code"`
+	AccountNumberMasked string `json:"account_number_masked"`
+}
+
 // Publisher publishes domain events to NATS JetStream.
 type Publisher interface {
 	PublishUserRegistered(ctx context.Context, payload UserRegisteredPayload) error
 	PublishPasswordResetRequested(ctx context.Context, payload PasswordResetRequestedPayload) error
 	PublishShopReviewed(ctx context.Context, payload ShopReviewedPayload) error
+	PublishShopBankAccountOTP(ctx context.Context, payload ShopBankAccountOTPPayload) error
 }
 
 // NATSPublisher implements Publisher using NATS JetStream.
@@ -80,24 +94,7 @@ func NewNATSPublisher(nc *nats.Conn, stream string) (*NATSPublisher, error) {
 }
 
 func ensureStream(js nats.JetStreamContext, stream string) error {
-	_, err := js.StreamInfo(stream)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, nats.ErrStreamNotFound) {
-		return fmt.Errorf("check stream %s: %w", stream, err)
-	}
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:       stream,
-		Subjects:   []string{"user.>", "order.>", "payment.>", "shipment.>"},
-		Retention:  nats.LimitsPolicy,
-		Storage:    nats.FileStorage,
-		Duplicates: 2 * time.Minute,
-	})
-	if err != nil && !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
-		return fmt.Errorf("create stream %s: %w", stream, err)
-	}
-	return nil
+	return jetstream.EnsurePrimaryStream(js, stream)
 }
 
 func (p *NATSPublisher) PublishUserRegistered(ctx context.Context, payload UserRegisteredPayload) error {
@@ -110,6 +107,10 @@ func (p *NATSPublisher) PublishPasswordResetRequested(ctx context.Context, paylo
 
 func (p *NATSPublisher) PublishShopReviewed(ctx context.Context, payload ShopReviewedPayload) error {
 	return p.publish(ctx, "user.shop_reviewed", payload)
+}
+
+func (p *NATSPublisher) PublishShopBankAccountOTP(ctx context.Context, payload ShopBankAccountOTPPayload) error {
+	return p.publish(ctx, "user.shop_bank_account_otp", payload)
 }
 
 func (p *NATSPublisher) publish(ctx context.Context, subject string, payload any) error {

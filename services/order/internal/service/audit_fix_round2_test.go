@@ -80,7 +80,6 @@ func newHookedHarness() (*testHarness, *hookStore) {
 		CODMaxVND:            5000000,
 		CODMaxRejectedCount:  3,
 		PaymentExpiryMinutes: 15,
-		DefaultCommissionBPS: 500,
 		RewardCoinsBPS:       100,
 		GRPCCallTimeout:      5 * time.Second,
 	}
@@ -756,6 +755,10 @@ func TestReviewA_P2_10_LegacyCODPending_CancelledOnCancelAndShippingReturned(t *
 
 	t.Run("CancelLegacyCODPendingOrder", func(t *testing.T) {
 		h := newTestHarness()
+		_, _ = h.store.CreateCheckoutGroup(context.Background(), db.CreateCheckoutGroupParams{
+			ID: "grp-legacy-cod-1", BuyerID: "buyer-1", IdempotencyKey: "idem-leg-1",
+			Status: "IN_PROGRESS", PaymentMethod: "COD", TotalPayableVND: 200000,
+		})
 		_, err := h.store.PersistCheckoutBatch(context.Background(), store.CheckoutBatch{
 			CheckoutGroupID: "grp-legacy-cod-1",
 			Orders: []store.NewOrderRecord{
@@ -792,6 +795,10 @@ func TestReviewA_P2_10_LegacyCODPending_CancelledOnCancelAndShippingReturned(t *
 
 	t.Run("ShippingReturnedLegacyCODPendingOrder", func(t *testing.T) {
 		h := newTestHarness()
+		_, _ = h.store.CreateCheckoutGroup(context.Background(), db.CreateCheckoutGroupParams{
+			ID: "grp-legacy-cod-2", BuyerID: "buyer-1", IdempotencyKey: "idem-leg-2",
+			Status: "IN_PROGRESS", PaymentMethod: "COD", TotalPayableVND: 200000,
+		})
 		_, err := h.store.PersistCheckoutBatch(context.Background(), store.CheckoutBatch{
 			CheckoutGroupID: "grp-legacy-cod-2",
 			Orders: []store.NewOrderRecord{
@@ -816,6 +823,14 @@ func TestReviewA_P2_10_LegacyCODPending_CancelledOnCancelAndShippingReturned(t *
 		})
 		if err != nil {
 			t.Fatalf("PersistCheckoutBatch: %v", err)
+		}
+		if err := h.store.CompleteCheckoutWithPayment(context.Background(), store.UpdateCheckoutPaymentParams{
+			CheckoutGroupID: "grp-legacy-cod-2",
+			PaymentID:       "pay-legacy-2",
+			PaymentStatus:   "COD_PENDING",
+			TotalPayableVND: 200000,
+		}); err != nil {
+			t.Fatalf("CompleteCheckoutWithPayment: %v", err)
 		}
 		shipResp, err := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{
 			OrderId: "ord-legacy-cod-2", ShopId: "shop-1",

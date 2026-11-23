@@ -35,12 +35,12 @@ export const ORDER_STATUS_META: Record<OrderStatus, OrderStatusMeta> = {
   da_giao: {
     label: "Đã giao",
     tone: "pos",
-    description: "Giao thành công. Có thể yêu cầu đổi size 2 chiều hoặc trả hàng trong 45 ngày.",
+    description: "Giao thành công. Có thể yêu cầu đổi size 2 chiều hoặc trả hàng trong 7 ngày.",
   },
   yeu_cau_tra_hang: {
     label: "Yêu cầu trả hàng",
     tone: "warn",
-    description: "Đang xác minh lý do đổi trả 45 ngày và điều phối bưu tá 2 chiều.",
+    description: "Đang xác minh lý do đổi trả 7 ngày và điều phối bưu tá 2 chiều.",
   },
   da_huy: {
     label: "Đã hủy",
@@ -677,7 +677,7 @@ export const INITIAL_ORDERS: Order[] = [
         fromSize: "M",
         toSize: "L",
         pickupAddress: "Ngõ 85 phố Xuân Thủy, nhà số 14, Phường Cầu Giấy, Thành phố Hà Nội",
-        refundScheduleNote: "Đổi size 2 chiều miễn phí tận nơi trong 45 ngày.",
+        refundScheduleNote: "Đổi size 2 chiều miễn phí tận nơi trong 7 ngày.",
         status: "dang_dieu_phoi_buu_ta",
         requestedAt: "2026-11-11T09:15:00+07:00",
       },
@@ -699,7 +699,7 @@ export const INITIAL_ORDERS: Order[] = [
           timestamp: "2026-11-11T09:15:00+07:00",
           status: "yeu_cau_tra_hang",
           title: "Yêu cầu đổi size 2 chiều M sang L",
-          note: "Đã gửi yêu cầu trong hạn 45 ngày, bưu tá sẽ mang áo size L tới đổi trực tiếp.",
+          note: "Đã gửi yêu cầu trong hạn 7 ngày, bưu tá sẽ mang áo size L tới đổi trực tiếp.",
         },
       ],
     },

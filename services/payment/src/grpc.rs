@@ -3,18 +3,23 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 use prost_types::Timestamp;
 use tonic::{Request, Response, Status};
+use tracing::{error, info, warn, Instrument};
 use uuid::Uuid;
 
-use crate::auth::{require_payment_read_access, Caller, GrpcAuth};
+use crate::auth::{
+    require_payment_read_access, seller_scoped_amount_vnd, seller_scoped_order_id, Caller,
+    GrpcAuth, PaymentViewScope,
+};
 use crate::domain::{
-    parse_and_validate_reconciliation_date, CreatePaymentInput, CreateRefundInput,
-    ListRefundsFilter, PaymentMethod as DomainMethod, PaymentWithAllocations,
+    parse_and_validate_reconciliation_date, parse_seller_ledger_account_filter, CreatePaymentInput,
+    CreateRefundInput, GetFeeConfigFilter, ListRefundsFilter, ListSellerLedgerFilter,
+    PaymentFeeConfigRecord, PaymentMethod as DomainMethod, PaymentWithAllocations,
     ReconciliationActionKind, ReconciliationItemRecord, ReconciliationQueueItem as DomainQueueItem,
-    RefundRecord, ResolveReconciliationInput, SettleRefundInput, ShopAllocationInput,
-    SubmitRefundBankAccountInput,
+    RefundRecord, ResolveReconciliationInput, SellerLedgerEntryRecord, SetFeeConfigInput,
+    SettleRefundInput, ShopAllocationInput, SubmitRefundBankAccountInput,
 };
 use crate::service::PaymentService;
-use crate::telemetry::extract_or_generate_trace_id;
+use crate::telemetry::{attach_parent_context, extract_context_from_grpc};
 
 #[allow(clippy::result_large_err)]
 pub mod pb {
@@ -24,14 +29,16 @@ pub mod pb {
 use pb::payment_service_server::PaymentService as PaymentServiceTrait;
 use pb::{
     AccountBalance, CancelPaymentRequest, CancelPaymentResponse, CreatePaymentRequest,
-    CreatePaymentResponse, CreateRefundRequest, CreateRefundResponse, GetLedgerSummaryRequest,
-    GetLedgerSummaryResponse, GetPaymentRequest, GetPaymentResponse, GetSellerBalanceRequest,
-    GetSellerBalanceResponse, ListReconciliationQueueRequest, ListReconciliationQueueResponse,
-    ListRefundsRequest, ListRefundsResponse, Payment, PaymentMethod, PaymentStatus,
-    ReconciliationAction, ReconciliationItem, ReconciliationQueueItem, ReconciliationStatus,
-    Refund, RefundStatus, ReleaseEscrowRequest, ReleaseEscrowResponse,
-    ResolveReconciliationItemRequest, ResolveReconciliationItemResponse, RunReconciliationRequest,
-    RunReconciliationResponse, SettleRefundRequest, SettleRefundResponse, ShopAllocation,
+    CreatePaymentResponse, CreateRefundRequest, CreateRefundResponse, GetFeeConfigRequest,
+    GetFeeConfigResponse, GetLedgerSummaryRequest, GetLedgerSummaryResponse, GetPaymentRequest,
+    GetPaymentResponse, GetSellerBalanceRequest, GetSellerBalanceResponse,
+    ListReconciliationQueueRequest, ListReconciliationQueueResponse, ListRefundsRequest,
+    ListRefundsResponse, ListSellerLedgerRequest, ListSellerLedgerResponse, Payment,
+    PaymentFeeConfigItem, PaymentMethod, PaymentStatus, ReconciliationAction, ReconciliationItem,
+    ReconciliationQueueItem, ReconciliationStatus, Refund, RefundStatus, ReleaseEscrowRequest,
+    ReleaseEscrowResponse, ResolveReconciliationItemRequest, ResolveReconciliationItemResponse,
+    RunReconciliationRequest, RunReconciliationResponse, SellerLedgerEntry, SetFeeConfigRequest,
+    SetFeeConfigResponse, SettleRefundRequest, SettleRefundResponse, ShopAllocation,
     SubmitRefundBankAccountRequest, SubmitRefundBankAccountResponse,
 };
 
@@ -56,11 +63,25 @@ impl CallerAuth {
         self.caller.is_admin()
     }
 
+    fn is_admin_or_service(&self) -> bool {
+        self.caller.is_admin_or_service()
+    }
+
     #[allow(clippy::result_large_err)]
     fn require_admin(&self, op: &str) -> Result<(), Status> {
         if !self.is_admin() {
             return Err(Status::permission_denied(format!(
                 "forbidden: {op} requires admin role"
+            )));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn require_admin_or_service(&self, op: &str) -> Result<(), Status> {
+        if !self.is_admin_or_service() {
+            return Err(Status::permission_denied(format!(
+                "forbidden: {op} requires admin or service identity"
             )));
         }
         Ok(())
@@ -73,7 +94,7 @@ impl CallerAuth {
 
     #[allow(clippy::result_large_err)]
     fn require_payment_owner(&self, owner_user_id: &str, op: &str) -> Result<(), Status> {
-        if self.is_admin()
+        if self.is_admin_or_service()
             || (!self.caller.user_id.is_empty() && owner_user_id == self.caller.user_id)
         {
             return Ok(());
@@ -115,18 +136,66 @@ impl PaymentGrpcServer {
         pb::payment_service_server::PaymentServiceServer::new(self)
     }
 
-    fn record_metrics<T>(&self, method: &str, start: Instant, res: &Result<Response<T>, Status>) {
+    fn finish_rpc<T>(
+        &self,
+        span: &tracing::Span,
+        method: &str,
+        start: Instant,
+        trace_id: &str,
+        res: &Result<Response<T>, Status>,
+    ) {
         let elapsed = start.elapsed().as_secs_f64();
+        let duration_ms = (elapsed * 1000.0 * 1000.0).round() / 1000.0;
         match res {
-            Ok(_) => self
-                .service
-                .metrics()
-                .record_grpc(method, "OK", false, elapsed),
+            Ok(_) => {
+                self.service
+                    .metrics()
+                    .record_grpc(method, "OK", false, elapsed);
+                span.in_scope(|| {
+                    info!(
+                        service = "payment",
+                        method = method,
+                        code = "OK",
+                        duration_ms = duration_ms,
+                        trace_id = %trace_id,
+                        "grpc request"
+                    );
+                });
+            }
             Err(status) => {
                 let code = format!("{:?}", status.code());
                 self.service
                     .metrics()
                     .record_grpc(method, &code, true, elapsed);
+                span.in_scope(|| {
+                    if matches!(
+                        status.code(),
+                        tonic::Code::Internal
+                            | tonic::Code::Unknown
+                            | tonic::Code::DataLoss
+                            | tonic::Code::Unavailable
+                            | tonic::Code::DeadlineExceeded
+                            | tonic::Code::Unimplemented
+                    ) {
+                        error!(
+                            service = "payment",
+                            method = method,
+                            code = %code,
+                            duration_ms = duration_ms,
+                            trace_id = %trace_id,
+                            "grpc request"
+                        );
+                    } else {
+                        warn!(
+                            service = "payment",
+                            method = method,
+                            code = %code,
+                            duration_ms = duration_ms,
+                            trace_id = %trace_id,
+                            "grpc request"
+                        );
+                    }
+                });
             }
         }
     }
@@ -139,13 +208,16 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<CreatePaymentRequest>,
     ) -> Result<Response<CreatePaymentResponse>, Status> {
         let start = Instant::now();
-        let trace_id = extract_trace_from_metadata(&request);
+        let (span, trace_id) = start_rpc_span("CreatePayment", &request);
         let caller = CallerAuth::from_request(&self.auth, &request, "CreatePayment");
         let req = request.into_inner();
 
         let result = async {
             let caller = caller?;
             caller.require_payment_owner(&req.user_id, "CreatePayment")?;
+            if caller.caller.is_service {
+                validate_service_create_payment(&req)?;
+            }
 
             let method =
                 match PaymentMethod::try_from(req.method).unwrap_or(PaymentMethod::Unspecified) {
@@ -194,18 +266,19 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                     expires_at,
                     idempotency_key,
                     supersede_previous: req.supersede_previous,
-                    trace_id,
+                    trace_id: trace_id.clone(),
                 })
                 .await
                 .map_err(|e| e.to_tonic_status())?;
 
             Ok(Response::new(CreatePaymentResponse {
-                payment: Some(to_proto_payment(created)),
+                payment: Some(to_proto_payment_for_caller(created, &caller.caller)),
             }))
         }
+        .instrument(span.clone())
         .await;
 
-        self.record_metrics("CreatePayment", start, &result);
+        self.finish_rpc(&span, "CreatePayment", start, &trace_id, &result);
         result
     }
 
@@ -214,6 +287,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<GetPaymentRequest>,
     ) -> Result<Response<GetPaymentResponse>, Status> {
         let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("GetPayment", &request);
         let caller = CallerAuth::from_request(&self.auth, &request, "GetPayment");
         let req = request.into_inner();
 
@@ -233,12 +307,13 @@ impl PaymentServiceTrait for PaymentGrpcServer {
             caller.require_payment_read_access(&found)?;
 
             Ok(Response::new(GetPaymentResponse {
-                payment: Some(to_proto_payment(found)),
+                payment: Some(to_proto_payment_for_caller(found, &caller.caller)),
             }))
         }
+        .instrument(span.clone())
         .await;
 
-        self.record_metrics("GetPayment", start, &result);
+        self.finish_rpc(&span, "GetPayment", start, &trace_id, &result);
         result
     }
 
@@ -247,7 +322,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<CancelPaymentRequest>,
     ) -> Result<Response<CancelPaymentResponse>, Status> {
         let start = Instant::now();
-        let trace_id = extract_trace_from_metadata(&request);
+        let (span, trace_id) = start_rpc_span("CancelPayment", &request);
         let caller = CallerAuth::from_request(&self.auth, &request, "CancelPayment");
         let req = request.into_inner();
 
@@ -257,7 +332,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 .map_err(|e| e.to_tonic_status())?;
             let order_group_id = non_empty(&req.order_group_id);
 
-            if !caller.is_admin() {
+            if !caller.is_admin_or_service() {
                 let existing = self
                     .service
                     .get_payment(payment_id, order_group_id, None)
@@ -273,12 +348,13 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 .map_err(|e| e.to_tonic_status())?;
 
             Ok(Response::new(CancelPaymentResponse {
-                payment: Some(to_proto_payment(cancelled)),
+                payment: Some(to_proto_payment_for_caller(cancelled, &caller.caller)),
             }))
         }
+        .instrument(span.clone())
         .await;
 
-        self.record_metrics("CancelPayment", start, &result);
+        self.finish_rpc(&span, "CancelPayment", start, &trace_id, &result);
         result
     }
 
@@ -287,13 +363,13 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<CreateRefundRequest>,
     ) -> Result<Response<CreateRefundResponse>, Status> {
         let start = Instant::now();
-        let trace_id = extract_trace_from_metadata(&request);
+        let (span, trace_id) = start_rpc_span("CreateRefund", &request);
         let caller = CallerAuth::from_request(&self.auth, &request, "CreateRefund");
         let req = request.into_inner();
 
         let result = async {
             let caller = caller?;
-            caller.require_admin("CreateRefund")?;
+            caller.require_admin_or_service("CreateRefund")?;
 
             let payment_id = parse_optional_uuid(&req.payment_id, "payment_id")
                 .map_err(|e| e.to_tonic_status())?;
@@ -305,19 +381,20 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                     amount_vnd: req.amount_vnd,
                     reason: req.reason,
                     idempotency_key: req.idempotency_key,
-                    trace_id,
+                    trace_id: trace_id.clone(),
                 })
                 .await
                 .map_err(|e| e.to_tonic_status())?;
 
             Ok(Response::new(CreateRefundResponse {
-                refund: Some(to_proto_refund(out.refund, caller.is_admin())),
+                refund: Some(to_proto_refund(out.refund, caller.is_admin_or_service())),
                 already_existed: out.already_existed,
             }))
         }
+        .instrument(span.clone())
         .await;
 
-        self.record_metrics("CreateRefund", start, &result);
+        self.finish_rpc(&span, "CreateRefund", start, &trace_id, &result);
         result
     }
 
@@ -326,6 +403,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<GetLedgerSummaryRequest>,
     ) -> Result<Response<GetLedgerSummaryResponse>, Status> {
         let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("GetLedgerSummary", &request);
         let caller = CallerAuth::from_request(&self.auth, &request, "GetLedgerSummary");
 
         let result = async {
@@ -357,9 +435,10 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 accounts,
             }))
         }
+        .instrument(span.clone())
         .await;
 
-        self.record_metrics("GetLedgerSummary", start, &result);
+        self.finish_rpc(&span, "GetLedgerSummary", start, &trace_id, &result);
         result
     }
 
@@ -368,6 +447,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<GetSellerBalanceRequest>,
     ) -> Result<Response<GetSellerBalanceResponse>, Status> {
         let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("GetSellerBalance", &request);
         let caller = CallerAuth::from_request(&self.auth, &request, "GetSellerBalance");
         let req = request.into_inner();
 
@@ -388,9 +468,10 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 total_earned_vnd: bal.total_earned_vnd,
             }))
         }
+        .instrument(span.clone())
         .await;
 
-        self.record_metrics("GetSellerBalance", start, &result);
+        self.finish_rpc(&span, "GetSellerBalance", start, &trace_id, &result);
         result
     }
 
@@ -399,6 +480,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<ReleaseEscrowRequest>,
     ) -> Result<Response<ReleaseEscrowResponse>, Status> {
         let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("ReleaseEscrow", &request);
         let caller = CallerAuth::from_request(&self.auth, &request, "ReleaseEscrow");
         let req = request.into_inner();
 
@@ -417,9 +499,10 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 already_released: res.already_released,
             }))
         }
+        .instrument(span.clone())
         .await;
 
-        self.record_metrics("ReleaseEscrow", start, &result);
+        self.finish_rpc(&span, "ReleaseEscrow", start, &trace_id, &result);
         result
     }
 
@@ -428,6 +511,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<RunReconciliationRequest>,
     ) -> Result<Response<RunReconciliationResponse>, Status> {
         let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("RunReconciliation", &request);
         let caller = CallerAuth::from_request(&self.auth, &request, "RunReconciliation");
         let req = request.into_inner();
 
@@ -459,9 +543,10 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 items,
             }))
         }
+        .instrument(span.clone())
         .await;
 
-        self.record_metrics("RunReconciliation", start, &result);
+        self.finish_rpc(&span, "RunReconciliation", start, &trace_id, &result);
         result
     }
 
@@ -470,6 +555,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<ListRefundsRequest>,
     ) -> Result<Response<ListRefundsResponse>, Status> {
         let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("ListRefunds", &request);
         let caller = CallerAuth::from_request(&self.auth, &request, "ListRefunds");
         let req = request.into_inner();
 
@@ -508,9 +594,10 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 total: out.total,
             }))
         }
+        .instrument(span.clone())
         .await;
 
-        self.record_metrics("ListRefunds", start, &result);
+        self.finish_rpc(&span, "ListRefunds", start, &trace_id, &result);
         result
     }
 
@@ -519,6 +606,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<SubmitRefundBankAccountRequest>,
     ) -> Result<Response<SubmitRefundBankAccountResponse>, Status> {
         let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("SubmitRefundBankAccount", &request);
         let caller = CallerAuth::from_request(&self.auth, &request, "SubmitRefundBankAccount");
         let req = request.into_inner();
 
@@ -544,9 +632,10 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 refund: Some(to_proto_refund(updated, false)),
             }))
         }
+        .instrument(span.clone())
         .await;
 
-        self.record_metrics("SubmitRefundBankAccount", start, &result);
+        self.finish_rpc(&span, "SubmitRefundBankAccount", start, &trace_id, &result);
         result
     }
 
@@ -555,7 +644,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<SettleRefundRequest>,
     ) -> Result<Response<SettleRefundResponse>, Status> {
         let start = Instant::now();
-        let trace_id = extract_trace_from_metadata(&request);
+        let (span, trace_id) = start_rpc_span("SettleRefund", &request);
         let caller = CallerAuth::from_request(&self.auth, &request, "SettleRefund");
         let req = request.into_inner();
 
@@ -573,7 +662,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                     provider_refund_id: req.provider_refund_id,
                     note: req.note,
                     idempotency_key: req.idempotency_key,
-                    trace_id,
+                    trace_id: trace_id.clone(),
                 })
                 .await
                 .map_err(|e| e.to_tonic_status())?;
@@ -583,9 +672,10 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 already_settled: out.already_settled,
             }))
         }
+        .instrument(span.clone())
         .await;
 
-        self.record_metrics("SettleRefund", start, &result);
+        self.finish_rpc(&span, "SettleRefund", start, &trace_id, &result);
         result
     }
 
@@ -594,6 +684,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<ListReconciliationQueueRequest>,
     ) -> Result<Response<ListReconciliationQueueResponse>, Status> {
         let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("ListReconciliationQueue", &request);
         let caller = CallerAuth::from_request(&self.auth, &request, "ListReconciliationQueue");
         let req = request.into_inner();
 
@@ -618,9 +709,10 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 total: out.total,
             }))
         }
+        .instrument(span.clone())
         .await;
 
-        self.record_metrics("ListReconciliationQueue", start, &result);
+        self.finish_rpc(&span, "ListReconciliationQueue", start, &trace_id, &result);
         result
     }
 
@@ -629,7 +721,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         request: Request<ResolveReconciliationItemRequest>,
     ) -> Result<Response<ResolveReconciliationItemResponse>, Status> {
         let start = Instant::now();
-        let trace_id = extract_trace_from_metadata(&request);
+        let (span, trace_id) = start_rpc_span("ResolveReconciliationItem", &request);
         let caller = CallerAuth::from_request(&self.auth, &request, "ResolveReconciliationItem");
         let req = request.into_inner();
 
@@ -662,7 +754,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                     payment_id,
                     note: req.note,
                     idempotency_key: req.idempotency_key,
-                    trace_id,
+                    trace_id: trace_id.clone(),
                 })
                 .await
                 .map_err(|e| e.to_tonic_status())?;
@@ -673,9 +765,185 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 already_resolved: out.already_resolved,
             }))
         }
+        .instrument(span.clone())
         .await;
 
-        self.record_metrics("ResolveReconciliationItem", start, &result);
+        self.finish_rpc(
+            &span,
+            "ResolveReconciliationItem",
+            start,
+            &trace_id,
+            &result,
+        );
+        result
+    }
+
+    async fn get_fee_config(
+        &self,
+        request: Request<GetFeeConfigRequest>,
+    ) -> Result<Response<GetFeeConfigResponse>, Status> {
+        let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("GetFeeConfig", &request);
+        let caller = CallerAuth::from_request(&self.auth, &request, "GetFeeConfig");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            caller.require_admin_or_service("GetFeeConfig")?;
+
+            let method = match PaymentMethod::try_from(req.payment_method) {
+                Ok(PaymentMethod::Unspecified) => None,
+                Ok(PaymentMethod::Cod) => Some(DomainMethod::Cod),
+                Ok(PaymentMethod::Vietqr) => Some(DomainMethod::VietQr),
+                Err(_) => {
+                    return Err(Status::invalid_argument(
+                        "invalid payment_method; expected UNSPECIFIED, COD, or VIETQR",
+                    ));
+                }
+            };
+
+            let at_time = parse_optional_proto_timestamp(req.at_time, "at_time")
+                .map_err(|e| e.to_tonic_status())?;
+
+            let out = self
+                .service
+                .get_fee_config(GetFeeConfigFilter {
+                    method,
+                    include_history: req.include_history,
+                    at_time,
+                })
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            Ok(Response::new(GetFeeConfigResponse {
+                active_configs: out
+                    .active_configs
+                    .into_iter()
+                    .map(to_proto_fee_config_item)
+                    .collect(),
+                history: out
+                    .history
+                    .into_iter()
+                    .map(to_proto_fee_config_item)
+                    .collect(),
+            }))
+        }
+        .instrument(span.clone())
+        .await;
+
+        self.finish_rpc(&span, "GetFeeConfig", start, &trace_id, &result);
+        result
+    }
+
+    async fn set_fee_config(
+        &self,
+        request: Request<SetFeeConfigRequest>,
+    ) -> Result<Response<SetFeeConfigResponse>, Status> {
+        let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("SetFeeConfig", &request);
+        let caller = CallerAuth::from_request(&self.auth, &request, "SetFeeConfig");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            caller.require_admin("SetFeeConfig")?;
+
+            let method = match PaymentMethod::try_from(req.payment_method) {
+                Ok(PaymentMethod::Cod) => DomainMethod::Cod,
+                Ok(PaymentMethod::Vietqr) => DomainMethod::VietQr,
+                Ok(PaymentMethod::Unspecified) | Err(_) => {
+                    return Err(Status::invalid_argument(
+                        "payment_method must be PAYMENT_METHOD_COD or PAYMENT_METHOD_VIETQR",
+                    ));
+                }
+            };
+
+            let effective_from =
+                parse_optional_proto_timestamp(req.effective_from, "effective_from")
+                    .map_err(|e| e.to_tonic_status())?;
+
+            let created = self
+                .service
+                .set_fee_config(SetFeeConfigInput {
+                    method,
+                    fee_bps: req.fee_bps,
+                    effective_from,
+                    created_by: caller.caller.user_id,
+                    note: req.note,
+                })
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            Ok(Response::new(SetFeeConfigResponse {
+                config: Some(to_proto_fee_config_item(created)),
+            }))
+        }
+        .instrument(span.clone())
+        .await;
+
+        self.finish_rpc(&span, "SetFeeConfig", start, &trace_id, &result);
+        result
+    }
+
+    async fn list_seller_ledger(
+        &self,
+        request: Request<ListSellerLedgerRequest>,
+    ) -> Result<Response<ListSellerLedgerResponse>, Status> {
+        let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("ListSellerLedger", &request);
+        let caller = CallerAuth::from_request(&self.auth, &request, "ListSellerLedger");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            let req_shop_id = non_empty(&req.shop_id);
+
+            let target_shop_id = if caller.is_admin() {
+                req_shop_id.map(ToString::to_string)
+            } else if caller.caller.role == "seller" && !caller.caller.shop_id.is_empty() {
+                if let Some(requested) = req_shop_id {
+                    if requested != caller.caller.shop_id {
+                        return Err(Status::permission_denied(
+                            "forbidden: seller can only access own shop ledger",
+                        ));
+                    }
+                }
+                Some(caller.caller.shop_id.clone())
+            } else {
+                return Err(Status::permission_denied(
+                    "forbidden: ListSellerLedger requires seller or admin role",
+                ));
+            };
+
+            let account_filter = parse_seller_ledger_account_filter(&req.account_filter)
+                .map_err(|e| e.to_tonic_status())?;
+            let reference_type = non_empty(&req.reference_type).map(ToString::to_string);
+
+            let out = self
+                .service
+                .list_seller_ledger(ListSellerLedgerFilter {
+                    shop_id: target_shop_id,
+                    account_filter,
+                    reference_type,
+                    page: req.page,
+                    page_size: req.page_size,
+                })
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            Ok(Response::new(ListSellerLedgerResponse {
+                entries: out
+                    .entries
+                    .into_iter()
+                    .map(to_proto_seller_ledger_entry)
+                    .collect(),
+                total: out.total,
+            }))
+        }
+        .instrument(span.clone())
+        .await;
+
+        self.finish_rpc(&span, "ListSellerLedger", start, &trace_id, &result);
         result
     }
 }
@@ -684,11 +952,52 @@ impl PaymentServiceTrait for PaymentGrpcServer {
 // Protobuf Conversion Helpers
 // =============================================================================
 
-fn extract_trace_from_metadata<T>(request: &Request<T>) -> String {
+fn start_rpc_span<T>(method: &str, request: &Request<T>) -> (tracing::Span, String) {
     let md = request.metadata();
-    let traceparent = md.get("traceparent").and_then(|v| v.to_str().ok());
+    let parent_cx = extract_context_from_grpc(md);
     let x_trace_id = md.get("x-trace-id").and_then(|v| v.to_str().ok());
-    extract_or_generate_trace_id(traceparent, x_trace_id)
+    let span = tracing::info_span!(
+        "grpc.request",
+        otel.name = method,
+        otel.kind = "server",
+        rpc.system = "grpc",
+        rpc.method = method,
+        trace_id = tracing::field::Empty,
+    );
+    let trace_id = attach_parent_context(&span, parent_cx, x_trace_id);
+    span.record("trace_id", trace_id.as_str());
+    (span, trace_id)
+}
+
+/// Additional invariants enforced when `CreatePayment` is called with an internal service token
+/// (used exclusively by `order` watchdog forward recovery):
+/// - `supersede_previous = true` is forbidden (`PermissionDenied`; retry-payment is buyer-only);
+/// - `user_id` must be non-empty (`InvalidArgument`);
+/// - `order_group_id` and `idempotency_key` are required with exact format
+///   `idempotency_key == "checkout:" + order_group_id` (`InvalidArgument`).
+#[allow(clippy::result_large_err)]
+fn validate_service_create_payment(req: &CreatePaymentRequest) -> Result<(), Status> {
+    if req.supersede_previous {
+        return Err(Status::permission_denied(
+            "forbidden: service identity cannot supersede an existing payment",
+        ));
+    }
+    if req.user_id.trim().is_empty() {
+        return Err(Status::invalid_argument("user_id is required"));
+    }
+    let order_group_id = req.order_group_id.trim();
+    if order_group_id.is_empty() || order_group_id != req.order_group_id {
+        return Err(Status::invalid_argument(
+            "order_group_id is required for service CreatePayment",
+        ));
+    }
+    let expected_key = format!("checkout:{order_group_id}");
+    if req.idempotency_key.is_empty() || req.idempotency_key != expected_key {
+        return Err(Status::invalid_argument(
+            "service CreatePayment requires idempotency_key == \"checkout:<order_group_id>\"",
+        ));
+    }
+    Ok(())
 }
 
 fn non_empty(s: &str) -> Option<&str> {
@@ -726,7 +1035,87 @@ fn proto_to_chrono(ts: Timestamp) -> Option<DateTime<Utc>> {
     DateTime::from_timestamp(ts.seconds, ts.nanos.max(0) as u32)
 }
 
-fn to_proto_payment(pwa: PaymentWithAllocations) -> Payment {
+fn parse_optional_proto_timestamp(
+    ts: Option<Timestamp>,
+    field: &str,
+) -> crate::error::Result<Option<DateTime<Utc>>> {
+    match ts {
+        None => Ok(None),
+        Some(t) => {
+            if !(0..1_000_000_000).contains(&t.nanos) {
+                return Err(crate::error::PaymentError::Validation(format!(
+                    "invalid timestamp nanos for {field}"
+                )));
+            }
+            DateTime::from_timestamp(t.seconds, t.nanos as u32)
+                .map(Some)
+                .ok_or_else(|| {
+                    crate::error::PaymentError::Validation(format!(
+                        "out-of-range timestamp for {field}"
+                    ))
+                })
+        }
+    }
+}
+
+fn to_proto_fee_config_item(rec: PaymentFeeConfigRecord) -> PaymentFeeConfigItem {
+    let payment_method = match rec.payment_method.as_str() {
+        "COD" => PaymentMethod::Cod as i32,
+        "VIETQR" => PaymentMethod::Vietqr as i32,
+        _ => PaymentMethod::Unspecified as i32,
+    };
+    PaymentFeeConfigItem {
+        id: rec.id.to_string(),
+        payment_method,
+        fee_bps: rec.fee_bps,
+        effective_from: Some(chrono_to_proto(rec.effective_from)),
+        created_by: rec.created_by,
+        note: rec.note,
+        created_at: Some(chrono_to_proto(rec.created_at)),
+    }
+}
+
+fn to_proto_seller_ledger_entry(rec: SellerLedgerEntryRecord) -> SellerLedgerEntry {
+    SellerLedgerEntry {
+        id: rec.id.to_string(),
+        transaction_id: rec.transaction_id.to_string(),
+        account_code: rec.account_code,
+        reference_type: rec.reference_type,
+        reference_id: rec.reference_id,
+        description: rec.description,
+        debit_vnd: rec.debit_vnd,
+        credit_vnd: rec.credit_vnd,
+        delta_vnd: rec.delta_vnd,
+        created_at: Some(chrono_to_proto(rec.created_at)),
+    }
+}
+
+fn to_proto_payment_for_caller(pwa: PaymentWithAllocations, caller: &Caller) -> Payment {
+    let scope = if caller.is_admin_or_service() {
+        Some(PaymentViewScope::Full)
+    } else if !caller.user_id.is_empty() && pwa.payment.user_id == caller.user_id {
+        Some(PaymentViewScope::BuyerOwner)
+    } else if caller.role == "seller" && !caller.shop_id.is_empty() {
+        Some(PaymentViewScope::SellerAllocation {
+            shop_id: caller.shop_id.clone(),
+        })
+    } else {
+        None
+    };
+
+    let seller_amount = match &scope {
+        Some(PaymentViewScope::SellerAllocation { shop_id }) => {
+            Some(seller_scoped_amount_vnd(&pwa, shop_id))
+        }
+        _ => None,
+    };
+    let seller_order_id = match &scope {
+        Some(PaymentViewScope::SellerAllocation { shop_id }) => {
+            Some(seller_scoped_order_id(&pwa, shop_id))
+        }
+        _ => None,
+    };
+
     let p = pwa.payment;
     let method = match p.method.as_str() {
         "COD" => PaymentMethod::Cod as i32,
@@ -742,34 +1131,99 @@ fn to_proto_payment(pwa: PaymentWithAllocations) -> Payment {
         "refunded" => PaymentStatus::Refunded as i32,
         _ => PaymentStatus::Unspecified as i32,
     };
-    let provider_ref = p
+    let full_provider_ref = p
         .provider_tx_id
         .clone()
         .unwrap_or_else(|| p.provider_order_code.clone());
 
-    let shop_allocations = pwa
-        .allocations
-        .into_iter()
-        .map(|a| ShopAllocation {
-            order_id: a.order_id,
-            shop_id: a.shop_id,
-            subtotal_vnd: a.subtotal_vnd,
-            commission_vnd: a.commission_vnd,
-            shipping_fee_vnd: a.shipping_fee_vnd,
-            platform_discount_vnd: a.platform_discount_vnd,
-        })
-        .collect();
+    let (amount_vnd, order_id, qr_url, qr_code, provider_ref, shop_allocations) = match scope {
+        Some(PaymentViewScope::Full) => {
+            let allocs = pwa
+                .allocations
+                .into_iter()
+                .map(|a| ShopAllocation {
+                    order_id: a.order_id,
+                    shop_id: a.shop_id,
+                    subtotal_vnd: a.subtotal_vnd,
+                    commission_vnd: a.commission_vnd,
+                    shipping_fee_vnd: a.shipping_fee_vnd,
+                    platform_discount_vnd: a.platform_discount_vnd,
+                })
+                .collect();
+            (
+                p.amount_vnd,
+                p.order_id,
+                p.qr_url.unwrap_or_default(),
+                p.qr_code.unwrap_or_default(),
+                full_provider_ref,
+                allocs,
+            )
+        }
+        Some(PaymentViewScope::BuyerOwner) => {
+            let allocs = pwa
+                .allocations
+                .into_iter()
+                .map(|a| ShopAllocation {
+                    order_id: a.order_id,
+                    shop_id: a.shop_id,
+                    subtotal_vnd: a.subtotal_vnd,
+                    commission_vnd: 0,
+                    shipping_fee_vnd: a.shipping_fee_vnd,
+                    platform_discount_vnd: a.platform_discount_vnd,
+                })
+                .collect();
+            (
+                p.amount_vnd,
+                p.order_id,
+                p.qr_url.unwrap_or_default(),
+                p.qr_code.unwrap_or_default(),
+                full_provider_ref,
+                allocs,
+            )
+        }
+        Some(PaymentViewScope::SellerAllocation { shop_id }) => {
+            let allocs = pwa
+                .allocations
+                .into_iter()
+                .filter(|a| a.shop_id == shop_id)
+                .map(|a| ShopAllocation {
+                    order_id: a.order_id,
+                    shop_id: a.shop_id,
+                    subtotal_vnd: a.subtotal_vnd,
+                    commission_vnd: a.commission_vnd,
+                    shipping_fee_vnd: a.shipping_fee_vnd,
+                    platform_discount_vnd: a.platform_discount_vnd,
+                })
+                .collect();
+            (
+                seller_amount.unwrap_or(0),
+                seller_order_id.unwrap_or_default(),
+                String::new(),
+                String::new(),
+                String::new(),
+                allocs,
+            )
+        }
+        None => (
+            0,
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            Vec::new(),
+        ),
+    };
 
     Payment {
         payment_id: p.id.to_string(),
         order_group_id: p.order_group_id,
-        order_id: p.order_id,
+        order_id,
         user_id: p.user_id,
-        amount_vnd: p.amount_vnd,
+        amount_vnd,
         method,
         status,
-        qr_url: p.qr_url.unwrap_or_default(),
-        qr_code: p.qr_code.unwrap_or_default(),
+        qr_url,
+        qr_code,
         provider: p.provider,
         provider_ref,
         shop_allocations,
@@ -865,6 +1319,7 @@ mod tests {
     const TEST_USER_KEY: &str = "grpc-test-user-key";
 
     fn test_grpc_server() -> (PaymentGrpcServer, Metrics) {
+        crate::telemetry::init_test_tracing();
         let cfg = Config::from_env();
         let pool = PgPoolOptions::new()
             .connect_lazy(&cfg.database_url)
@@ -1305,5 +1760,918 @@ mod tests {
         let admin_pb = to_proto_refund(rec, true);
         assert_eq!(admin_pb.bank_account_masked, "****0123");
         assert_eq!(admin_pb.bank_account_number, "19034567890123");
+    }
+
+    #[tokio::test]
+    async fn test_grpc_rpc_extracts_w3c_traceparent_into_child_otel_span() {
+        crate::telemetry::init_test_tracing();
+
+        use std::sync::{Arc, Mutex};
+
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::export::trace::SpanData;
+        use opentelemetry_sdk::trace::{SpanProcessor, TracerProvider};
+        use tracing_subscriber::layer::SubscriberExt;
+
+        #[derive(Debug, Default, Clone)]
+        struct CaptureProcessor {
+            spans: Arc<Mutex<Vec<SpanData>>>,
+        }
+
+        impl SpanProcessor for CaptureProcessor {
+            fn on_start(
+                &self,
+                _span: &mut opentelemetry_sdk::trace::Span,
+                _cx: &opentelemetry::Context,
+            ) {
+            }
+            fn on_end(&self, span: SpanData) {
+                self.spans.lock().unwrap().push(span);
+            }
+            fn force_flush(&self) -> opentelemetry::trace::TraceResult<()> {
+                Ok(())
+            }
+            fn shutdown(&self) -> opentelemetry::trace::TraceResult<()> {
+                Ok(())
+            }
+        }
+
+        let processor = CaptureProcessor::default();
+        let captured = processor.spans.clone();
+        let tp = TracerProvider::builder()
+            .with_span_processor(processor)
+            .build();
+        let tracer = tp.tracer("payment-grpc-test");
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        const TRACE_ID: &str = "bb11cc22dd33ee44ff556677889900aa";
+        const PARENT_SPAN_ID: &str = "1122334455667788";
+        let tp_hdr = format!("00-{TRACE_ID}-{PARENT_SPAN_ID}-01");
+
+        let (server, _) = test_grpc_server();
+        let mut req = with_auth(
+            GetPaymentRequest {
+                payment_id: "invalid-uuid".into(),
+                order_group_id: String::new(),
+                order_id: String::new(),
+            },
+            "admin",
+            "admin-1",
+            "",
+        );
+        req.metadata_mut()
+            .insert("traceparent", MetadataValue::try_from(tp_hdr).unwrap());
+
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let (span, tid) = tracing::dispatcher::with_default(&dispatch, || {
+            let (s, t) = start_rpc_span("GetPayment", &req);
+            (s, t)
+        });
+        assert_eq!(tid, TRACE_ID);
+        drop(span);
+
+        let err =
+            tracing::instrument::WithSubscriber::with_subscriber(server.get_payment(req), dispatch)
+                .await
+                .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        let spans = captured.lock().unwrap();
+        assert!(
+            spans.len() >= 2,
+            "expected at least 2 child spans, got {}",
+            spans.len()
+        );
+        for sd in spans.iter() {
+            assert_eq!(sd.span_context.trace_id().to_string(), TRACE_ID);
+            assert_eq!(sd.parent_span_id.to_string(), PARENT_SPAN_ID);
+            assert_ne!(sd.span_context.span_id().to_string(), PARENT_SPAN_ID);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_w2b_fee_config_and_seller_ledger_rbac_and_validation() {
+        let (server, _) = test_grpc_server();
+
+        let svc_tok = crate::auth::sign_hs256(
+            "grpc-test-service-key",
+            serde_json::json!({
+                "sub": "order-service",
+                "role": "admin",
+                "service": "order-service",
+                "exp": Utc::now().timestamp() + 60,
+            }),
+        );
+        fn with_svc<T>(tok: &str, payload: T) -> Request<T> {
+            let mut req = Request::new(payload);
+            req.metadata_mut().insert(
+                "authorization",
+                MetadataValue::try_from(format!("Bearer {tok}")).unwrap(),
+            );
+            req
+        }
+
+        // --- SetFeeConfig RBAC ---
+        // Unauthenticated -> Unauthenticated
+        let err = server
+            .set_fee_config(Request::new(SetFeeConfigRequest {
+                payment_method: PaymentMethod::Vietqr as i32,
+                fee_bps: 150,
+                effective_from: None,
+                note: String::new(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+        // Service token -> PermissionDenied
+        let err = server
+            .set_fee_config(with_svc(
+                &svc_tok,
+                SetFeeConfigRequest {
+                    payment_method: PaymentMethod::Vietqr as i32,
+                    fee_bps: 150,
+                    effective_from: None,
+                    note: String::new(),
+                },
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+
+        // Buyer & seller -> PermissionDenied
+        for (role, uid, sid) in [("buyer", "u-1", ""), ("seller", "u-2", "shop-1")] {
+            let err = server
+                .set_fee_config(with_auth(
+                    SetFeeConfigRequest {
+                        payment_method: PaymentMethod::Cod as i32,
+                        fee_bps: 100,
+                        effective_from: None,
+                        note: String::new(),
+                    },
+                    role,
+                    uid,
+                    sid,
+                ))
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), tonic::Code::PermissionDenied, "role={role}");
+        }
+
+        // --- SetFeeConfig validation (admin) ---
+        // Unspecified method -> InvalidArgument
+        let err = server
+            .set_fee_config(with_auth(
+                SetFeeConfigRequest {
+                    payment_method: PaymentMethod::Unspecified as i32,
+                    fee_bps: 100,
+                    effective_from: None,
+                    note: String::new(),
+                },
+                "admin",
+                "admin-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        // fee_bps out of [0, 2000] -> InvalidArgument
+        for bad_bps in [-1, 2001] {
+            let err = server
+                .set_fee_config(with_auth(
+                    SetFeeConfigRequest {
+                        payment_method: PaymentMethod::Vietqr as i32,
+                        fee_bps: bad_bps,
+                        effective_from: None,
+                        note: String::new(),
+                    },
+                    "admin",
+                    "admin-1",
+                    "",
+                ))
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), tonic::Code::InvalidArgument, "bps={bad_bps}");
+        }
+
+        // Past effective_from -> InvalidArgument
+        let err = server
+            .set_fee_config(with_auth(
+                SetFeeConfigRequest {
+                    payment_method: PaymentMethod::Vietqr as i32,
+                    fee_bps: 150,
+                    effective_from: Some(chrono_to_proto(
+                        Utc::now() - chrono::Duration::seconds(60),
+                    )),
+                    note: "past".into(),
+                },
+                "admin",
+                "admin-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        // --- GetFeeConfig RBAC & validation ---
+        // Unauthenticated -> Unauthenticated
+        let err = server
+            .get_fee_config(Request::new(GetFeeConfigRequest {
+                payment_method: PaymentMethod::Unspecified as i32,
+                include_history: false,
+                at_time: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+        // Buyer / seller -> PermissionDenied unconditionally (both include_history=false and true)
+        for (role, uid, sid) in [("buyer", "u-1", ""), ("seller", "u-2", "shop-1")] {
+            for include_history in [false, true] {
+                let err = server
+                    .get_fee_config(with_auth(
+                        GetFeeConfigRequest {
+                            payment_method: PaymentMethod::Unspecified as i32,
+                            include_history,
+                            at_time: None,
+                        },
+                        role,
+                        uid,
+                        sid,
+                    ))
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    err.code(),
+                    tonic::Code::PermissionDenied,
+                    "role={role} include_history={include_history}"
+                );
+            }
+        }
+
+        // Unknown payment_method enum value -> InvalidArgument (for service token & admin)
+        let err = server
+            .get_fee_config(with_svc(
+                &svc_tok,
+                GetFeeConfigRequest {
+                    payment_method: 99,
+                    include_history: false,
+                    at_time: None,
+                },
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        let err = server
+            .get_fee_config(with_auth(
+                GetFeeConfigRequest {
+                    payment_method: 99,
+                    include_history: false,
+                    at_time: None,
+                },
+                "admin",
+                "admin-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        // --- ListSellerLedger RBAC & validation ---
+        // Unauthenticated -> Unauthenticated
+        let err = server
+            .list_seller_ledger(Request::new(ListSellerLedgerRequest {
+                shop_id: String::new(),
+                account_filter: String::new(),
+                reference_type: String::new(),
+                page: 1,
+                page_size: 20,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+        // Service token -> PermissionDenied
+        let err = server
+            .list_seller_ledger(with_svc(
+                &svc_tok,
+                ListSellerLedgerRequest {
+                    shop_id: "shop-1".into(),
+                    account_filter: String::new(),
+                    reference_type: String::new(),
+                    page: 1,
+                    page_size: 20,
+                },
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+
+        // Buyer & demoted buyer with stale shop_id -> PermissionDenied
+        for (uid, sid) in [("u-buyer", ""), ("u-demoted", "shop-1")] {
+            let err = server
+                .list_seller_ledger(with_auth(
+                    ListSellerLedgerRequest {
+                        shop_id: sid.into(),
+                        account_filter: String::new(),
+                        reference_type: String::new(),
+                        page: 1,
+                        page_size: 20,
+                    },
+                    "buyer",
+                    uid,
+                    sid,
+                ))
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), tonic::Code::PermissionDenied, "uid={uid}");
+        }
+
+        // Seller without shop_id in claims -> PermissionDenied
+        let err = server
+            .list_seller_ledger(with_auth(
+                ListSellerLedgerRequest {
+                    shop_id: String::new(),
+                    account_filter: String::new(),
+                    reference_type: String::new(),
+                    page: 1,
+                    page_size: 20,
+                },
+                "seller",
+                "u-seller",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+
+        // Seller trying to read another shop's ledger -> PermissionDenied
+        let err = server
+            .list_seller_ledger(with_auth(
+                ListSellerLedgerRequest {
+                    shop_id: "shop-victim".into(),
+                    account_filter: String::new(),
+                    reference_type: String::new(),
+                    page: 1,
+                    page_size: 20,
+                },
+                "seller",
+                "u-seller",
+                "shop-mine",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+
+        // Invalid account_filter -> InvalidArgument (for both seller and admin)
+        let err = server
+            .list_seller_ledger(with_auth(
+                ListSellerLedgerRequest {
+                    shop_id: String::new(),
+                    account_filter: "gateway_clearing".into(),
+                    reference_type: String::new(),
+                    page: 1,
+                    page_size: 20,
+                },
+                "seller",
+                "u-seller",
+                "shop-mine",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        let err = server
+            .list_seller_ledger(with_auth(
+                ListSellerLedgerRequest {
+                    shop_id: String::new(),
+                    account_filter: "escrow_liability".into(),
+                    reference_type: String::new(),
+                    page: 1,
+                    page_size: 20,
+                },
+                "admin",
+                "admin-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn test_w2b_r4_get_fee_config_requires_admin_or_service_unconditionally() {
+        let (server, _) = test_grpc_server();
+
+        // Unauthenticated -> Unauthenticated
+        let err = server
+            .get_fee_config(Request::new(GetFeeConfigRequest {
+                payment_method: PaymentMethod::Vietqr as i32,
+                include_history: false,
+                at_time: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+        // Buyer & seller MUST be rejected with PermissionDenied unconditionally
+        // (even when include_history=false and at_time=None).
+        for (role, uid, sid) in [("buyer", "u-1", ""), ("seller", "u-2", "shop-1")] {
+            for include_history in [false, true] {
+                let err = server
+                    .get_fee_config(with_auth(
+                        GetFeeConfigRequest {
+                            payment_method: PaymentMethod::Vietqr as i32,
+                            include_history,
+                            at_time: None,
+                        },
+                        role,
+                        uid,
+                        sid,
+                    ))
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    err.code(),
+                    tonic::Code::PermissionDenied,
+                    "role={role} include_history={include_history} must be denied"
+                );
+            }
+        }
+
+        // Admin, super_admin, and service token (role="admin" or role="service") MUST pass RBAC
+        // (reaches lazy DB -> Internal, NOT PermissionDenied/Unauthenticated).
+        let future_ts = chrono_to_proto(Utc::now() + chrono::Duration::hours(2));
+        for (role, uid) in [("admin", "admin-1"), ("super_admin", "sadmin-1")] {
+            let err = server
+                .get_fee_config(with_auth(
+                    GetFeeConfigRequest {
+                        payment_method: PaymentMethod::Vietqr as i32,
+                        include_history: true,
+                        at_time: Some(future_ts),
+                    },
+                    role,
+                    uid,
+                    "",
+                ))
+                .await
+                .unwrap_err();
+            assert_ne!(err.code(), tonic::Code::PermissionDenied, "role={role}");
+            assert_ne!(err.code(), tonic::Code::Unauthenticated, "role={role}");
+            assert_ne!(err.code(), tonic::Code::InvalidArgument, "role={role}");
+        }
+
+        for svc_role in ["admin", "service"] {
+            let svc_tok = crate::auth::sign_hs256(
+                "grpc-test-service-key",
+                serde_json::json!({
+                    "sub": "order-service",
+                    "role": svc_role,
+                    "service": "order-service",
+                    "exp": Utc::now().timestamp() + 60,
+                }),
+            );
+            let mut req = Request::new(GetFeeConfigRequest {
+                payment_method: PaymentMethod::Vietqr as i32,
+                include_history: false,
+                at_time: Some(future_ts),
+            });
+            req.metadata_mut().insert(
+                "authorization",
+                MetadataValue::try_from(format!("Bearer {svc_tok}")).unwrap(),
+            );
+            let err = server.get_fee_config(req).await.unwrap_err();
+            assert_ne!(
+                err.code(),
+                tonic::Code::PermissionDenied,
+                "svc_role={svc_role}"
+            );
+            assert_ne!(
+                err.code(),
+                tonic::Code::Unauthenticated,
+                "svc_role={svc_role}"
+            );
+            assert_ne!(
+                err.code(),
+                tonic::Code::InvalidArgument,
+                "svc_role={svc_role}"
+            );
+        }
+
+        // Admin/service callers receive full metadata (created_by & note).
+        let now = Utc::now();
+        let rec = PaymentFeeConfigRecord {
+            id: Uuid::new_v4(),
+            seq: 10,
+            payment_method: "VIETQR".into(),
+            fee_bps: 150,
+            effective_from: now,
+            created_by: "admin-user-1".into(),
+            note: "internal Q4 fee adjustment".into(),
+            created_at: now,
+        };
+        let pb = to_proto_fee_config_item(rec);
+        assert_eq!(pb.fee_bps, 150);
+        assert_eq!(pb.created_by, "admin-user-1");
+        assert_eq!(pb.note, "internal Q4 fee adjustment");
+    }
+
+    #[test]
+    fn test_w2b_r4_payment_projection_filters_by_caller_role() {
+        use crate::domain::{PaymentRecord, ShopAllocationRecord};
+
+        let now = Utc::now();
+        let payment_id = Uuid::new_v4();
+        let make_pwa = || PaymentWithAllocations {
+            payment: PaymentRecord {
+                id: payment_id,
+                order_group_id: "grp-multi-1".into(),
+                order_id: "ord-shop-b".into(), // worst-case: top-level order_id points to shop-b
+                user_id: "buyer-owner".into(),
+                method: "VIETQR".into(),
+                provider: "vietqr_mock".into(),
+                amount_vnd: 740_000, // shop-a 210,000 + shop-b 530,000
+                status: "succeeded".into(),
+                provider_tx_id: Some("TX-SECRET-999".into()),
+                provider_order_code: "NM-ORDER-999".into(),
+                qr_code: Some("000201010212-QR-PAYLOAD".into()),
+                qr_url: Some("https://qr.example/secret-1".into()),
+                idempotency_key: Some("idem-1".into()),
+                expires_at: None,
+                paid_at: Some(now),
+                trace_id: "trace-1".into(),
+                created_at: now,
+                updated_at: now,
+            },
+            allocations: vec![
+                ShopAllocationRecord {
+                    id: Uuid::new_v4(),
+                    payment_id,
+                    order_id: "ord-shop-a".into(),
+                    shop_id: "shop-a".into(),
+                    subtotal_vnd: 200_000,
+                    commission_vnd: 12_000,
+                    shipping_fee_vnd: 20_000,
+                    platform_discount_vnd: 10_000,
+                    escrow_status: "held".into(),
+                    settled_at: Some(now),
+                    released_at: None,
+                    created_at: now,
+                },
+                ShopAllocationRecord {
+                    id: Uuid::new_v4(),
+                    payment_id,
+                    order_id: "ord-shop-b".into(),
+                    shop_id: "shop-b".into(),
+                    subtotal_vnd: 500_000,
+                    commission_vnd: 35_000,
+                    shipping_fee_vnd: 30_000,
+                    platform_discount_vnd: 0,
+                    escrow_status: "held".into(),
+                    settled_at: Some(now),
+                    released_at: None,
+                    created_at: now,
+                },
+            ],
+        };
+
+        // 1. Admin, super_admin, and service tokens (role="admin" or role="service"): full view.
+        for caller in [
+            Caller {
+                role: "admin".into(),
+                user_id: "admin-1".into(),
+                ..Default::default()
+            },
+            Caller {
+                role: "super_admin".into(),
+                user_id: "sadmin-1".into(),
+                ..Default::default()
+            },
+            Caller {
+                role: "admin".into(),
+                user_id: "order-service".into(),
+                is_service: true,
+                ..Default::default()
+            },
+            Caller {
+                role: "service".into(),
+                user_id: "order-service".into(),
+                is_service: true,
+                ..Default::default()
+            },
+        ] {
+            let pb = to_proto_payment_for_caller(make_pwa(), &caller);
+            assert_eq!(pb.amount_vnd, 740_000);
+            assert_eq!(pb.qr_url, "https://qr.example/secret-1");
+            assert_eq!(pb.qr_code, "000201010212-QR-PAYLOAD");
+            assert_eq!(pb.provider_ref, "TX-SECRET-999");
+            assert_eq!(pb.shop_allocations.len(), 2);
+            assert_eq!(pb.shop_allocations[0].commission_vnd, 12_000);
+            assert_eq!(pb.shop_allocations[1].commission_vnd, 35_000);
+        }
+
+        // 2. Buyer owner AND seller acting as buyer owner: all allocations, commission_vnd == 0,
+        //    buyer QR / provider_ref / full amount_vnd preserved.
+        for caller in [
+            Caller {
+                role: "buyer".into(),
+                user_id: "buyer-owner".into(),
+                ..Default::default()
+            },
+            Caller {
+                role: "seller".into(),
+                user_id: "buyer-owner".into(),
+                shop_id: "shop-other".into(),
+                ..Default::default()
+            },
+            Caller {
+                role: "seller".into(),
+                user_id: "buyer-owner".into(),
+                shop_id: "shop-a".into(),
+                ..Default::default()
+            },
+        ] {
+            let pb = to_proto_payment_for_caller(make_pwa(), &caller);
+            assert_eq!(pb.amount_vnd, 740_000);
+            assert_eq!(pb.qr_url, "https://qr.example/secret-1");
+            assert_eq!(pb.qr_code, "000201010212-QR-PAYLOAD");
+            assert_eq!(pb.provider_ref, "TX-SECRET-999");
+            assert_eq!(pb.shop_allocations.len(), 2);
+            for a in &pb.shop_allocations {
+                assert_eq!(
+                    a.commission_vnd, 0,
+                    "buyer view must mask commission_vnd to 0 for caller={caller:?}"
+                );
+            }
+            assert_eq!(pb.shop_allocations[0].subtotal_vnd, 200_000);
+            assert_eq!(pb.shop_allocations[0].platform_discount_vnd, 10_000);
+            assert_eq!(pb.shop_allocations[1].subtotal_vnd, 500_000);
+        }
+
+        // 3. Seller who ONLY owns shop-a allocation (not buyer owner):
+        //    only shop-a allocation (with real commission_vnd), redacted QR/provider_ref,
+        //    shop-scoped amount_vnd = 200_000 + 20_000 - 10_000 = 210_000,
+        //    order_id must NOT leak shop-b's order_id.
+        let seller_a = Caller {
+            role: "seller".into(),
+            user_id: "seller-u1".into(),
+            shop_id: "shop-a".into(),
+            ..Default::default()
+        };
+        let pb_seller = to_proto_payment_for_caller(make_pwa(), &seller_a);
+        assert_eq!(pb_seller.user_id, "buyer-owner");
+        assert_eq!(pb_seller.order_group_id, "grp-multi-1");
+        assert_eq!(pb_seller.order_id, "ord-shop-a");
+        assert_eq!(pb_seller.amount_vnd, 210_000);
+        assert!(pb_seller.qr_url.is_empty(), "qr_url must be redacted");
+        assert!(pb_seller.qr_code.is_empty(), "qr_code must be redacted");
+        assert!(
+            pb_seller.provider_ref.is_empty(),
+            "provider_ref must be redacted"
+        );
+        assert_eq!(pb_seller.shop_allocations.len(), 1);
+        assert_eq!(pb_seller.shop_allocations[0].shop_id, "shop-a");
+        assert_eq!(pb_seller.shop_allocations[0].order_id, "ord-shop-a");
+        assert_eq!(pb_seller.shop_allocations[0].subtotal_vnd, 200_000);
+        assert_eq!(pb_seller.shop_allocations[0].commission_vnd, 12_000);
+        assert_eq!(pb_seller.shop_allocations[0].shipping_fee_vnd, 20_000);
+        assert_eq!(pb_seller.shop_allocations[0].platform_discount_vnd, 10_000);
+
+        // 3b. Seller B on the same 2-shop payment sees ONLY shop-b (and checkout-group order_id is kept).
+        let mut pwa_grp = make_pwa();
+        pwa_grp.payment.order_id = "grp-multi-1".into();
+        let seller_b = Caller {
+            role: "seller".into(),
+            user_id: "seller-u2".into(),
+            shop_id: "shop-b".into(),
+            ..Default::default()
+        };
+        let pb_seller_b = to_proto_payment_for_caller(pwa_grp, &seller_b);
+        assert_eq!(pb_seller_b.order_id, "grp-multi-1");
+        assert_eq!(pb_seller_b.amount_vnd, 530_000);
+        assert!(pb_seller_b.qr_url.is_empty());
+        assert!(pb_seller_b.qr_code.is_empty());
+        assert!(pb_seller_b.provider_ref.is_empty());
+        assert_eq!(pb_seller_b.shop_allocations.len(), 1);
+        assert_eq!(pb_seller_b.shop_allocations[0].shop_id, "shop-b");
+        assert_eq!(pb_seller_b.shop_allocations[0].commission_vnd, 35_000);
+
+        // 4. Defensive fail-closed for unauthorized caller (should already be blocked by RBAC):
+        let stranger = Caller {
+            role: "buyer".into(),
+            user_id: "stranger".into(),
+            ..Default::default()
+        };
+        let pb_stranger = to_proto_payment_for_caller(make_pwa(), &stranger);
+        assert!(pb_stranger.shop_allocations.is_empty());
+        assert_eq!(pb_stranger.amount_vnd, 0);
+        assert!(pb_stranger.qr_url.is_empty());
+        assert!(pb_stranger.qr_code.is_empty());
+        assert!(pb_stranger.provider_ref.is_empty());
+    }
+
+    #[test]
+    fn test_w2b_r5_validate_service_create_payment_rules() {
+        let base = || CreatePaymentRequest {
+            order_group_id: "grp-123".into(),
+            order_id: "grp-123".into(),
+            user_id: "buyer-1".into(),
+            amount_vnd: 150_000,
+            method: PaymentMethod::Cod as i32,
+            shop_allocations: vec![],
+            expires_at: None,
+            idempotency_key: "checkout:grp-123".into(),
+            supersede_previous: false,
+        };
+
+        // Valid service forward-recovery request -> Ok
+        assert!(validate_service_create_payment(&base()).is_ok());
+
+        // Rule 1: missing or untrimmed order_group_id -> InvalidArgument
+        for bad_group in ["", "   ", " grp-123 "] {
+            let mut req = base();
+            req.order_group_id = bad_group.into();
+            req.idempotency_key = format!("checkout:{bad_group}");
+            let err = validate_service_create_payment(&req).unwrap_err();
+            assert_eq!(
+                err.code(),
+                tonic::Code::InvalidArgument,
+                "bad_group={bad_group:?}"
+            );
+        }
+
+        // Rule 1: missing or mismatched idempotency_key -> InvalidArgument
+        for bad_key in [
+            "",
+            "   ",
+            "retry:grp-123",
+            "checkout:grp-other",
+            " checkout:grp-123 ",
+            "checkout:",
+        ] {
+            let mut req = base();
+            req.idempotency_key = bad_key.into();
+            let err = validate_service_create_payment(&req).unwrap_err();
+            assert_eq!(
+                err.code(),
+                tonic::Code::InvalidArgument,
+                "bad_key={bad_key:?}"
+            );
+        }
+
+        // Rule 2: supersede_previous = true -> PermissionDenied (even with valid or mismatched key)
+        for key in ["checkout:grp-123", "retry-grp-123", ""] {
+            let mut req = base();
+            req.idempotency_key = key.into();
+            req.supersede_previous = true;
+            let err = validate_service_create_payment(&req).unwrap_err();
+            assert_eq!(
+                err.code(),
+                tonic::Code::PermissionDenied,
+                "supersede key={key:?}"
+            );
+        }
+
+        // Rule 3: empty user_id -> InvalidArgument
+        for bad_uid in ["", "   "] {
+            let mut req = base();
+            req.user_id = bad_uid.into();
+            let err = validate_service_create_payment(&req).unwrap_err();
+            assert_eq!(
+                err.code(),
+                tonic::Code::InvalidArgument,
+                "bad_uid={bad_uid:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_w2b_r5_grpc_create_payment_with_real_service_token() {
+        let (server, _) = test_grpc_server();
+
+        let sign_svc = |role: &str| {
+            crate::auth::sign_hs256(
+                "grpc-test-service-key",
+                serde_json::json!({
+                    "sub": "order-service",
+                    "role": role,
+                    "service": "order-service",
+                    "exp": Utc::now().timestamp() + 60,
+                }),
+            )
+        };
+        let with_svc = |tok: &str, payload: CreatePaymentRequest| {
+            let mut req = Request::new(payload);
+            req.metadata_mut().insert(
+                "authorization",
+                MetadataValue::try_from(format!("Bearer {tok}")).unwrap(),
+            );
+            req
+        };
+        let valid_req = || CreatePaymentRequest {
+            order_group_id: "grp-rec-1".into(),
+            order_id: "grp-rec-1".into(),
+            user_id: "buyer-owner-1".into(),
+            amount_vnd: 200_000,
+            method: PaymentMethod::Cod as i32,
+            shop_allocations: vec![],
+            expires_at: None,
+            idempotency_key: "checkout:grp-rec-1".into(),
+            supersede_previous: false,
+        };
+
+        for svc_role in ["admin", "service"] {
+            let tok = sign_svc(svc_role);
+
+            // Service token with supersede_previous=true -> PermissionDenied
+            let mut sup_req = valid_req();
+            sup_req.supersede_previous = true;
+            let err = server
+                .create_payment(with_svc(&tok, sup_req))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.code(),
+                tonic::Code::PermissionDenied,
+                "svc_role={svc_role} supersede_previous=true"
+            );
+
+            // Service token with mismatched idempotency_key -> InvalidArgument
+            let mut bad_key = valid_req();
+            bad_key.idempotency_key = "checkout:other".into();
+            let err = server
+                .create_payment(with_svc(&tok, bad_key))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.code(),
+                tonic::Code::InvalidArgument,
+                "svc_role={svc_role} mismatched key"
+            );
+
+            // Service token with empty order_group_id -> InvalidArgument
+            let mut no_grp = valid_req();
+            no_grp.order_group_id = String::new();
+            let err = server
+                .create_payment(with_svc(&tok, no_grp))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.code(),
+                tonic::Code::InvalidArgument,
+                "svc_role={svc_role} empty order_group_id"
+            );
+
+            // Service token with empty user_id -> InvalidArgument
+            let mut no_uid = valid_req();
+            no_uid.user_id = "  ".into();
+            let err = server
+                .create_payment(with_svc(&tok, no_uid))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.code(),
+                tonic::Code::InvalidArgument,
+                "svc_role={svc_role} empty user_id"
+            );
+
+            // Valid service token CreatePayment passes auth + service guard and reaches lazy DB
+            // (Internal/Unavailable, NOT Unauthenticated / PermissionDenied / InvalidArgument).
+            let err = server
+                .create_payment(with_svc(&tok, valid_req()))
+                .await
+                .unwrap_err();
+            assert_ne!(
+                err.code(),
+                tonic::Code::Unauthenticated,
+                "svc_role={svc_role}"
+            );
+            assert_ne!(
+                err.code(),
+                tonic::Code::PermissionDenied,
+                "svc_role={svc_role}"
+            );
+            assert_ne!(
+                err.code(),
+                tonic::Code::InvalidArgument,
+                "svc_role={svc_role}"
+            );
+        }
+
+        // End-user buyer JWT behavior unchanged: buyer can still retry with supersede_previous=true
+        // and custom retry idempotency_key (reaches lazy DB, not blocked by service-only rules).
+        let mut buyer_retry = valid_req();
+        buyer_retry.idempotency_key = "retry-pay-1".into();
+        buyer_retry.supersede_previous = true;
+        let err = server
+            .create_payment(with_auth(buyer_retry, "buyer", "buyer-owner-1", ""))
+            .await
+            .unwrap_err();
+        assert_ne!(err.code(), tonic::Code::Unauthenticated);
+        assert_ne!(err.code(), tonic::Code::PermissionDenied);
+        assert_ne!(err.code(), tonic::Code::InvalidArgument);
     }
 }

@@ -89,6 +89,59 @@ export function formatPercent(value: number, digits = 1, isRatio = true): string
 }
 
 /**
+ * Formats basis points (`10000` = 100%, `500` = `5%`, `125` = `1,25%`, `0` = `0%`).
+ */
+export function formatBpsPercent(bps: number): string {
+  const safe = Number.isFinite(bps) ? Math.trunc(bps) : 0;
+  const pct = safe / 100;
+  if (Number.isInteger(pct)) {
+    return `${pct}%`;
+  }
+  const formatted = pct.toFixed(2).replace(/0+$/, "").replace(/\.$/, "").replace(".", ",");
+  return `${formatted}%`;
+}
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+export const MAX_REPORT_RANGE_DAYS = 366;
+
+/**
+ * Returns `YYYY-MM-DD` in Asia/Ho_Chi_Minh shifted by `deltaDays` from `baseMs` (default now).
+ */
+export function formatVnDateOffset(deltaDays: number, baseMs = Date.now()): string {
+  return formatVnDayKey(baseMs + Math.trunc(deltaDays) * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * Validates report date range matching gateway/order rules: `YYYY-MM-DD`, `from <= to`, inclusive span <= 366 days.
+ */
+export function validateReportDateRange(
+  fromDate: string,
+  toDate: string
+): { ok: true; days: number } | { ok: false; message: string } {
+  const f = fromDate.trim();
+  const t = toDate.trim();
+  if (!ISO_DATE_RE.test(f) || !ISO_DATE_RE.test(t)) {
+    return { ok: false, message: "Ngày báo cáo phải đúng định dạng YYYY-MM-DD." };
+  }
+  const fMs = Date.parse(`${f}T00:00:00Z`);
+  const tMs = Date.parse(`${t}T00:00:00Z`);
+  if (!Number.isFinite(fMs) || !Number.isFinite(tMs)) {
+    return { ok: false, message: "Ngày báo cáo không hợp lệ." };
+  }
+  if (fMs > tMs) {
+    return { ok: false, message: "Ngày bắt đầu phải trước hoặc bằng ngày kết thúc." };
+  }
+  const days = Math.floor((tMs - fMs) / (24 * 60 * 60 * 1000)) + 1;
+  if (days > MAX_REPORT_RANGE_DAYS) {
+    return {
+      ok: false,
+      message: `Khoảng thời gian báo cáo tối đa ${MAX_REPORT_RANGE_DAYS} ngày (đang chọn ${days} ngày).`,
+    };
+  }
+  return { ok: true, days };
+}
+
+/**
  * Formats discount percentage between originalPrice and salePrice (`-22%`).
  */
 export function formatDiscountPercent(originalPrice: number, salePrice: number): string {

@@ -90,31 +90,33 @@ func TestE2E_GatewayRules(t *testing.T) {
 		env.mustDoJSON(t, http.MethodDelete, fmt.Sprintf("/api/v1/seller/products/%s", url.PathEscape(prodOut.Product.ID)),
 			seller1.AccessToken, nil, nil, http.StatusOK)
 
-		// Deleting category with a soft-deleted product triggers FK SQLSTATE 23503 -> codes.Internal in product service.
+		// Wave 2b (CAT-B8): deleting a category referenced by soft-deleted products now returns 409 FAILED_PRECONDITION
+		// cleanly without leaking SQL/table/driver details (500 Internal masking is enforced by gateway unit tests).
 		delResp, err := env.client.DoJSON(env.ctx(t), http.MethodDelete,
 			fmt.Sprintf("/api/v1/admin/categories/%s", url.PathEscape(catOut.Category.ID)),
 			adminTok, nil, nil)
 		if err != nil {
 			t.Fatalf("DELETE temp category: %v", err)
 		}
-		if delResp.StatusCode != http.StatusInternalServerError {
-			t.Fatalf("expected 500 INTERNAL_ERROR to exercise gateway masking, got %d (body=%s)", delResp.StatusCode, string(delResp.Body))
+		if delResp.StatusCode != http.StatusConflict {
+			t.Fatalf("expected 409 FAILED_PRECONDITION deleting category with soft-deleted product (CAT-B8), got %d (body=%s)",
+				delResp.StatusCode, string(delResp.Body))
 		}
 
 		var envErr gwFixErrorEnvelope
 		if err := DecodeJSON(delResp, &envErr); err != nil {
 			t.Fatalf("decode error envelope: %v", err)
 		}
-		if envErr.Error.Code != "INTERNAL_ERROR" || envErr.Error.Message != "internal server error" {
-			t.Fatalf("internal error detail leaked: code=%q message=%q body=%s", envErr.Error.Code, envErr.Error.Message, string(delResp.Body))
+		if envErr.Error.Code != "FAILED_PRECONDITION" || strings.TrimSpace(envErr.Error.Message) == "" {
+			t.Fatalf("unexpected 409 error envelope: code=%q message=%q body=%s", envErr.Error.Code, envErr.Error.Message, string(delResp.Body))
 		}
 		if envErr.Error.TraceID == "" {
-			t.Fatalf("expected non-empty trace_id in 500 error envelope")
+			t.Fatalf("expected non-empty trace_id in 409 error envelope")
 		}
-		rawBody := string(delResp.Body)
-		for _, forbidden := range []string{"SQLSTATE", "products_category_id_fkey", "delete category", "foreign key"} {
-			if strings.Contains(rawBody, forbidden) {
-				t.Fatalf("500 response body leaked %q: %s", forbidden, rawBody)
+		rawLower := strings.ToLower(string(delResp.Body))
+		for _, forbidden := range []string{"sqlstate", "products_category_id_fkey", "foreign key", "pgx", "pq:", "postgres", `relation "`, "constraint", "select ", "delete from"} {
+			if strings.Contains(rawLower, forbidden) {
+				t.Fatalf("409 response body leaked internal/SQL detail %q: %s", forbidden, string(delResp.Body))
 			}
 		}
 	})

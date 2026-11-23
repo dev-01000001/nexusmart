@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nexusmart/core/pkg/common/jetstream"
 	"github.com/nexusmart/core/pkg/common/telemetry"
 	"github.com/nexusmart/core/services/notification/internal/service"
 	"github.com/nexusmart/core/services/notification/internal/store"
@@ -40,51 +41,9 @@ type Message interface {
 	NakWithDelay(delay time.Duration) error
 }
 
-// EnsureStreams idempotently creates NEXUSMART and NEXUSMART_DLQ streams.
+// EnsureStreams idempotently creates or union-updates NEXUSMART and NEXUSMART_DLQ streams.
 func EnsureStreams(js nats.JetStreamContext, primaryStream, dlqStream string) error {
-	if primaryStream == "" {
-		primaryStream = "NEXUSMART"
-	}
-	if dlqStream == "" {
-		dlqStream = "NEXUSMART_DLQ"
-	}
-
-	if err := ensureSingleStream(js, &nats.StreamConfig{
-		Name:       primaryStream,
-		Subjects:   []string{"user.>", "order.>", "payment.>", "shipment.>"},
-		Retention:  nats.LimitsPolicy,
-		Storage:    nats.FileStorage,
-		Duplicates: 2 * time.Minute,
-	}); err != nil {
-		return fmt.Errorf("ensure stream %s: %w", primaryStream, err)
-	}
-
-	if err := ensureSingleStream(js, &nats.StreamConfig{
-		Name:      dlqStream,
-		Subjects:  []string{"dlq.>"},
-		Retention: nats.LimitsPolicy,
-		Storage:   nats.FileStorage,
-	}); err != nil {
-		return fmt.Errorf("ensure dlq stream %s: %w", dlqStream, err)
-	}
-	return nil
-}
-
-func ensureSingleStream(js nats.JetStreamContext, cfg *nats.StreamConfig) error {
-	if _, err := js.StreamInfo(cfg.Name); err == nil {
-		return nil
-	} else if !errors.Is(err, nats.ErrStreamNotFound) {
-		return err
-	}
-	if _, err := js.AddStream(cfg); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "already in use") {
-			if _, infoErr := js.StreamInfo(cfg.Name); infoErr == nil {
-				return nil
-			}
-		}
-		return err
-	}
-	return nil
+	return jetstream.EnsureStreams(js, primaryStream, dlqStream)
 }
 
 // Consumer consumes all NEXUSMART events idempotently with Dead Letter Queue routing.
@@ -203,9 +162,8 @@ func (c *Consumer) HandleMessage(baseCtx context.Context, msg Message) {
 	if ts := msg.Header("tracestate"); ts != "" {
 		carrier["tracestate"] = ts
 	}
-	if len(carrier) > 0 {
-		ctx = telemetry.ExtractTraceHeaders(ctx, carrier)
-	}
+	ctx, span := telemetry.StartConsumerSpan(ctx, "notification", msg.Subject(), carrier)
+	defer span.End()
 
 	delivered := msg.NumDelivered()
 	if delivered == 0 {
@@ -240,12 +198,11 @@ func (c *Consumer) HandleMessage(baseCtx context.Context, msg Message) {
 		return
 	}
 
-	if duplicate {
-		c.logger.DebugContext(ctx, "skipped duplicate notification event",
-			slog.String("subject", msg.Subject()),
-			slog.String("event_id", env.EventID),
-		)
-	}
+	c.logger.InfoContext(ctx, "processed notification event",
+		slog.String("subject", msg.Subject()),
+		slog.String("event_id", env.EventID),
+		slog.Bool("duplicate", duplicate),
+	)
 	_ = msg.Ack()
 }
 
@@ -286,24 +243,31 @@ func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw 
 	}
 }
 
-var sensitivePayloadFields = []string{"reset_token", "otp"}
+var sensitivePayloadFields = map[string]struct{}{
+	"reset_token":    {},
+	"otp":            {},
+	"account_number": {},
+}
 
-// sanitizeDLQPayload redacts secret tokens (e.g. reset_token, otp) before persisting to dead_letter_events or NEXUSMART_DLQ.
+func isSensitiveSubject(subject string) bool {
+	switch strings.TrimSpace(subject) {
+	case "user.password_reset_requested", "user.registered", "user.shop_bank_account_otp":
+		return true
+	default:
+		return false
+	}
+}
+
+// sanitizeDLQPayload redacts secret tokens (e.g. reset_token, otp, account_number) before persisting to dead_letter_events or NEXUSMART_DLQ.
 func sanitizeDLQPayload(subject string, raw []byte) []byte {
-	var top map[string]any
+	var top any
 	if err := json.Unmarshal(raw, &top); err != nil {
-		if subject == "user.password_reset_requested" || subject == "user.registered" {
+		if isSensitiveSubject(subject) {
 			return []byte(`{"redacted":true}`)
 		}
 		return raw
 	}
-	changed := redactMapFields(top)
-	if payloadMap, ok := top["payload"].(map[string]any); ok {
-		if redactMapFields(payloadMap) {
-			changed = true
-		}
-	}
-	if !changed {
+	if !redactValue(top) {
 		return raw
 	}
 	encoded, err := json.Marshal(top)
@@ -313,12 +277,25 @@ func sanitizeDLQPayload(subject string, raw []byte) []byte {
 	return encoded
 }
 
-func redactMapFields(m map[string]any) bool {
+func redactValue(v any) bool {
 	changed := false
-	for _, field := range sensitivePayloadFields {
-		if _, exists := m[field]; exists {
-			m[field] = "[REDACTED]"
-			changed = true
+	switch node := v.(type) {
+	case map[string]any:
+		for k, val := range node {
+			if _, sensitive := sensitivePayloadFields[strings.ToLower(strings.TrimSpace(k))]; sensitive {
+				node[k] = "[REDACTED]"
+				changed = true
+				continue
+			}
+			if redactValue(val) {
+				changed = true
+			}
+		}
+	case []any:
+		for _, item := range node {
+			if redactValue(item) {
+				changed = true
+			}
 		}
 	}
 	return changed

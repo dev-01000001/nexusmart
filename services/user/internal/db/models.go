@@ -80,6 +80,28 @@ type Shop struct {
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 	Slug               string    `json:"slug"`
+	VerifiedOwnerName  string    `json:"verified_owner_name"`
+}
+
+type ShopBankAccount struct {
+	ID                  string     `json:"id"`
+	ShopID              string     `json:"shop_id"`
+	BankCode            string     `json:"bank_code"`
+	BankName            string     `json:"bank_name"`
+	AccountNumber       string     `json:"account_number"`
+	AccountNumberMasked string     `json:"account_number_masked"`
+	AccountHolderName   string     `json:"account_holder_name"`
+	HolderNameMatched   bool       `json:"holder_name_matched"`
+	Status              string     `json:"status"`
+	ReviewNote          string     `json:"review_note"`
+	OTPHash             string     `json:"otp_hash"`
+	OTPExpiresAt        *time.Time `json:"otp_expires_at"`
+	OTPAttempts         int32      `json:"otp_attempts"`
+	PayoutLockedUntil   *time.Time `json:"payout_locked_until"`
+	VerifiedAt          *time.Time `json:"verified_at"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+	OTPPublishFailed    bool       `json:"otp_publish_failed"`
 }
 
 type User struct {

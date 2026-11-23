@@ -13,6 +13,11 @@ export interface BuyNowResolvedItem {
   flashSaleItemId?: string;
   flashPriceVnd?: number;
   flashRemainingSlots?: number;
+  flashPerUserLimit?: number;
+  flashFallbackNotice?: string;
+  shopProgramItemId?: string;
+  shopDiscountedPriceVnd?: number;
+  shopProgramName?: string;
   quantity: number;
   availableStock: number;
   weightGrams: number;

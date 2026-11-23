@@ -13,22 +13,25 @@ use crate::domain::{
     allocation_buyer_payable_vnd, compute_capped_escrow_release_vnd,
     compute_post_settlement_clawback, compute_reconciliation_assign_split,
     compute_settlement_split, compute_suborder_refund_amount, decide_reconciliation_match_action,
-    decide_return_allocation_action, format_settlement_note_with_masked_account,
-    is_payment_already_cancelled_terminal, late_payment_refund_key, order_cancel_refund_key,
-    order_expiry_candidate_indices, plan_initial_payment, reconciliation_overpay_key,
-    reconciliation_refund_key, resolve_cod_payment_status, select_payment_for_group_action,
-    utc_to_vn_date, validate_allocations_sum, validate_group_can_create_payment,
+    decide_return_allocation_action, format_seller_ledger_description,
+    format_settlement_note_with_masked_account, is_payment_already_cancelled_terminal,
+    late_payment_refund_key, order_cancel_refund_key, order_expiry_candidate_indices,
+    plan_initial_payment, reconciliation_overpay_key, reconciliation_refund_key,
+    resolve_cod_payment_status, select_payment_for_group_action, utc_to_vn_date,
+    validate_allocations_sum, validate_group_can_create_payment,
     validate_payment_idempotency_match, validate_reconciliation_provider_tx_accountable,
     validate_refund_bank_account, validate_refund_eligibility, validate_refund_idempotency_match,
-    validate_resolve_reconciliation_idempotency_match, validate_settle_refund_idempotency_match,
-    validate_suborder_refund_cap, vn_day_utc_bounds, vn_today, AssignAmountSplit,
-    CreatePaymentInput, CreateRefundInput, CreateRefundOutput, GroupPaymentSelection,
-    ListReconciliationQueueResult, ListRefundsFilter, ListRefundsResult, PaymentMethod,
-    PaymentRecord, PaymentSseEvent, PaymentWithAllocations, ProviderTxAccountingState,
-    ReconciliationActionKind, ReconciliationDecision, ReconciliationItemRecord,
-    ReconciliationQueueItem, ReconciliationReport, ReconciliationRunRecord, RefundRecord,
-    ResolveReconciliationInput, ResolveReconciliationOutput, ReturnAllocationAction,
-    SellerPayoutRecord, SettleRefundInput, SettleRefundOutput, ShopAllocationRecord,
+    validate_resolve_reconciliation_idempotency_match, validate_set_fee_config,
+    validate_settle_refund_idempotency_match, validate_suborder_refund_cap, vn_day_utc_bounds,
+    vn_today, AssignAmountSplit, CreatePaymentInput, CreateRefundInput, CreateRefundOutput,
+    GetFeeConfigFilter, GetFeeConfigResult, GroupPaymentSelection, ListReconciliationQueueResult,
+    ListRefundsFilter, ListRefundsResult, ListSellerLedgerFilter, ListSellerLedgerResult,
+    PaymentFeeConfigRecord, PaymentMethod, PaymentRecord, PaymentSseEvent, PaymentWithAllocations,
+    ProviderTxAccountingState, ReconciliationActionKind, ReconciliationDecision,
+    ReconciliationItemRecord, ReconciliationQueueItem, ReconciliationReport,
+    ReconciliationRunRecord, RefundRecord, ResolveReconciliationInput, ResolveReconciliationOutput,
+    ReturnAllocationAction, SellerLedgerAccountFilter, SellerLedgerEntryRecord, SellerPayoutRecord,
+    SetFeeConfigInput, SettleRefundInput, SettleRefundOutput, ShopAllocationRecord,
     SubmitRefundBankAccountInput,
 };
 use crate::error::{PaymentError, Result};
@@ -227,7 +230,16 @@ impl PaymentService {
 
         let mut tx = self.pool.begin().await?;
 
-        // Re-check idempotency inside transaction (P0-2: verify caller & params match)
+        // Serialize concurrent create/confirm operations for this order / checkout group (P1-5).
+        // Acquiring the group lock before the in-TX idempotency check prevents a concurrent
+        // buyer/service CreatePayment (e.g. 0-VND payment starting in `succeeded`) that commits
+        // between the fast check and the lock from tripping `validate_group_can_create_payment`.
+        let existing_group_payments =
+            lock_payment_group_tx(&mut tx, &order_id, &order_group_id).await?;
+
+        // Re-check idempotency inside transaction after acquiring group lock (P0-2 / W2b-r5):
+        // returns the existing payment verbatim with its real status (including expired/cancelled/
+        // succeeded) without resurrecting or superseding it.
         if let Some(ref key) = input.idempotency_key {
             if !key.trim().is_empty() {
                 if let Some(existing) = sqlx::query_as::<_, PaymentRecord>(
@@ -253,10 +265,6 @@ impl PaymentService {
                 }
             }
         }
-
-        // Serialize concurrent create/confirm operations for this order / checkout group (P1-5).
-        let existing_group_payments =
-            lock_payment_group_tx(&mut tx, &order_id, &order_group_id).await?;
 
         // UC-B25 / R3 / P2-7: reject if group already succeeded/refunded, or if supersede_previous
         // targets a group without an active pending payment or with cancelled/expired/failed history.
@@ -343,41 +351,48 @@ impl PaymentService {
 
         let payment = match insert_res {
             Ok(p) => p,
-            Err(err) if is_unique_violation(&err, "idempotency_key") => {
-                // Concurrent duplicate idempotency_key race: roll back and validate winning row (P0-2).
-                let _ = tx.rollback().await;
-                if let Some(ref key) = input.idempotency_key {
-                    if let Some(existing) = sqlx::query_as::<_, PaymentRecord>(
-                        "SELECT * FROM payments WHERE idempotency_key = $1",
-                    )
-                    .bind(key)
-                    .fetch_optional(&self.pool)
-                    .await?
-                    {
-                        validate_payment_idempotency_match(
-                            &existing,
-                            &input.user_id,
-                            &order_group_id,
-                            input.amount_vnd,
-                            input.method,
-                        )?;
-                        let allocations = fetch_allocations_pool(&self.pool, existing.id).await?;
-                        return Ok(PaymentWithAllocations {
-                            payment: existing,
-                            allocations,
-                        });
-                    }
-                }
-                return Err(PaymentError::Database(err));
-            }
             Err(err)
-                if is_unique_violation(&err, "idx_payments_one_succeeded_per_order")
+                if is_unique_violation(&err, "idempotency_key")
+                    || is_unique_violation(&err, "idx_payments_one_succeeded_per_order")
                     || is_unique_violation(&err, "idx_payments_one_succeeded_per_group") =>
             {
+                // Concurrent duplicate idempotency_key race (including 0-VND payments where a
+                // partial succeeded unique index can fire alongside payments_idempotency_key_key):
+                // roll back and return the winning row if its idempotency_key & params match.
                 let _ = tx.rollback().await;
-                return Err(PaymentError::Conflict(format!(
-                    "order {order_id} already has a succeeded payment"
-                )));
+                if let Some(ref key) = input.idempotency_key {
+                    if !key.trim().is_empty() {
+                        if let Some(existing) = sqlx::query_as::<_, PaymentRecord>(
+                            "SELECT * FROM payments WHERE idempotency_key = $1",
+                        )
+                        .bind(key)
+                        .fetch_optional(&self.pool)
+                        .await?
+                        {
+                            validate_payment_idempotency_match(
+                                &existing,
+                                &input.user_id,
+                                &order_group_id,
+                                input.amount_vnd,
+                                input.method,
+                            )?;
+                            let allocations =
+                                fetch_allocations_pool(&self.pool, existing.id).await?;
+                            return Ok(PaymentWithAllocations {
+                                payment: existing,
+                                allocations,
+                            });
+                        }
+                    }
+                }
+                if is_unique_violation(&err, "idx_payments_one_succeeded_per_order")
+                    || is_unique_violation(&err, "idx_payments_one_succeeded_per_group")
+                {
+                    return Err(PaymentError::Conflict(format!(
+                        "order {order_id} already has a succeeded payment"
+                    )));
+                }
+                return Err(PaymentError::Database(err));
             }
             Err(err) => return Err(PaymentError::Database(err)),
         };
@@ -1979,6 +1994,229 @@ impl PaymentService {
             return Err(PaymentError::Validation("shop_id is required".to_string()));
         }
         ledger::get_seller_balance(&self.pool, shop_id).await
+    }
+
+    /// Queries effective payment fee configurations at `at_time` (defaults to now), optionally
+    /// including full append-only history & scheduled future entries (UC-A09).
+    pub async fn get_fee_config(&self, filter: GetFeeConfigFilter) -> Result<GetFeeConfigResult> {
+        let at_time = filter.at_time.unwrap_or_else(Utc::now);
+        let method_str: Option<&str> = filter.method.map(PaymentMethod::as_str);
+
+        let active_configs = sqlx::query_as::<_, PaymentFeeConfigRecord>(
+            r#"
+            SELECT DISTINCT ON (payment_method)
+                id, seq, payment_method, fee_bps, effective_from, created_by, note, created_at
+            FROM payment_fee_configs
+            WHERE effective_from <= $1
+              AND ($2::TEXT IS NULL OR payment_method = $2)
+            ORDER BY payment_method ASC, effective_from DESC, seq DESC
+            "#,
+        )
+        .bind(at_time)
+        .bind(method_str)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let history = if filter.include_history {
+            sqlx::query_as::<_, PaymentFeeConfigRecord>(
+                r#"
+                SELECT id, seq, payment_method, fee_bps, effective_from, created_by, note, created_at
+                FROM payment_fee_configs
+                WHERE ($1::TEXT IS NULL OR payment_method = $1)
+                ORDER BY effective_from DESC, seq DESC
+                "#,
+            )
+            .bind(method_str)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            Vec::new()
+        };
+
+        Ok(GetFeeConfigResult {
+            active_configs,
+            history,
+        })
+    }
+
+    /// Appends a new immutable payment fee configuration entry (UC-A09).
+    /// `effective_from` defaults to now when omitted; past timestamps and bps outside 0..=2000 are rejected.
+    pub async fn set_fee_config(&self, input: SetFeeConfigInput) -> Result<PaymentFeeConfigRecord> {
+        let now = Utc::now();
+        let (effective_from, note) =
+            validate_set_fee_config(input.fee_bps, input.effective_from, &input.note, now)?;
+        let created_by = input.created_by.trim();
+
+        let rec = sqlx::query_as::<_, PaymentFeeConfigRecord>(
+            r#"
+            INSERT INTO payment_fee_configs (payment_method, fee_bps, effective_from, created_by, note)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id, seq, payment_method, fee_bps, effective_from, created_by, note, created_at
+            "#,
+        )
+        .bind(input.method.as_str())
+        .bind(input.fee_bps)
+        .bind(effective_from)
+        .bind(created_by)
+        .bind(&note)
+        .fetch_one(&self.pool)
+        .await?;
+
+        info!(
+            fee_config_id = %rec.id,
+            payment_method = %rec.payment_method,
+            fee_bps = rec.fee_bps,
+            effective_from = %rec.effective_from,
+            created_by = %rec.created_by,
+            "payment fee config scheduled"
+        );
+
+        Ok(rec)
+    }
+
+    /// Lists paginated double-entry ledger entries on `seller_pending:<shop>` and
+    /// `seller_available:<shop>` accounts with Vietnamese descriptions (UC-S17).
+    pub async fn list_seller_ledger(
+        &self,
+        filter: ListSellerLedgerFilter,
+    ) -> Result<ListSellerLedgerResult> {
+        let page = filter.page.max(1);
+        let page_size = if filter.page_size <= 0 {
+            20
+        } else {
+            filter.page_size.min(100)
+        };
+        let offset = i64::from(page - 1) * i64::from(page_size);
+
+        let ref_type_filter = filter
+            .reference_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
+        let shop_filter: Option<&str> = match filter.shop_id.as_deref() {
+            Some(raw) => {
+                let sid = raw.trim();
+                if sid.is_empty() {
+                    return Err(PaymentError::Validation("shop_id is required".to_string()));
+                }
+                Some(sid)
+            }
+            None => None,
+        };
+        let acct_mode = match filter.account_filter {
+            None => "all",
+            Some(SellerLedgerAccountFilter::Pending) => "pending",
+            Some(SellerLedgerAccountFilter::Available) => "available",
+        };
+
+        let total: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)::BIGINT
+            FROM ledger_accounts a
+            JOIN ledger_entries e ON e.account_id = a.id
+            JOIN ledger_transactions lt ON lt.id = e.transaction_id
+            WHERE a.shop_id IS NOT NULL
+              AND ($1::TEXT IS NULL OR a.shop_id = $1)
+              AND (
+                  ($2 = 'all' AND (a.id = 'seller_pending:' || a.shop_id OR a.id = 'seller_available:' || a.shop_id))
+                  OR ($2 = 'pending' AND a.id = 'seller_pending:' || a.shop_id)
+                  OR ($2 = 'available' AND a.id = 'seller_available:' || a.shop_id)
+              )
+              AND ($3::TEXT IS NULL OR lt.reference_type = $3)
+            "#,
+        )
+        .bind(shop_filter)
+        .bind(acct_mode)
+        .bind(ref_type_filter)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let rows = sqlx::query(
+            r#"
+            WITH page_entries AS (
+                SELECT
+                    e.id,
+                    e.transaction_id,
+                    e.account_id,
+                    lt.reference_type,
+                    lt.reference_id,
+                    e.debit_vnd,
+                    e.credit_vnd,
+                    e.created_at
+                FROM ledger_accounts a
+                JOIN ledger_entries e ON e.account_id = a.id
+                JOIN ledger_transactions lt ON lt.id = e.transaction_id
+                WHERE a.shop_id IS NOT NULL
+                  AND ($1::TEXT IS NULL OR a.shop_id = $1)
+                  AND (
+                      ($2 = 'all' AND (a.id = 'seller_pending:' || a.shop_id OR a.id = 'seller_available:' || a.shop_id))
+                      OR ($2 = 'pending' AND a.id = 'seller_pending:' || a.shop_id)
+                      OR ($2 = 'available' AND a.id = 'seller_available:' || a.shop_id)
+                  )
+                  AND ($3::TEXT IS NULL OR lt.reference_type = $3)
+                ORDER BY e.created_at DESC, e.id DESC
+                LIMIT $4 OFFSET $5
+            )
+            SELECT
+                pe.id,
+                pe.transaction_id,
+                pe.account_id,
+                pe.reference_type,
+                pe.reference_id,
+                pe.debit_vnd,
+                pe.credit_vnd,
+                pe.created_at,
+                COALESCE((
+                    SELECT SUM(fe.credit_vnd)::BIGINT
+                    FROM ledger_entries fe
+                    WHERE fe.transaction_id = pe.transaction_id
+                      AND fe.account_id = 'platform_fee_revenue'
+                ), 0)::BIGINT AS platform_fee_vnd
+            FROM page_entries pe
+            ORDER BY pe.created_at DESC, pe.id DESC
+            "#,
+        )
+        .bind(shop_filter)
+        .bind(acct_mode)
+        .bind(ref_type_filter)
+        .bind(i64::from(page_size))
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut entries = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id: Uuid = row.try_get("id")?;
+            let transaction_id: Uuid = row.try_get("transaction_id")?;
+            let account_code: String = row.try_get("account_id")?;
+            let reference_type: String = row.try_get("reference_type")?;
+            let reference_id: String = row.try_get("reference_id")?;
+            let debit_vnd: i64 = row.try_get("debit_vnd")?;
+            let credit_vnd: i64 = row.try_get("credit_vnd")?;
+            let created_at: DateTime<Utc> = row.try_get("created_at")?;
+            let platform_fee_vnd: i64 = row.try_get("platform_fee_vnd")?;
+            let description = format_seller_ledger_description(
+                &reference_type,
+                &reference_id,
+                &account_code,
+                platform_fee_vnd,
+            );
+            entries.push(SellerLedgerEntryRecord {
+                id,
+                transaction_id,
+                account_code,
+                reference_type,
+                reference_id,
+                description,
+                debit_vnd,
+                credit_vnd,
+                delta_vnd: credit_vnd - debit_vnd,
+                created_at,
+            });
+        }
+
+        Ok(ListSellerLedgerResult { entries, total })
     }
 
     pub async fn list_reconciliation_queue(

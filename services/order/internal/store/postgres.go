@@ -91,6 +91,62 @@ func (s *PostgresStore) FailCheckoutGroup(ctx context.Context, id, paymentStatus
 	})
 }
 
+// ClaimStaleCheckoutGroupForCleanup implements P1 M3 claim-first stale cleanup using explicit
+// two-statement READ COMMITTED serialization:
+//  1. SELECT checkout_groups FOR UPDATE (blocks behind any in-flight PersistCheckoutBatch).
+//  2. Second statement (fresh snapshot AFTER lock) checks whether any orders exist for the group.
+//  3. Only if status == IN_PROGRESS and zero orders exist, flips status = 'FAILED' + needs_cleanup = TRUE and commits.
+//
+// Also returns claimed=true if the group is already FAILED + needs_cleanup=TRUE with zero orders so
+// retries after transient ReleasePromotion/ReleaseStock errors can finish and clear needs_cleanup.
+func (s *PostgresStore) ClaimStaleCheckoutGroupForCleanup(ctx context.Context, id, reason string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin claim stale checkout tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := s.queries.WithTx(tx)
+	grp, err := q.GetCheckoutGroupByIDForUpdate(ctx, id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("lock checkout group for cleanup claim: %w", err)
+	}
+
+	// Statement 2: fresh snapshot after acquiring row lock so any concurrently committed orders are visible!
+	hasOrders, err := q.CheckoutGroupHasOrders(ctx, id)
+	if err != nil {
+		return false, fmt.Errorf("check orders for cleanup claim: %w", err)
+	}
+	if hasOrders {
+		return false, nil
+	}
+
+	if grp.Status == "FAILED" && grp.NeedsCleanup {
+		return true, nil
+	}
+	if grp.Status != "IN_PROGRESS" {
+		return false, nil
+	}
+
+	if err := q.ClaimCheckoutGroupForCleanup(ctx, db.ClaimCheckoutGroupForCleanupParams{
+		ID:            id,
+		PaymentStatus: reason,
+	}); err != nil {
+		return false, fmt.Errorf("claim checkout group for cleanup: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit claim stale checkout tx: %w", err)
+	}
+	return true, nil
+}
+
+func (s *PostgresStore) ClearCheckoutGroupNeedsCleanup(ctx context.Context, id string) error {
+	return s.queries.ClearCheckoutGroupNeedsCleanup(ctx, id)
+}
+
 func (s *PostgresStore) PersistCheckoutBatch(ctx context.Context, batch CheckoutBatch) ([]OrderAggregate, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -99,6 +155,20 @@ func (s *PostgresStore) PersistCheckoutBatch(ctx context.Context, batch Checkout
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := s.queries.WithTx(tx)
+
+	// P0 N1: Lock the checkout_group row FOR UPDATE and require status = 'IN_PROGRESS' so stale/failed
+	// groups can never receive late sub-order inserts and post-error inspection serializes cleanly.
+	grp, err := q.GetCheckoutGroupByIDForUpdate(ctx, batch.CheckoutGroupID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("lock checkout group for persist: %w", err)
+	}
+	if grp.Status != "IN_PROGRESS" {
+		return nil, fmt.Errorf("%w: checkout group %s has status %s", ErrCheckoutGroupNotInProgress, grp.ID, grp.Status)
+	}
+
 	result := make([]OrderAggregate, 0, len(batch.Orders))
 
 	for _, rec := range batch.Orders {
@@ -138,6 +208,15 @@ func (s *PostgresStore) PersistCheckoutBatch(ctx context.Context, batch Checkout
 		})
 	}
 
+	if len(batch.WarningsJSON) > 0 {
+		if err := q.SetCheckoutGroupWarnings(ctx, db.SetCheckoutGroupWarningsParams{
+			ID:           batch.CheckoutGroupID,
+			WarningsJSON: batch.WarningsJSON,
+		}); err != nil {
+			return nil, fmt.Errorf("persist checkout group warnings: %w", err)
+		}
+	}
+
 	if batch.PendingStockConfirm {
 		if err := q.SetCheckoutGroupPendingStockConfirm(ctx, db.SetCheckoutGroupPendingStockConfirmParams{
 			ID:                  batch.CheckoutGroupID,
@@ -153,6 +232,39 @@ func (s *PostgresStore) PersistCheckoutBatch(ctx context.Context, batch Checkout
 	return result, nil
 }
 
+// InspectCheckoutGroupOrdersLocked acquires FOR UPDATE on the checkout_group row (waiting for any
+// in-flight PersistCheckoutBatch transaction to finish) and reads all committed sub-orders in the same TX (P0 N1).
+func (s *PostgresStore) InspectCheckoutGroupOrdersLocked(ctx context.Context, checkoutGroupID string) (*db.CheckoutGroup, []OrderAggregate, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin inspect checkout group tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := s.queries.WithTx(tx)
+	grp, err := q.GetCheckoutGroupByIDForUpdate(ctx, checkoutGroupID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, ErrNotFound
+		}
+		return nil, nil, fmt.Errorf("lock checkout group for inspect: %w", err)
+	}
+
+	rows, err := q.ListOrdersByCheckoutGroup(ctx, checkoutGroupID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list orders for inspect: %w", err)
+	}
+	aggs := make([]OrderAggregate, 0, len(rows))
+	for _, ord := range rows {
+		agg, lErr := loadOrderAggregate(ctx, q, ord.ID)
+		if lErr != nil {
+			return nil, nil, fmt.Errorf("load order aggregate %s for inspect: %w", ord.ID, lErr)
+		}
+		aggs = append(aggs, *agg)
+	}
+	return &grp, aggs, nil
+}
+
 func (s *PostgresStore) CompleteCheckoutWithPayment(ctx context.Context, arg UpdateCheckoutPaymentParams) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -161,24 +273,100 @@ func (s *PostgresStore) CompleteCheckoutWithPayment(ctx context.Context, arg Upd
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := s.queries.WithTx(tx)
-	if err := q.UpdateOrderPaymentInfoByGroup(ctx, db.UpdateOrderPaymentInfoByGroupParams{
+
+	// P0-1: Lock orders FIRST in canonical (shop_id, created_at, id) order matching TransitionOrdersPaymentResult
+	// to prevent AB-BA deadlocks, then lock checkout_groups.
+	lockedOrders, err := q.ListOrdersByCheckoutGroupForUpdate(ctx, arg.CheckoutGroupID)
+	if err != nil {
+		return fmt.Errorf("lock orders for checkout completion: %w", err)
+	}
+	grp, err := q.GetCheckoutGroupByIDForUpdate(ctx, arg.CheckoutGroupID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lock checkout group for completion: %w", err)
+	}
+
+	// P1 N4: If the group already left IN_PROGRESS (e.g. COMPLETED by another pod + RetryPayment P2, or FAILED),
+	// write NOTHING to orders or checkout_groups; still hand current locked state to BuildSnapshot so caller can
+	// render an accurate response without mutating DB.
+	if grp.Status != "IN_PROGRESS" {
+		if arg.BuildSnapshot != nil {
+			curAggs := make([]OrderAggregate, 0, len(lockedOrders))
+			for _, ord := range lockedOrders {
+				agg, lErr := loadOrderAggregate(ctx, q, ord.ID)
+				if lErr != nil {
+					return fmt.Errorf("load current order aggregate %s: %w", ord.ID, lErr)
+				}
+				curAggs = append(curAggs, *agg)
+			}
+			_, _ = arg.BuildSnapshot(grp, curAggs)
+		}
+		return nil
+	}
+
+	if err := q.AttachCheckoutPaymentToOrders(ctx, db.AttachCheckoutPaymentToOrdersParams{
 		CheckoutGroupID:  arg.CheckoutGroupID,
 		PaymentID:        arg.PaymentID,
 		PaymentStatus:    arg.PaymentStatus,
 		PaymentExpiresAt: arg.PaymentExpiresAt,
 	}); err != nil {
-		return fmt.Errorf("update order payment info: %w", err)
+		return fmt.Errorf("attach order payment info: %w", err)
 	}
 
-	if err := q.CompleteCheckoutGroup(ctx, db.CompleteCheckoutGroupParams{
+	// Re-read post-update orders (already locked in this TX) to compute non-downgrading group status and fresh snapshot.
+	postOrders, err := q.ListOrdersByCheckoutGroupForUpdate(ctx, arg.CheckoutGroupID)
+	if err != nil {
+		return fmt.Errorf("reload locked orders after attach: %w", err)
+	}
+	resolvedPayStatus := resolveNonDowngradingGroupPaymentStatus(grp.PaymentStatus, arg.PaymentStatus, postOrders)
+
+	effectiveGrp := grp
+	effectiveGrp.Status = "COMPLETED"
+	if effectiveGrp.PaymentID == "" {
+		effectiveGrp.PaymentID = arg.PaymentID
+	}
+	if isPendingOrEmptyPaymentStatus(effectiveGrp.PaymentStatus) {
+		effectiveGrp.PaymentStatus = resolvedPayStatus
+		if effectiveGrp.QRURL == "" {
+			effectiveGrp.QRURL = arg.QRURL
+		}
+		if effectiveGrp.QRCode == "" {
+			effectiveGrp.QRCode = arg.QRCode
+		}
+		if arg.PaymentExpiresAt != nil {
+			effectiveGrp.PaymentExpiresAt = arg.PaymentExpiresAt
+		}
+	}
+	effectiveGrp.TotalPayableVND = arg.TotalPayableVND
+
+	snapshotBytes := arg.ResponseSnapshotJSON
+	if arg.BuildSnapshot != nil {
+		postAggs := make([]OrderAggregate, 0, len(postOrders))
+		for _, ord := range postOrders {
+			agg, lErr := loadOrderAggregate(ctx, q, ord.ID)
+			if lErr != nil {
+				return fmt.Errorf("load post-attach order aggregate %s: %w", ord.ID, lErr)
+			}
+			postAggs = append(postAggs, *agg)
+		}
+		built, bErr := arg.BuildSnapshot(effectiveGrp, postAggs)
+		if bErr != nil {
+			return fmt.Errorf("build checkout response snapshot: %w", bErr)
+		}
+		snapshotBytes = built
+	}
+
+	if _, err := q.CompleteCheckoutGroup(ctx, db.CompleteCheckoutGroupParams{
 		ID:                   arg.CheckoutGroupID,
 		PaymentID:            arg.PaymentID,
-		PaymentStatus:        arg.PaymentStatus,
+		PaymentStatus:        resolvedPayStatus,
 		QRURL:                arg.QRURL,
 		QRCode:               arg.QRCode,
 		PaymentExpiresAt:     arg.PaymentExpiresAt,
 		TotalPayableVND:      arg.TotalPayableVND,
-		ResponseSnapshotJSON: arg.ResponseSnapshotJSON,
+		ResponseSnapshotJSON: snapshotBytes,
 	}); err != nil {
 		return fmt.Errorf("complete checkout group: %w", err)
 	}
@@ -274,7 +462,7 @@ func (s *PostgresStore) UpdateGroupPaymentOnRetry(ctx context.Context, params Re
 	return tx.Commit(ctx)
 }
 
-func (s *PostgresStore) CancelCheckoutGroupOrders(ctx context.Context, params CancelGroupOrdersParams) ([]db.Order, error) {
+func (s *PostgresStore) CancelCheckoutGroupOrders(ctx context.Context, params CancelGroupOrdersParams) (*CancelGroupOrdersResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin cancel group tx: %w", err)
@@ -282,26 +470,50 @@ func (s *PostgresStore) CancelCheckoutGroupOrders(ctx context.Context, params Ca
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := s.queries.WithTx(tx)
+	// Keep canonical lock order: orders first, then checkout_groups.
 	orders, err := q.ListOrdersByCheckoutGroupForUpdate(ctx, params.CheckoutGroupID)
 	if err != nil {
 		return nil, err
 	}
+	grp, grpErr := q.GetCheckoutGroupByIDForUpdate(ctx, params.CheckoutGroupID)
+	if grpErr != nil && !errors.Is(grpErr, pgx.ErrNoRows) {
+		return nil, grpErr
+	}
+	// P1 M4: If the checkout group exists and has already left IN_PROGRESS (e.g. COMPLETED by checkout
+	// or FAILED), refuse to cancel any order and signal HasLiveOrders = true so callers release nothing.
+	if grpErr == nil && grp.Status != "IN_PROGRESS" {
+		return &CancelGroupOrdersResult{
+			Cancelled:     nil,
+			HasLiveOrders: true,
+		}, nil
+	}
 
 	cancelled := make([]db.Order, 0, len(orders))
+	hasLiveOrders := false
 	for _, ord := range orders {
 		curStatus := statemachine.StringToStatus(ord.Status)
 		if curStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
 			continue
 		}
-		if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_CANCELLED); err != nil {
+		if !canCancelGroupOrder(ord, params.OnlyPending) {
+			hasLiveOrders = true
 			continue
+		}
+
+		// P0 N2 + P3(a): Never overwrite paid SUCCEEDED/REFUNDED payment_status with FAILED;
+		// for 0-VND orders align with TransitionOrderStatus by setting payment_status = "CANCELLED".
+		nextPayStatus := params.PaymentStatus
+		if ord.TotalPayableVND == 0 {
+			nextPayStatus = "CANCELLED"
+		} else if isOrderPaymentTerminalProtected(ord) {
+			nextPayStatus = ""
 		}
 
 		updated, err := q.UpdateOrderStatus(ctx, db.UpdateOrderStatusParams{
 			ID:            ord.ID,
 			Status:        statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_CANCELLED),
 			CancelReason:  params.Reason,
-			PaymentStatus: params.PaymentStatus,
+			PaymentStatus: nextPayStatus,
 			PaymentID:     ord.PaymentID,
 		})
 		if err != nil {
@@ -352,23 +564,36 @@ func (s *PostgresStore) CancelCheckoutGroupOrders(ctx context.Context, params Ca
 		cancelled = append(cancelled, updated)
 	}
 
-	if err := q.FailCheckoutGroup(ctx, db.FailCheckoutGroupParams{
-		ID:            params.CheckoutGroupID,
-		PaymentStatus: params.PaymentStatus,
-	}); err != nil {
-		return nil, err
-	}
-	if err := q.SetCheckoutGroupPendingStockConfirm(ctx, db.SetCheckoutGroupPendingStockConfirmParams{
-		ID:                  params.CheckoutGroupID,
-		PendingStockConfirm: false,
-	}); err != nil {
-		return nil, err
+	// P0 N2: Only mark checkout_groups FAILED and clear pending_stock_confirm when NO live orders remain.
+	if !hasLiveOrders {
+		if err := q.FailCheckoutGroup(ctx, db.FailCheckoutGroupParams{
+			ID:            params.CheckoutGroupID,
+			PaymentStatus: params.PaymentStatus,
+		}); err != nil {
+			return nil, err
+		}
+		if err := q.SetCheckoutGroupPendingStockConfirm(ctx, db.SetCheckoutGroupPendingStockConfirmParams{
+			ID:                  params.CheckoutGroupID,
+			PendingStockConfirm: false,
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return cancelled, nil
+	return &CancelGroupOrdersResult{
+		Cancelled:     cancelled,
+		HasLiveOrders: hasLiveOrders,
+	}, nil
+}
+
+func (s *PostgresStore) MarkOrderPendingCancelCompensation(ctx context.Context, orderID string) error {
+	return s.queries.SetOrderPendingCancelCompensation(ctx, db.SetOrderPendingCancelCompensationParams{
+		ID:                        orderID,
+		PendingCancelCompensation: true,
+	})
 }
 
 func (s *PostgresStore) GetOrderWithDetails(ctx context.Context, orderID string) (*OrderAggregate, error) {
@@ -1138,6 +1363,240 @@ func (s *PostgresStore) FindCancelledOrdersPendingCompensation(ctx context.Conte
 
 func (s *PostgresStore) FindReturnedOrdersPendingCompensation(ctx context.Context, limit int32) ([]string, error) {
 	return s.queries.FindReturnedOrdersPendingCompensation(ctx, limit)
+}
+
+func (s *PostgresStore) ListOrdersNeedingManualReview(ctx context.Context, limit, offset int32) ([]OrderAggregate, int64, error) {
+	total, err := s.queries.CountOrdersNeedingManualReview(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.queries.ListOrdersNeedingManualReview(ctx, db.ListOrdersNeedingManualReviewParams{
+		PageLimit:  limit,
+		PageOffset: offset,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	orderIDs := make([]string, 0, len(rows))
+	for _, ord := range rows {
+		orderIDs = append(orderIDs, ord.ID)
+	}
+	retByOrder, err := loadReturnSummaries(ctx, s.queries, orderIDs)
+	if err != nil {
+		return nil, 0, err
+	}
+	aggs := make([]OrderAggregate, 0, len(rows))
+	for _, ord := range rows {
+		items, err := s.queries.ListOrderItemsByOrderID(ctx, ord.ID)
+		if err != nil {
+			return nil, 0, err
+		}
+		tl, err := s.queries.ListOrderTimelineByOrderID(ctx, ord.ID)
+		if err != nil {
+			return nil, 0, err
+		}
+		ret := retByOrder[ord.ID]
+		aggs = append(aggs, OrderAggregate{
+			Order:           ord,
+			Items:           items,
+			Timeline:        tl,
+			ReturnRequestID: ret.ID,
+			ReturnStatus:    ret.Status,
+		})
+	}
+	return aggs, total, nil
+}
+
+func (s *PostgresStore) ResolveOrderManualReview(ctx context.Context, orderID, actorID, actorRole, note string, _ time.Time) (*OrderAggregate, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin resolve manual review tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := s.queries.WithTx(tx)
+	ord, err := q.GetOrderByIDForUpdate(ctx, orderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if !ord.OrphanShipmentNeedsManualReview {
+		return nil, ErrOrderNotNeedingReview
+	}
+	if _, err := q.ClearOrderOrphanShipmentManualReview(ctx, ord.ID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrOrderNotNeedingReview
+		}
+		return nil, err
+	}
+	if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+		ID:         uuid.NewString(),
+		OrderID:    ord.ID,
+		FromStatus: ord.Status,
+		ToStatus:   ord.Status,
+		ActorID:    actorID,
+		ActorRole:  actorRole,
+		Note:       note,
+	}); err != nil {
+		return nil, err
+	}
+	agg, err := loadOrderAggregate(ctx, q, ord.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return agg, nil
+}
+
+func (s *PostgresStore) QueryOrderReport(ctx context.Context, params OrderReportParams) (*OrderReportData, error) {
+	data := &OrderReportData{
+		StatusCounts: make(map[string]int64),
+	}
+	shopID := strings.TrimSpace(params.ShopID)
+	if shopID != "" {
+		stRows, err := s.queries.ReportSellerStatusCounts(ctx, db.ReportSellerStatusCountsParams{
+			ShopID:  shopID,
+			StartTs: params.StartTS,
+			EndTs:   params.EndTS,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range stRows {
+			data.StatusCounts[r.Status] = r.Count
+		}
+
+		crRows, err := s.queries.ReportSellerCreatedDaily(ctx, db.ReportSellerCreatedDailyParams{
+			ShopID:  shopID,
+			StartTs: params.StartTS,
+			EndTs:   params.EndTS,
+		})
+		if err != nil {
+			return nil, err
+		}
+		data.CreatedDaily = make([]CreatedDailyStat, 0, len(crRows))
+		for _, r := range crRows {
+			data.CreatedDaily = append(data.CreatedDaily, CreatedDailyStat{
+				Date:           r.ReportDate,
+				OrderCount:     r.OrderCount,
+				CancelledCount: r.CancelledCount,
+				ReturnedCount:  r.ReturnedCount,
+				GMVVND:         r.GMVVND,
+			})
+		}
+
+		cpRows, err := s.queries.ReportSellerCompletedDaily(ctx, db.ReportSellerCompletedDailyParams{
+			ShopID:  shopID,
+			StartTs: params.StartTS,
+			EndTs:   params.EndTS,
+		})
+		if err != nil {
+			return nil, err
+		}
+		data.CompletedDaily = make([]CompletedDailyStat, 0, len(cpRows))
+		for _, r := range cpRows {
+			data.CompletedDaily = append(data.CompletedDaily, CompletedDailyStat{
+				Date:           r.ReportDate,
+				CompletedCount: r.CompletedCount,
+				NetRevenueVND:  r.NetRevenueVND,
+				CommissionVND:  r.CommissionVND,
+				PaymentFeeVND:  r.PaymentFeeVND,
+			})
+		}
+
+		tpRows, err := s.queries.ReportSellerTopProducts(ctx, db.ReportSellerTopProductsParams{
+			ShopID:   shopID,
+			StartTs:  params.StartTS,
+			EndTs:    params.EndTS,
+			TopLimit: params.TopLimit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		data.TopProducts = make([]TopProductRow, 0, len(tpRows))
+		for _, r := range tpRows {
+			data.TopProducts = append(data.TopProducts, TopProductRow{
+				ProductID:   r.ProductID,
+				ProductName: r.ProductName,
+				UnitsSold:   r.UnitsSold,
+				RevenueVND:  r.RevenueVND,
+				OrderCount:  r.OrderCount,
+			})
+		}
+		return data, nil
+	}
+
+	stRows, err := s.queries.ReportPlatformStatusCounts(ctx, db.ReportPlatformStatusCountsParams{
+		StartTs: params.StartTS,
+		EndTs:   params.EndTS,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range stRows {
+		data.StatusCounts[r.Status] = r.Count
+	}
+
+	crRows, err := s.queries.ReportPlatformCreatedDaily(ctx, db.ReportPlatformCreatedDailyParams{
+		StartTs: params.StartTS,
+		EndTs:   params.EndTS,
+	})
+	if err != nil {
+		return nil, err
+	}
+	data.CreatedDaily = make([]CreatedDailyStat, 0, len(crRows))
+	for _, r := range crRows {
+		data.CreatedDaily = append(data.CreatedDaily, CreatedDailyStat{
+			Date:           r.ReportDate,
+			OrderCount:     r.OrderCount,
+			CancelledCount: r.CancelledCount,
+			ReturnedCount:  r.ReturnedCount,
+			GMVVND:         r.GMVVND,
+		})
+	}
+
+	cpRows, err := s.queries.ReportPlatformCompletedDaily(ctx, db.ReportPlatformCompletedDailyParams{
+		StartTs: params.StartTS,
+		EndTs:   params.EndTS,
+	})
+	if err != nil {
+		return nil, err
+	}
+	data.CompletedDaily = make([]CompletedDailyStat, 0, len(cpRows))
+	for _, r := range cpRows {
+		data.CompletedDaily = append(data.CompletedDaily, CompletedDailyStat{
+			Date:               r.ReportDate,
+			CompletedCount:     r.CompletedCount,
+			NetRevenueVND:      r.NetRevenueVND,
+			CommissionVND:      r.CommissionVND,
+			PaymentFeeVND:      r.PaymentFeeVND,
+			PlatformSubsidyVND: r.PlatformSubsidyVND,
+		})
+	}
+
+	tpRows, err := s.queries.ReportPlatformTopProducts(ctx, db.ReportPlatformTopProductsParams{
+		StartTs:  params.StartTS,
+		EndTs:    params.EndTS,
+		TopLimit: params.TopLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	data.TopProducts = make([]TopProductRow, 0, len(tpRows))
+	for _, r := range tpRows {
+		data.TopProducts = append(data.TopProducts, TopProductRow{
+			ProductID:   r.ProductID,
+			ProductName: r.ProductName,
+			UnitsSold:   r.UnitsSold,
+			RevenueVND:  r.RevenueVND,
+			OrderCount:  r.OrderCount,
+		})
+	}
+	return data, nil
 }
 
 func (s *PostgresStore) TransitionOrderPreparedForShipment(ctx context.Context, params ShipOrderParams) (*OrderAggregate, error) {
@@ -2068,6 +2527,20 @@ func (s *PostgresStore) FindStaleInProgressCheckoutGroups(ctx context.Context, o
 	return s.queries.FindStaleInProgressCheckoutGroups(ctx, db.FindStaleInProgressCheckoutGroupsParams{
 		StaleAfterMs: olderThan.Milliseconds(),
 		BatchLimit:   limit,
+	})
+}
+
+func (s *PostgresStore) FindIncompleteCheckoutGroupsWithOrders(ctx context.Context, olderThan time.Duration, limit int32) ([]string, error) {
+	return s.queries.FindIncompleteCheckoutGroupsWithOrders(ctx, db.FindIncompleteCheckoutGroupsWithOrdersParams{
+		StaleAfterMs: olderThan.Milliseconds(),
+		BatchLimit:   limit,
+	})
+}
+
+func (s *PostgresStore) MarkCheckoutGroupNeedsCleanup(ctx context.Context, id, reason string) error {
+	return s.queries.MarkCheckoutGroupNeedsCleanup(ctx, db.MarkCheckoutGroupNeedsCleanupParams{
+		ID:     id,
+		Reason: reason,
 	})
 }
 

@@ -1,4 +1,5 @@
 import React, { Suspense } from "react";
+import { notFound } from "next/navigation";
 import { COLLECTIONS } from "@/data";
 import { StateView } from "@/components";
 import { CollectionDetailClient } from "./CollectionDetailClient";
@@ -13,6 +14,9 @@ export default async function CollectionDetailPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
+  if (!COLLECTIONS.some((c) => c.slug === slug)) {
+    notFound();
+  }
 
   return (
     <Suspense

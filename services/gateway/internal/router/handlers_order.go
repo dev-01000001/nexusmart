@@ -1,11 +1,20 @@
 package router
 
 import (
+	"bytes"
+	"context"
+	"encoding/csv"
+	"errors"
+	"fmt"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
 	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
+	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/gateway/internal/httpx"
 )
@@ -23,6 +32,8 @@ type orderItemDTO struct {
 	LineTotalVND          int64  `json:"line_total_vnd"`
 	WeightGrams           int32  `json:"weight_grams"`
 	FlashSaleItemID       string `json:"flash_sale_item_id"`
+	CommissionBps         int32  `json:"commission_bps"`
+	ShopProgramItemID     string `json:"shop_program_item_id"`
 }
 
 type orderTimelineEventDTO struct {
@@ -58,12 +69,17 @@ type orderDTO struct {
 	PaymentStatus              string                   `json:"payment_status"`
 	SubtotalVND                int64                    `json:"subtotal_vnd"`
 	FlashSaleDiscountVND       int64                    `json:"flash_sale_discount_vnd"`
+	ShopProgramDiscountVND     int64                    `json:"shop_program_discount_vnd"`
 	ShopVoucherDiscountVND     int64                    `json:"shop_voucher_discount_vnd"`
+	ShopFreeshipDiscountVND    int64                    `json:"shop_freeship_discount_vnd"`
 	PlatformVoucherDiscountVND int64                    `json:"platform_voucher_discount_vnd"`
 	FreeshipDiscountVND        int64                    `json:"freeship_discount_vnd"`
 	CoinsDiscountVND           int64                    `json:"coins_discount_vnd"`
 	ShippingFeeVND             int64                    `json:"shipping_fee_vnd"`
 	CommissionVND              int64                    `json:"commission_vnd"`
+	PaymentFeeVND              int64                    `json:"payment_fee_vnd"`
+	PaymentFeeBps              int32                    `json:"payment_fee_bps"`
+	NeedsManualReview          bool                     `json:"needs_manual_review"`
 	TotalPayableVND            int64                    `json:"total_payable_vnd"`
 	CarrierCode                string                   `json:"carrier_code"`
 	ServiceCode                string                   `json:"service_code"`
@@ -132,12 +148,38 @@ func mapOrderTimelineEvent(e *orderv1.OrderTimelineEvent) *orderTimelineEventDTO
 	}
 }
 
-func mapOrder(o *orderv1.Order) *orderDTO {
+func mapOrderForBuyer(o *orderv1.Order) *orderDTO {
+	return mapOrderView(o, false, false)
+}
+
+func mapOrderForSeller(o *orderv1.Order) *orderDTO {
+	return mapOrderView(o, true, false)
+}
+
+func mapOrderForAdmin(o *orderv1.Order) *orderDTO {
+	return mapOrderView(o, true, true)
+}
+
+// mapOrderForCaller applies role-scoped visibility on shared order endpoints:
+// admins see fees + manual-review flag; the selling shop owner sees fees only;
+// buyers (including sellers purchasing from another shop) get 0 for platform/seller fee fields.
+func mapOrderForCaller(ctx context.Context, o *orderv1.Order) *orderDTO {
+	claims, _ := auth.ClaimsFromContext(ctx)
+	isAdmin := auth.HasRole(claims, "admin", "super_admin")
+	isSellerOwner := o != nil && auth.HasRole(claims, "seller") && claims.ShopID != "" && claims.ShopID == o.GetShopId()
+	return mapOrderView(o, isAdmin || isSellerOwner, isAdmin)
+}
+
+func mapOrderView(o *orderv1.Order, showFees, isAdmin bool) *orderDTO {
 	if o == nil {
 		return nil
 	}
 	items := make([]*orderItemDTO, 0, len(o.GetItems()))
 	for _, it := range o.GetItems() {
+		var commBps int32
+		if showFees {
+			commBps = it.GetCommissionBps()
+		}
 		items = append(items, &orderItemDTO{
 			ID:                    it.GetId(),
 			OrderID:               it.GetOrderId(),
@@ -151,6 +193,8 @@ func mapOrder(o *orderv1.Order) *orderDTO {
 			LineTotalVND:          it.GetLineTotalVnd(),
 			WeightGrams:           it.GetWeightGrams(),
 			FlashSaleItemID:       it.GetFlashSaleItemId(),
+			CommissionBps:         commBps,
+			ShopProgramItemID:     it.GetShopProgramItemId(),
 		})
 	}
 	timeline := make([]*orderTimelineEventDTO, 0, len(o.GetTimeline()))
@@ -169,6 +213,13 @@ func mapOrder(o *orderv1.Order) *orderDTO {
 			StreetAddress:  a.GetStreetAddress(),
 		}
 	}
+	var commVND, payFeeVND int64
+	var payFeeBps int32
+	if showFees {
+		commVND = o.GetCommissionVnd()
+		payFeeVND = o.GetPaymentFeeVnd()
+		payFeeBps = o.GetPaymentFeeBps()
+	}
 	return &orderDTO{
 		ID:                         o.GetId(),
 		OrderCode:                  o.GetOrderCode(),
@@ -181,12 +232,17 @@ func mapOrder(o *orderv1.Order) *orderDTO {
 		PaymentStatus:              o.GetPaymentStatus(),
 		SubtotalVND:                o.GetSubtotalVnd(),
 		FlashSaleDiscountVND:       o.GetFlashSaleDiscountVnd(),
+		ShopProgramDiscountVND:     o.GetShopProgramDiscountVnd(),
 		ShopVoucherDiscountVND:     o.GetShopVoucherDiscountVnd(),
+		ShopFreeshipDiscountVND:    o.GetShopFreeshipDiscountVnd(),
 		PlatformVoucherDiscountVND: o.GetPlatformVoucherDiscountVnd(),
 		FreeshipDiscountVND:        o.GetFreeshipDiscountVnd(),
 		CoinsDiscountVND:           o.GetCoinsDiscountVnd(),
 		ShippingFeeVND:             o.GetShippingFeeVnd(),
-		CommissionVND:              o.GetCommissionVnd(),
+		CommissionVND:              commVND,
+		PaymentFeeVND:              payFeeVND,
+		PaymentFeeBps:              payFeeBps,
+		NeedsManualReview:          isAdmin && o.GetNeedsManualReview(),
 		TotalPayableVND:            o.GetTotalPayableVnd(),
 		CarrierCode:                o.GetCarrierCode(),
 		ServiceCode:                o.GetServiceCode(),
@@ -480,12 +536,17 @@ func (h *handler) handleCheckout(w http.ResponseWriter, r *http.Request) {
 
 	orders := make([]*orderDTO, 0, len(resp.GetOrders()))
 	for _, o := range resp.GetOrders() {
-		orders = append(orders, mapOrder(o))
+		orders = append(orders, mapOrderForBuyer(o))
 	}
 
 	statusCode := http.StatusCreated
 	if resp.GetIdempotentReplay() {
 		statusCode = http.StatusOK
+	}
+
+	warnings := resp.GetWarnings()
+	if warnings == nil {
+		warnings = []string{}
 	}
 
 	httpx.WriteJSON(w, statusCode, map[string]any{
@@ -499,6 +560,7 @@ func (h *handler) handleCheckout(w http.ResponseWriter, r *http.Request) {
 		"payment_expires_at": httpx.FormatTimestamp(resp.GetPaymentExpiresAt()),
 		"total_payable_vnd":  resp.GetTotalPayableVnd(),
 		"idempotent_replay":  resp.GetIdempotentReplay(),
+		"warnings":           warnings,
 	})
 }
 
@@ -520,7 +582,7 @@ func (h *handler) handleListBuyerOrders(w http.ResponseWriter, r *http.Request) 
 	}
 	items := make([]*orderDTO, 0, len(resp.GetOrders()))
 	for _, o := range resp.GetOrders() {
-		items = append(items, mapOrder(o))
+		items = append(items, mapOrderForBuyer(o))
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"items":     items,
@@ -544,7 +606,7 @@ func (h *handler) handleGetOrder(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"order": mapOrder(resp.GetOrder())})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"order": mapOrderForCaller(r.Context(), resp.GetOrder())})
 }
 
 func (h *handler) handleGetOrderTimeline(w http.ResponseWriter, r *http.Request) {
@@ -590,7 +652,7 @@ func (h *handler) handleCancelOrder(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"order": mapOrder(resp.GetOrder())})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"order": mapOrderForCaller(r.Context(), resp.GetOrder())})
 }
 
 func (h *handler) handleConfirmReceived(w http.ResponseWriter, r *http.Request) {
@@ -605,7 +667,7 @@ func (h *handler) handleConfirmReceived(w http.ResponseWriter, r *http.Request) 
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"order": mapOrder(resp.GetOrder())})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"order": mapOrderForBuyer(resp.GetOrder())})
 }
 
 func (h *handler) handleRequestReturn(w http.ResponseWriter, r *http.Request) {
@@ -631,7 +693,7 @@ func (h *handler) handleRequestReturn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"order":             mapOrder(resp.GetOrder()),
+		"order":             mapOrderForBuyer(resp.GetOrder()),
 		"return_request_id": resp.GetReturnRequestId(),
 	})
 }
@@ -654,7 +716,7 @@ func (h *handler) handleSellerListOrders(w http.ResponseWriter, r *http.Request)
 	}
 	items := make([]*orderDTO, 0, len(resp.GetOrders()))
 	for _, o := range resp.GetOrders() {
-		items = append(items, mapOrder(o))
+		items = append(items, mapOrderForSeller(o))
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"items":     items,
@@ -688,7 +750,7 @@ func (h *handler) handleSellerGetOrder(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, http.StatusForbidden, "PERMISSION_DENIED", "cannot access another shop's order")
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"order": mapOrder(ord)})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"order": mapOrderForSeller(ord)})
 }
 
 func (h *handler) handleSellerConfirmOrder(w http.ResponseWriter, r *http.Request) {
@@ -704,7 +766,7 @@ func (h *handler) handleSellerConfirmOrder(w http.ResponseWriter, r *http.Reques
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"order": mapOrder(resp.GetOrder())})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"order": mapOrderForSeller(resp.GetOrder())})
 }
 
 func (h *handler) handleSellerShipOrder(w http.ResponseWriter, r *http.Request) {
@@ -731,7 +793,7 @@ func (h *handler) handleSellerShipOrder(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"order":         mapOrder(resp.GetOrder()),
+		"order":         mapOrderForSeller(resp.GetOrder()),
 		"tracking_code": resp.GetTrackingCode(),
 		"label_url":     resp.GetLabelUrl(),
 	})
@@ -757,7 +819,7 @@ func (h *handler) handleAdminListOrders(w http.ResponseWriter, r *http.Request) 
 	}
 	items := make([]*orderDTO, 0, len(resp.GetOrders()))
 	for _, o := range resp.GetOrders() {
-		items = append(items, mapOrder(o))
+		items = append(items, mapOrderForAdmin(o))
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"items":     items,
@@ -998,4 +1060,566 @@ func (h *handler) handleAdminResolveReturn(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"return_request": mapReturnRequest(resp.GetReturnRequest())})
+}
+
+// --- Wave 2b: Manual-Review Orders, Seller/Admin Reports & CSV Export ---
+
+type orderStatusCountDTO struct {
+	Status string `json:"status"`
+	Count  int64  `json:"count"`
+}
+
+type dailyReportPointDTO struct {
+	Date           string `json:"date"`
+	OrderCount     int64  `json:"order_count"`
+	CompletedCount int64  `json:"completed_count"`
+	CancelledCount int64  `json:"cancelled_count"`
+	ReturnedCount  int64  `json:"returned_count"`
+	GMVVND         int64  `json:"gmv_vnd"`
+	NetRevenueVND  int64  `json:"net_revenue_vnd"`
+	CommissionVND  int64  `json:"commission_vnd"`
+	PaymentFeeVND  int64  `json:"payment_fee_vnd"`
+}
+
+type adminDailyReportPointDTO struct {
+	dailyReportPointDTO
+	PlatformSubsidyVND int64 `json:"platform_subsidy_vnd"`
+}
+
+type topProductStatDTO struct {
+	ProductID   string `json:"product_id"`
+	ProductName string `json:"product_name"`
+	UnitsSold   int64  `json:"units_sold"`
+	RevenueVND  int64  `json:"revenue_vnd"`
+	OrderCount  int64  `json:"order_count"`
+}
+
+type sellerReportDTO struct {
+	ShopID          string                 `json:"shop_id"`
+	FromDate        string                 `json:"from_date"`
+	ToDate          string                 `json:"to_date"`
+	GMVVND          int64                  `json:"gmv_vnd"`
+	NetRevenueVND   int64                  `json:"net_revenue_vnd"`
+	CommissionVND   int64                  `json:"commission_vnd"`
+	PaymentFeeVND   int64                  `json:"payment_fee_vnd"`
+	TotalOrders     int64                  `json:"total_orders"`
+	CompletedOrders int64                  `json:"completed_orders"`
+	CancelledOrders int64                  `json:"cancelled_orders"`
+	ReturnedOrders  int64                  `json:"returned_orders"`
+	CancelRateBps   int32                  `json:"cancel_rate_bps"`
+	ReturnRateBps   int32                  `json:"return_rate_bps"`
+	OrdersByStatus  []*orderStatusCountDTO `json:"orders_by_status"`
+	Daily           []*dailyReportPointDTO `json:"daily"`
+	TopProducts     []*topProductStatDTO   `json:"top_products"`
+}
+
+type platformReportDTO struct {
+	FromDate           string                      `json:"from_date"`
+	ToDate             string                      `json:"to_date"`
+	GMVVND             int64                       `json:"gmv_vnd"`
+	NetRevenueVND      int64                       `json:"net_revenue_vnd"`
+	CommissionVND      int64                       `json:"commission_vnd"`
+	PaymentFeeVND      int64                       `json:"payment_fee_vnd"`
+	PlatformSubsidyVND int64                       `json:"platform_subsidy_vnd"`
+	TotalOrders        int64                       `json:"total_orders"`
+	CompletedOrders    int64                       `json:"completed_orders"`
+	CancelledOrders    int64                       `json:"cancelled_orders"`
+	ReturnedOrders     int64                       `json:"returned_orders"`
+	CancelRateBps      int32                       `json:"cancel_rate_bps"`
+	ReturnRateBps      int32                       `json:"return_rate_bps"`
+	OrdersByStatus     []*orderStatusCountDTO      `json:"orders_by_status"`
+	Daily              []*adminDailyReportPointDTO `json:"daily"`
+	TopProducts        []*topProductStatDTO        `json:"top_products"`
+	UserStats          *platformUserStatsDTO       `json:"user_stats,omitempty"`
+}
+
+func mapOrderStatusCounts(in []*orderv1.OrderStatusCount) []*orderStatusCountDTO {
+	out := make([]*orderStatusCountDTO, 0, len(in))
+	for _, s := range in {
+		out = append(out, &orderStatusCountDTO{
+			Status: orderStatusString(s.GetStatus()),
+			Count:  s.GetCount(),
+		})
+	}
+	return out
+}
+
+func mapDailyReportPoints(in []*orderv1.DailyReportPoint) []*dailyReportPointDTO {
+	out := make([]*dailyReportPointDTO, 0, len(in))
+	for _, d := range in {
+		out = append(out, &dailyReportPointDTO{
+			Date:           d.GetDate(),
+			OrderCount:     d.GetOrderCount(),
+			CompletedCount: d.GetCompletedCount(),
+			CancelledCount: d.GetCancelledCount(),
+			ReturnedCount:  d.GetReturnedCount(),
+			GMVVND:         d.GetGmvVnd(),
+			NetRevenueVND:  d.GetNetRevenueVnd(),
+			CommissionVND:  d.GetCommissionVnd(),
+			PaymentFeeVND:  d.GetPaymentFeeVnd(),
+		})
+	}
+	return out
+}
+
+func mapAdminDailyReportPoints(in []*orderv1.DailyReportPoint) []*adminDailyReportPointDTO {
+	out := make([]*adminDailyReportPointDTO, 0, len(in))
+	for _, d := range in {
+		out = append(out, &adminDailyReportPointDTO{
+			dailyReportPointDTO: dailyReportPointDTO{
+				Date:           d.GetDate(),
+				OrderCount:     d.GetOrderCount(),
+				CompletedCount: d.GetCompletedCount(),
+				CancelledCount: d.GetCancelledCount(),
+				ReturnedCount:  d.GetReturnedCount(),
+				GMVVND:         d.GetGmvVnd(),
+				NetRevenueVND:  d.GetNetRevenueVnd(),
+				CommissionVND:  d.GetCommissionVnd(),
+				PaymentFeeVND:  d.GetPaymentFeeVnd(),
+			},
+			PlatformSubsidyVND: d.GetPlatformSubsidyVnd(),
+		})
+	}
+	return out
+}
+
+func mapTopProductStats(in []*orderv1.TopProductStat) []*topProductStatDTO {
+	out := make([]*topProductStatDTO, 0, len(in))
+	for _, p := range in {
+		out = append(out, &topProductStatDTO{
+			ProductID:   p.GetProductId(),
+			ProductName: p.GetProductName(),
+			UnitsSold:   p.GetUnitsSold(),
+			RevenueVND:  p.GetRevenueVnd(),
+			OrderCount:  p.GetOrderCount(),
+		})
+	}
+	return out
+}
+
+func (h *handler) handleAdminListOrdersNeedingReview(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := httpx.ParsePagination(r)
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Order.ListOrdersNeedingReview(ctx, &orderv1.ListOrdersNeedingReviewRequest{
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	items := make([]*orderDTO, 0, len(resp.GetOrders()))
+	for _, o := range resp.GetOrders() {
+		items = append(items, mapOrderForAdmin(o))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"page":      page,
+		"page_size": pageSize,
+		"total":     resp.GetTotal(),
+	})
+}
+
+func (h *handler) handleAdminResolveOrderReview(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Note string `json:"note"`
+	}
+	if err := httpx.DecodeOptionalJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Order.ResolveOrderReview(ctx, &orderv1.ResolveOrderReviewRequest{
+		OrderId: chi.URLParam(r, "id"),
+		Note:    body.Note,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"order": mapOrderForAdmin(resp.GetOrder()),
+	})
+}
+
+func (h *handler) handleSellerReports(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Order.GetSellerReport(ctx, &orderv1.GetSellerReportRequest{
+		ShopId:   auth.ShopIDFromContext(r.Context()),
+		FromDate: strings.TrimSpace(q.Get("from_date")),
+		ToDate:   strings.TrimSpace(q.Get("to_date")),
+		TopLimit: httpx.ParseInt32Query(r, "top_limit", 0),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"report": &sellerReportDTO{
+			ShopID:          resp.GetShopId(),
+			FromDate:        resp.GetFromDate(),
+			ToDate:          resp.GetToDate(),
+			GMVVND:          resp.GetGmvVnd(),
+			NetRevenueVND:   resp.GetNetRevenueVnd(),
+			CommissionVND:   resp.GetCommissionVnd(),
+			PaymentFeeVND:   resp.GetPaymentFeeVnd(),
+			TotalOrders:     resp.GetTotalOrders(),
+			CompletedOrders: resp.GetCompletedOrders(),
+			CancelledOrders: resp.GetCancelledOrders(),
+			ReturnedOrders:  resp.GetReturnedOrders(),
+			CancelRateBps:   resp.GetCancelRateBps(),
+			ReturnRateBps:   resp.GetReturnRateBps(),
+			OrdersByStatus:  mapOrderStatusCounts(resp.GetOrdersByStatus()),
+			Daily:           mapDailyReportPoints(resp.GetDaily()),
+			TopProducts:     mapTopProductStats(resp.GetTopProducts()),
+		},
+	})
+}
+
+func (h *handler) handleAdminReports(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	fromDate := strings.TrimSpace(q.Get("from_date"))
+	toDate := strings.TrimSpace(q.Get("to_date"))
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	ordResp, err := h.clients.Order.GetPlatformReport(ctx, &orderv1.GetPlatformReportRequest{
+		FromDate: fromDate,
+		ToDate:   toDate,
+		TopLimit: httpx.ParseInt32Query(r, "top_limit", 0),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	var userStats *platformUserStatsDTO
+	if h.clients.User != nil {
+		uFrom := ordResp.GetFromDate()
+		if uFrom == "" {
+			uFrom = fromDate
+		}
+		uTo := ordResp.GetToDate()
+		if uTo == "" {
+			uTo = toDate
+		}
+		uResp, uErr := h.clients.User.GetPlatformUserStats(ctx, &userv1.GetPlatformUserStatsRequest{
+			FromDate: uFrom,
+			ToDate:   uTo,
+		})
+		if uErr != nil {
+			httpx.WriteGRPCError(w, r, uErr)
+			return
+		}
+		userStats = mapPlatformUserStats(uResp)
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"report": &platformReportDTO{
+			FromDate:           ordResp.GetFromDate(),
+			ToDate:             ordResp.GetToDate(),
+			GMVVND:             ordResp.GetGmvVnd(),
+			NetRevenueVND:      ordResp.GetNetRevenueVnd(),
+			CommissionVND:      ordResp.GetCommissionVnd(),
+			PaymentFeeVND:      ordResp.GetPaymentFeeVnd(),
+			PlatformSubsidyVND: ordResp.GetPlatformSubsidyVnd(),
+			TotalOrders:        ordResp.GetTotalOrders(),
+			CompletedOrders:    ordResp.GetCompletedOrders(),
+			CancelledOrders:    ordResp.GetCancelledOrders(),
+			ReturnedOrders:     ordResp.GetReturnedOrders(),
+			CancelRateBps:      ordResp.GetCancelRateBps(),
+			ReturnRateBps:      ordResp.GetReturnRateBps(),
+			OrdersByStatus:     mapOrderStatusCounts(ordResp.GetOrdersByStatus()),
+			Daily:              mapAdminDailyReportPoints(ordResp.GetDaily()),
+			TopProducts:        mapTopProductStats(ordResp.GetTopProducts()),
+			UserStats:          userStats,
+		},
+	})
+}
+
+const maxCSVExportBytes = 5 << 20 // 5 MiB cap per CSV report export
+
+var (
+	utf8BOM            = []byte{0xEF, 0xBB, 0xBF}
+	errCSVSizeExceeded = errors.New("csv export exceeds maximum allowed size")
+)
+
+// isPureInteger reports whether v matches ^-?[0-9]+$.
+func isPureInteger(v string) bool {
+	if v == "" {
+		return false
+	}
+	start := 0
+	if v[0] == '-' {
+		if len(v) == 1 {
+			return false
+		}
+		start = 1
+	}
+	for i := start; i < len(v); i++ {
+		if v[i] < '0' || v[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// sanitizeCSVCell guards against spreadsheet formula injection by prefixing non-integer
+// values starting with '=', '+', '-', '@', '\t', '\r', '\n', or leading whitespace followed
+// by '=', '+', '-', '@' with a single quote.
+// Pure integers (including negative integers like "-500") are preserved verbatim.
+func sanitizeCSVCell(v string) string {
+	if v == "" || isPureInteger(v) {
+		return v
+	}
+	switch v[0] {
+	case '=', '+', '-', '@', '\t', '\r', '\n':
+		return "'" + v
+	}
+	trimmed := strings.TrimLeftFunc(v, unicode.IsSpace)
+	if trimmed != "" {
+		switch trimmed[0] {
+		case '=', '+', '-', '@':
+			return "'" + v
+		}
+	}
+	return v
+}
+
+func renderCSVWithLimit(header []string, rows [][]string, maxBytes int) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = maxCSVExportBytes
+	}
+	var buf bytes.Buffer
+	buf.Write(utf8BOM)
+	cw := csv.NewWriter(&buf)
+
+	writeRow := func(rec []string) error {
+		safe := make([]string, len(rec))
+		for i, c := range rec {
+			safe[i] = sanitizeCSVCell(c)
+		}
+		if err := cw.Write(safe); err != nil {
+			return err
+		}
+		cw.Flush()
+		if err := cw.Error(); err != nil {
+			return err
+		}
+		if buf.Len() > maxBytes {
+			return errCSVSizeExceeded
+		}
+		return nil
+	}
+
+	if err := writeRow(header); err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if err := writeRow(row); err != nil {
+			return nil, err
+		}
+	}
+	return buf.Bytes(), nil
+}
+
+func sanitizeFilenamePart(s string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(s) {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "all"
+	}
+	return b.String()
+}
+
+func writeReportCSV(w http.ResponseWriter, r *http.Request, filename string, header []string, rows [][]string) {
+	payload, err := renderCSVWithLimit(header, rows, maxCSVExportBytes)
+	if err != nil {
+		if errors.Is(err, errCSVSizeExceeded) {
+			httpx.WriteError(w, r, http.StatusRequestEntityTooLarge, "EXPORT_TOO_LARGE", "CSV export exceeds maximum size limit; narrow the date range")
+			return
+		}
+		httpx.WriteError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to generate CSV report")
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(payload)
+}
+
+func i64s(v int64) string { return strconv.FormatInt(v, 10) }
+
+func (h *handler) handleSellerReportsExport(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Order.GetSellerReport(ctx, &orderv1.GetSellerReportRequest{
+		ShopId:   auth.ShopIDFromContext(r.Context()),
+		FromDate: strings.TrimSpace(q.Get("from_date")),
+		ToDate:   strings.TrimSpace(q.Get("to_date")),
+		TopLimit: 50,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	header := []string{
+		"section", "date", "label", "order_count", "completed_count", "cancelled_count",
+		"returned_count", "gmv_vnd", "net_revenue_vnd", "commission_vnd", "payment_fee_vnd",
+		"units_sold", "revenue_vnd",
+	}
+	rows := make([][]string, 0, 1+len(resp.GetOrdersByStatus())+len(resp.GetDaily())+len(resp.GetTopProducts()))
+	rows = append(rows, []string{
+		"summary", resp.GetFromDate() + ".." + resp.GetToDate(), resp.GetShopId(),
+		i64s(resp.GetTotalOrders()), i64s(resp.GetCompletedOrders()), i64s(resp.GetCancelledOrders()),
+		i64s(resp.GetReturnedOrders()), i64s(resp.GetGmvVnd()), i64s(resp.GetNetRevenueVnd()),
+		i64s(resp.GetCommissionVnd()), i64s(resp.GetPaymentFeeVnd()), "", "",
+	})
+	for _, st := range resp.GetOrdersByStatus() {
+		rows = append(rows, []string{
+			"status", "", orderStatusString(st.GetStatus()), i64s(st.GetCount()),
+			"", "", "", "", "", "", "", "", "",
+		})
+	}
+	for _, d := range resp.GetDaily() {
+		rows = append(rows, []string{
+			"daily", d.GetDate(), "",
+			i64s(d.GetOrderCount()), i64s(d.GetCompletedCount()), i64s(d.GetCancelledCount()),
+			i64s(d.GetReturnedCount()), i64s(d.GetGmvVnd()), i64s(d.GetNetRevenueVnd()),
+			i64s(d.GetCommissionVnd()), i64s(d.GetPaymentFeeVnd()), "", "",
+		})
+	}
+	for _, p := range resp.GetTopProducts() {
+		rows = append(rows, []string{
+			"top_product", "", p.GetProductName(),
+			i64s(p.GetOrderCount()), "", "", "", "", "", "", "",
+			i64s(p.GetUnitsSold()), i64s(p.GetRevenueVnd()),
+		})
+	}
+
+	filename := fmt.Sprintf("seller-report-%s-%s.csv",
+		sanitizeFilenamePart(resp.GetFromDate()),
+		sanitizeFilenamePart(resp.GetToDate()),
+	)
+	writeReportCSV(w, r, filename, header, rows)
+}
+
+func (h *handler) handleAdminReportsExport(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	fromDate := strings.TrimSpace(q.Get("from_date"))
+	toDate := strings.TrimSpace(q.Get("to_date"))
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	ordResp, err := h.clients.Order.GetPlatformReport(ctx, &orderv1.GetPlatformReportRequest{
+		FromDate: fromDate,
+		ToDate:   toDate,
+		TopLimit: 50,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	var uResp *userv1.GetPlatformUserStatsResponse
+	if h.clients.User != nil {
+		uFrom := ordResp.GetFromDate()
+		if uFrom == "" {
+			uFrom = fromDate
+		}
+		uTo := ordResp.GetToDate()
+		if uTo == "" {
+			uTo = toDate
+		}
+		uResp, err = h.clients.User.GetPlatformUserStats(ctx, &userv1.GetPlatformUserStatsRequest{
+			FromDate: uFrom,
+			ToDate:   uTo,
+		})
+		if err != nil {
+			httpx.WriteGRPCError(w, r, err)
+			return
+		}
+	}
+
+	userDailyByDate := make(map[string]*userv1.DailyUserShopStat)
+	if uResp != nil {
+		for _, d := range uResp.GetDaily() {
+			userDailyByDate[d.GetDate()] = d
+		}
+	}
+	orderDailyByDate := make(map[string]*orderv1.DailyReportPoint, len(ordResp.GetDaily()))
+	dateSet := make(map[string]struct{}, len(ordResp.GetDaily())+len(userDailyByDate))
+	for _, d := range ordResp.GetDaily() {
+		orderDailyByDate[d.GetDate()] = d
+		dateSet[d.GetDate()] = struct{}{}
+	}
+	for dt := range userDailyByDate {
+		dateSet[dt] = struct{}{}
+	}
+	sortedDates := make([]string, 0, len(dateSet))
+	for dt := range dateSet {
+		sortedDates = append(sortedDates, dt)
+	}
+	sort.Strings(sortedDates)
+
+	header := []string{
+		"section", "date", "label", "order_count", "completed_count", "cancelled_count",
+		"returned_count", "gmv_vnd", "net_revenue_vnd", "commission_vnd", "payment_fee_vnd",
+		"platform_subsidy_vnd", "units_sold", "revenue_vnd", "new_users", "new_shops",
+	}
+	rows := make([][]string, 0, 1+len(ordResp.GetOrdersByStatus())+len(sortedDates)+len(ordResp.GetTopProducts()))
+	rows = append(rows, []string{
+		"summary", ordResp.GetFromDate() + ".." + ordResp.GetToDate(), "platform",
+		i64s(ordResp.GetTotalOrders()), i64s(ordResp.GetCompletedOrders()), i64s(ordResp.GetCancelledOrders()),
+		i64s(ordResp.GetReturnedOrders()), i64s(ordResp.GetGmvVnd()), i64s(ordResp.GetNetRevenueVnd()),
+		i64s(ordResp.GetCommissionVnd()), i64s(ordResp.GetPaymentFeeVnd()), i64s(ordResp.GetPlatformSubsidyVnd()),
+		"", "", i64s(uResp.GetNewUsers()), i64s(uResp.GetNewShops()),
+	})
+	for _, st := range ordResp.GetOrdersByStatus() {
+		rows = append(rows, []string{
+			"status", "", orderStatusString(st.GetStatus()), i64s(st.GetCount()),
+			"", "", "", "", "", "", "", "", "", "", "", "",
+		})
+	}
+	for _, dt := range sortedDates {
+		d := orderDailyByDate[dt]
+		u := userDailyByDate[dt]
+		rows = append(rows, []string{
+			"daily", dt, "",
+			i64s(d.GetOrderCount()), i64s(d.GetCompletedCount()), i64s(d.GetCancelledCount()),
+			i64s(d.GetReturnedCount()), i64s(d.GetGmvVnd()), i64s(d.GetNetRevenueVnd()),
+			i64s(d.GetCommissionVnd()), i64s(d.GetPaymentFeeVnd()), i64s(d.GetPlatformSubsidyVnd()),
+			"", "", i64s(u.GetNewUsers()), i64s(u.GetNewShops()),
+		})
+	}
+	for _, p := range ordResp.GetTopProducts() {
+		rows = append(rows, []string{
+			"top_product", "", p.GetProductName(),
+			i64s(p.GetOrderCount()), "", "", "", "", "", "", "", "",
+			i64s(p.GetUnitsSold()), i64s(p.GetRevenueVnd()), "", "",
+		})
+	}
+
+	filename := fmt.Sprintf("admin-report-%s-%s.csv",
+		sanitizeFilenamePart(ordResp.GetFromDate()),
+		sanitizeFilenamePart(ordResp.GetToDate()),
+	)
+	writeReportCSV(w, r, filename, header, rows)
 }

@@ -90,8 +90,14 @@
   --gutter: clamp(1rem, 2vw, 2rem);
   --section: clamp(5rem, 10vw, 9.5rem);
   --gap: 16px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
   --card-pad: 20px;
   --pad: 24px;
+  --qr-size: 148px;
+  --border-dashed: 1px dashed var(--rule);
   --control-height: 34px;
   --row-height: 48px;
   --nav-row: 32px;

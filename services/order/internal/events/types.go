@@ -123,6 +123,7 @@ type OrderCompletedPayload struct {
 	ShopID          string `json:"shop_id"`
 	SubtotalVND     int64  `json:"subtotal_vnd"`
 	CommissionVND   int64  `json:"commission_vnd"`
+	PaymentFeeVND   int64  `json:"payment_fee_vnd"`
 	TotalPayableVND int64  `json:"total_payable_vnd"`
 	CoinsReward     int64  `json:"coins_reward"`
 }

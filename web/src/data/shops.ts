@@ -81,7 +81,7 @@ export const SHOPS: Shop[] = [
     foundedYear: 2019,
     responseTime: "Trong 15 phút",
     fulfillmentRate: "98,6%",
-    returnPolicy: "Đổi trả miễn phí 45 ngày, bưu tá đổi size 2 chiều tận nơi",
+    returnPolicy: "Đổi trả miễn phí 7 ngày, bưu tá đổi size 2 chiều tận nơi",
     warehouseAddress: "Số 42 đường Lạch Tray, Phường Ngô Quyền, Thành phố Hải Phòng",
     story:
       "Chủ động khâu dệt kim tròn và xử lý chống co rút trước khi cắt rập. Tập trung vào đồ mặc hằng ngày bền form sau nhiều lần giặt máy.",
@@ -91,9 +91,9 @@ export const SHOPS: Shop[] = [
     fastDeliveryEnabled: false,
     fastDeliveryFee: 35000,
     fastDeliveryNote: "Giao tiêu chuẩn liên tỉnh 1-3 ngày từ kho Hải Phòng",
-    returnDays: 45,
+    returnDays: 7,
     twoWayExchange: true,
-    verifiedBadge: "Xưởng chính hãng · Đổi trả 45 ngày",
+    verifiedBadge: "Xưởng chính hãng · Đổi trả 7 ngày",
     factoryProfile: {
       factoryName: "Nhà máy Dệt may Bạch Đằng số 2",
       factoryAddress: "Khu công nghiệp Tràng Duệ, Phường An Dương, Thành phố Hải Phòng",
@@ -244,7 +244,7 @@ export const SHOPS: Shop[] = [
     foundedYear: 2020,
     responseTime: "Trong 12 phút",
     fulfillmentRate: "99,1%",
-    returnPolicy: "Đổi trả miễn phí 45 ngày, đổi size 2 chiều tận nhà",
+    returnPolicy: "Đổi trả miễn phí 7 ngày, đổi size 2 chiều tận nhà",
     warehouseAddress: "Số 118 đường Nguyễn Văn Hưởng, Phường Thảo Điền, Thành phố Hồ Chí Minh",
     story:
       "Thiết kế cho khí hậu nóng ẩm phía Nam với sợi microfiber thoát mồ hôi nhanh, trọng lượng vải nhẹ và đường may phẳng giảm ma sát khi vận động.",
@@ -254,7 +254,7 @@ export const SHOPS: Shop[] = [
     fastDeliveryEnabled: true,
     fastDeliveryFee: 39000,
     fastDeliveryNote: "Giao nhanh nội thành TP.HCM trong 2-4 giờ (đặt trước 17:00)",
-    returnDays: 45,
+    returnDays: 7,
     twoWayExchange: true,
     verifiedBadge: "Xưởng chính hãng · Giao nhanh 2-4h",
     factoryProfile: {
@@ -404,7 +404,7 @@ export const SHOPS: Shop[] = [
     foundedYear: 2021,
     responseTime: "Trong 18 phút",
     fulfillmentRate: "98,2%",
-    returnPolicy: "Đổi trả miễn phí 45 ngày, đổi size 2 chiều tận nơi",
+    returnPolicy: "Đổi trả miễn phí 7 ngày, đổi size 2 chiều tận nơi",
     warehouseAddress: "Số 76 đường Bạch Đằng, Phường Hải Châu, Thành phố Đà Nẵng",
     story:
       "Ưu tiên chất liệu sợi thực vật thoáng khí như lanh pha bông và sợi tre thiên nhiên, nhuộm tông trung tính dễ phối từ công sở đến cuối tuần.",
@@ -414,7 +414,7 @@ export const SHOPS: Shop[] = [
     fastDeliveryEnabled: true,
     fastDeliveryFee: 35000,
     fastDeliveryNote: "Giao nhanh nội thành Đà Nẵng trong 3 giờ",
-    returnDays: 45,
+    returnDays: 7,
     twoWayExchange: true,
     verifiedBadge: "Xưởng chính hãng · Sợi thực vật",
     factoryProfile: {
@@ -564,7 +564,7 @@ export const SHOPS: Shop[] = [
     foundedYear: 2018,
     responseTime: "Trong 20 phút",
     fulfillmentRate: "97,9%",
-    returnPolicy: "Đổi trả miễn phí 45 ngày, bù lẻ chiếc tất thất lạc",
+    returnPolicy: "Đổi trả miễn phí 7 ngày, bù lẻ chiếc tất thất lạc",
     warehouseAddress: "Số 19 phố Minh Khai, Phường Hai Bà Trưng, Thành phố Hà Nội",
     story:
       "Kế thừa tay nghề dệt kim truyền thống miền Bắc, chú trọng độ đứng dáng của cổ áo polo, bo gấu jogger dày dặn và dòng tất cotton chải kỹ.",
@@ -574,7 +574,7 @@ export const SHOPS: Shop[] = [
     fastDeliveryEnabled: true,
     fastDeliveryFee: 39000,
     fastDeliveryNote: "Giao nhanh nội thành Hà Nội trong 2-4 giờ (đặt trước 17:00)",
-    returnDays: 45,
+    returnDays: 7,
     twoWayExchange: true,
     verifiedBadge: "Xưởng chính hãng · Bù lẻ tất",
     factoryProfile: {

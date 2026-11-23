@@ -46,9 +46,9 @@ const SESSION_QUICK_CHIPS: QuickActionChip[] = [
     prompt: "Tư vấn size áo và quần theo hồ sơ số đo hiện tại của tôi",
   },
   {
-    id: "chip-return-45",
-    label: "Chính sách đổi trả 45 ngày",
-    prompt: "Chính sách đổi trả 45 ngày và đổi size 2 chiều của NexusMart như thế nào?",
+    id: "chip-return-7",
+    label: "Chính sách đổi trả 7 ngày",
+    prompt: "Chính sách trả hàng và hoàn tiền trong 7 ngày của NexusMart như thế nào?",
   },
 ];
 
@@ -126,10 +126,15 @@ function buildAiAnswer(
     };
   }
 
-  // 45-day return & exchange policy
-  if (lower.includes("45 ngày") || lower.includes("đổi trả") || lower.includes("hoàn tiền")) {
+  // 7-day return & refund policy
+  if (
+    lower.includes("7 ngày") ||
+    lower.includes("45 ngày") ||
+    lower.includes("đổi trả") ||
+    lower.includes("hoàn tiền")
+  ) {
     return {
-      text: "NexusMart áp dụng đổi trả miễn phí trong 45 ngày (tối đa 3 lần/đơn): bưu tá đổi size 2 chiều tận nơi, hoàn chuyển khoản định kỳ vào Thứ 2 & Thứ 5 hằng tuần, và bù lẻ 1 chiếc tất thất lạc miễn phí từ Dệt Kim Hà Nội. Hàng Outlet, săn deal sốc và pack niêm phong không áp dụng đổi trả.",
+      text: "NexusMart hỗ trợ yêu cầu trả hàng và hoàn tiền trong vòng 7 ngày kể từ khi nhận hàng. Bạn có thể mở trang chi tiết đơn hàng để gửi yêu cầu và theo dõi tiến độ xử lý.",
       products: [],
       helpHref: "/tro-giup",
     };
@@ -298,7 +303,7 @@ function buildAiAnswer(
   }
 
   return {
-    text: "Mình có thể tra cứu đơn hàng trong tài khoản của bạn, tư vấn size theo số đo cho cả 4 xưởng, giải thích chính sách đổi trả 45 ngày hoặc so sánh chất liệu vải.",
+    text: "Mình có thể tra cứu đơn hàng trong tài khoản của bạn, tư vấn size theo số đo cho cả 4 xưởng, giải thích chính sách đổi trả 7 ngày hoặc so sánh chất liệu vải.",
     products: PRODUCTS.filter((p) => ["prod-at-xamda", "prod-polo-xanhda"].includes(p.id)),
   };
 }
@@ -415,7 +420,7 @@ export function AiAssistantPanel() {
           <div className={styles.headerText}>
             <p className={styles.title}>Trợ lý AI NexusMart</p>
             <p className={styles.subtitle}>
-              Tra cứu đơn, tư vấn size 4 xưởng theo hồ sơ số đo và đổi trả 45 ngày
+              Tra cứu đơn, tư vấn size 4 xưởng theo hồ sơ số đo và đổi trả 7 ngày
             </p>
           </div>
           <div className={styles.headerControls}>
@@ -438,8 +443,8 @@ export function AiAssistantPanel() {
         <div className={styles.noticeBar}>
           <IconShield size={16} className={styles.noticeIcon} />
           <span>
-            Hỗ trợ riêng tư theo tài khoản của bạn — chỉ đọc số đo và đơn hàng thuộc tài khoản đang
-            đăng nhập.
+            <strong>Bản xem trước, dữ liệu mẫu:</strong> Trợ lý AI đang ở chế độ minh họa giao diện.
+            Để xem đơn hàng thật, vui lòng mở mục Đơn hàng của tôi.
           </span>
         </div>
 
@@ -501,15 +506,11 @@ export function AiAssistantPanel() {
                 {turn.orderRef && (
                   <div className={styles.orderLinkBox}>
                     <span>
-                      Đơn <strong className="num">{turn.orderRef.orderCode}</strong> ·{" "}
+                      Đơn mẫu <strong className="num">{turn.orderRef.orderCode}</strong> ·{" "}
                       <span className="num">{formatVnd(turn.orderRef.total)}</span>
                     </span>
-                    <Link
-                      href={`/don-hang/${turn.orderRef.id}`}
-                      className={styles.orderLinkAction}
-                      onClick={closeAi}
-                    >
-                      Mở chi tiết đơn
+                    <Link href="/don-hang" className={styles.orderLinkAction} onClick={closeAi}>
+                      Mở đơn hàng của tôi
                     </Link>
                   </div>
                 )}

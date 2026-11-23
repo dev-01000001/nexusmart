@@ -51,7 +51,9 @@ func New(cfg config.Config) (*Clients, error) {
 		return conn, nil
 	}
 
-	c := &Clients{Timeout: cfg.GRPCCallTimeout}
+	c := &Clients{
+		Timeout: cfg.GRPCCallTimeout,
+	}
 	if c.Timeout <= 0 {
 		c.Timeout = 10 * time.Second
 	}

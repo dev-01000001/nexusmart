@@ -223,6 +223,16 @@ func TestE2E_PaymentMoney_PAY_B4_CODLifecycle(t *testing.T) {
 		t.Fatalf("decode COD checkout #2: %v", err)
 	}
 	ord2 := cod2.Orders[0]
+	// Wave 2b buyer fee privacy: gateway masks commission & payment fee fields to 0 for buyers.
+	if ord2.CommissionVND != 0 || ord2.PaymentFeeVND != 0 || ord2.PaymentFeeBps != 0 {
+		t.Fatalf("buyer checkout must mask fees to 0, got comm=%d pay_fee=%d pay_fee_bps=%d",
+			ord2.CommissionVND, ord2.PaymentFeeVND, ord2.PaymentFeeBps)
+	}
+	for _, it := range ord2.Items {
+		if it.CommissionBps != 0 {
+			t.Fatalf("buyer checkout must mask item commission_bps to 0, got %d", it.CommissionBps)
+		}
+	}
 
 	pay2Before := env.getPayment(t, buyer.AccessToken, cod2.PaymentID)
 	if !StatusEquals(pay2Before.Status, "PENDING") {
@@ -247,7 +257,9 @@ func TestE2E_PaymentMoney_PAY_B4_CODLifecycle(t *testing.T) {
 	confirmRecPath := fmt.Sprintf("/api/v1/orders/%s/confirm-received", url.PathEscape(ord2.ID))
 	env.mustDoJSON(t, http.MethodPost, confirmRecPath, buyer.AccessToken, nil, nil, http.StatusOK)
 
-	wantSellerNet := ord2.SubtotalVND - ord2.CommissionVND
+	sellerOrd2 := env.getOrder(t, seller.AccessToken, ord2.ID)
+	// Wave 2b (docs/contracts.md §3/§6): seller net = R - (C_cat + C_pay) = SubtotalVND - CommissionVND - PaymentFeeVND.
+	wantSellerNet := sellerOrd2.SubtotalVND - sellerOrd2.CommissionVND - sellerOrd2.PaymentFeeVND
 	env.pollUntil(t, env.cfg.PollTimeout, 300*time.Millisecond, "COD seller pending balance credited after completion", func() (bool, string) {
 		bal := payFixGetSellerBalance(t, env, seller)
 		return bal.PendingVND == wantSellerNet && bal.AvailableVND == 0 && bal.TotalEarnedVND == wantSellerNet,
@@ -356,7 +368,9 @@ func TestE2E_PaymentMoney_PAY_B2_RefundAndEscrowInvariant(t *testing.T) {
 	env.mustDoJSON(t, http.MethodPost, fmt.Sprintf("/api/v1/orders/%s/confirm-received", url.PathEscape(ord2.ID)),
 		buyer.AccessToken, nil, nil, http.StatusOK)
 
-	wantSeller2Net := ord2.SubtotalVND - ord2.CommissionVND - partialBeforeVND
+	sellerOrd2 := env.getOrder(t, seller2.AccessToken, ord2.ID)
+	// Wave 2b (docs/contracts.md §3/§6): seller net = R - (C_cat + C_pay) - partialBeforeVND.
+	wantSeller2Net := sellerOrd2.SubtotalVND - sellerOrd2.CommissionVND - sellerOrd2.PaymentFeeVND - partialBeforeVND
 	env.pollUntil(t, env.cfg.PollTimeout, 300*time.Millisecond, "PAY-B2 Case A seller2 pending net reflects partial refund", func() (bool, string) {
 		bal := payFixGetSellerBalance(t, env, seller2)
 		return bal.PendingVND == wantSeller2Net && bal.AvailableVND == 0 && bal.TotalEarnedVND == wantSeller2Net,
@@ -368,7 +382,9 @@ func TestE2E_PaymentMoney_PAY_B2_RefundAndEscrowInvariant(t *testing.T) {
 	env.mustDoJSON(t, http.MethodPost, fmt.Sprintf("/api/v1/orders/%s/confirm-received", url.PathEscape(ord1.ID)),
 		buyer.AccessToken, nil, nil, http.StatusOK)
 
-	wantSeller1Full := ord1.SubtotalVND - ord1.CommissionVND
+	sellerOrd1 := env.getOrder(t, seller1.AccessToken, ord1.ID)
+	// Wave 2b (docs/contracts.md §3/§6): seller net = R - (C_cat + C_pay).
+	wantSeller1Full := sellerOrd1.SubtotalVND - sellerOrd1.CommissionVND - sellerOrd1.PaymentFeeVND
 	env.pollUntil(t, env.cfg.PollTimeout, 300*time.Millisecond, "PAY-B2 Case B seller1 receives full net in pending before post-settle refund", func() (bool, string) {
 		bal := payFixGetSellerBalance(t, env, seller1)
 		return bal.PendingVND == wantSeller1Full && bal.AvailableVND == 0 && bal.TotalEarnedVND == wantSeller1Full,

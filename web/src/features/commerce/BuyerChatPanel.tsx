@@ -14,7 +14,7 @@ import styles from "./OverlayPanel.module.css";
 const QUICK_REPLIES = [
   "Tư vấn size theo chiều cao cân nặng",
   "Phí giao về tỉnh và thời gian nhận hàng?",
-  "Hỗ trợ đổi size 2 chiều trong 45 ngày",
+  "Hỗ trợ đổi trả trong 7 ngày",
 ];
 
 function buildVietnameseSellerReply(shopName: string, buyerText: string): string {
@@ -25,7 +25,7 @@ function buildVietnameseSellerReply(shopName: string, buyerText: string): string
     lower.includes("kg") ||
     lower.includes("nặng")
   ) {
-    return `${shopName} chào bạn. Với phom Regular fit, khoảng 1m66-1m72 (60-67 kg) mặc size M, còn 1m72-1m77 (68-75 kg) mặc size L vừa gọn vai. Nếu mặc chưa vừa, shop hỗ trợ bưu tá đổi size 2 chiều miễn phí tận nơi trong 45 ngày ạ.`;
+    return `${shopName} chào bạn. Với phom Regular fit, khoảng 1m66-1m72 (60-67 kg) mặc size M, còn 1m72-1m77 (68-75 kg) mặc size L vừa gọn vai. Nếu mặc chưa vừa, shop hỗ trợ đổi trả theo chính sách chuẩn sàn 7 ngày ạ.`;
   }
   if (
     lower.includes("ship") ||
@@ -41,7 +41,7 @@ function buildVietnameseSellerReply(shopName: string, buyerText: string): string
     lower.includes("hủy") ||
     lower.includes("đổi")
   ) {
-    return `${shopName} đã ghi nhận thông tin đơn hàng của bạn. Bạn có thể mở mục Đơn hàng để theo dõi vận đơn, yêu cầu đổi size 2 chiều miễn phí trong 45 ngày hoặc xuất hóa đơn VAT điện tử (duyệt bản nháp 24h) ạ.`;
+    return `${shopName} đã ghi nhận thông tin đơn hàng của bạn. Bạn có thể mở mục Đơn hàng để theo dõi vận đơn, yêu cầu đổi trả trong 7 ngày hoặc xuất hóa đơn VAT điện tử (duyệt bản nháp 24h) ạ.`;
   }
   if (lower.includes("tồn") || lower.includes("màu") || lower.includes("còn")) {
     return `Các size phổ biến từ M đến XL tại ${shopName} hiện đều còn sẵn tại kho. Khi bạn bấm Đặt hàng, sản phẩm đúng màu và size sẽ được giữ riêng cho đơn của bạn ngay ạ.`;
@@ -208,6 +208,13 @@ export function BuyerChatPanel() {
               <IconClose size={18} />
             </button>
           </div>
+        </div>
+
+        <div className={styles.noticeBar} role="note">
+          <span>
+            <strong>Bản xem trước, dữ liệu mẫu:</strong> Tin nhắn trả lời tự động trong khung này
+            chỉ mang tính minh họa, chưa kết nối tới gian hàng thực tế.
+          </span>
         </div>
 
         <div className={styles.noticeBar}>

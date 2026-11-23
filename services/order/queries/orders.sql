@@ -33,23 +33,88 @@ WHERE payment_id = $1
 ORDER BY created_at DESC
 LIMIT 1;
 
--- name: CompleteCheckoutGroup :exec
+-- name: CompleteCheckoutGroup :one
 UPDATE checkout_groups
-SET status = 'COMPLETED',
-    payment_id = $2,
-    payment_status = $3,
-    qr_url = $4,
-    qr_code = $5,
-    payment_expires_at = $6,
+SET status = CASE
+        WHEN status = 'IN_PROGRESS' THEN 'COMPLETED'
+        ELSE status
+    END,
+    payment_id = CASE
+        WHEN payment_id = '' THEN $2
+        ELSE payment_id
+    END,
+    payment_status = CASE
+        WHEN payment_status IN ('', 'PENDING') THEN $3
+        ELSE payment_status
+    END,
+    qr_url = CASE
+        WHEN payment_status IN ('', 'PENDING') AND qr_url = '' THEN $4
+        ELSE qr_url
+    END,
+    qr_code = CASE
+        WHEN payment_status IN ('', 'PENDING') AND qr_code = '' THEN $5
+        ELSE qr_code
+    END,
+    payment_expires_at = CASE
+        WHEN payment_status IN ('', 'PENDING') THEN COALESCE($6, payment_expires_at)
+        ELSE payment_expires_at
+    END,
     total_payable_vnd = $7,
-    response_snapshot_json = $8,
+    response_snapshot_json = CASE
+        WHEN sqlc.narg(response_snapshot_json)::jsonb IS NOT NULL THEN sqlc.narg(response_snapshot_json)::jsonb
+        ELSE response_snapshot_json
+    END,
+    needs_cleanup = FALSE,
     updated_at = NOW()
-WHERE id = $1;
+WHERE id = $1
+  AND status = 'IN_PROGRESS'
+RETURNING *;
+
+-- name: SetCheckoutGroupWarnings :exec
+UPDATE checkout_groups
+SET warnings_json = $2,
+    updated_at = NOW()
+WHERE id = $1
+  AND status = 'IN_PROGRESS';
 
 -- name: FailCheckoutGroup :exec
 UPDATE checkout_groups
 SET status = 'FAILED',
     payment_status = $2,
+    needs_cleanup = FALSE,
+    updated_at = NOW()
+WHERE checkout_groups.id = $1
+  AND checkout_groups.status = 'IN_PROGRESS'
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.checkout_group_id = checkout_groups.id
+        AND o.status <> 'CANCELLED'
+  );
+
+-- name: CheckoutGroupHasOrders :one
+SELECT EXISTS (
+    SELECT 1 FROM orders WHERE checkout_group_id = $1
+);
+
+-- name: ClaimCheckoutGroupForCleanup :exec
+UPDATE checkout_groups
+SET status = 'FAILED',
+    payment_status = CASE WHEN payment_status IN ('', 'PENDING') THEN $2 ELSE payment_status END,
+    needs_cleanup = TRUE,
+    updated_at = NOW()
+WHERE id = $1
+  AND status = 'IN_PROGRESS';
+
+-- name: ClearCheckoutGroupNeedsCleanup :exec
+UPDATE checkout_groups
+SET needs_cleanup = FALSE,
+    updated_at = NOW()
+WHERE id = $1;
+
+-- name: MarkCheckoutGroupNeedsCleanup :exec
+UPDATE checkout_groups
+SET needs_cleanup = TRUE,
+    payment_status = CASE WHEN sqlc.arg(reason)::text <> '' THEN sqlc.arg(reason)::text ELSE payment_status END,
     updated_at = NOW()
 WHERE id = $1
   AND status = 'IN_PROGRESS';
@@ -84,19 +149,21 @@ WHERE id = $1;
 INSERT INTO orders (
     id, order_code, checkout_group_id, buyer_id, shop_id, status,
     payment_method, payment_id, payment_status,
-    subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd,
+    subtotal_vnd, flash_sale_discount_vnd, shop_program_discount_vnd,
+    shop_voucher_discount_vnd, shop_freeship_discount_vnd,
     platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd,
-    shipping_fee_vnd, commission_vnd, total_payable_vnd,
+    shipping_fee_vnd, commission_vnd, payment_fee_vnd, payment_fee_bps, total_payable_vnd,
     carrier_code, service_code, tracking_code, label_url, cancel_reason,
     shipping_address_json, payment_expires_at, confirmed_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
     $7, $8, $9,
     $10, $11, $12,
-    $13, $14, $15,
-    $16, $17, $18,
-    $19, $20, $21, $22, $23,
-    $24, $25, $26
+    $13, $14,
+    $15, $16, $17,
+    $18, $19, $20, $21, $22,
+    $23, $24, $25, $26, $27,
+    $28, $29, $30
 )
 RETURNING *;
 
@@ -104,11 +171,13 @@ RETURNING *;
 INSERT INTO order_items (
     id, order_id, sku_id, product_id, product_name, sku_name,
     unit_price_vnd, effective_unit_price_vnd, quantity, line_total_vnd,
-    weight_grams, flash_sale_item_id, commission_rate_bps
+    weight_grams, flash_sale_item_id, commission_rate_bps,
+    category_id, shop_program_item_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
     $7, $8, $9, $10,
-    $11, $12, $13
+    $11, $12, $13,
+    $14, $15
 )
 RETURNING *;
 
@@ -172,13 +241,34 @@ WHERE (sqlc.arg(buyer_id)::text = '' OR buyer_id = sqlc.arg(buyer_id)::text)
   AND (sqlc.arg(shop_id)::text = '' OR shop_id = sqlc.arg(shop_id)::text)
   AND (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text);
 
+-- name: AttachCheckoutPaymentToOrders :exec
+UPDATE orders
+SET payment_id = CASE
+        WHEN payment_id = '' THEN $2
+        ELSE payment_id
+    END,
+    payment_status = CASE
+        WHEN payment_status IN ('', 'PENDING') THEN $3
+        ELSE payment_status
+    END,
+    payment_expires_at = CASE
+        WHEN payment_status IN ('', 'PENDING') THEN COALESCE($4, payment_expires_at)
+        ELSE payment_expires_at
+    END,
+    updated_at = NOW()
+WHERE checkout_group_id = $1
+  AND status <> 'CANCELLED'
+  AND (payment_id = '' OR payment_id = $2)
+  AND (payment_status IN ('', 'PENDING') OR payment_id = '');
+
 -- name: UpdateOrderPaymentInfoByGroup :exec
 UPDATE orders
 SET payment_id = $2,
     payment_status = $3,
     payment_expires_at = COALESCE($4, payment_expires_at),
     updated_at = NOW()
-WHERE checkout_group_id = $1;
+WHERE checkout_group_id = $1
+  AND status = 'PENDING';
 
 -- name: UpdateOrderStatus :one
 UPDATE orders
@@ -289,6 +379,7 @@ RETURNING *;
 UPDATE orders
 SET status = 'COMPLETED',
     completed_at = NOW(),
+    settlement_refunded_vnd = refunded_vnd,
     updated_at = NOW()
 WHERE id = $1
 RETURNING *;
@@ -508,9 +599,25 @@ LIMIT $1;
 -- name: FindStaleInProgressCheckoutGroups :many
 SELECT g.id
 FROM checkout_groups g
+WHERE (
+    (g.status = 'IN_PROGRESS' AND (
+        g.needs_cleanup = TRUE
+        OR g.updated_at < NOW() - (sqlc.arg(stale_after_ms)::bigint * INTERVAL '1 millisecond')
+    ))
+    OR (g.status = 'FAILED' AND g.needs_cleanup = TRUE)
+)
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o WHERE o.checkout_group_id = g.id
+  )
+ORDER BY random()
+LIMIT sqlc.arg(batch_limit)::int;
+
+-- name: FindIncompleteCheckoutGroupsWithOrders :many
+SELECT g.id
+FROM checkout_groups g
 WHERE g.status = 'IN_PROGRESS'
   AND g.updated_at < NOW() - (sqlc.arg(stale_after_ms)::bigint * INTERVAL '1 millisecond')
-  AND NOT EXISTS (
+  AND EXISTS (
       SELECT 1 FROM orders o WHERE o.checkout_group_id = g.id
   )
 ORDER BY random()
@@ -609,3 +716,197 @@ WHERE status = 'RETURNED'
   AND pending_return_compensation = TRUE
 ORDER BY random()
 LIMIT sqlc.arg(batch_limit)::int;
+
+-- Wave 2b: Admin orphan-shipment manual review queue (uses idx_orders_orphan_manual_review).
+-- name: ListOrdersNeedingManualReview :many
+SELECT *
+FROM orders
+WHERE orphan_shipment_needs_manual_review = TRUE
+ORDER BY updated_at ASC, id ASC
+LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
+
+-- name: CountOrdersNeedingManualReview :one
+SELECT COUNT(*)
+FROM orders
+WHERE orphan_shipment_needs_manual_review = TRUE;
+
+-- name: ClearOrderOrphanShipmentManualReview :one
+UPDATE orders
+SET orphan_shipment_needs_manual_review = FALSE,
+    updated_at = NOW()
+WHERE id = $1
+  AND orphan_shipment_needs_manual_review = TRUE
+RETURNING *;
+
+-- Wave 2b: Seller and Platform reporting queries (Asia/Ho_Chi_Minh date boundaries passed as TIMESTAMPTZ
+-- so PostgreSQL can use B-tree indexes directly: idx_orders_shop_id, idx_orders_created_at,
+-- idx_orders_shop_completed_at, idx_orders_completed_at, idx_order_items_order_id).
+
+-- name: ReportSellerStatusCounts :many
+SELECT status, COUNT(*)::bigint AS count
+FROM orders
+WHERE shop_id = $1
+  AND created_at >= sqlc.arg(start_ts)::timestamptz
+  AND created_at < sqlc.arg(end_ts)::timestamptz
+GROUP BY status;
+
+-- name: ReportPlatformStatusCounts :many
+SELECT status, COUNT(*)::bigint AS count
+FROM orders
+WHERE created_at >= sqlc.arg(start_ts)::timestamptz
+  AND created_at < sqlc.arg(end_ts)::timestamptz
+GROUP BY status;
+
+-- name: ReportSellerCreatedDaily :many
+SELECT to_char(created_at AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY-MM-DD')::text AS report_date,
+       COUNT(*)::bigint AS order_count,
+       COUNT(*) FILTER (WHERE status = 'CANCELLED')::bigint AS cancelled_count,
+       COUNT(*) FILTER (WHERE status = 'RETURNED')::bigint AS returned_count,
+       COALESCE(SUM(
+           total_payable_vnd
+           + GREATEST(0, platform_voucher_discount_vnd)
+           + GREATEST(0, freeship_discount_vnd)
+           + GREATEST(0, coins_discount_vnd)
+       ) FILTER (WHERE status NOT IN ('PENDING', 'CANCELLED', 'RETURNED')), 0)::bigint AS gmv_vnd
+FROM orders
+WHERE shop_id = $1
+  AND created_at >= sqlc.arg(start_ts)::timestamptz
+  AND created_at < sqlc.arg(end_ts)::timestamptz
+GROUP BY 1
+ORDER BY 1 ASC;
+
+-- name: ReportPlatformCreatedDaily :many
+SELECT to_char(created_at AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY-MM-DD')::text AS report_date,
+       COUNT(*)::bigint AS order_count,
+       COUNT(*) FILTER (WHERE status = 'CANCELLED')::bigint AS cancelled_count,
+       COUNT(*) FILTER (WHERE status = 'RETURNED')::bigint AS returned_count,
+       COALESCE(SUM(
+           total_payable_vnd
+           + GREATEST(0, platform_voucher_discount_vnd)
+           + GREATEST(0, freeship_discount_vnd)
+           + GREATEST(0, coins_discount_vnd)
+       ) FILTER (WHERE status NOT IN ('PENDING', 'CANCELLED', 'RETURNED')), 0)::bigint AS gmv_vnd
+FROM orders
+WHERE created_at >= sqlc.arg(start_ts)::timestamptz
+  AND created_at < sqlc.arg(end_ts)::timestamptz
+GROUP BY 1
+ORDER BY 1 ASC;
+
+-- name: ReportSellerCompletedDaily :many
+WITH base AS (
+    SELECT to_char(completed_at AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY-MM-DD')::text AS report_date,
+           GREATEST(0, subtotal_vnd - flash_sale_discount_vnd - shop_program_discount_vnd - shop_voucher_discount_vnd - shop_freeship_discount_vnd) AS r_vnd,
+           GREATEST(0, commission_vnd) AS raw_c_cat,
+           GREATEST(0, payment_fee_vnd) AS raw_c_pay,
+           GREATEST(0, refunded_vnd) AS refunded,
+           LEAST(GREATEST(0, settlement_refunded_vnd), GREATEST(0, refunded_vnd)) AS pre_refund
+    FROM orders
+    WHERE shop_id = $1
+      AND status = 'COMPLETED'
+      AND completed_at IS NOT NULL
+      AND completed_at >= sqlc.arg(start_ts)::timestamptz
+      AND completed_at < sqlc.arg(end_ts)::timestamptz
+),
+capped AS (
+    SELECT report_date,
+           r_vnd,
+           LEAST(raw_c_cat, r_vnd) AS c_cat,
+           LEAST(raw_c_pay, GREATEST(0, r_vnd - LEAST(raw_c_cat, r_vnd))) AS c_pay,
+           refunded,
+           pre_refund
+    FROM base
+),
+wf AS (
+    SELECT report_date,
+           GREATEST(0, (r_vnd - c_cat - c_pay) - pre_refund) - (refunded - pre_refund) AS seller_net,
+           GREATEST(0, pre_refund - (r_vnd - c_cat - c_pay)) AS rem_after_seller,
+           c_cat,
+           c_pay
+    FROM capped
+)
+SELECT report_date::text AS report_date,
+       COUNT(*)::bigint AS completed_count,
+       COALESCE(SUM(seller_net), 0)::bigint AS net_revenue_vnd,
+       COALESCE(SUM(c_cat - LEAST(GREATEST(0, rem_after_seller - LEAST(rem_after_seller, c_pay)), c_cat)), 0)::bigint AS commission_vnd,
+       COALESCE(SUM(c_pay - LEAST(rem_after_seller, c_pay)), 0)::bigint AS payment_fee_vnd
+FROM wf
+GROUP BY 1
+ORDER BY 1 ASC;
+
+-- name: ReportPlatformCompletedDaily :many
+WITH base AS (
+    SELECT to_char(completed_at AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY-MM-DD')::text AS report_date,
+           GREATEST(0, subtotal_vnd - flash_sale_discount_vnd - shop_program_discount_vnd - shop_voucher_discount_vnd - shop_freeship_discount_vnd) AS r_vnd,
+           GREATEST(0, shipping_fee_vnd) AS ship_vnd,
+           total_payable_vnd,
+           GREATEST(0, commission_vnd) AS raw_c_cat,
+           GREATEST(0, payment_fee_vnd) AS raw_c_pay,
+           GREATEST(0, refunded_vnd) AS refunded,
+           LEAST(GREATEST(0, settlement_refunded_vnd), GREATEST(0, refunded_vnd)) AS pre_refund
+    FROM orders
+    WHERE status = 'COMPLETED'
+      AND completed_at IS NOT NULL
+      AND completed_at >= sqlc.arg(start_ts)::timestamptz
+      AND completed_at < sqlc.arg(end_ts)::timestamptz
+),
+capped AS (
+    SELECT report_date,
+           r_vnd,
+           GREATEST(0, r_vnd + ship_vnd - total_payable_vnd) AS platform_subsidy,
+           LEAST(raw_c_cat, r_vnd) AS c_cat,
+           LEAST(raw_c_pay, GREATEST(0, r_vnd - LEAST(raw_c_cat, r_vnd))) AS c_pay,
+           refunded,
+           pre_refund
+    FROM base
+),
+wf AS (
+    SELECT report_date,
+           platform_subsidy,
+           GREATEST(0, (r_vnd - c_cat - c_pay) - pre_refund) - (refunded - pre_refund) AS seller_net,
+           GREATEST(0, pre_refund - (r_vnd - c_cat - c_pay)) AS rem_after_seller,
+           c_cat,
+           c_pay
+    FROM capped
+)
+SELECT report_date::text AS report_date,
+       COUNT(*)::bigint AS completed_count,
+       COALESCE(SUM(seller_net), 0)::bigint AS net_revenue_vnd,
+       COALESCE(SUM(c_cat - LEAST(GREATEST(0, rem_after_seller - LEAST(rem_after_seller, c_pay)), c_cat)), 0)::bigint AS commission_vnd,
+       COALESCE(SUM(c_pay - LEAST(rem_after_seller, c_pay)), 0)::bigint AS payment_fee_vnd,
+       COALESCE(SUM(platform_subsidy), 0)::bigint AS platform_subsidy_vnd
+FROM wf
+GROUP BY 1
+ORDER BY 1 ASC;
+
+-- name: ReportSellerTopProducts :many
+SELECT oi.product_id,
+       MAX(oi.product_name)::text AS product_name,
+       COALESCE(SUM(oi.quantity), 0)::bigint AS units_sold,
+       COALESCE(SUM(oi.line_total_vnd), 0)::bigint AS revenue_vnd,
+       COUNT(DISTINCT oi.order_id)::bigint AS order_count
+FROM orders o
+JOIN order_items oi ON oi.order_id = o.id
+WHERE o.shop_id = $1
+  AND o.status = 'COMPLETED'
+  AND o.completed_at IS NOT NULL
+  AND o.completed_at >= sqlc.arg(start_ts)::timestamptz
+  AND o.completed_at < sqlc.arg(end_ts)::timestamptz
+GROUP BY oi.product_id
+ORDER BY revenue_vnd DESC, units_sold DESC, oi.product_id ASC
+LIMIT sqlc.arg(top_limit)::int;
+
+-- name: ReportPlatformTopProducts :many
+SELECT oi.product_id,
+       MAX(oi.product_name)::text AS product_name,
+       COALESCE(SUM(oi.quantity), 0)::bigint AS units_sold,
+       COALESCE(SUM(oi.line_total_vnd), 0)::bigint AS revenue_vnd,
+       COUNT(DISTINCT oi.order_id)::bigint AS order_count
+FROM orders o
+JOIN order_items oi ON oi.order_id = o.id
+WHERE o.status = 'COMPLETED'
+  AND o.completed_at IS NOT NULL
+  AND o.completed_at >= sqlc.arg(start_ts)::timestamptz
+  AND o.completed_at < sqlc.arg(end_ts)::timestamptz
+GROUP BY oi.product_id
+ORDER BY revenue_vnd DESC, units_sold DESC, oi.product_id ASC
+LIMIT sqlc.arg(top_limit)::int;

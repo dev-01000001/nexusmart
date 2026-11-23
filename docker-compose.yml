@@ -12,7 +12,8 @@ services:
       - ./infra/postgres/init-dbs.sql:/docker-entrypoint-initdb.d/init-dbs.sql:ro
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexusmart} -d postgres"]
+      # Probe via TCP (-h 127.0.0.1) so the Unix-socket-only initdb server on a fresh volume is not reported healthy before port 5432 listens.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-nexusmart} -d postgres"]
       interval: 5s
       timeout: 5s
       retries: 15
@@ -64,6 +65,14 @@ services:
       - "127.0.0.1:${OTEL_GRPC_PORT:-4317}:4317"
       - "127.0.0.1:${OTEL_HTTP_PORT:-4318}:4318"
       - "127.0.0.1:${OTEL_PROM_PORT:-8889}:8889"
+      - "127.0.0.1:${OTEL_HEALTH_PORT:-13133}:13133"
+    # Scratch image has no shell/wget/curl; validate verifies config in-container while the
+    # health_check extension exposes HTTP liveness on :13133 for host/network probes.
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otel-collector-config.yaml"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   user:
     build:
@@ -83,6 +92,7 @@ services:
       REFRESH_TOKEN_TTL: ${REFRESH_TOKEN_TTL:-168h}
       ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-admin@nexusmart.local}
       ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-AdminDevPassword123!}
+      USER_BANK_PAYOUT_LOCK_HOURS: ${USER_BANK_PAYOUT_LOCK_HOURS:-24}
       SHIPPING_GRPC_ADDR: shipping:50057
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
       OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
@@ -178,6 +188,9 @@ services:
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
+      PRODUCT_GRPC_ADDR: product:50052
+      SHIPPING_GRPC_ADDR: shipping:50057
+      PROMOTION_VOUCHER_EXPIRY_NOTICE_HOURS: ${PROMOTION_VOUCHER_EXPIRY_NOTICE_HOURS:-24}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
@@ -191,6 +204,10 @@ services:
       redis:
         condition: service_healthy
       nats:
+        condition: service_healthy
+      product:
+        condition: service_healthy
+      shipping:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -345,7 +362,7 @@ services:
       ORDER_COD_MAX_VND: ${ORDER_COD_MAX_VND:-5000000}
       ORDER_COD_MAX_REJECTED_COUNT: ${ORDER_COD_MAX_REJECTED_COUNT:-3}
       ORDER_PAYMENT_EXPIRY_MINUTES: ${ORDER_PAYMENT_EXPIRY_MINUTES:-15}
-      ORDER_DEFAULT_COMMISSION_BPS: ${ORDER_DEFAULT_COMMISSION_BPS:-500}
+      ORDER_FLASH_PAYMENT_EXPIRY_MINUTES: ${ORDER_FLASH_PAYMENT_EXPIRY_MINUTES:-5}
       ORDER_AUTO_COMPLETE_DAYS: ${ORDER_AUTO_COMPLETE_DAYS:-7}
       ORDER_SELLER_CONFIRM_HOURS: ${ORDER_SELLER_CONFIRM_HOURS:-48}
       ORDER_RETURN_SELLER_RESPONSE_DAYS: ${ORDER_RETURN_SELLER_RESPONSE_DAYS:-3}
@@ -485,16 +502,22 @@ services:
       PAYMENT_HTTP_URL: http://payment:8086
       SHIPPING_HTTP_URL: http://shipping:8087
       NOTIFICATION_HTTP_URL: http://notification:8088
+      USER_GRPC_ADDR: user:50051
       PROMOTION_GRPC_ADDR: promotion:50054
       PRODUCT_GRPC_ADDR: product:50052
+      ORDER_GRPC_ADDR: order:50055
       PAYMENT_GRPC_ADDR: payment:50056
+      SHIPPING_GRPC_ADDR: shipping:50057
+      OTEL_PROM_URL: http://otel-collector:8889/metrics
+      OTEL_HEALTH_URL: http://otel-collector:13133/
       MAILPIT_URL: http://mailpit:8025
       ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-admin@nexusmart.local}
       ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-AdminDevPassword123!}
       PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-dev-only-payment-webhook-hmac-secret}
       SHIPPING_WEBHOOK_SECRET: ${SHIPPING_WEBHOOK_SECRET:-dev-only-shipping-webhook-hmac-secret}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
-    command: ["go", "test", "-v", "-count=1", "-timeout", "5m", "./..."]
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
+    command: ["go", "test", "-v", "-count=1", "-timeout", "20m", "./..."]
 
 volumes:
   postgres_data:

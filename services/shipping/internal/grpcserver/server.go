@@ -3,6 +3,7 @@ package grpcserver
 import (
 	"context"
 	"errors"
+	"strings"
 
 	shippingv1 "github.com/nexusmart/core/gen/go/nexusmart/shipping/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
@@ -257,25 +258,35 @@ func (s *Server) GetShopShippingSettings(ctx context.Context, req *shippingv1.Ge
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "authentication required")
 	}
-	var shopID string
+
+	reqShopID := strings.TrimSpace(req.GetShopId())
+	var (
+		shopID     string
+		fullAccess bool
+	)
 	switch {
 	case isServiceOrAdmin(claims):
-		shopID = req.GetShopId()
-	case auth.HasRole(claims, "seller"):
-		if claims.ShopID == "" {
-			return nil, status.Error(codes.PermissionDenied, "seller token missing shop_id")
-		}
-		if req.GetShopId() != "" && req.GetShopId() != claims.ShopID {
-			return nil, status.Error(codes.PermissionDenied, "seller cannot read another shop's shipping settings")
-		}
+		shopID = reqShopID
+		fullAccess = true
+	case auth.HasRole(claims, "seller") && claims.ShopID != "" && (reqShopID == "" || reqShopID == claims.ShopID):
 		shopID = claims.ShopID
+		fullAccess = true
 	default:
-		return nil, status.Error(codes.PermissionDenied, "only seller, admin, or internal service may view shop shipping settings")
+		if reqShopID == "" {
+			return nil, status.Error(codes.InvalidArgument, "shop_id is required")
+		}
+		shopID = reqShopID
+		fullAccess = false
 	}
 
 	st, err := s.svc.GetShopShippingSettings(ctx, shopID)
 	if err != nil {
 		return nil, mapError(err)
+	}
+	if !fullAccess {
+		return &shippingv1.GetShopShippingSettingsResponse{
+			Settings: toProtoPublicShopSettings(st),
+		}, nil
 	}
 	return &shippingv1.GetShopShippingSettingsResponse{
 		Settings: toProtoShopSettings(st),
@@ -314,6 +325,9 @@ func (s *Server) UpdateShopShippingSettings(ctx context.Context, req *shippingv1
 		DefaultLengthCM:     req.GetDefaultLengthCm(),
 		DefaultWidthCM:      req.GetDefaultWidthCm(),
 		DefaultHeightCM:     req.GetDefaultHeightCm(),
+		FreeShipEnabled:     req.GetFreeShipEnabled(),
+		FreeShipMinOrderVND: req.GetFreeShipMinOrderVnd(),
+		FreeShipMaxVND:      req.GetFreeShipMaxVnd(),
 	})
 	if err != nil {
 		return nil, mapError(err)
@@ -482,11 +496,24 @@ func toProtoShopSettings(st *store.ShopShippingSettings) *shippingv1.ShopShippin
 		DefaultLengthCm:     st.DefaultLengthCM,
 		DefaultWidthCm:      st.DefaultWidthCM,
 		DefaultHeightCm:     st.DefaultHeightCM,
+		FreeShipEnabled:     st.FreeShipEnabled,
+		FreeShipMinOrderVnd: st.FreeShipMinOrderVND,
+		FreeShipMaxVnd:      st.FreeShipMaxVND,
 	}
 	if !st.UpdatedAt.IsZero() {
 		out.UpdatedAt = timestamppb.New(st.UpdatedAt)
 	}
 	return out
+}
+
+func toProtoPublicShopSettings(st *store.ShopShippingSettings) *shippingv1.ShopShippingSettings {
+	return &shippingv1.ShopShippingSettings{
+		ShopId:              st.ShopID,
+		DefaultWeightGrams:  st.DefaultWeightGrams,
+		FreeShipEnabled:     st.FreeShipEnabled,
+		FreeShipMinOrderVnd: st.FreeShipMinOrderVND,
+		FreeShipMaxVnd:      st.FreeShipMaxVND,
+	}
 }
 
 func toProtoCarrierConfig(v *service.CarrierConfigView) *shippingv1.CarrierConfig {

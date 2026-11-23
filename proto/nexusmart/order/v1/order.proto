@@ -74,6 +74,8 @@ message OrderItem {
   int64 line_total_vnd = 10;
   int32 weight_grams = 11;
   string flash_sale_item_id = 12;
+  int32 commission_bps = 13;
+  string shop_program_item_id = 14;
 }
 
 message OrderTimelineEvent {
@@ -130,6 +132,12 @@ message Order {
   google.protobuf.Timestamp delivered_at = 30;
   string return_request_id = 31;
   ReturnStatus return_status = 32;
+  int64 shop_program_discount_vnd = 33;
+  int64 shop_freeship_discount_vnd = 34;
+  int64 payment_fee_vnd = 35;
+  int32 payment_fee_bps = 36;
+  // Populated only for admin/super_admin callers; always false for buyers and sellers.
+  bool needs_manual_review = 37;
 }
 
 message ReturnEvent {
@@ -172,6 +180,8 @@ message CheckoutItemInput {
   string sku_id = 1;
   int32 quantity = 2;
   string flash_sale_item_id = 3;
+  // Ignored when sent by clients; server resolves active shop discount programs authoritatively.
+  string shop_program_item_id = 4;
 }
 
 message ShopShippingChoice {
@@ -205,6 +215,7 @@ message CreateCheckoutResponse {
   google.protobuf.Timestamp payment_expires_at = 8;
   int64 total_payable_vnd = 9;
   bool idempotent_replay = 10;
+  repeated string warnings = 11;
 }
 
 message GetOrderRequest {
@@ -407,6 +418,110 @@ message AdminResolveReturnResponse {
   ReturnRequest return_request = 1;
 }
 
+message OrderStatusCount {
+  OrderStatus status = 1;
+  int64 count = 2;
+}
+
+message DailyReportPoint {
+  // Vietnam date in YYYY-MM-DD (Asia/Ho_Chi_Minh).
+  string date = 1;
+  int64 order_count = 2;
+  int64 completed_count = 3;
+  int64 cancelled_count = 4;
+  int64 returned_count = 5;
+  int64 gmv_vnd = 6;
+  int64 net_revenue_vnd = 7;
+  int64 commission_vnd = 8;
+  int64 payment_fee_vnd = 9;
+  // Populated only on GetPlatformReport; always 0 on GetSellerReport.
+  int64 platform_subsidy_vnd = 10;
+}
+
+message TopProductStat {
+  string product_id = 1;
+  string product_name = 2;
+  int64 units_sold = 3;
+  int64 revenue_vnd = 4;
+  int64 order_count = 5;
+}
+
+message GetSellerReportRequest {
+  // Optional for seller (overridden by verified JWT shop_id); admin may specify shop_id.
+  string shop_id = 1;
+  // Vietnam dates YYYY-MM-DD inclusive (max span 366 days).
+  string from_date = 2;
+  string to_date = 3;
+  // Max number of top products to return (default 10, max 50).
+  int32 top_limit = 4;
+}
+
+message GetSellerReportResponse {
+  string shop_id = 1;
+  string from_date = 2;
+  string to_date = 3;
+  int64 gmv_vnd = 4;
+  int64 net_revenue_vnd = 5;
+  int64 commission_vnd = 6;
+  int64 payment_fee_vnd = 7;
+  int64 total_orders = 8;
+  int64 completed_orders = 9;
+  int64 cancelled_orders = 10;
+  int64 returned_orders = 11;
+  // Rates in basis points (0..10000, e.g. 1250 = 12.50%).
+  int32 cancel_rate_bps = 12;
+  int32 return_rate_bps = 13;
+  repeated OrderStatusCount orders_by_status = 14;
+  repeated DailyReportPoint daily = 15;
+  repeated TopProductStat top_products = 16;
+}
+
+message GetPlatformReportRequest {
+  // Vietnam dates YYYY-MM-DD inclusive (max span 366 days).
+  string from_date = 1;
+  string to_date = 2;
+  int32 top_limit = 3;
+}
+
+message GetPlatformReportResponse {
+  string from_date = 1;
+  string to_date = 2;
+  int64 gmv_vnd = 3;
+  int64 net_revenue_vnd = 4;
+  int64 commission_vnd = 5;
+  int64 payment_fee_vnd = 6;
+  int64 platform_subsidy_vnd = 7;
+  int64 total_orders = 8;
+  int64 completed_orders = 9;
+  int64 cancelled_orders = 10;
+  int64 returned_orders = 11;
+  // Rates in basis points (0..10000).
+  int32 cancel_rate_bps = 12;
+  int32 return_rate_bps = 13;
+  repeated OrderStatusCount orders_by_status = 14;
+  repeated DailyReportPoint daily = 15;
+  repeated TopProductStat top_products = 16;
+}
+
+message ListOrdersNeedingReviewRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+}
+
+message ListOrdersNeedingReviewResponse {
+  repeated Order orders = 1;
+  int64 total = 2;
+}
+
+message ResolveOrderReviewRequest {
+  string order_id = 1;
+  string note = 2;
+}
+
+message ResolveOrderReviewResponse {
+  Order order = 1;
+}
+
 service OrderService {
   rpc CreateCheckout(CreateCheckoutRequest) returns (CreateCheckoutResponse);
   rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
@@ -427,4 +542,8 @@ service OrderService {
   rpc ConfirmReturnReceived(ConfirmReturnReceivedRequest) returns (ConfirmReturnReceivedResponse);
   rpc DisputeReturnGoods(DisputeReturnGoodsRequest) returns (DisputeReturnGoodsResponse);
   rpc AdminResolveReturn(AdminResolveReturnRequest) returns (AdminResolveReturnResponse);
+  rpc GetSellerReport(GetSellerReportRequest) returns (GetSellerReportResponse);
+  rpc GetPlatformReport(GetPlatformReportRequest) returns (GetPlatformReportResponse);
+  rpc ListOrdersNeedingReview(ListOrdersNeedingReviewRequest) returns (ListOrdersNeedingReviewResponse);
+  rpc ResolveOrderReview(ResolveOrderReviewRequest) returns (ResolveOrderReviewResponse);
 }

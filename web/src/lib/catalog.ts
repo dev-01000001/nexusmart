@@ -1,6 +1,8 @@
 import type {
+  GatewayActiveShopDiscount,
   GatewayCategory,
   GatewayFlashSale,
+  GatewayFlashSaleItem,
   GatewayProduct,
   GatewayProvince,
   GatewayPublicShop,
@@ -25,6 +27,7 @@ import type {
   CatalogVoucher,
 } from "@/lib/catalog-types";
 import { getLegacyShopSlugById } from "@/mock/productEditorial";
+import { fetchActiveShopDiscountsWithFetcher } from "@/features/checkout/helpers";
 
 const UNAVAILABLE_MESSAGE = "Hệ thống đang tạm bận, vui lòng thử lại sau ít phút.";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -188,6 +191,35 @@ export async function fetchRawFlashSales(includeUpcoming = true): Promise<Gatewa
   return Array.isArray(res?.flash_sales) ? res.flash_sales : [];
 }
 
+export async function fetchActiveShopDiscounts(params?: {
+  skuIds?: string[];
+  shopId?: string;
+}): Promise<GatewayActiveShopDiscount[]> {
+  return fetchActiveShopDiscountsWithFetcher(params, async (batch) => {
+    const qs = new URLSearchParams();
+    if (batch.skuIds && batch.skuIds.length > 0) {
+      qs.set("sku_ids", batch.skuIds.join(","));
+    }
+    if (batch.shopId) {
+      qs.set("shop_id", batch.shopId);
+    }
+    const res = await publicGatewayFetch<{ discounts?: GatewayActiveShopDiscount[] }>(
+      `/shop-discounts/active?${qs.toString()}`
+    );
+    return Array.isArray(res?.discounts) ? res.discounts : [];
+  });
+}
+
+function collectProductSkuIds(products: GatewayProduct[]): string[] {
+  const ids: string[] = [];
+  for (const p of products) {
+    for (const s of p.skus ?? []) {
+      if (s.id) ids.push(s.id);
+    }
+  }
+  return ids;
+}
+
 export async function fetchShippingProvinces(): Promise<GatewayProvince[]> {
   try {
     const res = await publicGatewayFetch<{ provinces: GatewayProvince[] }>("/shipping/provinces");
@@ -197,20 +229,41 @@ export async function fetchShippingProvinces(): Promise<GatewayProvince[]> {
   }
 }
 
-function buildLiveFlashSkuSet(rawSales: GatewayFlashSale[], nowMs: number): Set<string> {
-  const liveIds = new Set<string>();
+function buildLiveFlashItemsBySkuId(
+  rawSales: GatewayFlashSale[],
+  nowMs: number
+): Map<string, GatewayFlashSaleItem> {
+  const map = new Map<string, GatewayFlashSaleItem>();
   for (const sale of rawSales) {
     const startMs = sale.starts_at ? Date.parse(sale.starts_at) : 0;
     const endMs = sale.ends_at ? Date.parse(sale.ends_at) : 0;
     if (nowMs >= startMs && nowMs < endMs) {
       for (const item of sale.items ?? []) {
         if ((!item.status || item.status === "APPROVED") && item.remaining_slots > 0) {
-          liveIds.add(item.sku_id);
+          if (!map.has(item.sku_id)) {
+            map.set(item.sku_id, item);
+          }
         }
       }
     }
   }
-  return liveIds;
+  return map;
+}
+
+function buildActiveShopDiscountsMap(
+  discounts: GatewayActiveShopDiscount[]
+): Map<string, GatewayActiveShopDiscount> {
+  const map = new Map<string, GatewayActiveShopDiscount>();
+  for (const d of discounts) {
+    if (d.sku_id && d.discounted_price_vnd > 0 && !map.has(d.sku_id)) {
+      map.set(d.sku_id, d);
+    }
+  }
+  return map;
+}
+
+function buildLiveFlashSkuSet(rawSales: GatewayFlashSale[], nowMs: number): Set<string> {
+  return new Set(buildLiveFlashItemsBySkuId(rawSales, nowMs).keys());
 }
 
 export interface HomeCatalogData {
@@ -231,13 +284,28 @@ export async function loadHomeCatalogData(): Promise<HomeCatalogData> {
       fetchRawProducts({ page: 1, pageSize: 100 }),
       fetchRawFlashSales(true).catch(() => [] as GatewayFlashSale[]),
     ]);
+    const homeSkuIds = collectProductSkuIds(productPage.items);
+    const activeShopDiscounts =
+      homeSkuIds.length > 0
+        ? await fetchActiveShopDiscounts({ skuIds: homeSkuIds }).catch(
+            () => [] as GatewayActiveShopDiscount[]
+          )
+        : [];
 
     const categoriesById = new Map(categories.map((c) => [c.id, c]));
     const shopsById = new Map(shops.map((s) => [s.id, s]));
-    const liveFlashSkuIds = buildLiveFlashSkuSet(rawFlashSales, serverNowMs);
+    const liveFlashItemsBySkuId = buildLiveFlashItemsBySkuId(rawFlashSales, serverNowMs);
+    const liveFlashSkuIds = new Set(liveFlashItemsBySkuId.keys());
+    const activeShopDiscountsBySkuId = buildActiveShopDiscountsMap(activeShopDiscounts);
 
     const products = productPage.items.map((p) =>
-      mapGatewayProduct(p, { categoriesById, shopsById, flashSkuIds: liveFlashSkuIds })
+      mapGatewayProduct(p, {
+        categoriesById,
+        shopsById,
+        flashSkuIds: liveFlashSkuIds,
+        liveFlashItemsBySkuId,
+        activeShopDiscountsBySkuId,
+      })
     );
     const flashSlots = mapGatewayFlashSales(rawFlashSales, products, serverNowMs);
 
@@ -340,7 +408,7 @@ export async function loadCatalogExplorerData(
   try {
     // ponytail: tải tối đa 100 sản phẩm thật để giữ 13 nhóm facet & tìm bỏ dấu/đồng nghĩa phía client;
     // khi có Search service (Tháng 4–6) sẽ chuyển toàn bộ facet & synonym lên server.
-    const [categories, shops, allPage, filteredPage] = await Promise.all([
+    const [categories, shops, allPage, filteredPage, rawFlashSales] = await Promise.all([
       fetchCategories(),
       fetchPublicShops(),
       fetchRawProducts({ page: 1, pageSize: 100 }),
@@ -357,16 +425,34 @@ export async function loadCatalogExplorerData(
             pageSize: 100,
           })
         : Promise.resolve(null),
+      fetchRawFlashSales(false).catch(() => [] as GatewayFlashSale[]),
     ]);
+    const explorerSkuIds = collectProductSkuIds([...allPage.items, ...(filteredPage?.items ?? [])]);
+    const activeShopDiscounts =
+      explorerSkuIds.length > 0
+        ? await fetchActiveShopDiscounts({ skuIds: explorerSkuIds }).catch(
+            () => [] as GatewayActiveShopDiscount[]
+          )
+        : [];
 
+    const nowMs = Date.now();
     const categoriesById = new Map(categories.map((c) => [c.id, c]));
     const shopsById = new Map(shops.map((s) => [s.id, s]));
+    const liveFlashItemsBySkuId = buildLiveFlashItemsBySkuId(rawFlashSales, nowMs);
+    const liveFlashSkuIds = new Set(liveFlashItemsBySkuId.keys());
+    const activeShopDiscountsBySkuId = buildActiveShopDiscountsMap(activeShopDiscounts);
 
-    const allProducts = allPage.items.map((p) =>
-      mapGatewayProduct(p, { categoriesById, shopsById })
-    );
+    const mapCtx = {
+      categoriesById,
+      shopsById,
+      flashSkuIds: liveFlashSkuIds,
+      liveFlashItemsBySkuId,
+      activeShopDiscountsBySkuId,
+    };
+
+    const allProducts = allPage.items.map((p) => mapGatewayProduct(p, mapCtx));
     const serverFilteredProducts = filteredPage
-      ? filteredPage.items.map((p) => mapGatewayProduct(p, { categoriesById, shopsById }))
+      ? filteredPage.items.map((p) => mapGatewayProduct(p, mapCtx))
       : allProducts;
 
     // Order shops so shops with catalog products come first
@@ -414,6 +500,7 @@ export interface ProductDetailData {
   bundleProducts: CatalogProduct[];
   allProducts: CatalogProduct[];
   liveFlashBySkuId: Record<string, CatalogFlashSaleItem>;
+  activeShopDiscountBySkuId: Record<string, GatewayActiveShopDiscount>;
   provinces: GatewayProvince[];
 }
 
@@ -430,6 +517,7 @@ export async function loadProductDetailData(slug: string): Promise<ProductDetail
     bundleProducts: [],
     allProducts: [],
     liveFlashBySkuId: {},
+    activeShopDiscountBySkuId: {},
     provinces: [],
   };
 
@@ -450,6 +538,7 @@ export async function loadProductDetailData(slug: string): Promise<ProductDetail
       sameShopPage,
       allProductsPage,
       rawFlashSales,
+      activeShopDiscounts,
       provinces,
     ] = await Promise.all([
       fetchShopById(rawProduct.shop_id),
@@ -472,6 +561,9 @@ export async function loadProductDetailData(slug: string): Promise<ProductDetail
         total: 0,
       })),
       fetchRawFlashSales(true).catch(() => [] as GatewayFlashSale[]),
+      fetchActiveShopDiscounts({ shopId: rawProduct.shop_id }).catch(
+        () => [] as GatewayActiveShopDiscount[]
+      ),
       fetchShippingProvinces(),
     ]);
 
@@ -492,25 +584,28 @@ export async function loadProductDetailData(slug: string): Promise<ProductDetail
         status: "ACTIVE",
       });
 
-    const liveFlashSkuIds = buildLiveFlashSkuSet(rawFlashSales, nowMs);
-    const product = mapGatewayProduct(rawProduct, {
+    const liveFlashItemsBySkuId = buildLiveFlashItemsBySkuId(rawFlashSales, nowMs);
+    const liveFlashSkuIds = new Set(liveFlashItemsBySkuId.keys());
+    const activeShopDiscountsBySkuId = buildActiveShopDiscountsMap(activeShopDiscounts);
+
+    const mapCtx = {
       categoriesById,
       shopsById,
       flashSkuIds: liveFlashSkuIds,
-    });
+      liveFlashItemsBySkuId,
+      activeShopDiscountsBySkuId,
+    };
 
-    const allProducts = allProductsPage.items.map((p) =>
-      mapGatewayProduct(p, { categoriesById, shopsById, flashSkuIds: liveFlashSkuIds })
-    );
+    const product = mapGatewayProduct(rawProduct, mapCtx);
+
+    const allProducts = allProductsPage.items.map((p) => mapGatewayProduct(p, mapCtx));
     const productBySlug = new Map(allProducts.map((p) => [p.slug, p]));
     productBySlug.set(product.slug, product);
 
     const sameShopProducts = sameShopPage.items
       .filter((p) => p.id !== product.id)
       .slice(0, 4)
-      .map((p) =>
-        mapGatewayProduct(p, { categoriesById, shopsById, flashSkuIds: liveFlashSkuIds })
-      );
+      .map((p) => mapGatewayProduct(p, mapCtx));
 
     const similarProducts = allProducts
       .filter((p) => p.id !== product.id && p.shopId !== product.shopId)
@@ -552,6 +647,14 @@ export async function loadProductDetailData(slug: string): Promise<ProductDetail
       }
     }
 
+    const activeShopDiscountBySkuId: Record<string, GatewayActiveShopDiscount> = {};
+    for (const sku of product.skus) {
+      const disc = activeShopDiscountsBySkuId.get(sku.id);
+      if (disc && !liveFlashBySkuId[sku.id]) {
+        activeShopDiscountBySkuId[sku.id] = disc;
+      }
+    }
+
     return {
       notFound: false,
       error: null,
@@ -564,6 +667,7 @@ export async function loadProductDetailData(slug: string): Promise<ProductDetail
       bundleProducts,
       allProducts,
       liveFlashBySkuId,
+      activeShopDiscountBySkuId,
       provinces,
     };
   } catch (err) {
@@ -609,6 +713,8 @@ export async function loadShopDetailData(slug: string): Promise<ShopDetailData> 
       allProductsPage,
       shopVoucherList,
       allVoucherList,
+      rawFlashSales,
+      activeShopDiscounts,
     ] = await Promise.all([
       fetchPublicShops().catch(() => [] as CatalogShop[]),
       fetchCategories(),
@@ -621,18 +727,28 @@ export async function loadShopDetailData(slug: string): Promise<ShopDetailData> 
       })),
       fetchVouchers({ shopId: shop.id, scope: "SHOP" }).catch(() => [] as CatalogVoucher[]),
       fetchVouchers().catch(() => [] as CatalogVoucher[]),
+      fetchRawFlashSales(false).catch(() => [] as GatewayFlashSale[]),
+      fetchActiveShopDiscounts({ shopId: shop.id }).catch(() => [] as GatewayActiveShopDiscount[]),
     ]);
 
+    const nowMs = Date.now();
     const categoriesById = new Map(categories.map((c) => [c.id, c]));
     const shopsById = new Map(allShops.map((s) => [s.id, s]));
     shopsById.set(shop.id, shop);
+    const liveFlashItemsBySkuId = buildLiveFlashItemsBySkuId(rawFlashSales, nowMs);
+    const liveFlashSkuIds = new Set(liveFlashItemsBySkuId.keys());
+    const activeShopDiscountsBySkuId = buildActiveShopDiscountsMap(activeShopDiscounts);
 
-    const shopProducts = shopProductsPage.items.map((p) =>
-      mapGatewayProduct(p, { categoriesById, shopsById })
-    );
-    const allProducts = allProductsPage.items.map((p) =>
-      mapGatewayProduct(p, { categoriesById, shopsById })
-    );
+    const mapCtx = {
+      categoriesById,
+      shopsById,
+      flashSkuIds: liveFlashSkuIds,
+      liveFlashItemsBySkuId,
+      activeShopDiscountsBySkuId,
+    };
+
+    const shopProducts = shopProductsPage.items.map((p) => mapGatewayProduct(p, mapCtx));
+    const allProducts = allProductsPage.items.map((p) => mapGatewayProduct(p, mapCtx));
 
     const countByShop = new Map<string, number>();
     for (const p of allProducts) {
@@ -690,10 +806,16 @@ export async function loadFlashSalePageData(): Promise<FlashSalePageData> {
 
     const categoriesById = new Map(categories.map((c) => [c.id, c]));
     const shopsById = new Map(shops.map((s) => [s.id, s]));
+    const liveFlashItemsBySkuId = buildLiveFlashItemsBySkuId(rawFlashSales, serverNowMs);
     const liveFlashSkuIds = buildLiveFlashSkuSet(rawFlashSales, serverNowMs);
 
     const products = productPage.items.map((p) =>
-      mapGatewayProduct(p, { categoriesById, shopsById, flashSkuIds: liveFlashSkuIds })
+      mapGatewayProduct(p, {
+        categoriesById,
+        shopsById,
+        flashSkuIds: liveFlashSkuIds,
+        liveFlashItemsBySkuId,
+      })
     );
     const flashSlots = mapGatewayFlashSales(rawFlashSales, products, serverNowMs);
 

@@ -20,6 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proto_root = PathBuf::from("../../proto");
 
     println!("cargo:rerun-if-changed={}", proto_file.display());
+    println!("cargo:rerun-if-changed=migrations");
 
     let mut includes = vec![proto_root];
     if let Ok(extra_inc) = env::var("PROTOC_INCLUDE") {

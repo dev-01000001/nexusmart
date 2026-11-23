@@ -134,6 +134,7 @@ func run() error {
 		grpc.ChainUnaryInterceptor(
 			telemetry.GRPCUnaryServerInterceptor(cfg.ServiceName),
 			red.GRPCUnaryServerInterceptor(),
+			logger.GRPCUnaryServerInterceptor(log),
 			auth.GRPCUnaryServerInterceptor(authMgr, svcMgr),
 		),
 	)
@@ -144,6 +145,7 @@ func run() error {
 		OTPMaxResends:          cfg.OTPMaxResends,
 		LoginMaxFailedAttempts: cfg.LoginMaxFailedAttempts,
 		LoginLockoutDuration:   cfg.LoginLockoutDuration,
+		BankPayoutLockDuration: cfg.BankPayoutLockDuration,
 		AddressCatalog:         addrCatalog,
 	})
 	userv1.RegisterUserServiceServer(grpcSrv, userSrv)
@@ -166,9 +168,15 @@ func run() error {
 		return nil
 	}
 
+	opsHandler := telemetry.HTTPMiddleware(cfg.ServiceName)(
+		red.HTTPMiddleware()(
+			metrics.NewOpsHandler(cfg.ServiceName, readyFn, reg),
+		),
+	)
+
 	opsSrv := &http.Server{
 		Addr:              ":" + cfg.HTTPPort,
-		Handler:           metrics.NewOpsHandler(cfg.ServiceName, readyFn, reg),
+		Handler:           opsHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

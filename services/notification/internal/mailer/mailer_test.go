@@ -205,3 +205,55 @@ func TestFormatPasswordResetEmailVietnameseAndHidesTokenFromSubject(t *testing.T
 		t.Errorf("raw Subject header must never contain token, got %q", parsed.Header.Get("Subject"))
 	}
 }
+
+func TestFormatShopBankAccountOTPEmailHidesOTPFromSubjectAndUsesVietnamese(t *testing.T) {
+	sixDigitsRe := regexp.MustCompile(`\d{6}`)
+	e2eOTPRe := regexp.MustCompile(`(?i)(?:otp|code|verification|mã|xác\s*thực)[^0-9]{0,24}(\d{6})\b`)
+
+	otp := "918273"
+	msg := FormatShopBankAccountOTPEmail(
+		"seller@nexusmart.local\r\nBcc: evil@example.com",
+		"Nguyễn Thị Hoa",
+		otp,
+		"2026-11-23T10:45:00Z",
+		"VCB",
+		"******7890",
+	)
+
+	if sixDigitsRe.MatchString(msg.Subject) || strings.Contains(msg.Subject, otp) {
+		t.Errorf("SECURITY: shop bank OTP must not appear in Subject, got %q", msg.Subject)
+	}
+	if strings.Contains(strings.ToLower(msg.Subject), "bank account") {
+		t.Errorf("shop bank OTP Subject must be in Vietnamese, got %q", msg.Subject)
+	}
+	m := e2eOTPRe.FindStringSubmatch(msg.Body)
+	if len(m) != 2 || m[1] != otp {
+		t.Errorf("shop bank OTP body must allow extracting 6-digit OTP cleanly, got %q", msg.Body)
+	}
+	if !strings.Contains(msg.Body, "Nguyễn Thị Hoa") || !strings.Contains(msg.Body, "VCB") || !strings.Contains(msg.Body, "******7890") {
+		t.Errorf("shop bank OTP body must include greeting, bank code, and masked account, got %q", msg.Body)
+	}
+	if !strings.Contains(msg.Body, "17:45 ngày 23/11/2026 (GMT+7)") {
+		t.Errorf("shop bank OTP body must format GMT+7 expiry, got %q", msg.Body)
+	}
+
+	raw := FormatMessage("no-reply@nexusmart.local", msg, time.Date(2026, 11, 23, 10, 30, 0, 0, time.UTC))
+	if strings.Contains(string(raw), "\r\nBcc:") {
+		t.Fatalf("expected CRLF header injection to be sanitized")
+	}
+	parsed, err := mail.ReadMessage(strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatalf("parse RFC 5322 message: %v", err)
+	}
+	rawSubject := parsed.Header.Get("Subject")
+	if sixDigitsRe.MatchString(rawSubject) || strings.Contains(rawSubject, otp) {
+		t.Errorf("SECURITY: raw Subject header must not contain OTP, got %q", rawSubject)
+	}
+	decodedSubject, err := new(mime.WordDecoder).DecodeHeader(rawSubject)
+	if err != nil {
+		t.Fatalf("decode RFC 2047 Subject %q: %v", rawSubject, err)
+	}
+	if decodedSubject != msg.Subject {
+		t.Errorf("decoded Subject mismatch: got %q, want %q", decodedSubject, msg.Subject)
+	}
+}

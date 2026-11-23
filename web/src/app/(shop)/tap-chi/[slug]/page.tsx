@@ -1,4 +1,5 @@
 import React, { Suspense } from "react";
+import { notFound } from "next/navigation";
 import { JOURNAL_ARTICLES } from "@/data";
 import { StateView } from "@/components";
 import { JournalDetailClient } from "./JournalDetailClient";
@@ -9,6 +10,9 @@ export function generateStaticParams() {
 
 export default async function JournalDetailPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
+  if (!JOURNAL_ARTICLES.some((a) => a.slug === slug)) {
+    notFound();
+  }
 
   return (
     <Suspense

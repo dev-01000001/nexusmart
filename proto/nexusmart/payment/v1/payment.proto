@@ -45,8 +45,9 @@ enum ReconciliationAction {
 }
 
 // Per-sub-order financial allocation.
-// subtotal_vnd is seller merchandise revenue after seller-borne discounts (flash sale + shop voucher; R in plan.md).
-// platform_discount_vnd is platform-borne discount for this sub-order (platform voucher + freeship + coins; D in plan.md).
+// subtotal_vnd is seller merchandise revenue after seller-borne discounts (flash sale + shop program + shop voucher + shop freeship; R in w2b-plan.md).
+// commission_vnd is total seller-borne platform fees (category commission + payment fee; C_total <= R).
+// platform_discount_vnd is platform-borne discount for this sub-order (platform voucher + platform freeship + coins; D in plan.md).
 // Payment.amount_vnd equals sum(subtotal_vnd + shipping_fee_vnd - platform_discount_vnd).
 message ShopAllocation {
   string order_id = 1;
@@ -281,6 +282,74 @@ message ResolveReconciliationItemResponse {
   bool already_resolved = 3;
 }
 
+message PaymentFeeConfigItem {
+  string id = 1;
+  PaymentMethod payment_method = 2;
+  int32 fee_bps = 3;
+  google.protobuf.Timestamp effective_from = 4;
+  string created_by = 5;
+  string note = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message GetFeeConfigRequest {
+  // Optional: filter to a specific payment method; UNSPECIFIED returns all methods.
+  PaymentMethod payment_method = 1;
+  // When true (admin only), also populates history with past and scheduled future entries.
+  bool include_history = 2;
+  // Optional reference time for resolving active rates (defaults to now).
+  google.protobuf.Timestamp at_time = 3;
+}
+
+message GetFeeConfigResponse {
+  // Currently effective fee config entry per payment method (at_time or now).
+  repeated PaymentFeeConfigItem active_configs = 1;
+  // Full history + scheduled future entries (ordered by effective_from DESC) when include_history = true.
+  repeated PaymentFeeConfigItem history = 2;
+}
+
+message SetFeeConfigRequest {
+  PaymentMethod payment_method = 1;
+  int32 fee_bps = 2;
+  // Empty/nil defaults to now (effective immediately).
+  google.protobuf.Timestamp effective_from = 3;
+  string note = 4;
+}
+
+message SetFeeConfigResponse {
+  PaymentFeeConfigItem config = 1;
+}
+
+message SellerLedgerEntry {
+  string id = 1;
+  string transaction_id = 2;
+  string account_code = 3;
+  string reference_type = 4;
+  string reference_id = 5;
+  string description = 6;
+  int64 debit_vnd = 7;
+  int64 credit_vnd = 8;
+  // Signed change for this seller liability account: credit_vnd - debit_vnd.
+  int64 delta_vnd = 9;
+  google.protobuf.Timestamp created_at = 10;
+}
+
+message ListSellerLedgerRequest {
+  // Optional for seller (always overridden by verified JWT shop_id); admin may specify shop_id.
+  string shop_id = 1;
+  // Optional filter: "pending" | "available" | "" (all shop accounts).
+  string account_filter = 2;
+  // Optional filter by ledger transaction reference_type.
+  string reference_type = 3;
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+message ListSellerLedgerResponse {
+  repeated SellerLedgerEntry entries = 1;
+  int64 total = 2;
+}
+
 service PaymentService {
   rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse);
   rpc GetPayment(GetPaymentRequest) returns (GetPaymentResponse);
@@ -295,4 +364,7 @@ service PaymentService {
   rpc SettleRefund(SettleRefundRequest) returns (SettleRefundResponse);
   rpc ListReconciliationQueue(ListReconciliationQueueRequest) returns (ListReconciliationQueueResponse);
   rpc ResolveReconciliationItem(ResolveReconciliationItemRequest) returns (ResolveReconciliationItemResponse);
+  rpc GetFeeConfig(GetFeeConfigRequest) returns (GetFeeConfigResponse);
+  rpc SetFeeConfig(SetFeeConfigRequest) returns (SetFeeConfigResponse);
+  rpc ListSellerLedger(ListSellerLedgerRequest) returns (ListSellerLedgerResponse);
 }

@@ -17,12 +17,13 @@ INSERT INTO dead_letter_events (id, event_id, subject, payload, error_message, a
 VALUES ($1, $2, $3, $4, $5, $6);
 
 -- name: InsertNotification :one
-INSERT INTO notifications (id, user_id, category, title, body, link, event_id, is_read, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, $8)
-RETURNING id, user_id, category, title, body, link, event_id, is_read, created_at;
+INSERT INTO notifications (id, user_id, category, title, body, link, event_id, dedup_key, is_read, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE, $9)
+ON CONFLICT (dedup_key) WHERE dedup_key <> '' DO NOTHING
+RETURNING id, user_id, category, title, body, link, event_id, is_read, created_at, dedup_key;
 
 -- name: ListNotifications :many
-SELECT id, user_id, category, title, body, link, event_id, is_read, created_at
+SELECT id, user_id, category, title, body, link, event_id, is_read, created_at, dedup_key
 FROM notifications
 WHERE user_id = $1
   AND ($2::text = '' OR category = $2)

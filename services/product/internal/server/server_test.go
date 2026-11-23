@@ -148,13 +148,27 @@ func TestCategoryCRUDAndDeleteGuard(t *testing.T) {
 		t.Fatalf("expected FailedPrecondition deleting category with product, got %v", err)
 	}
 
-	// Soft-delete product -> now category CAN be deleted
+	// Soft-delete product -> CAT-B8: category still referenced by soft-deleted product returns FailedPrecondition (409).
 	if _, err := srv.DeleteProduct(sellerCtx, &productv1.DeleteProductRequest{Id: prodResp.Product.Id}); err != nil {
 		t.Fatalf("delete product: %v", err)
 	}
-	delResp, err := srv.DeleteCategory(adminCtx, &productv1.DeleteCategoryRequest{Id: childResp.Category.Id})
+	_, err = srv.DeleteCategory(adminCtx, &productv1.DeleteCategoryRequest{Id: childResp.Category.Id})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition deleting category with soft-deleted product, got %v", err)
+	}
+
+	// Empty category with no products or children can be deleted cleanly.
+	emptyResp, err := srv.CreateCategory(adminCtx, &productv1.CreateCategoryRequest{
+		Name:              "Accessories",
+		Slug:              "accessories",
+		CommissionRateBps: 500,
+	})
+	if err != nil {
+		t.Fatalf("create empty category: %v", err)
+	}
+	delResp, err := srv.DeleteCategory(adminCtx, &productv1.DeleteCategoryRequest{Id: emptyResp.Category.Id})
 	if err != nil || !delResp.Ok {
-		t.Fatalf("expected child category deletion to succeed after product deleted, got %v, err=%v", delResp, err)
+		t.Fatalf("expected empty category deletion to succeed, got %v, err=%v", delResp, err)
 	}
 }
 
@@ -387,11 +401,12 @@ func TestReserveReleaseConfirmIdempotencyAndAtomicRollback(t *testing.T) {
 	}
 
 	// 3. Idempotent ReleaseStock: calling twice only decrements reserved_stock ONCE
-	rel1, err := srv.ReleaseStock(context.Background(), &productv1.ReleaseStockRequest{OrderId: "order-idem-1"})
+	svcCtx := ctxWithService("order-service")
+	rel1, err := srv.ReleaseStock(svcCtx, &productv1.ReleaseStockRequest{OrderId: "order-idem-1"})
 	if err != nil || !rel1.Released || rel1.AlreadyReleased {
 		t.Fatalf("first ReleaseStock: resp=%+v err=%v", rel1, err)
 	}
-	rel2, err := srv.ReleaseStock(context.Background(), &productv1.ReleaseStockRequest{OrderId: "order-idem-1"})
+	rel2, err := srv.ReleaseStock(svcCtx, &productv1.ReleaseStockRequest{OrderId: "order-idem-1"})
 	if err != nil || !rel2.Released || !rel2.AlreadyReleased {
 		t.Fatalf("second ReleaseStock should be idempotent no-op: resp=%+v err=%v", rel2, err)
 	}
@@ -401,9 +416,9 @@ func TestReserveReleaseConfirmIdempotencyAndAtomicRollback(t *testing.T) {
 		t.Fatalf("expected reserved A=0 B=0 after release, got A=%d B=%d", skAState.ReservedStock, skBState.ReservedStock)
 	}
 
-	// Unknown order_id release is graceful no-op
-	relUnknown, err := srv.ReleaseStock(context.Background(), &productv1.ReleaseStockRequest{OrderId: "does-not-exist"})
-	if err != nil || relUnknown.Released {
+	// Unknown order_id release is graceful no-op on first call (inserts tombstone)
+	relUnknown, err := srv.ReleaseStock(svcCtx, &productv1.ReleaseStockRequest{OrderId: "does-not-exist"})
+	if err != nil || relUnknown.Released || relUnknown.AlreadyReleased {
 		t.Fatalf("expected graceful no-op for unknown order_id release, got %+v err=%v", relUnknown, err)
 	}
 
@@ -415,11 +430,11 @@ func TestReserveReleaseConfirmIdempotencyAndAtomicRollback(t *testing.T) {
 		t.Fatalf("ReserveStock for confirm: %v", err)
 	}
 
-	conf1, err := srv.ConfirmStock(context.Background(), &productv1.ConfirmStockRequest{OrderId: "order-confirm-1"})
+	conf1, err := srv.ConfirmStock(svcCtx, &productv1.ConfirmStockRequest{OrderId: "order-confirm-1"})
 	if err != nil || !conf1.Confirmed || conf1.AlreadyConfirmed {
 		t.Fatalf("first ConfirmStock: resp=%+v err=%v", conf1, err)
 	}
-	conf2, err := srv.ConfirmStock(context.Background(), &productv1.ConfirmStockRequest{OrderId: "order-confirm-1"})
+	conf2, err := srv.ConfirmStock(svcCtx, &productv1.ConfirmStockRequest{OrderId: "order-confirm-1"})
 	if err != nil || !conf2.Confirmed || !conf2.AlreadyConfirmed {
 		t.Fatalf("second ConfirmStock should be idempotent: resp=%+v err=%v", conf2, err)
 	}
@@ -430,7 +445,7 @@ func TestReserveReleaseConfirmIdempotencyAndAtomicRollback(t *testing.T) {
 	}
 
 	// Confirming an already-released order must fail with FailedPrecondition
-	_, err = srv.ConfirmStock(context.Background(), &productv1.ConfirmStockRequest{OrderId: "order-idem-1"})
+	_, err = srv.ConfirmStock(svcCtx, &productv1.ConfirmStockRequest{OrderId: "order-idem-1"})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition confirming released order, got %v", err)
 	}
@@ -466,7 +481,7 @@ func TestReserveStockConcurrentNoOversellAndRetry(t *testing.T) {
 	}
 
 	// Release that test reservation so stock available returns to 10
-	if _, err := srv.ReleaseStock(context.Background(), &productv1.ReleaseStockRequest{OrderId: "order-retry-check"}); err != nil {
+	if _, err := srv.ReleaseStock(ctxWithService("order-service"), &productv1.ReleaseStockRequest{OrderId: "order-retry-check"}); err != nil {
 		t.Fatalf("ReleaseStock: %v", err)
 	}
 
@@ -798,7 +813,7 @@ func TestProductUpdateRejectAndOutOfStockTransitions(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ReserveStock drain: %v", err)
 	}
-	if _, err := srv.ConfirmStock(context.Background(), &productv1.ConfirmStockRequest{OrderId: "ord-drain-all"}); err != nil {
+	if _, err := srv.ConfirmStock(ctxWithService("order-service"), &productv1.ConfirmStockRequest{OrderId: "ord-drain-all"}); err != nil {
 		t.Fatalf("ConfirmStock drain: %v", err)
 	}
 
@@ -1005,7 +1020,7 @@ func TestRestockOrderItems_IdempotentAuthAndOutOfStockRecovery(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ReserveStock: %v", err)
 	}
-	if _, err := srv.ConfirmStock(context.Background(), &productv1.ConfirmStockRequest{OrderId: "grp-drain"}); err != nil {
+	if _, err := srv.ConfirmStock(serviceCtx, &productv1.ConfirmStockRequest{OrderId: "grp-drain"}); err != nil {
 		t.Fatalf("ConfirmStock: %v", err)
 	}
 	drainedProd, err := srv.GetProduct(context.Background(), &productv1.GetProductRequest{Id: prodID})

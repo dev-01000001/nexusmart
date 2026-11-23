@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { GatewayOrder, GatewayPayment, GatewayProduct } from "@/lib/gateway-types";
@@ -9,6 +9,11 @@ import { Button, StateView } from "@/components";
 import { RetryPaymentBox } from "@/features/commerce/RetryPaymentBox";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import { CheckoutSuggestionStrip } from "@/features/checkout/CheckoutSuggestionStrip";
+import {
+  clearCheckoutWarnings,
+  computeShopAllocationPayableVnd,
+  readCheckoutWarnings,
+} from "@/features/checkout/helpers";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./page.module.css";
 
@@ -33,6 +38,17 @@ export function PaymentWaitingClient({
   const [paidConfirmed, setPaidConfirmed] = useState<boolean>(
     (initialPayment?.status ?? "").toUpperCase() === "SUCCEEDED"
   );
+  const [checkoutWarnings, setCheckoutWarnings] = useState<string[]>([]);
+
+  useEffect(() => {
+    const paymentId = payment?.payment_id;
+    const orderIds = initialOrders.map((o) => o.id).filter(Boolean);
+    if (!paymentId && orderIds.length === 0) return;
+    const found = readCheckoutWarnings({ paymentId, orderIds });
+    if (found.length > 0) {
+      setCheckoutWarnings(found);
+    }
+  }, [payment?.payment_id, initialOrders]);
 
   useRevealOnScroll(`${viewState ?? "live"}-${payment?.payment_id ?? "none"}-${paidConfirmed}`);
 
@@ -125,6 +141,38 @@ export function PaymentWaitingClient({
       )}
 
       <section className={shared.section}>
+        {checkoutWarnings.length > 0 && (
+          <div
+            className={`${shared.feedbackBox} ${shared.feedbackWarn} ${shared.noticeSpacer}`}
+            role="status"
+          >
+            <div>
+              <strong>Lưu ý về ưu đãi khi tạo đơn:</strong>
+              {checkoutWarnings.map((w, idx) => (
+                <p key={idx} className={shared.noticeItem}>
+                  {w}
+                </p>
+              ))}
+              <p className={shared.noticeSubtle}>
+                Số tiền thanh toán bên dưới là giá cuối cùng đã được hệ thống xác nhận trên đơn
+                hàng.
+              </p>
+            </div>
+            <div className={shared.formActions}>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  clearCheckoutWarnings();
+                  setCheckoutWarnings([]);
+                }}
+              >
+                Đã hiểu
+              </Button>
+            </div>
+          </div>
+        )}
         <div className={styles.waitGrid}>
           <div
             className={styles.mainSheet}
@@ -207,7 +255,7 @@ export function PaymentWaitingClient({
                         Xem chi tiết đơn hàng
                       </Link>
                       <span className={`${styles.orderTotal} num`}>
-                        {formatVnd(alloc.subtotal_vnd + alloc.shipping_fee_vnd)}
+                        {formatVnd(computeShopAllocationPayableVnd(alloc))}
                       </span>
                     </div>
                   ))}

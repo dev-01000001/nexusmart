@@ -21,6 +21,7 @@ import { Button, IconPackage, StateView } from "@/components";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
 import { RetryPaymentBox } from "@/features/commerce/RetryPaymentBox";
 import { useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
+import { clearCheckoutWarnings, readCheckoutWarnings } from "@/features/checkout/helpers";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "@/app/(shop)/don-hang/[id]/page.module.css";
 import type { OrderVisualLookup } from "./types";
@@ -29,6 +30,7 @@ import {
   MAX_EVIDENCE_URLS,
   MAX_REDELIVERY_ATTEMPTS,
   VN_BANK_OPTIONS,
+  buildBuyerOrderBreakdownLines,
   buildShippingLabelHref,
   canCancelOrder,
   canConfirmReceived,
@@ -221,6 +223,16 @@ export function OrderDetailClient({
   );
   const [refunds, setRefunds] = useState<GatewayRefund[]>(initialRefunds);
   const [groupOrders, setGroupOrders] = useState<GatewayOrder[]>(initialGroupOrders);
+  const [checkoutWarnings, setCheckoutWarnings] = useState<string[]>([]);
+
+  useEffect(() => {
+    const id = order?.id || orderId;
+    if (!id) return;
+    const found = readCheckoutWarnings({ orderId: id, paymentId: order?.payment_id });
+    if (found.length > 0) {
+      setCheckoutWarnings(found);
+    }
+  }, [order?.id, order?.payment_id, orderId]);
 
   const [cancelReason, setCancelReason] = useState(CANCEL_REASONS[0]);
   const [cancelNote, setCancelNote] = useState("");
@@ -885,6 +897,37 @@ export function OrderDetailClient({
       </section>
 
       <section className={shared.section}>
+        {checkoutWarnings.length > 0 && (
+          <div
+            className={`${shared.feedbackBox} ${shared.feedbackWarn} ${shared.noticeSpacer}`}
+            role="status"
+          >
+            <div>
+              <strong>Lưu ý về ưu đãi khi tạo đơn:</strong>
+              {checkoutWarnings.map((w, idx) => (
+                <p key={idx} className={shared.noticeItem}>
+                  {w}
+                </p>
+              ))}
+              <p className={shared.noticeSubtle}>
+                Tổng tiền hiển thị trên đơn là số tiền cuối cùng do hệ thống xác nhận.
+              </p>
+            </div>
+            <div className={shared.formActions}>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  clearCheckoutWarnings();
+                  setCheckoutWarnings([]);
+                }}
+              >
+                Đã hiểu
+              </Button>
+            </div>
+          </div>
+        )}
         <div className={styles.detailGrid}>
           {/* Left column: VietQR retry highlight + ONE white order sheet + unboxed state-gated actions */}
           <div className={styles.mainCol}>
@@ -898,6 +941,19 @@ export function OrderDetailClient({
                   paymentId={order.payment_id}
                   onPaid={() => {
                     showToast(`Đơn ${order.order_code} đã hoàn tất thanh toán.`);
+                    void refreshOrder();
+                  }}
+                  onPaymentReplaced={(next) => {
+                    setOrder((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            payment_id: next.payment_id,
+                            payment_status: next.status,
+                            payment_expires_at: next.expires_at,
+                          }
+                        : prev
+                    );
                     void refreshOrder();
                   }}
                 />
@@ -2023,54 +2079,18 @@ export function OrderDetailClient({
                 </p>
 
                 <dl className={styles.ledgerBox}>
-                  <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Tạm tính tiền hàng</dt>
-                    <dd className="num">{formatVnd(order.subtotal_vnd)}</dd>
-                  </div>
-                  {order.flash_sale_discount_vnd > 0 && (
-                    <div className={styles.ledgerRow}>
-                      <dt className={styles.ledgerLabel}>Giảm giá Flash Sale</dt>
-                      <dd className={`${styles.ledgerDiscount} num`}>
-                        {formatSignedVnd(-order.flash_sale_discount_vnd)}
+                  {buildBuyerOrderBreakdownLines(order).map((line) => (
+                    <div key={line.key} className={styles.ledgerRow}>
+                      <dt className={styles.ledgerLabel}>{line.label}</dt>
+                      <dd className={`${line.isDiscount ? styles.ledgerDiscount : ""} num`}>
+                        {line.isDiscount
+                          ? line.amountVnd < 0
+                            ? formatSignedVnd(line.amountVnd)
+                            : "0₫"
+                          : formatVnd(line.amountVnd)}
                       </dd>
                     </div>
-                  )}
-                  <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Voucher gian hàng</dt>
-                    <dd className={`${styles.ledgerDiscount} num`}>
-                      {order.shop_voucher_discount_vnd > 0
-                        ? formatSignedVnd(-order.shop_voucher_discount_vnd)
-                        : "0₫"}
-                    </dd>
-                  </div>
-                  <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Voucher toàn sàn</dt>
-                    <dd className={`${styles.ledgerDiscount} num`}>
-                      {order.platform_voucher_discount_vnd > 0
-                        ? formatSignedVnd(-order.platform_voucher_discount_vnd)
-                        : "0₫"}
-                    </dd>
-                  </div>
-                  <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Phí vận chuyển</dt>
-                    <dd className="num">{formatVnd(order.shipping_fee_vnd)}</dd>
-                  </div>
-                  <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Giảm phí vận chuyển</dt>
-                    <dd className={`${styles.ledgerDiscount} num`}>
-                      {order.freeship_discount_vnd > 0
-                        ? formatSignedVnd(-order.freeship_discount_vnd)
-                        : "0₫"}
-                    </dd>
-                  </div>
-                  <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Trừ Xu NexusMart</dt>
-                    <dd className={`${styles.ledgerDiscount} num`}>
-                      {order.coins_discount_vnd > 0
-                        ? formatSignedVnd(-order.coins_discount_vnd)
-                        : "0₫"}
-                    </dd>
-                  </div>
+                  ))}
                 </dl>
               </div>
 

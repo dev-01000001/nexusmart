@@ -219,15 +219,28 @@ class HeadlessBrowser {
   }
 
   async clearCookies() {
+    // Unload any live page first so in-flight /api/gw calls cannot 401 after cookies are cleared
+    // and trigger SessionContext's /dang-nhap?expired=1&next=... redirect racing the next navigation.
+    await this.goto("about:blank");
     await this.send("Network.clearBrowserCookies");
   }
 
   async goto(reqPath) {
-    const url = reqPath.startsWith("http")
-      ? reqPath
-      : `${config.webUrl}${reqPath.startsWith("/") ? reqPath : `/${reqPath}`}`;
+    const isBlank = reqPath === "about:blank";
+    const url =
+      isBlank || reqPath.startsWith("http")
+        ? reqPath
+        : `${config.webUrl}${reqPath.startsWith("/") ? reqPath : `/${reqPath}`}`;
     this.lastRateLimit = null;
     await this.send("Page.navigate", { url });
+    if (isBlank) {
+      await this.waitFor(
+        `window.location.href === "about:blank" && document.readyState === "complete"`,
+        15_000,
+        { reloadOnRateLimit: false }
+      );
+      return;
+    }
     await this.waitFor(`document.readyState === "complete"`, 15_000, { reloadOnRateLimit: false });
   }
 
@@ -363,6 +376,13 @@ async function submitLoginFormInBrowser(browser, { email, password, query = "" }
   await browser.goto(`/dang-nhap${query}`);
   await browser.waitFor(`Boolean(document.querySelector('#login-email'))`);
 
+  const searchAfterGoto = await browser.eval(`window.location.search`);
+  assert.equal(
+    searchAfterGoto,
+    query,
+    `login page location.search after goto must equal ${JSON.stringify(query)}, got ${JSON.stringify(searchAfterGoto)}`
+  );
+
   const setOk = await browser.eval(`(() => {
     const emailEl = document.querySelector('#login-email');
     const passEl = document.querySelector('#login-password');
@@ -376,6 +396,13 @@ async function submitLoginFormInBrowser(browser, { email, password, query = "" }
     return true;
   })()`);
   assert.equal(setOk, true, "login form inputs must be present");
+
+  const searchBeforeSubmit = await browser.eval(`window.location.search`);
+  assert.equal(
+    searchBeforeSubmit,
+    query,
+    `login page location.search before submit must equal ${JSON.stringify(query)}, got ${JSON.stringify(searchBeforeSubmit)}`
+  );
 
   await browser.eval(`document.querySelector('form button[type="submit"]').click()`);
   await browser.waitFor(`window.location.pathname !== "/dang-nhap"`, 15_000);

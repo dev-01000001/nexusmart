@@ -8,11 +8,14 @@ import (
 	"strconv"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/nexusmart/core/services/promotion/internal/domain"
 )
 
 const (
-	// DefaultReservationTTLSeconds keeps reservation/release tombstones for 30 days.
-	DefaultReservationTTLSeconds = 30 * 24 * 3600
+	// DefaultReservationTTLSeconds keeps reservation/release tombstones for 400 days
+	// so late returns and disputes never lose their Redis compensation payload.
+	DefaultReservationTTLSeconds = 400 * 24 * 3600
 )
 
 var (
@@ -25,25 +28,32 @@ var (
 	//go:embed release_partial_atomic.lua
 	releasePartialAtomicLua string
 
+	//go:embed adjust_voucher.lua
+	adjustVoucherLua string
+
 	reserveScript        = redis.NewScript(reserveAtomicLua)
 	releaseScript        = redis.NewScript(releaseAtomicLua)
 	releasePartialScript = redis.NewScript(releasePartialAtomicLua)
+	adjustVoucherScript  = redis.NewScript(adjustVoucherLua)
 )
 
 // ReservationErrorCode categorizes failures returned by reserve_atomic.lua.
 type ReservationErrorCode string
 
 const (
-	ErrCodeFlashSoldOut             ReservationErrorCode = "FLASH_SOLD_OUT"
-	ErrCodeFlashUserLimitExceeded   ReservationErrorCode = "FLASH_USER_LIMIT_EXCEEDED"
-	ErrCodeFlashNotInitialized      ReservationErrorCode = "FLASH_NOT_INITIALIZED"
-	ErrCodeInvalidFlashQty          ReservationErrorCode = "INVALID_FLASH_QTY"
-	ErrCodeVoucherOutOfQuota        ReservationErrorCode = "VOUCHER_OUT_OF_QUOTA"
-	ErrCodeVoucherUserLimitExceeded ReservationErrorCode = "VOUCHER_USER_LIMIT_EXCEEDED"
-	ErrCodeVoucherBudgetExhausted   ReservationErrorCode = "VOUCHER_BUDGET_EXHAUSTED"
-	ErrCodeVoucherNotInitialized    ReservationErrorCode = "VOUCHER_NOT_INITIALIZED"
-	ErrCodeVoucherBudgetNotInit     ReservationErrorCode = "VOUCHER_BUDGET_NOT_INITIALIZED"
-	ErrCodeOrderAlreadyReleased     ReservationErrorCode = "ORDER_ALREADY_RELEASED"
+	ErrCodeFlashSoldOut              ReservationErrorCode = "FLASH_SOLD_OUT"
+	ErrCodeFlashUserLimitExceeded    ReservationErrorCode = "FLASH_USER_LIMIT_EXCEEDED"
+	ErrCodeFlashNotInitialized       ReservationErrorCode = "FLASH_NOT_INITIALIZED"
+	ErrCodeInvalidFlashQty           ReservationErrorCode = "INVALID_FLASH_QTY"
+	ErrCodeVoucherInactive           ReservationErrorCode = "VOUCHER_INACTIVE"
+	ErrCodeVoucherOutOfQuota         ReservationErrorCode = "VOUCHER_OUT_OF_QUOTA"
+	ErrCodeVoucherUserLimitExceeded  ReservationErrorCode = "VOUCHER_USER_LIMIT_EXCEEDED"
+	ErrCodeVoucherBudgetExhausted    ReservationErrorCode = "VOUCHER_BUDGET_EXHAUSTED"
+	ErrCodeVoucherNotInitialized     ReservationErrorCode = "VOUCHER_NOT_INITIALIZED"
+	ErrCodeVoucherBudgetNotInit      ReservationErrorCode = "VOUCHER_BUDGET_NOT_INITIALIZED"
+	ErrCodeShopProgUserLimitExceeded ReservationErrorCode = "SHOP_PROG_USER_LIMIT_EXCEEDED"
+	ErrCodeInvalidShopProgQty        ReservationErrorCode = "INVALID_SHOP_PROG_QTY"
+	ErrCodeOrderAlreadyReleased      ReservationErrorCode = "ORDER_ALREADY_RELEASED"
 )
 
 // ReservationError represents a business failure returned atomically by Redis Lua.
@@ -71,13 +81,21 @@ type VoucherReserveSpec struct {
 	HasBudget    bool
 }
 
+// ShopProgramReserveSpec describes one shop discount program item to reserve atomically.
+type ShopProgramReserveSpec struct {
+	ItemID       string
+	Quantity     int32
+	PerUserLimit int32
+}
+
 // ReserveInput holds all parameters for an atomic promotion reservation.
 type ReserveInput struct {
-	OrderID    string
-	UserID     string
-	TTLSeconds int
-	FlashItems []FlashReserveSpec
-	Vouchers   []VoucherReserveSpec
+	OrderID          string
+	UserID           string
+	TTLSeconds       int
+	FlashItems       []FlashReserveSpec
+	Vouchers         []VoucherReserveSpec
+	ShopProgramItems []ShopProgramReserveSpec
 }
 
 // ReserveOutcome captures the result of reserve_atomic.lua.
@@ -118,6 +136,14 @@ func VoucherBudgetRemainingKey(voucherID string) string {
 	return "promo:voucher:" + voucherID + ":budget_remaining"
 }
 
+func VoucherStatusKey(voucherID string) string {
+	return "promo:voucher:" + voucherID + ":status"
+}
+
+func ShopProgramUserKey(itemID, userID string) string {
+	return "promo:shop_prog:" + itemID + ":user:" + userID
+}
+
 // Engine executes embedded Lua scripts and key operations against Redis.
 type Engine struct {
 	rdb redis.UniversalClient
@@ -128,10 +154,11 @@ func NewEngine(rdb redis.UniversalClient) *Engine {
 	return &Engine{rdb: rdb}
 }
 
-// InitVoucherKeys sets the initial Redis quota and optional budget keys for a voucher.
+// InitVoucherKeys sets the initial Redis quota, status (ACTIVE), and optional budget keys for a voucher.
 func (e *Engine) InitVoucherKeys(ctx context.Context, voucherID string, quota int32, budgetVND int64) error {
 	pipe := e.rdb.TxPipeline()
 	pipe.Set(ctx, VoucherRemainingKey(voucherID), quota, 0)
+	pipe.Set(ctx, VoucherStatusKey(voucherID), domain.VoucherStatusActive, 0)
 	if budgetVND > 0 {
 		pipe.Set(ctx, VoucherBudgetRemainingKey(voucherID), budgetVND, 0)
 	}
@@ -139,12 +166,54 @@ func (e *Engine) InitVoucherKeys(ctx context.Context, voucherID string, quota in
 	return err
 }
 
-// SyncVoucherKeysIfMissing initializes missing Redis keys without overwriting live counters.
-func (e *Engine) SyncVoucherKeysIfMissing(ctx context.Context, voucherID string, remainingQuota int32, budgetVND, remainingBudgetVND int64) error {
+// SetVoucherStatusKey atomically updates a voucher's status key in Redis (ACTIVE / PAUSED / DELETED).
+func (e *Engine) SetVoucherStatusKey(ctx context.Context, voucherID, status string) error {
+	return e.rdb.Set(ctx, VoucherStatusKey(voucherID), status, 0).Err()
+}
+
+// AdjustVoucherKeys atomically synchronizes voucher status and quota/budget deltas in Redis
+// without losing concurrent reservation decrements.
+func (e *Engine) AdjustVoucherKeys(
+	ctx context.Context,
+	voucherID string,
+	status string,
+	quotaDelta int32,
+	fallbackRemQuota int32,
+	oldBudgetVND int64,
+	newBudgetVND int64,
+	fallbackRemBudget int64,
+) error {
+	keys := []string{
+		VoucherRemainingKey(voucherID),
+		VoucherBudgetRemainingKey(voucherID),
+		VoucherStatusKey(voucherID),
+	}
+	_, err := adjustVoucherScript.Run(
+		ctx,
+		e.rdb,
+		keys,
+		status,
+		quotaDelta,
+		fallbackRemQuota,
+		oldBudgetVND,
+		newBudgetVND,
+		fallbackRemBudget,
+	).Result()
+	if err != nil {
+		return fmt.Errorf("run adjust_voucher.lua: %w", err)
+	}
+	return nil
+}
+
+// SyncVoucherKeysWithStatus initializes missing quota/budget counters and overwrites status from DB.
+func (e *Engine) SyncVoucherKeysWithStatus(ctx context.Context, voucherID, status string, remainingQuota int32, budgetVND, remainingBudgetVND int64) error {
 	pipe := e.rdb.Pipeline()
-	pipe.SetNX(ctx, VoucherRemainingKey(voucherID), remainingQuota, 0)
-	if budgetVND > 0 {
-		pipe.SetNX(ctx, VoucherBudgetRemainingKey(voucherID), remainingBudgetVND, 0)
+	pipe.Set(ctx, VoucherStatusKey(voucherID), status, 0)
+	if status == domain.VoucherStatusActive {
+		pipe.SetNX(ctx, VoucherRemainingKey(voucherID), remainingQuota, 0)
+		if budgetVND > 0 {
+			pipe.SetNX(ctx, VoucherBudgetRemainingKey(voucherID), remainingBudgetVND, 0)
+		}
 	}
 	_, err := pipe.Exec(ctx)
 	return err
@@ -213,18 +282,19 @@ func (e *Engine) MGetInt64(ctx context.Context, keys []string) (map[string]int64
 	return res, nil
 }
 
-// Reserve runs reserve_atomic.lua atomically across all requested flash sale items and vouchers.
+// Reserve runs reserve_atomic.lua atomically across all requested flash sale items, vouchers,
+// and shop discount program per-user limits.
 func (e *Engine) Reserve(ctx context.Context, in ReserveInput) (ReserveOutcome, error) {
 	ttl := in.TTLSeconds
 	if ttl == 0 {
 		ttl = DefaultReservationTTLSeconds
 	}
 
-	keys := make([]string, 0, 1+len(in.FlashItems)*2+len(in.Vouchers)*3)
-	args := make([]any, 0, 3+len(in.FlashItems)*2+len(in.Vouchers)*3)
+	keys := make([]string, 0, 1+len(in.FlashItems)*2+len(in.Vouchers)*4+len(in.ShopProgramItems))
+	args := make([]any, 0, 4+len(in.FlashItems)*2+len(in.Vouchers)*3+len(in.ShopProgramItems)*2)
 
 	keys = append(keys, ReservationKey(in.OrderID))
-	args = append(args, len(in.FlashItems), len(in.Vouchers), ttl)
+	args = append(args, len(in.FlashItems), len(in.Vouchers), ttl, len(in.ShopProgramItems))
 
 	for _, f := range in.FlashItems {
 		keys = append(keys, FlashRemainingKey(f.ItemID), FlashUserKey(f.ItemID, in.UserID))
@@ -241,8 +311,14 @@ func (e *Engine) Reserve(ctx context.Context, in ReserveInput) (ReserveOutcome, 
 			VoucherRemainingKey(v.VoucherID),
 			VoucherUserKey(v.VoucherID, in.UserID),
 			VoucherBudgetRemainingKey(v.VoucherID),
+			VoucherStatusKey(v.VoucherID),
 		)
 		args = append(args, v.PerUserLimit, v.DiscountVND, hasBudget)
+	}
+
+	for _, p := range in.ShopProgramItems {
+		keys = append(keys, ShopProgramUserKey(p.ItemID, in.UserID))
+		args = append(args, p.Quantity, p.PerUserLimit)
 	}
 
 	raw, err := reserveScript.Run(ctx, e.rdb, keys, args...).Result()
@@ -275,7 +351,8 @@ func (e *Engine) Reserve(ctx context.Context, in ReserveInput) (ReserveOutcome, 
 	}
 }
 
-// Release runs release_atomic.lua idempotently to restore flash sale slots, voucher quotas, budgets, and per-user counters.
+// Release runs release_atomic.lua idempotently to restore flash sale slots, voucher quotas, budgets,
+// and per-user counters (including shop discount program items).
 func (e *Engine) Release(ctx context.Context, orderID string, extraKeys ...string) (ReleaseOutcome, error) {
 	keys := make([]string, 0, 1+len(extraKeys))
 	keys = append(keys, ReservationKey(orderID))
@@ -301,10 +378,10 @@ func (e *Engine) Release(ctx context.Context, orderID string, extraKeys ...strin
 	}
 }
 
-// ReleasePartial idempotently releases only the specified remaining-counter keys from promo:res:<order_id>,
-// leaving unreleased flash items and vouchers intact for subsequent partial or full releases.
-func (e *Engine) ReleasePartial(ctx context.Context, orderID string, targetRemKeys []string, extraKeys ...string) (ReleaseOutcome, error) {
-	if len(targetRemKeys) == 0 {
+// ReleasePartial idempotently releases only the specified target keys from promo:res:<order_id>,
+// leaving unreleased flash items, vouchers, and shop discount program items intact for subsequent releases.
+func (e *Engine) ReleasePartial(ctx context.Context, orderID string, targetKeys []string, extraKeys ...string) (ReleaseOutcome, error) {
+	if len(targetKeys) == 0 {
 		return ReleaseOutcome{Released: true, AlreadyReleased: true}, nil
 	}
 
@@ -312,9 +389,9 @@ func (e *Engine) ReleasePartial(ctx context.Context, orderID string, targetRemKe
 	keys = append(keys, ReservationKey(orderID))
 	keys = append(keys, extraKeys...)
 
-	args := make([]any, 0, 1+len(targetRemKeys))
+	args := make([]any, 0, 1+len(targetKeys))
 	args = append(args, DefaultReservationTTLSeconds)
-	for _, k := range targetRemKeys {
+	for _, k := range targetKeys {
 		args = append(args, k)
 	}
 

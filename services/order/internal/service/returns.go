@@ -163,6 +163,10 @@ func (s *OrderService) RequestReturn(ctx context.Context, req *orderv1.RequestRe
 	if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED); err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
+	// P0 M1: Refuse post-delivery return request while checkout payment initialization is still IN_PROGRESS.
+	if err := s.requireCheckoutPaymentInitialized(ctx, agg.Order.CheckoutGroupID); err != nil {
+		return nil, err
+	}
 
 	now := s.nowFn()
 	if agg.Order.DeliveredAt != nil && now.Sub(*agg.Order.DeliveredAt) > s.autoCompleteDuration() {
@@ -221,7 +225,7 @@ func (s *OrderService) RequestReturn(ctx context.Context, req *orderv1.RequestRe
 
 	s.notifyOutbox()
 	return &orderv1.RequestReturnResponse{
-		Order:           aggregateToProto(*updatedAgg),
+		Order:           aggregateToProtoForCaller(*updatedAgg, caller),
 		ReturnRequestId: returnID,
 	}, nil
 }

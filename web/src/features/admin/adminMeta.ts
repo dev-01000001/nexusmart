@@ -136,7 +136,7 @@ export const BADGE_STATUS_META: Record<BadgeApprovalStatus, { label: string; ton
 export const BADGE_KIND_LABELS: Record<PlatformBadgeKind, string> = {
   pre_order: "Pre-order",
   gian_hang_chinh_hang: "Gian hàng chính hãng",
-  doi_tra_45_ngay: "Đổi trả 45 ngày",
+  doi_tra_45_ngay: "Đổi trả 7 ngày",
 };
 
 export const GIFT_CARD_STATUS_META: Record<GiftCardStatus, { label: string; tone: PillTone }> = {

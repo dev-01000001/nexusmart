@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	promotionv1 "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/promotion/internal/calculator"
@@ -22,14 +23,22 @@ import (
 	"github.com/nexusmart/core/services/promotion/internal/store"
 )
 
+// ProductClient abstracts ProductService calls needed for flash/shop-discount validation
+// and category descendant expansion.
+type ProductClient interface {
+	GetSKUsBatch(ctx context.Context, skuIDs []string) (map[string]*productv1.SKU, error)
+	GetCategoryDescendants(ctx context.Context, categoryIDs []string) ([]string, error)
+}
+
 // PromotionService implements nexusmart.promotion.v1.PromotionServiceServer.
 type PromotionService struct {
 	promotionv1.UnimplementedPromotionServiceServer
 
-	store  store.Store
-	engine *lua.Engine
-	logger *slog.Logger
-	nowFn  func() time.Time
+	store         store.Store
+	engine        *lua.Engine
+	productClient ProductClient
+	logger        *slog.Logger
+	nowFn         func() time.Time
 }
 
 // NewPromotionService creates a PromotionService wired to a Store and Redis Lua Engine.
@@ -45,6 +54,11 @@ func NewPromotionService(st store.Store, engine *lua.Engine, logger *slog.Logger
 	}
 }
 
+// SetProductClient wires the upstream ProductService client (used for SKU validation & category descendants).
+func (s *PromotionService) SetProductClient(pc ProductClient) {
+	s.productClient = pc
+}
+
 // SetClock overrides the wall clock function (intended for deterministic unit tests).
 func (s *PromotionService) SetClock(fn func() time.Time) {
 	if fn != nil {
@@ -52,11 +66,17 @@ func (s *PromotionService) SetClock(fn func() time.Time) {
 	}
 }
 
-// SyncRedisFromStore rehydrates missing Redis counters from Postgres without overwriting live keys.
+// SyncRedisFromStore rehydrates missing Redis counters and authoritative voucher statuses from Postgres.
+//
+// ponytail: Redis runs with AOF + persistent volume, so startup intentionally does NOT reconstruct
+// per-user (:user:) counters or promo:res:<order_id> keys. If Redis storage were ever completely
+// wiped, shop discount program per_user_limit counters would reset to 0 while Postgres
+// CommitReservation still authoritatively enforces voucher quota/budget/status, flash remaining_slots,
+// and shop discount program active windows.
 func (s *PromotionService) SyncRedisFromStore(ctx context.Context) error {
-	vouchers, err := s.store.ListAllActiveVouchers(ctx)
+	vouchers, err := s.store.ListAllVouchers(ctx)
 	if err != nil {
-		return fmt.Errorf("list active vouchers for redis sync: %w", err)
+		return fmt.Errorf("list vouchers for redis sync: %w", err)
 	}
 	for _, v := range vouchers {
 		remQuota := v.Quota - v.UsedCount
@@ -67,7 +87,7 @@ func (s *PromotionService) SyncRedisFromStore(ctx context.Context) error {
 		if remBudget < 0 {
 			remBudget = 0
 		}
-		if syncErr := s.engine.SyncVoucherKeysIfMissing(ctx, v.ID, remQuota, v.BudgetVND, remBudget); syncErr != nil {
+		if syncErr := s.engine.SyncVoucherKeysWithStatus(ctx, v.ID, v.EffectiveStatus(), remQuota, v.BudgetVND, remBudget); syncErr != nil {
 			return fmt.Errorf("sync voucher %s to redis: %w", v.ID, syncErr)
 		}
 	}
@@ -97,7 +117,6 @@ func (s *PromotionService) CreateVoucher(ctx context.Context, req *promotionv1.C
 
 	shopID := strings.TrimSpace(req.GetShopId())
 
-	// Enforce authentication and RBAC on voucher creation.
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "authentication required")
@@ -143,13 +162,24 @@ func (s *PromotionService) CreateVoucher(ctx context.Context, req *promotionv1.C
 		return nil, status.Error(codes.InvalidArgument, "shop_id must be empty for PLATFORM and FREESHIP vouchers")
 	}
 
+	categoryIDs := normalizeUniqueStrings(req.GetCategoryIds())
+	if len(categoryIDs) > 0 && scopeStr != domain.VoucherScopePlatform {
+		return nil, status.Error(codes.InvalidArgument, "category_ids is only supported for PLATFORM vouchers")
+	}
+
 	if discTypeStr == domain.DiscountTypeFixed {
 		if req.GetValueVnd() <= 0 {
 			return nil, status.Error(codes.InvalidArgument, "value_vnd must be > 0 for FIXED discount")
 		}
+		if req.GetDiscountPercent() != 0 {
+			return nil, status.Error(codes.InvalidArgument, "discount_percent must be 0 for FIXED discount")
+		}
 	} else {
 		if req.GetDiscountPercent() < 1 || req.GetDiscountPercent() > 100 {
 			return nil, status.Error(codes.InvalidArgument, "discount_percent must be between 1 and 100 for PERCENT discount")
+		}
+		if req.GetValueVnd() != 0 {
+			return nil, status.Error(codes.InvalidArgument, "value_vnd must be 0 for PERCENT discount")
 		}
 	}
 
@@ -192,6 +222,8 @@ func (s *PromotionService) CreateVoucher(ctx context.Context, req *promotionv1.C
 		StartsAt:        startsAt,
 		EndsAt:          endsAt,
 		IsActive:        true,
+		Status:          domain.VoucherStatusActive,
+		CategoryIDs:     categoryIDs,
 		CreatedBy:       createdBy,
 	})
 	if err != nil {
@@ -221,12 +253,16 @@ func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promo
 		}
 	}
 
+	statusFilter, err := protoVoucherStatusToDomain(req.GetStatus())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	shopFilter := strings.TrimSpace(req.GetShopId())
 	reqUserID := strings.TrimSpace(req.GetUserId())
 	claims, hasClaims := auth.ClaimsFromContext(ctx)
 
-	// review-A P1-5: Seller managing their own shop's vouchers (GET /api/v1/seller/vouchers)
-	// sees all of their shop's vouchers without buyer availability filtering.
+	// Seller managing their own shop's vouchers (GET /api/v1/seller/vouchers)
 	sellerManageView := hasClaims &&
 		isSeller(claims) &&
 		claims.ShopID != "" &&
@@ -235,7 +271,13 @@ func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promo
 		reqUserID == "" &&
 		req.GetOrderAmountVnd() == 0
 
-	// review-A P1-6: Never trust req.UserId different from verified claims unless caller is admin/service.
+	// Admin managing vouchers (GET /api/v1/admin/vouchers)
+	adminManageView := hasClaims &&
+		isAdmin(claims) &&
+		(req.GetIncludeInactive() || statusFilter != "")
+
+	manageView := sellerManageView || adminManageView
+
 	var userID string
 	switch {
 	case !hasClaims:
@@ -244,7 +286,7 @@ func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promo
 		}
 	case isAdmin(claims) || claims.Service != "":
 		userID = reqUserID
-		if userID == "" && claims.Service == "" {
+		if userID == "" && claims.Service == "" && !adminManageView {
 			userID = claims.UserID()
 		}
 	case sellerManageView:
@@ -290,6 +332,8 @@ func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promo
 	}
 	for i := range vouchers {
 		v := &vouchers[i]
+		st := v.EffectiveStatus()
+
 		remQuota := v.Quota - v.UsedCount
 		if live, ok := liveVals[lua.VoucherRemainingKey(v.ID)]; ok {
 			remQuota = int32(live)
@@ -315,10 +359,23 @@ func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promo
 			}
 		}
 
-		// PRM-B8: Exclude unavailable vouchers for buyer/public views using the same eligibility criteria
-		// as PreviewDiscounts/ReservePromotion (seller managing own shop sees all shop vouchers).
-		if !sellerManageView {
-			if !v.IsActive ||
+		if manageView {
+			if statusFilter != "" {
+				if st != statusFilter {
+					continue
+				}
+			} else if st == domain.VoucherStatusDeleted {
+				continue
+			}
+		} else {
+			saved := savedMap[v.ID]
+			// Saved PAUSED/DELETED vouchers remain visible in the buyer's wallet as unusable (eligible=false).
+			if saved && (st == domain.VoucherStatusPaused || st == domain.VoucherStatusDeleted) {
+				resp.Vouchers = append(resp.Vouchers, voucherToProto(v, remQuota, remBudget, userUsed, true, req.GetOrderAmountVnd(), now))
+				continue
+			}
+			if st != domain.VoucherStatusActive ||
+				!v.IsActive ||
 				now.Before(v.StartsAt) ||
 				now.After(v.EndsAt) ||
 				remQuota <= 0 ||
@@ -333,7 +390,7 @@ func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promo
 	return resp, nil
 }
 
-// SaveVoucher atomically checks voucher quota/eligibility and saves the voucher into user's wallet without duplicates.
+// SaveVoucher atomically checks voucher status/quota/eligibility and saves the voucher into user's wallet.
 func (s *PromotionService) SaveVoucher(ctx context.Context, req *promotionv1.SaveVoucherRequest) (*promotionv1.SaveVoucherResponse, error) {
 	userID, err := resolveUserID(ctx, req.GetUserId())
 	if err != nil {
@@ -360,6 +417,14 @@ func (s *PromotionService) SaveVoucher(ctx context.Context, req *promotionv1.Sav
 	}
 
 	now := s.nowFn()
+	switch v.EffectiveStatus() {
+	case domain.VoucherStatusDeleted:
+		_ = s.engine.SetVoucherStatusKey(ctx, v.ID, domain.VoucherStatusDeleted)
+		return nil, status.Error(codes.FailedPrecondition, "voucher has been deleted")
+	case domain.VoucherStatusPaused:
+		_ = s.engine.SetVoucherStatusKey(ctx, v.ID, domain.VoucherStatusPaused)
+		return nil, status.Error(codes.FailedPrecondition, "voucher is paused")
+	}
 	if !v.IsActive {
 		return nil, status.Error(codes.FailedPrecondition, "voucher is inactive")
 	}
@@ -414,12 +479,17 @@ func (s *PromotionService) CreateFlashSale(ctx context.Context, req *promotionv1
 	if !endsAt.After(startsAt) {
 		return nil, status.Error(codes.InvalidArgument, "ends_at must be after starts_at")
 	}
+	if req.GetMinDiscountPercent() < 0 || req.GetMinDiscountPercent() > 99 {
+		return nil, status.Error(codes.InvalidArgument, "min_discount_percent must be between 0 and 99")
+	}
 
 	fs, err := s.store.CreateFlashSale(ctx, domain.FlashSale{
-		Name:      name,
-		StartsAt:  startsAt,
-		EndsAt:    endsAt,
-		CreatedBy: createdBy,
+		Name:               name,
+		StartsAt:           startsAt,
+		EndsAt:             endsAt,
+		MinDiscountPercent: req.GetMinDiscountPercent(),
+		CategoryIDs:        normalizeUniqueStrings(req.GetCategoryIds()),
+		CreatedBy:          createdBy,
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "create flash sale: %v", err)
@@ -427,7 +497,7 @@ func (s *PromotionService) CreateFlashSale(ctx context.Context, req *promotionv1
 	return &promotionv1.CreateFlashSaleResponse{FlashSale: flashSaleToProto(fs, nil)}, nil
 }
 
-// RegisterFlashSaleItem enrolls a seller SKU into a flash sale, rejecting overlapping windows for the same SKU.
+// RegisterFlashSaleItem enrolls a seller SKU into a flash sale after full SKU, price, category, stock & overlap checks.
 func (s *PromotionService) RegisterFlashSaleItem(ctx context.Context, req *promotionv1.RegisterFlashSaleItemRequest) (*promotionv1.RegisterFlashSaleItemResponse, error) {
 	shopID := strings.TrimSpace(req.GetShopId())
 	claims, ok := auth.ClaimsFromContext(ctx)
@@ -468,14 +538,32 @@ func (s *PromotionService) RegisterFlashSaleItem(ctx context.Context, req *promo
 		return nil, status.Error(codes.InvalidArgument, "per_user_limit must be > 0")
 	}
 
+	fs, err := s.store.GetFlashSale(ctx, flashSaleID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, status.Error(codes.NotFound, "flash sale not found")
+		}
+		return nil, status.Errorf(codes.Internal, "get flash sale: %v", err)
+	}
+	now := s.nowFn()
+	if !fs.EndsAt.After(now) {
+		return nil, status.Error(codes.FailedPrecondition, "flash sale has already ended")
+	}
+
+	origPrice, err := s.validateFlashSaleSKU(ctx, fs, shopID, skuID, req.GetFlashPriceVnd(), req.GetTotalSlots(), false)
+	if err != nil {
+		return nil, err
+	}
+
 	item, err := s.store.RegisterFlashSaleItem(ctx, domain.FlashSaleItem{
-		FlashSaleID:   flashSaleID,
-		ShopID:        shopID,
-		SKUID:         skuID,
-		FlashPriceVND: req.GetFlashPriceVnd(),
-		TotalSlots:    req.GetTotalSlots(),
-		PerUserLimit:  perUserLimit,
-	}, s.nowFn())
+		FlashSaleID:      flashSaleID,
+		ShopID:           shopID,
+		SKUID:            skuID,
+		OriginalPriceVND: origPrice,
+		FlashPriceVND:    req.GetFlashPriceVnd(),
+		TotalSlots:       req.GetTotalSlots(),
+		PerUserLimit:     perUserLimit,
+	}, now)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrNotFound):
@@ -492,7 +580,10 @@ func (s *PromotionService) RegisterFlashSaleItem(ctx context.Context, req *promo
 	return &promotionv1.RegisterFlashSaleItemResponse{Item: flashSaleItemToProto(item, item.RemainingSlots)}, nil
 }
 
-// ApproveFlashSaleItem approves or rejects a flash sale item and initializes its Redis atomic slot counter on approval.
+// ApproveFlashSaleItem approves or rejects a PENDING flash sale item.
+// Strict state machine: only PENDING -> APPROVED|REJECTED is allowed.
+// Repeating the same decision is idempotent (no stock/price re-check, no Redis overwrite);
+// APPROVED <-> REJECTED transitions fail with FailedPrecondition.
 func (s *PromotionService) ApproveFlashSaleItem(ctx context.Context, req *promotionv1.ApproveFlashSaleItemRequest) (*promotionv1.ApproveFlashSaleItemResponse, error) {
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
@@ -508,26 +599,80 @@ func (s *PromotionService) ApproveFlashSaleItem(ctx context.Context, req *promot
 		return nil, status.Error(codes.InvalidArgument, "item_id is required")
 	}
 
-	item, prevStatus, err := s.store.ApproveFlashSaleItem(ctx, itemID, adminID, req.GetApprove(), strings.TrimSpace(req.GetReason()))
+	targetStatus := domain.FlashStatusRejected
+	if req.GetApprove() {
+		targetStatus = domain.FlashStatusApproved
+	}
+
+	now := s.nowFn()
+	existing, err := s.store.GetFlashSaleItem(ctx, itemID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, status.Error(codes.NotFound, "flash sale item not found")
 		}
-		return nil, status.Errorf(codes.Internal, "approve flash sale item: %v", err)
+		return nil, status.Errorf(codes.Internal, "get flash sale item: %v", err)
+	}
+	// Fast-path idempotency: skip SKU stock/price re-validation; for APPROVED, call InitFlashItemSlots
+	// with overwrite=false (SetNX) so a prior post-commit Redis init failure self-heals without overwriting live slots.
+	if existing.Status == targetStatus {
+		remaining := existing.RemainingSlots
+		if targetStatus == domain.FlashStatusApproved {
+			if err := s.engine.InitFlashItemSlots(ctx, existing.ID, existing.RemainingSlots, false); err != nil {
+				return nil, status.Errorf(codes.Internal, "initialize flash sale redis slots: %v", err)
+			}
+			if live, liveOK, getErr := s.engine.GetInt64(ctx, lua.FlashRemainingKey(existing.ID)); getErr == nil && liveOK {
+				remaining = int32(live)
+			}
+		}
+		return &promotionv1.ApproveFlashSaleItemResponse{Item: flashSaleItemToProto(existing, remaining)}, nil
+	}
+	if existing.Status != domain.FlashStatusPending {
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot transition flash sale item from %s to %s", existing.Status, targetStatus)
+	}
+
+	var refreshedOrigPrice int64
+	if req.GetApprove() {
+		fs, err := s.store.GetFlashSale(ctx, existing.FlashSaleID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, status.Error(codes.NotFound, "flash sale not found")
+			}
+			return nil, status.Errorf(codes.Internal, "get flash sale: %v", err)
+		}
+		if !fs.EndsAt.After(now) {
+			return nil, status.Error(codes.FailedPrecondition, "flash sale has already ended")
+		}
+		origPrice, vErr := s.validateFlashSaleSKU(ctx, fs, existing.ShopID, existing.SKUID, existing.FlashPriceVND, existing.TotalSlots, true)
+		if vErr != nil {
+			return nil, vErr
+		}
+		refreshedOrigPrice = origPrice
+	}
+
+	item, _, err := s.store.ApproveFlashSaleItem(ctx, itemID, adminID, req.GetApprove(), strings.TrimSpace(req.GetReason()), refreshedOrigPrice, now)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			return nil, status.Error(codes.NotFound, "flash sale item not found")
+		case errors.Is(err, store.ErrFlashSaleEnded):
+			return nil, status.Error(codes.FailedPrecondition, "flash sale has already ended")
+		case errors.Is(err, store.ErrInvalidFlashTransition):
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		case errors.Is(err, store.ErrOverlappingFlashSale):
+			return nil, status.Error(codes.AlreadyExists, "SKU overlaps with another registered flash sale window")
+		default:
+			return nil, status.Errorf(codes.Internal, "approve flash sale item: %v", err)
+		}
 	}
 
 	remaining := item.RemainingSlots
 	if req.GetApprove() {
-		overwrite := prevStatus != domain.FlashStatusApproved
-		if err := s.engine.InitFlashItemSlots(ctx, item.ID, item.RemainingSlots, overwrite); err != nil {
+		// overwrite=false (SetNX) heals any missing Redis key without overwriting live slot counters.
+		if err := s.engine.InitFlashItemSlots(ctx, item.ID, item.RemainingSlots, false); err != nil {
 			return nil, status.Errorf(codes.Internal, "initialize flash sale redis slots: %v", err)
 		}
-		if live, ok, getErr := s.engine.GetInt64(ctx, lua.FlashRemainingKey(item.ID)); getErr == nil && ok {
+		if live, liveOK, getErr := s.engine.GetInt64(ctx, lua.FlashRemainingKey(item.ID)); getErr == nil && liveOK {
 			remaining = int32(live)
-		}
-	} else {
-		if err := s.engine.DeleteFlashItemSlots(ctx, item.ID); err != nil {
-			return nil, status.Errorf(codes.Internal, "delete rejected flash sale redis slots: %v", err)
 		}
 	}
 
@@ -649,8 +794,9 @@ func (s *PromotionService) PreviewDiscounts(ctx context.Context, req *promotionv
 	return &promotionv1.PreviewDiscountsResponse{Breakdown: out.Breakdown}, nil
 }
 
-// ReservePromotion atomically reserves flash sale slots, voucher quotas/budgets (via Redis Lua),
-// and coins (via Postgres TX) idempotently by order_id. Compensates Redis on Postgres failure.
+// ReservePromotion atomically reserves flash sale slots, voucher quotas/budgets, shop discount
+// program per-user limits (via Redis Lua), and coins (via Postgres TX) idempotently by order_id.
+// Compensates Redis on Postgres failure.
 func (s *PromotionService) ReservePromotion(ctx context.Context, req *promotionv1.ReservePromotionRequest) (*promotionv1.ReservePromotionResponse, error) {
 	orderID := strings.TrimSpace(req.GetOrderId())
 	if orderID == "" {
@@ -676,6 +822,9 @@ func (s *PromotionService) ReservePromotion(ctx context.Context, req *promotionv
 
 	// Fast idempotency check in Postgres
 	if existing, err := s.store.GetReservation(ctx, orderID); err == nil {
+		if existing.UserID != "" && existing.UserID != userID {
+			return nil, status.Error(codes.PermissionDenied, "cannot access another user's promotion reservation")
+		}
 		if existing.Status == domain.ReservationStatusReleased {
 			return nil, status.Error(codes.FailedPrecondition, "promotion reservation for this order was already released")
 		}
@@ -690,96 +839,146 @@ func (s *PromotionService) ReservePromotion(ctx context.Context, req *promotionv
 
 	now := s.nowFn()
 
-	// Collect and merge flash sale items to reserve (deduplicating by flash_sale_item_id)
-	flashSpecs, reservedFlash, err := s.resolveFlashReservations(ctx, req.GetFlashSaleItems(), req.GetShopItems(), now)
-	if err != nil {
-		return nil, err
-	}
-
-	// Calculate discounts and validate vouchers/coins
-	var breakdown *promotionv1.DiscountBreakdown
-	var voucherSpecs []lua.VoucherReserveSpec
-	var reservedVouchers []domain.ReservedVoucher
-	var coinsToDeduct int64
+	var (
+		breakdown         *promotionv1.DiscountBreakdown
+		flashSpecs        []lua.FlashReserveSpec
+		reservedFlash     []domain.ReservedFlashItem
+		voucherSpecs      []lua.VoucherReserveSpec
+		reservedVouchers  []domain.ReservedVoucher
+		shopProgSpecs     []lua.ShopProgramReserveSpec
+		reservedShopProgs []domain.ReservedShopProgramItem
+		coinsToDeduct     int64
+		luaOutcome        lua.ReserveOutcome
+	)
 
 	if len(req.GetShopItems()) > 0 {
-		calcInput, buildErr := s.buildCalcInput(ctx, userID, req.GetShopItems(), req.GetShopVoucherIds(), req.GetPlatformVoucherId(), req.GetFreeshipVoucherId(), req.GetCoinsToUse(), true)
-		if buildErr != nil {
-			return nil, buildErr
+		// When shop_items is provided, flash sale quantities are derived EXCLUSIVELY from shop_items
+		// (rejecting mismatched explicit flash_sale_items to prevent qty-mismatch oversell).
+		flashSpecs, reservedFlash, err = s.resolveFlashFromShopItems(ctx, req.GetShopItems(), req.GetFlashSaleItems(), now)
+		if err != nil {
+			return nil, err
 		}
-		out, calcErr := calculator.Calculate(calcInput)
-		if calcErr != nil {
-			return nil, mapCalcError(calcErr)
+
+		// Convergent retry loop on concurrent Lua SHOP_PROG_USER_LIMIT_EXCEEDED race:
+		// cap attempts to distinct shop-program items + 1 (bounded by maxShopProgRaceCap)
+		// so multi-shop checkouts converge cleanly to regular price without failing.
+		const maxShopProgRaceCap = 20
+		maxAttempts := countDistinctShopProgramItems(req.GetShopItems()) + 1
+		if maxAttempts < 2 {
+			maxAttempts = 2
 		}
-		breakdown = out.Breakdown
-		coinsToDeduct = out.CoinsUsed
-		seenVoucher := make(map[string]bool, len(out.AppliedVouchers))
-		for _, av := range out.AppliedVouchers {
-			if seenVoucher[av.VoucherID] {
-				return nil, status.Errorf(codes.InvalidArgument, "duplicate voucher %s in reservation", av.VoucherID)
+		if maxAttempts > maxShopProgRaceCap {
+			maxAttempts = maxShopProgRaceCap
+		}
+
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			calcInput, buildErr := s.buildCalcInput(ctx, userID, req.GetShopItems(), req.GetShopVoucherIds(), req.GetPlatformVoucherId(), req.GetFreeshipVoucherId(), req.GetCoinsToUse(), true)
+			if buildErr != nil {
+				return nil, buildErr
 			}
-			seenVoucher[av.VoucherID] = true
-			voucherSpecs = append(voucherSpecs, lua.VoucherReserveSpec{
-				VoucherID:    av.VoucherID,
-				PerUserLimit: av.PerUserLimit,
-				DiscountVND:  av.DiscountVND,
-				HasBudget:    av.HasBudget,
+			out, calcErr := calculator.Calculate(calcInput)
+			if calcErr != nil {
+				return nil, mapCalcError(calcErr)
+			}
+
+			breakdown = out.Breakdown
+			coinsToDeduct = out.CoinsUsed
+
+			voucherSpecs = make([]lua.VoucherReserveSpec, 0, len(out.AppliedVouchers))
+			reservedVouchers = make([]domain.ReservedVoucher, 0, len(out.AppliedVouchers))
+			seenVoucher := make(map[string]bool, len(out.AppliedVouchers))
+			for _, av := range out.AppliedVouchers {
+				if seenVoucher[av.VoucherID] {
+					return nil, status.Errorf(codes.InvalidArgument, "duplicate voucher %s in reservation", av.VoucherID)
+				}
+				seenVoucher[av.VoucherID] = true
+				voucherSpecs = append(voucherSpecs, lua.VoucherReserveSpec{
+					VoucherID:    av.VoucherID,
+					PerUserLimit: av.PerUserLimit,
+					DiscountVND:  av.DiscountVND,
+					HasBudget:    av.HasBudget,
+				})
+				reservedVouchers = append(reservedVouchers, domain.ReservedVoucher{
+					VoucherID:   av.VoucherID,
+					Scope:       av.Scope,
+					ShopID:      av.ShopID,
+					DiscountVND: av.DiscountVND,
+					HasBudget:   av.HasBudget,
+				})
+			}
+
+			shopProgSpecs = make([]lua.ShopProgramReserveSpec, 0, len(out.AppliedShopPrograms))
+			reservedShopProgs = make([]domain.ReservedShopProgramItem, 0, len(out.AppliedShopPrograms))
+			for _, ap := range out.AppliedShopPrograms {
+				if kErr := validateKeySegment("shop_discount_program_item_id", ap.ItemID); kErr != nil {
+					return nil, status.Error(codes.InvalidArgument, kErr.Error())
+				}
+				shopProgSpecs = append(shopProgSpecs, lua.ShopProgramReserveSpec{
+					ItemID:       ap.ItemID,
+					Quantity:     ap.Quantity,
+					PerUserLimit: ap.PerUserLimit,
+				})
+				reservedShopProgs = append(reservedShopProgs, domain.ReservedShopProgramItem{
+					ShopDiscountProgramItemID: ap.ItemID,
+					SKUID:                     ap.SKUID,
+					Quantity:                  ap.Quantity,
+					ShopID:                    ap.ShopID,
+				})
+			}
+
+			luaOutcome, err = s.engine.Reserve(ctx, lua.ReserveInput{
+				OrderID:          orderID,
+				UserID:           userID,
+				FlashItems:       flashSpecs,
+				Vouchers:         voucherSpecs,
+				ShopProgramItems: shopProgSpecs,
 			})
-			reservedVouchers = append(reservedVouchers, domain.ReservedVoucher{
-				VoucherID:   av.VoucherID,
-				Scope:       av.Scope,
-				ShopID:      av.ShopID,
-				DiscountVND: av.DiscountVND,
-				HasBudget:   av.HasBudget,
-			})
+			if err == nil {
+				break
+			}
+			var resErr *lua.ReservationError
+			if attempt+1 < maxAttempts && errors.As(err, &resErr) && resErr.Code == lua.ErrCodeShopProgUserLimitExceeded {
+				continue
+			}
+			return nil, mapLuaError(err)
 		}
 	} else {
-		// Direct reservation without shop_items (e.g. flash-sale concurrency reserve, standalone voucher/coin reserve)
-		vSpecs, rVouchers, vErr := s.resolveBareVoucherReservations(ctx, userID, req.GetShopVoucherIds(), req.GetPlatformVoucherId(), req.GetFreeshipVoucherId(), now)
-		if vErr != nil {
-			return nil, vErr
+		// Vouchers and shop discount programs require shop_items so discount amounts, budgets,
+		// categories, and per-user fallbacks are computed accurately by the calculator.
+		if hasAnyVoucher(req.GetShopVoucherIds(), req.GetPlatformVoucherId(), req.GetFreeshipVoucherId()) ||
+			len(req.GetShopDiscountProgramItems()) > 0 {
+			return nil, status.Error(codes.InvalidArgument, "shop_items is required when reserving vouchers or shop discount programs")
 		}
-		voucherSpecs = vSpecs
-		reservedVouchers = rVouchers
+
+		flashSpecs, reservedFlash, err = s.resolveBareFlashReservations(ctx, req.GetFlashSaleItems(), now)
+		if err != nil {
+			return nil, err
+		}
 		coinsToDeduct = req.GetCoinsToUse()
 		breakdown = &promotionv1.DiscountBreakdown{
 			TotalCoinsDiscountVnd: coinsToDeduct,
 			PlatformCostVnd:       coinsToDeduct,
 			TotalDiscountVnd:      coinsToDeduct,
 		}
-		for _, rv := range reservedVouchers {
-			switch rv.Scope {
-			case domain.VoucherScopeShop:
-				breakdown.TotalShopVoucherDiscountVnd += rv.DiscountVND
-				breakdown.ShopCostVnd += rv.DiscountVND
-			case domain.VoucherScopePlatform:
-				breakdown.TotalPlatformVoucherDiscountVnd += rv.DiscountVND
-				breakdown.PlatformCostVnd += rv.DiscountVND
-			case domain.VoucherScopeFreeship:
-				breakdown.TotalFreeshipDiscountVnd += rv.DiscountVND
-				breakdown.PlatformCostVnd += rv.DiscountVND
-			}
-			breakdown.TotalDiscountVnd += rv.DiscountVND
+
+		luaOutcome, err = s.engine.Reserve(ctx, lua.ReserveInput{
+			OrderID:    orderID,
+			UserID:     userID,
+			FlashItems: flashSpecs,
+		})
+		if err != nil {
+			return nil, mapLuaError(err)
 		}
 	}
 
-	// Atomically execute Redis Lua reservation (also guards concurrent duplicate order_id!)
-	luaOutcome, err := s.engine.Reserve(ctx, lua.ReserveInput{
-		OrderID:    orderID,
-		UserID:     userID,
-		FlashItems: flashSpecs,
-		Vouchers:   voucherSpecs,
-	})
-	if err != nil {
-		return nil, mapLuaError(err)
-	}
-
 	if luaOutcome.AlreadyReserved {
-		// Wait briefly in case the winning concurrent call is finishing its Postgres commit.
 		saved := s.waitForCommittedReservation(ctx, orderID)
 		if saved != nil {
+			if saved.UserID != "" && saved.UserID != userID {
+				return nil, status.Error(codes.PermissionDenied, "cannot access another user's promotion reservation")
+			}
 			if saved.Status == domain.ReservationStatusReleased {
-				return nil, status.Error(codes.FailedPrecondition, "promotion reservation for this order was already released")
+				return nil, status.Error(codes.FailedPrecondition, "RESERVATION_ALREADY_RELEASED: promotion reservation for this order was already released")
 			}
 			return &promotionv1.ReservePromotionResponse{
 				Reserved:        true,
@@ -796,30 +995,39 @@ func (s *PromotionService) ReservePromotion(ctx context.Context, req *promotionv
 		return nil, status.Errorf(codes.Internal, "marshal discount breakdown: %v", err)
 	}
 
-	// Persist reservation + atomically deduct coins in Postgres.
-	// On ANY failure after Redis succeeded, immediately compensate via release_atomic.lua!
 	existing, alreadyCommitted, err := s.store.CommitReservation(ctx, domain.PromotionReservation{
-		OrderID:        orderID,
-		UserID:         userID,
-		Status:         domain.ReservationStatusReserved,
-		CoinsUsed:      coinsToDeduct,
-		Vouchers:       reservedVouchers,
-		FlashSaleItems: reservedFlash,
-		BreakdownJSON:  breakdownBytes,
-	})
+		OrderID:          orderID,
+		UserID:           userID,
+		Status:           domain.ReservationStatusReserved,
+		CoinsUsed:        coinsToDeduct,
+		Vouchers:         reservedVouchers,
+		FlashSaleItems:   reservedFlash,
+		ShopProgramItems: reservedShopProgs,
+		BreakdownJSON:    breakdownBytes,
+	}, now)
 	if err != nil {
 		s.compensateRedisRelease(orderID)
 		switch {
 		case errors.Is(err, store.ErrInsufficientCoins):
-			return nil, status.Error(codes.FailedPrecondition, "insufficient coin balance")
+			return nil, status.Error(codes.FailedPrecondition, "INSUFFICIENT_COINS: insufficient coin balance")
 		case errors.Is(err, store.ErrReservationAlreadyReleased):
-			return nil, status.Error(codes.FailedPrecondition, "promotion reservation for this order was already released")
+			return nil, status.Error(codes.FailedPrecondition, "RESERVATION_ALREADY_RELEASED: promotion reservation for this order was already released")
+		case errors.Is(err, store.ErrVoucherNotEligibleForCommit):
+			return nil, status.Errorf(codes.FailedPrecondition, "VOUCHER_UNAVAILABLE_ON_COMMIT: %v", err)
+		case errors.Is(err, store.ErrFlashNotEligibleForCommit):
+			return nil, status.Errorf(codes.FailedPrecondition, "FLASH_UNAVAILABLE_ON_COMMIT: %v", err)
+		case errors.Is(err, store.ErrShopProgramNotEligibleForCommit):
+			return nil, status.Errorf(codes.FailedPrecondition, "SHOP_PROGRAM_UNAVAILABLE_ON_COMMIT: %v", err)
 		default:
 			return nil, status.Errorf(codes.Internal, "persist promotion reservation: %v", err)
 		}
 	}
 
 	if alreadyCommitted {
+		if existing.UserID != "" && existing.UserID != userID {
+			s.compensateRedisRelease(orderID)
+			return nil, status.Error(codes.PermissionDenied, "cannot access another user's promotion reservation")
+		}
 		return &promotionv1.ReservePromotionResponse{
 			Reserved:        true,
 			AlreadyReserved: true,
@@ -835,8 +1043,7 @@ func (s *PromotionService) ReservePromotion(ctx context.Context, req *promotionv
 }
 
 // ReleasePromotion idempotently compensates remaining Redis flash-sale slots, voucher quotas/budgets,
-// per-user usage counters, and Postgres coin deductions for an order without double-releasing
-// shops already released by ReleasePromotionShop.
+// shop discount program per-user counters, and Postgres coin deductions for an order.
 func (s *PromotionService) ReleasePromotion(ctx context.Context, req *promotionv1.ReleasePromotionRequest) (*promotionv1.ReleasePromotionResponse, error) {
 	if _, err := requireAdminOrService(ctx, "only admins or internal services can release promotions"); err != nil {
 		return nil, err
@@ -850,10 +1057,9 @@ func (s *PromotionService) ReleasePromotion(ctx context.Context, req *promotionv
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	// Collect known touched keys from Postgres (optional hint for Redis Cluster semantics)
 	var extraKeys []string
 	if saved, err := s.store.GetReservation(ctx, orderID); err == nil {
-		extraKeys = collectReservationRedisKeys(saved.UserID, saved.FlashSaleItems, saved.Vouchers)
+		extraKeys = collectReservationRedisKeys(saved.UserID, saved.FlashSaleItems, saved.Vouchers, saved.ShopProgramItems)
 	}
 
 	pgAlreadyReleased, err := s.store.ReleaseReservation(ctx, orderID)
@@ -873,8 +1079,7 @@ func (s *PromotionService) ReleasePromotion(ctx context.Context, req *promotionv
 }
 
 // ReleasePromotionShop idempotently releases one shop sub-order's share (coins, shop voucher,
-// flash sale slots) from a checkout group's reservation. When every shop in the reservation has
-// been released, platform/freeship vouchers are also released and the reservation becomes RELEASED.
+// flash sale slots, shop discount program limits) from a checkout group's reservation.
 func (s *PromotionService) ReleasePromotionShop(ctx context.Context, req *promotionv1.ReleasePromotionShopRequest) (*promotionv1.ReleasePromotionShopResponse, error) {
 	if _, err := requireAdminOrService(ctx, "only admins or internal services can release shop promotions"); err != nil {
 		return nil, err
@@ -902,36 +1107,45 @@ func (s *PromotionService) ReleasePromotionShop(ctx context.Context, req *promot
 	}
 
 	if res.AllReleased {
-		extraKeys := collectReservationRedisKeys(res.UserID, res.AllFlash, res.AllVouchers)
+		extraKeys := collectReservationRedisKeys(res.UserID, res.AllFlash, res.AllVouchers, res.AllShopPrograms)
 		if _, err := s.engine.Release(ctx, orderID, extraKeys...); err != nil {
 			return nil, status.Errorf(codes.Internal, "release final redis promotion reservation: %v", err)
 		}
-	} else if len(res.TargetFlash) > 0 || len(res.TargetVouchers) > 0 {
-		targetRemKeys := make([]string, 0, len(res.TargetFlash)+len(res.TargetVouchers))
+	} else if len(res.TargetFlash) > 0 || len(res.TargetVouchers) > 0 || len(res.TargetShopPrograms) > 0 {
+		targetKeys := make([]string, 0, len(res.TargetFlash)+len(res.TargetVouchers)+len(res.TargetShopPrograms))
 		for _, f := range res.TargetFlash {
-			targetRemKeys = append(targetRemKeys, lua.FlashRemainingKey(f.FlashSaleItemID))
+			targetKeys = append(targetKeys, lua.FlashRemainingKey(f.FlashSaleItemID))
 		}
 		for _, v := range res.TargetVouchers {
-			targetRemKeys = append(targetRemKeys, lua.VoucherRemainingKey(v.VoucherID))
+			targetKeys = append(targetKeys, lua.VoucherRemainingKey(v.VoucherID))
 		}
-		extraKeys := collectReservationRedisKeys(res.UserID, res.TargetFlash, res.TargetVouchers)
-		if _, err := s.engine.ReleasePartial(ctx, orderID, targetRemKeys, extraKeys...); err != nil {
+		for _, p := range res.TargetShopPrograms {
+			targetKeys = append(targetKeys, lua.ShopProgramUserKey(p.ShopDiscountProgramItemID, res.UserID))
+		}
+		extraKeys := collectReservationRedisKeys(res.UserID, res.TargetFlash, res.TargetVouchers, res.TargetShopPrograms)
+		if _, err := s.engine.ReleasePartial(ctx, orderID, targetKeys, extraKeys...); err != nil {
 			return nil, status.Errorf(codes.Internal, "release partial redis promotion reservation: %v", err)
 		}
 	}
 
 	return &promotionv1.ReleasePromotionShopResponse{
-		Released:                  true,
-		AlreadyReleased:           res.AlreadyReleased,
-		CoinsReturned:             res.CoinsReturned,
-		ShopVoucherReleased:       res.ShopVoucherReleased,
-		FlashSaleQuantityReleased: res.FlashQuantityReleased,
-		PlatformVoucherReleased:   res.PlatformVoucherReleased,
+		Released:                    true,
+		AlreadyReleased:             res.AlreadyReleased,
+		CoinsReturned:               res.CoinsReturned,
+		ShopVoucherReleased:         res.ShopVoucherReleased,
+		FlashSaleQuantityReleased:   res.FlashQuantityReleased,
+		ShopProgramQuantityReleased: res.ShopProgramQuantityReleased,
+		PlatformVoucherReleased:     res.PlatformVoucherReleased,
 	}, nil
 }
 
-func collectReservationRedisKeys(userID string, flashItems []domain.ReservedFlashItem, vouchers []domain.ReservedVoucher) []string {
-	keys := make([]string, 0, len(flashItems)*2+len(vouchers)*3)
+func collectReservationRedisKeys(
+	userID string,
+	flashItems []domain.ReservedFlashItem,
+	vouchers []domain.ReservedVoucher,
+	shopProgs []domain.ReservedShopProgramItem,
+) []string {
+	keys := make([]string, 0, len(flashItems)*2+len(vouchers)*3+len(shopProgs))
 	for _, f := range flashItems {
 		keys = append(keys, lua.FlashRemainingKey(f.FlashSaleItemID), lua.FlashUserKey(f.FlashSaleItemID, userID))
 	}
@@ -941,6 +1155,9 @@ func collectReservationRedisKeys(userID string, flashItems []domain.ReservedFlas
 			lua.VoucherUserKey(v.VoucherID, userID),
 			lua.VoucherBudgetRemainingKey(v.VoucherID),
 		)
+	}
+	for _, p := range shopProgs {
+		keys = append(keys, lua.ShopProgramUserKey(p.ShopDiscountProgramItemID, userID))
 	}
 	return keys
 }
@@ -973,62 +1190,22 @@ func (s *PromotionService) waitForCommittedReservation(ctx context.Context, orde
 	return nil
 }
 
-func (s *PromotionService) resolveFlashReservations(
+type mergedFlashReq struct {
+	itemID string
+	skuID  string
+	shopID string
+	qty    int32
+}
+
+func (s *PromotionService) resolveFlashFromShopItems(
 	ctx context.Context,
-	explicit []*promotionv1.FlashSaleReservationItem,
 	shopItems []*promotionv1.ShopDiscountInput,
+	explicit []*promotionv1.FlashSaleReservationItem,
 	now time.Time,
 ) ([]lua.FlashReserveSpec, []domain.ReservedFlashItem, error) {
-	type mergedFlash struct {
-		itemID string
-		skuID  string
-		shopID string
-		qty    int32
-	}
-	merged := make(map[string]*mergedFlash)
+	merged := make(map[string]*mergedFlashReq)
 	order := make([]string, 0)
 
-	addItem := func(itemID, skuID, shopID string, qty int32) error {
-		itemID = strings.TrimSpace(itemID)
-		if itemID == "" {
-			return nil
-		}
-		if err := validateKeySegment("flash_sale_item_id", itemID); err != nil {
-			return status.Error(codes.InvalidArgument, err.Error())
-		}
-		if qty <= 0 {
-			return status.Errorf(codes.InvalidArgument, "flash sale item %s quantity must be > 0", itemID)
-		}
-		skuID = strings.TrimSpace(skuID)
-		shopID = strings.TrimSpace(shopID)
-		if cur, ok := merged[itemID]; ok {
-			cur.qty += qty
-			if cur.skuID == "" {
-				cur.skuID = skuID
-			}
-			if cur.shopID == "" {
-				cur.shopID = shopID
-			}
-			return nil
-		}
-		merged[itemID] = &mergedFlash{itemID: itemID, skuID: skuID, shopID: shopID, qty: qty}
-		order = append(order, itemID)
-		return nil
-	}
-
-	explicitSet := make(map[string]bool, len(explicit))
-	for _, f := range explicit {
-		id := strings.TrimSpace(f.GetFlashSaleItemId())
-		if id == "" {
-			return nil, nil, status.Error(codes.InvalidArgument, "flash_sale_item_id is required")
-		}
-		explicitSet[id] = true
-		if err := addItem(id, f.GetSkuId(), f.GetShopId(), f.GetQuantity()); err != nil {
-			return nil, nil, err
-		}
-	}
-
-	// Include flash items referenced only inside shop_items without double-counting explicit entries.
 	for _, shop := range shopItems {
 		shopID := strings.TrimSpace(shop.GetShopId())
 		for _, line := range shop.GetItems() {
@@ -1036,18 +1213,89 @@ func (s *PromotionService) resolveFlashReservations(
 			if id == "" {
 				continue
 			}
-			if explicitSet[id] {
-				if cur := merged[id]; cur != nil && cur.shopID == "" && shopID != "" {
-					cur.shopID = shopID
-				}
-				continue
-			}
-			if err := addItem(id, line.GetSkuId(), shopID, line.GetQuantity()); err != nil {
+			if err := addMergedFlash(merged, &order, id, line.GetSkuId(), shopID, line.GetQuantity()); err != nil {
 				return nil, nil, err
 			}
 		}
 	}
 
+	// If explicit flash_sale_items were also provided alongside shop_items, verify exact parity
+	// so callers cannot claim a smaller quantity in flash_sale_items than in shop_items.
+	if len(explicit) > 0 {
+		explicitQty := make(map[string]int32, len(explicit))
+		for _, f := range explicit {
+			id := strings.TrimSpace(f.GetFlashSaleItemId())
+			if id == "" {
+				return nil, nil, status.Error(codes.InvalidArgument, "flash_sale_item_id is required")
+			}
+			if f.GetQuantity() <= 0 {
+				return nil, nil, status.Errorf(codes.InvalidArgument, "flash sale item %s quantity must be > 0", id)
+			}
+			explicitQty[id] += f.GetQuantity()
+		}
+		if len(explicitQty) != len(merged) {
+			return nil, nil, status.Error(codes.InvalidArgument, "flash_sale_items does not match flash items in shop_items")
+		}
+		for id, qty := range explicitQty {
+			mf, ok := merged[id]
+			if !ok || mf.qty != qty {
+				return nil, nil, status.Errorf(codes.InvalidArgument, "flash_sale_items quantity for %s (%d) does not match shop_items", id, qty)
+			}
+		}
+	}
+
+	return s.validateMergedFlashReservations(ctx, merged, order, now)
+}
+
+func (s *PromotionService) resolveBareFlashReservations(
+	ctx context.Context,
+	explicit []*promotionv1.FlashSaleReservationItem,
+	now time.Time,
+) ([]lua.FlashReserveSpec, []domain.ReservedFlashItem, error) {
+	merged := make(map[string]*mergedFlashReq, len(explicit))
+	order := make([]string, 0, len(explicit))
+	for _, f := range explicit {
+		id := strings.TrimSpace(f.GetFlashSaleItemId())
+		if id == "" {
+			return nil, nil, status.Error(codes.InvalidArgument, "flash_sale_item_id is required")
+		}
+		if err := addMergedFlash(merged, &order, id, f.GetSkuId(), f.GetShopId(), f.GetQuantity()); err != nil {
+			return nil, nil, err
+		}
+	}
+	return s.validateMergedFlashReservations(ctx, merged, order, now)
+}
+
+func addMergedFlash(merged map[string]*mergedFlashReq, order *[]string, itemID, skuID, shopID string, qty int32) error {
+	if err := validateKeySegment("flash_sale_item_id", itemID); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	if qty <= 0 {
+		return status.Errorf(codes.InvalidArgument, "flash sale item %s quantity must be > 0", itemID)
+	}
+	skuID = strings.TrimSpace(skuID)
+	shopID = strings.TrimSpace(shopID)
+	if cur, ok := merged[itemID]; ok {
+		cur.qty += qty
+		if cur.skuID == "" {
+			cur.skuID = skuID
+		}
+		if cur.shopID == "" {
+			cur.shopID = shopID
+		}
+		return nil
+	}
+	merged[itemID] = &mergedFlashReq{itemID: itemID, skuID: skuID, shopID: shopID, qty: qty}
+	*order = append(*order, itemID)
+	return nil
+}
+
+func (s *PromotionService) validateMergedFlashReservations(
+	ctx context.Context,
+	merged map[string]*mergedFlashReq,
+	order []string,
+	now time.Time,
+) ([]lua.FlashReserveSpec, []domain.ReservedFlashItem, error) {
 	sort.Strings(order)
 	specs := make([]lua.FlashReserveSpec, 0, len(order))
 	reserved := make([]domain.ReservedFlashItem, 0, len(order))
@@ -1064,7 +1312,8 @@ func (s *PromotionService) resolveFlashReservations(
 		if fi.Status != domain.FlashStatusApproved {
 			return nil, nil, status.Errorf(codes.FailedPrecondition, "flash sale item %s is not approved", id)
 		}
-		if now.Before(fi.StartsAt) || now.After(fi.EndsAt) {
+		// Strictly half-open [StartsAt, EndsAt): upcoming and ended slots are rejected.
+		if now.Before(fi.StartsAt) || !now.Before(fi.EndsAt) {
 			return nil, nil, status.Errorf(codes.FailedPrecondition, "flash sale item %s is outside active window", id)
 		}
 		if mf.skuID != "" && fi.SKUID != "" && mf.skuID != fi.SKUID {
@@ -1094,92 +1343,28 @@ func (s *PromotionService) resolveFlashReservations(
 	return specs, reserved, nil
 }
 
-func (s *PromotionService) resolveBareVoucherReservations(
-	ctx context.Context,
-	userID string,
-	shopVoucherIDs map[string]string,
-	platformVoucherID string,
-	freeshipVoucherID string,
-	now time.Time,
-) ([]lua.VoucherReserveSpec, []domain.ReservedVoucher, error) {
-	type reqVoucher struct {
-		id            string
-		expectedScope string
-		expectedShop  string
+func countDistinctShopProgramItems(shopItems []*promotionv1.ShopDiscountInput) int {
+	seen := make(map[string]struct{})
+	for _, shop := range shopItems {
+		for _, line := range shop.GetItems() {
+			if id := strings.TrimSpace(line.GetShopDiscountProgramItemId()); id != "" {
+				seen[id] = struct{}{}
+			}
+		}
 	}
-	var list []reqVoucher
+	return len(seen)
+}
 
-	shopKeys := make([]string, 0, len(shopVoucherIDs))
-	for k := range shopVoucherIDs {
-		shopKeys = append(shopKeys, k)
+func hasAnyVoucher(shopVouchers map[string]string, platVoucher, freeVoucher string) bool {
+	if strings.TrimSpace(platVoucher) != "" || strings.TrimSpace(freeVoucher) != "" {
+		return true
 	}
-	sort.Strings(shopKeys)
-	for _, shopID := range shopKeys {
-		vid := strings.TrimSpace(shopVoucherIDs[shopID])
-		if vid != "" {
-			list = append(list, reqVoucher{id: vid, expectedScope: domain.VoucherScopeShop, expectedShop: shopID})
+	for _, vid := range shopVouchers {
+		if strings.TrimSpace(vid) != "" {
+			return true
 		}
 	}
-	if vid := strings.TrimSpace(platformVoucherID); vid != "" {
-		list = append(list, reqVoucher{id: vid, expectedScope: domain.VoucherScopePlatform})
-	}
-	if vid := strings.TrimSpace(freeshipVoucherID); vid != "" {
-		list = append(list, reqVoucher{id: vid, expectedScope: domain.VoucherScopeFreeship})
-	}
-
-	seen := make(map[string]bool, len(list))
-	specs := make([]lua.VoucherReserveSpec, 0, len(list))
-	reserved := make([]domain.ReservedVoucher, 0, len(list))
-
-	for _, item := range list {
-		cand, err := s.loadVoucherCandidate(ctx, item.id, userID)
-		if err != nil {
-			return nil, nil, status.Errorf(codes.Internal, "load voucher %s: %v", item.id, err)
-		}
-		if !cand.Found || cand.Voucher == nil {
-			return nil, nil, status.Errorf(codes.NotFound, "voucher %s not found", item.id)
-		}
-		v := cand.Voucher
-		if seen[v.ID] {
-			return nil, nil, status.Errorf(codes.InvalidArgument, "duplicate voucher %s in reservation", v.ID)
-		}
-		seen[v.ID] = true
-
-		if !v.IsActive {
-			return nil, nil, status.Errorf(codes.FailedPrecondition, "voucher %s is inactive", v.Code)
-		}
-		if v.Scope != item.expectedScope {
-			return nil, nil, status.Errorf(codes.FailedPrecondition, "voucher %s scope mismatch", v.Code)
-		}
-		if item.expectedScope == domain.VoucherScopeShop && v.ShopID != item.expectedShop {
-			return nil, nil, status.Errorf(codes.FailedPrecondition, "voucher %s does not belong to shop %s", v.Code, item.expectedShop)
-		}
-		if now.Before(v.StartsAt) || now.After(v.EndsAt) {
-			return nil, nil, status.Errorf(codes.FailedPrecondition, "voucher %s is not within active time window", v.Code)
-		}
-		if v.MinOrderVND > 0 {
-			return nil, nil, status.Errorf(codes.FailedPrecondition, "voucher %s requires minimum order %d VND", v.Code, v.MinOrderVND)
-		}
-
-		var disc int64
-		if v.DiscountType == domain.DiscountTypeFixed {
-			disc = v.ValueVND
-		}
-		specs = append(specs, lua.VoucherReserveSpec{
-			VoucherID:    v.ID,
-			PerUserLimit: v.PerUserLimit,
-			DiscountVND:  disc,
-			HasBudget:    v.BudgetVND > 0,
-		})
-		reserved = append(reserved, domain.ReservedVoucher{
-			VoucherID:   v.ID,
-			Scope:       v.Scope,
-			ShopID:      v.ShopID,
-			DiscountVND: disc,
-			HasBudget:   v.BudgetVND > 0,
-		})
-	}
-	return specs, reserved, nil
+	return false
 }
 
 func (s *PromotionService) buildCalcInput(
@@ -1192,24 +1377,113 @@ func (s *PromotionService) buildCalcInput(
 	coinsToUse int64,
 	strict bool,
 ) (calculator.Input, error) {
+	now := s.nowFn()
+
+	var platformCand *calculator.VoucherCandidate
+	if vid := strings.TrimSpace(platformVoucherID); vid != "" {
+		var err error
+		platformCand, err = s.loadVoucherCandidate(ctx, vid, userID)
+		if err != nil {
+			return calculator.Input{}, status.Errorf(codes.Internal, "load platform voucher %s: %v", vid, err)
+		}
+		if platformCand.Found && platformCand.Voucher != nil && len(platformCand.Voucher.CategoryIDs) > 0 {
+			allowed, catErr := s.resolveAllowedCategories(ctx, platformCand.Voucher.CategoryIDs)
+			if catErr != nil {
+				return calculator.Input{}, catErr
+			}
+			platformCand.AllowedCategoryIDs = allowed
+		}
+	}
+
+	// Collect SKU IDs for authoritative category lookup (when category-scoped platform voucher is used)
+	// and auto-lookup of active shop discount programs in preview mode.
+	needCategorySKUs := platformCand != nil && platformCand.Found && platformCand.Voucher != nil && len(platformCand.Voucher.CategoryIDs) > 0
+	allSKUs := make([]string, 0)
+	autoProgSKUs := make([]string, 0)
+	for _, ps := range pbShops {
+		for _, pi := range ps.GetItems() {
+			skuID := strings.TrimSpace(pi.GetSkuId())
+			if skuID == "" {
+				continue
+			}
+			if needCategorySKUs {
+				allSKUs = append(allSKUs, skuID)
+			}
+			if !strict && strings.TrimSpace(pi.GetShopDiscountProgramItemId()) == "" {
+				autoProgSKUs = append(autoProgSKUs, skuID)
+			}
+		}
+	}
+
+	var skuMeta map[string]*productv1.SKU
+	if needCategorySKUs && len(allSKUs) > 0 && s.productClient != nil {
+		var err error
+		skuMeta, err = s.productClient.GetSKUsBatch(ctx, allSKUs)
+		if err != nil {
+			return calculator.Input{}, status.Errorf(codes.Unavailable, "resolve SKU categories from product service: %v", err)
+		}
+	}
+
+	activeShopProgByShopSKU := make(map[string]domain.ShopDiscountProgramItem)
+	if !strict && len(autoProgSKUs) > 0 {
+		activeProgs, err := s.store.ListActiveShopDiscounts(ctx, normalizeUniqueStrings(autoProgSKUs), "", now)
+		if err != nil {
+			return calculator.Input{}, status.Errorf(codes.Internal, "load active shop discounts for preview: %v", err)
+		}
+		for _, it := range activeProgs {
+			activeShopProgByShopSKU[it.ShopID+"|"+it.SKUID] = it
+		}
+	}
+
 	shops := make([]calculator.ShopInput, 0, len(pbShops))
 	flashCandidates := make(map[string]calculator.FlashItemCandidate)
+	shopProgCandidates := make(map[string]calculator.ShopProgramItemCandidate)
 
 	for _, ps := range pbShops {
+		shopID := strings.TrimSpace(ps.GetShopId())
 		si := calculator.ShopInput{
-			ShopID:         strings.TrimSpace(ps.GetShopId()),
-			SubtotalVND:    ps.GetSubtotalVnd(),
-			ShippingFeeVND: ps.GetShippingFeeVnd(),
-			Items:          make([]calculator.LineItemInput, 0, len(ps.GetItems())),
+			ShopID:              shopID,
+			SubtotalVND:         ps.GetSubtotalVnd(),
+			ShippingFeeVND:      ps.GetShippingFeeVnd(),
+			FreeShipEnabled:     ps.GetFreeShipEnabled(),
+			FreeShipMinOrderVND: ps.GetFreeShipMinOrderVnd(),
+			FreeShipMaxVND:      ps.GetFreeShipMaxVnd(),
+			Items:               make([]calculator.LineItemInput, 0, len(ps.GetItems())),
 		}
 		for _, pi := range ps.GetItems() {
+			skuID := strings.TrimSpace(pi.GetSkuId())
 			fiID := strings.TrimSpace(pi.GetFlashSaleItemId())
+			spID := strings.TrimSpace(pi.GetShopDiscountProgramItemId())
+			// Never trust client-supplied category_id; resolve strictly from ProductService.
+			catID := ""
+			if skuMeta != nil && skuID != "" {
+				if sk, ok := skuMeta[skuID]; ok {
+					catID = sk.GetCategoryId()
+				}
+			}
+
+			// In non-strict preview mode, automatically look up active shop discount programs for every SKU
+			// (including flash lines) so lines fall back to shop program price when flash cannot apply.
+			autoShopProg := false
+			if !strict && spID == "" && skuID != "" {
+				if autoItem, ok := activeShopProgByShopSKU[shopID+"|"+skuID]; ok {
+					spID = autoItem.ID
+					autoShopProg = true
+					cp := autoItem
+					shopProgCandidates[spID] = calculator.ShopProgramItemCandidate{Item: &cp, Found: true}
+				}
+			}
+
 			si.Items = append(si.Items, calculator.LineItemInput{
-				SKUID:           strings.TrimSpace(pi.GetSkuId()),
-				Quantity:        pi.GetQuantity(),
-				UnitPriceVND:    pi.GetUnitPriceVnd(),
-				FlashSaleItemID: fiID,
+				SKUID:                     skuID,
+				Quantity:                  pi.GetQuantity(),
+				UnitPriceVND:              pi.GetUnitPriceVnd(),
+				FlashSaleItemID:           fiID,
+				CategoryID:                catID,
+				ShopDiscountProgramItemID: spID,
+				AutoShopProgram:           autoShopProg,
 			})
+
 			if fiID != "" {
 				if _, loaded := flashCandidates[fiID]; !loaded {
 					fi, err := s.store.GetFlashSaleItem(ctx, fiID)
@@ -1224,8 +1498,80 @@ func (s *PromotionService) buildCalcInput(
 					}
 				}
 			}
+
+			if spID != "" {
+				if _, loaded := shopProgCandidates[spID]; !loaded {
+					spi, err := s.store.GetShopDiscountProgramItem(ctx, spID)
+					if err != nil {
+						if errors.Is(err, store.ErrNotFound) {
+							shopProgCandidates[spID] = calculator.ShopProgramItemCandidate{Found: false}
+						} else {
+							return calculator.Input{}, status.Errorf(codes.Internal, "load shop discount program item %s: %v", spID, err)
+						}
+					} else {
+						shopProgCandidates[spID] = calculator.ShopProgramItemCandidate{Item: spi, Found: true}
+					}
+				}
+			}
 		}
 		shops = append(shops, si)
+	}
+
+	// Hydrate live per-user counters and (in Preview mode) live Redis flash remaining slots.
+	if len(flashCandidates) > 0 || (userID != "" && len(shopProgCandidates) > 0) {
+		redisKeys := make([]string, 0, len(flashCandidates)*2+len(shopProgCandidates))
+		for id, cand := range flashCandidates {
+			if !cand.Found {
+				continue
+			}
+			if userID != "" {
+				redisKeys = append(redisKeys, lua.FlashUserKey(id, userID))
+			}
+			if !strict {
+				redisKeys = append(redisKeys, lua.FlashRemainingKey(id))
+			}
+		}
+		if userID != "" {
+			for id, cand := range shopProgCandidates {
+				if cand.Found {
+					redisKeys = append(redisKeys, lua.ShopProgramUserKey(id, userID))
+				}
+			}
+		}
+		if len(redisKeys) > 0 {
+			vals, err := s.engine.MGetInt64(ctx, redisKeys)
+			if err != nil {
+				return calculator.Input{}, status.Errorf(codes.Internal, "read live item counters: %v", err)
+			}
+			for id, cand := range flashCandidates {
+				if !cand.Found {
+					continue
+				}
+				if userID != "" {
+					if v, ok := vals[lua.FlashUserKey(id, userID)]; ok {
+						cand.UserUsedCount = int32(v)
+					}
+				}
+				if !strict {
+					cand.CheckRemaining = true
+					if v, ok := vals[lua.FlashRemainingKey(id)]; ok {
+						cand.RemainingSlots = int32(v)
+					} else {
+						// Missing Redis remaining key is treated as sold out in Preview.
+						cand.RemainingSlots = 0
+					}
+				}
+				flashCandidates[id] = cand
+			}
+			if userID != "" {
+				for id, cand := range shopProgCandidates {
+					if v, ok := vals[lua.ShopProgramUserKey(id, userID)]; ok {
+						cand.UserUsedCount = int32(v)
+						shopProgCandidates[id] = cand
+					}
+				}
+			}
+		}
 	}
 
 	shopVoucherCands := make(map[string]*calculator.VoucherCandidate, len(shopVoucherIDs))
@@ -1239,15 +1585,6 @@ func (s *PromotionService) buildCalcInput(
 			return calculator.Input{}, status.Errorf(codes.Internal, "load shop voucher %s: %v", vid, err)
 		}
 		shopVoucherCands[shopID] = cand
-	}
-
-	var platformCand *calculator.VoucherCandidate
-	if vid := strings.TrimSpace(platformVoucherID); vid != "" {
-		var err error
-		platformCand, err = s.loadVoucherCandidate(ctx, vid, userID)
-		if err != nil {
-			return calculator.Input{}, status.Errorf(codes.Internal, "load platform voucher %s: %v", vid, err)
-		}
 	}
 
 	var freeshipCand *calculator.VoucherCandidate
@@ -1269,15 +1606,16 @@ func (s *PromotionService) buildCalcInput(
 	}
 
 	return calculator.Input{
-		Now:             s.nowFn(),
-		Strict:          strict,
-		Shops:           shops,
-		FlashItems:      flashCandidates,
-		ShopVouchers:    shopVoucherCands,
-		PlatformVoucher: platformCand,
-		FreeshipVoucher: freeshipCand,
-		CoinsToUse:      coinsToUse,
-		AvailableCoins:  availCoins,
+		Now:              now,
+		Strict:           strict,
+		Shops:            shops,
+		FlashItems:       flashCandidates,
+		ShopProgramItems: shopProgCandidates,
+		ShopVouchers:     shopVoucherCands,
+		PlatformVoucher:  platformCand,
+		FreeshipVoucher:  freeshipCand,
+		CoinsToUse:       coinsToUse,
+		AvailableCoins:   availCoins,
 	}, nil
 }
 
@@ -1288,6 +1626,10 @@ func (s *PromotionService) loadVoucherCandidate(ctx context.Context, idOrCode, u
 	}
 	if err != nil {
 		return nil, err
+	}
+	// Self-heal Redis status key if DB shows PAUSED/DELETED.
+	if st := v.EffectiveStatus(); st != domain.VoucherStatusActive {
+		_ = s.engine.SetVoucherStatusKey(ctx, v.ID, st)
 	}
 	remQuota, remBudget, userUsed, err := s.readVoucherLiveCounters(ctx, v, userID)
 	if err != nil {
@@ -1364,10 +1706,19 @@ func voucherToProto(
 		}
 	}
 
+	st := v.EffectiveStatus()
+	isActive := st == domain.VoucherStatusActive && v.IsActive
+
 	eligible := true
 	ineligibleReason := ""
 	switch {
-	case !v.IsActive:
+	case st == domain.VoucherStatusDeleted:
+		eligible = false
+		ineligibleReason = "voucher has been deleted"
+	case st == domain.VoucherStatusPaused:
+		eligible = false
+		ineligibleReason = "voucher is paused"
+	case !isActive:
 		eligible = false
 		ineligibleReason = "voucher is inactive"
 	case now.Before(v.StartsAt):
@@ -1409,10 +1760,12 @@ func voucherToProto(
 		UsedBudgetVnd:    usedBudget,
 		StartsAt:         timestamppb.New(v.StartsAt),
 		EndsAt:           timestamppb.New(v.EndsAt),
-		IsActive:         v.IsActive,
+		IsActive:         isActive,
 		Saved:            saved,
 		Eligible:         eligible,
 		IneligibleReason: ineligibleReason,
+		Status:           domainVoucherStatusToProto(st),
+		CategoryIds:      append([]string(nil), v.CategoryIDs...),
 	}
 }
 
@@ -1432,27 +1785,34 @@ func flashSaleToProto(fs *domain.FlashSale, liveSlots map[string]int64) *promoti
 		items = append(items, flashSaleItemToProto(item, rem))
 	}
 	return &promotionv1.FlashSale{
-		Id:       fs.ID,
-		Name:     fs.Name,
-		StartsAt: timestamppb.New(fs.StartsAt),
-		EndsAt:   timestamppb.New(fs.EndsAt),
-		Items:    items,
+		Id:                 fs.ID,
+		Name:               fs.Name,
+		StartsAt:           timestamppb.New(fs.StartsAt),
+		EndsAt:             timestamppb.New(fs.EndsAt),
+		Items:              items,
+		MinDiscountPercent: fs.MinDiscountPercent,
+		CategoryIds:        append([]string(nil), fs.CategoryIDs...),
 	}
 }
 
 func flashSaleItemToProto(item *domain.FlashSaleItem, remaining int32) *promotionv1.FlashSaleItem {
-	return &promotionv1.FlashSaleItem{
-		Id:              item.ID,
-		FlashSaleId:     item.FlashSaleID,
-		ShopId:          item.ShopID,
-		SkuId:           item.SKUID,
-		FlashPriceVnd:   item.FlashPriceVND,
-		TotalSlots:      item.TotalSlots,
-		RemainingSlots:  remaining,
-		PerUserLimit:    item.PerUserLimit,
-		Status:          domainFlashStatusToProto(item.Status),
-		RejectionReason: item.RejectionReason,
+	pb := &promotionv1.FlashSaleItem{
+		Id:               item.ID,
+		FlashSaleId:      item.FlashSaleID,
+		ShopId:           item.ShopID,
+		SkuId:            item.SKUID,
+		OriginalPriceVnd: item.OriginalPriceVND,
+		FlashPriceVnd:    item.FlashPriceVND,
+		TotalSlots:       item.TotalSlots,
+		RemainingSlots:   remaining,
+		PerUserLimit:     item.PerUserLimit,
+		Status:           domainFlashStatusToProto(item.Status),
+		RejectionReason:  item.RejectionReason,
 	}
+	if !item.CreatedAt.IsZero() {
+		pb.CreatedAt = timestamppb.New(item.CreatedAt)
+	}
+	return pb
 }
 
 func protoScopeToDomain(s promotionv1.VoucherScope) (string, error) {
@@ -1523,7 +1883,6 @@ func isVoucherBudgetExhausted(v *domain.Voucher, remBudget, orderAmountVND int64
 	if remBudget <= 0 {
 		return true
 	}
-	// review-A P2-11: Freeship discount is capped by shipping fee (unavailable here), not orderAmountVND.
 	if v.Scope == domain.VoucherScopeFreeship {
 		return false
 	}
@@ -1588,7 +1947,9 @@ func mapCalcError(err error) error {
 	switch {
 	case errors.Is(err, calculator.ErrVoucherIneligible),
 		errors.Is(err, calculator.ErrInsufficientCoins),
-		errors.Is(err, calculator.ErrInvalidFlashSaleItem):
+		errors.Is(err, calculator.ErrInvalidFlashSaleItem),
+		errors.Is(err, calculator.ErrInvalidShopDiscountProgram),
+		errors.Is(err, calculator.ErrShopProgramLimitExceeded):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	default:
 		return status.Errorf(codes.Internal, "calculate discounts: %v", err)
@@ -1604,13 +1965,16 @@ func mapLuaError(err error) error {
 			lua.ErrCodeVoucherBudgetExhausted:
 			return status.Error(codes.ResourceExhausted, resErr.Error())
 		case lua.ErrCodeFlashUserLimitExceeded,
+			lua.ErrCodeVoucherInactive,
 			lua.ErrCodeVoucherUserLimitExceeded,
 			lua.ErrCodeFlashNotInitialized,
 			lua.ErrCodeVoucherNotInitialized,
 			lua.ErrCodeVoucherBudgetNotInit,
+			lua.ErrCodeShopProgUserLimitExceeded,
 			lua.ErrCodeOrderAlreadyReleased:
 			return status.Error(codes.FailedPrecondition, resErr.Error())
-		case lua.ErrCodeInvalidFlashQty:
+		case lua.ErrCodeInvalidFlashQty,
+			lua.ErrCodeInvalidShopProgQty:
 			return status.Error(codes.InvalidArgument, resErr.Error())
 		default:
 			return status.Error(codes.FailedPrecondition, resErr.Error())

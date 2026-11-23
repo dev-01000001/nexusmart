@@ -344,6 +344,18 @@ class HeadlessBrowser {
   }
 
   async clearCookies() {
+    // Unload any live page first so in-flight /api/gw calls cannot 401 after cookies are cleared
+    // and trigger SessionContext's /dang-nhap?expired=1&next=... redirect racing the next navigation.
+    await this.send("Page.navigate", { url: "about:blank" });
+    await pollUntil(
+      async () => {
+        const done = await this.eval(
+          `window.location.href === "about:blank" && document.readyState === "complete"`
+        ).catch(() => false);
+        return { done: Boolean(done), detail: "about:blank" };
+      },
+      { timeoutMs: 15_000, intervalMs: 50, label: "unload page to about:blank before clearCookies" }
+    );
     await this.send("Network.clearBrowserCookies");
   }
 

@@ -13,39 +13,46 @@ import (
 // ShopReleaseResult captures the outcome of releasing a single shop's share of a reservation,
 // including Redis sync targets so callers can keep Redis idempotently in sync on retries.
 type ShopReleaseResult struct {
-	AlreadyReleased         bool
-	AllReleased             bool
-	UserID                  string
-	CoinsReturned           int64
-	ShopVoucherReleased     bool
-	FlashQuantityReleased   int32
-	PlatformVoucherReleased bool
-	TargetVouchers          []domain.ReservedVoucher
-	TargetFlash             []domain.ReservedFlashItem
-	AllVouchers             []domain.ReservedVoucher
-	AllFlash                []domain.ReservedFlashItem
+	AlreadyReleased             bool
+	AllReleased                 bool
+	UserID                      string
+	CoinsReturned               int64
+	ShopVoucherReleased         bool
+	FlashQuantityReleased       int32
+	ShopProgramQuantityReleased int32
+	PlatformVoucherReleased     bool
+	TargetVouchers              []domain.ReservedVoucher
+	TargetFlash                 []domain.ReservedFlashItem
+	TargetShopPrograms          []domain.ReservedShopProgramItem
+	AllVouchers                 []domain.ReservedVoucher
+	AllFlash                    []domain.ReservedFlashItem
+	AllShopPrograms             []domain.ReservedShopProgramItem
 }
 
 type shopReleasePlan struct {
-	alreadyReleased         bool
-	allReleased             bool
-	coinsToReturn           int64
-	vouchersToRelease       []domain.ReservedVoucher
-	flashToRelease          []domain.ReservedFlashItem
-	targetVouchersForRedis  []domain.ReservedVoucher
-	targetFlashForRedis     []domain.ReservedFlashItem
-	shopVoucherReleased     bool
-	flashQuantityReleased   int32
-	platformVoucherReleased bool
-	newReleasedShops        []string
+	alreadyReleased             bool
+	allReleased                 bool
+	coinsToReturn               int64
+	vouchersToRelease           []domain.ReservedVoucher
+	flashToRelease              []domain.ReservedFlashItem
+	shopProgramsToRelease       []domain.ReservedShopProgramItem
+	targetVouchersForRedis      []domain.ReservedVoucher
+	targetFlashForRedis         []domain.ReservedFlashItem
+	targetShopProgramsForRedis  []domain.ReservedShopProgramItem
+	shopVoucherReleased         bool
+	flashQuantityReleased       int32
+	shopProgramQuantityReleased int32
+	platformVoucherReleased     bool
+	newReleasedShops            []string
 }
 
 type fullRemainingPlan struct {
-	alreadyReleased   bool
-	coinsToReturn     int64
-	vouchersToRelease []domain.ReservedVoucher
-	flashToRelease    []domain.ReservedFlashItem
-	newReleasedShops  []string
+	alreadyReleased       bool
+	coinsToReturn         int64
+	vouchersToRelease     []domain.ReservedVoucher
+	flashToRelease        []domain.ReservedFlashItem
+	shopProgramsToRelease []domain.ReservedShopProgramItem
+	newReleasedShops      []string
 }
 
 func unmarshalBreakdownJSON(raw []byte) *promotionv1.DiscountBreakdown {
@@ -94,10 +101,18 @@ func resolveReservationShops(
 	res *domain.PromotionReservation,
 	bd *promotionv1.DiscountBreakdown,
 	lookupFlashShop func(itemID string) (string, error),
-) (allShops map[string]bool, flashShopByItemID map[string]string, voucherShopByID map[string]string, err error) {
+	lookupShopProgShop func(itemID string) (string, error),
+) (
+	allShops map[string]bool,
+	flashShopByItemID map[string]string,
+	shopProgShopByItemID map[string]string,
+	voucherShopByID map[string]string,
+	err error,
+) {
 	allShops = make(map[string]bool)
 	voucherShopByID = make(map[string]string)
 	flashShopByItemID = make(map[string]string)
+	shopProgShopByItemID = make(map[string]string)
 
 	for _, sb := range bd.GetShops() {
 		sid := strings.TrimSpace(sb.GetShopId())
@@ -120,19 +135,19 @@ func resolveReservationShops(
 		}
 	}
 
-	lookupCache := make(map[string]string)
+	flashLookupCache := make(map[string]string)
 	for _, rf := range res.FlashSaleItems {
 		sid := strings.TrimSpace(rf.ShopID)
 		if sid == "" && lookupFlashShop != nil {
-			if cached, ok := lookupCache[rf.FlashSaleItemID]; ok {
+			if cached, ok := flashLookupCache[rf.FlashSaleItemID]; ok {
 				sid = cached
 			} else {
 				looked, lErr := lookupFlashShop(rf.FlashSaleItemID)
 				if lErr != nil {
-					return nil, nil, nil, lErr
+					return nil, nil, nil, nil, lErr
 				}
 				sid = strings.TrimSpace(looked)
-				lookupCache[rf.FlashSaleItemID] = sid
+				flashLookupCache[rf.FlashSaleItemID] = sid
 			}
 		}
 		if sid != "" {
@@ -141,16 +156,38 @@ func resolveReservationShops(
 		}
 	}
 
-	return allShops, flashShopByItemID, voucherShopByID, nil
+	progLookupCache := make(map[string]string)
+	for _, rp := range res.ShopProgramItems {
+		sid := strings.TrimSpace(rp.ShopID)
+		if sid == "" && lookupShopProgShop != nil {
+			if cached, ok := progLookupCache[rp.ShopDiscountProgramItemID]; ok {
+				sid = cached
+			} else {
+				looked, lErr := lookupShopProgShop(rp.ShopDiscountProgramItemID)
+				if lErr != nil {
+					return nil, nil, nil, nil, lErr
+				}
+				sid = strings.TrimSpace(looked)
+				progLookupCache[rp.ShopDiscountProgramItemID] = sid
+			}
+		}
+		if sid != "" {
+			allShops[sid] = true
+			shopProgShopByItemID[rp.ShopDiscountProgramItemID] = sid
+		}
+	}
+
+	return allShops, flashShopByItemID, shopProgShopByItemID, voucherShopByID, nil
 }
 
 func planShopRelease(
 	res *domain.PromotionReservation,
 	shopID string,
 	lookupFlashShop func(itemID string) (string, error),
+	lookupShopProgShop func(itemID string) (string, error),
 ) (shopReleasePlan, error) {
 	bd := unmarshalBreakdownJSON(res.BreakdownJSON)
-	allShops, flashShopByItemID, voucherShopByID, err := resolveReservationShops(res, bd, lookupFlashShop)
+	allShops, flashShopByItemID, shopProgShopByItemID, voucherShopByID, err := resolveReservationShops(res, bd, lookupFlashShop, lookupShopProgShop)
 	if err != nil {
 		return shopReleasePlan{}, err
 	}
@@ -171,13 +208,23 @@ func planShopRelease(
 		}
 	}
 
+	var shopProgs []domain.ReservedShopProgramItem
+	var progQty int32
+	for _, rp := range res.ShopProgramItems {
+		if shopProgShopByItemID[rp.ShopDiscountProgramItemID] == shopID {
+			shopProgs = append(shopProgs, rp)
+			progQty += rp.Quantity
+		}
+	}
+
 	releasedSet := buildShopSet(res.ReleasedShops)
 	if res.Status == domain.ReservationStatusReleased || releasedSet[shopID] {
 		return shopReleasePlan{
-			alreadyReleased:        true,
-			allReleased:            res.Status == domain.ReservationStatusReleased,
-			targetVouchersForRedis: shopVouchers,
-			targetFlashForRedis:    shopFlash,
+			alreadyReleased:            true,
+			allReleased:                res.Status == domain.ReservationStatusReleased,
+			targetVouchersForRedis:     shopVouchers,
+			targetFlashForRedis:        shopFlash,
+			targetShopProgramsForRedis: shopProgs,
 		}, nil
 	}
 
@@ -220,30 +267,34 @@ func planShopRelease(
 	}
 
 	return shopReleasePlan{
-		alreadyReleased:         false,
-		allReleased:             allReleased,
-		coinsToReturn:           shopCoins,
-		vouchersToRelease:       vouchersToRelease,
-		flashToRelease:          shopFlash,
-		targetVouchersForRedis:  vouchersToRelease,
-		targetFlashForRedis:     shopFlash,
-		shopVoucherReleased:     len(shopVouchers) > 0,
-		flashQuantityReleased:   flashQty,
-		platformVoucherReleased: platformVoucherReleased,
-		newReleasedShops:        sortedSetKeys(releasedSet),
+		alreadyReleased:             false,
+		allReleased:                 allReleased,
+		coinsToReturn:               shopCoins,
+		vouchersToRelease:           vouchersToRelease,
+		flashToRelease:              shopFlash,
+		shopProgramsToRelease:       shopProgs,
+		targetVouchersForRedis:      vouchersToRelease,
+		targetFlashForRedis:         shopFlash,
+		targetShopProgramsForRedis:  shopProgs,
+		shopVoucherReleased:         len(shopVouchers) > 0,
+		flashQuantityReleased:       flashQty,
+		shopProgramQuantityReleased: progQty,
+		platformVoucherReleased:     platformVoucherReleased,
+		newReleasedShops:            sortedSetKeys(releasedSet),
 	}, nil
 }
 
 func planRemainingRelease(
 	res *domain.PromotionReservation,
 	lookupFlashShop func(itemID string) (string, error),
+	lookupShopProgShop func(itemID string) (string, error),
 ) (fullRemainingPlan, error) {
 	if res.Status == domain.ReservationStatusReleased {
 		return fullRemainingPlan{alreadyReleased: true}, nil
 	}
 
 	bd := unmarshalBreakdownJSON(res.BreakdownJSON)
-	allShops, flashShopByItemID, voucherShopByID, err := resolveReservationShops(res, bd, lookupFlashShop)
+	allShops, flashShopByItemID, shopProgShopByItemID, voucherShopByID, err := resolveReservationShops(res, bd, lookupFlashShop, lookupShopProgShop)
 	if err != nil {
 		return fullRemainingPlan{}, err
 	}
@@ -269,16 +320,25 @@ func planRemainingRelease(
 		flashToRelease = append(flashToRelease, rf)
 	}
 
+	shopProgsToRelease := make([]domain.ReservedShopProgramItem, 0, len(res.ShopProgramItems))
+	for _, rp := range res.ShopProgramItems {
+		if sid := shopProgShopByItemID[rp.ShopDiscountProgramItemID]; sid != "" && releasedSet[sid] {
+			continue
+		}
+		shopProgsToRelease = append(shopProgsToRelease, rp)
+	}
+
 	for sid := range allShops {
 		releasedSet[sid] = true
 	}
 
 	return fullRemainingPlan{
-		alreadyReleased:   false,
-		coinsToReturn:     coinsToReturn,
-		vouchersToRelease: vouchersToRelease,
-		flashToRelease:    flashToRelease,
-		newReleasedShops:  sortedSetKeys(releasedSet),
+		alreadyReleased:       false,
+		coinsToReturn:         coinsToReturn,
+		vouchersToRelease:     vouchersToRelease,
+		flashToRelease:        flashToRelease,
+		shopProgramsToRelease: shopProgsToRelease,
+		newReleasedShops:      sortedSetKeys(releasedSet),
 	}, nil
 }
 

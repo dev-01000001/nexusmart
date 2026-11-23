@@ -47,6 +47,7 @@ type CartClient interface {
 // PromotionClient defines the subset of PromotionService RPCs required by OrderService.
 type PromotionClient interface {
 	ListActiveFlashSales(ctx context.Context, req *promotionv1.ListActiveFlashSalesRequest, opts ...grpc.CallOption) (*promotionv1.ListActiveFlashSalesResponse, error)
+	ListActiveShopDiscounts(ctx context.Context, req *promotionv1.ListActiveShopDiscountsRequest, opts ...grpc.CallOption) (*promotionv1.ListActiveShopDiscountsResponse, error)
 	PreviewDiscounts(ctx context.Context, req *promotionv1.PreviewDiscountsRequest, opts ...grpc.CallOption) (*promotionv1.PreviewDiscountsResponse, error)
 	ReservePromotion(ctx context.Context, req *promotionv1.ReservePromotionRequest, opts ...grpc.CallOption) (*promotionv1.ReservePromotionResponse, error)
 	ReleasePromotion(ctx context.Context, req *promotionv1.ReleasePromotionRequest, opts ...grpc.CallOption) (*promotionv1.ReleasePromotionResponse, error)
@@ -59,6 +60,7 @@ type PaymentClient interface {
 	GetPayment(ctx context.Context, req *paymentv1.GetPaymentRequest, opts ...grpc.CallOption) (*paymentv1.GetPaymentResponse, error)
 	CancelPayment(ctx context.Context, req *paymentv1.CancelPaymentRequest, opts ...grpc.CallOption) (*paymentv1.CancelPaymentResponse, error)
 	CreateRefund(ctx context.Context, req *paymentv1.CreateRefundRequest, opts ...grpc.CallOption) (*paymentv1.CreateRefundResponse, error)
+	GetFeeConfig(ctx context.Context, req *paymentv1.GetFeeConfigRequest, opts ...grpc.CallOption) (*paymentv1.GetFeeConfigResponse, error)
 }
 
 // ShippingClient defines the subset of ShippingService RPCs required by OrderService.
@@ -68,6 +70,7 @@ type ShippingClient interface {
 	CreateReturnShipment(ctx context.Context, req *shippingv1.CreateReturnShipmentRequest, opts ...grpc.CallOption) (*shippingv1.CreateReturnShipmentResponse, error)
 	CancelShipment(ctx context.Context, req *shippingv1.CancelShipmentRequest, opts ...grpc.CallOption) (*shippingv1.CancelShipmentResponse, error)
 	GetShipment(ctx context.Context, req *shippingv1.GetShipmentRequest, opts ...grpc.CallOption) (*shippingv1.GetShipmentResponse, error)
+	GetShopShippingSettings(ctx context.Context, req *shippingv1.GetShopShippingSettingsRequest, opts ...grpc.CallOption) (*shippingv1.GetShopShippingSettingsResponse, error)
 }
 
 // Bundle groups all downstream gRPC clients used by OrderService.

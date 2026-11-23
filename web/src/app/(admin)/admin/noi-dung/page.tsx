@@ -455,13 +455,19 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
         <div className={shared.titleBlock}>
           <h1 className={shared.pageTitle}>Nội dung, danh mục & chiến dịch</h1>
           <p className={shared.pageSubtitle}>
-            {activeMegaCount}/{content.megaMenu.length} nhánh Mega-menu đang bật,{" "}
-            {content.fabrics.length} chất liệu chuẩn sàn, chiến dịch Sợi Xanh Nexus đạt{" "}
-            {formatVnd(csrProgress.totalVnd)} ({formatPercent(csrProgress.percent, 1, false)}) và{" "}
-            {pendingCampaignItems} đề xuất chờ duyệt.
+            Bản xem trước, dữ liệu mẫu · {activeMegaCount}/{content.megaMenu.length} nhánh Mega-menu
+            minh họa, {content.fabrics.length} chất liệu mẫu và {pendingCampaignItems} đề xuất mẫu.
           </p>
         </div>
       </header>
+
+      <section className={shared.panel} role="note" style={{ marginTop: 16 }}>
+        <StatusPill label="Bản xem trước, dữ liệu mẫu" tone="warning" />
+        <p className={shared.pageSubtitle} style={{ marginTop: 8 }}>
+          Phân hệ biên tập Mega-menu, xếp hạng tìm kiếm và chiến dịch CSR hiện sử dụng dữ liệu mẫu
+          trên trình duyệt và chưa đồng bộ lên máy chủ.
+        </p>
+      </section>
 
       <div className={shared.tabsBar}>
         <div className={shared.tabList} role="tablist" aria-label="Phân mục quản trị nội dung">
@@ -1714,11 +1720,11 @@ function AdminContentWorkspace({ initialQuery }: { initialQuery: string }) {
             </div>
           </section>
 
-          {/* 3D: Duyệt nhãn Pre-order / Gian hàng chính hãng / Đổi trả 45 ngày */}
+          {/* 3D: Duyệt nhãn Pre-order / Gian hàng chính hãng / Đổi trả 7 ngày */}
           <section className={shared.panel} aria-labelledby="nd-badge-heading">
             <div className={shared.panelHeader}>
               <h2 id="nd-badge-heading" className={shared.panelTitle}>
-                Duyệt nhãn Pre-order, Gian hàng chính hãng & Đổi trả 45 ngày
+                Duyệt nhãn Pre-order, Gian hàng chính hãng & Đổi trả 7 ngày
               </h2>
               <span className={shared.panelMeta}>
                 {content.badgeRequests.filter((x) => x.status === "cho_duyet").length} hồ sơ chờ

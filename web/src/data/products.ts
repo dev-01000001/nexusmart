@@ -1483,7 +1483,7 @@ export const PRODUCTS: Product[] = [
       {
         question: "Sản phẩm Pre-order mất bao lâu để giao hàng?",
         answer:
-          "Lô dệt kim mới xuất xưởng Dệt Kim Hà Nội sau 2 ngày và giao tới khách trong 3-5 ngày làm việc, vẫn áp dụng đổi trả 45 ngày.",
+          "Lô dệt kim mới xuất xưởng Dệt Kim Hà Nội sau 2 ngày và giao tới khách trong 3-5 ngày làm việc, vẫn áp dụng đổi trả 7 ngày.",
       },
     ],
     wishlistCount: 188,
@@ -2389,7 +2389,7 @@ export const PRODUCTS: Product[] = [
       {
         question: "Chính sách bù lẻ chiếc tất thất lạc áp dụng như thế nào?",
         answer:
-          "Trong 45 ngày từ khi nhận đơn, nếu thất lạc 1 chiếc tất trong combo, bạn có thể gửi mã đơn tại Trợ giúp để Dệt Kim Hà Nội gửi kèm 1 chiếc đồng màu ở đơn kế tiếp.",
+          "Trong 7 ngày từ khi nhận đơn, nếu thất lạc 1 chiếc tất trong combo, bạn có thể gửi mã đơn tại Trợ giúp để Dệt Kim Hà Nội gửi kèm 1 chiếc đồng màu ở đơn kế tiếp.",
       },
     ],
     wishlistCount: 289,

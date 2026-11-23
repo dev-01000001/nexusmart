@@ -129,6 +129,34 @@ func FormatPasswordResetEmail(to, fullName, resetLink, expiresAt string) Message
 	}
 }
 
+// FormatShopBankAccountOTPEmail formats a Vietnamese bank-account OTP email for sellers without leaking OTP in Subject.
+func FormatShopBankAccountOTPEmail(to, fullName, otp, expiresAt, bankCode, accountNumberMasked string) Message {
+	name := strings.TrimSpace(fullName)
+	if name == "" {
+		name = "Quý khách"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Xin chào %s,\n\n", name)
+	b.WriteString("Bạn vừa yêu cầu thêm hoặc cập nhật tài khoản ngân hàng nhận tiền cho gian hàng trên NexusMart.\n")
+	if bc := strings.TrimSpace(bankCode); bc != "" {
+		fmt.Fprintf(&b, "Ngân hàng: %s\n", bc)
+	}
+	if masked := strings.TrimSpace(accountNumberMasked); masked != "" {
+		fmt.Fprintf(&b, "Số tài khoản: %s\n", masked)
+	}
+	fmt.Fprintf(&b, "Mã xác thực OTP của bạn là: %s\n", strings.TrimSpace(otp))
+	if exp := formatOTPExpiry(expiresAt); exp != "" {
+		fmt.Fprintf(&b, "Mã có hiệu lực đến: %s\n", exp)
+	}
+	b.WriteString("\nVui lòng không chia sẻ mã này cho bất kỳ ai. Nếu bạn không thực hiện yêu cầu này, hãy kiểm tra bảo mật tài khoản ngay lập tức.\n")
+
+	return Message{
+		To:      to,
+		Subject: "Mã xác thực tài khoản ngân hàng gian hàng NexusMart",
+		Body:    b.String(),
+	}
+}
+
 func formatOTPExpiry(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {

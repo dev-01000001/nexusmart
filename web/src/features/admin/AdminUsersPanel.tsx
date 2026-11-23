@@ -274,6 +274,40 @@ export function AdminUsersPanel() {
               </table>
             </div>
 
+            <div className={shared.mobileList}>
+              {users.map((u) => {
+                const stMeta = getAdminUserStatusMeta(u.status);
+                const isSelected = selectedUser?.id === u.id;
+                return (
+                  <article key={u.id} className={shared.mobileItem}>
+                    <div className={shared.mobileLine1}>
+                      <span className={shared.mobileIdentity}>{u.full_name || u.email}</span>
+                      <StatusPill label={stMeta.label} tone={stMeta.tone} />
+                    </div>
+                    <div className={shared.mobileLine2}>
+                      <span className={shared.mobileMetaText}>
+                        {u.email}
+                        {u.phone ? ` · ${u.phone}` : ""}
+                      </span>
+                    </div>
+                    <div className={shared.mobileLine2}>
+                      <span className={shared.mobileMetaText}>
+                        {ADMIN_USER_ROLE_LABELS[u.role] ?? u.role} ·{" "}
+                        {u.created_at ? formatDateTimeVi(u.created_at) : "—"}
+                      </span>
+                      <button
+                        type="button"
+                        className={shared.rowActionBtn}
+                        onClick={() => handleSelectUser(u)}
+                      >
+                        {isSelected ? "Đóng" : "Quản trị"}
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+
             {selectedUser && (
               <div className={shared.detailWell} style={{ marginTop: 16 }}>
                 <div className={shared.detailHeader}>

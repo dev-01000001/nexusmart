@@ -10,28 +10,43 @@ import (
 
 type Querier interface {
 	ActivateUser(ctx context.Context, arg ActivateUserParams) (User, error)
+	AdminCountShops(ctx context.Context, arg AdminCountShopsParams) (int64, error)
+	AdminListShops(ctx context.Context, arg AdminListShopsParams) ([]AdminListShopsRow, error)
 	ClearUserDefaultAddresses(ctx context.Context, userID string) error
+	CompleteShopBankAccountOTPVerification(ctx context.Context, arg CompleteShopBankAccountOTPVerificationParams) (ShopBankAccount, error)
 	CountAuditLogs(ctx context.Context, arg CountAuditLogsParams) (int64, error)
+	CountShopBankAccountsCreatedSince(ctx context.Context, arg CountShopBankAccountsCreatedSinceParams) (int64, error)
 	CountShops(ctx context.Context, status string) (int64, error)
 	CountUsers(ctx context.Context, arg CountUsersParams) (int64, error)
 	CreateAddress(ctx context.Context, arg CreateAddressParams) (Address, error)
 	CreatePasswordReset(ctx context.Context, arg CreatePasswordResetParams) (PasswordReset, error)
 	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (RefreshToken, error)
 	CreateShop(ctx context.Context, arg CreateShopParams) (Shop, error)
+	CreateShopBankAccount(ctx context.Context, arg CreateShopBankAccountParams) (ShopBankAccount, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteAddress(ctx context.Context, id string) error
 	ExistsActiveShopByPickupAddressID(ctx context.Context, pickupAddressID string) (bool, error)
+	ExistsPendingBankReviewByShopID(ctx context.Context, shopID string) (bool, error)
 	GetAddressByID(ctx context.Context, id string) (Address, error)
+	GetLatestShopBankAccountByShopID(ctx context.Context, arg GetLatestShopBankAccountByShopIDParams) (ShopBankAccount, error)
 	GetPasswordResetByHashForUpdate(ctx context.Context, tokenHash string) (PasswordReset, error)
+	GetPendingAdminReviewShopBankAccountByShopIDForUpdate(ctx context.Context, shopID string) (ShopBankAccount, error)
+	GetPendingOTPShopBankAccountForUpdate(ctx context.Context, shopID string) (ShopBankAccount, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (RefreshToken, error)
+	GetShopBankAccountByIDForUpdate(ctx context.Context, id string) (ShopBankAccount, error)
 	GetShopByID(ctx context.Context, id string) (Shop, error)
+	GetShopByIDForUpdate(ctx context.Context, id string) (Shop, error)
 	GetShopByName(ctx context.Context, lower string) (Shop, error)
 	GetShopByOwnerID(ctx context.Context, ownerUserID string) (Shop, error)
 	GetShopBySlug(ctx context.Context, slug string) (Shop, error)
+	GetShopPlatformCounts(ctx context.Context) (GetShopPlatformCountsRow, error)
 	GetUserByEmail(ctx context.Context, lower string) (User, error)
 	GetUserByID(ctx context.Context, id string) (User, error)
 	GetUserByIDForShare(ctx context.Context, id string) (User, error)
+	GetUserByIDForUpdate(ctx context.Context, id string) (User, error)
 	GetUserByPhone(ctx context.Context, phone string) (User, error)
+	GetUserPlatformCounts(ctx context.Context) (GetUserPlatformCountsRow, error)
+	GetVerifiedShopBankAccountByShopID(ctx context.Context, shopID string) (ShopBankAccount, error)
 	GrantUserSellerShop(ctx context.Context, arg GrantUserSellerShopParams) (User, error)
 	IncrementUserCODRejectedCount(ctx context.Context, id string) (User, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) (AuditLog, error)
@@ -40,15 +55,23 @@ type Querier interface {
 	ListActiveAdminIDsForUpdate(ctx context.Context) ([]string, error)
 	ListAddressesByUserID(ctx context.Context, userID string) ([]Address, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
+	ListDailyNewShopsVN(ctx context.Context, arg ListDailyNewShopsVNParams) ([]ListDailyNewShopsVNRow, error)
+	ListDailyNewUsersVN(ctx context.Context, arg ListDailyNewUsersVNParams) ([]ListDailyNewUsersVNRow, error)
 	ListShops(ctx context.Context, arg ListShopsParams) ([]Shop, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
 	MarkPasswordResetUsed(ctx context.Context, arg MarkPasswordResetUsedParams) (int64, error)
+	MarkShopBankAccountPublishFailed(ctx context.Context, arg MarkShopBankAccountPublishFailedParams) error
+	RecordShopBankAccountOTPFailure(ctx context.Context, arg RecordShopBankAccountOTPFailureParams) (ShopBankAccount, error)
 	ResubmitShop(ctx context.Context, arg ResubmitShopParams) (Shop, error)
 	RevokeAllUserRefreshTokens(ctx context.Context, userID string) error
 	RevokeRefreshTokenByHash(ctx context.Context, tokenHash string) error
 	RevokeRefreshTokenFamily(ctx context.Context, familyID string) error
 	RevokeRefreshTokenWithReplacement(ctx context.Context, arg RevokeRefreshTokenWithReplacementParams) (int64, error)
+	SupersedePendingAdminReviewShopBankAccounts(ctx context.Context, arg SupersedePendingAdminReviewShopBankAccountsParams) error
+	SupersedePendingOTPShopBankAccounts(ctx context.Context, arg SupersedePendingOTPShopBankAccountsParams) error
+	SupersedeShopBankAccount(ctx context.Context, arg SupersedeShopBankAccountParams) error
 	UpdateAddress(ctx context.Context, arg UpdateAddressParams) (Address, error)
+	UpdateShopBankAccountAdminReview(ctx context.Context, arg UpdateShopBankAccountAdminReviewParams) (ShopBankAccount, error)
 	UpdateShopReview(ctx context.Context, arg UpdateShopReviewParams) (Shop, error)
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (User, error)
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (User, error)

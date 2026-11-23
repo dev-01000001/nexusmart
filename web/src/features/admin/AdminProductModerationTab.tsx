@@ -341,6 +341,44 @@ export function AdminProductModerationTab({ initialQuery = "", onPendingCountCha
             </table>
           </div>
 
+          <div className={shared.mobileList}>
+            {filtered.map((prod) => {
+              const meta = getAdminProductStatusMeta(prod.status);
+              const isSelected = activeProductSummary?.id === prod.id;
+              const shopName = shopNameById.get(prod.shop_id) ?? prod.shop_id;
+              const catName = categoryNameById.get(prod.category_id) ?? prod.category_id;
+              return (
+                <article key={prod.id} className={shared.mobileItem}>
+                  <div className={shared.mobileLine1}>
+                    <span className={shared.mobileIdentity}>{prod.name}</span>
+                    <StatusPill label={meta.label} tone={meta.tone} />
+                  </div>
+                  <div className={shared.mobileLine2}>
+                    <span className={shared.mobileMetaText}>
+                      {shopName} · {catName}
+                    </span>
+                    <span className={shared.mobileMetric}>{formatVnd(prod.min_price_vnd)}</span>
+                  </div>
+                  <div className={shared.mobileLine2}>
+                    <span className={shared.mobileMetaText}>
+                      {formatInt(prod.skus?.length ?? 0)} SKU
+                    </span>
+                    <button
+                      type="button"
+                      className={shared.rowActionBtn}
+                      onClick={() => {
+                        setReasonErrorId(null);
+                        setSelectedId(prod.id);
+                      }}
+                    >
+                      {isSelected ? "Đang xem" : "Xem & duyệt"}
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+
           {inspected && (
             <section
               className={shared.desktopDetailSection}
@@ -397,32 +435,55 @@ export function AdminProductModerationTab({ initialQuery = "", onPendingCountCha
                 </div>
 
                 {(inspected.skus ?? []).length > 0 && (
-                  <div className={shared.tableWrap}>
-                    <table className={shared.dataTable}>
-                      <thead>
-                        <tr>
-                          <th>Mã SKU</th>
-                          <th>Biến thể</th>
-                          <th className={shared.colNum}>Giá bán</th>
-                          <th className={shared.colNum}>Tồn kho</th>
-                          <th className={shared.colNum}>Khối lượng</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {inspected.skus.map((sku) => (
-                          <tr key={sku.id}>
-                            <td>{sku.sku_code}</td>
-                            <td>{sku.name}</td>
-                            <td className={shared.colNum}>{formatVnd(sku.price_vnd)}</td>
-                            <td className={shared.colNum}>
-                              {formatInt(sku.available_stock)} / {formatInt(sku.stock)}
-                            </td>
-                            <td className={shared.colNum}>{formatInt(sku.weight_grams)}g</td>
+                  <>
+                    <div className={shared.tableWrap}>
+                      <table className={shared.dataTable}>
+                        <thead>
+                          <tr>
+                            <th>Mã SKU</th>
+                            <th>Biến thể</th>
+                            <th className={shared.colNum}>Giá bán</th>
+                            <th className={shared.colNum}>Tồn kho</th>
+                            <th className={shared.colNum}>Khối lượng</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                        </thead>
+                        <tbody>
+                          {inspected.skus.map((sku) => (
+                            <tr key={sku.id}>
+                              <td>{sku.sku_code}</td>
+                              <td>{sku.name}</td>
+                              <td className={shared.colNum}>{formatVnd(sku.price_vnd)}</td>
+                              <td className={shared.colNum}>
+                                {formatInt(sku.available_stock)} / {formatInt(sku.stock)}
+                              </td>
+                              <td className={shared.colNum}>{formatInt(sku.weight_grams)}g</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className={shared.mobileList}>
+                      {inspected.skus.map((sku) => (
+                        <div key={sku.id} className={shared.mobileItem}>
+                          <div className={shared.mobileLine1}>
+                            <span className={shared.mobileIdentity}>
+                              {sku.sku_code} · {sku.name}
+                            </span>
+                            <span className={shared.mobileMetric}>{formatVnd(sku.price_vnd)}</span>
+                          </div>
+                          <div className={shared.mobileLine2}>
+                            <span className={shared.mobileMetaText}>
+                              Tồn: {formatInt(sku.available_stock)} / {formatInt(sku.stock)}
+                            </span>
+                            <span className={shared.mobileMetaText}>
+                              {formatInt(sku.weight_grams)}g
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
                 )}
 
                 <div className={shared.detailActionBar}>

@@ -119,6 +119,7 @@ func run() error {
 		grpc.ChainUnaryInterceptor(
 			telemetry.GRPCUnaryServerInterceptor(cfg.ServiceName),
 			red.GRPCUnaryServerInterceptor(),
+			logger.GRPCUnaryServerInterceptor(log),
 			auth.GRPCUnaryServerInterceptor(jwtMgr, svcMgr),
 		),
 	)

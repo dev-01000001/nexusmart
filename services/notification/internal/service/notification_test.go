@@ -251,6 +251,18 @@ type memTxStore struct {
 }
 
 func (t *memTxStore) InsertNotification(_ context.Context, n store.Notification) (store.Notification, error) {
+	if n.DedupKey != "" {
+		for _, existing := range t.parent.notifs {
+			if existing.DedupKey == n.DedupKey {
+				return store.Notification{}, nil
+			}
+		}
+		for _, existing := range t.stagedNotifs {
+			if existing.DedupKey == n.DedupKey {
+				return store.Notification{}, nil
+			}
+		}
+	}
 	if n.ID == "" {
 		n.ID = uuid.NewString()
 	}

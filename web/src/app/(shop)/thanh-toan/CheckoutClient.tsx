@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type {
+  GatewayActiveShopDiscount,
   GatewayAddress,
   GatewayCalculateFeeResponse,
   GatewayCarrierQuote,
@@ -10,6 +11,7 @@ import type {
   GatewayCheckoutRequest,
   GatewayCheckoutResponse,
   GatewayDiscountBreakdown,
+  GatewayFlashSale,
   GatewayPaymentMethod,
   GatewayPreviewDiscountsResponse,
   GatewayProduct,
@@ -19,7 +21,7 @@ import type {
   GatewayVoucher,
   GatewayVouchersResponse,
 } from "@/lib/gateway-types";
-import { ApiError, api, getErrorMessage } from "@/lib/api";
+import { api, getErrorMessage } from "@/lib/api";
 import { formatInt, formatSignedVnd, formatVnd, formatVoucherBenefit } from "@/lib/format";
 import { useCart } from "@/context/CartContext";
 import { Button, IconShield, IconTruck, StateView } from "@/components";
@@ -36,7 +38,20 @@ import {
   translateCheckoutError,
   translateVoucherReason,
 } from "@/features/checkout/messages";
-import { buildCalculateFeePayload, computeBuyNowSlicePricing } from "@/features/checkout/helpers";
+import {
+  buildCalculateFeePayload,
+  classifyCheckoutSubmitError,
+  clearCheckoutWarnings,
+  computeBuyNowSlicePricing,
+  evaluateShopFlashLines,
+  inspectFlashSaleStatusForSku,
+  isCodAllowedForCheckout,
+  isShopProgramItemApplied,
+  resolveLiveFlashSaleForSku,
+  resolveSkuEffectivePromotion,
+  saveCheckoutWarnings,
+  translatePromotionWarnings,
+} from "@/features/checkout/helpers";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./page.module.css";
 
@@ -48,6 +63,8 @@ export interface CheckoutClientProps {
   initialCoinBalance: number;
   initialVouchers: GatewayVoucher[];
   initialShops: GatewayPublicShop[];
+  initialFlashSales?: GatewayFlashSale[];
+  initialActiveShopDiscounts?: GatewayActiveShopDiscount[];
   initialError?: string | null;
   buyNowItem: BuyNowResolvedItem | null;
   buyNowError: string | null;
@@ -63,6 +80,13 @@ interface CheckoutLineItem {
   unitPriceVnd: number;
   flashSaleItemId?: string;
   flashPriceVnd?: number;
+  flashPerUserLimit?: number;
+  hasLiveFlashAvailable?: boolean;
+  hasActiveShopDiscount?: boolean;
+  flashOptedOut?: boolean;
+  shopProgramItemId?: string;
+  shopDiscountedPriceVnd?: number;
+  shopProgramName?: string;
   quantity: number;
   weightGrams: number;
 }
@@ -71,12 +95,14 @@ interface CheckoutShopSlice {
   shopId: string;
   shopName: string;
   items: CheckoutLineItem[];
-  /** Effective merchandise subtotal after validated flash sale discounts (G - F). */
+  /** Effective merchandise subtotal after validated flash sale / shop program discounts. */
   subtotalVnd: number;
-  /** Gross regular merchandise subtotal before flash sale discounts (G), required by promotions/preview. */
+  /** Gross regular merchandise subtotal before item discounts, required by promotions/preview. */
   regularSubtotalVnd: number;
   /** Expected flash sale discount total (F) for validated live flash items. */
   flashDiscountVnd: number;
+  /** Expected shop discount program total for validated active shop discounts. */
+  shopProgramDiscountVnd: number;
   weightGrams: number;
 }
 
@@ -88,6 +114,8 @@ export function CheckoutClient({
   initialCoinBalance,
   initialVouchers,
   initialShops,
+  initialFlashSales = [],
+  initialActiveShopDiscounts = [],
   initialError,
   buyNowItem,
   buyNowError,
@@ -111,9 +139,17 @@ export function CheckoutClient({
     setFreeshipVoucher,
     setUseCoins,
     resetPromotions,
+    optedOutFlashSkuIds,
+    optOutFlashForSku,
+    restoreFlashForSku,
   } = useCart();
 
   const isBuyNowMode = Boolean(buyNowItem || buyNowError);
+  const [buyNowOptedOutFlash, setBuyNowOptedOutFlash] = useState<boolean>(false);
+  const [checkoutIdempotencyKey, setCheckoutIdempotencyKey] = useState<string>(idempotencyKey);
+  const [flashCheckoutBlocked, setFlashCheckoutBlocked] = useState<boolean>(false);
+  const [idempotencyConflict, setIdempotencyConflict] = useState<boolean>(false);
+  const [ambiguousSubmit, setAmbiguousSubmit] = useState<boolean>(false);
 
   const [addresses, setAddresses] = useState<GatewayAddress[]>(initialAddresses);
   const [selectedAddressId, setSelectedAddressId] = useState<string>(() => {
@@ -150,6 +186,7 @@ export function CheckoutClient({
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const completedRef = useRef<boolean>(false);
   const previewSeqRef = useRef<number>(0);
+  const shippingSeqRef = useRef<number>(0);
 
   const shopNameById = useMemo(() => {
     const map: Record<string, string> = {};
@@ -159,31 +196,114 @@ export function CheckoutClient({
     return map;
   }, [initialShops]);
 
+  const shopDiscountBySkuId = useMemo(() => {
+    const map: Record<string, GatewayActiveShopDiscount> = {};
+    for (const d of initialActiveShopDiscounts) {
+      if (d.sku_id && !map[d.sku_id]) map[d.sku_id] = d;
+    }
+    return map;
+  }, [initialActiveShopDiscounts]);
+
+  const enrichCartLine = useCallback(
+    (raw: {
+      skuId: string;
+      productId: string;
+      productName: string;
+      skuName: string;
+      imageUrl: string;
+      unitPriceVnd: number;
+      quantity: number;
+      weightGrams: number;
+    }): CheckoutLineItem => {
+      const liveFlash = resolveLiveFlashSaleForSku(initialFlashSales, raw.skuId, raw.unitPriceVnd);
+      const activeShopDiscount = shopDiscountBySkuId[raw.skuId] ?? null;
+      const hasActiveShopDiscount = Boolean(
+        activeShopDiscount &&
+        activeShopDiscount.discounted_price_vnd > 0 &&
+        activeShopDiscount.discounted_price_vnd < raw.unitPriceVnd
+      );
+      const flashOptedOut = optedOutFlashSkuIds.has(raw.skuId);
+      const promo = resolveSkuEffectivePromotion({
+        regularPriceVnd: raw.unitPriceVnd,
+        liveFlash,
+        activeShopDiscount,
+        optOutFlash: flashOptedOut,
+      });
+      return {
+        ...raw,
+        flashSaleItemId: promo.flashSaleItemId,
+        flashPriceVnd: promo.kind === "flash" ? promo.effectiveUnitPriceVnd : undefined,
+        flashPerUserLimit: liveFlash?.perUserLimit,
+        hasLiveFlashAvailable: Boolean(liveFlash),
+        hasActiveShopDiscount,
+        flashOptedOut,
+        shopProgramItemId: promo.shopProgramItemId,
+        shopDiscountedPriceVnd:
+          promo.kind === "shop_discount" ? promo.effectiveUnitPriceVnd : undefined,
+        shopProgramName: promo.programName,
+      };
+    },
+    [initialFlashSales, shopDiscountBySkuId, optedOutFlashSkuIds]
+  );
+
+  const computeSliceTotals = (items: CheckoutLineItem[]) => {
+    let regularSubtotalVnd = 0;
+    let flashDiscountVnd = 0;
+    let shopProgramDiscountVnd = 0;
+    for (const it of items) {
+      const reg = it.unitPriceVnd * it.quantity;
+      regularSubtotalVnd += reg;
+      if (it.flashSaleItemId && it.flashPriceVnd && it.flashPriceVnd < it.unitPriceVnd) {
+        flashDiscountVnd += (it.unitPriceVnd - it.flashPriceVnd) * it.quantity;
+      } else if (
+        it.shopProgramItemId &&
+        it.shopDiscountedPriceVnd &&
+        it.shopDiscountedPriceVnd < it.unitPriceVnd
+      ) {
+        shopProgramDiscountVnd += (it.unitPriceVnd - it.shopDiscountedPriceVnd) * it.quantity;
+      }
+    }
+    const subtotalVnd = Math.max(0, regularSubtotalVnd - flashDiscountVnd - shopProgramDiscountVnd);
+    return { regularSubtotalVnd, flashDiscountVnd, shopProgramDiscountVnd, subtotalVnd };
+  };
+
   const activeSlices = useMemo<CheckoutShopSlice[]>(() => {
     if (buyNowItem) {
-      const pricing = computeBuyNowSlicePricing(buyNowItem);
+      const useFlash = Boolean(buyNowItem.flashSaleItemId) && !buyNowOptedOutFlash;
+      const hasShopDisc = Boolean(
+        buyNowItem.shopProgramItemId &&
+        typeof buyNowItem.shopDiscountedPriceVnd === "number" &&
+        buyNowItem.shopDiscountedPriceVnd > 0 &&
+        buyNowItem.shopDiscountedPriceVnd < buyNowItem.unitPriceVnd
+      );
+      const useShopDisc = !useFlash && hasShopDisc;
+      const line: CheckoutLineItem = {
+        skuId: buyNowItem.skuId,
+        productId: buyNowItem.productId,
+        productName: buyNowItem.productName,
+        skuName: buyNowItem.skuName,
+        imageUrl: buyNowItem.imageUrl,
+        unitPriceVnd: buyNowItem.unitPriceVnd,
+        flashSaleItemId: useFlash ? buyNowItem.flashSaleItemId : undefined,
+        flashPriceVnd: useFlash ? buyNowItem.flashPriceVnd : undefined,
+        flashPerUserLimit: buyNowItem.flashPerUserLimit,
+        hasLiveFlashAvailable: Boolean(buyNowItem.flashSaleItemId),
+        hasActiveShopDiscount: hasShopDisc,
+        flashOptedOut: buyNowOptedOutFlash,
+        shopProgramItemId: useShopDisc ? buyNowItem.shopProgramItemId : undefined,
+        shopDiscountedPriceVnd: useShopDisc ? buyNowItem.shopDiscountedPriceVnd : undefined,
+        shopProgramName: useShopDisc ? buyNowItem.shopProgramName : undefined,
+        quantity: buyNowItem.quantity,
+        weightGrams: buyNowItem.weightGrams,
+      };
+      const totals = computeSliceTotals([line]);
       return [
         {
           shopId: buyNowItem.shopId,
           shopName: shopNameById[buyNowItem.shopId] || buyNowItem.shopName,
-          items: [
-            {
-              skuId: buyNowItem.skuId,
-              productId: buyNowItem.productId,
-              productName: buyNowItem.productName,
-              skuName: buyNowItem.skuName,
-              imageUrl: buyNowItem.imageUrl,
-              unitPriceVnd: buyNowItem.unitPriceVnd,
-              flashSaleItemId: buyNowItem.flashSaleItemId,
-              flashPriceVnd: buyNowItem.flashPriceVnd,
-              quantity: buyNowItem.quantity,
-              weightGrams: buyNowItem.weightGrams,
-            },
-          ],
-          subtotalVnd: pricing.effectiveSubtotalVnd,
-          regularSubtotalVnd: pricing.regularSubtotalVnd,
-          flashDiscountVnd: pricing.flashDiscountVnd,
-          weightGrams: Math.max(100, buyNowItem.weightGrams * buyNowItem.quantity),
+          items: [line],
+          ...totals,
+          weightGrams: Math.max(0, buyNowItem.weightGrams * buyNowItem.quantity),
         },
       ];
     }
@@ -193,50 +313,93 @@ export function CheckoutClient({
         .map((g) => {
           const items = (g.items ?? [])
             .filter((it) => it.available_stock > 0 && it.quantity > 0)
-            .map((it) => ({
-              skuId: it.sku_id,
-              productId: it.product_id,
-              productName: it.product_name,
-              skuName: it.sku_name,
-              imageUrl: it.image_url || "/products/ao-thun-cotton-trang.png",
-              unitPriceVnd: it.price_vnd,
-              quantity: it.quantity,
-              weightGrams: Math.max(100, it.weight_grams || 300),
-            }));
+            .map((it) =>
+              enrichCartLine({
+                skuId: it.sku_id,
+                productId: it.product_id,
+                productName: it.product_name,
+                skuName: it.sku_name,
+                imageUrl: it.image_url || "/products/ao-thun-cotton-trang.png",
+                unitPriceVnd: it.price_vnd,
+                quantity: it.quantity,
+                weightGrams: Math.max(0, Math.trunc(it.weight_grams || 0)),
+              })
+            );
           if (items.length === 0) return null;
-          const subtotalVnd = items.reduce((s, it) => s + it.unitPriceVnd * it.quantity, 0);
+          const totals = computeSliceTotals(items);
           const weightGrams = items.reduce((s, it) => s + it.weightGrams * it.quantity, 0);
           return {
             shopId: g.shop_id,
             shopName: shopNameById[g.shop_id] || g.shop_name || "Gian hàng NexusMart",
             items,
-            subtotalVnd,
-            regularSubtotalVnd: subtotalVnd,
-            flashDiscountVnd: 0,
+            ...totals,
             weightGrams,
           };
         })
         .filter((s): s is CheckoutShopSlice => s !== null);
     }
-    return selectedShopGroups.map((g) => ({
-      shopId: g.shopId,
-      shopName: shopNameById[g.shopId] || g.shopName,
-      items: g.items.map((it) => ({
-        skuId: it.skuId,
-        productId: it.productId,
-        productName: it.productName,
-        skuName: it.skuName,
-        imageUrl: it.imageUrl,
-        unitPriceVnd: it.priceVnd,
-        quantity: it.quantity,
-        weightGrams: Math.max(100, it.weightGrams || 300),
-      })),
-      subtotalVnd: g.selectedSubtotalVnd,
-      regularSubtotalVnd: g.selectedSubtotalVnd,
-      flashDiscountVnd: 0,
-      weightGrams: Math.max(100, g.selectedWeightGrams),
-    }));
-  }, [buyNowItem, isBuyNowMode, cartInitialized, initialCart, selectedShopGroups, shopNameById]);
+    return selectedShopGroups.map((g) => {
+      const items = g.items.map((it) =>
+        enrichCartLine({
+          skuId: it.skuId,
+          productId: it.productId,
+          productName: it.productName,
+          skuName: it.skuName,
+          imageUrl: it.imageUrl,
+          unitPriceVnd: it.priceVnd,
+          quantity: it.quantity,
+          weightGrams: Math.max(0, Math.trunc(it.weightGrams || 0)),
+        })
+      );
+      const totals = computeSliceTotals(items);
+      return {
+        shopId: g.shopId,
+        shopName: shopNameById[g.shopId] || g.shopName,
+        items,
+        ...totals,
+        weightGrams: Math.max(0, g.selectedWeightGrams),
+      };
+    });
+  }, [
+    buyNowItem,
+    buyNowOptedOutFlash,
+    isBuyNowMode,
+    cartInitialized,
+    initialCart,
+    selectedShopGroups,
+    shopNameById,
+    enrichCartLine,
+  ]);
+
+  const hasFlashSaleItem = useMemo(
+    () => activeSlices.some((slice) => slice.items.some((it) => Boolean(it.flashSaleItemId))),
+    [activeSlices]
+  );
+
+  // Force VietQR when any item in checkout uses Flash Sale (COD disallowed)
+  useEffect(() => {
+    if (hasFlashSaleItem && paymentMethod !== "VIETQR") {
+      setPaymentMethod("VIETQR");
+    }
+  }, [hasFlashSaleItem, paymentMethod]);
+
+  const flashFallbackNotices = useMemo(() => {
+    const notices: string[] = [];
+    if (buyNowItem?.flashFallbackNotice) {
+      notices.push(buyNowItem.flashFallbackNotice);
+    } else if (!buyNowItem) {
+      for (const slice of activeSlices) {
+        for (const it of slice.items) {
+          if (it.flashSaleItemId) continue;
+          const inspect = inspectFlashSaleStatusForSku(initialFlashSales, it.skuId);
+          if (inspect.state === "sold_out" || inspect.state === "upcoming") {
+            notices.push(`${it.productName}: ${inspect.message}`);
+          }
+        }
+      }
+    }
+    return Array.from(new Set(notices));
+  }, [buyNowItem, activeSlices, initialFlashSales]);
 
   const totalItemCount = useMemo(
     () =>
@@ -259,6 +422,11 @@ export function CheckoutClient({
 
   const rawFlashDiscountVnd = useMemo(
     () => activeSlices.reduce((sum, slice) => sum + slice.flashDiscountVnd, 0),
+    [activeSlices]
+  );
+
+  const rawShopProgramDiscountVnd = useMemo(
+    () => activeSlices.reduce((sum, slice) => sum + slice.shopProgramDiscountVnd, 0),
     [activeSlices]
   );
 
@@ -293,19 +461,27 @@ export function CheckoutClient({
     };
   }, [rawSubtotalVnd]);
 
-  // Calculate real shipping quotes per shop whenever address, items, or COD method changes
+  // Calculate real shipping quotes per shop via authoritative items + payment_method (gateway r6)
   const shippingInputKey = useMemo(
     () =>
       `${selectedAddress?.id ?? ""}|${paymentMethod}|${activeSlices
-        .map((s) => `${s.shopId}:${s.subtotalVnd}:${s.weightGrams}`)
+        .map(
+          (s) =>
+            `${s.shopId}:${s.items
+              .map((it) => `${it.skuId}x${it.quantity}`)
+              .sort()
+              .join("+")}`
+        )
         .join(",")}`,
     [selectedAddress?.id, paymentMethod, activeSlices]
   );
 
   const loadShippingQuotes = useCallback(async () => {
+    const seq = ++shippingSeqRef.current;
     if (!selectedAddress || activeSlices.length === 0) {
       setQuotesByShop({});
       setShippingError(null);
+      setShippingLoading(false);
       return;
     }
 
@@ -321,13 +497,17 @@ export function CheckoutClient({
               shopId: slice.shopId,
               toProvinceCode: selectedAddress.province_code,
               toWardCode: selectedAddress.ward_code,
-              weightGrams: Math.max(100, slice.weightGrams),
-              codAmountVnd: paymentMethod === "COD" ? slice.subtotalVnd : 0,
+              items: slice.items.map((it) => ({
+                skuId: it.skuId,
+                quantity: it.quantity,
+              })),
+              paymentMethod,
             }),
           });
           return { shopId: slice.shopId, quotes: res?.quotes ?? [] };
         })
       );
+      if (shippingSeqRef.current !== seq) return;
 
       const nextQuotes: Record<string, GatewayCarrierQuote[]> = {};
       for (const r of results) {
@@ -365,11 +545,14 @@ export function CheckoutClient({
         return next;
       });
     } catch (err) {
+      if (shippingSeqRef.current !== seq) return;
       setShippingError(
         getErrorMessage(err, "Chưa thể tính phí vận chuyển lúc này. Vui lòng thử lại.")
       );
     } finally {
-      setShippingLoading(false);
+      if (shippingSeqRef.current === seq) {
+        setShippingLoading(false);
+      }
     }
   }, [activeSlices, paymentMethod, selectedAddress]);
 
@@ -410,12 +593,10 @@ export function CheckoutClient({
   const buildShopDiscountInputs = useCallback(() => {
     return activeSlices.map((slice) => ({
       shop_id: slice.shopId,
-      subtotal_vnd: slice.regularSubtotalVnd,
       shipping_fee_vnd: chosenQuoteByShop[slice.shopId]?.fee_vnd ?? 0,
       items: slice.items.map((it) => ({
         sku_id: it.skuId,
         quantity: it.quantity,
-        unit_price_vnd: it.unitPriceVnd,
         ...(it.flashSaleItemId ? { flash_sale_item_id: it.flashSaleItemId } : {}),
       })),
     }));
@@ -481,19 +662,111 @@ export function CheckoutClient({
 
   const subtotalDisplay = preview?.total_subtotal_vnd ?? rawRegularSubtotalVnd;
   const flashDiscountDisplay = preview?.total_flash_sale_discount_vnd ?? rawFlashDiscountVnd;
+  const shopProgramDiscountDisplay =
+    preview?.total_shop_program_discount_vnd ?? rawShopProgramDiscountVnd;
   const shopVoucherDisplay = preview?.total_shop_voucher_discount_vnd ?? 0;
+  const shopFreeshipDisplay = preview?.total_shop_freeship_discount_vnd ?? 0;
   const platformVoucherDisplay = preview?.total_platform_voucher_discount_vnd ?? 0;
   const shippingDisplay = preview?.total_shipping_fee_vnd ?? totalShippingFeeVnd;
   const freeshipDisplay = preview?.total_freeship_discount_vnd ?? 0;
   const coinsDisplay = preview?.total_coins_discount_vnd ?? 0;
   const grandTotalVnd =
     preview?.final_payable_vnd ??
-    Math.max(0, rawRegularSubtotalVnd - rawFlashDiscountVnd + totalShippingFeeVnd);
+    Math.max(
+      0,
+      rawRegularSubtotalVnd - rawFlashDiscountVnd - rawShopProgramDiscountVnd + totalShippingFeeVnd
+    );
 
-  const translatedWarnings = useMemo(() => {
-    if (!preview?.warnings?.length) return [];
-    return Array.from(new Set(preview.warnings.map(translateVoucherReason).filter(Boolean)));
-  }, [preview?.warnings]);
+  const flashEvalBySkuId = useMemo(() => {
+    const merged: Record<string, ReturnType<typeof evaluateShopFlashLines>[string]> = {};
+    for (const slice of activeSlices) {
+      const shopBreakdown = preview?.shops.find((s) => s.shop_id === slice.shopId);
+      const evals = evaluateShopFlashLines({
+        lines: slice.items.map((it) => ({
+          skuId: it.skuId,
+          quantity: it.quantity,
+          regularUnitPriceVnd: it.unitPriceVnd,
+          flashSaleItemId: it.flashSaleItemId,
+          flashUnitPriceVnd: it.flashPriceVnd,
+          flashPerUserLimit: it.flashPerUserLimit,
+          hasActiveShopDiscount: it.hasActiveShopDiscount,
+        })),
+        previewShopFlashDiscountVnd: shopBreakdown ? shopBreakdown.flash_sale_discount_vnd : null,
+        previewWarnings: preview?.warnings,
+      });
+      Object.assign(merged, evals);
+    }
+    return merged;
+  }, [activeSlices, preview]);
+
+  const rotateCheckoutIdempotencyKey = useCallback(() => {
+    const nextUuid =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    setCheckoutIdempotencyKey(`nm-checkout-${nextUuid}`);
+  }, []);
+
+  const handleOptOutFlashSku = useCallback(
+    (skuId: string) => {
+      if (buyNowItem && buyNowItem.skuId === skuId) {
+        setBuyNowOptedOutFlash(true);
+      } else {
+        optOutFlashForSku(skuId);
+      }
+      setFormError(null);
+      setFlashCheckoutBlocked(false);
+      setAmbiguousSubmit(false);
+      rotateCheckoutIdempotencyKey();
+    },
+    [buyNowItem, optOutFlashForSku, rotateCheckoutIdempotencyKey]
+  );
+
+  const handleRestoreFlashSku = useCallback(
+    (skuId: string) => {
+      if (buyNowItem && buyNowItem.skuId === skuId) {
+        setBuyNowOptedOutFlash(false);
+      } else {
+        restoreFlashForSku(skuId);
+      }
+      setFormError(null);
+      setFlashCheckoutBlocked(false);
+      setAmbiguousSubmit(false);
+      rotateCheckoutIdempotencyKey();
+    },
+    [buyNowItem, restoreFlashForSku, rotateCheckoutIdempotencyKey]
+  );
+
+  const handleOptOutAllActiveFlash = useCallback(() => {
+    if (buyNowItem) {
+      setBuyNowOptedOutFlash(true);
+    } else {
+      for (const slice of activeSlices) {
+        for (const it of slice.items) {
+          if (it.flashSaleItemId) {
+            optOutFlashForSku(it.skuId);
+          }
+        }
+      }
+    }
+    setFormError(null);
+    setFlashCheckoutBlocked(false);
+    setAmbiguousSubmit(false);
+    rotateCheckoutIdempotencyKey();
+  }, [buyNowItem, activeSlices, optOutFlashForSku, rotateCheckoutIdempotencyKey]);
+
+  const translatedWarnings = useMemo(
+    () => translatePromotionWarnings(preview?.warnings),
+    [preview?.warnings]
+  );
+
+  const hasFlashFallbackShopDiscount = useMemo(
+    () =>
+      activeSlices.some((slice) =>
+        slice.items.some((it) => Boolean(it.flashSaleItemId) && Boolean(it.hasActiveShopDiscount))
+      ),
+    [activeSlices]
+  );
 
   const handleAddressSaved = (saved: GatewayAddress) => {
     setAddresses((prev) => {
@@ -607,7 +880,7 @@ export function CheckoutClient({
   };
 
   const handlePlaceOrder = async () => {
-    if (isSubmitting || completedRef.current) return;
+    if (isSubmitting || completedRef.current || shippingLoading || previewLoading) return;
     if (activeSlices.length === 0) {
       setFormError("Chưa có sản phẩm nào để đặt hàng.");
       return;
@@ -629,19 +902,30 @@ export function CheckoutClient({
       }
     }
 
+    const codCheck = isCodAllowedForCheckout({
+      hasFlashSaleItem,
+      totalPayableVnd: grandTotalVnd,
+      codRejectedCount: user.cod_rejected_count,
+    });
+    if (paymentMethod === "COD" && hasFlashSaleItem) {
+      setFormError(codCheck.reason);
+      setPaymentMethod("VIETQR");
+      return;
+    }
+
     const fromCart = !buyNowItem && isFullCartSelected;
-    const explicitItems = fromCart
-      ? undefined
-      : activeSlices.flatMap((slice) =>
-          slice.items.map((it) => ({
-            sku_id: it.skuId,
-            quantity: it.quantity,
-            ...(it.flashSaleItemId ? { flash_sale_item_id: it.flashSaleItemId } : {}),
-          }))
-        );
+    const allItemsInput = activeSlices.flatMap((slice) =>
+      slice.items.map((it) => ({
+        sku_id: it.skuId,
+        quantity: it.quantity,
+        ...(it.flashSaleItemId ? { flash_sale_item_id: it.flashSaleItemId } : {}),
+      }))
+    );
+    const hasPromoOverrides = allItemsInput.some((it) => Boolean(it.flash_sale_item_id));
+    const explicitItems = !fromCart || hasPromoOverrides ? allItemsInput : undefined;
 
     const effectiveCoins = useCoins
-      ? Math.min(coinBalance, preview ? preview.total_coins_discount_vnd : coinBalance)
+      ? Math.min(coinBalance, preview ? preview.total_coins_discount_vnd : 0)
       : 0;
 
     const payload: GatewayCheckoutRequest = {
@@ -659,18 +943,32 @@ export function CheckoutClient({
     };
 
     setFormError(null);
+    setFlashCheckoutBlocked(false);
+    setIdempotencyConflict(false);
+    setAmbiguousSubmit(false);
     setIsSubmitting(true);
 
     try {
       const res = await api<GatewayCheckoutResponse>("checkout", {
         method: "POST",
         headers: {
-          "Idempotency-Key": idempotencyKey,
+          "Idempotency-Key": checkoutIdempotencyKey,
         },
         json: payload,
       });
 
       completedRef.current = true;
+
+      if (Array.isArray(res.warnings) && res.warnings.length > 0) {
+        saveCheckoutWarnings({
+          paymentId: res.payment_id,
+          orderIds: Array.isArray(res.orders) ? res.orders.map((o) => o.id).filter(Boolean) : [],
+          checkoutGroupId: res.checkout_group_id,
+          warnings: res.warnings,
+        });
+      } else {
+        clearCheckoutWarnings();
+      }
 
       if (!buyNowItem) {
         resetPromotions();
@@ -689,7 +987,11 @@ export function CheckoutClient({
 
       router.push("/don-hang");
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
+      const errKind = classifyCheckoutSubmitError(err, {
+        hasFlashSaleItem,
+        paymentMethod,
+      });
+      if (errKind === "unauthenticated") {
         const nextPath =
           typeof window !== "undefined"
             ? `${window.location.pathname}${window.location.search}`
@@ -701,13 +1003,23 @@ export function CheckoutClient({
       const hasVouchers = Boolean(
         platformVoucherCode || freeshipVoucherCode || Object.keys(activeShopVoucherMap).length > 0
       );
+      if (errKind === "idempotency_conflict") {
+        // NEVER auto-rotate idempotency key: the previous attempt may have already created an order.
+        setIdempotencyConflict(true);
+      } else if (errKind === "ambiguous_created") {
+        // Forward-recovery rule (503/504/ABORTED/CANCELED/network reject): keep the SAME Idempotency-Key,
+        // do NOT auto-retry, do NOT rotate key, and do NOT offer the key-rotating flash opt-out button.
+        setAmbiguousSubmit(true);
+      } else if (errKind === "flash_blocked") {
+        setFlashCheckoutBlocked(true);
+      }
       setFormError(
         translateCheckoutError(err, {
           paymentMethod,
           totalPayableVnd: grandTotalVnd,
           codRejectedCount: user.cod_rejected_count,
           hasVouchers,
-          isFlashSale: Boolean(buyNowItem?.flashSaleItemId),
+          isFlashSale: hasFlashSaleItem,
         })
       );
       setIsSubmitting(false);
@@ -821,6 +1133,11 @@ export function CheckoutClient({
     ? "Đang tạo đơn hàng..."
     : `Đặt hàng · ${formatVnd(grandTotalVnd)} (${methodShortLabel})`;
 
+  const codPolicy = isCodAllowedForCheckout({
+    hasFlashSaleItem,
+    totalPayableVnd: grandTotalVnd,
+    codRejectedCount: user.cod_rejected_count,
+  });
   const codExceedsLimit = grandTotalVnd > DEFAULT_COD_MAX_VND;
   const codBlockedHistory = user.cod_rejected_count >= DEFAULT_COD_MAX_REJECTED;
 
@@ -828,6 +1145,16 @@ export function CheckoutClient({
     <div className={`${shared.page} ${styles.mobileSpacer}`}>
       {renderHeader(
         "Chọn địa chỉ giao nhận, đơn vị vận chuyển và phương thức thanh toán để hoàn tất."
+      )}
+
+      {flashFallbackNotices.length > 0 && (
+        <div className={styles.warningList} role="status">
+          {flashFallbackNotices.map((note) => (
+            <p key={note} className={`${shared.feedbackBox} ${shared.feedbackWarn}`}>
+              {note}
+            </p>
+          ))}
+        </div>
       )}
 
       {buyNowItem && (
@@ -1058,6 +1385,9 @@ export function CheckoutClient({
                   <p className={styles.paymentDesc}>
                     Sau khi bấm Đặt hàng, hệ thống sẽ tạo mã VietQR riêng cho đơn của bạn để quét
                     bằng ứng dụng ngân hàng và xác nhận tự động, không cần nhập số thẻ.
+                    {hasFlashSaleItem
+                      ? " Đơn hàng có sản phẩm Flash sale cần thanh toán trong vòng 5 phút."
+                      : ""}
                   </p>
                 </button>
 
@@ -1065,20 +1395,28 @@ export function CheckoutClient({
                   type="button"
                   role="radio"
                   aria-checked={paymentMethod === "COD"}
+                  disabled={hasFlashSaleItem}
                   className={`${styles.paymentOption} ${
                     paymentMethod === "COD" ? styles.paymentOptionSelected : ""
                   }`}
-                  onClick={() => setPaymentMethod("COD")}
+                  onClick={() => {
+                    if (!hasFlashSaleItem) setPaymentMethod("COD");
+                  }}
                 >
                   <div className={styles.paymentHead}>
                     <span className={styles.paymentTitle}>Thanh toán khi nhận hàng (COD)</span>
-                    {paymentMethod === "COD" && (
+                    {hasFlashSaleItem ? (
+                      <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+                        Không áp dụng cho Flash sale
+                      </span>
+                    ) : paymentMethod === "COD" ? (
                       <span className={`${shared.statusTag} ${shared.tonePos}`}>Đang chọn</span>
-                    )}
+                    ) : null}
                   </div>
                   <p className={styles.paymentDesc}>
-                    Thanh toán tiền mặt trực tiếp cho nhân viên giao hàng khi nhận kiện. Áp dụng cho
-                    đơn hàng tối đa {formatVnd(DEFAULT_COD_MAX_VND)}.
+                    {hasFlashSaleItem
+                      ? codPolicy.reason
+                      : `Thanh toán tiền mặt trực tiếp cho nhân viên giao hàng khi nhận kiện. Áp dụng cho đơn hàng tối đa ${formatVnd(DEFAULT_COD_MAX_VND)}.`}
                   </p>
                   {paymentMethod === "COD" && codExceedsLimit && (
                     <p className={styles.codAdvisory}>
@@ -1115,15 +1453,54 @@ export function CheckoutClient({
                   );
                   const chosenShopVoucher = selectedShopVouchers[slice.shopId] ?? null;
 
+                  const sliceDisplayedSubtotal = shopBreakdown
+                    ? Math.max(
+                        0,
+                        shopBreakdown.subtotal_vnd -
+                          shopBreakdown.flash_sale_discount_vnd -
+                          (shopBreakdown.shop_program_discount_vnd ?? 0)
+                      )
+                    : slice.subtotalVnd;
+
                   return (
                     <div key={slice.shopId} className={styles.shopSlice}>
                       <div className={styles.shopSliceHead}>
                         <span>{slice.shopName}</span>
-                        <span className="num">{formatVnd(slice.subtotalVnd)}</span>
+                        <span className="num">{formatVnd(sliceDisplayedSubtotal)}</span>
                       </div>
                       <div className={styles.shopSliceItems}>
                         {slice.items.map((it) => {
                           const itemPricing = computeBuyNowSlicePricing(it);
+                          const flashEval = flashEvalBySkuId[it.skuId];
+                          const isFlashLine = itemPricing.flashDiscountVnd > 0;
+                          const flashShortfall = Boolean(flashEval?.previewShortfall);
+                          const shopProgramApplied = Boolean(
+                            (!isFlashLine || flashShortfall) &&
+                            it.shopProgramItemId &&
+                            isShopProgramItemApplied({
+                              shopProgramItemId: it.shopProgramItemId,
+                              shopBreakdown: shopBreakdown ?? null,
+                            })
+                          );
+                          const shopProgramExceeded = Boolean(
+                            !isFlashLine &&
+                            it.shopProgramItemId &&
+                            shopBreakdown &&
+                            !shopProgramApplied
+                          );
+                          const effectiveUnit =
+                            isFlashLine && !flashShortfall
+                              ? itemPricing.effectiveUnitPriceVnd
+                              : shopProgramApplied &&
+                                  it.shopDiscountedPriceVnd &&
+                                  it.shopDiscountedPriceVnd < it.unitPriceVnd
+                                ? it.shopDiscountedPriceVnd
+                                : it.unitPriceVnd;
+                          const effectiveLine = effectiveUnit * it.quantity;
+                          const showFlashOptOut = Boolean(
+                            isFlashLine &&
+                            (flashEval?.needsRegularPriceChoice || flashCheckoutBlocked)
+                          );
                           return (
                             <div key={it.skuId} className={styles.miniItem}>
                               <img
@@ -1138,26 +1515,93 @@ export function CheckoutClient({
                                 <span className={styles.miniMeta}>
                                   {it.skuName ? `${it.skuName} · ` : ""}SL{" "}
                                   <span className="num">{it.quantity}</span>
-                                  {itemPricing.flashDiscountVnd > 0
-                                    ? ` · Flash sale ${formatVnd(itemPricing.effectiveUnitPriceVnd)}`
-                                    : ""}
+                                  {isFlashLine && !flashShortfall
+                                    ? ` · Flash sale ${formatVnd(effectiveUnit)}`
+                                    : shopProgramApplied && effectiveUnit < it.unitPriceVnd
+                                      ? ` · ${it.shopProgramName || "Giảm giá shop"} ${formatVnd(effectiveUnit)}`
+                                      : ""}
                                 </span>
+                                {showFlashOptOut && (
+                                  <div className={styles.linePromoNotice} role="status">
+                                    <span className={styles.linePromoWarn}>
+                                      {flashEval?.reason ||
+                                        (it.hasActiveShopDiscount
+                                          ? "Suất Flash sale đã hết lượt hoặc vượt giới hạn mua/tài khoản. Bỏ Flash để tiếp tục mua theo giá chương trình gian hàng."
+                                          : "Suất Flash sale đã hết lượt hoặc vượt giới hạn mua/tài khoản. Chọn Mua giá thường để tiếp tục đặt hàng.")}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className={styles.regularPriceActionBtn}
+                                      onClick={() => handleOptOutFlashSku(it.skuId)}
+                                    >
+                                      {it.hasActiveShopDiscount
+                                        ? "Bỏ Flash (dùng giá chương trình gian hàng)"
+                                        : "Mua giá thường"}
+                                    </button>
+                                  </div>
+                                )}
+                                {it.flashOptedOut && it.hasLiveFlashAvailable && (
+                                  <div className={styles.linePromoNotice}>
+                                    <span className={styles.miniMeta}>
+                                      {shopProgramApplied
+                                        ? "Đang áp dụng giá chương trình gian hàng (đã bỏ suất Flash sale)"
+                                        : "Đang mua giá thường (đã bỏ suất Flash sale)"}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className={styles.regularPriceActionBtn}
+                                      onClick={() => handleRestoreFlashSku(it.skuId)}
+                                    >
+                                      Dùng lại giá Flash
+                                    </button>
+                                  </div>
+                                )}
+                                {shopProgramExceeded && (
+                                  <div className={styles.linePromoNotice} role="status">
+                                    <span className={styles.linePromoWarn}>
+                                      Vượt giới hạn chương trình giảm giá của gian hàng — dòng này
+                                      tính giá thường.
+                                    </span>
+                                  </div>
+                                )}
                               </div>
                               <span className={`${styles.miniPrice} num`}>
-                                {formatVnd(itemPricing.effectiveSubtotalVnd)}
+                                {formatVnd(effectiveLine)}
                               </span>
                             </div>
                           );
                         })}
                       </div>
 
+                      {slice.items.some(
+                        (it) => flashEvalBySkuId[it.skuId]?.ambiguousShopShortfall
+                      ) && (
+                        <div
+                          className={`${styles.linePromoNotice} ${styles.shopPromoNotice}`}
+                          role="status"
+                        >
+                          <span className={styles.linePromoWarn}>
+                            Một hoặc nhiều sản phẩm Flash sale của gian hàng đã hết lượt hoặc vượt
+                            giới hạn mua/tài khoản. Tổng thanh toán đã cập nhật theo giá hệ thống —
+                            hãy kiểm tra lại hoặc bỏ suất Flash sale không còn hiệu lực.
+                          </span>
+                        </div>
+                      )}
+
                       {shopVouchers.length > 0 && (
                         <div className={styles.voucherPickList}>
                           {shopVouchers.map((v) => {
+                            const statusActive = !v.status || v.status.toUpperCase() === "ACTIVE";
                             const eligible =
-                              slice.subtotalVnd >= v.min_order_vnd &&
+                              v.eligible !== false &&
+                              statusActive &&
                               v.remaining_quota > 0 &&
-                              v.is_active;
+                              v.is_active &&
+                              slice.subtotalVnd >= v.min_order_vnd;
+                            const ineligibleReason =
+                              !eligible && v.ineligible_reason
+                                ? translateVoucherReason(v.ineligible_reason)
+                                : "";
                             const isSelected = chosenShopVoucher === v.code;
                             return (
                               <button
@@ -1176,7 +1620,7 @@ export function CheckoutClient({
                                     {v.code} · {formatVoucherBenefit(v)}
                                   </span>
                                   <span className={styles.voucherPickDesc}>
-                                    {formatVoucherCondition(v)}
+                                    {ineligibleReason || formatVoucherCondition(v)}
                                   </span>
                                 </span>
                                 <span className={styles.voucherPickAction}>
@@ -1188,11 +1632,31 @@ export function CheckoutClient({
                         </div>
                       )}
 
+                      {(shopBreakdown?.shop_program_discount_vnd ?? 0) > 0 && (
+                        <div className={styles.ledgerRow}>
+                          <span className={styles.ledgerLabel}>
+                            Giảm giá chương trình gian hàng
+                          </span>
+                          <span className={`${styles.ledgerDiscount} num`}>
+                            {formatSignedVnd(-(shopBreakdown?.shop_program_discount_vnd ?? 0))}
+                          </span>
+                        </div>
+                      )}
+
                       {(shopBreakdown?.shop_voucher_discount_vnd ?? 0) > 0 && (
                         <div className={styles.ledgerRow}>
                           <span className={styles.ledgerLabel}>Ưu đãi gian hàng</span>
                           <span className={`${styles.ledgerDiscount} num`}>
                             {formatSignedVnd(-(shopBreakdown?.shop_voucher_discount_vnd ?? 0))}
+                          </span>
+                        </div>
+                      )}
+
+                      {(shopBreakdown?.shop_freeship_discount_vnd ?? 0) > 0 && (
+                        <div className={styles.ledgerRow}>
+                          <span className={styles.ledgerLabel}>Gian hàng hỗ trợ phí ship</span>
+                          <span className={`${styles.ledgerDiscount} num`}>
+                            {formatSignedVnd(-(shopBreakdown?.shop_freeship_discount_vnd ?? 0))}
                           </span>
                         </div>
                       )}
@@ -1330,6 +1794,15 @@ export function CheckoutClient({
                   </div>
                 )}
 
+                {shopProgramDiscountDisplay > 0 && (
+                  <div className={styles.ledgerRow}>
+                    <dt className={styles.ledgerLabel}>Giảm giá chương trình gian hàng</dt>
+                    <dd className={`${styles.ledgerDiscount} num`}>
+                      {formatSignedVnd(-shopProgramDiscountDisplay)}
+                    </dd>
+                  </div>
+                )}
+
                 <div className={styles.ledgerRow}>
                   <dt className={styles.ledgerLabel}>Ưu đãi gian hàng</dt>
                   <dd className={`${styles.ledgerDiscount} num`}>
@@ -1348,6 +1821,15 @@ export function CheckoutClient({
                   <dt className={styles.ledgerLabel}>Phí vận chuyển</dt>
                   <dd className="num">{formatVnd(shippingDisplay)}</dd>
                 </div>
+
+                {shopFreeshipDisplay > 0 && (
+                  <div className={styles.ledgerRow}>
+                    <dt className={styles.ledgerLabel}>Gian hàng hỗ trợ phí ship</dt>
+                    <dd className={`${styles.ledgerDiscount} num`}>
+                      {formatSignedVnd(-shopFreeshipDisplay)}
+                    </dd>
+                  </div>
+                )}
 
                 <div className={styles.ledgerRow}>
                   <dt className={styles.ledgerLabel}>Giảm phí vận chuyển</dt>
@@ -1379,9 +1861,50 @@ export function CheckoutClient({
               </div>
 
               {formError && (
-                <p className={`${shared.feedbackBox} ${shared.feedbackError}`} role="alert">
-                  {formError}
-                </p>
+                <div className={`${shared.feedbackBox} ${shared.feedbackError}`} role="alert">
+                  <p>{formError}</p>
+                  {ambiguousSubmit && !idempotencyConflict && (
+                    <div className={`${shared.formActions} ${styles.errorActions}`}>
+                      <Button variant="secondary" size="sm" href="/don-hang">
+                        Xem Đơn hàng của tôi
+                      </Button>
+                    </div>
+                  )}
+                  {idempotencyConflict && (
+                    <div className={`${shared.formActions} ${styles.errorActions}`}>
+                      <Button variant="secondary" size="sm" href="/don-hang">
+                        Kiểm tra Đơn hàng của tôi
+                      </Button>
+                      <button
+                        type="button"
+                        className={styles.regularPriceLightBtn}
+                        onClick={() => {
+                          rotateCheckoutIdempotencyKey();
+                          setIdempotencyConflict(false);
+                          setFormError(null);
+                        }}
+                      >
+                        Vẫn đặt đơn mới
+                      </button>
+                    </div>
+                  )}
+                  {flashCheckoutBlocked &&
+                    hasFlashSaleItem &&
+                    !ambiguousSubmit &&
+                    !idempotencyConflict && (
+                      <div className={styles.errorActions}>
+                        <button
+                          type="button"
+                          className={styles.regularPriceLightBtn}
+                          onClick={handleOptOutAllActiveFlash}
+                        >
+                          {hasFlashFallbackShopDiscount
+                            ? "Bỏ suất Flash sale (dùng giá chương trình gian hàng / giá thường)"
+                            : "Mua giá thường (bỏ suất Flash sale)"}
+                        </button>
+                      </div>
+                    )}
+                </div>
               )}
 
               <Button
@@ -1389,10 +1912,10 @@ export function CheckoutClient({
                 size="lg"
                 fullWidth
                 className={shared.wrapBtn}
-                disabled={isSubmitting || completedRef.current || shippingLoading}
+                disabled={isSubmitting || completedRef.current || shippingLoading || previewLoading}
                 onClick={() => void handlePlaceOrder()}
               >
-                {ctaLabel}
+                {previewLoading ? "Đang cập nhật giá & ưu đãi..." : ctaLabel}
               </Button>
             </div>
           </aside>
@@ -1416,10 +1939,14 @@ export function CheckoutClient({
         <Button
           variant="primary"
           size="md"
-          disabled={isSubmitting || completedRef.current || shippingLoading}
+          disabled={isSubmitting || completedRef.current || shippingLoading || previewLoading}
           onClick={() => void handlePlaceOrder()}
         >
-          {isSubmitting ? "Đang tạo..." : `Đặt · ${formatVnd(grandTotalVnd)}`}
+          {isSubmitting
+            ? "Đang tạo..."
+            : previewLoading
+              ? "Đang tính..."
+              : `Đặt · ${formatVnd(grandTotalVnd)}`}
         </Button>
       </div>
     </div>

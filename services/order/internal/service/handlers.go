@@ -244,6 +244,18 @@ func (s *OrderService) HandleShipmentUpdated(ctx context.Context, eventID string
 		}
 	}
 
+	// P0 M1: Block moving an order to SHIPPING/DELIVERED/RETURNED while its checkout_group is still IN_PROGRESS
+	// (causes NATS redelivery after payment initialization finishes instead of emitting order.delivered before payment exists).
+	if strings.TrimSpace(payload.OrderID) != "" {
+		if agg, gErr := s.store.GetOrderWithDetails(ctx, payload.OrderID); gErr == nil && agg != nil {
+			if pErr := s.requireCheckoutPaymentInitialized(ctx, agg.Order.CheckoutGroupID); pErr != nil {
+				return pErr
+			}
+		} else if gErr != nil && !errors.Is(gErr, store.ErrNotFound) {
+			return gErr
+		}
+	}
+
 	outcome, err := s.store.ApplyShipmentUpdate(ctx, store.ShipmentUpdateParams{
 		EventID:           eventID,
 		EventType:         events.SubjectShipmentUpdated,
@@ -379,11 +391,12 @@ func (s *OrderService) ScanExpiredPendingOrders(ctx context.Context) (int, error
 
 func (s *OrderService) processExpiredGroup(ctx context.Context, cand store.ExpiredGroupCandidate) error {
 	sysCtx := clients.WithInternalAdminContext(ctx)
+	resolvedPaymentID := strings.TrimSpace(cand.PaymentID)
 
 	// UC-PAY06: Always check PaymentService before cancelling an expired PENDING order!
 	if s.clients.Payment != nil {
 		payResp, err := s.clients.Payment.GetPayment(sysCtx, &paymentv1.GetPaymentRequest{
-			PaymentId:    cand.PaymentID,
+			PaymentId:    resolvedPaymentID,
 			OrderGroupId: cand.CheckoutGroupID,
 		})
 		if err != nil {
@@ -392,48 +405,90 @@ func (s *OrderService) processExpiredGroup(ctx context.Context, cand store.Expir
 				return fmt.Errorf("check payment status before expiry cancel: %w", err)
 			}
 		} else if pay := payResp.GetPayment(); pay != nil {
-			if pay.GetStatus() == paymentv1.PaymentStatus_PAYMENT_STATUS_SUCCEEDED {
-				// Late payment succeeded before cancel — confirm order instead of cancelling!
-				return s.HandlePaymentResult(sysCtx, PaymentResultInput{
-					CheckoutGroupID: cand.CheckoutGroupID,
-					PaymentID:       pay.GetPaymentId(),
-					Status:          orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_SUCCEEDED,
-					Reason:          "Payment confirmed by expiry watchdog",
-					ActorID:         "order-expiry-watchdog",
-					ActorRole:       "system",
-				})
+			if pid := strings.TrimSpace(pay.GetPaymentId()); pid != "" {
+				resolvedPaymentID = pid
 			}
-			if pay.GetStatus() == paymentv1.PaymentStatus_PAYMENT_STATUS_REFUNDED {
-				// Review2-O P1-2: payment was already 100% refunded before expiry sweep;
-				// cancel the pending order and release reservations without downgrading payment_status to EXPIRED.
-				return s.HandlePaymentResult(sysCtx, PaymentResultInput{
-					CheckoutGroupID:       cand.CheckoutGroupID,
-					PaymentID:             pay.GetPaymentId(),
-					Status:                orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_EXPIRED,
-					PaymentStatusOverride: "REFUNDED",
-					Reason:                "Payment already refunded before order confirmation",
-					ActorID:               "order-expiry-watchdog",
-					ActorRole:             "system",
-				})
+			if done, hErr := s.handleExpiredGroupObservedPayment(sysCtx, cand.CheckoutGroupID, pay); done || hErr != nil {
+				return hErr
 			}
 			if pay.GetStatus() == paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING {
-				_, _ = s.clients.Payment.CancelPayment(sysCtx, &paymentv1.CancelPaymentRequest{
-					PaymentId:    pay.GetPaymentId(),
+				_, cancelErr := s.clients.Payment.CancelPayment(sysCtx, &paymentv1.CancelPaymentRequest{
+					PaymentId:    resolvedPaymentID,
 					OrderGroupId: cand.CheckoutGroupID,
 					Reason:       "Payment expired",
 				})
+				if cancelErr != nil {
+					code := status.Code(cancelErr)
+					switch code {
+					case codes.NotFound:
+						// Payment already absent; safe to proceed with order expiry cancel.
+					case codes.AlreadyExists, codes.FailedPrecondition:
+						// Concurrent webhook or state transition raced ahead at payment service;
+						// re-read authoritative payment status before deciding.
+						reResp, reErr := s.clients.Payment.GetPayment(sysCtx, &paymentv1.GetPaymentRequest{
+							PaymentId:    resolvedPaymentID,
+							OrderGroupId: cand.CheckoutGroupID,
+						})
+						if reErr != nil {
+							if status.Code(reErr) != codes.NotFound {
+								return fmt.Errorf("re-check payment status after cancel race: %w", reErr)
+							}
+						} else if rePay := reResp.GetPayment(); rePay != nil {
+							if pid := strings.TrimSpace(rePay.GetPaymentId()); pid != "" {
+								resolvedPaymentID = pid
+							}
+							if done, hErr := s.handleExpiredGroupObservedPayment(sysCtx, cand.CheckoutGroupID, rePay); done || hErr != nil {
+								return hErr
+							}
+							if rePay.GetStatus() == paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING {
+								return fmt.Errorf("payment %s remained PENDING after CancelPayment (%s); retry next tick", resolvedPaymentID, code)
+							}
+						}
+					default:
+						return fmt.Errorf("cancel expired payment %s: %w", resolvedPaymentID, cancelErr)
+					}
+				}
 			}
 		}
 	}
 
 	return s.HandlePaymentResult(sysCtx, PaymentResultInput{
 		CheckoutGroupID: cand.CheckoutGroupID,
-		PaymentID:       cand.PaymentID,
+		PaymentID:       resolvedPaymentID,
 		Status:          orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_EXPIRED,
 		Reason:          "Payment expired after timeout",
 		ActorID:         "order-expiry-watchdog",
 		ActorRole:       "system",
 	})
+}
+
+func (s *OrderService) handleExpiredGroupObservedPayment(ctx context.Context, checkoutGroupID string, pay *paymentv1.Payment) (bool, error) {
+	switch pay.GetStatus() {
+	case paymentv1.PaymentStatus_PAYMENT_STATUS_SUCCEEDED:
+		// Late payment succeeded before cancel — confirm order instead of cancelling!
+		return true, s.HandlePaymentResult(ctx, PaymentResultInput{
+			CheckoutGroupID: checkoutGroupID,
+			PaymentID:       pay.GetPaymentId(),
+			Status:          orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_SUCCEEDED,
+			Reason:          "Payment confirmed by expiry watchdog",
+			ActorID:         "order-expiry-watchdog",
+			ActorRole:       "system",
+		})
+	case paymentv1.PaymentStatus_PAYMENT_STATUS_REFUNDED:
+		// Review2-O P1-2: payment was already 100% refunded before expiry sweep;
+		// cancel the pending order and release reservations without downgrading payment_status to EXPIRED.
+		return true, s.HandlePaymentResult(ctx, PaymentResultInput{
+			CheckoutGroupID:       checkoutGroupID,
+			PaymentID:             pay.GetPaymentId(),
+			Status:                orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_EXPIRED,
+			PaymentStatusOverride: "REFUNDED",
+			Reason:                "Payment already refunded before order confirmation",
+			ActorID:               "order-expiry-watchdog",
+			ActorRole:             "system",
+		})
+	default:
+		return false, nil
+	}
 }
 
 const defaultStaleCheckoutAfter = 5 * time.Minute
@@ -467,6 +522,17 @@ func (s *OrderService) cleanupStaleCheckoutGroup(ctx context.Context, groupID st
 	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 	defer cancel()
 
+	// P1 M3 (claim-first, release-later): atomically lock checkout_groups FOR UPDATE, verify with a fresh
+	// statement snapshot that no orders exist, and flip status='FAILED', needs_cleanup=TRUE BEFORE calling
+	// ReleasePromotion/ReleaseStock so a racing PersistCheckoutBatch can never commit live orders under us.
+	claimed, err := s.store.ClaimStaleCheckoutGroupForCleanup(compCtx, groupID, "STALE_CHECKOUT_EXPIRED")
+	if err != nil {
+		return fmt.Errorf("claim stale checkout group %s: %w", groupID, err)
+	}
+	if !claimed {
+		return nil
+	}
+
 	if s.clients.Promotion != nil {
 		if err := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
 			_, rErr := s.clients.Promotion.ReleasePromotion(c, &promotionv1.ReleasePromotionRequest{
@@ -495,9 +561,362 @@ func (s *OrderService) cleanupStaleCheckoutGroup(ctx context.Context, groupID st
 		}
 	}
 
-	if err := s.store.FailCheckoutGroup(compCtx, groupID, "STALE_CHECKOUT_EXPIRED"); err != nil {
-		return fmt.Errorf("fail stale checkout group %s: %w", groupID, err)
+	if err := s.store.ClearCheckoutGroupNeedsCleanup(compCtx, groupID); err != nil {
+		return fmt.Errorf("clear needs_cleanup for stale checkout group %s: %w", groupID, err)
 	}
+	return nil
+}
+
+// ScanIncompleteCheckoutGroups recovers IN_PROGRESS checkout_groups that already have persisted
+// sub-orders (e.g. CreatePayment succeeded but CompleteCheckoutWithPayment failed/crashed, or
+// checkout crashed before CreatePayment finished).
+func (s *OrderService) ScanIncompleteCheckoutGroups(ctx context.Context) (int, error) {
+	staleAfter := s.cfg.StaleCheckoutAfter
+	if staleAfter <= 0 {
+		staleAfter = defaultStaleCheckoutAfter
+	}
+
+	groupIDs, err := s.store.FindIncompleteCheckoutGroupsWithOrders(ctx, staleAfter, 20)
+	if err != nil {
+		return 0, err
+	}
+
+	handled := 0
+	for _, groupID := range groupIDs {
+		if err := s.reconcileIncompleteCheckoutGroup(ctx, groupID); err != nil {
+			s.logger.WarnContext(ctx, "incomplete checkout recovery skipped group due to error",
+				"checkout_group_id", groupID, "error", err)
+			continue
+		}
+		handled++
+	}
+	return handled, nil
+}
+
+func (s *OrderService) reconcileIncompleteCheckoutGroup(ctx context.Context, groupID string) error {
+	recovered, notFound, err := s.tryFinalizeInProgressGroupFromPayment(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	if recovered || !notFound {
+		return nil
+	}
+
+	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+	defer cancel()
+
+	aggs, err := s.store.ListOrdersByCheckoutGroup(compCtx, groupID)
+	if err != nil {
+		return fmt.Errorf("list orders for incomplete checkout %s: %w", groupID, err)
+	}
+	if len(aggs) == 0 {
+		return nil
+	}
+
+	// P0 M1: If legacy data already reached DELIVERED/COMPLETED/RETURN_REQUESTED/RETURNED without a
+	// payment record (prevented on new orders by requireCheckoutPaymentInitialized), do NOT call
+	// CreatePayment and do NOT close the group — log Error for manual reconciliation and return error.
+	for _, agg := range aggs {
+		st := statemachine.StringToStatus(agg.Order.Status)
+		switch st {
+		case orderv1.OrderStatus_ORDER_STATUS_DELIVERED,
+			orderv1.OrderStatus_ORDER_STATUS_COMPLETED,
+			orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED,
+			orderv1.OrderStatus_ORDER_STATUS_RETURNED:
+			s.logger.ErrorContext(compCtx,
+				"manual intervention required: IN_PROGRESS checkout group contains post-delivery/returned order with no payment record",
+				"checkout_group_id", groupID,
+				"order_id", agg.Order.ID,
+				"order_status", agg.Order.Status,
+			)
+			return fmt.Errorf("manual intervention required: checkout group %s has order %s in status %s with no payment record",
+				groupID, agg.Order.ID, agg.Order.Status)
+		}
+	}
+
+	// P1 M2: Exclude CANCELLED orders when computing live orders, live total, and forward-recovery eligibility.
+	allCancelled := true
+	allPending := true
+	hasConfirmedOrBeyond := false
+	hasTrackingOrPaid := false
+	liveAggs := make([]store.OrderAggregate, 0, len(aggs))
+	var liveTotalPayableVND int64
+	var paymentExpiresAt *time.Time
+	for _, agg := range aggs {
+		ord := agg.Order
+		st := statemachine.StringToStatus(ord.Status)
+		if st == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+			allPending = false
+			continue
+		}
+		allCancelled = false
+		liveAggs = append(liveAggs, agg)
+		liveTotalPayableVND += ord.TotalPayableVND
+		if ord.PaymentExpiresAt != nil {
+			exp := *ord.PaymentExpiresAt
+			if paymentExpiresAt == nil || exp.Before(*paymentExpiresAt) {
+				paymentExpiresAt = &exp
+			}
+		}
+		if st != orderv1.OrderStatus_ORDER_STATUS_PENDING {
+			allPending = false
+			hasConfirmedOrBeyond = true // CONFIRMED, PREPARING, or legacy SHIPPING
+		}
+		if strings.TrimSpace(ord.TrackingCode) != "" || ord.PendingShipmentCancel ||
+			((strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") || strings.EqualFold(ord.PaymentStatus, "REFUNDED")) && ord.TotalPayableVND > 0) {
+			hasTrackingOrPaid = true
+		}
+	}
+
+	// P0 N3 (no infinite loop): all sub-orders are already CANCELLED -> close group FAILED without re-releasing promo.
+	if allCancelled {
+		if err := s.store.FailCheckoutGroup(compCtx, groupID, "CANCELLED"); err != nil {
+			return fmt.Errorf("close already-cancelled checkout group %s: %w", groupID, err)
+		}
+		_ = s.store.ClearCheckoutGroupPendingStockConfirm(compCtx, groupID)
+		return nil
+	}
+
+	// P0 N3 + P1 M2 (forward recovery): if ANY live sub-order is CONFIRMED/PREPARING/SHIPPING
+	// (COD, 0-VND, or legacy SHIPPING), NEVER cancel or release promotions/stock — create the payment
+	// idempotently ("checkout:"+groupID) for ONLY the live (non-CANCELLED) orders and live total.
+	if hasConfirmedOrBeyond {
+		if s.clients.Payment == nil {
+			return fmt.Errorf("payment client unavailable for forward recovery of %s", groupID)
+		}
+		buyerID := liveAggs[0].Order.BuyerID
+		method := statemachine.StringToPaymentMethod(liveAggs[0].Order.PaymentMethod)
+		payReq := buildCreatePaymentRequest(groupID, buyerID, liveTotalPayableVND, method, paymentExpiresAt, liveAggs)
+		payResp, pErr := s.clients.Payment.CreatePayment(compCtx, payReq)
+		if pErr != nil {
+			return fmt.Errorf("forward-recover CreatePayment for %s: %w", groupID, pErr)
+		}
+		pay := payResp.GetPayment()
+		if pay == nil || strings.TrimSpace(pay.GetPaymentId()) == "" {
+			return fmt.Errorf("forward-recover CreatePayment for %s returned empty payment", groupID)
+		}
+		if err := s.finalizeRecoveredCheckoutGroup(compCtx, groupID, pay, liveAggs); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// P0 N3: Only cancel and release stock+promotion when EVERY order in the group is still unpaid PENDING (VietQR)
+	// with no tracking code.
+	traceID, traceparent := traceMetaFromContext(ctx)
+	if !allPending || hasTrackingOrPaid {
+		// Mixed PENDING + CANCELLED (zero CONFIRMED+): cancel only remaining PENDING orders without
+		// releasing group promotions here (leaving pending_cancel_compensation for cancel watchdog) so the
+		// group closes FAILED once zero live orders remain and never loops infinitely.
+		cancelRes, cErr := s.store.CancelCheckoutGroupOrders(compCtx, store.CancelGroupOrdersParams{
+			CheckoutGroupID: groupID,
+			Reason:          "Checkout payment was never initialized before timeout",
+			ActorID:         "order-checkout-recovery",
+			ActorRole:       "system",
+			PaymentStatus:   "FAILED",
+			OnlyPending:     true,
+			TraceID:         traceID,
+			Traceparent:     traceparent,
+		})
+		if cErr != nil {
+			return fmt.Errorf("cancel remaining pending orders for %s: %w", groupID, cErr)
+		}
+		if cancelRes.HasLiveOrders {
+			return fmt.Errorf("incomplete checkout group %s still has live orders; retry next tick", groupID)
+		}
+		s.notifyOutbox()
+		return nil
+	}
+
+	cancelRes, cancelErr := s.store.CancelCheckoutGroupOrders(compCtx, store.CancelGroupOrdersParams{
+		CheckoutGroupID: groupID,
+		Reason:          "Checkout payment was never initialized before timeout",
+		ActorID:         "order-checkout-recovery",
+		ActorRole:       "system",
+		PaymentStatus:   "FAILED",
+		OnlyPending:     true,
+		TraceID:         traceID,
+		Traceparent:     traceparent,
+	})
+	if cancelErr != nil {
+		return fmt.Errorf("cancel orphaned incomplete checkout group %s: %w", groupID, cancelErr)
+	}
+	if cancelRes.HasLiveOrders {
+		return fmt.Errorf("incomplete checkout group %s transitioned before cancel; retry next tick", groupID)
+	}
+
+	s.compensateCancelledCheckoutGroup(compCtx, groupID, cancelRes.Cancelled, aggs, true)
+	s.notifyOutbox()
+	return nil
+}
+
+// tryFinalizeInProgressGroupFromPayment checks PaymentService by OrderGroupId for an IN_PROGRESS
+// checkout_group that already has persisted orders and finalizes it atomically without downgrading.
+// Returns (recovered=true, notFound=false, nil) once finalized, or (false, true, nil) when PaymentService
+// definitively reports NotFound.
+func (s *OrderService) tryFinalizeInProgressGroupFromPayment(ctx context.Context, groupID string) (bool, bool, error) {
+	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+	defer cancel()
+
+	aggs, err := s.store.ListOrdersByCheckoutGroup(compCtx, groupID)
+	if err != nil {
+		return false, false, fmt.Errorf("list orders for incomplete checkout %s: %w", groupID, err)
+	}
+	if len(aggs) == 0 {
+		return false, false, nil
+	}
+	if s.clients.Payment == nil {
+		return false, false, nil
+	}
+
+	payResp, pErr := s.clients.Payment.GetPayment(compCtx, &paymentv1.GetPaymentRequest{
+		OrderGroupId: groupID,
+	})
+	if pErr != nil {
+		if status.Code(pErr) == codes.NotFound {
+			return false, true, nil
+		}
+		return false, false, fmt.Errorf("lookup payment for incomplete checkout %s: %w", groupID, pErr)
+	}
+	pay := payResp.GetPayment()
+	if pay == nil || strings.TrimSpace(pay.GetPaymentId()) == "" {
+		return false, true, nil
+	}
+
+	if err := s.finalizeRecoveredCheckoutGroup(compCtx, groupID, pay, aggs); err != nil {
+		return false, false, err
+	}
+	return true, false, nil
+}
+
+func (s *OrderService) reconcileObservedPaymentStatus(ctx context.Context, groupID string, pay *paymentv1.Payment) error {
+	paymentID := strings.TrimSpace(pay.GetPaymentId())
+	switch pay.GetStatus() {
+	case paymentv1.PaymentStatus_PAYMENT_STATUS_SUCCEEDED:
+		return s.HandlePaymentResult(ctx, PaymentResultInput{
+			CheckoutGroupID: groupID,
+			PaymentID:       paymentID,
+			Status:          orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_SUCCEEDED,
+			Reason:          "Payment confirmed during checkout recovery",
+			ActorID:         "order-checkout-recovery",
+			ActorRole:       "system",
+		})
+	case paymentv1.PaymentStatus_PAYMENT_STATUS_FAILED:
+		return s.HandlePaymentResult(ctx, PaymentResultInput{
+			CheckoutGroupID: groupID,
+			PaymentID:       paymentID,
+			Status:          orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_FAILED,
+			Reason:          "Payment failed before checkout finalization",
+			ActorID:         "order-checkout-recovery",
+			ActorRole:       "system",
+		})
+	case paymentv1.PaymentStatus_PAYMENT_STATUS_EXPIRED:
+		return s.HandlePaymentResult(ctx, PaymentResultInput{
+			CheckoutGroupID: groupID,
+			PaymentID:       paymentID,
+			Status:          orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_EXPIRED,
+			Reason:          "Payment expired before checkout finalization",
+			ActorID:         "order-checkout-recovery",
+			ActorRole:       "system",
+		})
+	case paymentv1.PaymentStatus_PAYMENT_STATUS_CANCELLED:
+		return s.HandlePaymentResult(ctx, PaymentResultInput{
+			CheckoutGroupID:       groupID,
+			PaymentID:             paymentID,
+			Status:                orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_FAILED,
+			PaymentStatusOverride: "CANCELLED",
+			Reason:                "Payment cancelled before checkout finalization",
+			ActorID:               "order-checkout-recovery",
+			ActorRole:             "system",
+		})
+	case paymentv1.PaymentStatus_PAYMENT_STATUS_REFUNDED:
+		return s.HandlePaymentResult(ctx, PaymentResultInput{
+			CheckoutGroupID:       groupID,
+			PaymentID:             paymentID,
+			Status:                orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_EXPIRED,
+			PaymentStatusOverride: "REFUNDED",
+			Reason:                "Payment refunded before checkout finalization",
+			ActorID:               "order-checkout-recovery",
+			ActorRole:             "system",
+		})
+	default:
+		return nil
+	}
+}
+
+func (s *OrderService) finalizeRecoveredCheckoutGroup(ctx context.Context, groupID string, pay *paymentv1.Payment, aggs []store.OrderAggregate) error {
+	paymentID := strings.TrimSpace(pay.GetPaymentId())
+	paymentStatus := paymentStatusToString(pay.GetStatus(), "PENDING")
+	qrURL := pay.GetQrUrl()
+	qrCode := pay.GetQrCode()
+
+	var liveTotalPayableVND int64
+	var allTotalPayableVND int64
+	var paymentExpiresAt *time.Time
+	hasPendingOrder := false
+	hasConfirmedOrder := false
+	for _, agg := range aggs {
+		allTotalPayableVND += agg.Order.TotalPayableVND
+		st := statemachine.StringToStatus(agg.Order.Status)
+		if st == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+			continue
+		}
+		liveTotalPayableVND += agg.Order.TotalPayableVND
+		if agg.Order.PaymentExpiresAt != nil {
+			exp := *agg.Order.PaymentExpiresAt
+			if paymentExpiresAt == nil || exp.Before(*paymentExpiresAt) {
+				paymentExpiresAt = &exp
+			}
+		}
+		if st == orderv1.OrderStatus_ORDER_STATUS_PENDING {
+			hasPendingOrder = true
+		}
+		if st == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
+			hasConfirmedOrder = true
+		}
+	}
+	if pay.GetExpiresAt() != nil {
+		exp := pay.GetExpiresAt().AsTime().UTC()
+		if paymentExpiresAt == nil || exp.Before(*paymentExpiresAt) {
+			paymentExpiresAt = &exp
+		}
+	}
+
+	if hasPendingOrder {
+		if hErr := s.reconcileObservedPaymentStatus(ctx, groupID, pay); hErr != nil {
+			return fmt.Errorf("reconcile payment status for %s: %w", groupID, hErr)
+		}
+	}
+	if hasConfirmedOrder {
+		if err := s.confirmGroupStockAndClear(ctx, groupID); err != nil {
+			s.logger.WarnContext(ctx, "ConfirmStock during checkout recovery failed; watchdog will retry",
+				"checkout_group_id", groupID, "error", err)
+		}
+	}
+
+	var (
+		finalGroup    db.CheckoutGroup
+		finalAggs     []store.OrderAggregate
+		builtSnapshot bool
+	)
+	if err := s.completeCheckoutGroupWithRetry(ctx, store.UpdateCheckoutPaymentParams{
+		CheckoutGroupID:  groupID,
+		PaymentID:        paymentID,
+		PaymentStatus:    paymentStatus,
+		QRURL:            qrURL,
+		QRCode:           qrCode,
+		PaymentExpiresAt: paymentExpiresAt,
+		TotalPayableVND:  liveTotalPayableVND,
+		BuildSnapshot:    s.makeBuyerCheckoutSnapshotBuilder(nil, &finalGroup, &finalAggs, &builtSnapshot),
+	}); err != nil {
+		return fmt.Errorf("finalize incomplete checkout group %s: %w", groupID, err)
+	}
+
+	if builtSnapshot && allOrdersCancelled(finalAggs) && paymentID != "" && (pay.GetAmountVnd() > 0 || allTotalPayableVND > 0) {
+		s.cancelPaymentAfterAllCancelled(ctx, groupID, paymentID, finalAggs)
+	}
+
+	s.notifyOutbox()
 	return nil
 }
 
@@ -849,6 +1268,7 @@ func (s *OrderService) RunExpiryWatchdog(ctx context.Context) {
 		case <-ticker.C:
 			runSweep("payment expiry watchdog", s.ScanExpiredPendingOrders)
 			runSweep("stale checkout group", s.ScanStaleCheckoutGroups)
+			runSweep("incomplete checkout group", s.ScanIncompleteCheckoutGroups)
 			runSweep("auto-cancel unconfirmed orders", s.ScanAutoCancelUnconfirmedOrders)
 			runSweep("auto-complete delivered orders", s.ScanAutoCompleteDeliveredOrders)
 			runSweep("return deadlines", s.ScanReturnDeadlines)

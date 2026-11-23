@@ -4,7 +4,11 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { SizeCode } from "@/data";
-import type { GatewayProvince, GatewayVoucher } from "@/lib/gateway-types";
+import type {
+  GatewayActiveShopDiscount,
+  GatewayProvince,
+  GatewayVoucher,
+} from "@/lib/gateway-types";
 import { api, ApiError, getErrorMessage } from "@/lib/api";
 import {
   findProductSku,
@@ -40,6 +44,7 @@ import {
   Price,
 } from "@/components";
 import { formatVnd } from "@/lib/format";
+import { computePdpQuantityCap } from "@/features/checkout/helpers";
 import { PROVINCES } from "@/lib/provinces";
 import { estimateDelivery, recommendSize } from "@/lib/sizing";
 import { useRevealObserver } from "@/features/catalog/useRevealObserver";
@@ -62,6 +67,7 @@ export interface ProductDetailClientProps {
   similarProducts: CatalogProduct[];
   allProducts: CatalogProduct[];
   liveFlashBySkuId: Record<string, CatalogFlashSaleItem>;
+  activeShopDiscountBySkuId?: Record<string, GatewayActiveShopDiscount>;
   provinces: GatewayProvince[];
   initialColorQuery: string | null;
   initialSizeQuery: SizeCode | null;
@@ -113,6 +119,7 @@ export function ProductDetailClient({
   similarProducts,
   allProducts,
   liveFlashBySkuId,
+  activeShopDiscountBySkuId = {},
   provinces,
   initialColorQuery,
   initialSizeQuery,
@@ -128,11 +135,23 @@ export function ProductDetailClient({
   const { openChat, showToast, toggleWishlist, isWishlisted, recordProductView, bodyProfile } =
     useMockStore();
 
+  const defaultPromotedSku =
+    !initialColorQuery && !initialSizeQuery
+      ? (product.skus.find((s) => s.stock > 0 && Boolean(liveFlashBySkuId[s.id])) ??
+        product.skus.find((s) => s.stock > 0 && Boolean(activeShopDiscountBySkuId[s.id])))
+      : undefined;
+
   const initialColor =
     initialColorQuery && product.colors.some((c) => c.code === initialColorQuery)
       ? initialColorQuery
-      : (product.colors[0]?.code ?? "");
-  const initialSize = resolveInitialSize(product, initialColor, initialSizeQuery);
+      : (defaultPromotedSku?.colorCode ?? product.colors[0]?.code ?? "");
+  const initialSize =
+    !initialSizeQuery &&
+    defaultPromotedSku &&
+    defaultPromotedSku.colorCode === initialColor &&
+    product.sizes.includes(defaultPromotedSku.size)
+      ? defaultPromotedSku.size
+      : resolveInitialSize(product, initialColor, initialSizeQuery);
   const initialColorObj = product.colors.find((c) => c.code === initialColor) ?? product.colors[0];
 
   const [selectedColor, setSelectedColor] = useState<string>(initialColor);
@@ -212,16 +231,34 @@ export function ProductDetailClient({
   );
   const skuStock = activeSku?.stock ?? 0;
   const activeFlashItem = activeSku ? liveFlashBySkuId[activeSku.id] : undefined;
-  const orderCap = activeFlashItem
-    ? Math.min(activeFlashItem.perUserLimit, activeFlashItem.remainingSlots, skuStock)
-    : (product.maxPerOrder ?? skuStock);
-  const maxQty = skuStock > 0 ? Math.max(1, Math.min(skuStock, orderCap || skuStock)) : 0;
+  const activeShopDiscount =
+    !activeFlashItem && activeSku ? activeShopDiscountBySkuId[activeSku.id] : undefined;
+  const maxQty = computePdpQuantityCap({
+    skuStock,
+    productMaxPerOrder: product.maxPerOrder,
+    liveFlash: activeFlashItem,
+  });
   const clampedQty = skuStock > 0 ? Math.max(1, Math.min(quantity, maxQty)) : 0;
-  const regularPrice = activeSku?.price ?? product.price;
-  const unitPrice = activeFlashItem ? activeFlashItem.flashPriceVnd : regularPrice;
+  const shopDiscountLimitExceeded = Boolean(
+    activeShopDiscount &&
+    activeShopDiscount.per_user_limit > 0 &&
+    clampedQty > activeShopDiscount.per_user_limit
+  );
+  const regularPrice = activeSku?.regularPriceVnd ?? activeSku?.price ?? product.price;
+  const unitPrice = activeFlashItem
+    ? activeFlashItem.flashPriceVnd
+    : activeShopDiscount &&
+        !shopDiscountLimitExceeded &&
+        activeShopDiscount.discounted_price_vnd < regularPrice
+      ? activeShopDiscount.discounted_price_vnd
+      : regularPrice;
   const displayedOriginalPrice = activeFlashItem
-    ? Math.max(regularPrice, product.originalPrice ?? 0)
-    : product.originalPrice;
+    ? Math.max(regularPrice, activeFlashItem.originalPriceVnd)
+    : activeShopDiscount &&
+        !shopDiscountLimitExceeded &&
+        activeShopDiscount.discounted_price_vnd < regularPrice
+      ? Math.max(regularPrice, activeShopDiscount.original_price_vnd)
+      : undefined;
 
   const effectiveSubtotal = unitPrice * Math.max(1, clampedQty);
 
@@ -466,7 +503,8 @@ export function ProductDetailClient({
             />
             {((product.badges && product.badges.length > 0) ||
               product.isFlashSale ||
-              Boolean(activeFlashItem)) && (
+              Boolean(activeFlashItem) ||
+              Boolean(activeShopDiscount)) && (
               <div className={styles.badgeGroup} aria-label="Nhãn sản phẩm">
                 {product.badges?.map((b) => (
                   <span
@@ -487,6 +525,14 @@ export function ProductDetailClient({
                     {activeFlashItem
                       ? `Flash sale · Còn ${activeFlashItem.remainingSlots} suất`
                       : "Flash sale"}
+                  </span>
+                )}
+                {!activeFlashItem && activeShopDiscount && (
+                  <span className={styles.badgeTag}>
+                    {activeShopDiscount.program_name || "Giảm giá gian hàng"}
+                    {activeShopDiscount.discount_percent > 0
+                      ? ` -${activeShopDiscount.discount_percent}%`
+                      : ""}
                   </span>
                 )}
               </div>
@@ -610,7 +656,14 @@ export function ProductDetailClient({
               </span>
               {activeFlashItem ? (
                 <span className={styles.skuCap}>
-                  Giới hạn {activeFlashItem.perUserLimit} suất Flash sale/tài khoản
+                  {activeFlashItem.perUserLimit > 0
+                    ? `Giới hạn ${activeFlashItem.perUserLimit} suất Flash sale/tài khoản`
+                    : `Flash sale (còn ${activeFlashItem.remainingSlots} suất)`}
+                </span>
+              ) : activeShopDiscount && activeShopDiscount.per_user_limit > 0 ? (
+                <span className={styles.skuCap}>
+                  Ưu đãi tối đa {activeShopDiscount.per_user_limit} SP/tài khoản (vượt giới hạn tính
+                  giá thường)
                 </span>
               ) : product.maxPerOrder && skuStock > 0 ? (
                 <span className={styles.skuCap}>Giới hạn {product.maxPerOrder} sp/đơn</span>
@@ -663,7 +716,16 @@ export function ProductDetailClient({
               <button
                 type="button"
                 className={`${styles.wishlistBtn} ${wishlisted ? styles.wishlistBtnActive : ""}`}
-                onClick={() => toggleWishlist(product.id, activeSku?.skuCode)}
+                onClick={() =>
+                  toggleWishlist(product.id, activeSku?.skuCode, {
+                    name: product.name,
+                    slug: product.slug,
+                    price: unitPrice,
+                    originalPrice: displayedOriginalPrice,
+                    image: product.image,
+                    shopName: shop.shortName || shop.name,
+                  })
+                }
                 aria-pressed={wishlisted}
                 aria-label={
                   wishlisted
@@ -697,6 +759,14 @@ export function ProductDetailClient({
               </Button>
             </div>
           </div>
+
+          {shopDiscountLimitExceeded && activeShopDiscount && (
+            <p className={styles.wishlistHint} role="status">
+              Số lượng đang chọn ({clampedQty}) vượt giới hạn {activeShopDiscount.per_user_limit}{" "}
+              SP/tài khoản của chương trình giảm giá gian hàng — toàn bộ dòng sẽ tính giá thường (
+              {formatVnd(regularPrice)}/SP).
+            </p>
+          )}
 
           {wishlisted && (
             <p className={styles.wishlistHint}>
@@ -925,7 +995,7 @@ export function ProductDetailClient({
                   <strong>
                     {product.returnEligible === false
                       ? "Không áp dụng đổi trả"
-                      : "Đổi trả miễn phí 45 ngày"}
+                      : "Đổi trả miễn phí 7 ngày"}
                   </strong>
                 </span>
                 <Link href="/tro-giup" className={styles.inlineLink}>

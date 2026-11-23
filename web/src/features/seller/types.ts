@@ -5,7 +5,11 @@ import type {
   ProductStatus,
   ShopStatus,
 } from "@/lib/gateway-types";
-import { GATEWAY_ORDER_STATUS_LABELS, GATEWAY_SHIPMENT_STATUS_LABELS } from "@/lib/format";
+import {
+  GATEWAY_ORDER_STATUS_LABELS,
+  GATEWAY_SHIPMENT_STATUS_LABELS,
+  formatVnd,
+} from "@/lib/format";
 
 export type SellerPillTone = "neutral" | "warn" | "pos" | "neg";
 
@@ -221,16 +225,28 @@ export function canSellerCancelOrder(status: string): boolean {
 }
 
 /**
- * Computes seller-borne deductions for a sub-order: flash sale + shop voucher + platform commission.
+ * Computes seller-borne deductions for a sub-order:
+ * flash sale + shop discount program + shop voucher + shop freeship + platform commission + payment fee.
  */
 export function computeOrderDeductionsVnd(
   order: Pick<
     GatewayOrder,
     "flash_sale_discount_vnd" | "shop_voucher_discount_vnd" | "commission_vnd"
-  >
+  > &
+    Partial<
+      Pick<
+        GatewayOrder,
+        "shop_program_discount_vnd" | "shop_freeship_discount_vnd" | "payment_fee_vnd"
+      >
+    >
 ): number {
   return Math.trunc(
-    order.flash_sale_discount_vnd + order.shop_voucher_discount_vnd + order.commission_vnd
+    (order.flash_sale_discount_vnd ?? 0) +
+      (order.shop_program_discount_vnd ?? 0) +
+      (order.shop_voucher_discount_vnd ?? 0) +
+      (order.shop_freeship_discount_vnd ?? 0) +
+      (order.commission_vnd ?? 0) +
+      (order.payment_fee_vnd ?? 0)
   );
 }
 
@@ -241,10 +257,289 @@ export function computeOrderNetVnd(
   order: Pick<
     GatewayOrder,
     "subtotal_vnd" | "flash_sale_discount_vnd" | "shop_voucher_discount_vnd" | "commission_vnd"
-  >
+  > &
+    Partial<
+      Pick<
+        GatewayOrder,
+        "shop_program_discount_vnd" | "shop_freeship_discount_vnd" | "payment_fee_vnd"
+      >
+    >
 ): number {
   const net = order.subtotal_vnd - computeOrderDeductionsVnd(order);
   return Math.max(0, Math.trunc(net));
+}
+
+export interface SellerOrderBreakdownLine {
+  key: string;
+  label: string;
+  /** Positive for gross merchandise subtotal; negative for seller-funded discounts & fees. */
+  amountVnd: number;
+  isDeduction: boolean;
+}
+
+/**
+ * Pure seller settlement breakdown lines that sum strictly to `computeOrderNetVnd(order)`
+ * (clamped >= 0), including Wave 2b shop_program_discount_vnd, shop_freeship_discount_vnd, and payment_fee_vnd.
+ */
+export function buildSellerOrderBreakdownLines(
+  order: Pick<
+    GatewayOrder,
+    "subtotal_vnd" | "flash_sale_discount_vnd" | "shop_voucher_discount_vnd" | "commission_vnd"
+  > &
+    Partial<
+      Pick<
+        GatewayOrder,
+        "shop_program_discount_vnd" | "shop_freeship_discount_vnd" | "payment_fee_vnd"
+      >
+    >
+): SellerOrderBreakdownLine[] {
+  const lines: SellerOrderBreakdownLine[] = [
+    {
+      key: "subtotal",
+      label: "Tổng tiền hàng",
+      amountVnd: Math.trunc(order.subtotal_vnd ?? 0),
+      isDeduction: false,
+    },
+  ];
+  const flash = Math.trunc(order.flash_sale_discount_vnd ?? 0);
+  if (flash > 0) {
+    lines.push({
+      key: "flash_sale",
+      label: "Giảm giá Flash sale",
+      amountVnd: -flash,
+      isDeduction: true,
+    });
+  }
+  const shopProg = Math.trunc(order.shop_program_discount_vnd ?? 0);
+  if (shopProg > 0) {
+    lines.push({
+      key: "shop_program",
+      label: "Giảm giá chương trình gian hàng",
+      amountVnd: -shopProg,
+      isDeduction: true,
+    });
+  }
+  lines.push({
+    key: "shop_voucher",
+    label: "Voucher gian hàng tài trợ",
+    amountVnd: -Math.trunc(order.shop_voucher_discount_vnd ?? 0),
+    isDeduction: true,
+  });
+  const shopFreeship = Math.trunc(order.shop_freeship_discount_vnd ?? 0);
+  if (shopFreeship > 0) {
+    lines.push({
+      key: "shop_freeship",
+      label: "Gian hàng hỗ trợ phí ship",
+      amountVnd: -shopFreeship,
+      isDeduction: true,
+    });
+  }
+  lines.push({
+    key: "commission",
+    label: "Phí hoa hồng sàn",
+    amountVnd: -Math.trunc(order.commission_vnd ?? 0),
+    isDeduction: true,
+  });
+  const payFee = Math.trunc(order.payment_fee_vnd ?? 0);
+  if (payFee > 0) {
+    lines.push({
+      key: "payment_fee",
+      label: "Phí thanh toán",
+      amountVnd: -payFee,
+      isDeduction: true,
+    });
+  }
+  return lines;
+}
+
+export function parseSellerFreeshipSettings(input: {
+  enabled: boolean;
+  minOrderRaw: string;
+  maxVndRaw: string;
+}): { ok: true; minOrderVnd: number; maxVnd: number } | { ok: false; message: string } {
+  if (!input.enabled) {
+    return { ok: true, minOrderVnd: 0, maxVnd: 0 };
+  }
+  const minTrim = input.minOrderRaw.trim();
+  const minNum = Number(minTrim);
+  if (minTrim === "" || !Number.isFinite(minNum) || !Number.isInteger(minNum) || minNum < 0) {
+    return {
+      ok: false,
+      message:
+        "Đơn tối thiểu áp dụng Freeship gian hàng phải là số nguyên không âm (0₫ áp dụng cho mọi đơn).",
+    };
+  }
+  const maxTrim = input.maxVndRaw.trim();
+  const maxNum = Number(maxTrim);
+  if (maxTrim === "" || !Number.isFinite(maxNum) || !Number.isInteger(maxNum) || maxNum <= 0) {
+    return {
+      ok: false,
+      message:
+        "Mức hỗ trợ phí ship tối đa mỗi đơn phải là số nguyên lớn hơn 0₫ khi bật Freeship gian hàng.",
+    };
+  }
+  return { ok: true, minOrderVnd: minNum, maxVnd: maxNum };
+}
+
+/**
+ * Translates English backend warnings from PromotionService shop discount create/update
+ * into natural Vietnamese with product & SKU names instead of raw UUIDs.
+ */
+export function translateShopDiscountWarning(
+  rawWarning: string,
+  skuLookup?: Map<string, { product: { name: string }; sku: { sku_code: string; name?: string } }>
+): string {
+  const clean = (rawWarning ?? "").trim();
+  if (!clean) return "";
+
+  const skuMatch = /^SKU\s+([0-9a-f-]{8,})\s+/i.exec(clean);
+  const skuId = skuMatch?.[1] ?? "";
+  const matched = skuId && skuLookup ? skuLookup.get(skuId) : undefined;
+  const skuLabel = matched
+    ? `${matched.product.name} (${matched.sku.sku_code})`
+    : skuId
+      ? `SKU ${skuId.slice(0, 8)}`
+      : "Một SKU";
+
+  const inflationMatch =
+    /had a lower price\s*\((\d+)\s*VND\)\s*in the last 30 days than current price\s*\((\d+)\s*VND\)/i.exec(
+      clean
+    );
+  if (inflationMatch) {
+    const min30d = Number.parseInt(inflationMatch[1], 10);
+    const orig = Number.parseInt(inflationMatch[2], 10);
+    return `${skuLabel} từng có giá thấp hơn trong 30 ngày qua (${formatVnd(min30d)} so với giá gốc hiện tại ${formatVnd(orig)}) và đã được đánh dấu cảnh báo tăng giá gốc.`;
+  }
+
+  if (/overlaps with an approved flash sale/i.test(clean)) {
+    return `${skuLabel} trùng lịch với một khung giờ Flash sale đã duyệt; giá Flash sale sẽ tự động được ưu tiên trong khung giờ đó.`;
+  }
+
+  return matched ? clean.replace(skuId, skuLabel) : clean;
+}
+
+export const PAYMENT_NOT_INITIALIZED_SHIP_MESSAGE =
+  "Đơn đang khởi tạo thanh toán, vui lòng thử lại sau ít phút.";
+
+/**
+ * Maps seller order ship errors into natural Vietnamese, explicitly handling
+ * order service PAYMENT_NOT_INITIALIZED (409 FAILED_PRECONDITION) while an order group
+ * is still finishing payment initialization.
+ */
+export function translateSellerShipError(err: unknown): string {
+  if (err && typeof err === "object") {
+    const e = err as { code?: unknown; message?: unknown };
+    if (typeof e.code === "string" && e.code.toUpperCase() === "PAYMENT_NOT_INITIALIZED") {
+      return PAYMENT_NOT_INITIALIZED_SHIP_MESSAGE;
+    }
+    if (typeof e.message === "string" && e.message.trim().length > 0) {
+      return e.message.trim();
+    }
+  }
+  return "Không thể tạo vận đơn giao hàng lúc này.";
+}
+
+export const VOUCHER_STATUS_META: Record<string, StatusMeta> = {
+  ACTIVE: { label: "Đang bật", tone: "pos" },
+  PAUSED: { label: "Tạm dừng", tone: "warn" },
+  DELETED: { label: "Đã xóa", tone: "neg" },
+};
+
+export const DISCOUNT_PROGRAM_STATUS_META: Record<string, StatusMeta> = {
+  SCHEDULED: { label: "Chờ chạy", tone: "warn" },
+  ACTIVE: { label: "Đang chạy", tone: "pos" },
+  ENDED: { label: "Đã kết thúc", tone: "neutral" },
+  CANCELLED: { label: "Đã hủy", tone: "neg" },
+};
+
+export const FLASH_ITEM_STATUS_META: Record<string, StatusMeta> = {
+  PENDING: { label: "Chờ duyệt", tone: "warn" },
+  APPROVED: { label: "Đã duyệt", tone: "pos" },
+  REJECTED: { label: "Từ chối", tone: "neg" },
+};
+
+export const BANK_ACCOUNT_STATUS_META: Record<string, StatusMeta> = {
+  PENDING_OTP: { label: "Chờ xác thực OTP", tone: "warn" },
+  PENDING_ADMIN_REVIEW: { label: "Chờ quản trị viên duyệt", tone: "warn" },
+  VERIFIED: { label: "Đã xác minh", tone: "pos" },
+  REJECTED: { label: "Bị từ chối", tone: "neg" },
+};
+
+/**
+ * Returns true when verify-otp fails with a terminal 409/FAILED_PRECONDITION
+ * (OTP expired, too many invalid attempts, or no bank account pending OTP),
+ * meaning the pending bank record has ended and the seller must re-submit bank details.
+ */
+export function isTerminalBankOtpError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { status?: number; code?: string; message?: string };
+  const code = (e.code ?? "").toUpperCase();
+  const msg = (e.message ?? "").toLowerCase();
+  if (e.status === 409 || code === "FAILED_PRECONDITION") return true;
+  return /otp expired|too many invalid otp|no bank account pending otp|không còn hiệu lực|đã hết hạn|nhập sai.*quá nhiều lần/.test(
+    msg
+  );
+}
+
+export type EditableVoucherField =
+  | "code"
+  | "name"
+  | "discount_type"
+  | "value_vnd"
+  | "discount_percent"
+  | "max_discount_vnd"
+  | "min_order_vnd"
+  | "quota"
+  | "budget_vnd"
+  | "per_user_limit"
+  | "starts_at"
+  | "ends_at"
+  | "category_ids";
+
+const USED_VOUCHER_EDITABLE_FIELDS = new Set<EditableVoucherField>([
+  "name",
+  "quota",
+  "budget_vnd",
+  "ends_at",
+]);
+
+/**
+ * Matches PromotionService.UpdateVoucher rules:
+ * - `code` is always immutable.
+ * - Once `used_count > 0`, only `name`, raising `quota`/`budget_vnd`, and extending `ends_at` are allowed.
+ */
+export function canEditVoucherField(
+  voucher: { used_count?: number },
+  field: EditableVoucherField
+): boolean {
+  if (field === "code") return false;
+  if ((voucher.used_count ?? 0) > 0) {
+    return USED_VOUCHER_EDITABLE_FIELDS.has(field);
+  }
+  return true;
+}
+
+const BANK_ACCOUNT_NUMBER_RE = /^[0-9]{6,19}$/;
+
+export function validateBankAccountInput(input: {
+  bankCode: string;
+  bankName: string;
+  accountNumber: string;
+  accountHolderName: string;
+}): { ok: true } | { ok: false; message: string } {
+  if (!input.bankCode.trim()) {
+    return { ok: false, message: "Vui lòng chọn hoặc nhập mã ngân hàng." };
+  }
+  if (!input.bankName.trim()) {
+    return { ok: false, message: "Vui lòng nhập tên ngân hàng." };
+  }
+  if (!BANK_ACCOUNT_NUMBER_RE.test(input.accountNumber.trim())) {
+    return { ok: false, message: "Số tài khoản ngân hàng phải gồm 6 đến 19 chữ số." };
+  }
+  if (input.accountHolderName.trim().length < 2) {
+    return { ok: false, message: "Vui lòng nhập đầy đủ họ tên chủ tài khoản." };
+  }
+  return { ok: true };
 }
 
 export function getProductCoverImage(product: GatewayProduct): string {

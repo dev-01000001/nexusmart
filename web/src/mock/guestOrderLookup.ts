@@ -30,7 +30,7 @@ export const GUEST_LOOKUP_SAMPLES: GuestLookupSample[] = [
   {
     code: "NM-261112-061",
     phone: DEMO_USER.phone,
-    hint: "Đã giao · Đổi trả 45 ngày",
+    hint: "Đã giao · Đổi trả 7 ngày",
   },
 ];
 

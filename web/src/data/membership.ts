@@ -70,7 +70,6 @@ export interface MembershipProfileState {
   eduEmail: string | null;
   eduVerified: boolean;
   giftCards: GiftCardItem[];
-  appliedGiftCardCode: string | null;
   yearInReview: YearInReviewSample;
 }
 
@@ -132,7 +131,7 @@ export const MEMBERSHIP_TIERS: MembershipTier[] = [
     perks: [
       "Hoàn 1% Xu trên mỗi đơn hoàn tất (1 Xu = 1₫, hạn dùng 12 tháng).",
       "Nhân đôi Xu hoàn vào mỗi Thứ Sáu hằng tuần.",
-      "Đổi trả miễn phí 45 ngày và lưu hồ sơ số đo toàn sàn.",
+      "Đổi trả miễn phí 7 ngày và lưu hồ sơ số đo toàn sàn.",
     ],
   },
   {
@@ -188,7 +187,7 @@ export const REFERRAL_CONFIG = {
   maxMonthlyInvites: 10,
   clearanceDays: 45,
   ruleSummary:
-    "Mời bạn bè đặt đơn đầu tiên thành công: nhận hoàn 10% giá trị đơn vào ví Xu sau khi đơn qua hạn đổi trả 45 ngày (tối đa 500.000 Xu và 10 lượt/tháng).",
+    "Mời bạn bè đặt đơn đầu tiên thành công: nhận hoàn 10% giá trị đơn vào ví Xu sau khi đơn qua hạn đổi trả 7 ngày (tối đa 500.000 Xu và 10 lượt/tháng).",
 } as const;
 
 export const GIFT_CARD_DENOMINATIONS: number[] = [100000, 200000, 500000, 1000000, 2000000];
@@ -340,7 +339,6 @@ export const INITIAL_MEMBERSHIP_STATE: MembershipProfileState = {
   eduEmail: null,
   eduVerified: false,
   giftCards: INITIAL_GIFT_CARDS,
-  appliedGiftCardCode: null,
   yearInReview: {
     year: 2026,
     totalOrders: 9,

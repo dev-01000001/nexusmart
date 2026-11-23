@@ -337,6 +337,8 @@ func (s *ShippingService) MapLegacyAddress(ctx context.Context, legacyProv, lega
 // CalculateFee validates input and service area, applies shop default weight (when configured) and
 // platform ∩ shop enabled carrier filtering (UC-SHIP06/UC-A12), resolves shop pickup when origin is omitted,
 // checks Redis quote cache keyed by active carriers + real origin/destination, then fans out to eligible carriers.
+// Returned quotes always carry raw pre-freeship carrier fees (Ship); shop and platform freeship discounts are
+// calculated by order/promotion from GetShopShippingSettings.
 func (s *ShippingService) CalculateFee(ctx context.Context, req carrier.FeeRequest) ([]carrier.Quote, error) {
 	req.ShopID = strings.TrimSpace(req.ShopID)
 	req.FromProvinceCode = strings.TrimSpace(req.FromProvinceCode)
@@ -1111,17 +1113,26 @@ func (s *ShippingService) GetShopShippingSettings(ctx context.Context, shopID st
 		DefaultLengthCM:     defaultLengthCM,
 		DefaultWidthCM:      defaultWidthCM,
 		DefaultHeightCM:     defaultHeightCM,
+		FreeShipEnabled:     false,
+		FreeShipMinOrderVND: 0,
+		FreeShipMaxVND:      0,
 	}, nil
 }
 
 // UpdateShopShippingSettings validates and persists a shop's shipping configuration (UC-SHIP06).
-// Disabling all carriers is rejected with ErrInvalidArgument (HTTP 400).
+// Disabling all carriers or configuring invalid freeship amounts is rejected with ErrInvalidArgument (HTTP 400).
 func (s *ShippingService) UpdateShopShippingSettings(ctx context.Context, in *store.ShopShippingSettings) (*store.ShopShippingSettings, error) {
 	if in == nil || strings.TrimSpace(in.ShopID) == "" {
 		return nil, fmt.Errorf("%w: shop_id is required", ErrInvalidArgument)
 	}
 	if in.DefaultWeightGrams < 0 || in.DefaultLengthCM < 0 || in.DefaultWidthCM < 0 || in.DefaultHeightCM < 0 {
 		return nil, fmt.Errorf("%w: parcel weight and dimensions must be >= 0", ErrInvalidArgument)
+	}
+	if in.FreeShipMinOrderVND < 0 || in.FreeShipMaxVND < 0 {
+		return nil, fmt.Errorf("%w: free_ship_min_order_vnd and free_ship_max_vnd must be >= 0", ErrInvalidArgument)
+	}
+	if in.FreeShipEnabled && in.FreeShipMaxVND <= 0 {
+		return nil, fmt.Errorf("%w: free_ship_max_vnd must be > 0 when free_ship_enabled is true", ErrInvalidArgument)
 	}
 
 	cleaned := make([]string, 0, len(in.EnabledCarrierCodes))
@@ -1155,25 +1166,58 @@ func (s *ShippingService) UpdateShopShippingSettings(ctx context.Context, in *st
 		return nil, fmt.Errorf("%w: cần chọn ít nhất một hãng vận chuyển đang hoạt động trên sàn", ErrInvalidArgument)
 	}
 
+	shopID := strings.TrimSpace(in.ShopID)
 	weight := in.DefaultWeightGrams
 	length := in.DefaultLengthCM
 	width := in.DefaultWidthCM
 	height := in.DefaultHeightCM
-	if weight == 0 {
-		if existing, err := s.repo.GetShopShippingSettings(ctx, in.ShopID); err == nil && existing != nil && existing.DefaultWeightGrams > 0 {
-			weight = existing.DefaultWeightGrams
-		} else {
-			weight = defaultWeightGrams
+	if weight == 0 || length == 0 || width == 0 || height == 0 {
+		var existing *store.ShopShippingSettings
+		if st, err := s.repo.GetShopShippingSettings(ctx, shopID); err == nil {
+			existing = st
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return nil, fmt.Errorf("load existing shop shipping settings: %w", err)
+		}
+		if weight == 0 {
+			if existing != nil && existing.DefaultWeightGrams > 0 {
+				weight = existing.DefaultWeightGrams
+			} else {
+				weight = defaultWeightGrams
+			}
+		}
+		if length == 0 {
+			if existing != nil && existing.DefaultLengthCM > 0 {
+				length = existing.DefaultLengthCM
+			} else {
+				length = defaultLengthCM
+			}
+		}
+		if width == 0 {
+			if existing != nil && existing.DefaultWidthCM > 0 {
+				width = existing.DefaultWidthCM
+			} else {
+				width = defaultWidthCM
+			}
+		}
+		if height == 0 {
+			if existing != nil && existing.DefaultHeightCM > 0 {
+				height = existing.DefaultHeightCM
+			} else {
+				height = defaultHeightCM
+			}
 		}
 	}
 
 	return s.repo.UpsertShopShippingSettings(ctx, &store.ShopShippingSettings{
-		ShopID:              strings.TrimSpace(in.ShopID),
+		ShopID:              shopID,
 		EnabledCarrierCodes: cleaned,
 		DefaultWeightGrams:  weight,
 		DefaultLengthCM:     length,
 		DefaultWidthCM:      width,
 		DefaultHeightCM:     height,
+		FreeShipEnabled:     in.FreeShipEnabled,
+		FreeShipMinOrderVND: in.FreeShipMinOrderVND,
+		FreeShipMaxVND:      in.FreeShipMaxVND,
 	})
 }
 

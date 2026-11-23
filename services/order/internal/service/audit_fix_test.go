@@ -568,9 +568,24 @@ func TestPaymentEvents_PAYB6_IgnoreStalePaymentID_CancelledGuard_PartialRefund(t
 // TestPromotionRelease_SubOrderVsLastOrder_ReturnedAndFlashShopID covers brief item 7 (R5: PRM-B3, ORD-B3).
 func TestPromotionRelease_SubOrderVsLastOrder_ReturnedAndFlashShopID(t *testing.T) {
 	h := newTestHarness()
+	h.promo.flashSales = []*promotionv1.FlashSale{
+		{
+			Id: "fs-r5",
+			Items: []*promotionv1.FlashSaleItem{
+				{Id: "fsi-shop1", SkuId: "sku-1", ShopId: "shop-1", FlashPriceVnd: 800000},
+			},
+		},
+	}
+	h.promo.breakdown = &promotionv1.DiscountBreakdown{
+		Shops: []*promotionv1.ShopDiscountBreakdown{
+			{ShopId: "shop-1", SubtotalVnd: 1000000, FlashSaleDiscountVnd: 200000, ShippingFeeVnd: 30000},
+			{ShopId: "shop-2", SubtotalVnd: 1000000, ShippingFeeVnd: 30000},
+		},
+	}
 	buyerCtx := auth.WithRawToken(ctxWithUser("buyer-1", "buyer", ""), "Bearer buyer-jwt")
 	seller1Ctx := ctxWithUser("seller-1", "seller", "shop-1")
 
+	// Wave 2b forbids COD on flash sale orders; confirm via VietQR payment.succeeded before partial cancel/return.
 	resp, err := h.svc.CreateCheckout(buyerCtx, &orderv1.CreateCheckoutRequest{
 		IdempotencyKey:    "idem-r5-promo",
 		BuyerId:           "buyer-1",
@@ -580,10 +595,15 @@ func TestPromotionRelease_SubOrderVsLastOrder_ReturnedAndFlashShopID(t *testing.
 		ShopVoucherIds:    map[string]string{"shop-1": "v-s1"},
 		PlatformVoucherId: "v-plat",
 		CoinsToUse:        5000,
-		PaymentMethod:     orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD,
+		PaymentMethod:     orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR,
 	})
 	if err != nil || len(resp.Orders) != 2 {
 		t.Fatalf("CreateCheckout failed: %v", err)
+	}
+	if err := h.svc.HandlePaymentSucceeded(context.Background(), "evt-r5-pay-ok", events.PaymentSucceededPayload{
+		PaymentID: resp.PaymentId, OrderGroupID: resp.CheckoutGroupId, AmountVND: resp.TotalPayableVnd,
+	}); err != nil {
+		t.Fatalf("HandlePaymentSucceeded failed: %v", err)
 	}
 
 	// Verify FlashSaleReservationItem.shop_id was populated in ReservePromotion!
@@ -634,6 +654,7 @@ func TestPromotionRelease_SubOrderVsLastOrder_ReturnedAndFlashShopID(t *testing.
 	}
 
 	// 3. Separate checkout where BOTH sub-orders are cancelled -> 1st uses ReleasePromotionShop, 2nd (last) uses ReleasePromotion!
+	h.promo.breakdown = nil
 	resp2, err := h.svc.CreateCheckout(buyerCtx, &orderv1.CreateCheckoutRequest{
 		IdempotencyKey:    "idem-r5-cancel-all",
 		BuyerId:           "buyer-1",
@@ -933,6 +954,14 @@ func TestRewardCoins_ComputedOnActualMerchPaidAndZeroForZeroPayable(t *testing.T
 		// V_plat=100,000, S_free=15,000, X=50,000, Ship=30,000
 		// Actual merch paid = R - V_plat - X = 750,000 - 100,000 - 50,000 = 600,000
 		// Reward (100 bps = 1%) = 6,000 coins (NOT 1% of G=10,000!)
+		h.promo.flashSales = []*promotionv1.FlashSale{
+			{
+				Id: "fs-prmb2",
+				Items: []*promotionv1.FlashSaleItem{
+					{Id: "fsi-prmb2", SkuId: "sku-1", ShopId: "shop-1", FlashPriceVnd: 800000},
+				},
+			},
+		}
 		h.promo.breakdown = &promotionv1.DiscountBreakdown{
 			Shops: []*promotionv1.ShopDiscountBreakdown{
 				{
@@ -952,15 +981,20 @@ func TestRewardCoins_ComputedOnActualMerchPaidAndZeroForZeroPayable(t *testing.T
 			IdempotencyKey:    "idem-prmb2-disc",
 			BuyerId:           "buyer-1",
 			AddressId:         "addr-buyer-1",
-			Items:             []*orderv1.CheckoutItemInput{{SkuId: "sku-1", Quantity: 1}},
+			Items:             []*orderv1.CheckoutItemInput{{SkuId: "sku-1", Quantity: 1, FlashSaleItemId: "fsi-prmb2"}},
 			ShopVoucherIds:    map[string]string{"shop-1": "v-s"},
 			PlatformVoucherId: "v-p",
 			FreeshipVoucherId: "v-f",
 			CoinsToUse:        50000,
-			PaymentMethod:     orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD,
+			PaymentMethod:     orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR,
 		})
 		if err != nil {
 			t.Fatalf("CreateCheckout failed: %v", err)
+		}
+		if err := h.svc.HandlePaymentSucceeded(context.Background(), "evt-prmb2-pay", events.PaymentSucceededPayload{
+			PaymentID: resp.PaymentId, OrderGroupID: resp.CheckoutGroupId, AmountVND: resp.TotalPayableVnd,
+		}); err != nil {
+			t.Fatalf("HandlePaymentSucceeded failed: %v", err)
 		}
 		ordID := resp.Orders[0].Id
 		shipResp, _ := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ordID, ShopId: "shop-1"})

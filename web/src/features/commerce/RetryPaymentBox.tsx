@@ -8,7 +8,13 @@ import { Button } from "@/components/Button";
 import { StateView } from "@/components/StateView";
 import { VietQrPreview } from "./VietQrPreview";
 import { formatCountdown, getPaymentStatusView } from "@/features/checkout/messages";
-import { canRetryPayment, isPaymentDeadlinePassed } from "@/features/checkout/helpers";
+import {
+  type StableReferenceCache,
+  canRetryPayment,
+  getSseReconnectDelayMs,
+  isPaymentDeadlinePassed,
+  resolveStableReferenceKey,
+} from "@/features/checkout/helpers";
 import styles from "./commerce.module.css";
 
 export interface RetryPaymentBoxProps {
@@ -57,6 +63,7 @@ export function RetryPaymentBox({
   const paidNotifiedRef = useRef<boolean>(
     (initialPayment?.status ?? "").toUpperCase() === "SUCCEEDED"
   );
+  const retryIdempotencyCacheRef = useRef<StableReferenceCache | null>(null);
   const onPaidRef = useRef(onPaid);
   onPaidRef.current = onPaid;
 
@@ -128,13 +135,15 @@ export function RetryPaymentBox({
     return () => window.clearInterval(timer);
   }, [tracksExpiry, payment?.expires_at]);
 
-  // Live SSE subscription + polling fallback while PENDING
+  // Live SSE subscription while PENDING (isolated from polling interval & sseDisconnected state).
+  // On error: close EventSource, refresh session at most once per disconnect, and reconnect with exponential backoff (5s..60s).
   useEffect(() => {
     if (!isPending || !activePaymentId) return;
 
     let closed = false;
     let source: EventSource | null = null;
-    setSseDisconnected(false);
+    let reconnectTimer: number | null = null;
+    let retryAttempt = 0;
 
     const handleSsePayload = (rawData: string) => {
       if (closed) return;
@@ -149,46 +158,95 @@ export function RetryPaymentBox({
       }
     };
 
-    if (typeof window !== "undefined" && typeof EventSource !== "undefined") {
+    const eventNames = [
+      "payment.succeeded",
+      "payment.failed",
+      "payment.expired",
+      "payment.refunded",
+      "payment.pending",
+      "payment.status",
+    ];
+    const onNamedEvent = (ev: Event) => {
+      const msg = ev as MessageEvent<string>;
+      if (typeof msg.data === "string") {
+        handleSsePayload(msg.data);
+      }
+    };
+
+    const connectSse = () => {
+      if (closed) return;
+      if (typeof window === "undefined" || typeof EventSource === "undefined") {
+        setSseDisconnected(true);
+        return;
+      }
+
+      let refreshedForThisDisconnect = false;
       try {
-        source = new EventSource(`/api/gw/payments/${encodeURIComponent(activePaymentId)}/events`, {
-          withCredentials: true,
-        });
-        const eventNames = [
-          "payment.succeeded",
-          "payment.failed",
-          "payment.expired",
-          "payment.refunded",
-          "payment.pending",
-          "payment.status",
-        ];
-        const onNamedEvent = (ev: Event) => {
-          const msg = ev as MessageEvent<string>;
-          if (typeof msg.data === "string") {
-            handleSsePayload(msg.data);
-          }
+        const nextSource = new EventSource(
+          `/api/gw/payments/${encodeURIComponent(activePaymentId)}/events`,
+          { withCredentials: true }
+        );
+        source = nextSource;
+
+        nextSource.onopen = () => {
+          if (closed) return;
+          retryAttempt = 0;
+          setSseDisconnected(false);
         };
         for (const name of eventNames) {
-          source.addEventListener(name, onNamedEvent);
+          nextSource.addEventListener(name, onNamedEvent);
         }
-        source.onmessage = (ev) => {
+        nextSource.onmessage = (ev) => {
           if (typeof ev.data === "string") {
             handleSsePayload(ev.data);
           }
         };
-        source.onerror = () => {
+        nextSource.onerror = () => {
           if (closed) return;
+          nextSource.close();
+          if (source === nextSource) {
+            source = null;
+          }
           setSseDisconnected(true);
-          // Refresh cookie silently in case access token rotated; fallback polling covers updates
-          void refreshSessionOnce();
+          if (!refreshedForThisDisconnect) {
+            refreshedForThisDisconnect = true;
+            void refreshSessionOnce();
+          }
+          const delayMs = getSseReconnectDelayMs(retryAttempt);
+          retryAttempt += 1;
+          reconnectTimer = window.setTimeout(() => {
+            reconnectTimer = null;
+            connectSse();
+          }, delayMs);
         };
       } catch {
         setSseDisconnected(true);
+        const delayMs = getSseReconnectDelayMs(retryAttempt);
+        retryAttempt += 1;
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null;
+          connectSse();
+        }, delayMs);
       }
-    } else {
-      setSseDisconnected(true);
-    }
+    };
 
+    connectSse();
+
+    return () => {
+      closed = true;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+      }
+      if (source) {
+        source.close();
+      }
+    };
+  }, [activePaymentId, fetchPayment, isPending]);
+
+  // Separate polling fallback effect while PENDING (speeds up automatically when SSE is disconnected)
+  useEffect(() => {
+    if (!isPending || !activePaymentId) return;
+    let closed = false;
     const pollInterval = window.setInterval(
       () => {
         if (!closed) {
@@ -197,13 +255,9 @@ export function RetryPaymentBox({
       },
       sseDisconnected ? SSE_FALLBACK_POLL_MS : POLL_INTERVAL_MS
     );
-
     return () => {
       closed = true;
       window.clearInterval(pollInterval);
-      if (source) {
-        source.close();
-      }
     };
   }, [activePaymentId, fetchPayment, isPending, sseDisconnected]);
 
@@ -239,20 +293,30 @@ export function RetryPaymentBox({
     setRetrying(true);
     setRetryFeedback(null);
     try {
+      const { key: idempotencyKey, cache } = resolveStableReferenceKey({
+        prefix: "nm-pay-retry",
+        fingerprint: activePaymentId,
+        cache: retryIdempotencyCacheRef.current,
+      });
+      retryIdempotencyCacheRef.current = cache;
       const res = await api<GatewayPaymentResponse>(
         `payments/${encodeURIComponent(activePaymentId)}/retry`,
         {
           method: "POST",
+          headers: {
+            "Idempotency-Key": idempotencyKey,
+          },
           json: { method: "VIETQR" },
         }
       );
       if (res?.payment) {
+        retryIdempotencyCacheRef.current = null;
         paidNotifiedRef.current = res.payment.status.toUpperCase() === "SUCCEEDED";
         setActivePaymentId(res.payment.payment_id);
         setPayment(res.payment);
         setRetryFeedback({
           tone: "success",
-          message: "Đã tạo mã VietQR mới với thời hạn 15 phút. Vui lòng quét mã để thanh toán.",
+          message: "Đã tạo mã VietQR mới. Vui lòng quét mã trong thời hạn đếm ngược trên màn hình.",
         });
         onPaymentReplaced?.(res.payment);
       }

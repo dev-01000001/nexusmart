@@ -3,7 +3,7 @@
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { PRODUCTS, getNextTierInfo } from "@/data";
+import { PRODUCTS } from "@/data";
 import type {
   GatewayAddress,
   GatewayCoinBalance,
@@ -161,7 +161,7 @@ export function AccountClient({
 }: AccountClientProps) {
   const router = useRouter();
   const { logout, setUser: setSessionUser } = useSession();
-  const { membership, membershipTier, wishlist, openChat, openAi, showToast } = useMockStore();
+  const { wishlist, showToast } = useMockStore();
 
   const [activeTab, setActiveTab] = useState<AccountTabKey>(initialTab);
 
@@ -235,7 +235,6 @@ export function AccountClient({
     `${forcedState ?? "live"}-${activeTab}-${addresses.length}-${notifications.length}-${myShop?.status ?? "none"}`
   );
 
-  const nextTier = useMemo(() => getNextTierInfo(membership.spend4Q), [membership.spend4Q]);
   const suggestedProducts = useMemo(() => PRODUCTS.slice(4, 8), []);
 
   const inProgressOrders = useMemo(
@@ -719,7 +718,7 @@ export function AccountClient({
                 <p className={styles.tierName}>Ví Xu NexusMart</p>
                 <p className={styles.tierSub}>1 Xu = 1₫ · Dùng trực tiếp khi thanh toán đơn hàng</p>
               </div>
-              <span className={styles.tierBadge}>Hạng {membershipTier.name} (xem thử)</span>
+              <span className={styles.tierBadge}>{roleLabel(profileUser.role)}</span>
             </div>
 
             <div className={styles.xuRow}>
@@ -746,25 +745,6 @@ export function AccountClient({
               >
                 <span className={`${styles.xuMed} num`}>{savedVouchersCount} mã</span>
                 <span className={styles.xuCaption}>Voucher đã lưu</span>
-              </div>
-            </div>
-
-            <div className={styles.tierProgress}>
-              <div className={styles.tierProgressMeta}>
-                <span>
-                  Hội viên Nexus: <strong className="num">{formatVnd(membership.spend4Q)}</strong>
-                </span>
-                <span className="num">
-                  {nextTier.next
-                    ? `Còn ${formatVnd(nextTier.remainingVnd)} lên ${nextTier.next.name}`
-                    : "Đã đạt hạng cao nhất"}
-                </span>
-              </div>
-              <div className={styles.darkTrack} aria-hidden="true">
-                <div
-                  className={styles.darkFill}
-                  style={{ width: `${nextTier.progressPercent}%` }}
-                />
               </div>
             </div>
           </div>
@@ -820,9 +800,6 @@ export function AccountClient({
                     {myShop ? "Xem hồ sơ gian hàng" : "Đăng ký mở gian hàng"}
                   </Button>
                 )}
-                <Button variant="secondary" size="sm" href="/hoi-vien">
-                  Hội viên Nexus
-                </Button>
               </div>
             </div>
           </div>
@@ -850,10 +827,10 @@ export function AccountClient({
                   : tab.key === "voucher"
                     ? vouchers.length
                     : tab.key === "yeu-thich"
-                      ? wishlist.length
-                      : tab.key === "gioi-thieu"
-                        ? membership.referrals.length
-                        : null;
+                      ? wishlist.length > 0
+                        ? wishlist.length
+                        : null
+                      : null;
             return (
               <button
                 key={tab.key}
@@ -888,12 +865,6 @@ export function AccountClient({
                       }}
                     >
                       {editingProfile ? "Đóng chỉnh sửa" : "Chỉnh sửa hồ sơ"}
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={() => openChat()}>
-                      Nhắn tin gian hàng
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={openAi}>
-                      Trợ lý AI
                     </Button>
                   </div>
                 </div>

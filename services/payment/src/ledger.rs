@@ -1434,4 +1434,173 @@ mod tests {
         assert_eq!(b4.total_earned_vnd, 200_000);
         assert!(ledger.summary().is_balanced);
     }
+
+    #[test]
+    fn test_w2b_settlement_refund_release_with_shop_discounts_and_payment_fee() {
+        use crate::domain::{compute_post_settlement_clawback, compute_settlement_split};
+
+        let mut ledger = InMemoryLedger::default();
+
+        // Scenario 1: VietQR order with P_shop=50k, V_shop=20k, S_shop=20k, Ship=35k, D=50k
+        // R=410k, P=395k, C_cat=21,500 + C_pay=5,925 => C_total=27,425 => seller_net=382,575
+        let pay_qr = Uuid::new_v4();
+        assert!(ledger
+            .post(&build_vietqr_confirm_tx(pay_qr, 395_000))
+            .unwrap());
+
+        // Pre-settlement partial refund of 45,000 VND
+        let rf_pre = Uuid::new_v4();
+        assert!(ledger
+            .post(&build_refund_tx(rf_pre, pay_qr, 45_000, "partial defect"))
+            .unwrap());
+        assert!(ledger
+            .post(&build_refund_settle_tx(rf_pre, 45_000))
+            .unwrap());
+
+        // Settle completed order after partial refund
+        let split1 = compute_settlement_split(
+            "ord-w2b-qr",
+            "shop-1",
+            410_000,
+            27_425,
+            35_000,
+            50_000,
+            45_000,
+        )
+        .unwrap();
+        assert_eq!(split1.escrow_debit_vnd, 350_000);
+        assert_eq!(split1.platform_promo_debit_vnd, 50_000);
+        assert_eq!(split1.seller_net_vnd, 337_575);
+        assert_eq!(split1.commission_vnd, 27_425);
+        assert_eq!(split1.shipping_fee_vnd, 35_000);
+
+        let settle_tx1 = build_escrow_settle_tx(
+            &split1.order_id,
+            &split1.shop_id,
+            split1.escrow_debit_vnd,
+            split1.platform_promo_debit_vnd,
+            split1.seller_net_vnd,
+            split1.commission_vnd,
+            split1.shipping_fee_vnd,
+        )
+        .unwrap();
+        assert!(ledger.post(&settle_tx1).unwrap());
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 0);
+        assert_eq!(ledger.balance_of(ACCOUNT_PLATFORM_FEE_REVENUE), 27_425);
+        assert_eq!(ledger.balance_of(ACCOUNT_PLATFORM_PROMO_EXPENSE), 50_000);
+        assert_eq!(ledger.balance_of(ACCOUNT_SHIPPING_FEE_PAYABLE), 35_000);
+        assert_eq!(ledger.seller_balance("shop-1").pending_vnd, 337_575);
+
+        // Release escrow to available
+        assert!(ledger
+            .post(&build_escrow_release_tx("ord-w2b-qr", "shop-1", 337_575).unwrap())
+            .unwrap());
+        assert_eq!(ledger.seller_balance("shop-1").pending_vnd, 0);
+        assert_eq!(ledger.seller_balance("shop-1").available_vnd, 337_575);
+
+        // Post-settlement refund clawback of 37,575 VND (drains available, leaves escrow at 0)
+        let (from_p, from_a) = compute_post_settlement_clawback(0, 337_575, 37_575).unwrap();
+        let rf_post = Uuid::new_v4();
+        assert!(ledger
+            .post(
+                &build_post_settlement_refund_tx(
+                    rf_post,
+                    pay_qr,
+                    "shop-1",
+                    from_p,
+                    from_a,
+                    "post-settle",
+                )
+                .unwrap()
+            )
+            .unwrap());
+        assert!(ledger
+            .post(&build_refund_settle_tx(rf_post, 37_575))
+            .unwrap());
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 0);
+        assert_eq!(ledger.seller_balance("shop-1").available_vnd, 300_000);
+        assert_eq!(ledger.seller_balance("shop-1").total_earned_vnd, 300_000);
+
+        // Scenario 2: Fee capped at R (C_total == R => seller_net == 0) + Ship = 30k
+        let pay_cap = Uuid::new_v4();
+        assert!(ledger
+            .post(&build_vietqr_confirm_tx(pay_cap, 40_000))
+            .unwrap());
+        let split_cap =
+            compute_settlement_split("ord-w2b-cap", "shop-2", 10_000, 10_000, 30_000, 0, 0)
+                .unwrap();
+        assert_eq!(split_cap.seller_net_vnd, 0);
+        let settle_cap = build_escrow_settle_tx(
+            &split_cap.order_id,
+            &split_cap.shop_id,
+            split_cap.escrow_debit_vnd,
+            split_cap.platform_promo_debit_vnd,
+            split_cap.seller_net_vnd,
+            split_cap.commission_vnd,
+            split_cap.shipping_fee_vnd,
+        )
+        .unwrap();
+        assert!(ledger.post(&settle_cap).unwrap());
+        assert_eq!(ledger.seller_balance("shop-2").pending_vnd, 0);
+        assert_eq!(ledger.balance_of(ACCOUNT_PLATFORM_FEE_REVENUE), 37_425);
+
+        // Scenario 3: COD order with shop discount + shop freeship + COD payment fee (200 bps)
+        // G=300k, P_shop=30k, S_shop=20k, Ship=25k, D=0 => R=250k, P=275k
+        // C_cat=13,500 + C_pay=5,500 => C_total=19,000 => seller_net=231,000
+        let pay_cod = Uuid::new_v4();
+        assert!(ledger
+            .post(&build_cod_collect_tx(
+                pay_cod,
+                "ord-w2b-cod",
+                Some("shop-3"),
+                275_000
+            ))
+            .unwrap());
+        let split_cod =
+            compute_settlement_split("ord-w2b-cod", "shop-3", 250_000, 19_000, 25_000, 0, 0)
+                .unwrap();
+        assert!(ledger
+            .post(
+                &build_escrow_settle_tx(
+                    &split_cod.order_id,
+                    &split_cod.shop_id,
+                    split_cod.escrow_debit_vnd,
+                    split_cod.platform_promo_debit_vnd,
+                    split_cod.seller_net_vnd,
+                    split_cod.commission_vnd,
+                    split_cod.shipping_fee_vnd,
+                )
+                .unwrap()
+            )
+            .unwrap());
+        assert!(ledger
+            .post(&build_escrow_release_tx("ord-w2b-cod", "shop-3", 231_000).unwrap())
+            .unwrap());
+        assert_eq!(ledger.seller_balance("shop-3").available_vnd, 231_000);
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 0);
+
+        // Scenario 4: Zero-payable with trimmed S_shop (R=0, C=0, Ship=25k, D=25k, P=0)
+        let split_zero =
+            compute_settlement_split("ord-w2b-zero", "shop-4", 0, 0, 25_000, 25_000, 0).unwrap();
+        assert!(ledger
+            .post(
+                &build_escrow_settle_tx(
+                    &split_zero.order_id,
+                    &split_zero.shop_id,
+                    split_zero.escrow_debit_vnd,
+                    split_zero.platform_promo_debit_vnd,
+                    split_zero.seller_net_vnd,
+                    split_zero.commission_vnd,
+                    split_zero.shipping_fee_vnd,
+                )
+                .unwrap()
+            )
+            .unwrap());
+
+        let summary = ledger.summary();
+        assert!(summary.is_balanced);
+        assert_eq!(summary.total_debits_vnd, summary.total_credits_vnd);
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 0);
+        assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 0);
+    }
 }

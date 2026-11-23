@@ -19,33 +19,39 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	UserService_Register_FullMethodName              = "/nexusmart.user.v1.UserService/Register"
-	UserService_VerifyOTP_FullMethodName             = "/nexusmart.user.v1.UserService/VerifyOTP"
-	UserService_ResendOTP_FullMethodName             = "/nexusmart.user.v1.UserService/ResendOTP"
-	UserService_Login_FullMethodName                 = "/nexusmart.user.v1.UserService/Login"
-	UserService_RefreshToken_FullMethodName          = "/nexusmart.user.v1.UserService/RefreshToken"
-	UserService_Logout_FullMethodName                = "/nexusmart.user.v1.UserService/Logout"
-	UserService_GetProfile_FullMethodName            = "/nexusmart.user.v1.UserService/GetProfile"
-	UserService_UpdateProfile_FullMethodName         = "/nexusmart.user.v1.UserService/UpdateProfile"
-	UserService_ValidateUser_FullMethodName          = "/nexusmart.user.v1.UserService/ValidateUser"
-	UserService_AdminListUsers_FullMethodName        = "/nexusmart.user.v1.UserService/AdminListUsers"
-	UserService_AdminUpdateUserStatus_FullMethodName = "/nexusmart.user.v1.UserService/AdminUpdateUserStatus"
-	UserService_AdminUpdateUserRole_FullMethodName   = "/nexusmart.user.v1.UserService/AdminUpdateUserRole"
-	UserService_RegisterShop_FullMethodName          = "/nexusmart.user.v1.UserService/RegisterShop"
-	UserService_GetShop_FullMethodName               = "/nexusmart.user.v1.UserService/GetShop"
-	UserService_ListPublicShops_FullMethodName       = "/nexusmart.user.v1.UserService/ListPublicShops"
-	UserService_AdminListShops_FullMethodName        = "/nexusmart.user.v1.UserService/AdminListShops"
-	UserService_AdminReviewShop_FullMethodName       = "/nexusmart.user.v1.UserService/AdminReviewShop"
-	UserService_CreateAddress_FullMethodName         = "/nexusmart.user.v1.UserService/CreateAddress"
-	UserService_ListAddresses_FullMethodName         = "/nexusmart.user.v1.UserService/ListAddresses"
-	UserService_GetAddress_FullMethodName            = "/nexusmart.user.v1.UserService/GetAddress"
-	UserService_UpdateAddress_FullMethodName         = "/nexusmart.user.v1.UserService/UpdateAddress"
-	UserService_DeleteAddress_FullMethodName         = "/nexusmart.user.v1.UserService/DeleteAddress"
-	UserService_WriteAuditLog_FullMethodName         = "/nexusmart.user.v1.UserService/WriteAuditLog"
-	UserService_ListAuditLogs_FullMethodName         = "/nexusmart.user.v1.UserService/ListAuditLogs"
-	UserService_RecordCODRejection_FullMethodName    = "/nexusmart.user.v1.UserService/RecordCODRejection"
-	UserService_ForgotPassword_FullMethodName        = "/nexusmart.user.v1.UserService/ForgotPassword"
-	UserService_ResetPassword_FullMethodName         = "/nexusmart.user.v1.UserService/ResetPassword"
+	UserService_Register_FullMethodName                    = "/nexusmart.user.v1.UserService/Register"
+	UserService_VerifyOTP_FullMethodName                   = "/nexusmart.user.v1.UserService/VerifyOTP"
+	UserService_ResendOTP_FullMethodName                   = "/nexusmart.user.v1.UserService/ResendOTP"
+	UserService_Login_FullMethodName                       = "/nexusmart.user.v1.UserService/Login"
+	UserService_RefreshToken_FullMethodName                = "/nexusmart.user.v1.UserService/RefreshToken"
+	UserService_Logout_FullMethodName                      = "/nexusmart.user.v1.UserService/Logout"
+	UserService_GetProfile_FullMethodName                  = "/nexusmart.user.v1.UserService/GetProfile"
+	UserService_UpdateProfile_FullMethodName               = "/nexusmart.user.v1.UserService/UpdateProfile"
+	UserService_ValidateUser_FullMethodName                = "/nexusmart.user.v1.UserService/ValidateUser"
+	UserService_AdminListUsers_FullMethodName              = "/nexusmart.user.v1.UserService/AdminListUsers"
+	UserService_AdminUpdateUserStatus_FullMethodName       = "/nexusmart.user.v1.UserService/AdminUpdateUserStatus"
+	UserService_AdminUpdateUserRole_FullMethodName         = "/nexusmart.user.v1.UserService/AdminUpdateUserRole"
+	UserService_RegisterShop_FullMethodName                = "/nexusmart.user.v1.UserService/RegisterShop"
+	UserService_GetShop_FullMethodName                     = "/nexusmart.user.v1.UserService/GetShop"
+	UserService_ListPublicShops_FullMethodName             = "/nexusmart.user.v1.UserService/ListPublicShops"
+	UserService_AdminListShops_FullMethodName              = "/nexusmart.user.v1.UserService/AdminListShops"
+	UserService_AdminReviewShop_FullMethodName             = "/nexusmart.user.v1.UserService/AdminReviewShop"
+	UserService_CreateAddress_FullMethodName               = "/nexusmart.user.v1.UserService/CreateAddress"
+	UserService_ListAddresses_FullMethodName               = "/nexusmart.user.v1.UserService/ListAddresses"
+	UserService_GetAddress_FullMethodName                  = "/nexusmart.user.v1.UserService/GetAddress"
+	UserService_UpdateAddress_FullMethodName               = "/nexusmart.user.v1.UserService/UpdateAddress"
+	UserService_DeleteAddress_FullMethodName               = "/nexusmart.user.v1.UserService/DeleteAddress"
+	UserService_WriteAuditLog_FullMethodName               = "/nexusmart.user.v1.UserService/WriteAuditLog"
+	UserService_ListAuditLogs_FullMethodName               = "/nexusmart.user.v1.UserService/ListAuditLogs"
+	UserService_RecordCODRejection_FullMethodName          = "/nexusmart.user.v1.UserService/RecordCODRejection"
+	UserService_ForgotPassword_FullMethodName              = "/nexusmart.user.v1.UserService/ForgotPassword"
+	UserService_ResetPassword_FullMethodName               = "/nexusmart.user.v1.UserService/ResetPassword"
+	UserService_AddShopBankAccount_FullMethodName          = "/nexusmart.user.v1.UserService/AddShopBankAccount"
+	UserService_VerifyShopBankAccountOTP_FullMethodName    = "/nexusmart.user.v1.UserService/VerifyShopBankAccountOTP"
+	UserService_GetShopBankAccount_FullMethodName          = "/nexusmart.user.v1.UserService/GetShopBankAccount"
+	UserService_AdminReviewShopBankAccount_FullMethodName  = "/nexusmart.user.v1.UserService/AdminReviewShopBankAccount"
+	UserService_GetPlatformUserStats_FullMethodName        = "/nexusmart.user.v1.UserService/GetPlatformUserStats"
+	UserService_GetShopBankAccountForPayout_FullMethodName = "/nexusmart.user.v1.UserService/GetShopBankAccountForPayout"
 )
 
 // UserServiceClient is the client API for UserService service.
@@ -79,6 +85,12 @@ type UserServiceClient interface {
 	RecordCODRejection(ctx context.Context, in *RecordCODRejectionRequest, opts ...grpc.CallOption) (*RecordCODRejectionResponse, error)
 	ForgotPassword(ctx context.Context, in *ForgotPasswordRequest, opts ...grpc.CallOption) (*ForgotPasswordResponse, error)
 	ResetPassword(ctx context.Context, in *ResetPasswordRequest, opts ...grpc.CallOption) (*ResetPasswordResponse, error)
+	AddShopBankAccount(ctx context.Context, in *AddShopBankAccountRequest, opts ...grpc.CallOption) (*AddShopBankAccountResponse, error)
+	VerifyShopBankAccountOTP(ctx context.Context, in *VerifyShopBankAccountOTPRequest, opts ...grpc.CallOption) (*VerifyShopBankAccountOTPResponse, error)
+	GetShopBankAccount(ctx context.Context, in *GetShopBankAccountRequest, opts ...grpc.CallOption) (*GetShopBankAccountResponse, error)
+	AdminReviewShopBankAccount(ctx context.Context, in *AdminReviewShopBankAccountRequest, opts ...grpc.CallOption) (*AdminReviewShopBankAccountResponse, error)
+	GetPlatformUserStats(ctx context.Context, in *GetPlatformUserStatsRequest, opts ...grpc.CallOption) (*GetPlatformUserStatsResponse, error)
+	GetShopBankAccountForPayout(ctx context.Context, in *GetShopBankAccountForPayoutRequest, opts ...grpc.CallOption) (*GetShopBankAccountForPayoutResponse, error)
 }
 
 type userServiceClient struct {
@@ -359,6 +371,66 @@ func (c *userServiceClient) ResetPassword(ctx context.Context, in *ResetPassword
 	return out, nil
 }
 
+func (c *userServiceClient) AddShopBankAccount(ctx context.Context, in *AddShopBankAccountRequest, opts ...grpc.CallOption) (*AddShopBankAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddShopBankAccountResponse)
+	err := c.cc.Invoke(ctx, UserService_AddShopBankAccount_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) VerifyShopBankAccountOTP(ctx context.Context, in *VerifyShopBankAccountOTPRequest, opts ...grpc.CallOption) (*VerifyShopBankAccountOTPResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VerifyShopBankAccountOTPResponse)
+	err := c.cc.Invoke(ctx, UserService_VerifyShopBankAccountOTP_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) GetShopBankAccount(ctx context.Context, in *GetShopBankAccountRequest, opts ...grpc.CallOption) (*GetShopBankAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetShopBankAccountResponse)
+	err := c.cc.Invoke(ctx, UserService_GetShopBankAccount_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) AdminReviewShopBankAccount(ctx context.Context, in *AdminReviewShopBankAccountRequest, opts ...grpc.CallOption) (*AdminReviewShopBankAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdminReviewShopBankAccountResponse)
+	err := c.cc.Invoke(ctx, UserService_AdminReviewShopBankAccount_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) GetPlatformUserStats(ctx context.Context, in *GetPlatformUserStatsRequest, opts ...grpc.CallOption) (*GetPlatformUserStatsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPlatformUserStatsResponse)
+	err := c.cc.Invoke(ctx, UserService_GetPlatformUserStats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) GetShopBankAccountForPayout(ctx context.Context, in *GetShopBankAccountForPayoutRequest, opts ...grpc.CallOption) (*GetShopBankAccountForPayoutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetShopBankAccountForPayoutResponse)
+	err := c.cc.Invoke(ctx, UserService_GetShopBankAccountForPayout_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UserServiceServer is the server API for UserService service.
 // All implementations must embed UnimplementedUserServiceServer
 // for forward compatibility.
@@ -390,6 +462,12 @@ type UserServiceServer interface {
 	RecordCODRejection(context.Context, *RecordCODRejectionRequest) (*RecordCODRejectionResponse, error)
 	ForgotPassword(context.Context, *ForgotPasswordRequest) (*ForgotPasswordResponse, error)
 	ResetPassword(context.Context, *ResetPasswordRequest) (*ResetPasswordResponse, error)
+	AddShopBankAccount(context.Context, *AddShopBankAccountRequest) (*AddShopBankAccountResponse, error)
+	VerifyShopBankAccountOTP(context.Context, *VerifyShopBankAccountOTPRequest) (*VerifyShopBankAccountOTPResponse, error)
+	GetShopBankAccount(context.Context, *GetShopBankAccountRequest) (*GetShopBankAccountResponse, error)
+	AdminReviewShopBankAccount(context.Context, *AdminReviewShopBankAccountRequest) (*AdminReviewShopBankAccountResponse, error)
+	GetPlatformUserStats(context.Context, *GetPlatformUserStatsRequest) (*GetPlatformUserStatsResponse, error)
+	GetShopBankAccountForPayout(context.Context, *GetShopBankAccountForPayoutRequest) (*GetShopBankAccountForPayoutResponse, error)
 	mustEmbedUnimplementedUserServiceServer()
 }
 
@@ -480,6 +558,24 @@ func (UnimplementedUserServiceServer) ForgotPassword(context.Context, *ForgotPas
 }
 func (UnimplementedUserServiceServer) ResetPassword(context.Context, *ResetPasswordRequest) (*ResetPasswordResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ResetPassword not implemented")
+}
+func (UnimplementedUserServiceServer) AddShopBankAccount(context.Context, *AddShopBankAccountRequest) (*AddShopBankAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AddShopBankAccount not implemented")
+}
+func (UnimplementedUserServiceServer) VerifyShopBankAccountOTP(context.Context, *VerifyShopBankAccountOTPRequest) (*VerifyShopBankAccountOTPResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method VerifyShopBankAccountOTP not implemented")
+}
+func (UnimplementedUserServiceServer) GetShopBankAccount(context.Context, *GetShopBankAccountRequest) (*GetShopBankAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetShopBankAccount not implemented")
+}
+func (UnimplementedUserServiceServer) AdminReviewShopBankAccount(context.Context, *AdminReviewShopBankAccountRequest) (*AdminReviewShopBankAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AdminReviewShopBankAccount not implemented")
+}
+func (UnimplementedUserServiceServer) GetPlatformUserStats(context.Context, *GetPlatformUserStatsRequest) (*GetPlatformUserStatsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetPlatformUserStats not implemented")
+}
+func (UnimplementedUserServiceServer) GetShopBankAccountForPayout(context.Context, *GetShopBankAccountForPayoutRequest) (*GetShopBankAccountForPayoutResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetShopBankAccountForPayout not implemented")
 }
 func (UnimplementedUserServiceServer) mustEmbedUnimplementedUserServiceServer() {}
 func (UnimplementedUserServiceServer) testEmbeddedByValue()                     {}
@@ -988,6 +1084,114 @@ func _UserService_ResetPassword_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserService_AddShopBankAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddShopBankAccountRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).AddShopBankAccount(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_AddShopBankAccount_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).AddShopBankAccount(ctx, req.(*AddShopBankAccountRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_VerifyShopBankAccountOTP_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VerifyShopBankAccountOTPRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).VerifyShopBankAccountOTP(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_VerifyShopBankAccountOTP_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).VerifyShopBankAccountOTP(ctx, req.(*VerifyShopBankAccountOTPRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_GetShopBankAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetShopBankAccountRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).GetShopBankAccount(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_GetShopBankAccount_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).GetShopBankAccount(ctx, req.(*GetShopBankAccountRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_AdminReviewShopBankAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdminReviewShopBankAccountRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).AdminReviewShopBankAccount(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_AdminReviewShopBankAccount_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).AdminReviewShopBankAccount(ctx, req.(*AdminReviewShopBankAccountRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_GetPlatformUserStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPlatformUserStatsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).GetPlatformUserStats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_GetPlatformUserStats_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).GetPlatformUserStats(ctx, req.(*GetPlatformUserStatsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_GetShopBankAccountForPayout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetShopBankAccountForPayoutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).GetShopBankAccountForPayout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_GetShopBankAccountForPayout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).GetShopBankAccountForPayout(ctx, req.(*GetShopBankAccountForPayoutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UserService_ServiceDesc is the grpc.ServiceDesc for UserService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1102,6 +1306,30 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResetPassword",
 			Handler:    _UserService_ResetPassword_Handler,
+		},
+		{
+			MethodName: "AddShopBankAccount",
+			Handler:    _UserService_AddShopBankAccount_Handler,
+		},
+		{
+			MethodName: "VerifyShopBankAccountOTP",
+			Handler:    _UserService_VerifyShopBankAccountOTP_Handler,
+		},
+		{
+			MethodName: "GetShopBankAccount",
+			Handler:    _UserService_GetShopBankAccount_Handler,
+		},
+		{
+			MethodName: "AdminReviewShopBankAccount",
+			Handler:    _UserService_AdminReviewShopBankAccount_Handler,
+		},
+		{
+			MethodName: "GetPlatformUserStats",
+			Handler:    _UserService_GetPlatformUserStats_Handler,
+		},
+		{
+			MethodName: "GetShopBankAccountForPayout",
+			Handler:    _UserService_GetShopBankAccountForPayout_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

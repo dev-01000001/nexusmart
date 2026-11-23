@@ -93,3 +93,19 @@ func (s *Server) DisputeReturnGoods(ctx context.Context, req *orderv1.DisputeRet
 func (s *Server) AdminResolveReturn(ctx context.Context, req *orderv1.AdminResolveReturnRequest) (*orderv1.AdminResolveReturnResponse, error) {
 	return s.svc.AdminResolveReturn(ctx, req)
 }
+
+func (s *Server) GetSellerReport(ctx context.Context, req *orderv1.GetSellerReportRequest) (*orderv1.GetSellerReportResponse, error) {
+	return s.svc.GetSellerReport(ctx, req)
+}
+
+func (s *Server) GetPlatformReport(ctx context.Context, req *orderv1.GetPlatformReportRequest) (*orderv1.GetPlatformReportResponse, error) {
+	return s.svc.GetPlatformReport(ctx, req)
+}
+
+func (s *Server) ListOrdersNeedingReview(ctx context.Context, req *orderv1.ListOrdersNeedingReviewRequest) (*orderv1.ListOrdersNeedingReviewResponse, error) {
+	return s.svc.ListOrdersNeedingReview(ctx, req)
+}
+
+func (s *Server) ResolveOrderReview(ctx context.Context, req *orderv1.ResolveOrderReviewRequest) (*orderv1.ResolveOrderReviewResponse, error) {
+	return s.svc.ResolveOrderReview(ctx, req)
+}

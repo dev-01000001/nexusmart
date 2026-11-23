@@ -662,39 +662,48 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
       )}
 
       {activeTab !== "san_pham" && (
-        <div className={shared.toolbar}>
-          <div className={shared.toolbarLeft}>
-            <div className={shared.searchWrap}>
-              <span className={shared.searchIcon}>
-                <IconSearch size={14} />
-              </span>
-              <input
-                type="search"
-                className={shared.toolbarSearch}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Tìm mã DG-, QA-, MD-, SKU, gian hàng..."
-                aria-label="Tìm kiếm trong hàng đợi kiểm duyệt"
-              />
+        <>
+          <section className={shared.panel} role="note" style={{ marginTop: 16 }}>
+            <StatusPill label="Bản xem trước, dữ liệu mẫu" tone="warning" />
+            <p className={shared.pageSubtitle} style={{ marginTop: 8 }}>
+              Hàng đợi đánh giá, hỏi đáp và media biến thể bên dưới là dữ liệu mẫu minh họa. Tab Sản
+              phẩm chờ duyệt đang đồng bộ trực tiếp với máy chủ.
+            </p>
+          </section>
+          <div className={shared.toolbar}>
+            <div className={shared.toolbarLeft}>
+              <div className={shared.searchWrap}>
+                <span className={shared.searchIcon}>
+                  <IconSearch size={14} />
+                </span>
+                <input
+                  type="search"
+                  className={shared.toolbarSearch}
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Tìm mã DG-, QA-, MD-, SKU, gian hàng..."
+                  aria-label="Tìm kiếm trong hàng đợi kiểm duyệt"
+                />
+              </div>
+            </div>
+
+            <div className={shared.toolbarRight}>
+              <span className={shared.resultCount}>{formatInt(currentResultCount)} mục</span>
+              <select
+                className={shared.toolbarSelect}
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+                aria-label="Lọc trạng thái kiểm duyệt"
+              >
+                <option value="all">Tất cả trạng thái</option>
+                <option value="cho_duyet">Chờ kiểm duyệt</option>
+                <option value="da_duyet">Đã duyệt</option>
+                <option value="da_an">Đã ẩn</option>
+                <option value="canh_bao">Đã cảnh báo</option>
+              </select>
             </div>
           </div>
-
-          <div className={shared.toolbarRight}>
-            <span className={shared.resultCount}>{formatInt(currentResultCount)} mục</span>
-            <select
-              className={shared.toolbarSelect}
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-              aria-label="Lọc trạng thái kiểm duyệt"
-            >
-              <option value="all">Tất cả trạng thái</option>
-              <option value="cho_duyet">Chờ kiểm duyệt</option>
-              <option value="da_duyet">Đã duyệt</option>
-              <option value="da_an">Đã ẩn</option>
-              <option value="canh_bao">Đã cảnh báo</option>
-            </select>
-          </div>
-        </div>
+        </>
       )}
 
       {/* TAB 1: ĐÁNH GIÁ SẢN PHẨM */}
@@ -1197,10 +1206,10 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
 function AdminModerationRoute() {
   return (
     <AdminStateGate
-      title="Kiểm duyệt đánh giá, hỏi đáp & media"
-      subtitle="Lọc đánh giá spam, duyệt Hỏi đáp theo bộ lọc từ cấm và thẩm định ảnh/video biến thể sản phẩm từ gian hàng."
+      title="Kiểm duyệt sản phẩm & nội dung"
+      subtitle="Phê duyệt sản phẩm từ gian hàng đăng bán cùng các hàng đợi kiểm duyệt đánh giá, hỏi đáp và media mẫu."
       emptyTitle="Hàng đợi kiểm duyệt đang trống"
-      emptyMessage="Tất cả đánh giá, câu hỏi và ảnh/video biến thể đã được kiểm duyệt hoàn tất."
+      emptyMessage="Tất cả sản phẩm và nội dung đã được kiểm duyệt hoàn tất."
       errorTitle="Không thể tải hàng đợi kiểm duyệt"
       errorMessage="Hệ thống kiểm duyệt nội dung tạm gián đoạn. Vui lòng thử tải lại."
       loadingRows={5}
@@ -1212,7 +1221,7 @@ function AdminModerationRoute() {
 
 export default function AdminModerationPage() {
   return (
-    <Suspense fallback={<AdminSuspenseFallback title="Kiểm duyệt đánh giá, hỏi đáp & media" />}>
+    <Suspense fallback={<AdminSuspenseFallback title="Kiểm duyệt sản phẩm & nội dung" />}>
       <AdminModerationRoute />
     </Suspense>
   );

@@ -89,19 +89,25 @@ export function SellerTrendChart({
       labels.length <= 1 ? leftPad : leftPad + (i / (labels.length - 1)) * plotW;
     const yFn = (v: number) => topPad + plotH * (1 - v / yHi);
 
-    // Even step on x-labels (4 labels on phone, up to 7 on desktop)
+    // Even step on x-labels (up to 4 on phone, up to 7 on desktop)
+    const maxLabels = isCompact ? 4 : 7;
     const n = labels.length;
     const picks: number[] = [];
-    if (n <= 4) {
+    if (n <= maxLabels) {
       for (let i = 0; i < n; i++) picks.push(i);
-    } else if (isCompact) {
-      // Exact 4 evenly spaced labels for 7-day series: 0, 2, 4, 6
-      const step = Math.max(1, Math.floor((n - 1) / 3));
-      for (let i = 0; i < n; i += step) {
-        if (picks.length < 4) picks.push(i);
-      }
     } else {
-      for (let i = 0; i < n; i++) picks.push(i);
+      const step = Math.max(1, Math.ceil((n - 1) / (maxLabels - 1)));
+      for (let i = 0; i < n; i += step) {
+        picks.push(i);
+      }
+      const last = picks[picks.length - 1];
+      if (last !== n - 1) {
+        if (n - 1 - last < Math.ceil(step * 0.5) && picks.length > 1) {
+          picks[picks.length - 1] = n - 1;
+        } else {
+          picks.push(n - 1);
+        }
+      }
     }
 
     return {

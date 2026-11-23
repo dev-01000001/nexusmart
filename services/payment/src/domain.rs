@@ -408,6 +408,192 @@ pub struct EventEnvelope {
     pub payload: serde_json::Value,
 }
 
+// =============================================================================
+// Wave 2b Domain Types & Helpers (Payment Fee Configs, Seller Ledger)
+// =============================================================================
+
+/// Maximum configurable payment fee in basis points (20.00%).
+pub const MAX_PAYMENT_FEE_BPS: i32 = 2000;
+const MAX_FEE_CONFIG_NOTE_LEN: usize = 500;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::FromRow)]
+pub struct PaymentFeeConfigRecord {
+    pub id: Uuid,
+    pub seq: i64,
+    pub payment_method: String,
+    pub fee_bps: i32,
+    pub effective_from: DateTime<Utc>,
+    pub created_by: String,
+    pub note: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SetFeeConfigInput {
+    pub method: PaymentMethod,
+    pub fee_bps: i32,
+    pub effective_from: Option<DateTime<Utc>>,
+    pub created_by: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct GetFeeConfigFilter {
+    pub method: Option<PaymentMethod>,
+    pub include_history: bool,
+    pub at_time: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GetFeeConfigResult {
+    pub active_configs: Vec<PaymentFeeConfigRecord>,
+    pub history: Vec<PaymentFeeConfigRecord>,
+}
+
+/// Validates `SetFeeConfig` parameters against `now` (UC-A09):
+/// - `fee_bps` must be in `0..=2000`.
+/// - `effective_from` defaults to `now` when omitted; when provided it MUST be `>= now`.
+/// - `note` is trimmed and capped at 500 characters.
+pub fn validate_set_fee_config(
+    fee_bps: i32,
+    effective_from: Option<DateTime<Utc>>,
+    note: &str,
+    now: DateTime<Utc>,
+) -> Result<(DateTime<Utc>, String)> {
+    if !(0..=MAX_PAYMENT_FEE_BPS).contains(&fee_bps) {
+        return Err(PaymentError::Validation(format!(
+            "fee_bps must be between 0 and {MAX_PAYMENT_FEE_BPS} (got {fee_bps})"
+        )));
+    }
+    let resolved_effective_from = match effective_from {
+        Some(ts) => {
+            if ts < now {
+                return Err(PaymentError::Validation(
+                    "effective_from cannot be in the past".to_string(),
+                ));
+            }
+            ts
+        }
+        None => now,
+    };
+    let trimmed_note = note.trim();
+    if trimmed_note.chars().count() > MAX_FEE_CONFIG_NOTE_LEN {
+        return Err(PaymentError::Validation(format!(
+            "note must not exceed {MAX_FEE_CONFIG_NOTE_LEN} characters"
+        )));
+    }
+    Ok((resolved_effective_from, trimmed_note.to_string()))
+}
+
+/// Pure reference resolution of active payment fee configs at `at_time`:
+/// picks the latest entry per payment method where `effective_from <= at_time`,
+/// breaking ties strictly by `(effective_from DESC, seq DESC)`.
+#[cfg(test)]
+fn resolve_active_fee_configs(
+    entries: &[PaymentFeeConfigRecord],
+    method_filter: Option<PaymentMethod>,
+    at_time: DateTime<Utc>,
+) -> Vec<PaymentFeeConfigRecord> {
+    let mut best_by_method: std::collections::BTreeMap<&str, &PaymentFeeConfigRecord> =
+        std::collections::BTreeMap::new();
+
+    for entry in entries {
+        if let Some(m) = method_filter {
+            if entry.payment_method != m.as_str() {
+                continue;
+            }
+        }
+        if entry.effective_from > at_time {
+            continue;
+        }
+        let key = (entry.effective_from, entry.seq);
+        match best_by_method.get(entry.payment_method.as_str()) {
+            Some(prev) if (prev.effective_from, prev.seq) >= key => {}
+            _ => {
+                best_by_method.insert(entry.payment_method.as_str(), entry);
+            }
+        }
+    }
+
+    best_by_method.into_values().cloned().collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SellerLedgerAccountFilter {
+    Pending,
+    Available,
+}
+
+pub fn parse_seller_ledger_account_filter(raw: &str) -> Result<Option<SellerLedgerAccountFilter>> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" => Ok(None),
+        "pending" => Ok(Some(SellerLedgerAccountFilter::Pending)),
+        "available" => Ok(Some(SellerLedgerAccountFilter::Available)),
+        other => Err(PaymentError::Validation(format!(
+            "account_filter must be 'pending', 'available', or empty (got '{other}')"
+        ))),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ListSellerLedgerFilter {
+    pub shop_id: Option<String>,
+    pub account_filter: Option<SellerLedgerAccountFilter>,
+    pub reference_type: Option<String>,
+    pub page: i32,
+    pub page_size: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SellerLedgerEntryRecord {
+    pub id: Uuid,
+    pub transaction_id: Uuid,
+    pub account_code: String,
+    pub reference_type: String,
+    pub reference_id: String,
+    pub description: String,
+    pub debit_vnd: i64,
+    pub credit_vnd: i64,
+    pub delta_vnd: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ListSellerLedgerResult {
+    pub entries: Vec<SellerLedgerEntryRecord>,
+    pub total: i64,
+}
+
+/// Formats a human-readable Vietnamese ledger description for seller accounts
+/// (`seller_pending:<shop>` / `seller_available:<shop>`) by `reference_type`.
+pub fn format_seller_ledger_description(
+    reference_type: &str,
+    reference_id: &str,
+    account_code: &str,
+    platform_fee_vnd: i64,
+) -> String {
+    let ref_id = reference_id.trim();
+    match reference_type.trim() {
+        "escrow_settle" => {
+            if platform_fee_vnd > 0 {
+                format!("Tiền đơn hàng {ref_id} (đã trừ phí sàn {platform_fee_vnd} VND)")
+            } else {
+                format!("Tiền đơn hàng {ref_id}")
+            }
+        }
+        "escrow_release" => {
+            if account_code.starts_with("seller_pending:") {
+                format!("Giải ngân đơn hàng {ref_id} (chuyển sang số dư khả dụng)")
+            } else {
+                format!("Giải ngân đơn hàng {ref_id} vào số dư khả dụng")
+            }
+        }
+        "refund" => format!("Hoàn tiền cho giao dịch {ref_id}"),
+        "payout" => format!("Rút tiền về tài khoản ngân hàng ({ref_id})"),
+        other => format!("Giao dịch {other} ({ref_id})"),
+    }
+}
+
 /// Validates that an existing payment matched by `idempotency_key` belongs to the exact same
 /// caller and parameters (`user_id`, `order_group_id`, `amount_vnd`, `method`).
 /// Prevents cross-user IDOR and cross-order payment corruption on `idempotency_key` collisions (review-B P0-2).
@@ -1917,6 +2103,24 @@ mod tests {
             PaymentMethod::VietQr
         )
         .is_ok());
+        // Replaying the same idempotency_key when the persisted payment is already terminal
+        // (`expired` / `cancelled` / `succeeded`) must still match so `create_payment` returns
+        // the existing row with its real status instead of resurrecting or failing.
+        for terminal_status in ["expired", "cancelled", "succeeded"] {
+            let mut terminal = existing.clone();
+            terminal.status = terminal_status.into();
+            assert!(
+                validate_payment_idempotency_match(
+                    &terminal,
+                    "user-a",
+                    "grp-a",
+                    250_000,
+                    PaymentMethod::VietQr
+                )
+                .is_ok(),
+                "status={terminal_status} must replay existing row"
+            );
+        }
         assert!(matches!(
             validate_payment_idempotency_match(
                 &existing,
@@ -2524,5 +2728,270 @@ mod tests {
         assert_eq!(ordered, vec![1, 3, 0, 2]);
         assert_eq!(order_expiry_candidate_indices(&[150_000], 200_000), vec![0]);
         assert!(order_expiry_candidate_indices(&[], 200_000).is_empty());
+    }
+
+    #[test]
+    fn test_w2b_fee_config_validation_and_time_boundaries() {
+        let now = DateTime::parse_from_rfc3339("2026-11-23T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // bps bounds: 0 and 2000 allowed, -1 and 2001 rejected
+        assert_eq!(
+            validate_set_fee_config(0, None, "  free  ", now).unwrap(),
+            (now, "free".to_string())
+        );
+        assert_eq!(
+            validate_set_fee_config(2000, Some(now), "", now).unwrap(),
+            (now, String::new())
+        );
+        let future = now + chrono::Duration::seconds(1);
+        assert_eq!(
+            validate_set_fee_config(150, Some(future), "scheduled", now).unwrap(),
+            (future, "scheduled".to_string())
+        );
+        for bad_bps in [-1, -100, 2001, 10_000] {
+            assert!(matches!(
+                validate_set_fee_config(bad_bps, None, "", now),
+                Err(PaymentError::Validation(_))
+            ));
+        }
+
+        // Past effective_from (even 1ms before now) rejected with error containing effective_from + past
+        let past_1ms = now - chrono::Duration::milliseconds(1);
+        let err = validate_set_fee_config(100, Some(past_1ms), "", now).unwrap_err();
+        let msg = err.to_string().to_ascii_lowercase();
+        assert!(
+            msg.contains("effective_from") && msg.contains("past"),
+            "{msg}"
+        );
+
+        // Overlong note rejected
+        let long_note = "a".repeat(501);
+        assert!(matches!(
+            validate_set_fee_config(100, None, &long_note, now),
+            Err(PaymentError::Validation(_))
+        ));
+
+        // Time boundary resolution with mock clock
+        let t0 = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let t1 = DateTime::parse_from_rfc3339("2026-11-23T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let t2 = DateTime::parse_from_rfc3339("2026-12-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let mk = |seq: i64, method: &str, bps: i32, eff: DateTime<Utc>, created: DateTime<Utc>| {
+            PaymentFeeConfigRecord {
+                id: Uuid::new_v4(),
+                seq,
+                payment_method: method.to_string(),
+                fee_bps: bps,
+                effective_from: eff,
+                created_by: "admin-1".to_string(),
+                note: String::new(),
+                created_at: created,
+            }
+        };
+
+        let rows = vec![
+            mk(1, "COD", 0, t0, t0),
+            mk(2, "VIETQR", 0, t0, t0),
+            // Earlier seq with later wall-clock created_at (NTP skew): higher seq MUST still win!
+            mk(3, "VIETQR", 120, t1, t1 + chrono::Duration::seconds(30)),
+            mk(4, "VIETQR", 150, t1, t1),
+            // Scheduled future rate at t2
+            mk(5, "VIETQR", 250, t2, t1 + chrono::Duration::seconds(5)),
+            mk(6, "COD", 200, t2, t1 + chrono::Duration::seconds(5)),
+        ];
+
+        // Strictly before t0 -> no active config
+        let before_t0 =
+            resolve_active_fee_configs(&rows, None, t0 - chrono::Duration::nanoseconds(1));
+        assert!(before_t0.is_empty());
+
+        // Exactly at t0 -> baseline 0 bps for both COD and VIETQR
+        let at_t0 = resolve_active_fee_configs(&rows, None, t0);
+        assert_eq!(at_t0.len(), 2);
+        assert_eq!(at_t0[0].payment_method, "COD");
+        assert_eq!(at_t0[0].fee_bps, 0);
+        assert_eq!(at_t0[1].payment_method, "VIETQR");
+        assert_eq!(at_t0[1].fee_bps, 0);
+
+        // 1 nanosecond before t1 -> still baseline 0 bps
+        let before_t1 = resolve_active_fee_configs(
+            &rows,
+            Some(PaymentMethod::VietQr),
+            t1 - chrono::Duration::nanoseconds(1),
+        );
+        assert_eq!(before_t1.len(), 1);
+        assert_eq!(before_t1[0].fee_bps, 0);
+
+        // Exactly at t1 -> seq=4 (150 bps) wins tie-break over seq=3 (120 bps)
+        let at_t1 = resolve_active_fee_configs(&rows, Some(PaymentMethod::VietQr), t1);
+        assert_eq!(at_t1.len(), 1);
+        assert_eq!(at_t1[0].fee_bps, 150);
+        assert_eq!(at_t1[0].seq, 4);
+
+        // 1 second before t2 -> future rates not active yet
+        let before_t2 = resolve_active_fee_configs(&rows, None, t2 - chrono::Duration::seconds(1));
+        assert_eq!(before_t2[0].fee_bps, 0); // COD
+        assert_eq!(before_t2[1].fee_bps, 150); // VIETQR
+
+        // Exactly at t2 -> future rates activate for both COD and VIETQR
+        let at_t2 = resolve_active_fee_configs(&rows, None, t2);
+        assert_eq!(at_t2[0].payment_method, "COD");
+        assert_eq!(at_t2[0].fee_bps, 200);
+        assert_eq!(at_t2[1].payment_method, "VIETQR");
+        assert_eq!(at_t2[1].fee_bps, 250);
+    }
+
+    #[test]
+    fn test_w2b_seller_ledger_account_filter_and_vn_descriptions() {
+        assert_eq!(parse_seller_ledger_account_filter("").unwrap(), None);
+        assert_eq!(parse_seller_ledger_account_filter("   ").unwrap(), None);
+        assert_eq!(
+            parse_seller_ledger_account_filter("pending").unwrap(),
+            Some(SellerLedgerAccountFilter::Pending)
+        );
+        assert_eq!(
+            parse_seller_ledger_account_filter("  AVAILABLE ").unwrap(),
+            Some(SellerLedgerAccountFilter::Available)
+        );
+        for bad in ["escrow", "gateway_clearing", "seller_pending:shop-1"] {
+            assert!(matches!(
+                parse_seller_ledger_account_filter(bad),
+                Err(PaymentError::Validation(_))
+            ));
+        }
+
+        let settle_with_fee =
+            format_seller_ledger_description("escrow_settle", "ord-1", "seller_pending:s1", 15_000);
+        assert!(settle_with_fee.contains("Tiền đơn hàng ord-1"));
+        assert!(settle_with_fee.contains("phí sàn 15000"));
+
+        let settle_no_fee =
+            format_seller_ledger_description("escrow_settle", "ord-2", "seller_pending:s1", 0);
+        assert_eq!(settle_no_fee, "Tiền đơn hàng ord-2");
+
+        let rel_pending =
+            format_seller_ledger_description("escrow_release", "ord-1", "seller_pending:s1", 0);
+        assert!(rel_pending.contains("Giải ngân"));
+        let rel_avail =
+            format_seller_ledger_description("escrow_release", "ord-1", "seller_available:s1", 0);
+        assert!(rel_avail.contains("Giải ngân"));
+
+        let refund_desc =
+            format_seller_ledger_description("refund", "rf-1", "seller_available:s1", 0);
+        assert!(refund_desc.contains("Hoàn tiền"));
+
+        let payout_desc =
+            format_seller_ledger_description("payout", "po-1", "seller_available:s1", 0);
+        assert!(payout_desc.contains("Rút tiền"));
+
+        let fallback_desc =
+            format_seller_ledger_description("adjustment", "adj-3", "seller_available:s1", 0);
+        assert_eq!(fallback_desc, "Giao dịch adjustment (adj-3)");
+    }
+
+    #[test]
+    fn test_w2b_money_model_with_shop_program_shop_freeship_and_payment_fee() {
+        // w2b-plan.md §1:
+        // G=500k, F=0, P_shop=50k, V_shop=20k, Ship=35k, S_shop=20k
+        // => R = 500k - 50k - 20k - 20k = 410k
+        // V_plat=30k, S_free=15k, X=5k => D = 50k
+        // P = R + Ship - D = 410k + 35k - 50k = 395k (P + D == R + Ship == 445k)
+        // C_cat=21,500, C_pay=5,925 (150 bps on 395k) => C_total = 27,425 <= R
+        let alloc = ShopAllocationInput {
+            order_id: Some("ord-w2b-1".into()),
+            shop_id: "shop-1".into(),
+            subtotal_vnd: 410_000,
+            commission_vnd: 27_425,
+            shipping_fee_vnd: 35_000,
+            platform_discount_vnd: 50_000,
+        };
+        assert!(validate_allocations_sum(395_000, &[alloc]).is_ok());
+
+        // Full settlement without refund
+        let split =
+            compute_settlement_split("ord-w2b-1", "shop-1", 410_000, 27_425, 35_000, 50_000, 0)
+                .unwrap();
+        assert_eq!(split.escrow_debit_vnd, 395_000);
+        assert_eq!(split.platform_promo_debit_vnd, 50_000);
+        assert_eq!(split.seller_net_vnd, 382_575);
+        assert_eq!(split.commission_vnd, 27_425);
+        assert_eq!(split.shipping_fee_vnd, 35_000);
+        assert_eq!(
+            split.total_debit_vnd(),
+            split.seller_net_vnd + split.commission_vnd + split.shipping_fee_vnd
+        );
+
+        // Partial refund of 100,000 before settlement stays balanced
+        let split_partial = compute_settlement_split(
+            "ord-w2b-1",
+            "shop-1",
+            410_000,
+            27_425,
+            35_000,
+            50_000,
+            100_000,
+        )
+        .unwrap();
+        assert_eq!(split_partial.escrow_debit_vnd, 295_000);
+        assert_eq!(split_partial.seller_net_vnd, 282_575);
+        assert_eq!(split_partial.commission_vnd, 27_425);
+        assert_eq!(
+            split_partial.total_debit_vnd(),
+            split_partial.seller_net_vnd
+                + split_partial.commission_vnd
+                + split_partial.shipping_fee_vnd
+        );
+
+        // Cap boundary: C_total == R (commission + payment_fee capped at R) => seller_net = 0
+        let capped = ShopAllocationInput {
+            order_id: Some("ord-w2b-cap".into()),
+            shop_id: "shop-2".into(),
+            subtotal_vnd: 10_000,
+            commission_vnd: 10_000,
+            shipping_fee_vnd: 30_000,
+            platform_discount_vnd: 0,
+        };
+        assert!(validate_allocations_sum(40_000, &[capped]).is_ok());
+        let split_cap =
+            compute_settlement_split("ord-w2b-cap", "shop-2", 10_000, 10_000, 30_000, 0, 0)
+                .unwrap();
+        assert_eq!(split_cap.seller_net_vnd, 0);
+        assert_eq!(split_cap.commission_vnd, 10_000);
+        assert_eq!(split_cap.shipping_fee_vnd, 30_000);
+
+        // C_total > R MUST be rejected
+        let over_cap = ShopAllocationInput {
+            order_id: Some("ord-w2b-bad".into()),
+            shop_id: "shop-2".into(),
+            subtotal_vnd: 10_000,
+            commission_vnd: 10_001,
+            shipping_fee_vnd: 30_000,
+            platform_discount_vnd: 0,
+        };
+        assert!(validate_allocations_sum(40_000, &[over_cap]).is_err());
+
+        // Trimmed S_shop boundary: R == 0, C_total == 0, Ship = 30k, D = 0 => P = 30k
+        let zero_r = ShopAllocationInput {
+            order_id: Some("ord-w2b-r0".into()),
+            shop_id: "shop-3".into(),
+            subtotal_vnd: 0,
+            commission_vnd: 0,
+            shipping_fee_vnd: 30_000,
+            platform_discount_vnd: 0,
+        };
+        assert!(validate_allocations_sum(30_000, &[zero_r]).is_ok());
+        let split_r0 =
+            compute_settlement_split("ord-w2b-r0", "shop-3", 0, 0, 30_000, 0, 0).unwrap();
+        assert_eq!(split_r0.escrow_debit_vnd, 30_000);
+        assert_eq!(split_r0.seller_net_vnd, 0);
+        assert_eq!(split_r0.shipping_fee_vnd, 30_000);
     }
 }

@@ -28,6 +28,7 @@ type Notification struct {
 	Body      string
 	Link      string
 	EventID   string
+	DedupKey  string
 	IsRead    bool
 	CreatedAt time.Time
 }
@@ -328,9 +329,13 @@ func (t *pgTxStore) InsertNotification(ctx context.Context, n Notification) (Not
 		Body:      n.Body,
 		Link:      n.Link,
 		EventID:   n.EventID,
+		DedupKey:  n.DedupKey,
 		CreatedAt: db.ToTimestamptz(createdAt),
 	})
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Notification{}, nil
+		}
 		return Notification{}, fmt.Errorf("insert notification: %w", err)
 	}
 	return fromDBNotification(row), nil
@@ -495,6 +500,7 @@ func fromDBNotification(r db.Notification) Notification {
 		Body:      r.Body,
 		Link:      r.Link,
 		EventID:   r.EventID,
+		DedupKey:  r.DedupKey,
 		IsRead:    r.IsRead,
 		CreatedAt: r.CreatedAt.Time.UTC(),
 	}

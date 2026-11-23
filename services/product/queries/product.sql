@@ -1,14 +1,35 @@
 -- Categories
 
+-- name: LockCategoryTree :exec
+SELECT pg_advisory_xact_lock(7956455656534110821);
+
 -- name: CreateCategory :one
 INSERT INTO categories (id, name, slug, parent_id, commission_rate_bps, sort_order)
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at;
 
 -- name: GetCategoryByID :one
+SELECT
+    c.id, c.name, c.slug, c.parent_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= sqlc.arg(as_of)::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    c.sort_order, c.created_at, c.updated_at
+FROM categories c
+WHERE c.id = sqlc.arg(id)::text;
+
+-- name: GetCategoryBySlug :one
 SELECT id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at
 FROM categories
-WHERE id = $1;
+WHERE slug = $1;
 
 -- name: UpdateCategory :one
 UPDATE categories
@@ -21,10 +42,18 @@ SET name = $2,
 WHERE id = $1
 RETURNING id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at;
 
+-- name: UpdateCategoryCommissionRate :exec
+UPDATE categories
+SET commission_rate_bps = $2,
+    updated_at = NOW()
+WHERE id = $1;
+
 -- name: CountProductsInCategory :one
-SELECT COUNT(*)::bigint AS cnt
+SELECT
+    COUNT(*)::bigint AS total_cnt,
+    COUNT(*) FILTER (WHERE deleted_at IS NULL)::bigint AS active_cnt
 FROM products
-WHERE category_id = $1 AND deleted_at IS NULL;
+WHERE category_id = $1;
 
 -- name: CountChildCategories :one
 SELECT COUNT(*)::bigint AS cnt
@@ -36,21 +65,109 @@ DELETE FROM categories
 WHERE id = $1;
 
 -- name: ListAllCategories :many
-SELECT id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at
-FROM categories
-ORDER BY sort_order ASC, name ASC, id ASC;
+SELECT
+    c.id, c.name, c.slug, c.parent_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= sqlc.arg(as_of)::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    c.sort_order, c.created_at, c.updated_at
+FROM categories c
+ORDER BY c.sort_order ASC, c.name ASC, c.id ASC;
 
 -- name: ListCategoriesByParent :many
-SELECT id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at
-FROM categories
-WHERE parent_id = $1
-ORDER BY sort_order ASC, name ASC, id ASC;
+SELECT
+    c.id, c.name, c.slug, c.parent_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= sqlc.arg(as_of)::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    c.sort_order, c.created_at, c.updated_at
+FROM categories c
+WHERE c.parent_id = sqlc.arg(parent_id)
+ORDER BY c.sort_order ASC, c.name ASC, c.id ASC;
 
 -- name: ListRootCategories :many
-SELECT id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at
-FROM categories
-WHERE parent_id IS NULL
-ORDER BY sort_order ASC, name ASC, id ASC;
+SELECT
+    c.id, c.name, c.slug, c.parent_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= sqlc.arg(as_of)::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    c.sort_order, c.created_at, c.updated_at
+FROM categories c
+WHERE c.parent_id IS NULL
+ORDER BY c.sort_order ASC, c.name ASC, c.id ASC;
+
+-- name: CategoryHasAncestor :one
+WITH RECURSIVE ancestors AS (
+    SELECT c.id, c.parent_id
+    FROM categories c
+    WHERE c.id = sqlc.arg(start_id)::text
+    UNION
+    SELECT p.id, p.parent_id
+    FROM categories p
+    JOIN ancestors a ON p.id = a.parent_id
+)
+SELECT EXISTS (
+    SELECT 1 FROM ancestors WHERE id = sqlc.arg(target_ancestor_id)::text
+)::bool AS has_ancestor;
+
+-- name: GetCategoryDescendants :many
+WITH RECURSIVE cat_tree AS (
+    SELECT DISTINCT id
+    FROM unnest(sqlc.arg(category_ids)::text[]) AS t(id)
+    UNION
+    SELECT child.id
+    FROM categories child
+    JOIN cat_tree ct ON child.parent_id = ct.id
+)
+SELECT id::text AS id
+FROM cat_tree
+ORDER BY id ASC;
+
+-- Category Fee Schedules
+
+-- name: InsertCategoryFeeSchedule :one
+INSERT INTO category_fee_schedules (
+    id, category_id, commission_rate_bps, effective_from, created_by, note, created_at
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, seq, category_id, commission_rate_bps, effective_from, created_by, note, created_at;
+
+-- name: CountCategoryFeeSchedules :one
+SELECT COUNT(*)::bigint AS cnt
+FROM category_fee_schedules
+WHERE (sqlc.arg(category_id)::text = '' OR category_id = sqlc.arg(category_id)::text);
+
+-- name: ListCategoryFeeSchedules :many
+SELECT id, seq, category_id, commission_rate_bps, effective_from, created_by, note, created_at
+FROM category_fee_schedules
+WHERE (sqlc.arg(category_id)::text = '' OR category_id = sqlc.arg(category_id)::text)
+ORDER BY effective_from DESC, seq DESC
+LIMIT sqlc.arg(limit_val)::int
+OFFSET sqlc.arg(offset_val)::int;
 
 -- Products
 
@@ -68,6 +185,13 @@ SELECT id, shop_id, category_id, name, description, images, status,
        rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
 FROM products
 WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: GetProductByIDForUpdate :one
+SELECT id, shop_id, category_id, name, description, images, status,
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
+FROM products
+WHERE id = $1 AND deleted_at IS NULL
+FOR UPDATE;
 
 -- name: GetProductBySlug :one
 SELECT id, shop_id, category_id, name, description, images, status,
@@ -115,10 +239,19 @@ SET deleted_at = NOW(),
 WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: CountProductsFiltered :one
+WITH RECURSIVE cat_tree AS (
+    SELECT c.id
+    FROM categories c
+    WHERE sqlc.arg(category_id)::text <> '' AND c.id = sqlc.arg(category_id)::text
+    UNION
+    SELECT child.id
+    FROM categories child
+    JOIN cat_tree ct ON child.parent_id = ct.id
+)
 SELECT COUNT(*)::bigint AS cnt
 FROM products p
 WHERE p.deleted_at IS NULL
-  AND (sqlc.arg(category_id)::text = '' OR p.category_id = sqlc.arg(category_id)::text OR p.category_id IN (SELECT c.id FROM categories c WHERE c.parent_id = sqlc.arg(category_id)::text))
+  AND (sqlc.arg(category_id)::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
   AND (sqlc.arg(keyword)::text = '' OR p.search_text LIKE '%' || sqlc.arg(keyword)::text || '%' ESCAPE '\')
   AND (sqlc.arg(shop_id)::text = '' OR p.shop_id = sqlc.arg(shop_id)::text)
   AND (NOT sqlc.arg(public_only)::bool OR p.status IN ('APPROVED', 'OUT_OF_STOCK'))
@@ -135,11 +268,20 @@ WHERE p.deleted_at IS NULL
   );
 
 -- name: ListProductsFiltered :many
+WITH RECURSIVE cat_tree AS (
+    SELECT c.id
+    FROM categories c
+    WHERE sqlc.arg(category_id)::text <> '' AND c.id = sqlc.arg(category_id)::text
+    UNION
+    SELECT child.id
+    FROM categories child
+    JOIN cat_tree ct ON child.parent_id = ct.id
+)
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
        p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug, p.search_text
 FROM products p
 WHERE p.deleted_at IS NULL
-  AND (sqlc.arg(category_id)::text = '' OR p.category_id = sqlc.arg(category_id)::text OR p.category_id IN (SELECT c.id FROM categories c WHERE c.parent_id = sqlc.arg(category_id)::text))
+  AND (sqlc.arg(category_id)::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
   AND (sqlc.arg(keyword)::text = '' OR p.search_text LIKE '%' || sqlc.arg(keyword)::text || '%' ESCAPE '\')
   AND (sqlc.arg(shop_id)::text = '' OR p.shop_id = sqlc.arg(shop_id)::text)
   AND (NOT sqlc.arg(public_only)::bool OR p.status IN ('APPROVED', 'OUT_OF_STOCK'))
@@ -174,6 +316,10 @@ INSERT INTO skus (
 VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 1, $8, $9, $10)
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
           reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+
+-- name: InsertSKUPriceHistory :exec
+INSERT INTO sku_price_history (id, sku_id, price_vnd, actor_id, reason, recorded_at)
+VALUES ($1, $2, $3, $4, $5, $6);
 
 -- name: UpdateSKUMetadata :one
 UPDATE skus
@@ -226,12 +372,44 @@ WHERE id = $1;
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
     s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
-    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.weight_grams, s.image_url, p.category_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= sqlc.arg(as_of)::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    COALESCE(
+        LEAST(
+            s.price_vnd,
+            (
+                SELECT MIN(h.price_vnd)
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at > sqlc.arg(cutoff_30d)::timestamptz
+                  AND h.recorded_at <= sqlc.arg(as_of)::timestamptz
+            ),
+            (
+                SELECT h.price_vnd
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at <= sqlc.arg(cutoff_30d)::timestamptz
+                ORDER BY h.recorded_at DESC, h.seq DESC
+                LIMIT 1
+            )
+        ),
+        s.price_vnd
+    )::bigint AS min_price_30d_vnd,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
-WHERE s.product_id = ANY($1::text[])
+WHERE s.product_id = ANY(sqlc.arg(product_ids)::text[])
   AND s.status <> 'INACTIVE'
 ORDER BY s.created_at ASC, s.id ASC;
 
@@ -239,47 +417,175 @@ ORDER BY s.created_at ASC, s.id ASC;
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
     s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
-    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.weight_grams, s.image_url, p.category_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= sqlc.arg(as_of)::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    COALESCE(
+        LEAST(
+            s.price_vnd,
+            (
+                SELECT MIN(h.price_vnd)
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at > sqlc.arg(cutoff_30d)::timestamptz
+                  AND h.recorded_at <= sqlc.arg(as_of)::timestamptz
+            ),
+            (
+                SELECT h.price_vnd
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at <= sqlc.arg(cutoff_30d)::timestamptz
+                ORDER BY h.recorded_at DESC, h.seq DESC
+                LIMIT 1
+            )
+        ),
+        s.price_vnd
+    )::bigint AS min_price_30d_vnd,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
-WHERE s.product_id = $1
+WHERE s.product_id = sqlc.arg(product_id)::text
 ORDER BY s.created_at ASC, s.id ASC;
 
 -- name: GetSKUsBatch :many
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
     s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
-    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.weight_grams, s.image_url, p.category_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= sqlc.arg(as_of)::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    COALESCE(
+        LEAST(
+            s.price_vnd,
+            (
+                SELECT MIN(h.price_vnd)
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at > sqlc.arg(cutoff_30d)::timestamptz
+                  AND h.recorded_at <= sqlc.arg(as_of)::timestamptz
+            ),
+            (
+                SELECT h.price_vnd
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at <= sqlc.arg(cutoff_30d)::timestamptz
+                ORDER BY h.recorded_at DESC, h.seq DESC
+                LIMIT 1
+            )
+        ),
+        s.price_vnd
+    )::bigint AS min_price_30d_vnd,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
-WHERE s.id = ANY($1::text[])
+WHERE s.id = ANY(sqlc.arg(sku_ids)::text[])
 ORDER BY s.id ASC;
 
 -- name: GetSKUWithContext :one
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
     s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
-    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.weight_grams, s.image_url, p.category_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= sqlc.arg(as_of)::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    COALESCE(
+        LEAST(
+            s.price_vnd,
+            (
+                SELECT MIN(h.price_vnd)
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at > sqlc.arg(cutoff_30d)::timestamptz
+                  AND h.recorded_at <= sqlc.arg(as_of)::timestamptz
+            ),
+            (
+                SELECT h.price_vnd
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at <= sqlc.arg(cutoff_30d)::timestamptz
+                ORDER BY h.recorded_at DESC, h.seq DESC
+                LIMIT 1
+            )
+        ),
+        s.price_vnd
+    )::bigint AS min_price_30d_vnd,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
-WHERE s.id = $1;
+WHERE s.id = sqlc.arg(id)::text;
 
 -- name: GetSKUWithContextForUpdate :one
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
     s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
-    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.weight_grams, s.image_url, p.category_id,
+    COALESCE(
+        (
+            SELECT f.commission_rate_bps
+            FROM category_fee_schedules f
+            WHERE f.category_id = c.id
+              AND f.effective_from <= sqlc.arg(as_of)::timestamptz
+            ORDER BY f.effective_from DESC, f.seq DESC
+            LIMIT 1
+        ),
+        c.commission_rate_bps
+    )::int AS commission_rate_bps,
+    COALESCE(
+        LEAST(
+            s.price_vnd,
+            (
+                SELECT MIN(h.price_vnd)
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at > sqlc.arg(cutoff_30d)::timestamptz
+                  AND h.recorded_at <= sqlc.arg(as_of)::timestamptz
+            ),
+            (
+                SELECT h.price_vnd
+                FROM sku_price_history h
+                WHERE h.sku_id = s.id
+                  AND h.recorded_at <= sqlc.arg(cutoff_30d)::timestamptz
+                ORDER BY h.recorded_at DESC, h.seq DESC
+                LIMIT 1
+            )
+        ),
+        s.price_vnd
+    )::bigint AS min_price_30d_vnd,
     s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
-WHERE s.id = $1
+WHERE s.id = sqlc.arg(id)::text
 FOR UPDATE OF s;
 
 -- name: CountActiveInStockSKUsByProduct :one
@@ -358,6 +664,19 @@ RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
 
 -- Stock reservations
 
+-- name: LockStockOrder :exec
+SELECT pg_advisory_xact_lock(1937010539, hashtext($1));
+
+-- name: InsertStockReleaseTombstone :execrows
+INSERT INTO stock_release_tombstones (order_id)
+VALUES ($1)
+ON CONFLICT (order_id) DO NOTHING;
+
+-- name: HasStockReleaseTombstone :one
+SELECT EXISTS (
+    SELECT 1 FROM stock_release_tombstones WHERE order_id = $1
+)::bool AS exists;
+
 -- name: ListReservationsByOrderID :many
 SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at
 FROM stock_reservations
@@ -400,3 +719,30 @@ INSERT INTO stock_history (
 )
 VALUES ($1, $2, $3, 'RESTOCK', $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (order_id, sku_id) WHERE change_type = 'RESTOCK' DO NOTHING;
+
+-- Outbox events
+
+-- name: InsertOutboxEvent :exec
+INSERT INTO outbox_events (id, event_type, trace_id, traceparent, payload_json, created_at)
+VALUES ($1, $2, $3, $4, $5, $6);
+
+-- name: LockPendingOutboxEvents :many
+SELECT id, event_type, trace_id, traceparent, payload_json, published_at, attempts, last_error, created_at
+FROM outbox_events
+WHERE published_at IS NULL
+ORDER BY created_at ASC
+LIMIT $1
+FOR UPDATE SKIP LOCKED;
+
+-- name: MarkOutboxEventPublished :exec
+UPDATE outbox_events
+SET published_at = NOW(),
+    attempts = attempts + 1,
+    last_error = ''
+WHERE id = $1;
+
+-- name: MarkOutboxEventAttemptFailed :exec
+UPDATE outbox_events
+SET attempts = attempts + 1,
+    last_error = $2
+WHERE id = $1;

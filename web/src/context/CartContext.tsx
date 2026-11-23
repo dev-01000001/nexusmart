@@ -1,6 +1,14 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   GatewayCart,
   GatewayCartResponse,
@@ -9,6 +17,7 @@ import type {
 import { ApiError, api, getErrorMessage } from "@/lib/api";
 import { useSession } from "@/context/SessionContext";
 import { useMockStore } from "@/mock/MockStoreContext";
+import { shouldClearUserClientState } from "@/features/checkout/helpers";
 
 export interface CartItem {
   skuId: string;
@@ -87,6 +96,11 @@ export interface CartContextValue {
   setUseCoins: (enabled: boolean) => void;
   resetPromotions: () => void;
 
+  // In-memory opt-out of Flash Sale per SKU (explicit "Mua giá thường" choice shared between /gio-hang and /thanh-toan)
+  optedOutFlashSkuIds: Set<string>;
+  optOutFlashForSku: (skuId: string) => void;
+  restoreFlashForSku: (skuId: string) => void;
+
   // Voucher saving via real backend POST /vouchers/{id}/save
   savedVoucherCodes: string[];
   saveVoucherCode: (codeOrId: string) => Promise<boolean>;
@@ -112,18 +126,28 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const [platformVoucherCode, setPlatformVoucherCode] = useState<string | null>(null);
   const [freeshipVoucherCode, setFreeshipVoucherCode] = useState<string | null>(null);
   const [useCoins, setUseCoins] = useState<boolean>(false);
+  const [optedOutFlashSkuIds, setOptedOutFlashSkuIds] = useState<Set<string>>(() => new Set());
   const [savedVoucherCodes, setSavedVoucherCodes] = useState<string[]>([]);
+  const prevUserIdRef = useRef<string | null>(null);
 
   const applyCartSnapshot = useCallback((nextCart: GatewayCart | null) => {
     setRawCart(nextCart);
+    const validIds = new Set<string>();
+    for (const group of nextCart?.shop_groups ?? []) {
+      for (const item of group.items ?? []) {
+        validIds.add(item.sku_id);
+      }
+    }
     setDeselectedSkuIds((prev) => {
       if (prev.size === 0 || !nextCart) return prev.size === 0 ? prev : new Set();
-      const validIds = new Set<string>();
-      for (const group of nextCart.shop_groups ?? []) {
-        for (const item of group.items ?? []) {
-          validIds.add(item.sku_id);
-        }
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (validIds.has(id)) next.add(id);
       }
+      return next.size === prev.size ? prev : next;
+    });
+    setOptedOutFlashSkuIds((prev) => {
+      if (prev.size === 0 || !nextCart) return prev.size === 0 ? prev : new Set();
       const next = new Set<string>();
       for (const id of prev) {
         if (validIds.has(id)) next.add(id);
@@ -161,16 +185,26 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (sessionLoading) return;
-    if (!isAuthenticated) {
-      applyCartSnapshot(null);
-      setCartError(null);
-      setCartLoading(false);
-      setCartInitialized(true);
+    const nextUserId = isAuthenticated ? (user?.id ?? null) : null;
+    const mustClear = shouldClearUserClientState(prevUserIdRef.current, nextUserId);
+    prevUserIdRef.current = nextUserId;
+
+    if (!isAuthenticated || mustClear) {
       setClampedSkuNotices({});
       setSelectedShopVouchers({});
       setPlatformVoucherCode(null);
       setFreeshipVoucherCode(null);
       setUseCoins(false);
+      setOptedOutFlashSkuIds(new Set());
+      setSavedVoucherCodes([]);
+      setDeselectedSkuIds(new Set());
+    }
+
+    if (!isAuthenticated) {
+      applyCartSnapshot(null);
+      setCartError(null);
+      setCartLoading(false);
+      setCartInitialized(true);
       return;
     }
     setCartInitialized(false);
@@ -208,7 +242,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         for (const item of items) {
           if (item.selected) {
             selectedSubtotalVnd += item.priceVnd * item.quantity;
-            selectedWeightGrams += Math.max(100, item.weightGrams || 300) * item.quantity;
+            selectedWeightGrams += Math.max(0, Math.trunc(item.weightGrams || 0)) * item.quantity;
           }
         }
 
@@ -487,11 +521,34 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const optOutFlashForSku = useCallback((skuId: string) => {
+    const clean = skuId.trim();
+    if (!clean) return;
+    setOptedOutFlashSkuIds((prev) => {
+      if (prev.has(clean)) return prev;
+      const next = new Set(prev);
+      next.add(clean);
+      return next;
+    });
+  }, []);
+
+  const restoreFlashForSku = useCallback((skuId: string) => {
+    const clean = skuId.trim();
+    if (!clean) return;
+    setOptedOutFlashSkuIds((prev) => {
+      if (!prev.has(clean)) return prev;
+      const next = new Set(prev);
+      next.delete(clean);
+      return next;
+    });
+  }, []);
+
   const resetPromotions = useCallback(() => {
     setSelectedShopVouchers({});
     setPlatformVoucherCode(null);
     setFreeshipVoucherCode(null);
     setUseCoins(false);
+    setOptedOutFlashSkuIds(new Set());
   }, []);
 
   const saveVoucherCode = useCallback(
@@ -551,6 +608,9 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       setFreeshipVoucher: setFreeshipVoucherCode,
       setUseCoins,
       resetPromotions,
+      optedOutFlashSkuIds,
+      optOutFlashForSku,
+      restoreFlashForSku,
       savedVoucherCodes,
       saveVoucherCode,
     }),
@@ -582,6 +642,9 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       useCoins,
       setShopVoucher,
       resetPromotions,
+      optedOutFlashSkuIds,
+      optOutFlashForSku,
+      restoreFlashForSku,
       savedVoucherCodes,
       saveVoucherCode,
     ]

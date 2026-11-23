@@ -311,7 +311,7 @@ export function ShopDetailClient({
               <dd className={styles.factVal}>{shopProducts.length} mẫu đang mở bán</dd>
             </div>
             <div className={styles.factItem}>
-              <dt className={styles.factKey}>Đổi trả {shop.returnDays ?? 45} ngày</dt>
+              <dt className={styles.factKey}>Đổi trả {shop.returnDays ?? 7} ngày</dt>
               <dd className={styles.factVal}>
                 {shop.twoWayExchange ? "Đổi size 2 chiều tận nơi" : shop.returnPolicy}
               </dd>

@@ -87,40 +87,6 @@ interface SellerSessionState {
   opsConfigs: Record<string, SellerOperationsConfig>;
 }
 
-const BANK_ACCOUNTS: Record<
-  string,
-  { bank: string; branch: string; mask: string; holder: string }
-> = {
-  "shop-bach-dang": {
-    bank: "Vietcombank",
-    branch: "CN Hải Phòng",
-    mask: "****4821",
-    holder: "CONG TY TNHH DET MAY BACH DANG",
-  },
-  "shop-sai-gon": {
-    bank: "Techcombank",
-    branch: "CN Thảo Điền",
-    mask: "****7390",
-    holder: "HO KINH DOANH KHO BASIC SAI GON",
-  },
-  "shop-da-nang": {
-    bank: "ACB",
-    branch: "CN Hải Châu",
-    mask: "****2154",
-    holder: "CONG TY TNHH SOI TU NHIEN DA NANG",
-  },
-  "shop-ha-noi": {
-    bank: "BIDV",
-    branch: "CN Hai Bà Trưng",
-    mask: "****6018",
-    holder: "CONG TY CP DET KIM HA NOI",
-  },
-};
-
-export function getShopBankAccount(shopId: string) {
-  return BANK_ACCOUNTS[shopId] ?? BANK_ACCOUNTS["shop-bach-dang"];
-}
-
 function buildInitialExtraThreads(): ChatThread[] {
   return [
     {

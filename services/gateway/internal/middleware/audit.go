@@ -28,9 +28,10 @@ const (
 // userSelfAuditedRoutes lists admin mutation routes that services/user already writes
 // to audit_logs transactionally, skipped by gateway middleware to prevent duplicate records.
 var userSelfAuditedRoutes = map[string]struct{}{
-	"PATCH /api/v1/admin/users/{id}/status": {},
-	"PATCH /api/v1/admin/users/{id}/role":   {},
-	"POST /api/v1/admin/shops/{id}/review":  {},
+	"PATCH /api/v1/admin/users/{id}/status":             {},
+	"PATCH /api/v1/admin/users/{id}/role":               {},
+	"POST /api/v1/admin/shops/{id}/review":              {},
+	"POST /api/v1/admin/shops/{id}/bank-account/review": {},
 }
 
 // AdminAuditConfig configures centralized audit logging for mutating /api/v1/admin/* routes.
@@ -281,6 +282,14 @@ func isMutatingMethod(method string) bool {
 
 func auditTargetType(routePattern string) string {
 	trimmed := strings.TrimPrefix(routePattern, "/api/v1/admin/")
+	switch {
+	case strings.Contains(trimmed, "/bank-account"):
+		return "shop_bank_account"
+	case strings.HasPrefix(trimmed, "fees/categories"):
+		return "category_fee_schedule"
+	case strings.HasPrefix(trimmed, "fees/payment"):
+		return "payment_fee_config"
+	}
 	seg, _, _ := strings.Cut(trimmed, "/")
 	switch seg {
 	case "products":
@@ -295,6 +304,8 @@ func auditTargetType(routePattern string) string {
 		return "flash_sale_item"
 	case "coins":
 		return "coin"
+	case "orders":
+		return "order"
 	case "payments":
 		return "payment"
 	case "refunds":
@@ -353,7 +364,7 @@ func extractTargetIDFromJSON(raw []byte) string {
 			return strings.TrimSpace(s)
 		}
 	}
-	for _, nestedKey := range []string{"category", "voucher", "flash_sale", "product", "item", "refund", "return_request", "carrier"} {
+	for _, nestedKey := range []string{"category", "voucher", "flash_sale", "product", "item", "refund", "return_request", "carrier", "bank_account", "schedule", "config", "order"} {
 		if nested, ok := obj[nestedKey].(map[string]any); ok {
 			for _, idKey := range []string{"id", "refund_id", "carrier_code"} {
 				if s, ok := nested[idKey].(string); ok && strings.TrimSpace(s) != "" {
@@ -381,8 +392,12 @@ var auditSensitiveSubstrings = []string{
 	"hmac",
 	"cookie",
 	"otp",
+	"verification_code",
 	"bank_account_number",
 	"account_number",
+	"account_no",
+	"acct_no",
+	"iban",
 	"bank_account",
 	"credit_card",
 	"cvv",
@@ -391,7 +406,7 @@ var auditSensitiveSubstrings = []string{
 func isSensitiveAuditKey(key string) bool {
 	lower := strings.ToLower(strings.TrimSpace(key))
 	switch lower {
-	case "token_configured", "bank_account_masked":
+	case "token_configured", "bank_account_masked", "account_number_masked", "bank_account_id", "bank_account_name", "otp_sent":
 		return false
 	}
 	for _, sub := range auditSensitiveSubstrings {
@@ -407,6 +422,15 @@ func sanitizeAuditValue(v any) any {
 	case map[string]any:
 		out := make(map[string]any, len(val))
 		for k, item := range val {
+			lower := strings.ToLower(strings.TrimSpace(k))
+			// Recurse into nested bank_account objects so non-sensitive metadata (id, status, masked)
+			// stays auditable while account_number and any other sensitive fields inside are redacted.
+			if lower == "bank_account" {
+				if nested, ok := item.(map[string]any); ok {
+					out[k] = sanitizeAuditValue(nested)
+					continue
+				}
+			}
 			if isSensitiveAuditKey(k) {
 				out[k] = auditRedactedValue
 			} else {

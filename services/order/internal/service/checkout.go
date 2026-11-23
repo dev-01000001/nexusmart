@@ -31,27 +31,38 @@ import (
 )
 
 type resolvedLineItem struct {
-	sku             *productv1.SKU
-	quantity        int32
-	flashSaleItemID string
-	effectivePrice  int64
+	sku               *productv1.SKU
+	quantity          int32
+	weightGrams       int32
+	commissionBPS     int32
+	flashSaleItemID   string
+	shopProgramItemID string
+	effectivePrice    int64
 }
 
 type shopCheckoutPlan struct {
-	shopID                string
-	items                 []resolvedLineItem
-	subtotalVND           int64
-	weightGrams           int32
-	carrierCode           string
-	serviceCode           string
-	shippingFeeVND        int64
-	flashSaleDiscountVND  int64
-	shopVoucherDiscount   int64
-	platformVoucherShare  int64
-	freeshipDiscountShare int64
-	coinsDiscountShare    int64
-	commissionVND         int64
-	totalPayableVND       int64
+	shopID                  string
+	items                   []resolvedLineItem
+	subtotalVND             int64
+	defaultWeightGrams      int32
+	weightGrams             int32
+	freeShipEnabled         bool
+	freeShipMinOrderVND     int64
+	freeShipMaxVND          int64
+	carrierCode             string
+	serviceCode             string
+	shippingFeeVND          int64
+	flashSaleDiscountVND    int64
+	shopProgramDiscountVND  int64
+	shopVoucherDiscount     int64
+	shopFreeshipDiscountVND int64
+	platformVoucherShare    int64
+	freeshipDiscountShare   int64
+	coinsDiscountShare      int64
+	commissionVND           int64
+	paymentFeeVND           int64
+	paymentFeeBPS           int32
+	totalPayableVND         int64
 }
 
 // CreateCheckout orchestrates the idempotent multi-shop checkout saga.
@@ -93,7 +104,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	reqHash := computeCheckoutRequestHash(buyerID, req)
 
 	// Fast path: check for already completed idempotent checkout without blocking.
-	if replay, err := s.tryLoadIdempotentReplay(ctx, buyerID, idemKey, reqHash); err != nil {
+	if replay, err := s.tryLoadIdempotentReplay(ctx, buyerID, idemKey, reqHash, caller); err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			return nil, err
 		}
@@ -105,7 +116,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	unlock := s.idemLocks.Lock(buyerID + ":" + idemKey)
 	defer unlock()
 
-	checkoutGroupID, replay, err := s.acquireCheckoutGroup(ctx, buyerID, idemKey, reqHash, req.GetPaymentMethod())
+	checkoutGroupID, replay, err := s.acquireCheckoutGroup(ctx, buyerID, idemKey, reqHash, req.GetPaymentMethod(), caller)
 	if err != nil {
 		return nil, err
 	}
@@ -195,9 +206,48 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		return nil, err
 	}
 
-	// Step C: Calculate authoritative shipping fee per shop.
+	checkNow := s.nowFn()
+
+	// Wave 2b Flash Sale Gate: reject COD when any flash item is present and require every
+	// requested flash sale slot to belong to a currently live (active) flash sale window.
+	var (
+		flashPriceByItemID  map[string]int64
+		earliestFlashEndsAt *time.Time
+	)
+	if len(flashSaleItems) > 0 {
+		if req.GetPaymentMethod() == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
+			failGroupBeforePersist("FLASH_SALE_COD_NOT_ALLOWED")
+			return nil, status.Error(
+				codes.FailedPrecondition,
+				"FLASH_SALE_COD_NOT_ALLOWED: đơn hàng có sản phẩm Flash Sale không hỗ trợ thanh toán khi nhận hàng (COD), vui lòng chọn VietQR",
+			)
+		}
+		flashPriceByItemID, earliestFlashEndsAt, err = s.resolveActiveFlashSales(ctx, flashSaleItems, skuByID, checkNow)
+		if err != nil {
+			failGroupBeforePersist("FLASH_SALE_NOT_ACTIVE")
+			return nil, err
+		}
+	}
+
+	// Wave 2b Shop Discount Programs (UC-S18): server-authoritative lookup via ListActiveShopDiscounts.
+	// Single item-price rule: flash sale items never stack with shop discount programs.
+	shopProgramItems, shopProgramPrices, err := s.resolveActiveShopDiscounts(ctx, plans, checkNow)
+	if err != nil {
+		failGroupBeforePersist("SHOP_DISCOUNT_LOOKUP_FAILED")
+		return nil, err
+	}
+
+	// Step C: Fetch shop shipping settings (default_weight_grams + shop freeship) and calculate shipping fee per shop.
 	if err := s.calculateShippingFees(ctx, plans, req.GetShippingChoices(), addrSnapshot, req.GetPaymentMethod()); err != nil {
 		failGroupBeforePersist("SHIPPING_FEE_FAILED")
+		return nil, err
+	}
+
+	// Wave 2b Payment Fee Config (UC-A09): fetch authoritative payment_fee_bps from PaymentService.
+	// Fail checkout clearly on error; never guess a fallback fee rate.
+	paymentFeeBPS, err := s.lookupPaymentFeeBPS(ctx, req.GetPaymentMethod(), checkNow)
+	if err != nil {
+		failGroupBeforePersist("PAYMENT_FEE_CONFIG_FAILED")
 		return nil, err
 	}
 
@@ -206,7 +256,16 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		strings.TrimSpace(req.GetPlatformVoucherId()) != "" ||
 		strings.TrimSpace(req.GetFreeshipVoucherId()) != "" ||
 		req.GetCoinsToUse() > 0 ||
-		len(flashSaleItems) > 0
+		len(flashSaleItems) > 0 ||
+		len(shopProgramItems) > 0
+
+	hasShopFreeship := false
+	for _, p := range plans {
+		if p.freeShipEnabled && p.freeShipMaxVND > 0 {
+			hasShopFreeship = true
+			break
+		}
+	}
 
 	if req.GetPaymentMethod() == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
 		if valResp.GetCodRejectedCount() >= s.cfg.CODMaxRejectedCount {
@@ -218,7 +277,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 				s.cfg.CODMaxRejectedCount,
 			)
 		}
-		if !hasPromotions {
+		if !hasPromotions && !hasShopFreeship {
 			var preTotal int64
 			for _, p := range plans {
 				preTotal += p.subtotalVND + p.shippingFeeVND
@@ -240,28 +299,38 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		OrderId: checkoutGroupID,
 		Items:   allStockItems,
 	}); err != nil {
-		failGroupBeforePersist("STOCK_RESERVE_FAILED")
+		if isAmbiguousReserveError(err) {
+			// Server may have committed the stock reservation despite timeout/network error:
+			// compensate stock only (ReservePromotion has not been called yet, N12).
+			s.compensateBeforePersistAndFail(ctx, checkoutGroupID, true, false, "STOCK_RESERVE_FAILED")
+		} else {
+			failGroupBeforePersist("STOCK_RESERVE_FAILED")
+		}
 		return nil, err
 	}
 
-	// Saga Step 2: Reserve Promotions (vouchers, freeship, coins, flash sale slots).
+	// Saga Step 2: Reserve Promotions (vouchers, freeship, coins, flash sale slots, shop discount program limits).
 	promoReserved := false
 	var breakdown *promotionv1.DiscountBreakdown
+	var promoWarnings []string
 	if hasPromotions {
-		promoReq := buildReservePromotionRequest(checkoutGroupID, buyerID, req, plans, flashSaleItems)
+		promoReq := buildReservePromotionRequest(checkoutGroupID, buyerID, req, plans, flashSaleItems, shopProgramItems)
 		promoResp, pErr := s.clients.Promotion.ReservePromotion(ctx, promoReq)
 		if pErr != nil {
-			s.compensateReleaseStock(ctx, checkoutGroupID)
-			failGroupBeforePersist("PROMOTION_RESERVE_FAILED")
+			s.compensateBeforePersistAndFail(ctx, checkoutGroupID, true, isAmbiguousReserveError(pErr), "PROMOTION_RESERVE_FAILED")
 			return nil, pErr
 		}
 		promoReserved = true
 		breakdown = promoResp.GetBreakdown()
+		if breakdown != nil && len(breakdown.GetWarnings()) > 0 {
+			promoWarnings = append([]string(nil), breakdown.GetWarnings()...)
+		}
 	}
 
-	// Resolve exact flash sale prices if multiple flash sale items exist in a shop.
-	flashPriceByItemID := s.lookupFlashSalePrices(ctx, flashSaleItems)
-	applyDiscountsAndTotals(plans, breakdown, flashPriceByItemID, s.cfg.DefaultCommissionBPS)
+	if err := applyDiscountsAndTotals(plans, promoReserved, breakdown, flashPriceByItemID, shopProgramPrices, paymentFeeBPS); err != nil {
+		s.compensateBeforePersistAndFail(ctx, checkoutGroupID, true, promoReserved, "DISCOUNT_VALIDATION_FAILED")
+		return nil, err
+	}
 
 	var grandTotalPayableVND int64
 	for _, p := range plans {
@@ -270,11 +339,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 
 	// Post-promotion COD max check (for orders where discounts might still leave total > COD limit).
 	if req.GetPaymentMethod() == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD && grandTotalPayableVND > s.cfg.CODMaxVND {
-		if promoReserved {
-			s.compensateReleasePromotion(ctx, checkoutGroupID)
-		}
-		s.compensateReleaseStock(ctx, checkoutGroupID)
-		failGroupBeforePersist("COD_LIMIT_EXCEEDED")
+		s.compensateBeforePersistAndFail(ctx, checkoutGroupID, true, promoReserved, "COD_LIMIT_EXCEEDED")
 		return nil, status.Errorf(
 			codes.FailedPrecondition,
 			"COD_LIMIT_EXCEEDED: order total %d VND exceeds COD maximum %d VND",
@@ -294,17 +359,23 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 			initialPaymentStatus = "SUCCEEDED"
 		}
 	} else {
-		exp := now.Add(time.Duration(s.cfg.PaymentExpiryMinutes) * time.Minute)
+		exp := now.Add(s.paymentExpiryDuration())
+		if len(flashSaleItems) > 0 {
+			exp = now.Add(s.flashPaymentExpiryDuration())
+			if earliestFlashEndsAt != nil && earliestFlashEndsAt.Before(exp) {
+				exp = *earliestFlashEndsAt
+			}
+			if !exp.After(now) {
+				s.compensateBeforePersistAndFail(ctx, checkoutGroupID, true, promoReserved, "FLASH_SALE_NOT_ACTIVE")
+				return nil, status.Error(codes.FailedPrecondition, "FLASH_SALE_NOT_ACTIVE: khung giờ Flash Sale đã kết thúc")
+			}
+		}
 		paymentExpiresAt = &exp
 	}
 
 	addrJSON, err := json.Marshal(addrSnapshot)
 	if err != nil {
-		if promoReserved {
-			s.compensateReleasePromotion(ctx, checkoutGroupID)
-		}
-		s.compensateReleaseStock(ctx, checkoutGroupID)
-		failGroupBeforePersist("ADDRESS_MARSHAL_FAILED")
+		s.compensateBeforePersistAndFail(ctx, checkoutGroupID, true, promoReserved, "ADDRESS_MARSHAL_FAILED")
 		return nil, status.Errorf(codes.Internal, "marshal shipping address: %v", err)
 	}
 
@@ -323,22 +394,44 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		traceparent,
 	)
 	if err != nil {
-		if promoReserved {
-			s.compensateReleasePromotion(ctx, checkoutGroupID)
-		}
-		s.compensateReleaseStock(ctx, checkoutGroupID)
-		failGroupBeforePersist("BATCH_BUILD_FAILED")
+		s.compensateBeforePersistAndFail(ctx, checkoutGroupID, true, promoReserved, "BATCH_BUILD_FAILED")
 		return nil, status.Errorf(codes.Internal, "prepare checkout batch: %v", err)
 	}
 
-	persistedAggs, err := s.store.PersistCheckoutBatch(ctx, batch)
-	if err != nil {
-		if promoReserved {
-			s.compensateReleasePromotion(ctx, checkoutGroupID)
+	if len(promoWarnings) > 0 {
+		if wBytes, wErr := json.Marshal(promoWarnings); wErr == nil {
+			batch.WarningsJSON = wBytes
 		}
-		s.compensateReleaseStock(ctx, checkoutGroupID)
-		failGroupBeforePersist("DB_PERSIST_FAILED")
-		return nil, status.Errorf(codes.Internal, "persist checkout orders: %v", err)
+	}
+
+	// P0 N1: Run PersistCheckoutBatch with a detached timeout context so client disconnects cannot
+	// race commit vs compensation. On error, acquire FOR UPDATE on checkout_groups to inspect committed orders:
+	//   - orders exist -> commit succeeded; continue forward!
+	//   - no orders exist -> confirmed rollback; compensate stock+promo and mark FAILED.
+	//   - inspect failed -> state uncertain; DO NOT compensate or mark FAILED; return Unavailable for watchdog.
+	persistCtx, persistCancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+	defer persistCancel()
+	persistedAggs, err := s.store.PersistCheckoutBatch(persistCtx, batch)
+	if err != nil {
+		inspectCtx, inspectCancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+		defer inspectCancel()
+		_, existingAggs, inspectErr := s.store.InspectCheckoutGroupOrdersLocked(inspectCtx, checkoutGroupID)
+		if inspectErr != nil {
+			s.logger.ErrorContext(ctx, "PersistCheckoutBatch failed and locked inspection also failed; leaving checkout group for watchdog",
+				"checkout_group_id", checkoutGroupID, "persist_error", err, "inspect_error", inspectErr)
+			return nil, status.Errorf(codes.Unavailable, "checkout persistence state uncertain; please retry with same idempotency_key: %v", err)
+		}
+		if len(existingAggs) > 0 {
+			s.logger.WarnContext(ctx, "PersistCheckoutBatch returned error after commit succeeded; continuing forward with persisted orders",
+				"checkout_group_id", checkoutGroupID, "order_count", len(existingAggs), "error", err)
+			persistedAggs = existingAggs
+		} else {
+			s.compensateBeforePersistAndFail(ctx, checkoutGroupID, true, promoReserved, "DB_PERSIST_FAILED")
+			if errors.Is(err, store.ErrCheckoutGroupNotInProgress) {
+				return nil, status.Errorf(codes.FailedPrecondition, "persist checkout orders: %v", err)
+			}
+			return nil, status.Errorf(codes.Internal, "persist checkout orders: %v", err)
+		}
 	}
 	ordersPersisted = true
 
@@ -353,12 +446,69 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		paymentExpiresAt,
 		persistedAggs,
 	)
-	payResp, payErr := s.clients.Payment.CreatePayment(ctx, payReq)
+	// P2 M6: Run CreatePayment with detachedCallerContext (keeps buyer JWT metadata while insulating
+	// payment initialization from client disconnect after orders have already been persisted).
+	payCtx, payCancel := detachedCallerContext(ctx, s.cfg.GRPCCallTimeout)
+	defer payCancel()
+	payResp, payErr := s.clients.Payment.CreatePayment(payCtx, payReq)
+	wasAmbiguousPayErr := payErr != nil && isAmbiguousReserveError(payErr)
+	if wasAmbiguousPayErr {
+		// P0 N2: Ambiguous CreatePayment failure (timeout/disconnect/Unavailable) — payment may have committed!
+		// Probe GetPayment(OrderGroupId) with detached ctx + retry before ever cancelling.
+		probeCtx, probeCancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+		defer probeCancel()
+		var probedPay *paymentv1.Payment
+		probeErr := clients.RetryIdempotent(probeCtx, 3, func(c context.Context) error {
+			gResp, gErr := s.clients.Payment.GetPayment(c, &paymentv1.GetPaymentRequest{
+				OrderGroupId: checkoutGroupID,
+			})
+			if gErr != nil {
+				if status.Code(gErr) == codes.NotFound {
+					probedPay = nil
+					return nil
+				}
+				return gErr
+			}
+			probedPay = gResp.GetPayment()
+			return nil
+		})
+		if probeErr != nil {
+			// Probe could not confirm absence -> NEVER cancel orders or release stock/promo!
+			s.logger.ErrorContext(ctx, "CreatePayment ambiguous error and GetPayment probe failed; leaving checkout for watchdog recovery",
+				"checkout_group_id", checkoutGroupID, "create_error", payErr, "probe_error", probeErr)
+			return nil, status.Errorf(codes.Unavailable, "payment initialization status uncertain; please retry with same idempotency_key: %v", payErr)
+		}
+		if probedPay != nil && strings.TrimSpace(probedPay.GetPaymentId()) != "" {
+			s.logger.WarnContext(ctx, "CreatePayment returned ambiguous error but payment already exists; continuing forward",
+				"checkout_group_id", checkoutGroupID, "payment_id", probedPay.GetPaymentId(), "create_error", payErr)
+			payResp = &paymentv1.CreatePaymentResponse{Payment: probedPay}
+			payErr = nil
+			if initialStatus == orderv1.OrderStatus_ORDER_STATUS_PENDING &&
+				probedPay.GetStatus() != paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING {
+				// P2 M5: If reconciling the observed terminal/settled payment status fails, return Unavailable
+				// immediately and NEVER call CompleteCheckoutWithPayment (prevents PENDING order + SUCCEEDED/CANCELLED payment_status).
+				if rErr := s.reconcileObservedPaymentStatus(probeCtx, checkoutGroupID, probedPay); rErr != nil {
+					s.logger.ErrorContext(ctx, "reconcile observed payment status after CreatePayment recovery failed; leaving group IN_PROGRESS",
+						"checkout_group_id", checkoutGroupID, "payment_id", probedPay.GetPaymentId(), "error", rErr)
+					return nil, status.Errorf(codes.Unavailable, "payment status sync incomplete; please retry with same idempotency_key: %v", rErr)
+				}
+			}
+		} else if initialStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
+			// P2 M6: Order is already CONFIRMED (COD or 0-VND). On ambiguous CreatePayment error + probe NotFound,
+			// do NOT cancel — return Unavailable so watchdog ScanIncompleteCheckoutGroups forward-recovers via
+			// idempotent CreatePayment("checkout:"+groupID).
+			s.logger.WarnContext(ctx, "CreatePayment ambiguous error and probe NotFound on CONFIRMED (COD/0-VND) order; deferring to watchdog forward recovery",
+				"checkout_group_id", checkoutGroupID, "create_error", payErr)
+			return nil, status.Errorf(codes.Unavailable, "payment initialization pending recovery; please retry with same idempotency_key: %v", payErr)
+		}
+	}
 	if payErr != nil {
-		// Full Saga compensation: cancel persisted orders, release promotions, release stock.
+		// Definite CreatePayment rejection OR ambiguous error where probe confirmed NotFound:
+		// Cancel persisted orders FIRST; if CancelCheckoutGroupOrders fails or live orders remain,
+		// NEVER release group stock/promotions.
 		compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 		defer cancel()
-		cancelledOrders, cancelErr := s.store.CancelCheckoutGroupOrders(compCtx, store.CancelGroupOrdersParams{
+		cancelRes, cancelErr := s.store.CancelCheckoutGroupOrders(compCtx, store.CancelGroupOrdersParams{
 			CheckoutGroupID: checkoutGroupID,
 			Reason:          "Payment initialization failed",
 			ActorID:         "order-service",
@@ -368,25 +518,17 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 			Traceparent:     traceparent,
 		})
 		if cancelErr != nil {
-			s.logger.ErrorContext(ctx, "failed to cancel sub-orders during payment failure compensation",
+			s.logger.ErrorContext(ctx, "failed to cancel sub-orders during payment failure compensation; skipping resource release for watchdog",
 				"checkout_group_id", checkoutGroupID, "error", cancelErr)
+			return nil, payErr
 		}
-		var compFailed bool
-		if promoReserved {
-			if err := s.releasePromotionErr(compCtx, checkoutGroupID); err != nil {
-				s.logger.ErrorContext(ctx, "saga compensation ReleasePromotion failed", "checkout_group_id", checkoutGroupID, "error", err)
-				compFailed = true
-			}
+		if cancelRes.HasLiveOrders {
+			s.logger.WarnContext(ctx, "CreatePayment failure compensation skipped group-wide release because live orders remain",
+				"checkout_group_id", checkoutGroupID, "cancelled_count", len(cancelRes.Cancelled))
+			s.notifyOutbox()
+			return nil, payErr
 		}
-		if _, err := s.releaseStockErr(compCtx, checkoutGroupID); err != nil {
-			s.logger.ErrorContext(ctx, "saga compensation ReleaseStock failed", "checkout_group_id", checkoutGroupID, "error", err)
-			compFailed = true
-		}
-		if !compFailed {
-			for _, co := range cancelledOrders {
-				_ = s.store.ClearOrderPendingCancelCompensation(compCtx, co.ID)
-			}
-		}
+		s.compensateCancelledCheckoutGroup(compCtx, checkoutGroupID, cancelRes.Cancelled, persistedAggs, promoReserved)
 		s.notifyOutbox()
 		return nil, payErr
 	}
@@ -397,12 +539,16 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		qrCode = pay.GetQrCode()
 		if pay.GetExpiresAt() != nil {
 			exp := pay.GetExpiresAt().AsTime().UTC()
-			paymentExpiresAt = &exp
+			// Never allow PaymentService default expiry to extend a flash sale order's short window.
+			if len(flashSaleItems) == 0 || paymentExpiresAt == nil || exp.Before(*paymentExpiresAt) {
+				paymentExpiresAt = &exp
+			}
 		}
 	}
 
 	// For COD (or zero-payable), stock is immediately confirmed because sub-orders start CONFIRMED.
 	// pending_stock_confirm was set atomically in PersistCheckoutBatch; cleared only when ConfirmStock succeeds.
+	// Runs with detachedCompensationContext so client disconnect after CreatePayment cannot abort it.
 	if initialStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
 		if err := s.confirmGroupStockAndClear(ctx, checkoutGroupID); err != nil {
 			s.logger.WarnContext(ctx, "ConfirmStock after checkout failed; watchdog will retry",
@@ -410,54 +556,75 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		}
 	}
 
-	// Build final response & persist snapshot atomically into checkout_groups.
-	protoOrders := make([]*orderv1.Order, 0, len(persistedAggs))
-	for i := range persistedAggs {
-		persistedAggs[i].Order.PaymentID = paymentID
-		persistedAggs[i].Order.PaymentStatus = paymentStatus
-		if paymentExpiresAt != nil {
-			persistedAggs[i].Order.PaymentExpiresAt = paymentExpiresAt
-		}
-		protoOrders = append(protoOrders, aggregateToProto(persistedAggs[i]))
-	}
-
-	resp := &orderv1.CreateCheckoutResponse{
-		CheckoutGroupId:  checkoutGroupID,
-		Orders:           protoOrders,
-		PaymentId:        paymentID,
-		PaymentMethod:    req.GetPaymentMethod(),
+	// Persist checkout_groups finalization + response_snapshot_json atomically under lock order
+	// (orders -> checkout_groups), using detached context + retry so client cancel or transient DB
+	// hiccups cannot leave the group stuck IN_PROGRESS. BuildSnapshot constructs the snapshot from
+	// the real locked post-update state so racing SUCCEEDED/CANCELLED transitions are never downgraded.
+	var (
+		finalGroup    db.CheckoutGroup
+		finalAggs     []store.OrderAggregate
+		builtSnapshot bool
+	)
+	if err := s.completeCheckoutGroupWithRetry(ctx, store.UpdateCheckoutPaymentParams{
+		CheckoutGroupID:  checkoutGroupID,
+		PaymentID:        paymentID,
 		PaymentStatus:    paymentStatus,
-		QrUrl:            qrURL,
-		QrCode:           qrCode,
-		TotalPayableVnd:  grandTotalPayableVND,
-		IdempotentReplay: false,
-	}
-	if paymentExpiresAt != nil {
-		resp.PaymentExpiresAt = timestamppb.New(*paymentExpiresAt)
-	}
-
-	snapshotBytes, err := protojson.Marshal(resp)
-	if err != nil {
-		s.logger.WarnContext(ctx, "failed to marshal checkout response snapshot", "checkout_group_id", checkoutGroupID, "error", err)
-		snapshotBytes = []byte("{}")
-	}
-
-	if err := s.store.CompleteCheckoutWithPayment(ctx, store.UpdateCheckoutPaymentParams{
-		CheckoutGroupID:      checkoutGroupID,
-		PaymentID:            paymentID,
-		PaymentStatus:        paymentStatus,
-		QRURL:                qrURL,
-		QRCode:               qrCode,
-		PaymentExpiresAt:     paymentExpiresAt,
-		TotalPayableVND:      grandTotalPayableVND,
-		ResponseSnapshotJSON: snapshotBytes,
+		QRURL:            qrURL,
+		QRCode:           qrCode,
+		PaymentExpiresAt: paymentExpiresAt,
+		TotalPayableVND:  grandTotalPayableVND,
+		BuildSnapshot:    s.makeBuyerCheckoutSnapshotBuilder(promoWarnings, &finalGroup, &finalAggs, &builtSnapshot),
 	}); err != nil {
-		s.logger.ErrorContext(ctx, "failed to finalize checkout group payment info", "checkout_group_id", checkoutGroupID, "error", err)
+		s.logger.ErrorContext(ctx, "failed to finalize checkout group payment info after retries; watchdog/retry will recover",
+			"checkout_group_id", checkoutGroupID, "error", err)
 	}
 
-	// Saga Step 5: Best-effort ClearCart for ordered SKUs.
+	// P1 N5: If all sub-orders were already CANCELLED before CompleteCheckoutWithPayment committed,
+	// proactively cancel the newly created payment P1 (with retry; falls back to pending_cancel_compensation watchdog).
+	if builtSnapshot && allOrdersCancelled(finalAggs) && paymentID != "" && grandTotalPayableVND > 0 {
+		s.cancelPaymentAfterAllCancelled(ctx, checkoutGroupID, paymentID, finalAggs)
+	}
+
+	var resp *orderv1.CreateCheckoutResponse
+	if builtSnapshot {
+		effectiveWarnings := promoWarnings
+		if len(effectiveWarnings) == 0 {
+			effectiveWarnings = parseWarningsJSON(finalGroup.WarningsJSON)
+		}
+		resp = buildCheckoutResponseFromState(finalGroup, finalAggs, effectiveWarnings, caller)
+	} else {
+		protoOrders := make([]*orderv1.Order, 0, len(persistedAggs))
+		for i := range persistedAggs {
+			persistedAggs[i].Order.PaymentID = paymentID
+			persistedAggs[i].Order.PaymentStatus = paymentStatus
+			if paymentExpiresAt != nil {
+				persistedAggs[i].Order.PaymentExpiresAt = paymentExpiresAt
+			}
+			protoOrders = append(protoOrders, aggregateToProtoForCaller(persistedAggs[i], caller))
+		}
+		resp = &orderv1.CreateCheckoutResponse{
+			CheckoutGroupId:  checkoutGroupID,
+			Orders:           protoOrders,
+			PaymentId:        paymentID,
+			PaymentMethod:    req.GetPaymentMethod(),
+			PaymentStatus:    paymentStatus,
+			QrUrl:            qrURL,
+			QrCode:           qrCode,
+			TotalPayableVnd:  grandTotalPayableVND,
+			IdempotentReplay: false,
+			Warnings:         append([]string(nil), promoWarnings...),
+		}
+		if paymentExpiresAt != nil {
+			resp.PaymentExpiresAt = timestamppb.New(*paymentExpiresAt)
+		}
+	}
+
+	// Saga Step 5: Best-effort ClearCart for ordered SKUs using a detached context that preserves
+	// buyer JWT metadata while insulating cart cleanup from client disconnect.
 	if s.clients.Cart != nil {
-		if _, cErr := s.clients.Cart.ClearItems(ctx, &cartv1.ClearItemsRequest{
+		cartCtx, cartCancel := detachedCallerContext(ctx, s.cfg.GRPCCallTimeout)
+		defer cartCancel()
+		if _, cErr := s.clients.Cart.ClearItems(cartCtx, &cartv1.ClearItemsRequest{
 			UserId: buyerID,
 			SkuIds: skuIDs,
 		}); cErr != nil {
@@ -564,7 +731,7 @@ func computeCheckoutRequestHash(buyerID string, req *orderv1.CreateCheckoutReque
 	return hex.EncodeToString(sum[:])
 }
 
-func (s *OrderService) tryLoadIdempotentReplay(ctx context.Context, buyerID, idemKey, reqHash string) (*orderv1.CreateCheckoutResponse, error) {
+func (s *OrderService) tryLoadIdempotentReplay(ctx context.Context, buyerID, idemKey, reqHash string, caller callerIdentity) (*orderv1.CreateCheckoutResponse, error) {
 	group, err := s.store.GetActiveCheckoutGroup(ctx, buyerID, idemKey)
 	if err != nil {
 		return nil, err
@@ -575,10 +742,12 @@ func (s *OrderService) tryLoadIdempotentReplay(ctx context.Context, buyerID, ide
 	if group.Status != "COMPLETED" {
 		return nil, nil
 	}
-	return s.buildReplayResponse(ctx, group)
+	return s.buildReplayResponse(ctx, group, caller)
 }
 
-func (s *OrderService) acquireCheckoutGroup(ctx context.Context, buyerID, idemKey, reqHash string, method orderv1.OrderPaymentMethod) (string, *orderv1.CreateCheckoutResponse, error) {
+const inProgressRecoveryGrace = 2 * time.Second
+
+func (s *OrderService) acquireCheckoutGroup(ctx context.Context, buyerID, idemKey, reqHash string, method orderv1.OrderPaymentMethod, caller callerIdentity) (string, *orderv1.CreateCheckoutResponse, error) {
 	const maxWait = 15 * time.Second
 	deadline := time.Now().Add(maxWait)
 
@@ -589,8 +758,29 @@ func (s *OrderService) acquireCheckoutGroup(ctx context.Context, buyerID, idemKe
 				return "", nil, status.Error(codes.FailedPrecondition, idempotencyConflictMsg)
 			}
 			if existing.Status == "COMPLETED" {
-				replay, rErr := s.buildReplayResponse(ctx, existing)
+				replay, rErr := s.buildReplayResponse(ctx, existing, caller)
 				return "", replay, rErr
+			}
+			// P2 N9: If previous pre-persist failure left needs_cleanup=true with no persisted orders,
+			// clean it up immediately and retry creating a fresh group (or return Unavailable clearly if cleanup still fails).
+			if existing.NeedsCleanup {
+				aggs, lErr := s.store.ListOrdersByCheckoutGroup(ctx, existing.ID)
+				if lErr != nil {
+					return "", nil, status.Errorf(codes.Unavailable, "failed to inspect pending cleanup checkout group: %v", lErr)
+				}
+				if len(aggs) == 0 {
+					if cErr := s.cleanupStaleCheckoutGroup(ctx, existing.ID); cErr != nil {
+						return "", nil, status.Errorf(codes.Unavailable, "previous checkout cleanup still pending; please retry shortly: %v", cErr)
+					}
+					continue
+				}
+			}
+			// P2 N7: Only trigger self-recovery after inProgressRecoveryGrace (2s) so a healthy sibling pod
+			// finishing CreatePayment -> CompleteCheckoutWithPayment is not prematurely raced.
+			if !existing.NeedsCleanup && s.nowFn().Sub(existing.UpdatedAt) >= inProgressRecoveryGrace {
+				if recovered, _, recErr := s.tryFinalizeInProgressGroupFromPayment(ctx, existing.ID); recErr == nil && recovered {
+					continue
+				}
 			}
 			// Another pod is currently executing this idempotency key.
 			if time.Now().After(deadline) {
@@ -634,11 +824,35 @@ func (s *OrderService) acquireCheckoutGroup(ctx context.Context, buyerID, idemKe
 	}
 }
 
-func (s *OrderService) buildReplayResponse(ctx context.Context, group *db.CheckoutGroup) (*orderv1.CreateCheckoutResponse, error) {
+func (s *OrderService) buildReplayResponse(ctx context.Context, group *db.CheckoutGroup, caller callerIdentity) (*orderv1.CreateCheckoutResponse, error) {
+	savedWarnings := parseWarningsJSON(group.WarningsJSON)
 	if len(group.ResponseSnapshotJSON) > 2 {
 		var resp orderv1.CreateCheckoutResponse
 		if err := protojson.Unmarshal(group.ResponseSnapshotJSON, &resp); err == nil && resp.CheckoutGroupId != "" {
 			resp.IdempotentReplay = true
+			if len(resp.Warnings) == 0 && len(savedWarnings) > 0 {
+				resp.Warnings = savedWarnings
+			}
+			// P2 N6: Never return raw unmasked snapshot fields. Privileged/seller callers reload
+			// authoritative rows (propagating store errors instead of silently returning masked zeros);
+			// buyer/non-owning callers always pass through maskProtoOrderForCaller (covers legacy pre-r4 snapshots).
+			if caller.IsPrivileged || (caller.Role == "seller" && caller.ShopID != "") {
+				aggs, lErr := s.store.ListOrdersByCheckoutGroup(ctx, group.ID)
+				if lErr != nil {
+					return nil, mapStoreError(lErr)
+				}
+				if len(aggs) > 0 {
+					orders := make([]*orderv1.Order, 0, len(aggs))
+					for _, agg := range aggs {
+						orders = append(orders, aggregateToProtoForCaller(agg, caller))
+					}
+					resp.Orders = orders
+					return &resp, nil
+				}
+			}
+			for _, ord := range resp.Orders {
+				maskProtoOrderForCaller(ord, caller)
+			}
 			return &resp, nil
 		}
 	}
@@ -647,25 +861,290 @@ func (s *OrderService) buildReplayResponse(ctx context.Context, group *db.Checko
 	if err != nil {
 		return nil, mapStoreError(err)
 	}
+	resp := buildCheckoutResponseFromState(*group, aggs, savedWarnings, caller)
+	resp.IdempotentReplay = true
+	return resp, nil
+}
+
+func parseWarningsJSON(raw []byte) []string {
+	if len(raw) <= 2 {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal(raw, &out); err != nil || len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func allOrdersCancelled(aggs []store.OrderAggregate) bool {
+	if len(aggs) == 0 {
+		return false
+	}
+	for _, agg := range aggs {
+		if statemachine.StringToStatus(agg.Order.Status) != orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *OrderService) cancelPaymentAfterAllCancelled(ctx context.Context, groupID, paymentID string, aggs []store.OrderAggregate) {
+	if s.clients.Payment == nil || (paymentID == "" && groupID == "") {
+		return
+	}
+	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+	defer cancel()
+	if err := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
+		_, cErr := s.clients.Payment.CancelPayment(c, &paymentv1.CancelPaymentRequest{
+			PaymentId:    paymentID,
+			OrderGroupId: groupID,
+			Reason:       "All sub-orders cancelled before checkout completion",
+		})
+		if code := status.Code(cErr); code == codes.NotFound || code == codes.AlreadyExists || code == codes.FailedPrecondition {
+			return nil
+		}
+		return cErr
+	}); err != nil {
+		s.logger.WarnContext(ctx, "post-commit CancelPayment for all-cancelled group failed; flagging pending_cancel_compensation for watchdog",
+			"checkout_group_id", groupID, "payment_id", paymentID, "error", err)
+		// P2 M7: Prefer flagging a sub-order with TotalPayableVND > 0 so watchdog compensation never skips CancelPayment.
+		if len(aggs) > 0 {
+			targetOrderID := aggs[0].Order.ID
+			for _, agg := range aggs {
+				if agg.Order.TotalPayableVND > 0 {
+					targetOrderID = agg.Order.ID
+					break
+				}
+			}
+			_ = s.store.MarkOrderPendingCancelCompensation(compCtx, targetOrderID)
+		}
+	}
+}
+
+// compensateCancelledCheckoutGroup runs full post-cancel cleanup after CancelCheckoutGroupOrders succeeds
+// with zero remaining live orders: cancels any latent payment by OrderGroupId, releases promotion,
+// releases stock (falling back to RestockOrderItems if ConfirmStock already committed), and clears
+// pending_cancel_compensation ONLY when every step succeeds (P0 N2 & N3).
+func (s *OrderService) compensateCancelledCheckoutGroup(
+	compCtx context.Context,
+	groupID string,
+	cancelledOrders []db.Order,
+	allAggs []store.OrderAggregate,
+	releasePromo bool,
+) {
+	itemsByOrderID := make(map[string][]db.OrderItem, len(allAggs))
+	for _, agg := range allAggs {
+		itemsByOrderID[agg.Order.ID] = agg.Items
+	}
+
+	var compFailed bool
+	if s.clients.Payment != nil {
+		if err := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
+			_, cErr := s.clients.Payment.CancelPayment(c, &paymentv1.CancelPaymentRequest{
+				OrderGroupId: groupID,
+				Reason:       "Checkout group orders cancelled",
+			})
+			if code := status.Code(cErr); code == codes.NotFound || code == codes.AlreadyExists || code == codes.FailedPrecondition {
+				return nil
+			}
+			return cErr
+		}); err != nil {
+			s.logger.ErrorContext(compCtx, "saga compensation CancelPayment(OrderGroupId) failed",
+				"checkout_group_id", groupID, "error", err)
+			compFailed = true
+		}
+	}
+	if releasePromo {
+		if err := s.releasePromotionErr(compCtx, groupID); err != nil {
+			s.logger.ErrorContext(compCtx, "saga compensation ReleasePromotion failed",
+				"checkout_group_id", groupID, "error", err)
+			compFailed = true
+		}
+	}
+	if s.clients.Product != nil {
+		released, rErr := s.releaseStockErr(compCtx, groupID)
+		if rErr != nil {
+			s.logger.ErrorContext(compCtx, "saga compensation ReleaseStock failed",
+				"checkout_group_id", groupID, "error", rErr)
+			compFailed = true
+		} else if !released {
+			// Stock reservation was already confirmed (e.g. COD/0-VND ConfirmStock ran): restock each cancelled order.
+			for _, co := range cancelledOrders {
+				items := itemsByOrderID[co.ID]
+				if len(items) == 0 {
+					loaded, gErr := s.store.GetOrderWithDetails(compCtx, co.ID)
+					if gErr != nil {
+						s.logger.ErrorContext(compCtx, "saga compensation GetOrderWithDetails failed before restock; keeping pending_cancel_compensation",
+							"checkout_group_id", groupID, "order_id", co.ID, "error", gErr)
+						compFailed = true
+						continue
+					}
+					items = loaded.Items
+				}
+				if err := s.restockOrderItemsWithConfirmErr(compCtx, groupID, co.ID, items); err != nil {
+					s.logger.ErrorContext(compCtx, "saga compensation RestockOrderItems failed",
+						"checkout_group_id", groupID, "order_id", co.ID, "error", err)
+					compFailed = true
+				}
+			}
+		}
+	}
+	if !compFailed {
+		for _, co := range cancelledOrders {
+			_ = s.store.ClearOrderPendingCancelCompensation(compCtx, co.ID)
+		}
+	}
+}
+
+func buildCheckoutResponseFromState(
+	grp db.CheckoutGroup,
+	aggs []store.OrderAggregate,
+	warnings []string,
+	caller callerIdentity,
+) *orderv1.CreateCheckoutResponse {
 	orders := make([]*orderv1.Order, 0, len(aggs))
 	for _, agg := range aggs {
-		orders = append(orders, aggregateToProto(agg))
+		orders = append(orders, aggregateToProtoForCaller(agg, caller))
 	}
 	resp := &orderv1.CreateCheckoutResponse{
-		CheckoutGroupId:  group.ID,
+		CheckoutGroupId:  grp.ID,
 		Orders:           orders,
-		PaymentId:        group.PaymentID,
-		PaymentMethod:    statemachine.StringToPaymentMethod(group.PaymentMethod),
-		PaymentStatus:    group.PaymentStatus,
-		QrUrl:            group.QRURL,
-		QrCode:           group.QRCode,
-		TotalPayableVnd:  group.TotalPayableVND,
-		IdempotentReplay: true,
+		PaymentId:        grp.PaymentID,
+		PaymentMethod:    statemachine.StringToPaymentMethod(grp.PaymentMethod),
+		PaymentStatus:    grp.PaymentStatus,
+		QrUrl:            grp.QRURL,
+		QrCode:           grp.QRCode,
+		TotalPayableVnd:  grp.TotalPayableVND,
+		IdempotentReplay: false,
+		Warnings:         append([]string(nil), warnings...),
 	}
-	if group.PaymentExpiresAt != nil {
-		resp.PaymentExpiresAt = timestamppb.New(*group.PaymentExpiresAt)
+	if grp.PaymentExpiresAt != nil {
+		resp.PaymentExpiresAt = timestamppb.New(*grp.PaymentExpiresAt)
 	}
-	return resp, nil
+	return resp
+}
+
+func (s *OrderService) makeBuyerCheckoutSnapshotBuilder(
+	warnings []string,
+	outGroup *db.CheckoutGroup,
+	outAggs *[]store.OrderAggregate,
+	outBuilt *bool,
+) func(grp db.CheckoutGroup, aggs []store.OrderAggregate) ([]byte, error) {
+	return func(grp db.CheckoutGroup, aggs []store.OrderAggregate) ([]byte, error) {
+		if outGroup != nil {
+			*outGroup = grp
+		}
+		if outAggs != nil {
+			*outAggs = aggs
+		}
+		if outBuilt != nil {
+			*outBuilt = true
+		}
+		effWarnings := warnings
+		if len(effWarnings) == 0 {
+			effWarnings = parseWarningsJSON(grp.WarningsJSON)
+		}
+		buyerResp := buildCheckoutResponseFromState(grp, aggs, effWarnings, callerIdentity{UserID: grp.BuyerID, Role: "buyer"})
+		raw, err := protojson.Marshal(buyerResp)
+		if err != nil {
+			s.logger.Warn("failed to marshal checkout response snapshot", "checkout_group_id", grp.ID, "error", err)
+			return []byte("{}"), nil
+		}
+		return raw, nil
+	}
+}
+
+func (s *OrderService) completeCheckoutGroupWithRetry(ctx context.Context, params store.UpdateCheckoutPaymentParams) error {
+	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+	defer cancel()
+
+	var lastErr error
+	backoff := 25 * time.Millisecond
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := s.store.CompleteCheckoutWithPayment(compCtx, params); err != nil {
+			lastErr = err
+			if errors.Is(err, store.ErrNotFound) {
+				return err
+			}
+			if attempt < 2 {
+				select {
+				case <-compCtx.Done():
+					return compCtx.Err()
+				case <-time.After(backoff):
+					backoff *= 2
+				}
+			}
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
+// detachedCallerContext detaches cancellation/deadline from an incoming request context while
+// preserving caller metadata (e.g. buyer JWT for Cart.ClearItems) and trace context.
+func detachedCallerContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
+}
+
+func isAmbiguousReserveError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	switch status.Code(err) {
+	case codes.DeadlineExceeded, codes.Unavailable, codes.Canceled, codes.Aborted, codes.Internal, codes.Unknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// compensateBeforePersistAndFail releases stock/promotion reservations after a pre-persist failure.
+// Only marks checkout_groups FAILED once all required compensations succeed; otherwise flags
+// needs_cleanup = TRUE so ScanStaleCheckoutGroups retries cleanup and marks FAILED afterward.
+func (s *OrderService) compensateBeforePersistAndFail(
+	ctx context.Context,
+	checkoutGroupID string,
+	releaseStock, releasePromo bool,
+	failReason string,
+) {
+	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+	defer cancel()
+
+	compFailed := false
+	if releasePromo {
+		if err := s.releasePromotionErr(compCtx, checkoutGroupID); err != nil {
+			s.logger.ErrorContext(ctx, "saga compensation ReleasePromotion failed; leaving checkout group for watchdog cleanup",
+				"checkout_group_id", checkoutGroupID, "error", err)
+			compFailed = true
+		}
+	}
+	if releaseStock {
+		if _, err := s.releaseStockErr(compCtx, checkoutGroupID); err != nil {
+			s.logger.ErrorContext(ctx, "saga compensation ReleaseStock failed; leaving checkout group for watchdog cleanup",
+				"checkout_group_id", checkoutGroupID, "error", err)
+			compFailed = true
+		}
+	}
+
+	if compFailed {
+		if err := s.store.MarkCheckoutGroupNeedsCleanup(compCtx, checkoutGroupID, failReason); err != nil {
+			s.logger.ErrorContext(ctx, "failed to flag checkout group needs_cleanup",
+				"checkout_group_id", checkoutGroupID, "error", err)
+		}
+		return
+	}
+	if err := s.store.FailCheckoutGroup(compCtx, checkoutGroupID, failReason); err != nil {
+		s.logger.WarnContext(ctx, "failed to mark checkout group failed",
+			"checkout_group_id", checkoutGroupID, "error", err)
+	}
 }
 
 func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string, req *orderv1.CreateCheckoutRequest) ([]*orderv1.CheckoutItemInput, error) {
@@ -684,9 +1163,15 @@ func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string
 		// Map any flash_sale_item_id overrides supplied alongside from_cart=true.
 		flashOverrides := make(map[string]string, len(req.GetItems()))
 		for _, it := range req.GetItems() {
-			if it.GetSkuId() != "" && it.GetFlashSaleItemId() != "" {
-				flashOverrides[it.GetSkuId()] = it.GetFlashSaleItemId()
+			skuID := strings.TrimSpace(it.GetSkuId())
+			flashID := strings.TrimSpace(it.GetFlashSaleItemId())
+			if skuID == "" || flashID == "" {
+				continue
 			}
+			if prev, exists := flashOverrides[skuID]; exists && prev != flashID {
+				return nil, status.Errorf(codes.InvalidArgument, "duplicate sku_id %s with conflicting flash_sale_item_id", skuID)
+			}
+			flashOverrides[skuID] = flashID
 		}
 
 		anySelected := false
@@ -728,16 +1213,17 @@ func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string
 			if skuID == "" || it.GetQuantity() <= 0 {
 				return nil, status.Error(codes.InvalidArgument, "each checkout item must have sku_id and positive quantity")
 			}
+			flashID := strings.TrimSpace(it.GetFlashSaleItemId())
 			if prev, ok := merged[skuID]; ok {
-				prev.Quantity += it.GetQuantity()
-				if prev.FlashSaleItemId == "" {
-					prev.FlashSaleItemId = strings.TrimSpace(it.GetFlashSaleItemId())
+				if prev.FlashSaleItemId != flashID {
+					return nil, status.Errorf(codes.InvalidArgument, "duplicate sku_id %s with conflicting flash_sale_item_id", skuID)
 				}
+				prev.Quantity += it.GetQuantity()
 			} else {
 				merged[skuID] = &orderv1.CheckoutItemInput{
 					SkuId:           skuID,
 					Quantity:        it.GetQuantity(),
-					FlashSaleItemId: strings.TrimSpace(it.GetFlashSaleItemId()),
+					FlashSaleItemId: flashID,
 				}
 			}
 		}
@@ -777,6 +1263,14 @@ func buildShopPlans(
 		if sku.GetPriceVnd() <= 0 {
 			return nil, nil, nil, status.Errorf(codes.FailedPrecondition, "SKU %s has invalid price", sku.GetId())
 		}
+		if bps := sku.GetCommissionRateBps(); bps < 0 || bps > 10000 {
+			return nil, nil, nil, status.Errorf(
+				codes.FailedPrecondition,
+				"INVALID_COMMISSION_RATE: SKU %s has invalid commission_rate_bps %d (expected 0..10000)",
+				sku.GetId(),
+				bps,
+			)
+		}
 		if sku.GetAvailableStock() < reqItem.GetQuantity() {
 			return nil, nil, nil, status.Errorf(
 				codes.FailedPrecondition,
@@ -794,18 +1288,20 @@ func buildShopPlans(
 		}
 
 		weight := sku.GetWeightGrams()
-		if weight <= 0 {
-			weight = 500
-		}
 
 		plan.items = append(plan.items, resolvedLineItem{
 			sku:             sku,
 			quantity:        reqItem.GetQuantity(),
+			weightGrams:     weight,
 			flashSaleItemID: reqItem.GetFlashSaleItemId(),
 			effectivePrice:  sku.GetPriceVnd(),
 		})
 		plan.subtotalVND += sku.GetPriceVnd() * int64(reqItem.GetQuantity())
-		plan.weightGrams += weight * reqItem.GetQuantity()
+		if weight > 0 {
+			plan.weightGrams += weight * reqItem.GetQuantity()
+		} else {
+			plan.weightGrams += 500 * reqItem.GetQuantity()
+		}
 
 		stockItems = append(stockItems, &productv1.StockReservationItem{
 			SkuId:    sku.GetId(),
@@ -848,6 +1344,43 @@ func (s *OrderService) calculateShippingFees(
 	}
 
 	for _, plan := range plans {
+		// Wave 2b: Fetch shop shipping settings using a service token (default_weight_grams + shop freeship).
+		defaultWeight := int32(500)
+		if s.clients.Shipping != nil {
+			settingsResp, sErr := s.clients.Shipping.GetShopShippingSettings(
+				clients.WithInternalAdminContext(ctx),
+				&shippingv1.GetShopShippingSettingsRequest{ShopId: plan.shopID},
+			)
+			if sErr != nil {
+				if status.Code(sErr) != codes.NotFound {
+					return fmt.Errorf("load shipping settings for shop %s: %w", plan.shopID, sErr)
+				}
+			} else if st := settingsResp.GetSettings(); st != nil {
+				if st.GetDefaultWeightGrams() > 0 {
+					defaultWeight = st.GetDefaultWeightGrams()
+				}
+				if st.GetFreeShipEnabled() && st.GetFreeShipMaxVnd() > 0 && st.GetFreeShipMinOrderVnd() >= 0 {
+					plan.freeShipEnabled = true
+					plan.freeShipMinOrderVND = st.GetFreeShipMinOrderVnd()
+					plan.freeShipMaxVND = st.GetFreeShipMaxVnd()
+				}
+			}
+		}
+		plan.defaultWeightGrams = defaultWeight
+		var resolvedWeight int32
+		for idx := range plan.items {
+			w := plan.items[idx].sku.GetWeightGrams()
+			if w <= 0 {
+				w = defaultWeight
+			}
+			plan.items[idx].weightGrams = w
+			resolvedWeight += w * plan.items[idx].quantity
+		}
+		if resolvedWeight <= 0 {
+			resolvedWeight = defaultWeight
+		}
+		plan.weightGrams = resolvedWeight
+
 		pickup := s.resolveShopPickupAddress(ctx, plan.shopID, &shippingv1.ShipmentAddress{
 			ProvinceCode: toAddr.GetProvinceCode(),
 			WardCode:     toAddr.GetWardCode(),
@@ -883,6 +1416,40 @@ func (s *OrderService) calculateShippingFees(
 	return nil
 }
 
+func (s *OrderService) lookupPaymentFeeBPS(ctx context.Context, method orderv1.OrderPaymentMethod, atTime time.Time) (int32, error) {
+	if s.clients.Payment == nil {
+		return 0, status.Error(codes.Unavailable, "PAYMENT_FEE_CONFIG_UNAVAILABLE: payment client is not configured")
+	}
+	payMethod := paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR
+	if method == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
+		payMethod = paymentv1.PaymentMethod_PAYMENT_METHOD_COD
+	}
+	resp, err := s.clients.Payment.GetFeeConfig(clients.WithInternalAdminContext(ctx), &paymentv1.GetFeeConfigRequest{
+		PaymentMethod: payMethod,
+		AtTime:        timestamppb.New(atTime),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("PAYMENT_FEE_CONFIG_FAILED: load payment fee config for %s: %w", payMethod.String(), err)
+	}
+	for _, cfg := range resp.GetActiveConfigs() {
+		if cfg == nil {
+			continue
+		}
+		if cfg.GetPaymentMethod() == payMethod {
+			bps := cfg.GetFeeBps()
+			if bps < 0 || bps > 10000 {
+				return 0, status.Errorf(codes.Internal, "PAYMENT_FEE_CONFIG_INVALID: invalid fee_bps %d for %s", bps, payMethod.String())
+			}
+			return bps, nil
+		}
+	}
+	return 0, status.Errorf(
+		codes.FailedPrecondition,
+		"PAYMENT_FEE_CONFIG_NOT_FOUND: no active payment fee config found for %s",
+		payMethod.String(),
+	)
+}
+
 func pickShippingQuote(quotes []*shippingv1.CarrierQuote, choice *orderv1.ShopShippingChoice) *shippingv1.CarrierQuote {
 	if choice != nil && choice.GetCarrierCode() != "" {
 		for _, q := range quotes {
@@ -913,63 +1480,246 @@ func buildReservePromotionRequest(
 	req *orderv1.CreateCheckoutRequest,
 	plans []*shopCheckoutPlan,
 	flashItems []*promotionv1.FlashSaleReservationItem,
+	shopProgramItems []*promotionv1.ShopDiscountProgramReservationItem,
 ) *promotionv1.ReservePromotionRequest {
 	shopInputs := make([]*promotionv1.ShopDiscountInput, 0, len(plans))
 	for _, p := range plans {
 		lineItems := make([]*promotionv1.DiscountLineItem, 0, len(p.items))
 		for _, it := range p.items {
 			lineItems = append(lineItems, &promotionv1.DiscountLineItem{
-				SkuId:           it.sku.GetId(),
-				Quantity:        it.quantity,
-				UnitPriceVnd:    it.sku.GetPriceVnd(),
-				FlashSaleItemId: it.flashSaleItemID,
+				SkuId:                     it.sku.GetId(),
+				Quantity:                  it.quantity,
+				UnitPriceVnd:              it.sku.GetPriceVnd(),
+				FlashSaleItemId:           it.flashSaleItemID,
+				CategoryId:                it.sku.GetCategoryId(),
+				ShopDiscountProgramItemId: it.shopProgramItemID,
 			})
 		}
 		shopInputs = append(shopInputs, &promotionv1.ShopDiscountInput{
-			ShopId:         p.shopID,
-			SubtotalVnd:    p.subtotalVND,
-			ShippingFeeVnd: p.shippingFeeVND,
-			Items:          lineItems,
+			ShopId:              p.shopID,
+			SubtotalVnd:         p.subtotalVND,
+			ShippingFeeVnd:      p.shippingFeeVND,
+			Items:               lineItems,
+			FreeShipEnabled:     p.freeShipEnabled,
+			FreeShipMinOrderVnd: p.freeShipMinOrderVND,
+			FreeShipMaxVnd:      p.freeShipMaxVND,
 		})
 	}
 
 	return &promotionv1.ReservePromotionRequest{
-		OrderId:           checkoutGroupID,
-		UserId:            buyerID,
-		ShopVoucherIds:    req.GetShopVoucherIds(),
-		PlatformVoucherId: req.GetPlatformVoucherId(),
-		FreeshipVoucherId: req.GetFreeshipVoucherId(),
-		CoinsToUse:        req.GetCoinsToUse(),
-		FlashSaleItems:    flashItems,
-		ShopItems:         shopInputs,
+		OrderId:                  checkoutGroupID,
+		UserId:                   buyerID,
+		ShopVoucherIds:           req.GetShopVoucherIds(),
+		PlatformVoucherId:        req.GetPlatformVoucherId(),
+		FreeshipVoucherId:        req.GetFreeshipVoucherId(),
+		CoinsToUse:               req.GetCoinsToUse(),
+		FlashSaleItems:           flashItems,
+		ShopItems:                shopInputs,
+		ShopDiscountProgramItems: shopProgramItems,
 	}
 }
 
-func (s *OrderService) lookupFlashSalePrices(ctx context.Context, flashItems []*promotionv1.FlashSaleReservationItem) map[string]int64 {
-	prices := make(map[string]int64)
-	if len(flashItems) == 0 || s.clients.Promotion == nil {
-		return prices
+func (s *OrderService) resolveActiveFlashSales(
+	ctx context.Context,
+	flashItems []*promotionv1.FlashSaleReservationItem,
+	skuByID map[string]*productv1.SKU,
+	now time.Time,
+) (map[string]int64, *time.Time, error) {
+	prices := make(map[string]int64, len(flashItems))
+	if len(flashItems) == 0 {
+		return prices, nil, nil
 	}
-	resp, err := s.clients.Promotion.ListActiveFlashSales(ctx, &promotionv1.ListActiveFlashSalesRequest{IncludeUpcoming: false})
+	if s.clients.Promotion == nil {
+		return nil, nil, status.Error(codes.Unavailable, "FLASH_SALE_LOOKUP_FAILED: promotion client is not configured")
+	}
+	resp, err := s.clients.Promotion.ListActiveFlashSales(stripServiceAuth(ctx), &promotionv1.ListActiveFlashSalesRequest{IncludeUpcoming: false})
 	if err != nil {
-		return prices
+		return nil, nil, fmt.Errorf("FLASH_SALE_LOOKUP_FAILED: list active flash sales: %w", err)
 	}
+
+	type activeFlashEntry struct {
+		item   *promotionv1.FlashSaleItem
+		endsAt *time.Time
+	}
+	activeByID := make(map[string]activeFlashEntry)
 	for _, fs := range resp.GetFlashSales() {
+		if fs == nil {
+			continue
+		}
+		if fs.GetStartsAt() != nil && now.Before(fs.GetStartsAt().AsTime().UTC()) {
+			continue
+		}
+		var endsAt *time.Time
+		if fs.GetEndsAt() != nil {
+			et := fs.GetEndsAt().AsTime().UTC()
+			if !now.Before(et) {
+				continue
+			}
+			endsAt = &et
+		}
 		for _, it := range fs.GetItems() {
-			if it.GetId() != "" && it.GetFlashPriceVnd() > 0 {
-				prices[it.GetId()] = it.GetFlashPriceVnd()
+			if it == nil || strings.TrimSpace(it.GetId()) == "" {
+				continue
+			}
+			if it.GetStatus() != promotionv1.FlashSaleItemStatus_FLASH_SALE_ITEM_STATUS_UNSPECIFIED &&
+				it.GetStatus() != promotionv1.FlashSaleItemStatus_FLASH_SALE_ITEM_STATUS_APPROVED {
+				continue
+			}
+			activeByID[it.GetId()] = activeFlashEntry{item: it, endsAt: endsAt}
+		}
+	}
+
+	var earliestEndsAt *time.Time
+	for _, reqFI := range flashItems {
+		entry, ok := activeByID[reqFI.GetFlashSaleItemId()]
+		if !ok {
+			return nil, nil, status.Errorf(
+				codes.FailedPrecondition,
+				"FLASH_SALE_NOT_ACTIVE: suất Flash Sale %s hiện không đang diễn ra hoặc chưa được duyệt",
+				reqFI.GetFlashSaleItemId(),
+			)
+		}
+		if entry.item.GetSkuId() != "" && entry.item.GetSkuId() != reqFI.GetSkuId() {
+			return nil, nil, status.Errorf(
+				codes.InvalidArgument,
+				"FLASH_SALE_SKU_MISMATCH: flash sale item %s does not belong to SKU %s",
+				reqFI.GetFlashSaleItemId(),
+				reqFI.GetSkuId(),
+			)
+		}
+		if entry.item.GetShopId() != "" && reqFI.GetShopId() != "" && entry.item.GetShopId() != reqFI.GetShopId() {
+			return nil, nil, status.Errorf(
+				codes.InvalidArgument,
+				"FLASH_SALE_SHOP_MISMATCH: flash sale item %s does not belong to shop %s",
+				reqFI.GetFlashSaleItemId(),
+				reqFI.GetShopId(),
+			)
+		}
+		fp := entry.item.GetFlashPriceVnd()
+		if fp <= 0 {
+			return nil, nil, status.Errorf(
+				codes.FailedPrecondition,
+				"FLASH_SALE_INVALID_PRICE: flash sale item %s has invalid flash price",
+				reqFI.GetFlashSaleItemId(),
+			)
+		}
+		if sku := skuByID[reqFI.GetSkuId()]; sku != nil && fp > sku.GetPriceVnd() {
+			return nil, nil, status.Errorf(
+				codes.FailedPrecondition,
+				"FLASH_SALE_INVALID_PRICE: flash price %d exceeds SKU price %d",
+				fp,
+				sku.GetPriceVnd(),
+			)
+		}
+		prices[reqFI.GetFlashSaleItemId()] = fp
+		if entry.endsAt != nil && (earliestEndsAt == nil || entry.endsAt.Before(*earliestEndsAt)) {
+			et := *entry.endsAt
+			earliestEndsAt = &et
+		}
+	}
+	return prices, earliestEndsAt, nil
+}
+
+const maxShopDiscountLookupBatch = 200
+
+func (s *OrderService) resolveActiveShopDiscounts(
+	ctx context.Context,
+	plans []*shopCheckoutPlan,
+	now time.Time,
+) ([]*promotionv1.ShopDiscountProgramReservationItem, map[string]int64, error) {
+	prices := make(map[string]int64)
+	if s.clients.Promotion == nil {
+		return nil, prices, nil
+	}
+
+	nonFlashSKUs := make([]string, 0)
+	for _, p := range plans {
+		for _, it := range p.items {
+			// Single item-price rule: flash sale always takes precedence over shop discount program.
+			if it.flashSaleItemID == "" {
+				nonFlashSKUs = append(nonFlashSKUs, it.sku.GetId())
 			}
 		}
 	}
-	return prices
+	if len(nonFlashSKUs) == 0 {
+		return nil, prices, nil
+	}
+	sort.Strings(nonFlashSKUs)
+
+	bestBySKU := make(map[string]*promotionv1.ActiveShopDiscount)
+	lookupCtx := stripServiceAuth(ctx)
+	for start := 0; start < len(nonFlashSKUs); start += maxShopDiscountLookupBatch {
+		end := start + maxShopDiscountLookupBatch
+		if end > len(nonFlashSKUs) {
+			end = len(nonFlashSKUs)
+		}
+		resp, err := s.clients.Promotion.ListActiveShopDiscounts(lookupCtx, &promotionv1.ListActiveShopDiscountsRequest{
+			SkuIds: nonFlashSKUs[start:end],
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("SHOP_DISCOUNT_LOOKUP_FAILED: list active shop discounts: %w", err)
+		}
+		for _, d := range resp.GetDiscounts() {
+			if d == nil || strings.TrimSpace(d.GetItemId()) == "" || strings.TrimSpace(d.GetSkuId()) == "" {
+				continue
+			}
+			if d.GetStartsAt() != nil && now.Before(d.GetStartsAt().AsTime().UTC()) {
+				continue
+			}
+			if d.GetEndsAt() != nil && !now.Before(d.GetEndsAt().AsTime().UTC()) {
+				continue
+			}
+			if d.GetDiscountedPriceVnd() <= 0 {
+				continue
+			}
+			prev, exists := bestBySKU[d.GetSkuId()]
+			if !exists ||
+				d.GetDiscountedPriceVnd() < prev.GetDiscountedPriceVnd() ||
+				(d.GetDiscountedPriceVnd() == prev.GetDiscountedPriceVnd() && d.GetItemId() < prev.GetItemId()) {
+				bestBySKU[d.GetSkuId()] = d
+			}
+		}
+	}
+
+	var programItems []*promotionv1.ShopDiscountProgramReservationItem
+	for _, p := range plans {
+		for idx := range p.items {
+			it := &p.items[idx]
+			if it.flashSaleItemID != "" {
+				it.shopProgramItemID = ""
+				continue
+			}
+			d, ok := bestBySKU[it.sku.GetId()]
+			if !ok {
+				continue
+			}
+			if d.GetShopId() != "" && d.GetShopId() != p.shopID {
+				continue
+			}
+			if d.GetDiscountedPriceVnd() >= it.sku.GetPriceVnd() {
+				continue
+			}
+			it.shopProgramItemID = d.GetItemId()
+			prices[d.GetItemId()] = d.GetDiscountedPriceVnd()
+			programItems = append(programItems, &promotionv1.ShopDiscountProgramReservationItem{
+				ShopDiscountProgramItemId: d.GetItemId(),
+				SkuId:                     it.sku.GetId(),
+				Quantity:                  it.quantity,
+				ShopId:                    p.shopID,
+			})
+		}
+	}
+	return programItems, prices, nil
 }
 
 func applyDiscountsAndTotals(
 	plans []*shopCheckoutPlan,
+	promoReserved bool,
 	breakdown *promotionv1.DiscountBreakdown,
 	flashPrices map[string]int64,
-	defaultCommissionBPS int32,
-) {
+	shopProgramPrices map[string]int64,
+	paymentFeeBPS int32,
+) error {
 	shopBreakdowns := make(map[string]*promotionv1.ShopDiscountBreakdown)
 	if breakdown != nil {
 		for _, sb := range breakdown.GetShops() {
@@ -983,96 +1733,196 @@ func applyDiscountsAndTotals(
 		for _, p := range plans {
 			if sb, ok := shopBreakdowns[p.shopID]; ok {
 				p.flashSaleDiscountVND = maxInt64(0, sb.GetFlashSaleDiscountVnd())
+				p.shopProgramDiscountVND = maxInt64(0, sb.GetShopProgramDiscountVnd())
 				p.shopVoucherDiscount = maxInt64(0, sb.GetShopVoucherDiscountVnd())
+				p.shopFreeshipDiscountVND = maxInt64(0, sb.GetShopFreeshipDiscountVnd())
 				p.platformVoucherShare = maxInt64(0, sb.GetPlatformVoucherDiscountVnd())
 				p.freeshipDiscountShare = maxInt64(0, sb.GetFreeshipDiscountVnd())
 				p.coinsDiscountShare = maxInt64(0, sb.GetCoinsDiscountVnd())
 			}
 		}
-	} else if breakdown != nil {
-		// Fallback proportional allocation if PromotionService only populated aggregate totals.
-		subWeights := make([]int64, len(plans))
-		shipWeights := make([]int64, len(plans))
-		for i, p := range plans {
-			subWeights[i] = p.subtotalVND
-			shipWeights[i] = p.shippingFeeVND
-		}
-		flashShares := AllocateProportionalVND(breakdown.GetTotalFlashSaleDiscountVnd(), subWeights)
-		shopShares := AllocateProportionalVND(breakdown.GetTotalShopVoucherDiscountVnd(), subWeights)
-		platShares := AllocateProportionalVND(breakdown.GetTotalPlatformVoucherDiscountVnd(), subWeights)
-		freeShares := AllocateProportionalVND(breakdown.GetTotalFreeshipDiscountVnd(), shipWeights)
-		coinShares := AllocateProportionalVND(breakdown.GetTotalCoinsDiscountVnd(), subWeights)
-		for i, p := range plans {
-			p.flashSaleDiscountVND = flashShares[i]
-			p.shopVoucherDiscount = shopShares[i]
-			p.platformVoucherShare = platShares[i]
-			p.freeshipDiscountShare = freeShares[i]
-			p.coinsDiscountShare = coinShares[i]
-		}
+	} else if promoReserved && breakdown != nil &&
+		(breakdown.GetTotalFlashSaleDiscountVnd() > 0 ||
+			breakdown.GetTotalShopProgramDiscountVnd() > 0 ||
+			breakdown.GetTotalShopVoucherDiscountVnd() > 0 ||
+			breakdown.GetTotalShopFreeshipDiscountVnd() > 0 ||
+			breakdown.GetTotalPlatformVoucherDiscountVnd() > 0 ||
+			breakdown.GetTotalFreeshipDiscountVnd() > 0 ||
+			breakdown.GetTotalCoinsDiscountVnd() > 0) {
+		return status.Error(codes.FailedPrecondition, "PROMOTION_BREAKDOWN_MISSING: promotion service returned totals without per-shop breakdown")
 	}
 
 	for _, p := range plans {
-		// Apply flash sale effective unit prices to line items.
+		// Apply flash sale & shop discount program effective unit prices (strictly mutually exclusive per SKU).
 		var flashItemsIdx []int
+		var shopProgItemsIdx []int
 		for idx := range p.items {
 			if p.items[idx].flashSaleItemID != "" {
+				p.items[idx].shopProgramItemID = ""
 				flashItemsIdx = append(flashItemsIdx, idx)
+			} else if p.items[idx].shopProgramItemID != "" {
+				shopProgItemsIdx = append(shopProgItemsIdx, idx)
 			}
 		}
+
+		// Flash sale discount F: ReservePromotion breakdown is the sole source of truth for F.
+		// If breakdown disagrees with expected (unit_price - flash_price) * qty, fail checkout clearly
+		// so caller compensates stock + promotion instead of guessing or reverse-engineering prices.
 		var computedFlashDiscount int64
 		for _, idx := range flashItemsIdx {
 			it := &p.items[idx]
 			if fp, ok := flashPrices[it.flashSaleItemID]; ok && fp > 0 && fp <= it.sku.GetPriceVnd() {
-				it.effectivePrice = fp
 				computedFlashDiscount += (it.sku.GetPriceVnd() - fp) * int64(it.quantity)
 			}
 		}
-		if p.flashSaleDiscountVND == 0 && computedFlashDiscount > 0 {
-			p.flashSaleDiscountVND = computedFlashDiscount
-		} else if p.flashSaleDiscountVND > 0 && computedFlashDiscount == 0 && len(flashItemsIdx) == 1 {
-			it := &p.items[flashItemsIdx[0]]
-			perUnitDisc := p.flashSaleDiscountVND / int64(it.quantity)
-			eff := it.sku.GetPriceVnd() - perUnitDisc
-			if eff < 0 {
-				eff = 0
+		if promoReserved {
+			if p.flashSaleDiscountVND != computedFlashDiscount {
+				return status.Errorf(
+					codes.FailedPrecondition,
+					"FLASH_SALE_PRICE_CHANGED: giá Flash Sale của shop %s đã thay đổi hoặc không khớp (dự tính %d VND, thực tế %d VND); vui lòng đặt lại đơn",
+					p.shopID,
+					computedFlashDiscount,
+					p.flashSaleDiscountVND,
+				)
 			}
-			it.effectivePrice = eff
+		}
+		for _, idx := range flashItemsIdx {
+			it := &p.items[idx]
+			if fp, ok := flashPrices[it.flashSaleItemID]; ok && fp > 0 && fp <= it.sku.GetPriceVnd() {
+				it.effectivePrice = fp
+			}
 		}
 
-		// Clamp freeship discount to shipping fee.
-		if p.freeshipDiscountShare > p.shippingFeeVND {
-			p.freeshipDiscountShare = p.shippingFeeVND
+		// Shop discount program (UC-S18): ReservePromotion breakdown and applied_shop_program_item_ids
+		// are the sole source of truth for which lines received program pricing and for P_shop.
+		// Lines sent by order but excluded from applied_shop_program_item_ids (e.g. exceeded per_user_limit)
+		// are billed at regular price with shop_program_item_id = "" in order_items.
+		sentProgByID := make(map[string]bool, len(shopProgItemsIdx))
+		for _, idx := range shopProgItemsIdx {
+			sentProgByID[p.items[idx].shopProgramItemID] = true
 		}
 
-		// Compute seller merchandise revenue R = max(0, G - F - V_shop) and buyer payable P = max(0, R + Ship - D).
-		sellerRevenue := maxInt64(0, p.subtotalVND-p.flashSaleDiscountVND-p.shopVoucherDiscount)
+		var computedShopProgramDiscount int64
+		if promoReserved {
+			appliedSet := make(map[string]bool)
+			if sb, ok := shopBreakdowns[p.shopID]; ok {
+				for _, rawID := range sb.GetAppliedShopProgramItemIds() {
+					id := strings.TrimSpace(rawID)
+					if id == "" || !sentProgByID[id] {
+						return status.Errorf(
+							codes.FailedPrecondition,
+							"SHOP_PROGRAM_ITEM_UNKNOWN: promotion trả về mã chương trình giảm giá %q không thuộc danh sách sản phẩm đã gửi cho shop %s",
+							id,
+							p.shopID,
+						)
+					}
+					appliedSet[id] = true
+				}
+			}
+
+			for _, idx := range shopProgItemsIdx {
+				it := &p.items[idx]
+				if !appliedSet[it.shopProgramItemID] {
+					it.effectivePrice = it.sku.GetPriceVnd()
+					it.shopProgramItemID = ""
+					continue
+				}
+				if sp, ok := shopProgramPrices[it.shopProgramItemID]; ok && sp > 0 && sp < it.sku.GetPriceVnd() {
+					it.effectivePrice = sp
+					computedShopProgramDiscount += (it.sku.GetPriceVnd() - sp) * int64(it.quantity)
+				}
+			}
+
+			if p.shopProgramDiscountVND != computedShopProgramDiscount {
+				return status.Errorf(
+					codes.FailedPrecondition,
+					"SHOP_PROGRAM_PRICE_CHANGED: giá chương trình giảm giá của shop %s đã thay đổi hoặc không còn hiệu lực (dự tính %d VND, thực tế %d VND); vui lòng đặt lại đơn",
+					p.shopID,
+					computedShopProgramDiscount,
+					p.shopProgramDiscountVND,
+				)
+			}
+		} else {
+			for _, idx := range shopProgItemsIdx {
+				p.items[idx].effectivePrice = p.items[idx].sku.GetPriceVnd()
+				p.items[idx].shopProgramItemID = ""
+			}
+		}
+
+		// Clamp seller merchandise discounts F + P_shop + V_shop <= G.
+		p.flashSaleDiscountVND = minInt64(maxInt64(0, p.flashSaleDiscountVND), p.subtotalVND)
+		p.shopProgramDiscountVND = minInt64(maxInt64(0, p.shopProgramDiscountVND), maxInt64(0, p.subtotalVND-p.flashSaleDiscountVND))
+		p.shopVoucherDiscount = minInt64(maxInt64(0, p.shopVoucherDiscount), maxInt64(0, p.subtotalVND-p.flashSaleDiscountVND-p.shopProgramDiscountVND))
+
+		merchAfterShopDisc := p.subtotalVND - p.flashSaleDiscountVND - p.shopProgramDiscountVND - p.shopVoucherDiscount
+
+		// Shop freeship (UC-SHIP06): compute locally ONLY when ReservePromotion was NOT called (breakdown == nil).
+		// When ReservePromotion returned a breakdown, breakdown.shop_freeship_discount_vnd is authoritative.
+		// Always keep safety bounds (<= Ship and <= merchAfterShopDisc so R >= 0).
+		if !promoReserved && breakdown == nil && p.freeShipEnabled && p.freeShipMaxVND > 0 && merchAfterShopDisc >= p.freeShipMinOrderVND {
+			p.shopFreeshipDiscountVND = minInt64(p.shippingFeeVND, p.freeShipMaxVND)
+		}
+		if p.shopFreeshipDiscountVND > p.shippingFeeVND {
+			p.shopFreeshipDiscountVND = p.shippingFeeVND
+		}
+		if p.shopFreeshipDiscountVND > merchAfterShopDisc {
+			p.shopFreeshipDiscountVND = merchAfterShopDisc
+		}
+		if p.shopFreeshipDiscountVND < 0 {
+			p.shopFreeshipDiscountVND = 0
+		}
+
+		// Seller net merchandise revenue R = G - F - P_shop - V_shop - S_shop (>= 0).
+		sellerRevenue := merchAfterShopDisc - p.shopFreeshipDiscountVND
+
+		// Platform freeship S_free applies AFTER shop freeship on remaining Ship - S_shop.
+		remainingShip := maxInt64(0, p.shippingFeeVND-p.shopFreeshipDiscountVND)
+		if p.freeshipDiscountShare > remainingShip {
+			p.freeshipDiscountShare = remainingShip
+		}
+		if p.freeshipDiscountShare < 0 {
+			p.freeshipDiscountShare = 0
+		}
+
+		// Cap platform discounts V_plat and X so D = V_plat + S_free + X <= R + Ship and P + D == R + Ship.
+		maxAfterFreeship := sellerRevenue + p.shippingFeeVND - p.freeshipDiscountShare
+		p.platformVoucherShare = minInt64(maxInt64(0, p.platformVoucherShare), maxAfterFreeship)
+		maxCoins := maxInt64(0, maxAfterFreeship-p.platformVoucherShare)
+		p.coinsDiscountShare = minInt64(maxInt64(0, p.coinsDiscountShare), maxCoins)
+
 		platformDiscount := p.platformVoucherShare + p.freeshipDiscountShare + p.coinsDiscountShare
-		payable := sellerRevenue + p.shippingFeeVND - platformDiscount
-		if payable < 0 {
-			payable = 0
-		}
-		p.totalPayableVND = payable
+		p.totalPayableVND = sellerRevenue + p.shippingFeeVND - platformDiscount
 
-		// Compute commission_vnd from effective item totals using category commission rate or default BPS.
+		// Category commission C_cat computed per line on post-item-discount value using SKU's exact category bps
+		// (0 bps is valid when admin sets a 0% category fee schedule); capped at R.
 		var rawCommission int64
-		for _, it := range p.items {
+		for idx := range p.items {
+			it := &p.items[idx]
 			bps := it.sku.GetCommissionRateBps()
-			if bps <= 0 {
-				bps = defaultCommissionBPS
+			if bps < 0 || bps > 10000 {
+				return status.Errorf(
+					codes.FailedPrecondition,
+					"INVALID_COMMISSION_RATE: SKU %s has invalid commission_rate_bps %d (expected 0..10000)",
+					it.sku.GetId(),
+					bps,
+				)
 			}
+			it.commissionBPS = bps
 			lineVal := it.effectivePrice * int64(it.quantity)
 			rawCommission += (lineVal * int64(bps)) / 10000
 		}
+		p.commissionVND = minInt64(maxInt64(0, rawCommission), sellerRevenue)
 
-		// Cap commission to seller merchandise revenue R (plan.md R1).
-		if rawCommission > sellerRevenue {
-			rawCommission = sellerRevenue
+		// Payment fee C_pay = P * payment_fee_bps / 10000, seller-borne, capped so C_total = C_cat + C_pay <= R.
+		p.paymentFeeBPS = paymentFeeBPS
+		var rawPayFee int64
+		if paymentFeeBPS > 0 && p.totalPayableVND > 0 {
+			rawPayFee = (p.totalPayableVND * int64(paymentFeeBPS)) / 10000
 		}
-		if rawCommission < 0 {
-			rawCommission = 0
-		}
-		p.commissionVND = rawCommission
+		remainingForPayFee := maxInt64(0, sellerRevenue-p.commissionVND)
+		p.paymentFeeVND = minInt64(maxInt64(0, rawPayFee), remainingForPayFee)
 	}
+	return nil
 }
 
 func buildCheckoutBatch(
@@ -1117,12 +1967,16 @@ func buildCheckoutBatch(
 			PaymentStatus:              initialPaymentStatus,
 			SubtotalVND:                p.subtotalVND,
 			FlashSaleDiscountVND:       p.flashSaleDiscountVND,
+			ShopProgramDiscountVND:     p.shopProgramDiscountVND,
 			ShopVoucherDiscountVND:     p.shopVoucherDiscount,
+			ShopFreeshipDiscountVND:    p.shopFreeshipDiscountVND,
 			PlatformVoucherDiscountVND: p.platformVoucherShare,
 			FreeshipDiscountVND:        p.freeshipDiscountShare,
 			CoinsDiscountVND:           p.coinsDiscountShare,
 			ShippingFeeVND:             p.shippingFeeVND,
 			CommissionVND:              p.commissionVND,
+			PaymentFeeVND:              p.paymentFeeVND,
+			PaymentFeeBPS:              p.paymentFeeBPS,
 			TotalPayableVND:            p.totalPayableVND,
 			CarrierCode:                p.carrierCode,
 			ServiceCode:                p.serviceCode,
@@ -1136,6 +1990,10 @@ func buildCheckoutBatch(
 
 		itemParams := make([]db.InsertOrderItemParams, 0, len(p.items))
 		for _, it := range p.items {
+			itemWeight := it.weightGrams
+			if itemWeight <= 0 {
+				itemWeight = it.sku.GetWeightGrams()
+			}
 			itemParams = append(itemParams, db.InsertOrderItemParams{
 				ID:                    uuid.NewString(),
 				OrderID:               orderID,
@@ -1147,9 +2005,11 @@ func buildCheckoutBatch(
 				EffectiveUnitPriceVND: it.effectivePrice,
 				Quantity:              it.quantity,
 				LineTotalVND:          it.effectivePrice * int64(it.quantity),
-				WeightGrams:           it.sku.GetWeightGrams(),
+				WeightGrams:           itemWeight,
 				FlashSaleItemID:       it.flashSaleItemID,
-				CommissionRateBPS:     it.sku.GetCommissionRateBps(),
+				CommissionRateBPS:     it.commissionBPS,
+				CategoryID:            it.sku.GetCategoryId(),
+				ShopProgramItemID:     it.shopProgramItemID,
 			})
 		}
 
@@ -1225,15 +2085,15 @@ func buildCheckoutBatch(
 }
 
 func buildShopAllocation(ord db.Order) *paymentv1.ShopAllocation {
-	sellerRevenue := maxInt64(0, ord.SubtotalVND-ord.FlashSaleDiscountVND-ord.ShopVoucherDiscountVND)
+	sellerRevenue := computeSellerRevenue(ord)
 	ship := maxInt64(0, ord.ShippingFeeVND)
 	platformDiscount := maxInt64(0, sellerRevenue+ship-ord.TotalPayableVND)
-	comm := minInt64(maxInt64(0, ord.CommissionVND), sellerRevenue)
+	commTotal := minInt64(maxInt64(0, ord.CommissionVND)+maxInt64(0, ord.PaymentFeeVND), sellerRevenue)
 	return &paymentv1.ShopAllocation{
 		OrderId:             ord.ID,
 		ShopId:              ord.ShopID,
 		SubtotalVnd:         sellerRevenue,
-		CommissionVnd:       comm,
+		CommissionVnd:       commTotal,
 		ShippingFeeVnd:      ship,
 		PlatformDiscountVnd: platformDiscount,
 	}
@@ -1310,17 +2170,6 @@ func (s *OrderService) releaseStockErr(ctx context.Context, checkoutGroupID stri
 	return released, err
 }
 
-func (s *OrderService) compensateReleaseStock(ctx context.Context, checkoutGroupID string) {
-	if s.clients.Product == nil {
-		return
-	}
-	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
-	defer cancel()
-	if _, err := s.releaseStockErr(compCtx, checkoutGroupID); err != nil {
-		s.logger.ErrorContext(ctx, "saga compensation ReleaseStock failed", "checkout_group_id", checkoutGroupID, "error", err)
-	}
-}
-
 func (s *OrderService) releasePromotionErr(ctx context.Context, checkoutGroupID string) error {
 	if s.clients.Promotion == nil || strings.TrimSpace(checkoutGroupID) == "" {
 		return nil
@@ -1332,17 +2181,6 @@ func (s *OrderService) releasePromotionErr(ctx context.Context, checkoutGroupID 
 		}
 		return err
 	})
-}
-
-func (s *OrderService) compensateReleasePromotion(ctx context.Context, checkoutGroupID string) {
-	if s.clients.Promotion == nil {
-		return
-	}
-	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
-	defer cancel()
-	if err := s.releasePromotionErr(compCtx, checkoutGroupID); err != nil {
-		s.logger.ErrorContext(ctx, "saga compensation ReleasePromotion failed", "checkout_group_id", checkoutGroupID, "error", err)
-	}
 }
 
 func (s *OrderService) releasePromotionShopErr(ctx context.Context, checkoutGroupID, shopID, reason string) error {

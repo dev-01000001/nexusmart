@@ -42,7 +42,7 @@ const CAMPAIGN_TEMPLATES: Array<{
     kind: "quang_ba_bst",
     name: "Suất quảng bá BST nổi bật trên Mega-menu sàn",
     slotLabel: "Cột BST nổi bật trên Mega-menu",
-    defaultNote: "Ưu tiên giao trong 24h và áp dụng đổi trả 45 ngày tận nơi",
+    defaultNote: "Ưu tiên giao trong 24h và áp dụng chính sách đổi trả 7 ngày của sàn",
     period: "25/11 - 15/12/2026",
   },
 ];
@@ -102,6 +102,14 @@ export function PromotionsCampaignTab({
 
   return (
     <div className={styles.sectionStack}>
+      <section className={common.card} role="note" aria-label="Thông báo dữ liệu mẫu">
+        <span className={`${common.pill} ${common.pillWarn}`}>Bản xem trước, dữ liệu mẫu</span>
+        <p className={common.cardMeta} style={{ marginTop: 8 }}>
+          Khu vực đăng ký chiến dịch và bộ sưu tập sàn hiện sử dụng dữ liệu minh họa trên trình
+          duyệt; các khuyến mãi đang vận hành thật nằm ở 3 tab Voucher gian hàng, Chương trình giảm
+          giá shop và Đăng ký Flash sale.
+        </p>
+      </section>
       <section className={common.balanceStrip3} aria-label="Tổng hợp chiến dịch và BST sàn">
         <div className={common.balanceCell}>
           <span className={common.balanceLabel}>Suất đang hiển thị / đã duyệt</span>

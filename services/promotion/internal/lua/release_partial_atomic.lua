@@ -1,11 +1,15 @@
 -- release_partial_atomic.lua
--- Idempotently releases a subset of reserved flash-sale items and vouchers from promo:res:<order_id>,
--- keeping unreleased entries intact for later partial releases or full release_atomic.lua.
+-- Idempotently releases a subset of reserved flash-sale items, vouchers, and shop discount
+-- program per-user counters from promo:res:<order_id>, keeping unreleased entries intact
+-- for later partial releases or full release_atomic.lua.
 --
 -- KEYS[1] = promo:res:<order_id>
 -- KEYS[2..] = optional touched keys (for Redis Cluster compatibility)
 -- ARGV[1] = ttl_seconds for updated reservation payload (0 = no TTL)
--- ARGV[2..] = target remaining-counter keys to release (e.g. promo:flash:<id>:remaining, promo:voucher:<id>:remaining)
+-- ARGV[2..] = target keys to release:
+--   promo:flash:<id>:remaining
+--   promo:voucher:<id>:remaining
+--   promo:shop_prog:<id>:user:<user_id>
 
 local resKey = KEYS[1]
 local ttlSeconds = tonumber(ARGV[1]) or 0
@@ -70,6 +74,16 @@ for line in string.gmatch(val, "[^\n]+") do
         redis.call("INCRBY", budgetKey, discountVND)
       end
       releasedAny = true
+    elseif parts[1] == "P" and #parts >= 3 and targets[parts[2]] then
+      local userKey = parts[2]
+      local qty = tonumber(parts[3]) or 0
+      if qty > 0 then
+        local newUsed = redis.call("DECRBY", userKey, qty)
+        if newUsed <= 0 then
+          redis.call("DEL", userKey)
+        end
+        releasedAny = true
+      end
     else
       table.insert(remainingLines, line)
     end

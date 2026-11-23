@@ -27,6 +27,8 @@ type CheckoutGroup struct {
 	RetryIdempotencyKey  string     `json:"retry_idempotency_key"`
 	RetryFromPaymentID   string     `json:"retry_from_payment_id"`
 	PendingStockConfirm  bool       `json:"pending_stock_confirm"`
+	NeedsCleanup         bool       `json:"needs_cleanup"`
+	WarningsJSON         []byte     `json:"warnings_json"`
 }
 
 type DeadLetterEvent struct {
@@ -77,6 +79,11 @@ type Order struct {
 	PendingReturnCompensation       bool       `json:"pending_return_compensation"`
 	PendingShipmentCancelAt         *time.Time `json:"pending_shipment_cancel_at"`
 	PendingShipmentCancelToken      string     `json:"pending_shipment_cancel_token"`
+	ShopProgramDiscountVND          int64      `json:"shop_program_discount_vnd"`
+	ShopFreeshipDiscountVND         int64      `json:"shop_freeship_discount_vnd"`
+	PaymentFeeVND                   int64      `json:"payment_fee_vnd"`
+	PaymentFeeBPS                   int32      `json:"payment_fee_bps"`
+	SettlementRefundedVND           int64      `json:"settlement_refunded_vnd"`
 }
 
 type OrderItem struct {
@@ -93,6 +100,8 @@ type OrderItem struct {
 	WeightGrams           int32  `json:"weight_grams"`
 	FlashSaleItemID       string `json:"flash_sale_item_id"`
 	CommissionRateBPS     int32  `json:"commission_rate_bps"`
+	CategoryID            string `json:"category_id"`
+	ShopProgramItemID     string `json:"shop_program_item_id"`
 }
 
 type OrderTimelineEvent struct {

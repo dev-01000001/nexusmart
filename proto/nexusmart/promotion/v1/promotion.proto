@@ -26,6 +26,20 @@ enum FlashSaleItemStatus {
   FLASH_SALE_ITEM_STATUS_REJECTED = 3;
 }
 
+enum VoucherStatus {
+  VOUCHER_STATUS_UNSPECIFIED = 0;
+  VOUCHER_STATUS_ACTIVE = 1;
+  VOUCHER_STATUS_PAUSED = 2;
+  VOUCHER_STATUS_DELETED = 3;
+}
+
+enum ShopDiscountProgramStatus {
+  SHOP_DISCOUNT_PROGRAM_STATUS_UNSPECIFIED = 0;
+  SHOP_DISCOUNT_PROGRAM_STATUS_SCHEDULED = 1;
+  SHOP_DISCOUNT_PROGRAM_STATUS_ACTIVE = 2;
+  SHOP_DISCOUNT_PROGRAM_STATUS_ENDED = 3;
+}
+
 message Voucher {
   string id = 1;
   string code = 2;
@@ -49,6 +63,9 @@ message Voucher {
   bool saved = 20;
   bool eligible = 21;
   string ineligible_reason = 22;
+  VoucherStatus status = 23;
+  // Optional platform voucher category restriction (evaluated across all descendant categories).
+  repeated string category_ids = 24;
 }
 
 message FlashSaleItem {
@@ -62,6 +79,8 @@ message FlashSaleItem {
   int32 per_user_limit = 8;
   FlashSaleItemStatus status = 9;
   string rejection_reason = 10;
+  int64 original_price_vnd = 11;
+  google.protobuf.Timestamp created_at = 12;
 }
 
 message FlashSale {
@@ -70,6 +89,55 @@ message FlashSale {
   google.protobuf.Timestamp starts_at = 3;
   google.protobuf.Timestamp ends_at = 4;
   repeated FlashSaleItem items = 5;
+  int32 min_discount_percent = 6;
+  repeated string category_ids = 7;
+}
+
+message ShopDiscountProgramItemInput {
+  string sku_id = 1;
+  // Exactly one of discounted_price_vnd (> 0) or discount_percent (1..99) is specified.
+  int64 discounted_price_vnd = 2;
+  int32 discount_percent = 3;
+  int32 per_user_limit = 4;
+}
+
+message ShopDiscountProgramItem {
+  string id = 1;
+  string program_id = 2;
+  string shop_id = 3;
+  string sku_id = 4;
+  int64 original_price_vnd = 5;
+  int64 discounted_price_vnd = 6;
+  int32 discount_percent = 7;
+  int32 per_user_limit = 8;
+  bool price_inflation_flagged = 9;
+  string warning = 10;
+}
+
+message ShopDiscountProgram {
+  string id = 1;
+  string shop_id = 2;
+  string name = 3;
+  google.protobuf.Timestamp starts_at = 4;
+  google.protobuf.Timestamp ends_at = 5;
+  ShopDiscountProgramStatus status = 6;
+  repeated ShopDiscountProgramItem items = 7;
+  repeated string warnings = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+message ActiveShopDiscount {
+  string item_id = 1;
+  string program_id = 2;
+  string shop_id = 3;
+  string sku_id = 4;
+  int64 original_price_vnd = 5;
+  int64 discounted_price_vnd = 6;
+  int32 discount_percent = 7;
+  int32 per_user_limit = 8;
+  google.protobuf.Timestamp starts_at = 9;
+  google.protobuf.Timestamp ends_at = 10;
 }
 
 message CoinTransaction {
@@ -86,6 +154,8 @@ message DiscountLineItem {
   int32 quantity = 2;
   int64 unit_price_vnd = 3;
   string flash_sale_item_id = 4;
+  string category_id = 5;
+  string shop_discount_program_item_id = 6;
 }
 
 message ShopDiscountInput {
@@ -93,6 +163,9 @@ message ShopDiscountInput {
   int64 subtotal_vnd = 2;
   int64 shipping_fee_vnd = 3;
   repeated DiscountLineItem items = 4;
+  bool free_ship_enabled = 5;
+  int64 free_ship_min_order_vnd = 6;
+  int64 free_ship_max_vnd = 7;
 }
 
 message ShopDiscountBreakdown {
@@ -107,6 +180,10 @@ message ShopDiscountBreakdown {
   int64 shipping_fee_vnd = 9;
   int64 final_shipping_fee_vnd = 10;
   int64 final_payable_vnd = 11;
+  int64 shop_program_discount_vnd = 12;
+  int64 shop_freeship_discount_vnd = 13;
+  // shop_discount_program_item_id values actually applied for this shop; lines exceeding per_user_limit are excluded and billed at regular price.
+  repeated string applied_shop_program_item_ids = 14;
 }
 
 message DiscountBreakdown {
@@ -123,10 +200,19 @@ message DiscountBreakdown {
   int64 total_shipping_fee_vnd = 11;
   int64 final_payable_vnd = 12;
   repeated string warnings = 13;
+  int64 total_shop_program_discount_vnd = 14;
+  int64 total_shop_freeship_discount_vnd = 15;
 }
 
 message FlashSaleReservationItem {
   string flash_sale_item_id = 1;
+  string sku_id = 2;
+  int32 quantity = 3;
+  string shop_id = 4;
+}
+
+message ShopDiscountProgramReservationItem {
+  string shop_discount_program_item_id = 1;
   string sku_id = 2;
   int32 quantity = 3;
   string shop_id = 4;
@@ -148,10 +234,51 @@ message CreateVoucherRequest {
   google.protobuf.Timestamp starts_at = 13;
   google.protobuf.Timestamp ends_at = 14;
   string created_by = 15;
+  repeated string category_ids = 16;
 }
 
 message CreateVoucherResponse {
   Voucher voucher = 1;
+}
+
+message UpdateVoucherRequest {
+  string voucher_id = 1;
+  optional string name = 2;
+  optional DiscountType discount_type = 3;
+  optional int64 value_vnd = 4;
+  optional int32 discount_percent = 5;
+  optional int64 max_discount_vnd = 6;
+  optional int64 min_order_vnd = 7;
+  optional int32 quota = 8;
+  optional int32 per_user_limit = 9;
+  optional int64 budget_vnd = 10;
+  google.protobuf.Timestamp starts_at = 11;
+  google.protobuf.Timestamp ends_at = 12;
+  repeated string category_ids = 13;
+  // When true, replaces category_ids with the provided list (including empty to clear restriction).
+  bool replace_category_ids = 14;
+}
+
+message UpdateVoucherResponse {
+  Voucher voucher = 1;
+}
+
+message SetVoucherStatusRequest {
+  string voucher_id = 1;
+  // Valid target values: VOUCHER_STATUS_ACTIVE or VOUCHER_STATUS_PAUSED.
+  VoucherStatus status = 2;
+}
+
+message SetVoucherStatusResponse {
+  Voucher voucher = 1;
+}
+
+message DeleteVoucherRequest {
+  string voucher_id = 1;
+}
+
+message DeleteVoucherResponse {
+  bool ok = 1;
 }
 
 message ListAvailableVouchersRequest {
@@ -159,6 +286,9 @@ message ListAvailableVouchersRequest {
   string shop_id = 2;
   VoucherScope scope = 3;
   int64 order_amount_vnd = 4;
+  // For seller/admin management listings (includes PAUSED/scheduled/expired; excludes DELETED unless filtered).
+  bool include_inactive = 5;
+  VoucherStatus status = 6;
 }
 
 message ListAvailableVouchersResponse {
@@ -181,6 +311,8 @@ message CreateFlashSaleRequest {
   google.protobuf.Timestamp starts_at = 2;
   google.protobuf.Timestamp ends_at = 3;
   string created_by = 4;
+  int32 min_discount_percent = 5;
+  repeated string category_ids = 6;
 }
 
 message CreateFlashSaleResponse {
@@ -217,6 +349,87 @@ message ListActiveFlashSalesRequest {
 
 message ListActiveFlashSalesResponse {
   repeated FlashSale flash_sales = 1;
+}
+
+message ListFlashSaleItemsRequest {
+  FlashSaleItemStatus status = 1;
+  string flash_sale_id = 2;
+  string shop_id = 3;
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+message ListFlashSaleItemsResponse {
+  repeated FlashSaleItem items = 1;
+  int64 total = 2;
+}
+
+message ListAllFlashSalesRequest {
+  // Optional window status filter: UPCOMING, ACTIVE, ENDED (empty returns all).
+  string status = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message ListAllFlashSalesResponse {
+  repeated FlashSale flash_sales = 1;
+  int64 total = 2;
+}
+
+message CreateShopDiscountProgramRequest {
+  string shop_id = 1;
+  string name = 2;
+  google.protobuf.Timestamp starts_at = 3;
+  google.protobuf.Timestamp ends_at = 4;
+  repeated ShopDiscountProgramItemInput items = 5;
+}
+
+message CreateShopDiscountProgramResponse {
+  ShopDiscountProgram program = 1;
+  repeated string warnings = 2;
+}
+
+message UpdateShopDiscountProgramRequest {
+  string program_id = 1;
+  optional string name = 2;
+  google.protobuf.Timestamp starts_at = 3;
+  google.protobuf.Timestamp ends_at = 4;
+  repeated ShopDiscountProgramItemInput items = 5;
+  bool replace_items = 6;
+}
+
+message UpdateShopDiscountProgramResponse {
+  ShopDiscountProgram program = 1;
+  repeated string warnings = 2;
+}
+
+message EndShopDiscountProgramRequest {
+  string program_id = 1;
+}
+
+message EndShopDiscountProgramResponse {
+  ShopDiscountProgram program = 1;
+}
+
+message ListShopDiscountProgramsRequest {
+  string shop_id = 1;
+  ShopDiscountProgramStatus status = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message ListShopDiscountProgramsResponse {
+  repeated ShopDiscountProgram programs = 1;
+  int64 total = 2;
+}
+
+message ListActiveShopDiscountsRequest {
+  repeated string sku_ids = 1;
+  string shop_id = 2;
+}
+
+message ListActiveShopDiscountsResponse {
+  repeated ActiveShopDiscount discounts = 1;
 }
 
 message GetCoinBalanceRequest {
@@ -264,6 +477,7 @@ message ReservePromotionRequest {
   int64 coins_to_use = 6;
   repeated FlashSaleReservationItem flash_sale_items = 7;
   repeated ShopDiscountInput shop_items = 8;
+  repeated ShopDiscountProgramReservationItem shop_discount_program_items = 9;
 }
 
 message ReservePromotionResponse {
@@ -296,16 +510,27 @@ message ReleasePromotionShopResponse {
   bool shop_voucher_released = 4;
   int32 flash_sale_quantity_released = 5;
   bool platform_voucher_released = 6;
+  int32 shop_program_quantity_released = 7;
 }
 
 service PromotionService {
   rpc CreateVoucher(CreateVoucherRequest) returns (CreateVoucherResponse);
+  rpc UpdateVoucher(UpdateVoucherRequest) returns (UpdateVoucherResponse);
+  rpc SetVoucherStatus(SetVoucherStatusRequest) returns (SetVoucherStatusResponse);
+  rpc DeleteVoucher(DeleteVoucherRequest) returns (DeleteVoucherResponse);
   rpc ListAvailableVouchers(ListAvailableVouchersRequest) returns (ListAvailableVouchersResponse);
   rpc SaveVoucher(SaveVoucherRequest) returns (SaveVoucherResponse);
   rpc CreateFlashSale(CreateFlashSaleRequest) returns (CreateFlashSaleResponse);
   rpc RegisterFlashSaleItem(RegisterFlashSaleItemRequest) returns (RegisterFlashSaleItemResponse);
   rpc ApproveFlashSaleItem(ApproveFlashSaleItemRequest) returns (ApproveFlashSaleItemResponse);
   rpc ListActiveFlashSales(ListActiveFlashSalesRequest) returns (ListActiveFlashSalesResponse);
+  rpc ListFlashSaleItems(ListFlashSaleItemsRequest) returns (ListFlashSaleItemsResponse);
+  rpc ListAllFlashSales(ListAllFlashSalesRequest) returns (ListAllFlashSalesResponse);
+  rpc CreateShopDiscountProgram(CreateShopDiscountProgramRequest) returns (CreateShopDiscountProgramResponse);
+  rpc UpdateShopDiscountProgram(UpdateShopDiscountProgramRequest) returns (UpdateShopDiscountProgramResponse);
+  rpc EndShopDiscountProgram(EndShopDiscountProgramRequest) returns (EndShopDiscountProgramResponse);
+  rpc ListShopDiscountPrograms(ListShopDiscountProgramsRequest) returns (ListShopDiscountProgramsResponse);
+  rpc ListActiveShopDiscounts(ListActiveShopDiscountsRequest) returns (ListActiveShopDiscountsResponse);
   rpc GetCoinBalance(GetCoinBalanceRequest) returns (GetCoinBalanceResponse);
   rpc CreditCoins(CreditCoinsRequest) returns (CreditCoinsResponse);
   rpc PreviewDiscounts(PreviewDiscountsRequest) returns (PreviewDiscountsResponse);

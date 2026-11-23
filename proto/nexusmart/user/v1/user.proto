@@ -36,6 +36,14 @@ enum ReviewDecision {
   REVIEW_DECISION_REQUEST_INFO = 3;
 }
 
+enum ShopBankAccountStatus {
+  SHOP_BANK_ACCOUNT_STATUS_UNSPECIFIED = 0;
+  SHOP_BANK_ACCOUNT_STATUS_PENDING_OTP = 1;
+  SHOP_BANK_ACCOUNT_STATUS_PENDING_ADMIN_REVIEW = 2;
+  SHOP_BANK_ACCOUNT_STATUS_VERIFIED = 3;
+  SHOP_BANK_ACCOUNT_STATUS_REJECTED = 4;
+}
+
 message User {
   string id = 1;
   string full_name = 2;
@@ -65,6 +73,8 @@ message Shop {
   google.protobuf.Timestamp created_at = 10;
   google.protobuf.Timestamp updated_at = 11;
   string slug = 12;
+  // Populated only for admin callers; always false on public and seller responses.
+  bool bank_review_pending = 13;
 }
 
 message Address {
@@ -266,6 +276,7 @@ message AdminListShopsRequest {
   ShopStatus status = 1;
   int32 page = 2;
   int32 page_size = 3;
+  bool bank_review_pending_only = 4;
 }
 
 message AdminListShopsResponse {
@@ -406,6 +417,104 @@ message ResetPasswordResponse {
   bool ok = 1;
 }
 
+message ShopBankAccount {
+  string id = 1;
+  string shop_id = 2;
+  string bank_code = 3;
+  string bank_name = 4;
+  string account_number_masked = 5;
+  // Populated ONLY by internal service-token GetShopBankAccountForPayout; always empty for all end-user callers (including sellers and admins).
+  string account_number = 6;
+  string account_holder_name = 7;
+  bool holder_name_matched = 8;
+  ShopBankAccountStatus status = 9;
+  string review_note = 10;
+  // Set to now + 24h whenever a shop changes its verified bank account (anti-takeover payout lock).
+  google.protobuf.Timestamp payout_locked_until = 11;
+  google.protobuf.Timestamp verified_at = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp updated_at = 14;
+}
+
+message AddShopBankAccountRequest {
+  // Optional for seller (always overridden by verified JWT shop_id).
+  string shop_id = 1;
+  string bank_code = 2;
+  string bank_name = 3;
+  string account_number = 4;
+  string account_holder_name = 5;
+}
+
+message AddShopBankAccountResponse {
+  ShopBankAccount bank_account = 1;
+  bool otp_sent = 2;
+}
+
+message VerifyShopBankAccountOTPRequest {
+  // Optional for seller (always overridden by verified JWT shop_id).
+  string shop_id = 1;
+  string otp = 2;
+}
+
+message VerifyShopBankAccountOTPResponse {
+  ShopBankAccount bank_account = 1;
+}
+
+message GetShopBankAccountRequest {
+  // Optional for seller (always overridden by verified JWT shop_id); required for admin.
+  string shop_id = 1;
+}
+
+message GetShopBankAccountResponse {
+  ShopBankAccount bank_account = 1;
+}
+
+message AdminReviewShopBankAccountRequest {
+  string shop_id = 1;
+  string bank_account_id = 2;
+  // Valid values: REVIEW_DECISION_APPROVE or REVIEW_DECISION_REJECT.
+  ReviewDecision decision = 3;
+  string reason = 4;
+}
+
+message AdminReviewShopBankAccountResponse {
+  ShopBankAccount bank_account = 1;
+}
+
+message DailyUserShopStat {
+  // Vietnam date in YYYY-MM-DD (Asia/Ho_Chi_Minh).
+  string date = 1;
+  int64 new_users = 2;
+  int64 new_shops = 3;
+}
+
+message GetPlatformUserStatsRequest {
+  // Vietnam dates YYYY-MM-DD inclusive (max span 366 days).
+  string from_date = 1;
+  string to_date = 2;
+}
+
+message GetPlatformUserStatsResponse {
+  string from_date = 1;
+  string to_date = 2;
+  int64 total_users = 3;
+  int64 active_users = 4;
+  int64 new_users = 5;
+  int64 total_shops = 6;
+  int64 active_shops = 7;
+  int64 pending_shops = 8;
+  int64 new_shops = 9;
+  repeated DailyUserShopStat daily = 10;
+}
+
+message GetShopBankAccountForPayoutRequest {
+  string shop_id = 1;
+}
+
+message GetShopBankAccountForPayoutResponse {
+  ShopBankAccount bank_account = 1;
+}
+
 service UserService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   rpc VerifyOTP(VerifyOTPRequest) returns (VerifyOTPResponse);
@@ -434,4 +543,10 @@ service UserService {
   rpc RecordCODRejection(RecordCODRejectionRequest) returns (RecordCODRejectionResponse);
   rpc ForgotPassword(ForgotPasswordRequest) returns (ForgotPasswordResponse);
   rpc ResetPassword(ResetPasswordRequest) returns (ResetPasswordResponse);
+  rpc AddShopBankAccount(AddShopBankAccountRequest) returns (AddShopBankAccountResponse);
+  rpc VerifyShopBankAccountOTP(VerifyShopBankAccountOTPRequest) returns (VerifyShopBankAccountOTPResponse);
+  rpc GetShopBankAccount(GetShopBankAccountRequest) returns (GetShopBankAccountResponse);
+  rpc AdminReviewShopBankAccount(AdminReviewShopBankAccountRequest) returns (AdminReviewShopBankAccountResponse);
+  rpc GetPlatformUserStats(GetPlatformUserStatsRequest) returns (GetPlatformUserStatsResponse);
+  rpc GetShopBankAccountForPayout(GetShopBankAccountForPayoutRequest) returns (GetShopBankAccountForPayoutResponse);
 }

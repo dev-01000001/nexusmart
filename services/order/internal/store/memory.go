@@ -162,9 +162,54 @@ func (m *MemoryStore) CreateCheckoutGroup(_ context.Context, arg db.CreateChecko
 func (m *MemoryStore) FailCheckoutGroup(_ context.Context, id, paymentStatus string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, ord := range m.orders {
+		if ord.CheckoutGroupID == id && statemachine.StringToStatus(ord.Status) != orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+			return nil
+		}
+	}
 	if g, ok := m.groups[id]; ok && g.Status == "IN_PROGRESS" {
 		g.Status = "FAILED"
 		g.PaymentStatus = paymentStatus
+		g.NeedsCleanup = false
+		g.UpdatedAt = time.Now().UTC()
+		m.groups[id] = g
+	}
+	return nil
+}
+
+func (m *MemoryStore) ClaimStaleCheckoutGroupForCleanup(_ context.Context, id, reason string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g, ok := m.groups[id]
+	if !ok {
+		return false, nil
+	}
+	for _, ord := range m.orders {
+		if ord.CheckoutGroupID == id {
+			return false, nil
+		}
+	}
+	if g.Status == "FAILED" && g.NeedsCleanup {
+		return true, nil
+	}
+	if g.Status != "IN_PROGRESS" {
+		return false, nil
+	}
+	g.Status = "FAILED"
+	if isPendingOrEmptyPaymentStatus(g.PaymentStatus) {
+		g.PaymentStatus = reason
+	}
+	g.NeedsCleanup = true
+	g.UpdatedAt = time.Now().UTC()
+	m.groups[id] = g
+	return true, nil
+}
+
+func (m *MemoryStore) ClearCheckoutGroupNeedsCleanup(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if g, ok := m.groups[id]; ok {
+		g.NeedsCleanup = false
 		g.UpdatedAt = time.Now().UTC()
 		m.groups[id] = g
 	}
@@ -174,6 +219,14 @@ func (m *MemoryStore) FailCheckoutGroup(_ context.Context, id, paymentStatus str
 func (m *MemoryStore) PersistCheckoutBatch(_ context.Context, batch CheckoutBatch) ([]OrderAggregate, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	g, ok := m.groups[batch.CheckoutGroupID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if g.Status != "IN_PROGRESS" {
+		return nil, fmt.Errorf("%w: checkout group %s has status %s", ErrCheckoutGroupNotInProgress, g.ID, g.Status)
+	}
 
 	now := batch.Now
 	if now.IsZero() {
@@ -194,12 +247,16 @@ func (m *MemoryStore) PersistCheckoutBatch(_ context.Context, batch CheckoutBatc
 			PaymentStatus:              rec.Order.PaymentStatus,
 			SubtotalVND:                rec.Order.SubtotalVND,
 			FlashSaleDiscountVND:       rec.Order.FlashSaleDiscountVND,
+			ShopProgramDiscountVND:     rec.Order.ShopProgramDiscountVND,
 			ShopVoucherDiscountVND:     rec.Order.ShopVoucherDiscountVND,
+			ShopFreeshipDiscountVND:    rec.Order.ShopFreeshipDiscountVND,
 			PlatformVoucherDiscountVND: rec.Order.PlatformVoucherDiscountVND,
 			FreeshipDiscountVND:        rec.Order.FreeshipDiscountVND,
 			CoinsDiscountVND:           rec.Order.CoinsDiscountVND,
 			ShippingFeeVND:             rec.Order.ShippingFeeVND,
 			CommissionVND:              rec.Order.CommissionVND,
+			PaymentFeeVND:              rec.Order.PaymentFeeVND,
+			PaymentFeeBPS:              rec.Order.PaymentFeeBPS,
 			TotalPayableVND:            rec.Order.TotalPayableVND,
 			CarrierCode:                rec.Order.CarrierCode,
 			ServiceCode:                rec.Order.ServiceCode,
@@ -248,43 +305,155 @@ func (m *MemoryStore) PersistCheckoutBatch(_ context.Context, batch CheckoutBatc
 
 		out = append(out, OrderAggregate{Order: ord, Items: items, Timeline: tl})
 	}
+	if len(batch.WarningsJSON) > 0 {
+		g.WarningsJSON = append([]byte(nil), batch.WarningsJSON...)
+	}
 	if batch.PendingStockConfirm {
-		if g, ok := m.groups[batch.CheckoutGroupID]; ok {
-			g.PendingStockConfirm = true
-			g.UpdatedAt = now
-			m.groups[batch.CheckoutGroupID] = g
+		g.PendingStockConfirm = true
+	}
+	g.UpdatedAt = now
+	m.groups[batch.CheckoutGroupID] = g
+	return out, nil
+}
+
+func (m *MemoryStore) InspectCheckoutGroupOrdersLocked(_ context.Context, checkoutGroupID string) (*db.CheckoutGroup, []OrderAggregate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g, ok := m.groups[checkoutGroupID]
+	if !ok {
+		return nil, nil, ErrNotFound
+	}
+	var aggs []OrderAggregate
+	for _, ord := range m.orders {
+		if ord.CheckoutGroupID == checkoutGroupID {
+			if agg, err := m.getOrderLocked(ord.ID); err == nil {
+				aggs = append(aggs, *agg)
+			}
 		}
 	}
-	return out, nil
+	sort.Slice(aggs, func(i, j int) bool {
+		if aggs[i].Order.ShopID != aggs[j].Order.ShopID {
+			return aggs[i].Order.ShopID < aggs[j].Order.ShopID
+		}
+		if !aggs[i].Order.CreatedAt.Equal(aggs[j].Order.CreatedAt) {
+			return aggs[i].Order.CreatedAt.Before(aggs[j].Order.CreatedAt)
+		}
+		return aggs[i].Order.ID < aggs[j].Order.ID
+	})
+	cp := g
+	return &cp, aggs, nil
 }
 
 func (m *MemoryStore) CompleteCheckoutWithPayment(_ context.Context, arg UpdateCheckoutPaymentParams) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UTC()
+
+	g, ok := m.groups[arg.CheckoutGroupID]
+	if !ok {
+		return ErrNotFound
+	}
+
+	// P1 N4: Never write to orders or checkout_groups when group has already left IN_PROGRESS.
+	if g.Status != "IN_PROGRESS" {
+		if arg.BuildSnapshot != nil {
+			var curOrders []db.Order
+			for _, ord := range m.orders {
+				if ord.CheckoutGroupID == arg.CheckoutGroupID {
+					curOrders = append(curOrders, ord)
+				}
+			}
+			sort.Slice(curOrders, func(i, j int) bool {
+				if curOrders[i].ShopID != curOrders[j].ShopID {
+					return curOrders[i].ShopID < curOrders[j].ShopID
+				}
+				if !curOrders[i].CreatedAt.Equal(curOrders[j].CreatedAt) {
+					return curOrders[i].CreatedAt.Before(curOrders[j].CreatedAt)
+				}
+				return curOrders[i].ID < curOrders[j].ID
+			})
+			curAggs := make([]OrderAggregate, 0, len(curOrders))
+			for _, ord := range curOrders {
+				if agg, err := m.getOrderLocked(ord.ID); err == nil {
+					curAggs = append(curAggs, *agg)
+				}
+			}
+			_, _ = arg.BuildSnapshot(g, curAggs)
+		}
+		return nil
+	}
+
+	postOrders := make([]db.Order, 0)
 	for id, ord := range m.orders {
-		if ord.CheckoutGroupID == arg.CheckoutGroupID {
-			ord.PaymentID = arg.PaymentID
-			ord.PaymentStatus = arg.PaymentStatus
-			if arg.PaymentExpiresAt != nil {
-				ord.PaymentExpiresAt = arg.PaymentExpiresAt
+		if ord.CheckoutGroupID != arg.CheckoutGroupID {
+			continue
+		}
+		if statemachine.StringToStatus(ord.Status) != orderv1.OrderStatus_ORDER_STATUS_CANCELLED &&
+			(ord.PaymentID == "" || ord.PaymentID == arg.PaymentID) &&
+			(isPendingOrEmptyPaymentStatus(ord.PaymentStatus) || ord.PaymentID == "") {
+			if ord.PaymentID == "" {
+				ord.PaymentID = arg.PaymentID
+			}
+			if isPendingOrEmptyPaymentStatus(ord.PaymentStatus) {
+				ord.PaymentStatus = arg.PaymentStatus
+				if arg.PaymentExpiresAt != nil {
+					ord.PaymentExpiresAt = arg.PaymentExpiresAt
+				}
 			}
 			ord.UpdatedAt = now
 			m.orders[id] = ord
 		}
+		postOrders = append(postOrders, ord)
 	}
-	if g, ok := m.groups[arg.CheckoutGroupID]; ok {
-		g.Status = "COMPLETED"
+	sort.Slice(postOrders, func(i, j int) bool {
+		if postOrders[i].ShopID != postOrders[j].ShopID {
+			return postOrders[i].ShopID < postOrders[j].ShopID
+		}
+		if !postOrders[i].CreatedAt.Equal(postOrders[j].CreatedAt) {
+			return postOrders[i].CreatedAt.Before(postOrders[j].CreatedAt)
+		}
+		return postOrders[i].ID < postOrders[j].ID
+	})
+
+	resolvedPayStatus := resolveNonDowngradingGroupPaymentStatus(g.PaymentStatus, arg.PaymentStatus, postOrders)
+	g.Status = "COMPLETED"
+	if g.PaymentID == "" {
 		g.PaymentID = arg.PaymentID
-		g.PaymentStatus = arg.PaymentStatus
-		g.QRURL = arg.QRURL
-		g.QRCode = arg.QRCode
-		g.PaymentExpiresAt = arg.PaymentExpiresAt
-		g.TotalPayableVND = arg.TotalPayableVND
-		g.ResponseSnapshotJSON = arg.ResponseSnapshotJSON
-		g.UpdatedAt = now
-		m.groups[arg.CheckoutGroupID] = g
 	}
+	if isPendingOrEmptyPaymentStatus(g.PaymentStatus) {
+		g.PaymentStatus = resolvedPayStatus
+		if g.QRURL == "" {
+			g.QRURL = arg.QRURL
+		}
+		if g.QRCode == "" {
+			g.QRCode = arg.QRCode
+		}
+		if arg.PaymentExpiresAt != nil {
+			g.PaymentExpiresAt = arg.PaymentExpiresAt
+		}
+	}
+	g.TotalPayableVND = arg.TotalPayableVND
+	g.NeedsCleanup = false
+	g.UpdatedAt = now
+
+	snapshotBytes := arg.ResponseSnapshotJSON
+	if arg.BuildSnapshot != nil {
+		postAggs := make([]OrderAggregate, 0, len(postOrders))
+		for _, ord := range postOrders {
+			if agg, err := m.getOrderLocked(ord.ID); err == nil {
+				postAggs = append(postAggs, *agg)
+			}
+		}
+		built, bErr := arg.BuildSnapshot(g, postAggs)
+		if bErr != nil {
+			return bErr
+		}
+		snapshotBytes = built
+	}
+	if snapshotBytes != nil {
+		g.ResponseSnapshotJSON = snapshotBytes
+	}
+	m.groups[arg.CheckoutGroupID] = g
 	return nil
 }
 
@@ -392,11 +561,21 @@ func (m *MemoryStore) UpdateGroupPaymentOnRetry(_ context.Context, params RetryP
 	return nil
 }
 
-func (m *MemoryStore) CancelCheckoutGroupOrders(_ context.Context, params CancelGroupOrdersParams) ([]db.Order, error) {
+func (m *MemoryStore) CancelCheckoutGroupOrders(_ context.Context, params CancelGroupOrdersParams) (*CancelGroupOrdersResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UTC()
+
+	// P1 M4: If group exists and already left IN_PROGRESS, refuse to cancel any order.
+	if g, ok := m.groups[params.CheckoutGroupID]; ok && g.Status != "IN_PROGRESS" {
+		return &CancelGroupOrdersResult{
+			Cancelled:     nil,
+			HasLiveOrders: true,
+		}, nil
+	}
+
 	var cancelled []db.Order
+	hasLiveOrders := false
 
 	for id, ord := range m.orders {
 		if ord.CheckoutGroupID != params.CheckoutGroupID {
@@ -406,13 +585,16 @@ func (m *MemoryStore) CancelCheckoutGroupOrders(_ context.Context, params Cancel
 		if cur == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
 			continue
 		}
-		if err := statemachine.ValidateTransition(cur, orderv1.OrderStatus_ORDER_STATUS_CANCELLED); err != nil {
+		if !canCancelGroupOrder(ord, params.OnlyPending) {
+			hasLiveOrders = true
 			continue
 		}
 		prev := ord.Status
 		ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_CANCELLED)
 		ord.CancelReason = params.Reason
-		if params.PaymentStatus != "" {
+		if ord.TotalPayableVND == 0 {
+			ord.PaymentStatus = "CANCELLED"
+		} else if params.PaymentStatus != "" && !isOrderPaymentTerminalProtected(ord) {
 			ord.PaymentStatus = params.PaymentStatus
 		}
 		ord.PendingCancelCompensation = true
@@ -449,16 +631,33 @@ func (m *MemoryStore) CancelCheckoutGroupOrders(_ context.Context, params Cancel
 		cancelled = append(cancelled, ord)
 	}
 
-	if g, ok := m.groups[params.CheckoutGroupID]; ok {
-		if g.Status == "IN_PROGRESS" {
-			g.Status = "FAILED"
-			g.PaymentStatus = params.PaymentStatus
+	if !hasLiveOrders {
+		if g, ok := m.groups[params.CheckoutGroupID]; ok {
+			if g.Status == "IN_PROGRESS" {
+				g.Status = "FAILED"
+				g.PaymentStatus = params.PaymentStatus
+				g.NeedsCleanup = false
+			}
+			g.PendingStockConfirm = false
+			g.UpdatedAt = now
+			m.groups[params.CheckoutGroupID] = g
 		}
-		g.PendingStockConfirm = false
-		g.UpdatedAt = now
-		m.groups[params.CheckoutGroupID] = g
 	}
-	return cancelled, nil
+	return &CancelGroupOrdersResult{
+		Cancelled:     cancelled,
+		HasLiveOrders: hasLiveOrders,
+	}, nil
+}
+
+func (m *MemoryStore) MarkOrderPendingCancelCompensation(_ context.Context, orderID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ord, ok := m.orders[orderID]; ok {
+		ord.PendingCancelCompensation = true
+		ord.UpdatedAt = time.Now().UTC()
+		m.orders[orderID] = ord
+	}
+	return nil
 }
 
 func (m *MemoryStore) GetOrderWithDetails(_ context.Context, orderID string) (*OrderAggregate, error) {
@@ -1253,6 +1452,7 @@ func (m *MemoryStore) completeOrderLocked(ord db.Order, actorID, actorRole, note
 	ts := now
 	ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_COMPLETED)
 	ord.CompletedAt = &ts
+	ord.SettlementRefundedVND = ord.RefundedVND
 	ord.UpdatedAt = now
 	m.orders[ord.ID] = ord
 
@@ -1886,6 +2086,20 @@ func (m *MemoryStore) FindExpiredPendingGroups(_ context.Context, limit int32) (
 	return out, nil
 }
 
+func (m *MemoryStore) MarkCheckoutGroupNeedsCleanup(_ context.Context, id, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if g, ok := m.groups[id]; ok && g.Status == "IN_PROGRESS" {
+		g.NeedsCleanup = true
+		if reason != "" {
+			g.PaymentStatus = reason
+		}
+		g.UpdatedAt = time.Now().UTC()
+		m.groups[id] = g
+	}
+	return nil
+}
+
 func (m *MemoryStore) FindStaleInProgressCheckoutGroups(_ context.Context, olderThan time.Duration, limit int32) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1898,10 +2112,9 @@ func (m *MemoryStore) FindStaleInProgressCheckoutGroups(_ context.Context, older
 
 	var matched []db.CheckoutGroup
 	for _, g := range m.groups {
-		if g.Status != "IN_PROGRESS" {
-			continue
-		}
-		if !g.UpdatedAt.Before(cutoff) {
+		isStaleInProgress := g.Status == "IN_PROGRESS" && (g.NeedsCleanup || g.UpdatedAt.Before(cutoff))
+		isClaimedFailed := g.Status == "FAILED" && g.NeedsCleanup
+		if !isStaleInProgress && !isClaimedFailed {
 			continue
 		}
 		if _, hasOrders := groupsWithOrders[g.ID]; hasOrders {
@@ -1921,4 +2134,250 @@ func (m *MemoryStore) FindStaleInProgressCheckoutGroups(_ context.Context, older
 		out = append(out, g.ID)
 	}
 	return out, nil
+}
+
+func (m *MemoryStore) FindIncompleteCheckoutGroupsWithOrders(_ context.Context, olderThan time.Duration, limit int32) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cutoff := time.Now().UTC().Add(-olderThan)
+
+	groupsWithOrders := make(map[string]struct{}, len(m.orders))
+	for _, ord := range m.orders {
+		groupsWithOrders[ord.CheckoutGroupID] = struct{}{}
+	}
+
+	var matched []db.CheckoutGroup
+	for _, g := range m.groups {
+		if g.Status != "IN_PROGRESS" {
+			continue
+		}
+		if !g.UpdatedAt.Before(cutoff) {
+			continue
+		}
+		if _, hasOrders := groupsWithOrders[g.ID]; !hasOrders {
+			continue
+		}
+		matched = append(matched, g)
+	}
+
+	rand.Shuffle(len(matched), func(i, j int) { matched[i], matched[j] = matched[j], matched[i] })
+	if limit > 0 && int32(len(matched)) > limit {
+		matched = matched[:limit]
+	}
+
+	out := make([]string, 0, len(matched))
+	for _, g := range matched {
+		out = append(out, g.ID)
+	}
+	return out, nil
+}
+
+// SetOrderTimestamps overrides created_at and completed_at on an order (unit-test helper).
+func (m *MemoryStore) SetOrderTimestamps(orderID string, createdAt time.Time, completedAt *time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ord, ok := m.orders[orderID]; ok {
+		if !createdAt.IsZero() {
+			ord.CreatedAt = createdAt
+		}
+		if completedAt != nil {
+			ts := *completedAt
+			ord.CompletedAt = &ts
+		}
+		m.orders[orderID] = ord
+	}
+}
+
+func (m *MemoryStore) ListOrdersNeedingManualReview(_ context.Context, limit, offset int32) ([]OrderAggregate, int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var matched []OrderAggregate
+	for _, ord := range m.orders {
+		if !ord.OrphanShipmentNeedsManualReview {
+			continue
+		}
+		agg, _ := m.getOrderLocked(ord.ID)
+		matched = append(matched, *agg)
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].Order.UpdatedAt.Equal(matched[j].Order.UpdatedAt) {
+			return matched[i].Order.UpdatedAt.Before(matched[j].Order.UpdatedAt)
+		}
+		return matched[i].Order.ID < matched[j].Order.ID
+	})
+	total := int64(len(matched))
+	start := int(offset)
+	if start >= len(matched) {
+		return []OrderAggregate{}, total, nil
+	}
+	end := start + int(limit)
+	if end > len(matched) {
+		end = len(matched)
+	}
+	return matched[start:end], total, nil
+}
+
+func (m *MemoryStore) ResolveOrderManualReview(_ context.Context, orderID, actorID, actorRole, note string, now time.Time) (*OrderAggregate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	ord, ok := m.orders[orderID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if !ord.OrphanShipmentNeedsManualReview {
+		return nil, ErrOrderNotNeedingReview
+	}
+	ord.OrphanShipmentNeedsManualReview = false
+	ord.UpdatedAt = now
+	m.orders[orderID] = ord
+	m.timelines[orderID] = append(m.timelines[orderID], db.OrderTimelineEvent{
+		ID:         uuid.NewString(),
+		OrderID:    orderID,
+		FromStatus: ord.Status,
+		ToStatus:   ord.Status,
+		ActorID:    actorID,
+		ActorRole:  actorRole,
+		Note:       note,
+		CreatedAt:  now,
+	})
+	return m.getOrderLocked(orderID)
+}
+
+var vnReportLoc = time.FixedZone("Asia/Ho_Chi_Minh", 7*3600)
+
+func (m *MemoryStore) QueryOrderReport(_ context.Context, params OrderReportParams) (*OrderReportData, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	shopID := strings.TrimSpace(params.ShopID)
+	statusCounts := make(map[string]int64)
+	createdByDate := make(map[string]*CreatedDailyStat)
+	completedByDate := make(map[string]*CompletedDailyStat)
+	type prodAgg struct {
+		name     string
+		units    int64
+		revenue  int64
+		orderIDs map[string]struct{}
+	}
+	prods := make(map[string]*prodAgg)
+
+	for _, ord := range m.orders {
+		if shopID != "" && ord.ShopID != shopID {
+			continue
+		}
+		if !ord.CreatedAt.Before(params.StartTS) && ord.CreatedAt.Before(params.EndTS) {
+			statusCounts[ord.Status]++
+			d := ord.CreatedAt.In(vnReportLoc).Format("2006-01-02")
+			cr := createdByDate[d]
+			if cr == nil {
+				cr = &CreatedDailyStat{Date: d}
+				createdByDate[d] = cr
+			}
+			cr.OrderCount++
+			if ord.Status == "CANCELLED" {
+				cr.CancelledCount++
+			}
+			if ord.Status == "RETURNED" {
+				cr.ReturnedCount++
+			}
+			if ord.Status != "PENDING" && ord.Status != "CANCELLED" && ord.Status != "RETURNED" {
+				dPlat := max64(0, ord.PlatformVoucherDiscountVND) + max64(0, ord.FreeshipDiscountVND) + max64(0, ord.CoinsDiscountVND)
+				cr.GMVVND += ord.TotalPayableVND + dPlat
+			}
+		}
+
+		if ord.Status == "COMPLETED" && ord.CompletedAt != nil &&
+			!ord.CompletedAt.Before(params.StartTS) && ord.CompletedAt.Before(params.EndTS) {
+			d := ord.CompletedAt.In(vnReportLoc).Format("2006-01-02")
+			cp := completedByDate[d]
+			if cp == nil {
+				cp = &CompletedDailyStat{Date: d}
+				completedByDate[d] = cp
+			}
+			cp.CompletedCount++
+
+			r := max64(0, ord.SubtotalVND-ord.FlashSaleDiscountVND-ord.ShopProgramDiscountVND-ord.ShopVoucherDiscountVND-ord.ShopFreeshipDiscountVND)
+			cCat := min64(max64(0, ord.CommissionVND), r)
+			cPay := min64(max64(0, ord.PaymentFeeVND), max64(0, r-cCat))
+			rawNet := r - cCat - cPay
+			refunded := max64(0, ord.RefundedVND)
+			pre := min64(max64(0, ord.SettlementRefundedVND), refunded)
+			post := refunded - pre
+
+			sellerNetAtSettle := max64(0, rawNet-pre)
+			remAfterSeller := max64(0, pre-rawNet)
+			payFeeDeduct := min64(remAfterSeller, cPay)
+			effPayFee := cPay - payFeeDeduct
+			remAfterPayFee := remAfterSeller - payFeeDeduct
+			commDeduct := min64(remAfterPayFee, cCat)
+			effComm := cCat - commDeduct
+
+			cp.NetRevenueVND += sellerNetAtSettle - post
+			cp.CommissionVND += effComm
+			cp.PaymentFeeVND += effPayFee
+
+			ship := max64(0, ord.ShippingFeeVND)
+			subsidy := max64(0, r+ship-ord.TotalPayableVND)
+			cp.PlatformSubsidyVND += subsidy
+
+			for _, it := range m.items[ord.ID] {
+				pa := prods[it.ProductID]
+				if pa == nil {
+					pa = &prodAgg{name: it.ProductName, orderIDs: make(map[string]struct{})}
+					prods[it.ProductID] = pa
+				}
+				if it.ProductName > pa.name {
+					pa.name = it.ProductName
+				}
+				pa.units += int64(it.Quantity)
+				pa.revenue += it.LineTotalVND
+				pa.orderIDs[ord.ID] = struct{}{}
+			}
+		}
+	}
+
+	createdDaily := make([]CreatedDailyStat, 0, len(createdByDate))
+	for _, v := range createdByDate {
+		createdDaily = append(createdDaily, *v)
+	}
+	sort.Slice(createdDaily, func(i, j int) bool { return createdDaily[i].Date < createdDaily[j].Date })
+
+	completedDaily := make([]CompletedDailyStat, 0, len(completedByDate))
+	for _, v := range completedByDate {
+		completedDaily = append(completedDaily, *v)
+	}
+	sort.Slice(completedDaily, func(i, j int) bool { return completedDaily[i].Date < completedDaily[j].Date })
+
+	top := make([]TopProductRow, 0, len(prods))
+	for pid, pa := range prods {
+		top = append(top, TopProductRow{
+			ProductID:   pid,
+			ProductName: pa.name,
+			UnitsSold:   pa.units,
+			RevenueVND:  pa.revenue,
+			OrderCount:  int64(len(pa.orderIDs)),
+		})
+	}
+	sort.Slice(top, func(i, j int) bool {
+		if top[i].RevenueVND != top[j].RevenueVND {
+			return top[i].RevenueVND > top[j].RevenueVND
+		}
+		if top[i].UnitsSold != top[j].UnitsSold {
+			return top[i].UnitsSold > top[j].UnitsSold
+		}
+		return top[i].ProductID < top[j].ProductID
+	})
+	if params.TopLimit > 0 && int32(len(top)) > params.TopLimit {
+		top = top[:params.TopLimit]
+	}
+
+	return &OrderReportData{
+		StatusCounts:   statusCounts,
+		CreatedDaily:   createdDaily,
+		CompletedDaily: completedDaily,
+		TopProducts:    top,
+	}, nil
 }

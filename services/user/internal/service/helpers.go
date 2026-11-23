@@ -313,6 +313,29 @@ func toProtoShop(s db.Shop) *userv1.Shop {
 	}
 }
 
+func toAdminProtoShop(s db.Shop, bankReviewPending bool) *userv1.Shop {
+	out := toProtoShop(s)
+	out.BankReviewPending = bankReviewPending
+	return out
+}
+
+func shopFromAdminListRow(r db.AdminListShopsRow) db.Shop {
+	return db.Shop{
+		ID:                 r.ID,
+		OwnerUserID:        r.OwnerUserID,
+		Name:               r.Name,
+		Description:        r.Description,
+		PickupAddressID:    r.PickupAddressID,
+		ContactPhone:       r.ContactPhone,
+		BusinessLicenseDoc: r.BusinessLicenseDoc,
+		Status:             r.Status,
+		RejectionReason:    r.RejectionReason,
+		CreatedAt:          r.CreatedAt,
+		UpdatedAt:          r.UpdatedAt,
+		Slug:               r.Slug,
+	}
+}
+
 // toPublicProtoShop strips private owner/contact/license fields for unauthenticated storefront listings.
 func toPublicProtoShop(s db.Shop) *userv1.Shop {
 	return &userv1.Shop{
@@ -441,10 +464,11 @@ func lockedAccountMessage(reason string) string {
 
 func auditShopSnapshot(s db.Shop) map[string]any {
 	return map[string]any{
-		"id":               s.ID,
-		"owner_user_id":    s.OwnerUserID,
-		"name":             s.Name,
-		"status":           s.Status,
-		"rejection_reason": s.RejectionReason,
+		"id":                  s.ID,
+		"owner_user_id":       s.OwnerUserID,
+		"name":                s.Name,
+		"status":              s.Status,
+		"rejection_reason":    s.RejectionReason,
+		"verified_owner_name": s.VerifiedOwnerName,
 	}
 }

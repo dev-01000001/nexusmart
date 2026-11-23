@@ -102,6 +102,9 @@ message ShopShippingSettings {
   int32 default_width_cm = 5;
   int32 default_height_cm = 6;
   google.protobuf.Timestamp updated_at = 7;
+  bool free_ship_enabled = 8;
+  int64 free_ship_min_order_vnd = 9;
+  int64 free_ship_max_vnd = 10;
 }
 
 message ShipmentEvent {
@@ -252,6 +255,9 @@ message UpdateShopShippingSettingsRequest {
   int32 default_length_cm = 4;
   int32 default_width_cm = 5;
   int32 default_height_cm = 6;
+  bool free_ship_enabled = 7;
+  int64 free_ship_min_order_vnd = 8;
+  int64 free_ship_max_vnd = 9;
 }
 
 message UpdateShopShippingSettingsResponse {

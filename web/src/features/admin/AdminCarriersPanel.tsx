@@ -431,13 +431,19 @@ export function AdminCarriersPanel() {
                 {draft.fallback_rates.map((rate) => {
                   const regionKey = rate.region as GatewayShippingRegion;
                   const regionLabel = SHIPPING_REGION_LABELS[rate.region] ?? rate.region;
+                  const baseId = `carrier-rate-${code}-${rate.region}-base`;
+                  const weightId = `carrier-rate-${code}-${rate.region}-weight`;
+                  const extraId = `carrier-rate-${code}-${rate.region}-extra`;
                   return (
                     <div key={rate.region} className={styles.commissionMobileCard}>
                       <span className={styles.fieldLabel}>{regionLabel}</span>
                       <div className={styles.commissionMobileInputs}>
                         <div className={styles.fieldGroup}>
-                          <label className={styles.fieldHint}>Cước cơ bản (₫)</label>
+                          <label htmlFor={baseId} className={styles.fieldHint}>
+                            Cước cơ bản (₫)
+                          </label>
                           <input
+                            id={baseId}
                             type="number"
                             min={0}
                             step={1000}
@@ -450,8 +456,11 @@ export function AdminCarriersPanel() {
                           />
                         </div>
                         <div className={styles.fieldGroup}>
-                          <label className={styles.fieldHint}>Mốc KL (g)</label>
+                          <label htmlFor={weightId} className={styles.fieldHint}>
+                            Mốc KL (g)
+                          </label>
                           <input
+                            id={weightId}
                             type="number"
                             min={100}
                             step={100}
@@ -464,8 +473,11 @@ export function AdminCarriersPanel() {
                           />
                         </div>
                         <div className={styles.fieldGroup}>
-                          <label className={styles.fieldHint}>Phụ phí / 500g (₫)</label>
+                          <label htmlFor={extraId} className={styles.fieldHint}>
+                            Phụ phí / 500g (₫)
+                          </label>
                           <input
+                            id={extraId}
                             type="number"
                             min={0}
                             step={500}

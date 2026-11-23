@@ -112,31 +112,95 @@ jobs:
           NEXT_TELEMETRY_DISABLED: "1"
         run: npm run build
 
-  docker-build:
-    name: Docker Image Build (${{ matrix.service }})
+  go-vuln-scan:
+    name: Go Dependency Scan (govulncheck)
     runs-on: ubuntu-latest
-    needs: [proto-lint, go-lint-and-test, rust-payment]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.2"
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.3
+      - name: Run govulncheck across all Go modules
+        run: |
+          set -euo pipefail
+          for mod in pkg/common gen/go services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification; do
+            echo "==> govulncheck $mod"
+            (cd "$mod" && govulncheck ./...)
+          done
+
+  rust-audit:
+    name: Rust Dependency Scan (cargo audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-audit
+      - name: Run cargo audit
+        working-directory: services/payment
+        run: cargo audit
+
+  web-audit:
+    name: Web Dependency Scan (npm audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Run npm audit
+        run: npm audit --omit=dev --audit-level=high
+
+  docker-build:
+    name: Docker Build & Image Scan (${{ matrix.target.service }})
+    runs-on: ubuntu-latest
+    needs: [proto-lint, go-lint-and-test, rust-payment, web]
     strategy:
       fail-fast: false
       matrix:
-        service:
-          - gateway
-          - user
-          - product
-          - cart
-          - promotion
-          - order
-          - payment
-          - shipping
-          - notification
+        target:
+          - service: gateway
+            dockerfile: services/gateway/Dockerfile
+          - service: user
+            dockerfile: services/user/Dockerfile
+          - service: product
+            dockerfile: services/product/Dockerfile
+          - service: cart
+            dockerfile: services/cart/Dockerfile
+          - service: promotion
+            dockerfile: services/promotion/Dockerfile
+          - service: order
+            dockerfile: services/order/Dockerfile
+          - service: payment
+            dockerfile: services/payment/Dockerfile
+          - service: shipping
+            dockerfile: services/shipping/Dockerfile
+          - service: notification
+            dockerfile: services/notification/Dockerfile
+          - service: web
+            dockerfile: web/Dockerfile
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: Build ${{ matrix.service }} image
+      - name: Build ${{ matrix.target.service }} image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: services/${{ matrix.service }}/Dockerfile
+          file: ${{ matrix.target.dockerfile }}
           push: false
-          load: false
-          tags: nexusmart/${{ matrix.service }}:ci
+          load: true
+          tags: nexusmart/${{ matrix.target.service }}:ci
+      - name: Scan ${{ matrix.target.service }} image (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: nexusmart/${{ matrix.target.service }}:ci
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"

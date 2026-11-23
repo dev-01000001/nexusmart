@@ -170,7 +170,7 @@ function HelpCenterContent() {
           <h2 className={styles.sectionTitle}>Thư viện câu hỏi thường gặp</h2>
           <StateView kind="loading" title="Đang tải trung tâm trợ giúp..." rows={4} />
         </section>
-        <ProductAddonStrip title="Đồ cơ bản áp dụng đổi trả 45 ngày" products={suggestedProducts} />
+        <ProductAddonStrip title="Đồ cơ bản áp dụng đổi trả 7 ngày" products={suggestedProducts} />
       </div>
     );
   }
@@ -216,7 +216,7 @@ function HelpCenterContent() {
   return (
     <div ref={rootRef} className={styles.page}>
       {renderHeader(
-        "Tra cứu chính sách đổi trả 45 ngày, giao hàng 34 tỉnh thành và liên hệ tổng đài 1900 6845."
+        "Tra cứu chính sách đổi trả 7 ngày, giao hàng 34 tỉnh thành và liên hệ tổng đài 1900 6845."
       )}
 
       {/* 100% Satisfaction Commitment Band (dark slate) + Workshop Photography */}
@@ -304,7 +304,7 @@ function HelpCenterContent() {
               className={styles.input}
               value={faqQuery}
               onChange={(e) => setFaqQuery(e.target.value)}
-              placeholder="Tìm nhanh: đổi trả 45 ngày, freeship, hóa đơn VAT, bù lẻ tất..."
+              placeholder="Tìm nhanh: đổi trả 7 ngày, freeship, hóa đơn VAT, bù lẻ tất..."
               aria-label="Tìm kiếm câu hỏi thường gặp"
             />
             <div className={styles.modeSwitch} role="group" aria-label="Lọc phạm vi chính sách">
@@ -736,7 +736,7 @@ function HelpCenterContent() {
       </section>
 
       <ProductAddonStrip
-        title="An tâm chọn đồ basic với đổi trả 45 ngày"
+        title="An tâm chọn đồ basic với đổi trả 7 ngày"
         subtitle="Bốn thiết kế cơ bản áp dụng bưu tá đổi size 2 chiều miễn phí tận nơi"
         products={suggestedProducts}
       />

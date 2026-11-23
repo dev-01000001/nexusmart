@@ -103,6 +103,22 @@ func ExtractTraceHeaders(ctx context.Context, carrier map[string]string) context
 	return otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(carrier))
 }
 
+// StartConsumerSpan extracts W3C trace context from a string header map (case-insensitive)
+// and starts a child OpenTelemetry consumer span for the given subject.
+func StartConsumerSpan(ctx context.Context, service, subject string, carrier map[string]string) (context.Context, trace.Span) {
+	if len(carrier) > 0 {
+		normalized := make(map[string]string, len(carrier))
+		for k, v := range carrier {
+			normalized[strings.ToLower(k)] = v
+		}
+		ctx = ExtractTraceHeaders(ctx, normalized)
+	}
+	return otel.Tracer(service).Start(ctx, "nats.consume "+subject,
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(attribute.String("messaging.destination", subject)),
+	)
+}
+
 // HTTPMiddleware extracts W3C trace context, starts a server span, and adds X-Trace-Id to responses.
 func HTTPMiddleware(service string) func(http.Handler) http.Handler {
 	tracer := otel.Tracer(service)

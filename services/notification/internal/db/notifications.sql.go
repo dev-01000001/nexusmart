@@ -221,9 +221,10 @@ func (q *Queries) InsertEmailDedup(ctx context.Context, arg InsertEmailDedupPara
 }
 
 const insertNotification = `-- name: InsertNotification :one
-INSERT INTO notifications (id, user_id, category, title, body, link, event_id, is_read, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, $8)
-RETURNING id, user_id, category, title, body, link, event_id, is_read, created_at
+INSERT INTO notifications (id, user_id, category, title, body, link, event_id, dedup_key, is_read, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE, $9)
+ON CONFLICT (dedup_key) WHERE dedup_key <> '' DO NOTHING
+RETURNING id, user_id, category, title, body, link, event_id, is_read, created_at, dedup_key
 `
 
 type InsertNotificationParams struct {
@@ -234,6 +235,7 @@ type InsertNotificationParams struct {
 	Body      string
 	Link      string
 	EventID   string
+	DedupKey  string
 	CreatedAt pgtype.Timestamptz
 }
 
@@ -246,6 +248,7 @@ func (q *Queries) InsertNotification(ctx context.Context, arg InsertNotification
 		arg.Body,
 		arg.Link,
 		arg.EventID,
+		arg.DedupKey,
 		arg.CreatedAt,
 	)
 	var i Notification
@@ -259,6 +262,7 @@ func (q *Queries) InsertNotification(ctx context.Context, arg InsertNotification
 		&i.EventID,
 		&i.IsRead,
 		&i.CreatedAt,
+		&i.DedupKey,
 	)
 	return i, err
 }
@@ -294,7 +298,7 @@ func (q *Queries) IsEventProcessed(ctx context.Context, eventID string) (bool, e
 }
 
 const listNotifications = `-- name: ListNotifications :many
-SELECT id, user_id, category, title, body, link, event_id, is_read, created_at
+SELECT id, user_id, category, title, body, link, event_id, is_read, created_at, dedup_key
 FROM notifications
 WHERE user_id = $1
   AND ($2::text = '' OR category = $2)
@@ -336,6 +340,7 @@ func (q *Queries) ListNotifications(ctx context.Context, arg ListNotificationsPa
 			&i.EventID,
 			&i.IsRead,
 			&i.CreatedAt,
+			&i.DedupKey,
 		); err != nil {
 			return nil, err
 		}

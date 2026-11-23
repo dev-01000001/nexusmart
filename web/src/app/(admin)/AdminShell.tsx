@@ -20,7 +20,6 @@ import {
   IconDashboard,
   IconFileText,
   IconMenu,
-  IconPackage,
   IconSearch,
   IconShield,
   IconSliders,
@@ -144,8 +143,7 @@ export function AdminShell({ user, children }: { user: GatewayUser; children: Re
   ];
 
   const platformNavItems: AdminNavItem[] = [
-    { href: "/admin/noi-dung", label: "Nội dung & chiến dịch", icon: <IconPackage size={16} /> },
-    { href: "/admin/thanh-vien", label: "Hội viên & khuyến mãi", icon: <IconTag size={16} /> },
+    { href: "/admin/thanh-vien", label: "Khuyến mãi & Xu", icon: <IconTag size={16} /> },
     { href: "/admin/cau-hinh", label: "Cấu hình sàn", icon: <IconSliders size={16} /> },
     { href: "/admin/audit-log", label: "Nhật ký hệ thống", icon: <IconFileText size={16} /> },
   ];

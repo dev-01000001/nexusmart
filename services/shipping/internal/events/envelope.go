@@ -2,12 +2,8 @@ package events
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
-	"strings"
-	"time"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nexusmart/core/pkg/common/jetstream"
 )
 
 const (
@@ -50,51 +46,7 @@ type OrderCancelledPayload struct {
 	WasPaid   bool   `json:"was_paid"`
 }
 
-// EnsureStreams idempotently creates the NEXUSMART and NEXUSMART_DLQ JetStream streams.
-func EnsureStreams(js nats.JetStreamContext, primaryStream, dlqStream string) error {
-	if primaryStream == "" {
-		primaryStream = "NEXUSMART"
-	}
-	if dlqStream == "" {
-		dlqStream = "NEXUSMART_DLQ"
-	}
-
-	if err := ensureSingleStream(js, &nats.StreamConfig{
-		Name:       primaryStream,
-		Subjects:   []string{"user.>", "order.>", "payment.>", "shipment.>"},
-		Retention:  nats.LimitsPolicy,
-		Storage:    nats.FileStorage,
-		Duplicates: 2 * time.Minute,
-	}); err != nil {
-		return fmt.Errorf("ensure primary stream %s: %w", primaryStream, err)
-	}
-
-	if err := ensureSingleStream(js, &nats.StreamConfig{
-		Name:      dlqStream,
-		Subjects:  []string{"dlq.>"},
-		Retention: nats.LimitsPolicy,
-		Storage:   nats.FileStorage,
-	}); err != nil {
-		return fmt.Errorf("ensure dlq stream %s: %w", dlqStream, err)
-	}
-	return nil
-}
-
-func ensureSingleStream(js nats.JetStreamContext, cfg *nats.StreamConfig) error {
-	if _, err := js.StreamInfo(cfg.Name); err == nil {
-		return nil
-	} else if !errors.Is(err, nats.ErrStreamNotFound) {
-		return err
-	}
-
-	if _, err := js.AddStream(cfg); err != nil {
-		// Handle concurrent creation by sibling services during startup.
-		if strings.Contains(strings.ToLower(err.Error()), "already in use") {
-			if _, infoErr := js.StreamInfo(cfg.Name); infoErr == nil {
-				return nil
-			}
-		}
-		return err
-	}
-	return nil
+// EnsureStreams idempotently creates or union-updates the NEXUSMART and NEXUSMART_DLQ JetStream streams.
+func EnsureStreams(js jetstream.StreamManager, primaryStream, dlqStream string) error {
+	return jetstream.EnsureStreams(js, primaryStream, dlqStream)
 }

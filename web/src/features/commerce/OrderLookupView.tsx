@@ -293,7 +293,7 @@ function OrderLookupContent() {
                 </p>
                 <p className={styles.bodyCopy}>
                   Đặt hàng không cần tài khoản vẫn được hủy trước khi đóng gói, gửi yêu cầu đổi địa
-                  chỉ và hưởng trọn đổi trả 45 ngày.
+                  chỉ và hưởng trọn đổi trả 7 ngày.
                 </p>
               </div>
             </div>
@@ -418,7 +418,7 @@ function OrderLookupContent() {
                             ? "Mở kiểm tra khi nhận hàng"
                             : "Giao tiêu chuẩn"}
                         </dd>
-                        <dd className={styles.infoSub}>Đổi size 2 chiều tận nơi trong 45 ngày</dd>
+                        <dd className={styles.infoSub}>Đổi size 2 chiều tận nơi trong 7 ngày</dd>
                       </div>
                     </dl>
                   </div>

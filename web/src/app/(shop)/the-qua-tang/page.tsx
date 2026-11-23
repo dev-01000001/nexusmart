@@ -2,11 +2,10 @@
 
 import React, { Suspense, useMemo, useState } from "react";
 import Image from "next/image";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { EDU_DISCOUNT_CONFIG, GIFT_CARD_DENOMINATIONS, GIFT_CARD_POLICY, PRODUCTS } from "@/data";
 import { MEDIA_BANNERS } from "@/data/media";
 import { formatDateVi, formatVnd } from "@/lib/format";
-import { useCart } from "@/context/CartContext";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, ProductCard, StateView } from "@/components";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
@@ -14,11 +13,8 @@ import shared from "@/features/commerce/commerce.module.css";
 import styles from "./page.module.css";
 
 function GiftCardsPageContent() {
-  const router = useRouter();
   const viewState = usePageStateParam();
-  const { setPlatformVoucher } = useCart();
-  const { membership, purchaseGiftCard, applyGiftCardCode, verifyEduEmail, showToast } =
-    useMockStore();
+  const { membership, purchaseGiftCard, verifyEduEmail } = useMockStore();
 
   const [amountVnd, setAmountVnd] = useState<number>(500000);
   const [customCode, setCustomCode] = useState("QUATANG26");
@@ -62,8 +58,20 @@ function GiftCardsPageContent() {
 
   const handleRedeem = (e: React.FormEvent) => {
     e.preventDefault();
-    const res = applyGiftCardCode(redeemCode);
-    setRedeemResult(res);
+    const clean = redeemCode.trim().toUpperCase();
+    const found = membership.giftCards.find((gc) => gc.code.toUpperCase() === clean);
+    if (!found) {
+      setRedeemResult({ ok: false, message: `Không tìm thấy thẻ quà tặng mẫu ${clean}.` });
+      return;
+    }
+    if (found.remainingVnd <= 0) {
+      setRedeemResult({ ok: false, message: `Thẻ quà tặng mẫu ${clean} đã hết số dư.` });
+      return;
+    }
+    setRedeemResult({
+      ok: true,
+      message: `Bản xem trước: thẻ ${found.code} còn ${formatVnd(found.remainingVnd)} (chưa kết nối thanh toán thực tế).`,
+    });
   };
 
   const handleVerifyEdu = (e: React.FormEvent) => {
@@ -167,8 +175,16 @@ function GiftCardsPageContent() {
   return (
     <div className={shared.page}>
       {renderHeader(
-        "Tặng thẻ mua sắm dùng trên cả 4 xưởng dệt, tùy chọn lời chúc riêng và nhận ưu đãi sinh viên .edu."
+        "Bản xem trước, dữ liệu mẫu cho tính năng Thẻ quà tặng và ưu đãi sinh viên .edu."
       )}
+
+      <section className={shared.section}>
+        <p className={`${shared.feedbackBox} ${shared.feedbackWarn}`} role="note">
+          <strong>Bản xem trước, dữ liệu mẫu:</strong> Tính năng phát hành/áp dụng thẻ quà tặng và
+          xác thực email sinh viên trên trang này là bản minh họa giao diện, chưa khấu trừ vào đơn
+          hàng thật.
+        </p>
+      </section>
 
       {/* Primary surface: Gift card builder + Dark live preview & unboxed redeem */}
       <section className={shared.section}>
@@ -350,13 +366,9 @@ function GiftCardsPageContent() {
                   {redeemResult.ok && (
                     <>
                       {" "}
-                      <button
-                        type="button"
-                        className={shared.breadcrumbLink}
-                        onClick={() => router.push("/gio-hang")}
-                      >
+                      <Link href="/gio-hang" className={shared.breadcrumbLink}>
                         Mở giỏ hàng ngay
-                      </button>
+                      </Link>
                     </>
                   )}
                 </div>
@@ -378,52 +390,41 @@ function GiftCardsPageContent() {
             </div>
 
             <div className={styles.issuedList}>
-              {membership.giftCards.map((card) => {
-                const isApplied = membership.appliedGiftCardCode === card.code;
-                return (
-                  <article key={card.id} className={styles.issuedRow} data-reveal="">
-                    <div className={styles.issuedInfo}>
-                      <div className={styles.issuedCodeLine}>
-                        <span className={`${styles.issuedCode} num`}>{card.code}</span>
-                        <span
-                          className={`${shared.statusTag} ${
-                            card.remainingVnd > 0 ? shared.tonePos : shared.toneNeutral
-                          }`}
-                        >
-                          {card.status === "kha_dung"
-                            ? "Khả dụng"
-                            : card.status === "da_dung_mot_phan"
-                              ? "Đã dùng một phần"
-                              : "Đã dùng hết"}
-                        </span>
-                      </div>
-                      <p className={`${styles.issuedBalance} num`}>
-                        Còn lại <strong>{formatVnd(card.remainingVnd)}</strong> /{" "}
-                        {formatVnd(card.amountVnd)}
-                        <span className={styles.issuedExpiry}>
-                          {" "}
-                          · HSD {formatDateVi(card.expiresAt)}
-                        </span>
-                      </p>
-                      {card.message && <p className={styles.bodyCopy}>{card.message}</p>}
-                    </div>
-
-                    <div className={shared.formActions}>
-                      <Button
-                        variant={isApplied ? "primary" : "secondary"}
-                        size="sm"
-                        disabled={card.remainingVnd <= 0}
-                        onClick={() => {
-                          applyGiftCardCode(isApplied ? null : card.code);
-                          if (!isApplied) router.push("/gio-hang");
-                        }}
+              {membership.giftCards.map((card) => (
+                <article key={card.id} className={styles.issuedRow} data-reveal="">
+                  <div className={styles.issuedInfo}>
+                    <div className={styles.issuedCodeLine}>
+                      <span className={`${styles.issuedCode} num`}>{card.code}</span>
+                      <span
+                        className={`${shared.statusTag} ${
+                          card.remainingVnd > 0 ? shared.tonePos : shared.toneNeutral
+                        }`}
                       >
-                        {isApplied ? "Đang áp dụng trong giỏ" : "Áp vào giỏ hàng"}
-                      </Button>
+                        {card.status === "kha_dung"
+                          ? "Khả dụng"
+                          : card.status === "da_dung_mot_phan"
+                            ? "Đã dùng một phần"
+                            : "Đã dùng hết"}
+                      </span>
                     </div>
-                  </article>
-                );
-              })}
+                    <p className={`${styles.issuedBalance} num`}>
+                      Còn lại <strong>{formatVnd(card.remainingVnd)}</strong> /{" "}
+                      {formatVnd(card.amountVnd)}
+                      <span className={styles.issuedExpiry}>
+                        {" "}
+                        · HSD {formatDateVi(card.expiresAt)}
+                      </span>
+                    </p>
+                    {card.message && <p className={styles.bodyCopy}>{card.message}</p>}
+                  </div>
+
+                  <div className={shared.formActions}>
+                    <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
+                      Bản xem trước
+                    </span>
+                  </div>
+                </article>
+              ))}
             </div>
           </div>
 
@@ -486,20 +487,10 @@ function GiftCardsPageContent() {
             )}
 
             {membership.eduVerified && (
-              <div className={shared.formActions}>
-                <Button
-                  type="button"
-                  variant="ink"
-                  size="md"
-                  onClick={() => {
-                    setPlatformVoucher(EDU_DISCOUNT_CONFIG.voucherCode);
-                    showToast("Đã chọn mã sinh viên EDU15 cho giỏ hàng.");
-                    router.push("/gio-hang");
-                  }}
-                >
-                  Dùng ngay mã EDU15 trong giỏ hàng
-                </Button>
-              </div>
+              <p className={`${shared.feedbackBox} ${shared.feedbackWarn}`} role="note">
+                Bản xem trước, dữ liệu mẫu: mã {EDU_DISCOUNT_CONFIG.voucherCode} chỉ mang tính minh
+                họa và chưa gắn với chương trình voucher thật ở giỏ hàng.
+              </p>
             )}
           </form>
         </div>
@@ -507,7 +498,7 @@ function GiftCardsPageContent() {
 
       {renderSuggestedShelf(
         "Gợi ý quà tặng đồ cơ bản dễ chọn size",
-        "Đổi size hai chiều miễn phí 45 ngày nếu người nhận cần đổi cỡ"
+        "Hỗ trợ trả hàng hoàn tiền minh bạch trong 7 ngày kể từ khi nhận hàng"
       )}
     </div>
   );

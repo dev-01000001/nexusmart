@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/nexusmart/core/services/promotion/internal/config"
 	"github.com/nexusmart/core/services/promotion/internal/events"
 	"github.com/nexusmart/core/services/promotion/internal/lua"
+	"github.com/nexusmart/core/services/promotion/internal/productclient"
 	"github.com/nexusmart/core/services/promotion/internal/service"
 	"github.com/nexusmart/core/services/promotion/internal/store"
 )
@@ -67,6 +69,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	prodClient, err := productclient.New(cfg.ProductGRPCAddr, cfg.ServiceName, svcMgr, 60*time.Second)
+	if err != nil {
+		log.Error("failed to initialize product grpc client", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	defer func() { _ = prodClient.Close() }()
+
 	pool, err := connectPostgres(ctx, cfg.DatabaseURL, log)
 	if err != nil {
 		log.Error("failed to connect postgres", slog.String("error", err.Error()))
@@ -90,12 +99,13 @@ func main() {
 
 	luaEngine := lua.NewEngine(rdb)
 	promoSvc := service.NewPromotionService(pgStore, luaEngine, log)
+	promoSvc.SetProductClient(prodClient)
 	if err := promoSvc.SyncRedisFromStore(ctx); err != nil {
 		log.Error("failed to sync redis keys from store", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
-	nc, consumer, err := connectNATS(ctx, cfg.NATSURL, cfg.NATSStream, pgStore, log)
+	nc, js, consumer, err := connectNATS(ctx, cfg.NATSURL, cfg.NATSStream, pgStore, log)
 	if err != nil {
 		log.Error("failed to start nats consumer", slog.String("error", err.Error()))
 		os.Exit(1)
@@ -109,12 +119,26 @@ func main() {
 		}
 	}()
 
+	expiryJob := events.NewVoucherExpiryJob(
+		pgStore,
+		events.NewJetStreamPublisher(js),
+		time.Duration(cfg.VoucherExpiryNoticeHours)*time.Hour,
+		log,
+	)
+	var bgWG sync.WaitGroup
+	bgWG.Add(1)
+	go func() {
+		defer bgWG.Done()
+		expiryJob.Start(ctx, cfg.VoucherExpiryScanInterval)
+	}()
+
 	red := metrics.NewRED(cfg.ServiceName, prometheus.DefaultRegisterer)
 
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			telemetry.GRPCUnaryServerInterceptor(cfg.ServiceName),
 			red.GRPCUnaryServerInterceptor(),
+			logger.GRPCUnaryServerInterceptor(log),
 			auth.GRPCUnaryServerInterceptor(jwtMgr, svcMgr),
 		),
 	)
@@ -180,11 +204,13 @@ func main() {
 	}
 
 	healthSrv.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	stop()
 	grpcServer.GracefulStop()
 
 	shCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(shCtx)
+	bgWG.Wait()
 	log.Info("promotion service stopped cleanly")
 }
 
@@ -258,7 +284,7 @@ func connectNATS(
 	natsURL, streamName string,
 	st store.Store,
 	log *slog.Logger,
-) (*nats.Conn, *events.OrderCompletedConsumer, error) {
+) (*nats.Conn, nats.JetStreamContext, *events.OrderCompletedConsumer, error) {
 	var nc *nats.Conn
 	var lastErr error
 	for attempt := 1; attempt <= 15; attempt++ {
@@ -275,24 +301,24 @@ func connectNATS(
 		log.Warn("waiting for nats...", slog.Int("attempt", attempt), slog.String("error", err.Error()))
 		select {
 		case <-ctx.Done():
-			return nil, nil, ctx.Err()
+			return nil, nil, nil, ctx.Err()
 		case <-time.After(time.Duration(attempt) * 300 * time.Millisecond):
 		}
 	}
 	if nc == nil {
-		return nil, nil, fmt.Errorf("nats unavailable after retries: %w", lastErr)
+		return nil, nil, nil, fmt.Errorf("nats unavailable after retries: %w", lastErr)
 	}
 
 	js, err := nc.JetStream()
 	if err != nil {
 		nc.Close()
-		return nil, nil, fmt.Errorf("init jetstream context: %w", err)
+		return nil, nil, nil, fmt.Errorf("init jetstream context: %w", err)
 	}
 
 	consumer := events.NewOrderCompletedConsumer(st, js, streamName, log)
 	if err := consumer.Start(ctx); err != nil {
 		nc.Close()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return nc, consumer, nil
+	return nc, js, consumer, nil
 }

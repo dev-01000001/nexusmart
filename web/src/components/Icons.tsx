@@ -367,3 +367,22 @@ export function IconBolt({ size = 16, className }: IconProps) {
     </svg>
   );
 }
+
+export function IconBell({ size = 16, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <path d="M10 3.2C7.4 3.2 5.5 5.1 5.5 7.7V11L4 13.5H16L14.5 11V7.7C14.5 5.1 12.6 3.2 10 3.2Z" />
+      <path d="M8.3 15.5C8.7 16.3 9.3 16.8 10 16.8C10.7 16.8 11.3 16.3 11.7 15.5" />
+    </svg>
+  );
+}
+
+export function IconDownload({ size = 15, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <path d="M10 3.5V12.5" />
+      <path d="M6.5 9.5L10 13L13.5 9.5" />
+      <path d="M4 15.5H16" />
+    </svg>
+  );
+}

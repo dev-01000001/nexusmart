@@ -796,3 +796,96 @@ export function getVoucherScopeLabel(scope: string, shopName?: string): string {
       return "Ưu đãi";
   }
 }
+
+export interface BuyerOrderBreakdownLine {
+  key: string;
+  label: string;
+  /** Positive for subtotal & shipping; negative for discounts & coins. */
+  amountVnd: number;
+  isDiscount: boolean;
+}
+
+/**
+ * Pure buyer order payment breakdown lines that sum strictly to `order.total_payable_vnd`
+ * (clamped >= 0), including Wave 2b `shop_program_discount_vnd` and `shop_freeship_discount_vnd`.
+ */
+export function buildBuyerOrderBreakdownLines(
+  order: Pick<
+    GatewayOrder,
+    | "subtotal_vnd"
+    | "flash_sale_discount_vnd"
+    | "shop_voucher_discount_vnd"
+    | "platform_voucher_discount_vnd"
+    | "shipping_fee_vnd"
+    | "freeship_discount_vnd"
+    | "coins_discount_vnd"
+  > &
+    Partial<Pick<GatewayOrder, "shop_program_discount_vnd" | "shop_freeship_discount_vnd">>
+): BuyerOrderBreakdownLine[] {
+  const lines: BuyerOrderBreakdownLine[] = [
+    {
+      key: "subtotal",
+      label: "Tạm tính tiền hàng",
+      amountVnd: Math.trunc(order.subtotal_vnd ?? 0),
+      isDiscount: false,
+    },
+  ];
+  const flash = Math.trunc(order.flash_sale_discount_vnd ?? 0);
+  if (flash > 0) {
+    lines.push({
+      key: "flash_sale",
+      label: "Giảm giá Flash Sale",
+      amountVnd: -flash,
+      isDiscount: true,
+    });
+  }
+  const shopProg = Math.trunc(order.shop_program_discount_vnd ?? 0);
+  if (shopProg > 0) {
+    lines.push({
+      key: "shop_program",
+      label: "Giảm giá chương trình gian hàng",
+      amountVnd: -shopProg,
+      isDiscount: true,
+    });
+  }
+  lines.push({
+    key: "shop_voucher",
+    label: "Voucher gian hàng",
+    amountVnd: -Math.trunc(order.shop_voucher_discount_vnd ?? 0),
+    isDiscount: true,
+  });
+  lines.push({
+    key: "platform_voucher",
+    label: "Voucher toàn sàn",
+    amountVnd: -Math.trunc(order.platform_voucher_discount_vnd ?? 0),
+    isDiscount: true,
+  });
+  lines.push({
+    key: "shipping",
+    label: "Phí vận chuyển",
+    amountVnd: Math.trunc(order.shipping_fee_vnd ?? 0),
+    isDiscount: false,
+  });
+  const shopFreeship = Math.trunc(order.shop_freeship_discount_vnd ?? 0);
+  if (shopFreeship > 0) {
+    lines.push({
+      key: "shop_freeship",
+      label: "Gian hàng hỗ trợ phí ship",
+      amountVnd: -shopFreeship,
+      isDiscount: true,
+    });
+  }
+  lines.push({
+    key: "freeship",
+    label: "Giảm phí vận chuyển",
+    amountVnd: -Math.trunc(order.freeship_discount_vnd ?? 0),
+    isDiscount: true,
+  });
+  lines.push({
+    key: "coins",
+    label: "Trừ Xu NexusMart",
+    amountVnd: -Math.trunc(order.coins_discount_vnd ?? 0),
+    isDiscount: true,
+  });
+  return lines;
+}

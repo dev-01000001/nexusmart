@@ -50,6 +50,8 @@ message SKU {
   string category_id = 15;
   int32 commission_rate_bps = 16;
   bool is_active = 17;
+  // Lowest recorded price for this SKU in the last 30 days (defaults to price_vnd when no lower history exists).
+  int64 min_price_30d_vnd = 18;
 }
 
 message SKUInput {
@@ -99,6 +101,10 @@ message UpdateCategoryRequest {
   string parent_id = 4;
   int32 commission_rate_bps = 5;
   int32 sort_order = 6;
+  // Presence flags so omitted fields on partial updates do not reset existing values (CAT-B9).
+  bool has_commission_rate_bps = 7;
+  bool has_sort_order = 8;
+  bool has_parent_id = 9;
 }
 
 message UpdateCategoryResponse {
@@ -260,11 +266,57 @@ message RestockOrderItemsResponse {
   bool already_restocked = 2;
 }
 
+message GetCategoryDescendantsRequest {
+  repeated string category_ids = 1;
+}
+
+message GetCategoryDescendantsResponse {
+  // All input category IDs plus all recursive descendant category IDs (deduplicated).
+  repeated string category_ids = 1;
+}
+
+message CategoryFeeSchedule {
+  string id = 1;
+  string category_id = 2;
+  int32 commission_rate_bps = 3;
+  google.protobuf.Timestamp effective_from = 4;
+  string created_by = 5;
+  string note = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message SetCategoryFeeScheduleRequest {
+  string category_id = 1;
+  int32 commission_rate_bps = 2;
+  // Empty/nil defaults to now (effective immediately).
+  google.protobuf.Timestamp effective_from = 3;
+  string note = 4;
+}
+
+message SetCategoryFeeScheduleResponse {
+  CategoryFeeSchedule schedule = 1;
+}
+
+message ListCategoryFeeSchedulesRequest {
+  // Optional: filter to one category; empty lists schedules across all categories.
+  string category_id = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message ListCategoryFeeSchedulesResponse {
+  repeated CategoryFeeSchedule schedules = 1;
+  int64 total = 2;
+}
+
 service ProductService {
   rpc CreateCategory(CreateCategoryRequest) returns (CreateCategoryResponse);
   rpc UpdateCategory(UpdateCategoryRequest) returns (UpdateCategoryResponse);
   rpc DeleteCategory(DeleteCategoryRequest) returns (DeleteCategoryResponse);
   rpc ListCategories(ListCategoriesRequest) returns (ListCategoriesResponse);
+  rpc GetCategoryDescendants(GetCategoryDescendantsRequest) returns (GetCategoryDescendantsResponse);
+  rpc SetCategoryFeeSchedule(SetCategoryFeeScheduleRequest) returns (SetCategoryFeeScheduleResponse);
+  rpc ListCategoryFeeSchedules(ListCategoryFeeSchedulesRequest) returns (ListCategoryFeeSchedulesResponse);
   rpc CreateProduct(CreateProductRequest) returns (CreateProductResponse);
   rpc UpdateProduct(UpdateProductRequest) returns (UpdateProductResponse);
   rpc DeleteProduct(DeleteProductRequest) returns (DeleteProductResponse);

@@ -46,6 +46,126 @@ func (q *Queries) ActivateUser(ctx context.Context, arg ActivateUserParams) (Use
 	return i, err
 }
 
+const adminCountShops = `-- name: AdminCountShops :one
+SELECT COUNT(*)::bigint FROM shops s
+WHERE ($1::text = '' OR s.status = $1::text)
+  AND (
+      NOT $2::boolean
+      OR EXISTS (
+          SELECT 1 FROM shop_bank_accounts sba
+          WHERE sba.shop_id = s.id
+            AND sba.status = 'PENDING_ADMIN_REVIEW'
+      )
+  )
+`
+
+type AdminCountShopsParams struct {
+	Status                string `json:"status"`
+	BankReviewPendingOnly bool   `json:"bank_review_pending_only"`
+}
+
+func (q *Queries) AdminCountShops(ctx context.Context, arg AdminCountShopsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, adminCountShops, arg.Status, arg.BankReviewPendingOnly)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const adminListShops = `-- name: AdminListShops :many
+SELECT
+    s.id,
+    s.owner_user_id,
+    s.name,
+    s.description,
+    s.pickup_address_id,
+    s.contact_phone,
+    s.business_license_doc,
+    s.status,
+    s.rejection_reason,
+    s.created_at,
+    s.updated_at,
+    s.slug,
+    EXISTS (
+        SELECT 1 FROM shop_bank_accounts sba
+        WHERE sba.shop_id = s.id
+          AND sba.status = 'PENDING_ADMIN_REVIEW'
+    )::boolean AS bank_review_pending
+FROM shops s
+WHERE ($1::text = '' OR s.status = $1::text)
+  AND (
+      NOT $2::boolean
+      OR EXISTS (
+          SELECT 1 FROM shop_bank_accounts sba
+          WHERE sba.shop_id = s.id
+            AND sba.status = 'PENDING_ADMIN_REVIEW'
+      )
+  )
+ORDER BY s.created_at DESC
+LIMIT $4 OFFSET $3
+`
+
+type AdminListShopsParams struct {
+	Status                string `json:"status"`
+	BankReviewPendingOnly bool   `json:"bank_review_pending_only"`
+	PageOffset            int32  `json:"page_offset"`
+	PageLimit             int32  `json:"page_limit"`
+}
+
+type AdminListShopsRow struct {
+	ID                 string    `json:"id"`
+	OwnerUserID        string    `json:"owner_user_id"`
+	Name               string    `json:"name"`
+	Description        string    `json:"description"`
+	PickupAddressID    string    `json:"pickup_address_id"`
+	ContactPhone       string    `json:"contact_phone"`
+	BusinessLicenseDoc string    `json:"business_license_doc"`
+	Status             string    `json:"status"`
+	RejectionReason    string    `json:"rejection_reason"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+	Slug               string    `json:"slug"`
+	BankReviewPending  bool      `json:"bank_review_pending"`
+}
+
+func (q *Queries) AdminListShops(ctx context.Context, arg AdminListShopsParams) ([]AdminListShopsRow, error) {
+	rows, err := q.db.Query(ctx, adminListShops,
+		arg.Status,
+		arg.BankReviewPendingOnly,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AdminListShopsRow{}
+	for rows.Next() {
+		var i AdminListShopsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerUserID,
+			&i.Name,
+			&i.Description,
+			&i.PickupAddressID,
+			&i.ContactPhone,
+			&i.BusinessLicenseDoc,
+			&i.Status,
+			&i.RejectionReason,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Slug,
+			&i.BankReviewPending,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const clearUserDefaultAddresses = `-- name: ClearUserDefaultAddresses :exec
 UPDATE addresses
 SET is_default = FALSE,
@@ -56,6 +176,62 @@ WHERE user_id = $1 AND is_default = TRUE
 func (q *Queries) ClearUserDefaultAddresses(ctx context.Context, userID string) error {
 	_, err := q.db.Exec(ctx, clearUserDefaultAddresses, userID)
 	return err
+}
+
+const completeShopBankAccountOTPVerification = `-- name: CompleteShopBankAccountOTPVerification :one
+UPDATE shop_bank_accounts
+SET status = $2,
+    holder_name_matched = $3,
+    otp_hash = '',
+    otp_expires_at = NULL,
+    payout_locked_until = $4,
+    verified_at = $5,
+    updated_at = $6
+WHERE id = $1
+  AND status = 'PENDING_OTP'
+RETURNING id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed
+`
+
+type CompleteShopBankAccountOTPVerificationParams struct {
+	ID                string     `json:"id"`
+	Status            string     `json:"status"`
+	HolderNameMatched bool       `json:"holder_name_matched"`
+	PayoutLockedUntil *time.Time `json:"payout_locked_until"`
+	VerifiedAt        *time.Time `json:"verified_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
+func (q *Queries) CompleteShopBankAccountOTPVerification(ctx context.Context, arg CompleteShopBankAccountOTPVerificationParams) (ShopBankAccount, error) {
+	row := q.db.QueryRow(ctx, completeShopBankAccountOTPVerification,
+		arg.ID,
+		arg.Status,
+		arg.HolderNameMatched,
+		arg.PayoutLockedUntil,
+		arg.VerifiedAt,
+		arg.UpdatedAt,
+	)
+	var i ShopBankAccount
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.BankCode,
+		&i.BankName,
+		&i.AccountNumber,
+		&i.AccountNumberMasked,
+		&i.AccountHolderName,
+		&i.HolderNameMatched,
+		&i.Status,
+		&i.ReviewNote,
+		&i.OTPHash,
+		&i.OTPExpiresAt,
+		&i.OTPAttempts,
+		&i.PayoutLockedUntil,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OTPPublishFailed,
+	)
+	return i, err
 }
 
 const countAuditLogs = `-- name: CountAuditLogs :one
@@ -83,6 +259,25 @@ func (q *Queries) CountAuditLogs(ctx context.Context, arg CountAuditLogsParams) 
 		arg.FromTime,
 		arg.ToTime,
 	)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countShopBankAccountsCreatedSince = `-- name: CountShopBankAccountsCreatedSince :one
+SELECT COUNT(*)::bigint FROM shop_bank_accounts
+WHERE shop_id = $1
+  AND created_at > $2
+  AND NOT otp_publish_failed
+`
+
+type CountShopBankAccountsCreatedSinceParams struct {
+	ShopID    string    `json:"shop_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (q *Queries) CountShopBankAccountsCreatedSince(ctx context.Context, arg CountShopBankAccountsCreatedSinceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countShopBankAccountsCreatedSince, arg.ShopID, arg.CreatedAt)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -268,7 +463,7 @@ INSERT INTO shops (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9
 )
-RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug
+RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name
 `
 
 type CreateShopParams struct {
@@ -309,6 +504,80 @@ func (q *Queries) CreateShop(ctx context.Context, arg CreateShopParams) (Shop, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Slug,
+		&i.VerifiedOwnerName,
+	)
+	return i, err
+}
+
+const createShopBankAccount = `-- name: CreateShopBankAccount :one
+INSERT INTO shop_bank_accounts (
+    id, shop_id, bank_code, bank_name, account_number, account_number_masked,
+    account_holder_name, holder_name_matched, status, review_note,
+    otp_hash, otp_expires_at, otp_attempts, created_at, updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10,
+    $11, $12, $13, $14, $15
+)
+RETURNING id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed
+`
+
+type CreateShopBankAccountParams struct {
+	ID                  string     `json:"id"`
+	ShopID              string     `json:"shop_id"`
+	BankCode            string     `json:"bank_code"`
+	BankName            string     `json:"bank_name"`
+	AccountNumber       string     `json:"account_number"`
+	AccountNumberMasked string     `json:"account_number_masked"`
+	AccountHolderName   string     `json:"account_holder_name"`
+	HolderNameMatched   bool       `json:"holder_name_matched"`
+	Status              string     `json:"status"`
+	ReviewNote          string     `json:"review_note"`
+	OTPHash             string     `json:"otp_hash"`
+	OTPExpiresAt        *time.Time `json:"otp_expires_at"`
+	OTPAttempts         int32      `json:"otp_attempts"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+}
+
+func (q *Queries) CreateShopBankAccount(ctx context.Context, arg CreateShopBankAccountParams) (ShopBankAccount, error) {
+	row := q.db.QueryRow(ctx, createShopBankAccount,
+		arg.ID,
+		arg.ShopID,
+		arg.BankCode,
+		arg.BankName,
+		arg.AccountNumber,
+		arg.AccountNumberMasked,
+		arg.AccountHolderName,
+		arg.HolderNameMatched,
+		arg.Status,
+		arg.ReviewNote,
+		arg.OTPHash,
+		arg.OTPExpiresAt,
+		arg.OTPAttempts,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	var i ShopBankAccount
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.BankCode,
+		&i.BankName,
+		&i.AccountNumber,
+		&i.AccountNumberMasked,
+		&i.AccountHolderName,
+		&i.HolderNameMatched,
+		&i.Status,
+		&i.ReviewNote,
+		&i.OTPHash,
+		&i.OTPExpiresAt,
+		&i.OTPAttempts,
+		&i.PayoutLockedUntil,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OTPPublishFailed,
 	)
 	return i, err
 }
@@ -389,6 +658,21 @@ func (q *Queries) ExistsActiveShopByPickupAddressID(ctx context.Context, pickupA
 	return used, err
 }
 
+const existsPendingBankReviewByShopID = `-- name: ExistsPendingBankReviewByShopID :one
+SELECT EXISTS (
+    SELECT 1 FROM shop_bank_accounts
+    WHERE shop_id = $1
+      AND status = 'PENDING_ADMIN_REVIEW'
+)::boolean AS pending
+`
+
+func (q *Queries) ExistsPendingBankReviewByShopID(ctx context.Context, shopID string) (bool, error) {
+	row := q.db.QueryRow(ctx, existsPendingBankReviewByShopID, shopID)
+	var pending bool
+	err := row.Scan(&pending)
+	return pending, err
+}
+
 const getAddressByID = `-- name: GetAddressByID :one
 SELECT id, user_id, recipient_name, recipient_phone, province_code, province_name, ward_code, ward_name, street_address, legacy_province_code, legacy_district_code, legacy_ward_code, is_default, created_at, updated_at FROM addresses
 WHERE id = $1
@@ -418,6 +702,58 @@ func (q *Queries) GetAddressByID(ctx context.Context, id string) (Address, error
 	return i, err
 }
 
+const getLatestShopBankAccountByShopID = `-- name: GetLatestShopBankAccountByShopID :one
+SELECT id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed FROM shop_bank_accounts
+WHERE shop_id = $1
+  AND status <> 'SUPERSEDED'
+  AND (
+      status <> 'PENDING_OTP'
+      OR (otp_expires_at IS NOT NULL AND otp_expires_at > $2::timestamptz)
+  )
+ORDER BY
+    CASE WHEN $3::boolean AND status = 'PENDING_ADMIN_REVIEW' THEN 0 ELSE 1 END ASC,
+    created_at DESC,
+    CASE status
+        WHEN 'PENDING_OTP' THEN 0
+        WHEN 'PENDING_ADMIN_REVIEW' THEN 1
+        WHEN 'REJECTED' THEN 2
+        ELSE 3
+    END ASC
+LIMIT 1
+`
+
+type GetLatestShopBankAccountByShopIDParams struct {
+	ShopID            string    `json:"shop_id"`
+	NowTime           time.Time `json:"now_time"`
+	PreferAdminReview bool      `json:"prefer_admin_review"`
+}
+
+func (q *Queries) GetLatestShopBankAccountByShopID(ctx context.Context, arg GetLatestShopBankAccountByShopIDParams) (ShopBankAccount, error) {
+	row := q.db.QueryRow(ctx, getLatestShopBankAccountByShopID, arg.ShopID, arg.NowTime, arg.PreferAdminReview)
+	var i ShopBankAccount
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.BankCode,
+		&i.BankName,
+		&i.AccountNumber,
+		&i.AccountNumberMasked,
+		&i.AccountHolderName,
+		&i.HolderNameMatched,
+		&i.Status,
+		&i.ReviewNote,
+		&i.OTPHash,
+		&i.OTPExpiresAt,
+		&i.OTPAttempts,
+		&i.PayoutLockedUntil,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OTPPublishFailed,
+	)
+	return i, err
+}
+
 const getPasswordResetByHashForUpdate = `-- name: GetPasswordResetByHashForUpdate :one
 SELECT id, user_id, token_hash, expires_at, used_at, created_at FROM password_resets
 WHERE token_hash = $1
@@ -435,6 +771,76 @@ func (q *Queries) GetPasswordResetByHashForUpdate(ctx context.Context, tokenHash
 		&i.ExpiresAt,
 		&i.UsedAt,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getPendingAdminReviewShopBankAccountByShopIDForUpdate = `-- name: GetPendingAdminReviewShopBankAccountByShopIDForUpdate :one
+SELECT id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed FROM shop_bank_accounts
+WHERE shop_id = $1
+  AND status = 'PENDING_ADMIN_REVIEW'
+ORDER BY created_at DESC
+LIMIT 1
+FOR UPDATE
+`
+
+func (q *Queries) GetPendingAdminReviewShopBankAccountByShopIDForUpdate(ctx context.Context, shopID string) (ShopBankAccount, error) {
+	row := q.db.QueryRow(ctx, getPendingAdminReviewShopBankAccountByShopIDForUpdate, shopID)
+	var i ShopBankAccount
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.BankCode,
+		&i.BankName,
+		&i.AccountNumber,
+		&i.AccountNumberMasked,
+		&i.AccountHolderName,
+		&i.HolderNameMatched,
+		&i.Status,
+		&i.ReviewNote,
+		&i.OTPHash,
+		&i.OTPExpiresAt,
+		&i.OTPAttempts,
+		&i.PayoutLockedUntil,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OTPPublishFailed,
+	)
+	return i, err
+}
+
+const getPendingOTPShopBankAccountForUpdate = `-- name: GetPendingOTPShopBankAccountForUpdate :one
+SELECT id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed FROM shop_bank_accounts
+WHERE shop_id = $1
+  AND status = 'PENDING_OTP'
+ORDER BY created_at DESC
+LIMIT 1
+FOR UPDATE
+`
+
+func (q *Queries) GetPendingOTPShopBankAccountForUpdate(ctx context.Context, shopID string) (ShopBankAccount, error) {
+	row := q.db.QueryRow(ctx, getPendingOTPShopBankAccountForUpdate, shopID)
+	var i ShopBankAccount
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.BankCode,
+		&i.BankName,
+		&i.AccountNumber,
+		&i.AccountNumberMasked,
+		&i.AccountHolderName,
+		&i.HolderNameMatched,
+		&i.Status,
+		&i.ReviewNote,
+		&i.OTPHash,
+		&i.OTPExpiresAt,
+		&i.OTPAttempts,
+		&i.PayoutLockedUntil,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OTPPublishFailed,
 	)
 	return i, err
 }
@@ -461,8 +867,41 @@ func (q *Queries) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (
 	return i, err
 }
 
+const getShopBankAccountByIDForUpdate = `-- name: GetShopBankAccountByIDForUpdate :one
+SELECT id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed FROM shop_bank_accounts
+WHERE id = $1
+LIMIT 1
+FOR UPDATE
+`
+
+func (q *Queries) GetShopBankAccountByIDForUpdate(ctx context.Context, id string) (ShopBankAccount, error) {
+	row := q.db.QueryRow(ctx, getShopBankAccountByIDForUpdate, id)
+	var i ShopBankAccount
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.BankCode,
+		&i.BankName,
+		&i.AccountNumber,
+		&i.AccountNumberMasked,
+		&i.AccountHolderName,
+		&i.HolderNameMatched,
+		&i.Status,
+		&i.ReviewNote,
+		&i.OTPHash,
+		&i.OTPExpiresAt,
+		&i.OTPAttempts,
+		&i.PayoutLockedUntil,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OTPPublishFailed,
+	)
+	return i, err
+}
+
 const getShopByID = `-- name: GetShopByID :one
-SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug FROM shops
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name FROM shops
 WHERE id = $1
 LIMIT 1
 `
@@ -483,12 +922,41 @@ func (q *Queries) GetShopByID(ctx context.Context, id string) (Shop, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Slug,
+		&i.VerifiedOwnerName,
+	)
+	return i, err
+}
+
+const getShopByIDForUpdate = `-- name: GetShopByIDForUpdate :one
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name FROM shops
+WHERE id = $1
+LIMIT 1
+FOR UPDATE
+`
+
+func (q *Queries) GetShopByIDForUpdate(ctx context.Context, id string) (Shop, error) {
+	row := q.db.QueryRow(ctx, getShopByIDForUpdate, id)
+	var i Shop
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerUserID,
+		&i.Name,
+		&i.Description,
+		&i.PickupAddressID,
+		&i.ContactPhone,
+		&i.BusinessLicenseDoc,
+		&i.Status,
+		&i.RejectionReason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Slug,
+		&i.VerifiedOwnerName,
 	)
 	return i, err
 }
 
 const getShopByName = `-- name: GetShopByName :one
-SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug FROM shops
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name FROM shops
 WHERE LOWER(name) = LOWER($1)
 LIMIT 1
 `
@@ -509,12 +977,13 @@ func (q *Queries) GetShopByName(ctx context.Context, lower string) (Shop, error)
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Slug,
+		&i.VerifiedOwnerName,
 	)
 	return i, err
 }
 
 const getShopByOwnerID = `-- name: GetShopByOwnerID :one
-SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug FROM shops
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name FROM shops
 WHERE owner_user_id = $1
 ORDER BY created_at DESC
 LIMIT 1
@@ -536,12 +1005,13 @@ func (q *Queries) GetShopByOwnerID(ctx context.Context, ownerUserID string) (Sho
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Slug,
+		&i.VerifiedOwnerName,
 	)
 	return i, err
 }
 
 const getShopBySlug = `-- name: GetShopBySlug :one
-SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug FROM shops
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name FROM shops
 WHERE slug = $1
 LIMIT 1
 `
@@ -562,7 +1032,29 @@ func (q *Queries) GetShopBySlug(ctx context.Context, slug string) (Shop, error) 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Slug,
+		&i.VerifiedOwnerName,
 	)
+	return i, err
+}
+
+const getShopPlatformCounts = `-- name: GetShopPlatformCounts :one
+SELECT
+    COUNT(*)::bigint AS total_shops,
+    COUNT(*) FILTER (WHERE status = 'ACTIVE')::bigint AS active_shops,
+    COUNT(*) FILTER (WHERE status = 'PENDING')::bigint AS pending_shops
+FROM shops
+`
+
+type GetShopPlatformCountsRow struct {
+	TotalShops   int64 `json:"total_shops"`
+	ActiveShops  int64 `json:"active_shops"`
+	PendingShops int64 `json:"pending_shops"`
+}
+
+func (q *Queries) GetShopPlatformCounts(ctx context.Context) (GetShopPlatformCountsRow, error) {
+	row := q.db.QueryRow(ctx, getShopPlatformCounts)
+	var i GetShopPlatformCountsRow
+	err := row.Scan(&i.TotalShops, &i.ActiveShops, &i.PendingShops)
 	return i, err
 }
 
@@ -651,6 +1143,35 @@ func (q *Queries) GetUserByIDForShare(ctx context.Context, id string) (User, err
 	return i, err
 }
 
+const getUserByIDForUpdate = `-- name: GetUserByIDForUpdate :one
+SELECT id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason FROM users
+WHERE id = $1
+LIMIT 1
+FOR UPDATE
+`
+
+func (q *Queries) GetUserByIDForUpdate(ctx context.Context, id string) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByIDForUpdate, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.FullName,
+		&i.Email,
+		&i.Phone,
+		&i.PasswordHash,
+		&i.Role,
+		&i.Status,
+		&i.ShopID,
+		&i.PhoneVerified,
+		&i.CODRejectedCount,
+		&i.AvatarURL,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LockReason,
+	)
+	return i, err
+}
+
 const getUserByPhone = `-- name: GetUserByPhone :one
 SELECT id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason FROM users
 WHERE phone = $1 AND phone <> ''
@@ -675,6 +1196,58 @@ func (q *Queries) GetUserByPhone(ctx context.Context, phone string) (User, error
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LockReason,
+	)
+	return i, err
+}
+
+const getUserPlatformCounts = `-- name: GetUserPlatformCounts :one
+SELECT
+    COUNT(*)::bigint AS total_users,
+    COUNT(*) FILTER (WHERE status = 'ACTIVE')::bigint AS active_users
+FROM users
+`
+
+type GetUserPlatformCountsRow struct {
+	TotalUsers  int64 `json:"total_users"`
+	ActiveUsers int64 `json:"active_users"`
+}
+
+func (q *Queries) GetUserPlatformCounts(ctx context.Context) (GetUserPlatformCountsRow, error) {
+	row := q.db.QueryRow(ctx, getUserPlatformCounts)
+	var i GetUserPlatformCountsRow
+	err := row.Scan(&i.TotalUsers, &i.ActiveUsers)
+	return i, err
+}
+
+const getVerifiedShopBankAccountByShopID = `-- name: GetVerifiedShopBankAccountByShopID :one
+SELECT id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed FROM shop_bank_accounts
+WHERE shop_id = $1
+  AND status = 'VERIFIED'
+LIMIT 1
+`
+
+func (q *Queries) GetVerifiedShopBankAccountByShopID(ctx context.Context, shopID string) (ShopBankAccount, error) {
+	row := q.db.QueryRow(ctx, getVerifiedShopBankAccountByShopID, shopID)
+	var i ShopBankAccount
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.BankCode,
+		&i.BankName,
+		&i.AccountNumber,
+		&i.AccountNumberMasked,
+		&i.AccountHolderName,
+		&i.HolderNameMatched,
+		&i.Status,
+		&i.ReviewNote,
+		&i.OTPHash,
+		&i.OTPExpiresAt,
+		&i.OTPAttempts,
+		&i.PayoutLockedUntil,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OTPPublishFailed,
 	)
 	return i, err
 }
@@ -967,8 +1540,90 @@ func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([
 	return items, nil
 }
 
+const listDailyNewShopsVN = `-- name: ListDailyNewShopsVN :many
+SELECT
+    to_char(created_at AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY-MM-DD')::text AS vn_date,
+    COUNT(*)::bigint AS cnt
+FROM shops
+WHERE created_at >= $1::timestamptz
+  AND created_at < $2::timestamptz
+GROUP BY 1
+ORDER BY 1 ASC
+`
+
+type ListDailyNewShopsVNParams struct {
+	StartTime time.Time `json:"start_time"`
+	EndTime   time.Time `json:"end_time"`
+}
+
+type ListDailyNewShopsVNRow struct {
+	VnDate string `json:"vn_date"`
+	Cnt    int64  `json:"cnt"`
+}
+
+func (q *Queries) ListDailyNewShopsVN(ctx context.Context, arg ListDailyNewShopsVNParams) ([]ListDailyNewShopsVNRow, error) {
+	rows, err := q.db.Query(ctx, listDailyNewShopsVN, arg.StartTime, arg.EndTime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDailyNewShopsVNRow{}
+	for rows.Next() {
+		var i ListDailyNewShopsVNRow
+		if err := rows.Scan(&i.VnDate, &i.Cnt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDailyNewUsersVN = `-- name: ListDailyNewUsersVN :many
+SELECT
+    to_char(created_at AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY-MM-DD')::text AS vn_date,
+    COUNT(*)::bigint AS cnt
+FROM users
+WHERE created_at >= $1::timestamptz
+  AND created_at < $2::timestamptz
+GROUP BY 1
+ORDER BY 1 ASC
+`
+
+type ListDailyNewUsersVNParams struct {
+	StartTime time.Time `json:"start_time"`
+	EndTime   time.Time `json:"end_time"`
+}
+
+type ListDailyNewUsersVNRow struct {
+	VnDate string `json:"vn_date"`
+	Cnt    int64  `json:"cnt"`
+}
+
+func (q *Queries) ListDailyNewUsersVN(ctx context.Context, arg ListDailyNewUsersVNParams) ([]ListDailyNewUsersVNRow, error) {
+	rows, err := q.db.Query(ctx, listDailyNewUsersVN, arg.StartTime, arg.EndTime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDailyNewUsersVNRow{}
+	for rows.Next() {
+		var i ListDailyNewUsersVNRow
+		if err := rows.Scan(&i.VnDate, &i.Cnt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listShops = `-- name: ListShops :many
-SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug FROM shops
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name FROM shops
 WHERE ($1::text = '' OR status = $1::text)
 ORDER BY created_at DESC
 LIMIT $3 OFFSET $2
@@ -1002,6 +1657,7 @@ func (q *Queries) ListShops(ctx context.Context, arg ListShopsParams) ([]Shop, e
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Slug,
+			&i.VerifiedOwnerName,
 		); err != nil {
 			return nil, err
 		}
@@ -1091,6 +1747,80 @@ func (q *Queries) MarkPasswordResetUsed(ctx context.Context, arg MarkPasswordRes
 	return result.RowsAffected(), nil
 }
 
+const markShopBankAccountPublishFailed = `-- name: MarkShopBankAccountPublishFailed :exec
+UPDATE shop_bank_accounts
+SET status = 'SUPERSEDED',
+    otp_hash = '',
+    otp_expires_at = NULL,
+    otp_publish_failed = TRUE,
+    updated_at = $2
+WHERE id = $1
+  AND status = 'PENDING_OTP'
+`
+
+type MarkShopBankAccountPublishFailedParams struct {
+	ID        string    `json:"id"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (q *Queries) MarkShopBankAccountPublishFailed(ctx context.Context, arg MarkShopBankAccountPublishFailedParams) error {
+	_, err := q.db.Exec(ctx, markShopBankAccountPublishFailed, arg.ID, arg.UpdatedAt)
+	return err
+}
+
+const recordShopBankAccountOTPFailure = `-- name: RecordShopBankAccountOTPFailure :one
+UPDATE shop_bank_accounts
+SET status = $2,
+    otp_attempts = $3,
+    otp_hash = $4,
+    otp_expires_at = $5,
+    updated_at = $6
+WHERE id = $1
+RETURNING id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed
+`
+
+type RecordShopBankAccountOTPFailureParams struct {
+	ID           string     `json:"id"`
+	Status       string     `json:"status"`
+	OTPAttempts  int32      `json:"otp_attempts"`
+	OTPHash      string     `json:"otp_hash"`
+	OTPExpiresAt *time.Time `json:"otp_expires_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+func (q *Queries) RecordShopBankAccountOTPFailure(ctx context.Context, arg RecordShopBankAccountOTPFailureParams) (ShopBankAccount, error) {
+	row := q.db.QueryRow(ctx, recordShopBankAccountOTPFailure,
+		arg.ID,
+		arg.Status,
+		arg.OTPAttempts,
+		arg.OTPHash,
+		arg.OTPExpiresAt,
+		arg.UpdatedAt,
+	)
+	var i ShopBankAccount
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.BankCode,
+		&i.BankName,
+		&i.AccountNumber,
+		&i.AccountNumberMasked,
+		&i.AccountHolderName,
+		&i.HolderNameMatched,
+		&i.Status,
+		&i.ReviewNote,
+		&i.OTPHash,
+		&i.OTPExpiresAt,
+		&i.OTPAttempts,
+		&i.PayoutLockedUntil,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OTPPublishFailed,
+	)
+	return i, err
+}
+
 const resubmitShop = `-- name: ResubmitShop :one
 UPDATE shops
 SET name = $2,
@@ -1101,10 +1831,11 @@ SET name = $2,
     business_license_doc = $7,
     status = 'PENDING',
     rejection_reason = '',
+    verified_owner_name = '',
     updated_at = NOW()
 WHERE id = $1
   AND (status = 'REJECTED' OR (status = 'PENDING' AND btrim(rejection_reason) <> ''))
-RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug
+RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name
 `
 
 type ResubmitShopParams struct {
@@ -1141,6 +1872,7 @@ func (q *Queries) ResubmitShop(ctx context.Context, arg ResubmitShopParams) (Sho
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Slug,
+		&i.VerifiedOwnerName,
 	)
 	return i, err
 }
@@ -1200,6 +1932,66 @@ func (q *Queries) RevokeRefreshTokenWithReplacement(ctx context.Context, arg Rev
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const supersedePendingAdminReviewShopBankAccounts = `-- name: SupersedePendingAdminReviewShopBankAccounts :exec
+UPDATE shop_bank_accounts
+SET status = 'SUPERSEDED',
+    otp_hash = '',
+    otp_expires_at = NULL,
+    updated_at = $2
+WHERE shop_id = $1
+  AND status IN ('PENDING_ADMIN_REVIEW', 'REJECTED')
+`
+
+type SupersedePendingAdminReviewShopBankAccountsParams struct {
+	ShopID    string    `json:"shop_id"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (q *Queries) SupersedePendingAdminReviewShopBankAccounts(ctx context.Context, arg SupersedePendingAdminReviewShopBankAccountsParams) error {
+	_, err := q.db.Exec(ctx, supersedePendingAdminReviewShopBankAccounts, arg.ShopID, arg.UpdatedAt)
+	return err
+}
+
+const supersedePendingOTPShopBankAccounts = `-- name: SupersedePendingOTPShopBankAccounts :exec
+UPDATE shop_bank_accounts
+SET status = 'SUPERSEDED',
+    otp_hash = '',
+    otp_expires_at = NULL,
+    updated_at = $2
+WHERE shop_id = $1
+  AND status IN ('PENDING_OTP', 'REJECTED')
+`
+
+type SupersedePendingOTPShopBankAccountsParams struct {
+	ShopID    string    `json:"shop_id"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (q *Queries) SupersedePendingOTPShopBankAccounts(ctx context.Context, arg SupersedePendingOTPShopBankAccountsParams) error {
+	_, err := q.db.Exec(ctx, supersedePendingOTPShopBankAccounts, arg.ShopID, arg.UpdatedAt)
+	return err
+}
+
+const supersedeShopBankAccount = `-- name: SupersedeShopBankAccount :exec
+UPDATE shop_bank_accounts
+SET status = 'SUPERSEDED',
+    otp_hash = '',
+    otp_expires_at = NULL,
+    updated_at = $2
+WHERE id = $1
+  AND status <> 'SUPERSEDED'
+`
+
+type SupersedeShopBankAccountParams struct {
+	ID        string    `json:"id"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (q *Queries) SupersedeShopBankAccount(ctx context.Context, arg SupersedeShopBankAccountParams) error {
+	_, err := q.db.Exec(ctx, supersedeShopBankAccount, arg.ID, arg.UpdatedAt)
+	return err
 }
 
 const updateAddress = `-- name: UpdateAddress :one
@@ -1262,24 +2054,85 @@ func (q *Queries) UpdateAddress(ctx context.Context, arg UpdateAddressParams) (A
 	return i, err
 }
 
+const updateShopBankAccountAdminReview = `-- name: UpdateShopBankAccountAdminReview :one
+UPDATE shop_bank_accounts
+SET status = $2,
+    review_note = $3,
+    payout_locked_until = $4,
+    verified_at = $5,
+    updated_at = $6
+WHERE id = $1
+  AND status = 'PENDING_ADMIN_REVIEW'
+RETURNING id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed
+`
+
+type UpdateShopBankAccountAdminReviewParams struct {
+	ID                string     `json:"id"`
+	Status            string     `json:"status"`
+	ReviewNote        string     `json:"review_note"`
+	PayoutLockedUntil *time.Time `json:"payout_locked_until"`
+	VerifiedAt        *time.Time `json:"verified_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
+func (q *Queries) UpdateShopBankAccountAdminReview(ctx context.Context, arg UpdateShopBankAccountAdminReviewParams) (ShopBankAccount, error) {
+	row := q.db.QueryRow(ctx, updateShopBankAccountAdminReview,
+		arg.ID,
+		arg.Status,
+		arg.ReviewNote,
+		arg.PayoutLockedUntil,
+		arg.VerifiedAt,
+		arg.UpdatedAt,
+	)
+	var i ShopBankAccount
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.BankCode,
+		&i.BankName,
+		&i.AccountNumber,
+		&i.AccountNumberMasked,
+		&i.AccountHolderName,
+		&i.HolderNameMatched,
+		&i.Status,
+		&i.ReviewNote,
+		&i.OTPHash,
+		&i.OTPExpiresAt,
+		&i.OTPAttempts,
+		&i.PayoutLockedUntil,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OTPPublishFailed,
+	)
+	return i, err
+}
+
 const updateShopReview = `-- name: UpdateShopReview :one
 UPDATE shops
 SET status = $2,
     rejection_reason = $3,
+    verified_owner_name = CASE WHEN $2 = 'ACTIVE' THEN $4 ELSE verified_owner_name END,
     updated_at = NOW()
 WHERE id = $1
   AND status = 'PENDING'
-RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug
+RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name
 `
 
 type UpdateShopReviewParams struct {
-	ID              string `json:"id"`
-	Status          string `json:"status"`
-	RejectionReason string `json:"rejection_reason"`
+	ID                string `json:"id"`
+	Status            string `json:"status"`
+	RejectionReason   string `json:"rejection_reason"`
+	VerifiedOwnerName string `json:"verified_owner_name"`
 }
 
 func (q *Queries) UpdateShopReview(ctx context.Context, arg UpdateShopReviewParams) (Shop, error) {
-	row := q.db.QueryRow(ctx, updateShopReview, arg.ID, arg.Status, arg.RejectionReason)
+	row := q.db.QueryRow(ctx, updateShopReview,
+		arg.ID,
+		arg.Status,
+		arg.RejectionReason,
+		arg.VerifiedOwnerName,
+	)
 	var i Shop
 	err := row.Scan(
 		&i.ID,
@@ -1294,6 +2147,7 @@ func (q *Queries) UpdateShopReview(ctx context.Context, arg UpdateShopReviewPara
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Slug,
+		&i.VerifiedOwnerName,
 	)
 	return i, err
 }

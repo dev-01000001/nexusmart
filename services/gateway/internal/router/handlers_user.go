@@ -41,6 +41,12 @@ type shopDTO struct {
 	UpdatedAt          string `json:"updated_at,omitempty"`
 }
 
+// adminShopDTO extends shopDTO with admin-only operational flags.
+type adminShopDTO struct {
+	shopDTO
+	BankReviewPending bool `json:"bank_review_pending"`
+}
+
 // publicShopDTO exposes only non-sensitive fields for unauthenticated storefront reads.
 type publicShopDTO struct {
 	ID          string `json:"id"`
@@ -84,6 +90,99 @@ type auditLogDTO struct {
 	CreatedAt  string `json:"created_at,omitempty"`
 }
 
+type shopBankAccountDTO struct {
+	ID                  string `json:"id"`
+	ShopID              string `json:"shop_id"`
+	BankCode            string `json:"bank_code"`
+	BankName            string `json:"bank_name"`
+	AccountNumberMasked string `json:"account_number_masked"`
+	AccountHolderName   string `json:"account_holder_name"`
+	HolderNameMatched   bool   `json:"holder_name_matched"`
+	Status              string `json:"status"`
+	ReviewNote          string `json:"review_note"`
+	PayoutLockedUntil   string `json:"payout_locked_until,omitempty"`
+	VerifiedAt          string `json:"verified_at,omitempty"`
+	CreatedAt           string `json:"created_at,omitempty"`
+	UpdatedAt           string `json:"updated_at,omitempty"`
+}
+
+type dailyUserShopStatDTO struct {
+	Date     string `json:"date"`
+	NewUsers int64  `json:"new_users"`
+	NewShops int64  `json:"new_shops"`
+}
+
+type platformUserStatsDTO struct {
+	TotalUsers   int64                   `json:"total_users"`
+	ActiveUsers  int64                   `json:"active_users"`
+	NewUsers     int64                   `json:"new_users"`
+	TotalShops   int64                   `json:"total_shops"`
+	ActiveShops  int64                   `json:"active_shops"`
+	PendingShops int64                   `json:"pending_shops"`
+	NewShops     int64                   `json:"new_shops"`
+	Daily        []*dailyUserShopStatDTO `json:"daily"`
+}
+
+func shopBankAccountStatusString(st userv1.ShopBankAccountStatus) string {
+	switch st {
+	case userv1.ShopBankAccountStatus_SHOP_BANK_ACCOUNT_STATUS_PENDING_OTP:
+		return "PENDING_OTP"
+	case userv1.ShopBankAccountStatus_SHOP_BANK_ACCOUNT_STATUS_PENDING_ADMIN_REVIEW:
+		return "PENDING_ADMIN_REVIEW"
+	case userv1.ShopBankAccountStatus_SHOP_BANK_ACCOUNT_STATUS_VERIFIED:
+		return "VERIFIED"
+	case userv1.ShopBankAccountStatus_SHOP_BANK_ACCOUNT_STATUS_REJECTED:
+		return "REJECTED"
+	default:
+		return ""
+	}
+}
+
+func mapShopBankAccount(ba *userv1.ShopBankAccount) *shopBankAccountDTO {
+	if ba == nil {
+		return nil
+	}
+	return &shopBankAccountDTO{
+		ID:                  ba.GetId(),
+		ShopID:              ba.GetShopId(),
+		BankCode:            ba.GetBankCode(),
+		BankName:            ba.GetBankName(),
+		AccountNumberMasked: ba.GetAccountNumberMasked(),
+		AccountHolderName:   ba.GetAccountHolderName(),
+		HolderNameMatched:   ba.GetHolderNameMatched(),
+		Status:              shopBankAccountStatusString(ba.GetStatus()),
+		ReviewNote:          ba.GetReviewNote(),
+		PayoutLockedUntil:   httpx.FormatTimestamp(ba.GetPayoutLockedUntil()),
+		VerifiedAt:          httpx.FormatTimestamp(ba.GetVerifiedAt()),
+		CreatedAt:           httpx.FormatTimestamp(ba.GetCreatedAt()),
+		UpdatedAt:           httpx.FormatTimestamp(ba.GetUpdatedAt()),
+	}
+}
+
+func mapPlatformUserStats(s *userv1.GetPlatformUserStatsResponse) *platformUserStatsDTO {
+	if s == nil {
+		return nil
+	}
+	daily := make([]*dailyUserShopStatDTO, 0, len(s.GetDaily()))
+	for _, d := range s.GetDaily() {
+		daily = append(daily, &dailyUserShopStatDTO{
+			Date:     d.GetDate(),
+			NewUsers: d.GetNewUsers(),
+			NewShops: d.GetNewShops(),
+		})
+	}
+	return &platformUserStatsDTO{
+		TotalUsers:   s.GetTotalUsers(),
+		ActiveUsers:  s.GetActiveUsers(),
+		NewUsers:     s.GetNewUsers(),
+		TotalShops:   s.GetTotalShops(),
+		ActiveShops:  s.GetActiveShops(),
+		PendingShops: s.GetPendingShops(),
+		NewShops:     s.GetNewShops(),
+		Daily:        daily,
+	}
+}
+
 func mapUser(u *userv1.User) *userDTO {
 	if u == nil {
 		return nil
@@ -122,6 +221,16 @@ func mapShop(s *userv1.Shop) *shopDTO {
 		RejectionReason:    s.GetRejectionReason(),
 		CreatedAt:          httpx.FormatTimestamp(s.GetCreatedAt()),
 		UpdatedAt:          httpx.FormatTimestamp(s.GetUpdatedAt()),
+	}
+}
+
+func mapAdminShop(s *userv1.Shop) *adminShopDTO {
+	if s == nil {
+		return nil
+	}
+	return &adminShopDTO{
+		shopDTO:           *mapShop(s),
+		BankReviewPending: s.GetBankReviewPending(),
 	}
 }
 
@@ -860,17 +969,18 @@ func (h *handler) handleAdminListShops(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	resp, err := h.clients.User.AdminListShops(ctx, &userv1.AdminListShopsRequest{
-		Status:   parseShopStatus(r.URL.Query().Get("status")),
-		Page:     page,
-		PageSize: pageSize,
+		Status:                parseShopStatus(r.URL.Query().Get("status")),
+		BankReviewPendingOnly: httpx.ParseBoolQuery(r, "bank_review_pending"),
+		Page:                  page,
+		PageSize:              pageSize,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
-	items := make([]*shopDTO, 0, len(resp.GetShops()))
+	items := make([]*adminShopDTO, 0, len(resp.GetShops()))
 	for _, s := range resp.GetShops() {
-		items = append(items, mapShop(s))
+		items = append(items, mapAdminShop(s))
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"items":     items,
@@ -902,7 +1012,7 @@ func (h *handler) handleAdminReviewShop(w http.ResponseWriter, r *http.Request) 
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"shop": mapShop(resp.GetShop())})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"shop": mapAdminShop(resp.GetShop())})
 }
 
 func (h *handler) handleAdminListAuditLogs(w http.ResponseWriter, r *http.Request) {
@@ -945,5 +1055,125 @@ func (h *handler) handleAdminListAuditLogs(w http.ResponseWriter, r *http.Reques
 		"page":      page,
 		"page_size": pageSize,
 		"total":     resp.GetTotal(),
+	})
+}
+
+func (h *handler) handleSellerGetBankAccount(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.GetShopBankAccount(ctx, &userv1.GetShopBankAccountRequest{
+		ShopId: auth.ShopIDFromContext(r.Context()),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"bank_account": mapShopBankAccount(resp.GetBankAccount()),
+	})
+}
+
+func (h *handler) handleSellerAddBankAccount(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		BankCode          string `json:"bank_code"`
+		BankName          string `json:"bank_name"`
+		AccountNumber     string `json:"account_number"`
+		AccountHolderName string `json:"account_holder_name"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.AddShopBankAccount(ctx, &userv1.AddShopBankAccountRequest{
+		ShopId:            auth.ShopIDFromContext(r.Context()),
+		BankCode:          body.BankCode,
+		BankName:          body.BankName,
+		AccountNumber:     body.AccountNumber,
+		AccountHolderName: body.AccountHolderName,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+		"bank_account": mapShopBankAccount(resp.GetBankAccount()),
+		"otp_sent":     resp.GetOtpSent(),
+	})
+}
+
+func (h *handler) handleSellerVerifyBankAccountOTP(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		OTP string `json:"otp"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.VerifyShopBankAccountOTP(ctx, &userv1.VerifyShopBankAccountOTPRequest{
+		ShopId: auth.ShopIDFromContext(r.Context()),
+		Otp:    body.OTP,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"bank_account": mapShopBankAccount(resp.GetBankAccount()),
+	})
+}
+
+func (h *handler) handleAdminGetShopBankAccount(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.GetShopBankAccount(ctx, &userv1.GetShopBankAccountRequest{
+		ShopId: chi.URLParam(r, "id"),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"bank_account": mapShopBankAccount(resp.GetBankAccount()),
+	})
+}
+
+func (h *handler) handleAdminReviewShopBankAccount(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		BankAccountID string `json:"bank_account_id"`
+		Decision      string `json:"decision"`
+		Reason        string `json:"reason"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	decision := parseReviewDecision(body.Decision)
+	if decision != userv1.ReviewDecision_REVIEW_DECISION_APPROVE && decision != userv1.ReviewDecision_REVIEW_DECISION_REJECT {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "decision must be APPROVE or REJECT")
+		return
+	}
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.AdminReviewShopBankAccount(ctx, &userv1.AdminReviewShopBankAccountRequest{
+		ShopId:        chi.URLParam(r, "id"),
+		BankAccountId: body.BankAccountID,
+		Decision:      decision,
+		Reason:        body.Reason,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"bank_account": mapShopBankAccount(resp.GetBankAccount()),
 	})
 }

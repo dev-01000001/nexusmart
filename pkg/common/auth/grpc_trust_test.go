@@ -2,6 +2,15 @@ package auth
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,9 +123,11 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.user.v1.UserService/GetProfile",
 		"/nexusmart.user.v1.UserService/RecordCODRejection",
 		"/nexusmart.user.v1.UserService/WriteAuditLog",
+		"/nexusmart.user.v1.UserService/GetShopBankAccountForPayout",
 		"/nexusmart.product.v1.ProductService/ReleaseStock",
 		"/nexusmart.product.v1.ProductService/ConfirmStock",
 		"/nexusmart.product.v1.ProductService/RestockOrderItems",
+		"/nexusmart.product.v1.ProductService/GetCategoryDescendants",
 		"/nexusmart.promotion.v1.PromotionService/ReleasePromotion",
 		"/nexusmart.promotion.v1.PromotionService/ReleasePromotionShop",
 		"/nexusmart.promotion.v1.PromotionService/CreditCoins",
@@ -142,22 +153,44 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.user.v1.UserService/UpdateAddress",
 		"/nexusmart.user.v1.UserService/DeleteAddress",
 		"/nexusmart.user.v1.UserService/ListAuditLogs",
+		"/nexusmart.user.v1.UserService/AddShopBankAccount",
+		"/nexusmart.user.v1.UserService/VerifyShopBankAccountOTP",
+		"/nexusmart.user.v1.UserService/GetShopBankAccount",
+		"/nexusmart.user.v1.UserService/AdminReviewShopBankAccount",
+		"/nexusmart.user.v1.UserService/GetPlatformUserStats",
 		// ProductService
 		"/nexusmart.product.v1.ProductService/CreateCategory",
 		"/nexusmart.product.v1.ProductService/UpdateCategory",
 		"/nexusmart.product.v1.ProductService/DeleteCategory",
+		"/nexusmart.product.v1.ProductService/SetCategoryFeeSchedule",
+		"/nexusmart.product.v1.ProductService/ListCategoryFeeSchedules",
 		"/nexusmart.product.v1.ProductService/CreateProduct",
 		"/nexusmart.product.v1.ProductService/UpdateProduct",
 		"/nexusmart.product.v1.ProductService/DeleteProduct",
 		"/nexusmart.product.v1.ProductService/AdminReviewProduct",
 		"/nexusmart.product.v1.ProductService/UpdateStock",
 		"/nexusmart.product.v1.ProductService/ReserveStock",
+		// CartService
+		"/nexusmart.cart.v1.CartService/GetCart",
+		"/nexusmart.cart.v1.CartService/AddItem",
+		"/nexusmart.cart.v1.CartService/UpdateItemQty",
+		"/nexusmart.cart.v1.CartService/RemoveItem",
+		"/nexusmart.cart.v1.CartService/ClearItems",
 		// PromotionService
 		"/nexusmart.promotion.v1.PromotionService/CreateVoucher",
+		"/nexusmart.promotion.v1.PromotionService/UpdateVoucher",
+		"/nexusmart.promotion.v1.PromotionService/SetVoucherStatus",
+		"/nexusmart.promotion.v1.PromotionService/DeleteVoucher",
 		"/nexusmart.promotion.v1.PromotionService/SaveVoucher",
 		"/nexusmart.promotion.v1.PromotionService/CreateFlashSale",
 		"/nexusmart.promotion.v1.PromotionService/RegisterFlashSaleItem",
 		"/nexusmart.promotion.v1.PromotionService/ApproveFlashSaleItem",
+		"/nexusmart.promotion.v1.PromotionService/ListFlashSaleItems",
+		"/nexusmart.promotion.v1.PromotionService/ListAllFlashSales",
+		"/nexusmart.promotion.v1.PromotionService/CreateShopDiscountProgram",
+		"/nexusmart.promotion.v1.PromotionService/UpdateShopDiscountProgram",
+		"/nexusmart.promotion.v1.PromotionService/EndShopDiscountProgram",
+		"/nexusmart.promotion.v1.PromotionService/ListShopDiscountPrograms",
 		"/nexusmart.promotion.v1.PromotionService/GetCoinBalance",
 		"/nexusmart.promotion.v1.PromotionService/PreviewDiscounts",
 		"/nexusmart.promotion.v1.PromotionService/ReservePromotion",
@@ -180,6 +213,10 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.order.v1.OrderService/ConfirmReturnReceived",
 		"/nexusmart.order.v1.OrderService/DisputeReturnGoods",
 		"/nexusmart.order.v1.OrderService/AdminResolveReturn",
+		"/nexusmart.order.v1.OrderService/GetSellerReport",
+		"/nexusmart.order.v1.OrderService/GetPlatformReport",
+		"/nexusmart.order.v1.OrderService/ListOrdersNeedingReview",
+		"/nexusmart.order.v1.OrderService/ResolveOrderReview",
 		// ShippingService
 		"/nexusmart.shipping.v1.ShippingService/CalculateFee",
 		"/nexusmart.shipping.v1.ShippingService/CreateShipment",
@@ -194,7 +231,7 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.notification.v1.NotificationService/GetPreferences",
 		"/nexusmart.notification.v1.NotificationService/UpdatePreferences",
 	}
-	publicRPCs := []string{
+	expectedPublicRPCs := []string{
 		"/nexusmart.user.v1.UserService/Register",
 		"/nexusmart.user.v1.UserService/VerifyOTP",
 		"/nexusmart.user.v1.UserService/ResendOTP",
@@ -209,10 +246,18 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.shipping.v1.ShippingService/MapLegacyAddress",
 		"/nexusmart.promotion.v1.PromotionService/ListAvailableVouchers",
 		"/nexusmart.promotion.v1.PromotionService/ListActiveFlashSales",
+		"/nexusmart.promotion.v1.PromotionService/ListActiveShopDiscounts",
 		"/nexusmart.product.v1.ProductService/ListCategories",
 		"/nexusmart.product.v1.ProductService/GetProduct",
 		"/nexusmart.product.v1.ProductService/ListProducts",
 		"/nexusmart.product.v1.ProductService/GetSKUsBatch",
+	}
+
+	if got, want := len(serviceAllowedRPCs)+len(userOnlyInternalRPCs), len(internalRPCs); got != want {
+		t.Fatalf("contract test internal RPC count=%d does not match internalRPCs map size=%d", got, want)
+	}
+	if got, want := len(expectedPublicRPCs), len(publicRPCs); got != want {
+		t.Fatalf("contract test public RPC count=%d does not match publicRPCs map size=%d", got, want)
 	}
 
 	// None of these RPCs may run anonymously (even with spoofed headers).
@@ -264,6 +309,22 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		{"/nexusmart.user.v1.UserService/ListAddresses", buyerTok, "buyer-1"},
 		{"/nexusmart.user.v1.UserService/ValidateUser", buyerTok, "buyer-1"},
 		{"/nexusmart.user.v1.UserService/WriteAuditLog", adminTok, "admin-1"},
+		{"/nexusmart.user.v1.UserService/AddShopBankAccount", sellerTok, "seller-1"},
+		{"/nexusmart.user.v1.UserService/GetPlatformUserStats", adminTok, "admin-1"},
+		{"/nexusmart.product.v1.ProductService/SetCategoryFeeSchedule", adminTok, "admin-1"},
+		{"/nexusmart.product.v1.ProductService/ListCategoryFeeSchedules", adminTok, "admin-1"},
+		{"/nexusmart.promotion.v1.PromotionService/UpdateVoucher", sellerTok, "seller-1"},
+		{"/nexusmart.promotion.v1.PromotionService/ListFlashSaleItems", adminTok, "admin-1"},
+		{"/nexusmart.promotion.v1.PromotionService/CreateShopDiscountProgram", sellerTok, "seller-1"},
+		{"/nexusmart.order.v1.OrderService/GetSellerReport", sellerTok, "seller-1"},
+		{"/nexusmart.order.v1.OrderService/GetPlatformReport", adminTok, "admin-1"},
+		{"/nexusmart.order.v1.OrderService/ListOrdersNeedingReview", adminTok, "admin-1"},
+		{"/nexusmart.order.v1.OrderService/ResolveOrderReview", adminTok, "admin-1"},
+		{"/nexusmart.cart.v1.CartService/GetCart", buyerTok, "buyer-1"},
+		{"/nexusmart.cart.v1.CartService/AddItem", buyerTok, "buyer-1"},
+		{"/nexusmart.cart.v1.CartService/UpdateItemQty", buyerTok, "buyer-1"},
+		{"/nexusmart.cart.v1.CartService/RemoveItem", buyerTok, "buyer-1"},
+		{"/nexusmart.cart.v1.CartService/ClearItems", buyerTok, "buyer-1"},
 	} {
 		claims, err := callInterceptor(t, users, svc, tc.method, MDAuthorization, "Bearer "+tc.tok)
 		if err != nil || claims == nil || claims.UserID() != tc.wantID {
@@ -272,7 +333,10 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 	}
 
 	// Explicitly public RPCs allow anonymous callers (ignoring spoofed headers) and reject service tokens.
-	for _, m := range publicRPCs {
+	for _, m := range expectedPublicRPCs {
+		if !publicRPCs[m] {
+			t.Fatalf("expectedPublicRPCs entry %s missing from auth.publicRPCs", m)
+		}
 		claims, err := callInterceptor(t, users, svc, m, spoof...)
 		if err != nil || claims != nil {
 			t.Fatalf("public RPC %s with spoofed anonymous headers: want nil claims & nil err, got claims=%+v err=%v", m, claims, err)
@@ -281,4 +345,198 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 			t.Fatalf("service token on public RPC %s: want PermissionDenied, got %v", m, err)
 		}
 	}
+}
+
+// TestAllGoServiceRPCsAreClassified inspects every generated gRPC ServiceDesc under
+// gen/go/nexusmart/ (excluding Rust-only PaymentService) and enforces that every Go RPC
+// is explicitly classified in either internalRPCs or publicRPCs, with no overlap and no
+// stale entries. Any newly added Go RPC forgotten from both fails this test.
+func TestAllGoServiceRPCsAreClassified(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatalf("runtime.Caller failed")
+	}
+	genNexusmartDir := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "gen", "go", "nexusmart"))
+
+	// Rust services enforce service-token allowlists in their own codebase
+	// (PaymentService -> services/payment/src/auth.rs SERVICE_METHODS).
+	nonGoServices := map[string]bool{
+		"nexusmart.payment.v1.PaymentService": true,
+	}
+
+	discoveredRPCs, discoveredServices := discoverGeneratedGoRPCs(t, genNexusmartDir, nonGoServices)
+	if len(discoveredServices) < 7 {
+		t.Fatalf("expected at least 7 Go gRPC services under %s, found %d (%v)", genNexusmartDir, len(discoveredServices), discoveredServices)
+	}
+	if len(discoveredRPCs) < 100 {
+		t.Fatalf("expected >100 Go RPCs under %s, found %d", genNexusmartDir, len(discoveredRPCs))
+	}
+
+	// 1. Every generated Go RPC must be classified in exactly one of internalRPCs or publicRPCs.
+	var unclassified, overlapped []string
+	for method := range discoveredRPCs {
+		_, inInternal := internalRPCs[method]
+		inPublic := publicRPCs[method]
+		switch {
+		case !inInternal && !inPublic:
+			unclassified = append(unclassified, method)
+		case inInternal && inPublic:
+			overlapped = append(overlapped, method)
+		}
+	}
+	sort.Strings(unclassified)
+	sort.Strings(overlapped)
+	if len(unclassified) > 0 {
+		t.Errorf("unclassified Go RPCs (add each to internalRPCs or publicRPCs in pkg/common/auth/auth.go and update docs/contracts.md §4.10): %v", unclassified)
+	}
+	if len(overlapped) > 0 {
+		t.Errorf("RPCs classified as BOTH internal and public: %v", overlapped)
+	}
+
+	// 2. No stale/typo RPC names in internalRPCs or publicRPCs.
+	var staleInternal, stalePublic []string
+	for method := range internalRPCs {
+		if !discoveredRPCs[method] {
+			staleInternal = append(staleInternal, method)
+		}
+	}
+	for method := range publicRPCs {
+		if !discoveredRPCs[method] {
+			stalePublic = append(stalePublic, method)
+		}
+	}
+	sort.Strings(staleInternal)
+	sort.Strings(stalePublic)
+	if len(staleInternal) > 0 {
+		t.Errorf("stale RPCs in internalRPCs not found in gen/go ServiceDesc: %v", staleInternal)
+	}
+	if len(stalePublic) > 0 {
+		t.Errorf("stale RPCs in publicRPCs not found in gen/go ServiceDesc: %v", stalePublic)
+	}
+}
+
+func discoverGeneratedGoRPCs(t *testing.T, rootDir string, skipServices map[string]bool) (map[string]bool, []string) {
+	t.Helper()
+
+	rpcs := make(map[string]bool)
+	servicesSet := make(map[string]bool)
+	fset := token.NewFileSet()
+
+	err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), "_grpc.pb.go") {
+			return nil
+		}
+		file, parseErr := parser.ParseFile(fset, path, nil, 0)
+		if parseErr != nil {
+			return parseErr
+		}
+		for _, decl := range file.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range genDecl.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok || len(vs.Names) != 1 || len(vs.Values) != 1 || !strings.HasSuffix(vs.Names[0].Name, "_ServiceDesc") {
+					continue
+				}
+				comp, ok := vs.Values[0].(*ast.CompositeLit)
+				if !ok {
+					continue
+				}
+				svcName, methods := parseServiceDescLit(t, path, comp)
+				if svcName == "" {
+					t.Fatalf("%s: %s missing ServiceName", path, vs.Names[0].Name)
+				}
+				if skipServices[svcName] {
+					continue
+				}
+				servicesSet[svcName] = true
+				for _, m := range methods {
+					rpcs["/"+svcName+"/"+m] = true
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", rootDir, err)
+	}
+
+	services := make([]string, 0, len(servicesSet))
+	for s := range servicesSet {
+		services = append(services, s)
+	}
+	sort.Strings(services)
+	return rpcs, services
+}
+
+func parseServiceDescLit(t *testing.T, filePath string, comp *ast.CompositeLit) (string, []string) {
+	t.Helper()
+
+	var serviceName string
+	var methods []string
+	for _, elt := range comp.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		switch key.Name {
+		case "ServiceName":
+			serviceName = unquoteASTString(t, filePath, kv.Value)
+		case "Methods":
+			methods = append(methods, parseDescSliceNames(t, filePath, kv.Value, "MethodName")...)
+		case "Streams":
+			methods = append(methods, parseDescSliceNames(t, filePath, kv.Value, "StreamName")...)
+		}
+	}
+	return serviceName, methods
+}
+
+func parseDescSliceNames(t *testing.T, filePath string, expr ast.Expr, fieldName string) []string {
+	t.Helper()
+
+	sliceLit, ok := expr.(*ast.CompositeLit)
+	if !ok {
+		return nil
+	}
+	var names []string
+	for _, item := range sliceLit.Elts {
+		entryLit, ok := item.(*ast.CompositeLit)
+		if !ok {
+			continue
+		}
+		for _, field := range entryLit.Elts {
+			kv, ok := field.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			k, ok := kv.Key.(*ast.Ident)
+			if ok && k.Name == fieldName {
+				names = append(names, unquoteASTString(t, filePath, kv.Value))
+			}
+		}
+	}
+	return names
+}
+
+func unquoteASTString(t *testing.T, filePath string, expr ast.Expr) string {
+	t.Helper()
+
+	bl, ok := expr.(*ast.BasicLit)
+	if !ok || bl.Kind != token.STRING {
+		t.Fatalf("%s: expected string literal, got %T", filePath, expr)
+	}
+	s, err := strconv.Unquote(bl.Value)
+	if err != nil {
+		t.Fatalf("%s: unquote %s: %v", filePath, bl.Value, err)
+	}
+	return s
 }

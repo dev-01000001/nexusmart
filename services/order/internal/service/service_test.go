@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -28,6 +29,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // --- Thread-safe mock gRPC clients ---
@@ -174,6 +176,7 @@ type mockProductClient struct {
 	confirmCalls     []string
 	restockCalls     []*productv1.RestockOrderItemsRequest
 	restockAuth      []authCallSnapshot
+	onReserve        func(ctx context.Context, req *productv1.ReserveStockRequest)
 	onRelease        func(orderID string)
 }
 
@@ -265,12 +268,17 @@ func (m *mockProductClient) RestockOrderItems(ctx context.Context, req *productv
 	return &productv1.RestockOrderItemsResponse{Restocked: true}, nil
 }
 
-func (m *mockProductClient) ReserveStock(_ context.Context, req *productv1.ReserveStockRequest, _ ...grpc.CallOption) (*productv1.ReserveStockResponse, error) {
+func (m *mockProductClient) ReserveStock(ctx context.Context, req *productv1.ReserveStockRequest, _ ...grpc.CallOption) (*productv1.ReserveStockResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.reserveCalls = append(m.reserveCalls, req.GetOrderId())
-	if m.reserveErr != nil {
-		return nil, m.reserveErr
+	cb := m.onReserve
+	err := m.reserveErr
+	m.mu.Unlock()
+	if cb != nil {
+		cb(ctx, req)
+	}
+	if err != nil {
+		return nil, err
 	}
 	return &productv1.ReserveStockResponse{Reserved: true, ReservationId: "res-" + req.GetOrderId()}, nil
 }
@@ -288,7 +296,10 @@ func (m *mockProductClient) ReleaseStock(_ context.Context, req *productv1.Relea
 	return &productv1.ReleaseStockResponse{Released: m.releaseReturnsOk}, nil
 }
 
-func (m *mockProductClient) ConfirmStock(_ context.Context, req *productv1.ConfirmStockRequest, _ ...grpc.CallOption) (*productv1.ConfirmStockResponse, error) {
+func (m *mockProductClient) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRequest, _ ...grpc.CallOption) (*productv1.ConfirmStockResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.confirmCalls = append(m.confirmCalls, req.GetOrderId())
@@ -299,9 +310,10 @@ func (m *mockProductClient) ConfirmStock(_ context.Context, req *productv1.Confi
 }
 
 type mockCartClient struct {
-	mu         sync.Mutex
-	cart       *cartv1.Cart
-	clearCalls [][]string
+	mu           sync.Mutex
+	cart         *cartv1.Cart
+	clearCalls   [][]string
+	onClearItems func(ctx context.Context) error
 }
 
 func newMockCartClient() *mockCartClient {
@@ -332,32 +344,78 @@ func (m *mockCartClient) GetCart(_ context.Context, _ *cartv1.GetCartRequest, _ 
 	return &cartv1.GetCartResponse{Cart: m.cart}, nil
 }
 
-func (m *mockCartClient) ClearItems(_ context.Context, req *cartv1.ClearItemsRequest, _ ...grpc.CallOption) (*cartv1.ClearItemsResponse, error) {
+func (m *mockCartClient) ClearItems(ctx context.Context, req *cartv1.ClearItemsRequest, _ ...grpc.CallOption) (*cartv1.ClearItemsResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.clearCalls = append(m.clearCalls, append([]string(nil), req.GetSkuIds()...))
+	cb := m.onClearItems
+	m.mu.Unlock()
+	if cb != nil {
+		if err := cb(ctx); err != nil {
+			return nil, err
+		}
+	}
 	return &cartv1.ClearItemsResponse{Ok: true}, nil
 }
 
 type mockPromotionClient struct {
-	mu               sync.Mutex
-	reserveErr       error
-	releaseErr       error
-	releaseShopErr   error
-	breakdown        *promotionv1.DiscountBreakdown
-	flashSales       []*promotionv1.FlashSale
-	reserveCalls     []string
-	reserveReqs      []*promotionv1.ReservePromotionRequest
-	releaseCalls     []string
-	releaseShopCalls []*promotionv1.ReleasePromotionShopRequest
-	releaseShopAuth  []authCallSnapshot
-	onRelease        func(orderID string)
+	mu                    sync.Mutex
+	reserveErr            error
+	releaseErr            error
+	releaseShopErr        error
+	listFlashErr          error
+	listShopDiscountsErr  error
+	breakdown             *promotionv1.DiscountBreakdown
+	flashSales            []*promotionv1.FlashSale
+	activeShopDiscounts   []*promotionv1.ActiveShopDiscount
+	listShopDiscountsReqs []*promotionv1.ListActiveShopDiscountsRequest
+	listShopDiscountsAuth []authCallSnapshot
+	reserveCalls          []string
+	reserveReqs           []*promotionv1.ReservePromotionRequest
+	releaseCalls          []string
+	releaseShopCalls      []*promotionv1.ReleasePromotionShopRequest
+	releaseShopAuth       []authCallSnapshot
+	onRelease             func(orderID string)
 }
 
 func (m *mockPromotionClient) ListActiveFlashSales(_ context.Context, _ *promotionv1.ListActiveFlashSalesRequest, _ ...grpc.CallOption) (*promotionv1.ListActiveFlashSalesResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.listFlashErr != nil {
+		return nil, m.listFlashErr
+	}
 	return &promotionv1.ListActiveFlashSalesResponse{FlashSales: m.flashSales}, nil
+}
+
+func (m *mockPromotionClient) ListActiveShopDiscounts(ctx context.Context, req *promotionv1.ListActiveShopDiscountsRequest, _ ...grpc.CallOption) (*promotionv1.ListActiveShopDiscountsResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.listShopDiscountsReqs = append(m.listShopDiscountsReqs, req)
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.listShopDiscountsAuth = append(m.listShopDiscountsAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
+	if m.listShopDiscountsErr != nil {
+		return nil, m.listShopDiscountsErr
+	}
+	if len(req.GetSkuIds()) == 0 {
+		return &promotionv1.ListActiveShopDiscountsResponse{Discounts: m.activeShopDiscounts}, nil
+	}
+	wanted := make(map[string]struct{}, len(req.GetSkuIds()))
+	for _, id := range req.GetSkuIds() {
+		wanted[id] = struct{}{}
+	}
+	out := make([]*promotionv1.ActiveShopDiscount, 0, len(m.activeShopDiscounts))
+	for _, d := range m.activeShopDiscounts {
+		if _, ok := wanted[d.GetSkuId()]; ok {
+			out = append(out, d)
+		}
+	}
+	return &promotionv1.ListActiveShopDiscountsResponse{Discounts: out}, nil
 }
 
 func (m *mockPromotionClient) PreviewDiscounts(_ context.Context, _ *promotionv1.PreviewDiscountsRequest, _ ...grpc.CallOption) (*promotionv1.PreviewDiscountsResponse, error) {
@@ -417,21 +475,45 @@ type mockPaymentClient struct {
 	createErr         error
 	cancelErr         error
 	refundErr         error
+	getFeeConfigErr   error
+	feeConfigResp     *paymentv1.GetFeeConfigResponse
+	feeBPSByMethod    map[paymentv1.PaymentMethod]int32
+	feeConfigCalls    []*paymentv1.GetFeeConfigRequest
+	feeConfigAuth     []authCallSnapshot
 	getPaymentStatus  paymentv1.PaymentStatus
 	getPaymentErr     error
 	paymentsByID      map[string]*paymentv1.Payment
 	paymentsByIdemKey map[string]*paymentv1.Payment
 	onCreatePayment   func(req *paymentv1.CreatePaymentRequest)
+	onCreatePayCtx    func(ctx context.Context, req *paymentv1.CreatePaymentRequest)
+	afterCreatePay    func(pay *paymentv1.Payment)
+	onGetPayment      func(req *paymentv1.GetPaymentRequest) (*paymentv1.GetPaymentResponse, error)
+	onCancelPayment   func(req *paymentv1.CancelPaymentRequest) (*paymentv1.CancelPaymentResponse, error)
 	createCalls       []*paymentv1.CreatePaymentRequest
+	createAuth        []authCallSnapshot
+	createCtxErrs     []error
 	cancelCalls       []*paymentv1.CancelPaymentRequest
 	refundCalls       []*paymentv1.CreateRefundRequest
 	refundAuth        []authCallSnapshot
 }
 
-func (m *mockPaymentClient) CreatePayment(_ context.Context, req *paymentv1.CreatePaymentRequest, _ ...grpc.CallOption) (*paymentv1.CreatePaymentResponse, error) {
+func (m *mockPaymentClient) CreatePayment(ctx context.Context, req *paymentv1.CreatePaymentRequest, _ ...grpc.CallOption) (*paymentv1.CreatePaymentResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.createCalls = append(m.createCalls, req)
+	m.createCtxErrs = append(m.createCtxErrs, ctx.Err())
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.createAuth = append(m.createAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
+	if m.onCreatePayCtx != nil {
+		m.onCreatePayCtx(ctx, req)
+	}
 	if m.onCreatePayment != nil {
 		m.onCreatePayment(req)
 	}
@@ -483,10 +565,22 @@ func (m *mockPaymentClient) CreatePayment(_ context.Context, req *paymentv1.Crea
 		m.paymentsByIdemKey[req.GetIdempotencyKey()] = pay
 	}
 	cp, _ := proto.Clone(pay).(*paymentv1.Payment)
+	afterCb := m.afterCreatePay
+	m.mu.Unlock()
+	if afterCb != nil {
+		afterCb(cp)
+	}
+	m.mu.Lock()
 	return &paymentv1.CreatePaymentResponse{Payment: cp}, nil
 }
 
 func (m *mockPaymentClient) GetPayment(_ context.Context, req *paymentv1.GetPaymentRequest, _ ...grpc.CallOption) (*paymentv1.GetPaymentResponse, error) {
+	m.mu.Lock()
+	cb := m.onGetPayment
+	m.mu.Unlock()
+	if cb != nil {
+		return cb(req)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.getPaymentErr != nil {
@@ -496,6 +590,17 @@ func (m *mockPaymentClient) GetPayment(_ context.Context, req *paymentv1.GetPaym
 		if p, ok := m.paymentsByID[req.GetPaymentId()]; ok && m.getPaymentStatus == paymentv1.PaymentStatus_PAYMENT_STATUS_UNSPECIFIED {
 			cp, _ := proto.Clone(p).(*paymentv1.Payment)
 			return &paymentv1.GetPaymentResponse{Payment: cp}, nil
+		}
+	}
+	if req.GetOrderGroupId() != "" && m.getPaymentStatus == paymentv1.PaymentStatus_PAYMENT_STATUS_UNSPECIFIED {
+		for _, p := range m.paymentsByID {
+			if p.GetOrderGroupId() == req.GetOrderGroupId() {
+				cp, _ := proto.Clone(p).(*paymentv1.Payment)
+				return &paymentv1.GetPaymentResponse{Payment: cp}, nil
+			}
+		}
+		if req.GetPaymentId() == "" {
+			return nil, status.Error(codes.NotFound, "payment not found for order group")
 		}
 	}
 	st := m.getPaymentStatus
@@ -513,10 +618,15 @@ func (m *mockPaymentClient) GetPayment(_ context.Context, req *paymentv1.GetPaym
 
 func (m *mockPaymentClient) CancelPayment(_ context.Context, req *paymentv1.CancelPaymentRequest, _ ...grpc.CallOption) (*paymentv1.CancelPaymentResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.cancelCalls = append(m.cancelCalls, req)
-	if m.cancelErr != nil {
-		return nil, m.cancelErr
+	cb := m.onCancelPayment
+	err := m.cancelErr
+	m.mu.Unlock()
+	if cb != nil {
+		return cb(req)
+	}
+	if err != nil {
+		return nil, err
 	}
 	return &paymentv1.CancelPaymentResponse{
 		Payment: &paymentv1.Payment{
@@ -553,9 +663,48 @@ func (m *mockPaymentClient) CreateRefund(ctx context.Context, req *paymentv1.Cre
 	}, nil
 }
 
+func (m *mockPaymentClient) GetFeeConfig(ctx context.Context, req *paymentv1.GetFeeConfigRequest, _ ...grpc.CallOption) (*paymentv1.GetFeeConfigResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.feeConfigCalls = append(m.feeConfigCalls, req)
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.feeConfigAuth = append(m.feeConfigAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
+	if m.getFeeConfigErr != nil {
+		return nil, m.getFeeConfigErr
+	}
+	if m.feeConfigResp != nil {
+		return m.feeConfigResp, nil
+	}
+	method := req.GetPaymentMethod()
+	var bps int32
+	if m.feeBPSByMethod != nil {
+		bps = m.feeBPSByMethod[method]
+	}
+	return &paymentv1.GetFeeConfigResponse{
+		ActiveConfigs: []*paymentv1.PaymentFeeConfigItem{
+			{
+				Id:            "fee-" + method.String(),
+				PaymentMethod: method,
+				FeeBps:        bps,
+			},
+		},
+	}, nil
+}
+
 type mockShippingClient struct {
 	mu                     sync.Mutex
 	quotes                 []*shippingv1.CarrierQuote
+	shopSettings           map[string]*shippingv1.ShopShippingSettings
+	getShopSettingsErr     error
+	getShopSettingsCalls   []*shippingv1.GetShopShippingSettingsRequest
+	getShopSettingsAuth    []authCallSnapshot
 	createShipCalls        []*shippingv1.CreateShipmentRequest
 	onCreateShipment       func(req *shippingv1.CreateShipmentRequest) (*shippingv1.CreateShipmentResponse, error)
 	createReturnShipCalls  []*shippingv1.CreateReturnShipmentRequest
@@ -731,6 +880,35 @@ func (m *mockShippingClient) GetShipment(ctx context.Context, req *shippingv1.Ge
 	return nil, status.Error(codes.NotFound, "shipment not found")
 }
 
+func (m *mockShippingClient) GetShopShippingSettings(ctx context.Context, req *shippingv1.GetShopShippingSettingsRequest, _ ...grpc.CallOption) (*shippingv1.GetShopShippingSettingsResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.getShopSettingsCalls = append(m.getShopSettingsCalls, req)
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.getShopSettingsAuth = append(m.getShopSettingsAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
+	if m.getShopSettingsErr != nil {
+		return nil, m.getShopSettingsErr
+	}
+	if m.shopSettings != nil {
+		if st, ok := m.shopSettings[req.GetShopId()]; ok {
+			return &shippingv1.GetShopShippingSettingsResponse{Settings: st}, nil
+		}
+	}
+	return &shippingv1.GetShopShippingSettingsResponse{
+		Settings: &shippingv1.ShopShippingSettings{
+			ShopId:             req.GetShopId(),
+			DefaultWeightGrams: 500,
+		},
+	}, nil
+}
+
 type testHarness struct {
 	svc      *OrderService
 	store    *store.MemoryStore
@@ -752,18 +930,18 @@ func newTestHarness() *testHarness {
 	sh := newMockShippingClient()
 
 	cfg := config.Config{
-		ServiceName:              "order",
-		CODMaxVND:                5000000,
-		CODMaxRejectedCount:      3,
-		PaymentExpiryMinutes:     15,
-		DefaultCommissionBPS:     500,
-		RewardCoinsBPS:           100,
-		AutoCompleteDays:         7,
-		SellerConfirmHours:       48,
-		ReturnSellerResponseDays: 3,
-		ReturnShipDays:           5,
-		ReturnInspectDays:        3,
-		GRPCCallTimeout:          5 * time.Second,
+		ServiceName:               "order",
+		CODMaxVND:                 5000000,
+		CODMaxRejectedCount:       3,
+		PaymentExpiryMinutes:      15,
+		FlashPaymentExpiryMinutes: 5,
+		RewardCoinsBPS:            100,
+		AutoCompleteDays:          7,
+		SellerConfirmHours:        48,
+		ReturnSellerResponseDays:  3,
+		ReturnShipDays:            5,
+		ReturnInspectDays:         3,
+		GRPCCallTimeout:           5 * time.Second,
 	}
 
 	bundle := &clients.Bundle{
@@ -800,158 +978,223 @@ func ctxWithUser(userID, role, shopID string) context.Context {
 
 // --- Tests ---
 
-func TestAllocateProportionalVND_ExactSumConservation(t *testing.T) {
-	weights := []int64{100000, 200000, 300000}
-	shares := AllocateProportionalVND(10000, weights)
-	var sum int64
-	for _, s := range shares {
-		sum += s
-	}
-	if sum != 10000 {
-		t.Fatalf("expected sum 10000, got %d (%v)", sum, shares)
-	}
-	if shares[0] != 1666 || shares[1] != 3333 || shares[2] != 5001 {
-		t.Fatalf("unexpected proportional shares: %v", shares)
-	}
-}
-
 func TestCreateCheckout_MultiShopCOD_WithPromotionsAndFlashSale(t *testing.T) {
-	h := newTestHarness()
-	h.promo.flashSales = []*promotionv1.FlashSale{
-		{
-			Id: "fs-1",
-			Items: []*promotionv1.FlashSaleItem{
-				{Id: "fsi-1", SkuId: "sku-1", FlashPriceVnd: 800000},
+	t.Run("multi_shop_cod_with_promotions", func(t *testing.T) {
+		h := newTestHarness()
+		h.promo.breakdown = &promotionv1.DiscountBreakdown{
+			Shops: []*promotionv1.ShopDiscountBreakdown{
+				{
+					ShopId:                     "shop-1",
+					SubtotalVnd:                1000000,
+					ShopVoucherDiscountVnd:     50000,
+					PlatformVoucherDiscountVnd: 25000,
+					FreeshipDiscountVnd:        15000,
+					CoinsDiscountVnd:           10000,
+					ShippingFeeVnd:             30000,
+				},
+				{
+					ShopId:                     "shop-2",
+					SubtotalVnd:                1000000,
+					ShopVoucherDiscountVnd:     0,
+					PlatformVoucherDiscountVnd: 25000,
+					FreeshipDiscountVnd:        15000,
+					CoinsDiscountVnd:           10000,
+					ShippingFeeVnd:             45000,
+				},
 			},
-		},
-	}
-	h.promo.breakdown = &promotionv1.DiscountBreakdown{
-		Shops: []*promotionv1.ShopDiscountBreakdown{
-			{
-				ShopId:                     "shop-1",
-				SubtotalVnd:                1000000,
-				FlashSaleDiscountVnd:       200000,
-				ShopVoucherDiscountVnd:     50000,
-				PlatformVoucherDiscountVnd: 25000,
-				FreeshipDiscountVnd:        15000,
-				CoinsDiscountVnd:           10000,
-				ShippingFeeVnd:             30000,
-			},
-			{
-				ShopId:                     "shop-2",
-				SubtotalVnd:                1000000,
-				FlashSaleDiscountVnd:       0,
-				ShopVoucherDiscountVnd:     0,
-				PlatformVoucherDiscountVnd: 25000,
-				FreeshipDiscountVnd:        15000,
-				CoinsDiscountVnd:           10000,
-				ShippingFeeVnd:             45000,
-			},
-		},
-	}
+		}
 
-	ctx := ctxWithUser("buyer-1", "buyer", "")
-	resp, err := h.svc.CreateCheckout(ctx, &orderv1.CreateCheckoutRequest{
-		IdempotencyKey:    "idem-cod-multi-1",
-		BuyerId:           "buyer-1",
-		AddressId:         "addr-buyer-1",
-		FromCart:          true,
-		Items:             []*orderv1.CheckoutItemInput{{SkuId: "sku-1", FlashSaleItemId: "fsi-1"}},
-		ShopVoucherIds:    map[string]string{"shop-1": "v-shop-1"},
-		PlatformVoucherId: "v-plat-1",
-		FreeshipVoucherId: "v-free-1",
-		CoinsToUse:        20000,
-		PaymentMethod:     orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD,
-		ShippingChoices: []*orderv1.ShopShippingChoice{
-			{ShopId: "shop-2", CarrierCode: "mock_express", ServiceCode: "fast"},
-		},
+		ctx := ctxWithUser("buyer-1", "buyer", "")
+		resp, err := h.svc.CreateCheckout(ctx, &orderv1.CreateCheckoutRequest{
+			IdempotencyKey:    "idem-cod-multi-1",
+			BuyerId:           "buyer-1",
+			AddressId:         "addr-buyer-1",
+			FromCart:          true,
+			ShopVoucherIds:    map[string]string{"shop-1": "v-shop-1"},
+			PlatformVoucherId: "v-plat-1",
+			FreeshipVoucherId: "v-free-1",
+			CoinsToUse:        20000,
+			PaymentMethod:     orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD,
+			ShippingChoices: []*orderv1.ShopShippingChoice{
+				{ShopId: "shop-2", CarrierCode: "mock_express", ServiceCode: "fast"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateCheckout failed: %v", err)
+		}
+
+		if resp.IdempotentReplay {
+			t.Fatalf("expected idempotent_replay=false on first call")
+		}
+		if len(resp.Orders) != 2 {
+			t.Fatalf("expected 2 shop sub-orders, got %d", len(resp.Orders))
+		}
+
+		// Verify Shop 1 math: 1,000,000 - 50,000 (shop) - 25,000 (plat) + 30,000 (ship) - 15,000 (freeship) - 10,000 (coins) = 930,000
+		o1 := resp.Orders[0]
+		if o1.ShopId != "shop-1" || o1.Status != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
+			t.Fatalf("unexpected shop-1 order: shop=%s status=%v", o1.ShopId, o1.Status)
+		}
+		if o1.TotalPayableVnd != 930000 {
+			t.Fatalf("shop-1 total_payable_vnd = %d, want 930000", o1.TotalPayableVnd)
+		}
+		if o1.CommissionVnd != 0 { // Buyer view masks seller fees (Round 4 H)
+			t.Fatalf("buyer shop-1 commission_vnd = %d, want 0 (masked)", o1.CommissionVnd)
+		}
+		adminCtx := ctxWithUser("admin-1", "admin", "")
+		o1Admin, err := h.svc.GetOrder(adminCtx, &orderv1.GetOrderRequest{OrderId: o1.Id})
+		if err != nil || o1Admin.Order.CommissionVnd != 50000 { // 5% of 1,000,000
+			t.Fatalf("admin shop-1 commission_vnd = %d (err=%v), want 50000", o1Admin.GetOrder().GetCommissionVnd(), err)
+		}
+		if o1.CarrierCode != "ghn" { // cheapest default quote
+			t.Fatalf("shop-1 carrier = %q, want ghn", o1.CarrierCode)
+		}
+
+		// Verify Shop 2 math: 1,000,000 - 25,000 (plat) + 45,000 (ship) - 15,000 (freeship) - 10,000 (coins) = 995,000
+		o2 := resp.Orders[1]
+		if o2.ShopId != "shop-2" || o2.Status != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
+			t.Fatalf("unexpected shop-2 order: shop=%s status=%v", o2.ShopId, o2.Status)
+		}
+		if o2.TotalPayableVnd != 995000 {
+			t.Fatalf("shop-2 total_payable_vnd = %d, want 995000", o2.TotalPayableVnd)
+		}
+		if o2.CarrierCode != "mock_express" {
+			t.Fatalf("shop-2 carrier = %q, want mock_express", o2.CarrierCode)
+		}
+		if o2.CommissionVnd != 0 { // Buyer view masks seller fees (Round 4 H)
+			t.Fatalf("buyer shop-2 commission_vnd = %d, want 0 (masked)", o2.CommissionVnd)
+		}
+		o2Admin, err := h.svc.GetOrder(adminCtx, &orderv1.GetOrderRequest{OrderId: o2.Id})
+		if err != nil || o2Admin.Order.CommissionVnd != 80000 { // 8% of 1,000,000
+			t.Fatalf("admin shop-2 commission_vnd = %d (err=%v), want 80000", o2Admin.GetOrder().GetCommissionVnd(), err)
+		}
+
+		if resp.TotalPayableVnd != 1925000 {
+			t.Fatalf("grand total_payable_vnd = %d, want 1925000", resp.TotalPayableVnd)
+		}
+
+		// Verify PaymentService received exact matching ShopAllocations summing to grand total.
+		if len(h.payment.createCalls) != 1 {
+			t.Fatalf("expected 1 CreatePayment call, got %d", len(h.payment.createCalls))
+		}
+		payReq := h.payment.createCalls[0]
+		var allocSum int64
+		for _, al := range payReq.ShopAllocations {
+			if al.SubtotalVnd < al.CommissionVnd {
+				t.Fatalf("allocation commission %d exceeds subtotal %d", al.CommissionVnd, al.SubtotalVnd)
+			}
+			allocSum += al.SubtotalVnd + al.ShippingFeeVnd - al.PlatformDiscountVnd
+		}
+		if allocSum != payReq.AmountVnd {
+			t.Fatalf("payment allocations sum %d != amount_vnd %d", allocSum, payReq.AmountVnd)
+		}
+
+		// Verify ConfirmStock & ClearItems were invoked for COD checkout.
+		if len(h.product.confirmCalls) != 1 {
+			t.Fatalf("expected 1 ConfirmStock call for COD, got %d", len(h.product.confirmCalls))
+		}
+		if len(h.cart.clearCalls) != 1 || len(h.cart.clearCalls[0]) != 2 {
+			t.Fatalf("expected cart ClearItems with 2 SKUs, got %v", h.cart.clearCalls)
+		}
+
+		// Verify outbox contains 2 order.created + 2 order.confirmed events.
+		outbox := h.store.OutboxEvents()
+		createdCount, confirmedCount := 0, 0
+		for _, ev := range outbox {
+			if ev.EventType == events.SubjectOrderCreated {
+				createdCount++
+			}
+			if ev.EventType == events.SubjectOrderConfirmed {
+				confirmedCount++
+			}
+		}
+		if createdCount != 2 || confirmedCount != 2 {
+			t.Fatalf("expected 2 order.created and 2 order.confirmed outbox events, got created=%d confirmed=%d", createdCount, confirmedCount)
+		}
 	})
-	if err != nil {
-		t.Fatalf("CreateCheckout failed: %v", err)
-	}
 
-	if resp.IdempotentReplay {
-		t.Fatalf("expected idempotent_replay=false on first call")
-	}
-	if len(resp.Orders) != 2 {
-		t.Fatalf("expected 2 shop sub-orders, got %d", len(resp.Orders))
-	}
-
-	// Verify Shop 1 math: 1,000,000 - 200,000 (flash) - 50,000 (shop) - 25,000 (plat) + 30,000 (ship) - 15,000 (freeship) - 10,000 (coins) = 730,000
-	o1 := resp.Orders[0]
-	if o1.ShopId != "shop-1" || o1.Status != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
-		t.Fatalf("unexpected shop-1 order: shop=%s status=%v", o1.ShopId, o1.Status)
-	}
-	if o1.TotalPayableVnd != 730000 {
-		t.Fatalf("shop-1 total_payable_vnd = %d, want 730000", o1.TotalPayableVnd)
-	}
-	if o1.Items[0].EffectiveUnitPriceVnd != 800000 {
-		t.Fatalf("shop-1 flash sale effective unit price = %d, want 800000", o1.Items[0].EffectiveUnitPriceVnd)
-	}
-	if o1.CommissionVnd != 40000 { // 5% of 800,000
-		t.Fatalf("shop-1 commission_vnd = %d, want 40000", o1.CommissionVnd)
-	}
-	if o1.CarrierCode != "ghn" { // cheapest default quote
-		t.Fatalf("shop-1 carrier = %q, want ghn", o1.CarrierCode)
-	}
-
-	// Verify Shop 2 math: 1,000,000 - 25,000 (plat) + 45,000 (ship) - 15,000 (freeship) - 10,000 (coins) = 995,000
-	o2 := resp.Orders[1]
-	if o2.ShopId != "shop-2" || o2.Status != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
-		t.Fatalf("unexpected shop-2 order: shop=%s status=%v", o2.ShopId, o2.Status)
-	}
-	if o2.TotalPayableVnd != 995000 {
-		t.Fatalf("shop-2 total_payable_vnd = %d, want 995000", o2.TotalPayableVnd)
-	}
-	if o2.CarrierCode != "mock_express" {
-		t.Fatalf("shop-2 carrier = %q, want mock_express", o2.CarrierCode)
-	}
-	if o2.CommissionVnd != 80000 { // 8% of 1,000,000
-		t.Fatalf("shop-2 commission_vnd = %d, want 80000", o2.CommissionVnd)
-	}
-
-	if resp.TotalPayableVnd != 1725000 {
-		t.Fatalf("grand total_payable_vnd = %d, want 1725000", resp.TotalPayableVnd)
-	}
-
-	// Verify PaymentService received exact matching ShopAllocations summing to grand total.
-	if len(h.payment.createCalls) != 1 {
-		t.Fatalf("expected 1 CreatePayment call, got %d", len(h.payment.createCalls))
-	}
-	payReq := h.payment.createCalls[0]
-	var allocSum int64
-	for _, al := range payReq.ShopAllocations {
-		if al.SubtotalVnd < al.CommissionVnd {
-			t.Fatalf("allocation commission %d exceeds subtotal %d", al.CommissionVnd, al.SubtotalVnd)
+	// Wave 2b: Flash sale requires online payment (COD rejected) and uses active flash pricing.
+	t.Run("multi_shop_vietqr_with_promotions_and_flash_sale", func(t *testing.T) {
+		h := newTestHarness()
+		now := time.Now().UTC()
+		h.promo.flashSales = []*promotionv1.FlashSale{
+			{
+				Id:       "fs-1",
+				StartsAt: timestamppb.New(now.Add(-5 * time.Minute)),
+				EndsAt:   timestamppb.New(now.Add(30 * time.Minute)),
+				Items: []*promotionv1.FlashSaleItem{
+					{
+						Id:            "fsi-1",
+						SkuId:         "sku-1",
+						FlashPriceVnd: 800000,
+						Status:        promotionv1.FlashSaleItemStatus_FLASH_SALE_ITEM_STATUS_APPROVED,
+					},
+				},
+			},
 		}
-		allocSum += al.SubtotalVnd + al.ShippingFeeVnd - al.PlatformDiscountVnd
-	}
-	if allocSum != payReq.AmountVnd {
-		t.Fatalf("payment allocations sum %d != amount_vnd %d", allocSum, payReq.AmountVnd)
-	}
-
-	// Verify ConfirmStock & ClearItems were invoked for COD checkout.
-	if len(h.product.confirmCalls) != 1 {
-		t.Fatalf("expected 1 ConfirmStock call for COD, got %d", len(h.product.confirmCalls))
-	}
-	if len(h.cart.clearCalls) != 1 || len(h.cart.clearCalls[0]) != 2 {
-		t.Fatalf("expected cart ClearItems with 2 SKUs, got %v", h.cart.clearCalls)
-	}
-
-	// Verify outbox contains 2 order.created + 2 order.confirmed events.
-	outbox := h.store.OutboxEvents()
-	createdCount, confirmedCount := 0, 0
-	for _, ev := range outbox {
-		if ev.EventType == events.SubjectOrderCreated {
-			createdCount++
+		h.promo.breakdown = &promotionv1.DiscountBreakdown{
+			Shops: []*promotionv1.ShopDiscountBreakdown{
+				{
+					ShopId:                     "shop-1",
+					SubtotalVnd:                1000000,
+					FlashSaleDiscountVnd:       200000,
+					ShopVoucherDiscountVnd:     50000,
+					PlatformVoucherDiscountVnd: 25000,
+					FreeshipDiscountVnd:        15000,
+					CoinsDiscountVnd:           10000,
+					ShippingFeeVnd:             30000,
+				},
+				{
+					ShopId:                     "shop-2",
+					SubtotalVnd:                1000000,
+					FlashSaleDiscountVnd:       0,
+					ShopVoucherDiscountVnd:     0,
+					PlatformVoucherDiscountVnd: 25000,
+					FreeshipDiscountVnd:        15000,
+					CoinsDiscountVnd:           10000,
+					ShippingFeeVnd:             45000,
+				},
+			},
 		}
-		if ev.EventType == events.SubjectOrderConfirmed {
-			confirmedCount++
+
+		ctx := ctxWithUser("buyer-1", "buyer", "")
+		resp, err := h.svc.CreateCheckout(ctx, &orderv1.CreateCheckoutRequest{
+			IdempotencyKey:    "idem-vietqr-flash-multi-1",
+			BuyerId:           "buyer-1",
+			AddressId:         "addr-buyer-1",
+			FromCart:          true,
+			Items:             []*orderv1.CheckoutItemInput{{SkuId: "sku-1", FlashSaleItemId: "fsi-1"}},
+			ShopVoucherIds:    map[string]string{"shop-1": "v-shop-1"},
+			PlatformVoucherId: "v-plat-1",
+			FreeshipVoucherId: "v-free-1",
+			CoinsToUse:        20000,
+			PaymentMethod:     orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR,
+			ShippingChoices: []*orderv1.ShopShippingChoice{
+				{ShopId: "shop-2", CarrierCode: "mock_express", ServiceCode: "fast"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateCheckout VIETQR flash failed: %v", err)
 		}
-	}
-	if createdCount != 2 || confirmedCount != 2 {
-		t.Fatalf("expected 2 order.created and 2 order.confirmed outbox events, got created=%d confirmed=%d", createdCount, confirmedCount)
-	}
+		if len(resp.Orders) != 2 {
+			t.Fatalf("expected 2 orders, got %d", len(resp.Orders))
+		}
+		// Shop 1: 1,000,000 - 200,000 (flash) - 50,000 (shop) - 25,000 (plat) + 30,000 (ship) - 15,000 (freeship) - 10,000 (coins) = 730,000
+		o1 := resp.Orders[0]
+		if o1.Status != orderv1.OrderStatus_ORDER_STATUS_PENDING || o1.TotalPayableVnd != 730000 {
+			t.Fatalf("shop-1 status=%v total=%d, want PENDING 730000", o1.Status, o1.TotalPayableVnd)
+		}
+		if o1.Items[0].EffectiveUnitPriceVnd != 800000 || o1.CommissionVnd != 0 {
+			t.Fatalf("buyer shop-1 effective=%d commission=%d, want 800000/0 (masked)", o1.Items[0].EffectiveUnitPriceVnd, o1.CommissionVnd)
+		}
+		o1Admin, err := h.svc.GetOrder(ctxWithUser("admin-1", "admin", ""), &orderv1.GetOrderRequest{OrderId: o1.Id})
+		if err != nil || o1Admin.Order.CommissionVnd != 40000 {
+			t.Fatalf("admin shop-1 commission=%d (err=%v), want 40000", o1Admin.GetOrder().GetCommissionVnd(), err)
+		}
+		if resp.TotalPayableVnd != 1725000 {
+			t.Fatalf("grand total = %d, want 1725000", resp.TotalPayableVnd)
+		}
+	})
 }
 
 func TestCreateCheckout_IdempotencyReplay_SequentialAndConcurrent(t *testing.T) {
@@ -1757,14 +2000,15 @@ func TestHandlePaymentExpiredEvent_CompensatesStockAndPromotions(t *testing.T) {
 
 func TestCreateCheckout_FallbackProportionalDiscountBreakdown(t *testing.T) {
 	h := newTestHarness()
-	// PromotionService returns aggregate totals without per-shop breakdown.
+	// Round 4 H: dead proportional allocation fallback was removed; PromotionService returning
+	// aggregate totals without per-shop breakdown must fail checkout and compensate stock + promotion.
 	h.promo.breakdown = &promotionv1.DiscountBreakdown{
 		TotalPlatformVoucherDiscountVnd: 100000,
 		TotalFreeshipDiscountVnd:        20000,
 		TotalCoinsDiscountVnd:           10000,
 	}
 
-	resp, err := h.svc.CreateCheckout(ctxWithUser("buyer-1", "buyer", ""), &orderv1.CreateCheckoutRequest{
+	_, err := h.svc.CreateCheckout(ctxWithUser("buyer-1", "buyer", ""), &orderv1.CreateCheckoutRequest{
 		IdempotencyKey:    "idem-fallback-breakdown",
 		BuyerId:           "buyer-1",
 		AddressId:         "addr-buyer-1",
@@ -1774,17 +2018,12 @@ func TestCreateCheckout_FallbackProportionalDiscountBreakdown(t *testing.T) {
 		CoinsToUse:        10000,
 		PaymentMethod:     orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD,
 	})
-	if err != nil {
-		t.Fatalf("CreateCheckout failed: %v", err)
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "PROMOTION_BREAKDOWN_MISSING") {
+		t.Fatalf("expected FailedPrecondition PROMOTION_BREAKDOWN_MISSING, got %v", err)
 	}
-	var sumPlat, sumFree, sumCoins int64
-	for _, o := range resp.Orders {
-		sumPlat += o.PlatformVoucherDiscountVnd
-		sumFree += o.FreeshipDiscountVnd
-		sumCoins += o.CoinsDiscountVnd
-	}
-	if sumPlat != 100000 || sumFree != 20000 || sumCoins != 10000 {
-		t.Fatalf("expected exact proportional sum preservation (100000, 20000, 10000), got (%d, %d, %d)", sumPlat, sumFree, sumCoins)
+	if len(h.product.releaseCalls) != 1 || len(h.promo.releaseCalls) != 1 {
+		t.Fatalf("expected full stock+promo compensation, got stock=%d promo=%d",
+			len(h.product.releaseCalls), len(h.promo.releaseCalls))
 	}
 }
 
@@ -2104,7 +2343,8 @@ func TestScanStaleCheckoutGroups_CleanupGuardsAndRetries(t *testing.T) {
 		t.Fatalf("group with sub-orders status = %q, want IN_PROGRESS", gWithOrders.Status)
 	}
 
-	// Case 2: Release failure keeps group IN_PROGRESS for retry on next tick.
+	// Case 2 (P1 M3 claim-first, release-later): release failure leaves group claimed as FAILED + needs_cleanup=TRUE
+	// so racing PersistCheckoutBatch cannot commit orders under it and next tick retries release.
 	h2 := newTestHarness()
 	h2.svc.cfg.StaleCheckoutAfter = 5 * time.Minute
 	retryGroupID := "grp-stale-release-err"
@@ -2125,19 +2365,19 @@ func TestScanStaleCheckoutGroups_CleanupGuardsAndRetries(t *testing.T) {
 		t.Fatalf("expected 0 handled when ReleaseStock fails, got %d err=%v", nFail, err)
 	}
 	gRetry, _ := h2.store.GetCheckoutGroupByID(ctx, retryGroupID)
-	if gRetry.Status != "IN_PROGRESS" {
-		t.Fatalf("group must remain IN_PROGRESS on release error, got %q", gRetry.Status)
+	if gRetry.Status != "FAILED" || !gRetry.NeedsCleanup {
+		t.Fatalf("M3: group must be claimed FAILED + needs_cleanup=TRUE on release error, got status=%q needs_cleanup=%v", gRetry.Status, gRetry.NeedsCleanup)
 	}
 
-	// Next tick after product recovers -> succeeds and marks group FAILED.
+	// Next tick after product recovers -> picks up FAILED+needs_cleanup=TRUE, succeeds and clears needs_cleanup.
 	h2.product.releaseErr = nil
 	nRetry, err := h2.svc.ScanStaleCheckoutGroups(ctx)
 	if err != nil || nRetry != 1 {
 		t.Fatalf("expected 1 handled on retry tick, got %d err=%v", nRetry, err)
 	}
 	gRetryAfter, _ := h2.store.GetCheckoutGroupByID(ctx, retryGroupID)
-	if gRetryAfter.Status != "FAILED" {
-		t.Fatalf("group after retry status = %q, want FAILED", gRetryAfter.Status)
+	if gRetryAfter.Status != "FAILED" || gRetryAfter.NeedsCleanup {
+		t.Fatalf("group after retry status=%q needs_cleanup=%v, want FAILED / false", gRetryAfter.Status, gRetryAfter.NeedsCleanup)
 	}
 
 	// Case 3: FailCheckoutGroup must never overwrite a COMPLETED checkout group.

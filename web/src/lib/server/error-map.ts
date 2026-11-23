@@ -4,6 +4,58 @@ export const UNAVAILABLE_MESSAGE = "Hệ thống đang tạm bận, vui lòng th
 const CODE_PATTERN = /^[A-Z0-9_]{2,64}$/;
 const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f]/g;
 
+/**
+ * Real domain error prefixes emitted by services/order, services/promotion, and services/product
+ * inside gRPC status messages (gateway maps gRPC FailedPrecondition -> HTTP 409 FAILED_PRECONDITION).
+ */
+const KNOWN_PREFIXED_ERROR_CODES = new Set<string>([
+  "IDEMPOTENCY_KEY_CONFLICT",
+  "INSUFFICIENT_STOCK",
+  "SKU_INACTIVE",
+  "SKU_NOT_ACTIVE",
+  "STOCK_VERSION_CONFLICT",
+  "COD_LIMIT_EXCEEDED",
+  "COD_REJECTED_LIMIT_EXCEEDED",
+  "FLASH_SALE_COD_NOT_ALLOWED",
+  "FLASH_SALE_NOT_ACTIVE",
+  "FLASH_SALE_SKU_MISMATCH",
+  "FLASH_SALE_SHOP_MISMATCH",
+  "FLASH_SALE_INVALID_PRICE",
+  "FLASH_SALE_PRICE_CHANGED",
+  "FLASH_UNAVAILABLE_ON_COMMIT",
+  "VOUCHER_UNAVAILABLE_ON_COMMIT",
+  "SHOP_PROGRAM_UNAVAILABLE_ON_COMMIT",
+  "SHOP_PROGRAM_PRICE_CHANGED",
+  "SHOP_PROGRAM_ITEM_UNKNOWN",
+  "INSUFFICIENT_COINS",
+  "PROMOTION_BREAKDOWN_MISSING",
+  "RESERVATION_ALREADY_RELEASED",
+  "INVALID_COMMISSION_RATE",
+  "FLASH_SALE_LOOKUP_FAILED",
+  "SHOP_DISCOUNT_LOOKUP_FAILED",
+  "PAYMENT_FEE_CONFIG_UNAVAILABLE",
+  "PAYMENT_FEE_CONFIG_FAILED",
+  "PAYMENT_FEE_CONFIG_INVALID",
+  "PAYMENT_FEE_CONFIG_NOT_FOUND",
+  "PAYMENT_NOT_INITIALIZED",
+]);
+
+function normalizeDomainErrorCode(rawCode: string, rawMessage: string): string {
+  const prefixMatch = /^([A-Z][A-Z0-9_]+):/.exec(rawMessage.trim());
+  if (prefixMatch && KNOWN_PREFIXED_ERROR_CODES.has(prefixMatch[1])) {
+    return prefixMatch[1];
+  }
+  const lower = rawMessage.toLowerCase();
+  if (
+    lower.includes("not enough available stock") ||
+    lower.includes("insufficient stock") ||
+    lower.includes("out of stock")
+  ) {
+    return "INSUFFICIENT_STOCK";
+  }
+  return rawCode;
+}
+
 function defaultCodeForStatus(status: number): string {
   switch (status) {
     case 400:
@@ -20,6 +72,10 @@ function defaultCodeForStatus(status: number): string {
       return "PAYLOAD_TOO_LARGE";
     case 429:
       return "RESOURCE_EXHAUSTED";
+    case 499:
+      return "CANCELED";
+    case 504:
+      return "DEADLINE_EXCEEDED";
     default:
       return status >= 500 ? "UNAVAILABLE" : "BAD_REQUEST";
   }
@@ -104,6 +160,9 @@ export function toSafeVietnameseMessage(status: number, code: string, rawMessage
   ) {
     return "Liên kết đặt lại mật khẩu không hợp lệ, đã được sử dụng hoặc đã hết hạn. Vui lòng yêu cầu liên kết mới.";
   }
+  if (lower.includes("no bank account pending otp")) {
+    return "Yêu cầu xác thực OTP không còn hiệu lực hoặc đã hết hạn. Vui lòng nhập lại thông tin tài khoản ngân hàng để nhận mã mới.";
+  }
   if (lower.includes("invalid or expired otp")) {
     return "Mã xác thực không đúng hoặc đã hết hạn. Vui lòng kiểm tra lại hộp thư hoặc yêu cầu gửi mã mới.";
   }
@@ -184,9 +243,25 @@ export function toSafeVietnameseMessage(status: number, code: string, rawMessage
     return "Tối đa 5 liên kết bằng chứng hợp lệ (bắt đầu bằng http:// hoặc https://, tối đa 500 ký tự mỗi liên kết).";
   }
 
-  // Refund & Reconciliation domain mappings
-  if (lower.includes("bank_account") || lower.includes("bank account")) {
-    return "Thông tin tài khoản nhận hoàn tiền chưa hợp lệ (số tài khoản gồm 6–19 chữ số).";
+  // Refund, Bank Account & Reconciliation domain mappings
+  if (
+    (status === 429 || code === "RESOURCE_EXHAUSTED") &&
+    (lower.includes("bank") || lower.includes("otp"))
+  ) {
+    return "Bạn đã gửi yêu cầu OTP tài khoản ngân hàng quá số lần cho phép. Vui lòng thử lại sau.";
+  }
+  if (
+    lower.includes("payout locked") ||
+    lower.includes("payout_locked") ||
+    (lower.includes("24h") && lower.includes("bank"))
+  ) {
+    return "Tài khoản nhận tiền đang trong thời gian tạm khóa bảo mật 24 giờ sau khi thay đổi thông tin ngân hàng.";
+  }
+  if (
+    (status === 400 || code === "INVALID_ARGUMENT") &&
+    (lower.includes("bank_account") || lower.includes("bank account"))
+  ) {
+    return "Thông tin tài khoản ngân hàng chưa hợp lệ (số tài khoản gồm 6–19 chữ số).";
   }
   if (
     lower.includes("underpayment") ||
@@ -209,13 +284,106 @@ export function toSafeVietnameseMessage(status: number, code: string, rawMessage
     return "Ngày đối soát không hợp lệ hoặc nằm trong tương lai.";
   }
 
-  // Commerce domain mappings
+  // Wave 2b: Reports, Fees, Discount Programs & Flash Sale rules
+  if (lower.includes("366") || (lower.includes("date range") && lower.includes("exceed"))) {
+    return "Khoảng thời gian báo cáo tối đa là 366 ngày và ngày bắt đầu phải trước hoặc bằng ngày kết thúc.";
+  }
+  if (lower.includes("cod") && lower.includes("flash")) {
+    return "Đơn hàng có sản phẩm Flash sale không hỗ trợ COD. Vui lòng chọn chuyển khoản VietQR.";
+  }
+  if (
+    lower.includes("min_discount_percent") ||
+    (lower.includes("discount") && lower.includes("minimum"))
+  ) {
+    return "Mức giảm giá chưa đạt tỷ lệ giảm tối thiểu của khung giờ Flash sale.";
+  }
+  if (lower.includes("overlap") && lower.includes("flash")) {
+    return "Biến thể SKU này đã nằm trong khung giờ Flash sale bị trùng thời gian.";
+  }
+  if (
+    lower.includes("overlap") &&
+    (lower.includes("program") || lower.includes("discount") || lower.includes("sku"))
+  ) {
+    return "Một hoặc nhiều SKU đang nằm trong chương trình giảm giá khác bị trùng thời gian.";
+  }
+  if (
+    (lower.includes("voucher") &&
+      (lower.includes("used_count") || lower.includes("already used"))) ||
+    lower.includes("cannot decrease quota") ||
+    lower.includes("cannot shorten")
+  ) {
+    return "Voucher đã có lượt sử dụng nên chỉ được đổi tên, tăng hạn mức/ngân sách hoặc kéo dài thời gian kết thúc.";
+  }
+  if (lower.includes("effective_from") && (lower.includes("past") || lower.includes("future"))) {
+    return "Thời điểm áp dụng biểu phí phải hợp lệ và không nằm ở quá khứ.";
+  }
+
+  // Commerce domain mappings (prioritize normalized domain codes from services/order, promotion, product)
+  if (code === "IDEMPOTENCY_KEY_CONFLICT" || lower.includes("idempotency")) {
+    return "Lần đặt trước có thể đã tạo đơn hàng rồi. Vui lòng kiểm tra mục Đơn hàng của tôi trước khi đặt lại.";
+  }
   if (
     code === "INSUFFICIENT_STOCK" ||
     lower.includes("insufficient stock") ||
+    lower.includes("not enough available stock") ||
     lower.includes("out of stock")
   ) {
     return "Sản phẩm không đủ số lượng tồn kho.";
+  }
+  if (code === "SKU_INACTIVE" || code === "SKU_NOT_ACTIVE") {
+    return "Phân loại sản phẩm hiện đã ngừng kinh doanh hoặc không khả dụng.";
+  }
+  if (code === "STOCK_VERSION_CONFLICT") {
+    return "Tồn kho sản phẩm vừa thay đổi. Vui lòng tải lại và thử lại.";
+  }
+  if (code === "COD_REJECTED_LIMIT_EXCEEDED") {
+    return "Tài khoản tạm không áp dụng thanh toán khi nhận hàng (COD) do vượt giới hạn từ chối nhận hàng. Vui lòng chọn VietQR.";
+  }
+  if (code === "COD_LIMIT_EXCEEDED") {
+    return "Đơn hàng vượt quá hạn mức thanh toán khi nhận hàng (COD). Vui lòng chọn chuyển khoản VietQR.";
+  }
+  if (code === "FLASH_SALE_COD_NOT_ALLOWED") {
+    return "Đơn hàng có sản phẩm Flash sale không hỗ trợ COD. Vui lòng chọn chuyển khoản VietQR.";
+  }
+  if (
+    code === "FLASH_SALE_NOT_ACTIVE" ||
+    code === "FLASH_UNAVAILABLE_ON_COMMIT" ||
+    code === "FLASH_SALE_PRICE_CHANGED" ||
+    code === "FLASH_SALE_SKU_MISMATCH" ||
+    code === "FLASH_SALE_SHOP_MISMATCH" ||
+    code === "FLASH_SALE_INVALID_PRICE"
+  ) {
+    return "Suất Flash sale đã hết lượt, kết thúc hoặc bạn đã đạt giới hạn mua.";
+  }
+  if (code === "VOUCHER_UNAVAILABLE_ON_COMMIT") {
+    return "Mã ưu đãi bạn chọn vừa hết lượt hoặc không còn hiệu lực. Vui lòng bỏ chọn mã hoặc chọn mã khác.";
+  }
+  if (
+    code === "SHOP_PROGRAM_UNAVAILABLE_ON_COMMIT" ||
+    code === "SHOP_PROGRAM_PRICE_CHANGED" ||
+    code === "SHOP_PROGRAM_ITEM_UNKNOWN"
+  ) {
+    return "Chương trình giảm giá của gian hàng vừa thay đổi hoặc hết lượt. Vui lòng kiểm tra lại giá và thử đặt lại.";
+  }
+  if (code === "INSUFFICIENT_COINS") {
+    return "Số dư Xu hiện không đủ để áp dụng cho đơn hàng này.";
+  }
+  if (code === "PAYMENT_NOT_INITIALIZED") {
+    return "Đơn đang khởi tạo thanh toán, vui lòng thử lại sau ít phút.";
+  }
+  if (code === "PROMOTION_BREAKDOWN_MISSING" || code === "RESERVATION_ALREADY_RELEASED") {
+    return "Hệ thống khuyến mãi vừa cập nhật lại phiên tính giá. Vui lòng kiểm tra lại và đặt lại đơn.";
+  }
+  if (
+    lower.includes("flash") &&
+    (lower.includes("limit") ||
+      lower.includes("exhausted") ||
+      lower.includes("slot") ||
+      lower.includes("ended") ||
+      lower.includes("not active") ||
+      lower.includes("not started"))
+  ) {
+    return "Suất Flash sale đã hết lượt, kết thúc hoặc bạn đã đạt giới hạn mua.";
   }
   if (lower.includes("voucher")) {
     return "Mã ưu đãi không hợp lệ hoặc đã hết lượt sử dụng.";
@@ -235,6 +403,9 @@ export function toSafeVietnameseMessage(status: number, code: string, rawMessage
       return "Không thể thực hiện thao tác ở trạng thái hiện tại.";
     case "ABORTED":
       return "Dữ liệu vừa thay đổi, vui lòng tải lại và thử lại.";
+    case "CANCELED":
+    case "CANCELLED":
+      return "Yêu cầu bị gián đoạn giữa chừng, vui lòng kiểm tra trạng thái trước khi thử lại.";
     case "RESOURCE_EXHAUSTED":
       return "Bạn thao tác quá nhanh, vui lòng thử lại sau ít phút.";
     case "INVALID_ARGUMENT":
@@ -254,14 +425,18 @@ export function sanitizeGatewayError(
   status: number,
   body: unknown
 ): { status: number; code: string; message: string } {
+  if (status === 504) {
+    return { status: 504, code: "DEADLINE_EXCEEDED", message: UNAVAILABLE_MESSAGE };
+  }
   if (status >= 500 || status <= 0) {
     return { status: 503, code: "UNAVAILABLE", message: UNAVAILABLE_MESSAGE };
   }
 
   const envelope = body as Partial<GatewayErrorEnvelope> | null;
   const rawCode = typeof envelope?.error?.code === "string" ? envelope.error.code.trim() : "";
-  const code = CODE_PATTERN.test(rawCode) ? rawCode : defaultCodeForStatus(status);
+  const baseCode = CODE_PATTERN.test(rawCode) ? rawCode : defaultCodeForStatus(status);
   const rawMessage = typeof envelope?.error?.message === "string" ? envelope.error.message : "";
+  const code = normalizeDomainErrorCode(baseCode, rawMessage);
 
   return {
     status,

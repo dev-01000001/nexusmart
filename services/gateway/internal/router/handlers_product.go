@@ -24,6 +24,31 @@ type categoryDTO struct {
 	UpdatedAt         string `json:"updated_at,omitempty"`
 }
 
+type categoryFeeScheduleDTO struct {
+	ID                string `json:"id"`
+	CategoryID        string `json:"category_id"`
+	CommissionRateBps int32  `json:"commission_rate_bps"`
+	EffectiveFrom     string `json:"effective_from,omitempty"`
+	CreatedBy         string `json:"created_by"`
+	Note              string `json:"note"`
+	CreatedAt         string `json:"created_at,omitempty"`
+}
+
+func mapCategoryFeeSchedule(s *productv1.CategoryFeeSchedule) *categoryFeeScheduleDTO {
+	if s == nil {
+		return nil
+	}
+	return &categoryFeeScheduleDTO{
+		ID:                s.GetId(),
+		CategoryID:        s.GetCategoryId(),
+		CommissionRateBps: s.GetCommissionRateBps(),
+		EffectiveFrom:     httpx.FormatTimestamp(s.GetEffectiveFrom()),
+		CreatedBy:         s.GetCreatedBy(),
+		Note:              s.GetNote(),
+		CreatedAt:         httpx.FormatTimestamp(s.GetCreatedAt()),
+	}
+}
+
 type skuDTO struct {
 	ID                string            `json:"id"`
 	ProductID         string            `json:"product_id"`
@@ -33,6 +58,7 @@ type skuDTO struct {
 	Name              string            `json:"name"`
 	Attributes        map[string]string `json:"attributes"`
 	PriceVND          int64             `json:"price_vnd"`
+	MinPrice30dVND    int64             `json:"min_price_30d_vnd"`
 	Stock             int32             `json:"stock"`
 	ReservedStock     int32             `json:"reserved_stock"`
 	AvailableStock    int32             `json:"available_stock"`
@@ -105,6 +131,7 @@ func mapSKU(s *productv1.SKU) *skuDTO {
 		Name:              s.GetName(),
 		Attributes:        attrs,
 		PriceVND:          s.GetPriceVnd(),
+		MinPrice30dVND:    s.GetMinPrice_30DVnd(),
 		Stock:             s.GetStock(),
 		ReservedStock:     s.GetReservedStock(),
 		AvailableStock:    s.GetAvailableStock(),
@@ -258,32 +285,111 @@ func (h *handler) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name              string `json:"name"`
-		Slug              string `json:"slug"`
-		ParentID          string `json:"parent_id"`
-		CommissionRateBps int32  `json:"commission_rate_bps"`
-		SortOrder         int32  `json:"sort_order"`
+		Name              string  `json:"name"`
+		Slug              string  `json:"slug"`
+		ParentID          *string `json:"parent_id"`
+		CommissionRateBps *int32  `json:"commission_rate_bps"`
+		SortOrder         *int32  `json:"sort_order"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteDecodeError(w, r, err)
 		return
 	}
+	req := &productv1.UpdateCategoryRequest{
+		Id:   chi.URLParam(r, "id"),
+		Name: body.Name,
+		Slug: body.Slug,
+	}
+	if body.ParentID != nil {
+		req.ParentId = *body.ParentID
+		req.HasParentId = true
+	}
+	if body.CommissionRateBps != nil {
+		req.CommissionRateBps = *body.CommissionRateBps
+		req.HasCommissionRateBps = true
+	}
+	if body.SortOrder != nil {
+		req.SortOrder = *body.SortOrder
+		req.HasSortOrder = true
+	}
+
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
-	resp, err := h.clients.Product.UpdateCategory(ctx, &productv1.UpdateCategoryRequest{
-		Id:                chi.URLParam(r, "id"),
-		Name:              body.Name,
-		Slug:              body.Slug,
-		ParentId:          body.ParentID,
-		CommissionRateBps: body.CommissionRateBps,
-		SortOrder:         body.SortOrder,
-	})
+	resp, err := h.clients.Product.UpdateCategory(ctx, req)
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"category": mapCategory(resp.GetCategory())})
+}
+
+func (h *handler) handleAdminListCategoryFeeSchedules(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := httpx.ParsePagination(r)
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Product.ListCategoryFeeSchedules(ctx, &productv1.ListCategoryFeeSchedulesRequest{
+		CategoryId: strings.TrimSpace(r.URL.Query().Get("category_id")),
+		Page:       page,
+		PageSize:   pageSize,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	items := make([]*categoryFeeScheduleDTO, 0, len(resp.GetSchedules()))
+	for _, s := range resp.GetSchedules() {
+		items = append(items, mapCategoryFeeSchedule(s))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"page":      page,
+		"page_size": pageSize,
+		"total":     resp.GetTotal(),
+	})
+}
+
+func (h *handler) handleAdminSetCategoryFeeSchedule(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		CommissionRateBps *int32 `json:"commission_rate_bps"`
+		EffectiveFrom     string `json:"effective_from"`
+		Note              string `json:"note"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	if body.CommissionRateBps == nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "commission_rate_bps is required")
+		return
+	}
+	if *body.CommissionRateBps < 0 {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "commission_rate_bps must be non-negative")
+		return
+	}
+	effFrom, err := httpx.ParseTimestamp(body.EffectiveFrom)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid effective_from timestamp")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Product.SetCategoryFeeSchedule(ctx, &productv1.SetCategoryFeeScheduleRequest{
+		CategoryId:        chi.URLParam(r, "id"),
+		CommissionRateBps: *body.CommissionRateBps,
+		EffectiveFrom:     effFrom,
+		Note:              body.Note,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+		"schedule": mapCategoryFeeSchedule(resp.GetSchedule()),
+	})
 }
 
 func (h *handler) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
@@ -604,11 +710,23 @@ func (h *handler) handleSellerDeleteProduct(w http.ResponseWriter, r *http.Reque
 
 func (h *handler) handleSellerUpdateStock(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		NewStock        int32 `json:"new_stock"`
-		ExpectedVersion int64 `json:"expected_version"`
+		NewStock        *int32 `json:"new_stock"`
+		ExpectedVersion *int64 `json:"expected_version"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	if body.NewStock == nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "new_stock is required")
+		return
+	}
+	if *body.NewStock < 0 {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "new_stock must be non-negative")
+		return
+	}
+	if body.ExpectedVersion == nil || *body.ExpectedVersion < 0 {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "expected_version is required and must be non-negative")
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -617,8 +735,8 @@ func (h *handler) handleSellerUpdateStock(w http.ResponseWriter, r *http.Request
 	resp, err := h.clients.Product.UpdateStock(ctx, &productv1.UpdateStockRequest{
 		SkuId:           chi.URLParam(r, "sku_id"),
 		ShopId:          auth.ShopIDFromContext(r.Context()),
-		NewStock:        body.NewStock,
-		ExpectedVersion: body.ExpectedVersion,
+		NewStock:        *body.NewStock,
+		ExpectedVersion: *body.ExpectedVersion,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
