@@ -10,6 +10,7 @@ import (
 	paymentv1 "github.com/nexusmart/core/gen/go/nexusmart/payment/v1"
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	promotionv1 "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1"
+	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/services/order/internal/clients"
 	"github.com/nexusmart/core/services/order/internal/events"
 	"github.com/nexusmart/core/services/order/internal/statemachine"
@@ -20,15 +21,16 @@ import (
 
 // PaymentResultInput captures normalized payment event / RPC data.
 type PaymentResultInput struct {
-	EventID         string
-	EventType       string
-	CheckoutGroupID string
-	OrderID         string
-	PaymentID       string
-	Status          orderv1.PaymentResultStatus
-	Reason          string
-	ActorID         string
-	ActorRole       string
+	EventID               string
+	EventType             string
+	CheckoutGroupID       string
+	OrderID               string
+	PaymentID             string
+	Status                orderv1.PaymentResultStatus
+	PaymentStatusOverride string
+	Reason                string
+	ActorID               string
+	ActorRole             string
 }
 
 // HandlePaymentResult processes payment.succeeded, payment.failed, and payment.expired idempotently
@@ -44,32 +46,39 @@ func (s *OrderService) HandlePaymentResult(ctx context.Context, in PaymentResult
 		}
 	}
 
-	groupID := strings.TrimSpace(in.CheckoutGroupID)
-	if groupID == "" && strings.TrimSpace(in.OrderID) != "" {
-		if agg, err := s.store.GetOrderWithDetails(ctx, in.OrderID); err == nil && agg != nil {
-			groupID = agg.Order.CheckoutGroupID
-		} else if grp, gErr := s.store.GetCheckoutGroupByID(ctx, in.OrderID); gErr == nil && grp != nil {
-			groupID = grp.ID
-		}
+	// Review-A P0-2: perform order state transition under FOR UPDATE (checking payment_id match)
+	// BEFORE running downstream ReleaseStock/ReleasePromotion/ConfirmStock so a concurrent RetryPayment
+	// cannot have its stock/voucher released out from under it. Defer MarkEventProcessed until
+	// downstream calls succeed so transient failures trigger NATS redelivery.
+	traceID, traceparent := traceMetaFromContext(ctx)
+	outcome, err := s.store.TransitionOrdersPaymentResult(ctx, store.PaymentResultTransitionParams{
+		EventID:               in.EventID,
+		EventType:             in.EventType,
+		SkipMarkProcessed:     in.EventID != "",
+		CheckoutGroupID:       strings.TrimSpace(in.CheckoutGroupID),
+		OrderID:               in.OrderID,
+		PaymentID:             in.PaymentID,
+		ResultStatus:          in.Status,
+		PaymentStatusOverride: in.PaymentStatusOverride,
+		Reason:                in.Reason,
+		ActorID:               fallbackStr(in.ActorID, "payment-service"),
+		ActorRole:             fallbackStr(in.ActorRole, "system"),
+		TraceID:               traceID,
+		Traceparent:           traceparent,
+	})
+	if err != nil {
+		return err
+	}
+	if outcome.AlreadyProcessed {
+		return nil
 	}
 
-	hasPending := false
-	if groupID != "" {
-		aggs, err := s.store.ListOrdersByCheckoutGroup(ctx, groupID)
-		if err != nil {
-			return err
-		}
-		for _, a := range aggs {
-			if statemachine.StringToStatus(a.Order.Status) == orderv1.OrderStatus_ORDER_STATUS_PENDING {
-				hasPending = true
-				break
-			}
-		}
+	if len(outcome.Transitioned) > 0 {
+		s.notifyOutbox()
 	}
 
-	// Execute idempotent downstream calls BEFORE committing processed_events so transient failures
-	// trigger NATS redelivery and guarantee stock/voucher/coins compensation completes!
-	if hasPending && groupID != "" {
+	groupID := outcome.CheckoutGroupID
+	if outcome.NeedsDownstream && groupID != "" {
 		sysCtx := clients.WithInternalAdminContext(ctx)
 		switch in.Status {
 		case orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_SUCCEEDED:
@@ -114,26 +123,10 @@ func (s *OrderService) HandlePaymentResult(ctx context.Context, in PaymentResult
 		}
 	}
 
-	traceID, traceparent := traceMetaFromContext(ctx)
-	outcome, err := s.store.TransitionOrdersPaymentResult(ctx, store.PaymentResultTransitionParams{
-		EventID:         in.EventID,
-		EventType:       in.EventType,
-		CheckoutGroupID: groupID,
-		OrderID:         in.OrderID,
-		PaymentID:       in.PaymentID,
-		ResultStatus:    in.Status,
-		Reason:          in.Reason,
-		ActorID:         fallbackStr(in.ActorID, "payment-service"),
-		ActorRole:       fallbackStr(in.ActorRole, "system"),
-		TraceID:         traceID,
-		Traceparent:     traceparent,
-	})
-	if err != nil {
-		return err
-	}
-
-	if len(outcome.Transitioned) > 0 {
-		s.notifyOutbox()
+	if in.EventID != "" {
+		if err := s.store.MarkEventProcessed(ctx, in.EventID, in.EventType); err != nil {
+			return fmt.Errorf("mark payment event processed: %w", err)
+		}
 	}
 	return nil
 }
@@ -188,6 +181,7 @@ func (s *OrderService) HandlePaymentRefunded(ctx context.Context, eventID string
 	_, err := s.store.RecordPaymentRefunded(ctx, store.PaymentRefundedParams{
 		EventID:   eventID,
 		EventType: events.SubjectPaymentRefunded,
+		PaymentID: payload.PaymentID,
 		OrderID:   payload.OrderID,
 		RefundID:  payload.RefundID,
 		AmountVND: payload.AmountVND,
@@ -198,21 +192,41 @@ func (s *OrderService) HandlePaymentRefunded(ctx context.Context, eventID string
 
 // HandleShipmentUpdated processes shipment.updated events idempotently, updating timeline and state.
 func (s *OrderService) HandleShipmentUpdated(ctx context.Context, eventID string, payload events.ShipmentUpdatedPayload) error {
+	isReturned := strings.EqualFold(strings.TrimSpace(payload.Status), "returned")
+	if isReturned && eventID != "" {
+		processed, err := s.store.IsEventProcessed(ctx, eventID)
+		if err != nil {
+			return fmt.Errorf("check processed_events: %w", err)
+		}
+		if processed {
+			return nil
+		}
+	}
+
 	traceID, traceparent := traceMetaFromContext(ctx)
 	outcome, err := s.store.ApplyShipmentUpdate(ctx, store.ShipmentUpdateParams{
-		EventID:        eventID,
-		EventType:      events.SubjectShipmentUpdated,
-		OrderID:        payload.OrderID,
-		ShipmentStatus: payload.Status,
-		TrackingCode:   payload.TrackingCode,
-		Description:    payload.Description,
-		TraceID:        traceID,
-		Traceparent:    traceparent,
+		EventID:           eventID,
+		EventType:         events.SubjectShipmentUpdated,
+		SkipMarkProcessed: isReturned && eventID != "",
+		OrderID:           payload.OrderID,
+		ShipmentStatus:    payload.Status,
+		TrackingCode:      payload.TrackingCode,
+		Description:       payload.Description,
+		TraceID:           traceID,
+		Traceparent:       traceparent,
 	})
 	if err != nil {
 		return err
 	}
-	if outcome.AlreadyProcessed || outcome.NotFound {
+	if outcome.AlreadyProcessed {
+		return nil
+	}
+	if outcome.NotFound {
+		if isReturned && eventID != "" {
+			if mErr := s.store.MarkEventProcessed(ctx, eventID, events.SubjectShipmentUpdated); mErr != nil {
+				return fmt.Errorf("mark missing-order shipment event processed: %w", mErr)
+			}
+		}
 		return nil
 	}
 
@@ -220,31 +234,70 @@ func (s *OrderService) HandleShipmentUpdated(ctx context.Context, eventID string
 		s.notifyOutbox()
 	}
 
-	if outcome.TransitionedTo == orderv1.OrderStatus_ORDER_STATUS_RETURNED && outcome.Order != nil {
+	if (outcome.TransitionedTo == orderv1.OrderStatus_ORDER_STATUS_RETURNED || outcome.AlreadyReturned) && outcome.Order != nil {
+		if outcome.TransitionedTo == orderv1.OrderStatus_ORDER_STATUS_RETURNED {
+			s.notifyOutbox()
+		}
+
 		ord := outcome.Order.Order
 		compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 		defer cancel()
 
-		// Restock returned items.
-		s.restockOrderItems(compCtx, ord.ID, outcome.Order.Items)
+		// Review-A P1-7: return errors from all idempotent compensations before marking processed_events
+		// so transient downstream failures trigger NATS redelivery/DLQ instead of silent loss.
+		if err := s.restockOrderItemsErr(compCtx, ord.ID, outcome.Order.Items); err != nil {
+			return fmt.Errorf("restock returned order %s: %w", ord.ID, err)
+		}
 
-		// If order was paid online, initiate refund idempotently.
+		// R5: Release shop-scoped promotions (coins, shop voucher, flash slots) for returned sub-order.
+		if err := s.releasePromotionShopErr(compCtx, ord.CheckoutGroupID, ord.ShopID, "order_returned"); err != nil {
+			return fmt.Errorf("release shop promotion for returned order %s: %w", ord.ID, err)
+		}
+
+		// R6 (ORD-B6): COD delivery rejection (SHIPPING -> RETURNED) increments buyer's cod_rejected_count.
+		if outcome.TransitionedFrom == orderv1.OrderStatus_ORDER_STATUS_SHIPPING &&
+			statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD &&
+			s.clients.User != nil {
+			rejReason := strings.TrimSpace(payload.Description)
+			if rejReason == "" {
+				rejReason = "COD delivery rejected/returned"
+			}
+			if rErr := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
+				_, err := s.clients.User.RecordCODRejection(c, &userv1.RecordCODRejectionRequest{
+					UserId:  ord.BuyerID,
+					OrderId: ord.ID,
+					Reason:  rejReason,
+				})
+				return err
+			}); rErr != nil {
+				return fmt.Errorf("record COD rejection for returned order %s: %w", ord.ID, rErr)
+			}
+		}
+
+		// Review-A P0-1: if order was paid online, refund only the remaining unrefunded balance.
 		wasPaidOnline := statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
-			strings.EqualFold(ord.PaymentStatus, "SUCCEEDED")
-		if wasPaidOnline && ord.PaymentID != "" && s.clients.Payment != nil {
+			strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") &&
+			ord.TotalPayableVND > 0
+		remaining := ord.TotalPayableVND - ord.RefundedVND
+		if wasPaidOnline && remaining > 0 && ord.PaymentID != "" && s.clients.Payment != nil {
 			if rErr := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
 				_, err := s.clients.Payment.CreateRefund(c, &paymentv1.CreateRefundRequest{
 					PaymentId:      ord.PaymentID,
 					OrderId:        ord.ID,
-					AmountVnd:      ord.TotalPayableVND,
+					AmountVnd:      remaining,
 					Reason:         "Order returned to seller",
 					IdempotencyKey: "order-return-refund:" + ord.ID,
 				})
 				return err
 			}); rErr != nil {
-				s.logger.ErrorContext(ctx, "failed to trigger refund for returned order",
-					"order_id", ord.ID, "payment_id", ord.PaymentID, "error", rErr)
+				return fmt.Errorf("create refund for returned order %s: %w", ord.ID, rErr)
 			}
+		}
+	}
+
+	if isReturned && eventID != "" {
+		if err := s.store.MarkEventProcessed(ctx, eventID, events.SubjectShipmentUpdated); err != nil {
+			return fmt.Errorf("mark shipment returned event processed: %w", err)
 		}
 	}
 
@@ -294,6 +347,19 @@ func (s *OrderService) processExpiredGroup(ctx context.Context, cand store.Expir
 					Reason:          "Payment confirmed by expiry watchdog",
 					ActorID:         "order-expiry-watchdog",
 					ActorRole:       "system",
+				})
+			}
+			if pay.GetStatus() == paymentv1.PaymentStatus_PAYMENT_STATUS_REFUNDED {
+				// Review2-O P1-2: payment was already 100% refunded before expiry sweep;
+				// cancel the pending order and release reservations without downgrading payment_status to EXPIRED.
+				return s.HandlePaymentResult(sysCtx, PaymentResultInput{
+					CheckoutGroupID:       cand.CheckoutGroupID,
+					PaymentID:             pay.GetPaymentId(),
+					Status:                orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_EXPIRED,
+					PaymentStatusOverride: "REFUNDED",
+					Reason:                "Payment already refunded before order confirmation",
+					ActorID:               "order-expiry-watchdog",
+					ActorRole:             "system",
 				})
 			}
 			if pay.GetStatus() == paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING {

@@ -1,9 +1,11 @@
 package httpx
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +16,25 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+type loggerContextKey struct{}
+
+// WithLogger attaches a structured logger to ctx for downstream error logging.
+func WithLogger(ctx context.Context, log *slog.Logger) context.Context {
+	if log == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, loggerContextKey{}, log)
+}
+
+func loggerFromContext(ctx context.Context) *slog.Logger {
+	if ctx != nil {
+		if log, ok := ctx.Value(loggerContextKey{}).(*slog.Logger); ok && log != nil {
+			return log
+		}
+	}
+	return slog.Default()
+}
 
 // ErrorBody represents the standard NexusMart JSON error envelope body.
 type ErrorBody struct {
@@ -75,22 +96,45 @@ func MapGRPCError(err error) (int, string, string) {
 	case codes.ResourceExhausted:
 		return http.StatusTooManyRequests, "RESOURCE_EXHAUSTED", msg
 	case codes.DeadlineExceeded:
-		return http.StatusGatewayTimeout, "DEADLINE_EXCEEDED", msg
+		return http.StatusGatewayTimeout, "DEADLINE_EXCEEDED", "upstream service timed out"
 	case codes.Unavailable:
-		return http.StatusServiceUnavailable, "UNAVAILABLE", msg
+		return http.StatusServiceUnavailable, "UNAVAILABLE", "service temporarily unavailable"
 	case codes.Unimplemented:
 		return http.StatusNotImplemented, "UNIMPLEMENTED", msg
+	case codes.Internal, codes.Unknown, codes.DataLoss:
+		return http.StatusInternalServerError, "INTERNAL_ERROR", "internal server error"
 	default:
-		if msg == "" {
-			msg = "internal server error"
-		}
-		return http.StatusInternalServerError, "INTERNAL_ERROR", msg
+		return http.StatusInternalServerError, "INTERNAL_ERROR", "internal server error"
 	}
 }
 
 // WriteGRPCError maps a gRPC error to the standard REST error envelope.
+// Internal/Unknown/DataLoss/Unavailable/DeadlineExceeded details are logged server-side with trace_id and never leaked to clients.
 func WriteGRPCError(w http.ResponseWriter, r *http.Request, err error) {
 	httpStatus, code, msg := MapGRPCError(err)
+	if httpStatus >= http.StatusInternalServerError && err != nil {
+		ctx := context.Background()
+		method := ""
+		path := ""
+		if r != nil {
+			ctx = r.Context()
+			method = r.Method
+			if r.URL != nil {
+				path = r.URL.Path
+			}
+		}
+		grpcCode := "NON_GRPC"
+		if st, ok := status.FromError(err); ok {
+			grpcCode = st.Code().String()
+		}
+		loggerFromContext(ctx).ErrorContext(ctx, "upstream grpc internal error",
+			slog.Int("http_status", httpStatus),
+			slog.String("grpc_code", grpcCode),
+			slog.String("method", method),
+			slog.String("path", path),
+			slog.String("error", err.Error()),
+		)
+	}
 	WriteError(w, r, httpStatus, code, msg)
 }
 

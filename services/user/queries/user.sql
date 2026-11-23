@@ -34,6 +34,19 @@ UPDATE users
 SET full_name = $2,
     phone = $3,
     avatar_url = $4,
+    phone_verified = $5,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: InsertCODRejection :execrows
+INSERT INTO cod_rejections (order_id, user_id, reason)
+VALUES ($1, $2, $3)
+ON CONFLICT (order_id) DO NOTHING;
+
+-- name: IncrementUserCODRejectedCount :one
+UPDATE users
+SET cod_rejected_count = cod_rejected_count + 1,
     updated_at = NOW()
 WHERE id = $1
 RETURNING *;
@@ -156,13 +169,36 @@ LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 SELECT COUNT(*)::bigint FROM shops
 WHERE (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text);
 
+-- name: ResubmitShop :one
+UPDATE shops
+SET name = $2,
+    slug = $3,
+    description = $4,
+    pickup_address_id = $5,
+    contact_phone = $6,
+    business_license_doc = $7,
+    status = 'PENDING',
+    rejection_reason = '',
+    updated_at = NOW()
+WHERE id = $1
+  AND (status = 'REJECTED' OR (status = 'PENDING' AND btrim(rejection_reason) <> ''))
+RETURNING *;
+
 -- name: UpdateShopReview :one
 UPDATE shops
 SET status = $2,
     rejection_reason = $3,
     updated_at = NOW()
 WHERE id = $1
+  AND status = 'PENDING'
 RETURNING *;
+
+-- name: ExistsActiveShopByPickupAddressID :one
+SELECT EXISTS (
+    SELECT 1 FROM shops
+    WHERE pickup_address_id = $1
+      AND status = 'ACTIVE'
+)::boolean AS used;
 
 -- name: CreateAddress :one
 INSERT INTO addresses (

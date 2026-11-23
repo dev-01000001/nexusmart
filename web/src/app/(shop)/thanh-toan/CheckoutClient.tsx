@@ -36,6 +36,7 @@ import {
   translateCheckoutError,
   translateVoucherReason,
 } from "@/features/checkout/messages";
+import { buildCalculateFeePayload, computeBuyNowSlicePricing } from "@/features/checkout/helpers";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./page.module.css";
 
@@ -70,7 +71,12 @@ interface CheckoutShopSlice {
   shopId: string;
   shopName: string;
   items: CheckoutLineItem[];
+  /** Effective merchandise subtotal after validated flash sale discounts (G - F). */
   subtotalVnd: number;
+  /** Gross regular merchandise subtotal before flash sale discounts (G), required by promotions/preview. */
+  regularSubtotalVnd: number;
+  /** Expected flash sale discount total (F) for validated live flash items. */
+  flashDiscountVnd: number;
   weightGrams: number;
 }
 
@@ -155,6 +161,7 @@ export function CheckoutClient({
 
   const activeSlices = useMemo<CheckoutShopSlice[]>(() => {
     if (buyNowItem) {
+      const pricing = computeBuyNowSlicePricing(buyNowItem);
       return [
         {
           shopId: buyNowItem.shopId,
@@ -173,7 +180,9 @@ export function CheckoutClient({
               weightGrams: buyNowItem.weightGrams,
             },
           ],
-          subtotalVnd: buyNowItem.unitPriceVnd * buyNowItem.quantity,
+          subtotalVnd: pricing.effectiveSubtotalVnd,
+          regularSubtotalVnd: pricing.regularSubtotalVnd,
+          flashDiscountVnd: pricing.flashDiscountVnd,
           weightGrams: Math.max(100, buyNowItem.weightGrams * buyNowItem.quantity),
         },
       ];
@@ -202,6 +211,8 @@ export function CheckoutClient({
             shopName: shopNameById[g.shop_id] || g.shop_name || "Gian hàng NexusMart",
             items,
             subtotalVnd,
+            regularSubtotalVnd: subtotalVnd,
+            flashDiscountVnd: 0,
             weightGrams,
           };
         })
@@ -221,6 +232,8 @@ export function CheckoutClient({
         weightGrams: Math.max(100, it.weightGrams || 300),
       })),
       subtotalVnd: g.selectedSubtotalVnd,
+      regularSubtotalVnd: g.selectedSubtotalVnd,
+      flashDiscountVnd: 0,
       weightGrams: Math.max(100, g.selectedWeightGrams),
     }));
   }, [buyNowItem, isBuyNowMode, cartInitialized, initialCart, selectedShopGroups, shopNameById]);
@@ -236,6 +249,16 @@ export function CheckoutClient({
 
   const rawSubtotalVnd = useMemo(
     () => activeSlices.reduce((sum, slice) => sum + slice.subtotalVnd, 0),
+    [activeSlices]
+  );
+
+  const rawRegularSubtotalVnd = useMemo(
+    () => activeSlices.reduce((sum, slice) => sum + slice.regularSubtotalVnd, 0),
+    [activeSlices]
+  );
+
+  const rawFlashDiscountVnd = useMemo(
+    () => activeSlices.reduce((sum, slice) => sum + slice.flashDiscountVnd, 0),
     [activeSlices]
   );
 
@@ -294,15 +317,13 @@ export function CheckoutClient({
         activeSlices.map(async (slice) => {
           const res = await api<GatewayCalculateFeeResponse>("shipping/calculate-fee", {
             method: "POST",
-            json: {
-              shop_id: slice.shopId,
-              from_province_code: "",
-              from_ward_code: "",
-              to_province_code: selectedAddress.province_code,
-              to_ward_code: selectedAddress.ward_code,
-              weight_grams: Math.max(100, slice.weightGrams),
-              cod_amount_vnd: paymentMethod === "COD" ? slice.subtotalVnd : 0,
-            },
+            json: buildCalculateFeePayload({
+              shopId: slice.shopId,
+              toProvinceCode: selectedAddress.province_code,
+              toWardCode: selectedAddress.ward_code,
+              weightGrams: Math.max(100, slice.weightGrams),
+              codAmountVnd: paymentMethod === "COD" ? slice.subtotalVnd : 0,
+            }),
           });
           return { shopId: slice.shopId, quotes: res?.quotes ?? [] };
         })
@@ -389,7 +410,7 @@ export function CheckoutClient({
   const buildShopDiscountInputs = useCallback(() => {
     return activeSlices.map((slice) => ({
       shop_id: slice.shopId,
-      subtotal_vnd: slice.subtotalVnd,
+      subtotal_vnd: slice.regularSubtotalVnd,
       shipping_fee_vnd: chosenQuoteByShop[slice.shopId]?.fee_vnd ?? 0,
       items: slice.items.map((it) => ({
         sku_id: it.skuId,
@@ -458,15 +479,16 @@ export function CheckoutClient({
     [vouchers]
   );
 
-  const subtotalDisplay = preview?.total_subtotal_vnd ?? rawSubtotalVnd;
-  const flashDiscountDisplay = preview?.total_flash_sale_discount_vnd ?? 0;
+  const subtotalDisplay = preview?.total_subtotal_vnd ?? rawRegularSubtotalVnd;
+  const flashDiscountDisplay = preview?.total_flash_sale_discount_vnd ?? rawFlashDiscountVnd;
   const shopVoucherDisplay = preview?.total_shop_voucher_discount_vnd ?? 0;
   const platformVoucherDisplay = preview?.total_platform_voucher_discount_vnd ?? 0;
   const shippingDisplay = preview?.total_shipping_fee_vnd ?? totalShippingFeeVnd;
   const freeshipDisplay = preview?.total_freeship_discount_vnd ?? 0;
   const coinsDisplay = preview?.total_coins_discount_vnd ?? 0;
   const grandTotalVnd =
-    preview?.final_payable_vnd ?? Math.max(0, rawSubtotalVnd + totalShippingFeeVnd);
+    preview?.final_payable_vnd ??
+    Math.max(0, rawRegularSubtotalVnd - rawFlashDiscountVnd + totalShippingFeeVnd);
 
   const translatedWarnings = useMemo(() => {
     if (!preview?.warnings?.length) return [];
@@ -1100,30 +1122,33 @@ export function CheckoutClient({
                         <span className="num">{formatVnd(slice.subtotalVnd)}</span>
                       </div>
                       <div className={styles.shopSliceItems}>
-                        {slice.items.map((it) => (
-                          <div key={it.skuId} className={styles.miniItem}>
-                            <img
-                              src={it.imageUrl}
-                              alt={it.productName}
-                              width={896}
-                              height={1200}
-                              className={styles.miniThumb}
-                            />
-                            <div className={styles.miniInfo}>
-                              <span className={styles.miniName}>{it.productName}</span>
-                              <span className={styles.miniMeta}>
-                                {it.skuName ? `${it.skuName} · ` : ""}SL{" "}
-                                <span className="num">{it.quantity}</span>
-                                {it.flashPriceVnd && it.flashPriceVnd < it.unitPriceVnd
-                                  ? ` · Flash sale ${formatVnd(it.flashPriceVnd)}`
-                                  : ""}
+                        {slice.items.map((it) => {
+                          const itemPricing = computeBuyNowSlicePricing(it);
+                          return (
+                            <div key={it.skuId} className={styles.miniItem}>
+                              <img
+                                src={it.imageUrl}
+                                alt={it.productName}
+                                width={896}
+                                height={1200}
+                                className={styles.miniThumb}
+                              />
+                              <div className={styles.miniInfo}>
+                                <span className={styles.miniName}>{it.productName}</span>
+                                <span className={styles.miniMeta}>
+                                  {it.skuName ? `${it.skuName} · ` : ""}SL{" "}
+                                  <span className="num">{it.quantity}</span>
+                                  {itemPricing.flashDiscountVnd > 0
+                                    ? ` · Flash sale ${formatVnd(itemPricing.effectiveUnitPriceVnd)}`
+                                    : ""}
+                                </span>
+                              </div>
+                              <span className={`${styles.miniPrice} num`}>
+                                {formatVnd(itemPricing.effectiveSubtotalVnd)}
                               </span>
                             </div>
-                            <span className={`${styles.miniPrice} num`}>
-                              {formatVnd(it.unitPriceVnd * it.quantity)}
-                            </span>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
 
                       {shopVouchers.length > 0 && (

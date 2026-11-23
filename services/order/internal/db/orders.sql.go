@@ -72,17 +72,18 @@ func (q *Queries) CountOrdersFiltered(ctx context.Context, arg CountOrdersFilter
 
 const createCheckoutGroup = `-- name: CreateCheckoutGroup :one
 INSERT INTO checkout_groups (
-    id, buyer_id, idempotency_key, status, payment_method, total_payable_vnd
+    id, buyer_id, idempotency_key, request_hash, status, payment_method, total_payable_vnd
 ) VALUES (
-    $1, $2, $3, $4, $5, $6
+    $1, $2, $3, $4, $5, $6, $7
 )
-RETURNING id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at
+RETURNING id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id
 `
 
 type CreateCheckoutGroupParams struct {
 	ID              string `json:"id"`
 	BuyerID         string `json:"buyer_id"`
 	IdempotencyKey  string `json:"idempotency_key"`
+	RequestHash     string `json:"request_hash"`
 	Status          string `json:"status"`
 	PaymentMethod   string `json:"payment_method"`
 	TotalPayableVND int64  `json:"total_payable_vnd"`
@@ -93,6 +94,7 @@ func (q *Queries) CreateCheckoutGroup(ctx context.Context, arg CreateCheckoutGro
 		arg.ID,
 		arg.BuyerID,
 		arg.IdempotencyKey,
+		arg.RequestHash,
 		arg.Status,
 		arg.PaymentMethod,
 		arg.TotalPayableVND,
@@ -113,6 +115,9 @@ func (q *Queries) CreateCheckoutGroup(ctx context.Context, arg CreateCheckoutGro
 		&i.ResponseSnapshotJSON,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RequestHash,
+		&i.RetryIdempotencyKey,
+		&i.RetryFromPaymentID,
 	)
 	return i, err
 }
@@ -137,7 +142,7 @@ func (q *Queries) FailCheckoutGroup(ctx context.Context, arg FailCheckoutGroupPa
 }
 
 const getActiveCheckoutGroupByIdempotencyKey = `-- name: GetActiveCheckoutGroupByIdempotencyKey :one
-SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at
+SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id
 FROM checkout_groups
 WHERE buyer_id = $1
   AND idempotency_key = $2
@@ -168,12 +173,15 @@ func (q *Queries) GetActiveCheckoutGroupByIdempotencyKey(ctx context.Context, ar
 		&i.ResponseSnapshotJSON,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RequestHash,
+		&i.RetryIdempotencyKey,
+		&i.RetryFromPaymentID,
 	)
 	return i, err
 }
 
 const getCheckoutGroupByID = `-- name: GetCheckoutGroupByID :one
-SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at
+SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id
 FROM checkout_groups
 WHERE id = $1
 `
@@ -196,12 +204,49 @@ func (q *Queries) GetCheckoutGroupByID(ctx context.Context, id string) (Checkout
 		&i.ResponseSnapshotJSON,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RequestHash,
+		&i.RetryIdempotencyKey,
+		&i.RetryFromPaymentID,
+	)
+	return i, err
+}
+
+const getCheckoutGroupByPaymentID = `-- name: GetCheckoutGroupByPaymentID :one
+SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id
+FROM checkout_groups
+WHERE payment_id = $1
+  AND status <> 'FAILED'
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+func (q *Queries) GetCheckoutGroupByPaymentID(ctx context.Context, paymentID string) (CheckoutGroup, error) {
+	row := q.db.QueryRow(ctx, getCheckoutGroupByPaymentID, paymentID)
+	var i CheckoutGroup
+	err := row.Scan(
+		&i.ID,
+		&i.BuyerID,
+		&i.IdempotencyKey,
+		&i.Status,
+		&i.PaymentMethod,
+		&i.PaymentID,
+		&i.PaymentStatus,
+		&i.QRURL,
+		&i.QRCode,
+		&i.PaymentExpiresAt,
+		&i.TotalPayableVND,
+		&i.ResponseSnapshotJSON,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RequestHash,
+		&i.RetryIdempotencyKey,
+		&i.RetryFromPaymentID,
 	)
 	return i, err
 }
 
 const getOrderByID = `-- name: GetOrderByID :one
-SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at
+SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd
 FROM orders
 WHERE id = $1
 `
@@ -239,12 +284,13 @@ func (q *Queries) GetOrderByID(ctx context.Context, id string) (Order, error) {
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RefundedVND,
 	)
 	return i, err
 }
 
 const getOrderByIDForUpdate = `-- name: GetOrderByIDForUpdate :one
-SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at
+SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd
 FROM orders
 WHERE id = $1
 FOR UPDATE
@@ -283,6 +329,7 @@ func (q *Queries) GetOrderByIDForUpdate(ctx context.Context, id string) (Order, 
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RefundedVND,
 	)
 	return i, err
 }
@@ -334,7 +381,7 @@ INSERT INTO orders (
     $19, $20, $21, $22, $23,
     $24, $25
 )
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd
 `
 
 type InsertOrderParams struct {
@@ -424,6 +471,7 @@ func (q *Queries) InsertOrder(ctx context.Context, arg InsertOrderParams) (Order
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RefundedVND,
 	)
 	return i, err
 }
@@ -694,7 +742,7 @@ func (q *Queries) ListOrderTimelineByOrderID(ctx context.Context, orderID string
 }
 
 const listOrdersByCheckoutGroup = `-- name: ListOrdersByCheckoutGroup :many
-SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at
+SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd
 FROM orders
 WHERE checkout_group_id = $1
 ORDER BY shop_id ASC, created_at ASC
@@ -739,6 +787,7 @@ func (q *Queries) ListOrdersByCheckoutGroup(ctx context.Context, checkoutGroupID
 			&i.CompletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RefundedVND,
 		); err != nil {
 			return nil, err
 		}
@@ -751,7 +800,7 @@ func (q *Queries) ListOrdersByCheckoutGroup(ctx context.Context, checkoutGroupID
 }
 
 const listOrdersByCheckoutGroupForUpdate = `-- name: ListOrdersByCheckoutGroupForUpdate :many
-SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at
+SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd
 FROM orders
 WHERE checkout_group_id = $1
 ORDER BY shop_id ASC, created_at ASC, id ASC
@@ -797,6 +846,7 @@ func (q *Queries) ListOrdersByCheckoutGroupForUpdate(ctx context.Context, checko
 			&i.CompletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RefundedVND,
 		); err != nil {
 			return nil, err
 		}
@@ -809,7 +859,7 @@ func (q *Queries) ListOrdersByCheckoutGroupForUpdate(ctx context.Context, checko
 }
 
 const listOrdersFiltered = `-- name: ListOrdersFiltered :many
-SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at
+SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd
 FROM orders
 WHERE ($1::text = '' OR buyer_id = $1::text)
   AND ($2::text = '' OR shop_id = $2::text)
@@ -871,6 +921,7 @@ func (q *Queries) ListOrdersFiltered(ctx context.Context, arg ListOrdersFiltered
 			&i.CompletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RefundedVND,
 		); err != nil {
 			return nil, err
 		}
@@ -1046,6 +1097,45 @@ func (q *Queries) TryMarkEventProcessed(ctx context.Context, arg TryMarkEventPro
 	return result.RowsAffected(), nil
 }
 
+const updateCheckoutGroupPaymentOnRetry = `-- name: UpdateCheckoutGroupPaymentOnRetry :exec
+UPDATE checkout_groups
+SET payment_id = $2,
+    payment_status = $3,
+    qr_url = $4,
+    qr_code = $5,
+    payment_expires_at = $6,
+    response_snapshot_json = NULL,
+    retry_idempotency_key = $7,
+    retry_from_payment_id = $8,
+    updated_at = NOW()
+WHERE id = $1
+`
+
+type UpdateCheckoutGroupPaymentOnRetryParams struct {
+	ID                  string     `json:"id"`
+	PaymentID           string     `json:"payment_id"`
+	PaymentStatus       string     `json:"payment_status"`
+	QRURL               string     `json:"qr_url"`
+	QRCode              string     `json:"qr_code"`
+	PaymentExpiresAt    *time.Time `json:"payment_expires_at"`
+	RetryIdempotencyKey string     `json:"retry_idempotency_key"`
+	RetryFromPaymentID  string     `json:"retry_from_payment_id"`
+}
+
+func (q *Queries) UpdateCheckoutGroupPaymentOnRetry(ctx context.Context, arg UpdateCheckoutGroupPaymentOnRetryParams) error {
+	_, err := q.db.Exec(ctx, updateCheckoutGroupPaymentOnRetry,
+		arg.ID,
+		arg.PaymentID,
+		arg.PaymentStatus,
+		arg.QRURL,
+		arg.QRCode,
+		arg.PaymentExpiresAt,
+		arg.RetryIdempotencyKey,
+		arg.RetryFromPaymentID,
+	)
+	return err
+}
+
 const updateCheckoutGroupPaymentStatus = `-- name: UpdateCheckoutGroupPaymentStatus :exec
 UPDATE checkout_groups
 SET payment_status = $2,
@@ -1071,7 +1161,7 @@ SET status = 'COMPLETED',
     completed_at = NOW(),
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd
 `
 
 func (q *Queries) UpdateOrderCompleted(ctx context.Context, id string) (Order, error) {
@@ -1107,6 +1197,7 @@ func (q *Queries) UpdateOrderCompleted(ctx context.Context, id string) (Order, e
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RefundedVND,
 	)
 	return i, err
 }
@@ -1118,7 +1209,7 @@ SET status = 'DELIVERED',
     delivered_at = NOW(),
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd
 `
 
 type UpdateOrderDeliveredParams struct {
@@ -1159,6 +1250,7 @@ func (q *Queries) UpdateOrderDelivered(ctx context.Context, arg UpdateOrderDeliv
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RefundedVND,
 	)
 	return i, err
 }
@@ -1206,6 +1298,25 @@ func (q *Queries) UpdateOrderPaymentStatus(ctx context.Context, arg UpdateOrderP
 	return err
 }
 
+const updateOrderRefunded = `-- name: UpdateOrderRefunded :exec
+UPDATE orders
+SET refunded_vnd = $2,
+    payment_status = CASE WHEN $3::text <> '' THEN $3::text ELSE payment_status END,
+    updated_at = NOW()
+WHERE id = $1
+`
+
+type UpdateOrderRefundedParams struct {
+	ID            string `json:"id"`
+	RefundedVND   int64  `json:"refunded_vnd"`
+	PaymentStatus string `json:"payment_status"`
+}
+
+func (q *Queries) UpdateOrderRefunded(ctx context.Context, arg UpdateOrderRefundedParams) error {
+	_, err := q.db.Exec(ctx, updateOrderRefunded, arg.ID, arg.RefundedVND, arg.PaymentStatus)
+	return err
+}
+
 const updateOrderShipped = `-- name: UpdateOrderShipped :one
 UPDATE orders
 SET status = 'SHIPPING',
@@ -1215,7 +1326,7 @@ SET status = 'SHIPPING',
     label_url = $5,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd
 `
 
 type UpdateOrderShippedParams struct {
@@ -1265,6 +1376,7 @@ func (q *Queries) UpdateOrderShipped(ctx context.Context, arg UpdateOrderShipped
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RefundedVND,
 	)
 	return i, err
 }
@@ -1277,7 +1389,7 @@ SET status = $2,
     payment_id = CASE WHEN $5::text <> '' THEN $5::text ELSE payment_id END,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd
 `
 
 type UpdateOrderStatusParams struct {
@@ -1327,6 +1439,7 @@ func (q *Queries) UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusPa
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RefundedVND,
 	)
 	return i, err
 }

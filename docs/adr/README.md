@@ -14,6 +14,14 @@ Mẫu ADR: [0000-template.md](0000-template.md).
 
 ## Nhóm B: năng lực chưa có
 
+| Số | Tên | Trạng thái | Ngày |
+| --- | --- | --- | --- |
+| [0004](0004-search-service-hybrid-vector.md) | Search service và tìm kiếm hybrid (từ khoá + vector) | Đề xuất | 2026-11-23 |
+| [0005](0005-realtime-chat-and-object-storage.md) | Chat thời gian thực và Object Storage cho media | Đề xuất | 2026-11-23 |
+| [0006](0006-ai-assistant-llm-rag-guardrails.md) | Trợ lý AI — nhà cung cấp LLM, embedding tiếng Việt, RAG và guardrail | Đề xuất | 2026-11-23 |
+| [0007](0007-observability-and-aiops-engine.md) | Hệ thống giám sát (Observability) và AIOps engine bằng Rust | Đề xuất | 2026-11-23 |
+| [0008](0008-kubernetes-cicd-and-backup.md) | Nơi triển khai Kubernetes, CI/CD và sao lưu cơ sở dữ liệu | Đề xuất | 2026-11-23 |
+
 Chạy skill `evaluate-oss` và mở ADR mới khi bắt đầu triển khai từng năng lực dưới đây. Danh sách ứng viên chỉ là điểm xuất phát, chưa tra web kiểm trạng thái trong đợt này:
 
 - **Load balancer và ingress khi triển khai**: Gateway API với Envoy Gateway, Traefik; bare-metal thêm MetalLB hoặc Cilium.

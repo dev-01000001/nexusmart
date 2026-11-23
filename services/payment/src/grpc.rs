@@ -45,17 +45,13 @@ impl CallerAuth {
         Ok(Self { caller })
     }
 
-    fn has_role(&self) -> bool {
-        !self.caller.role.is_empty()
-    }
-
     fn is_admin(&self) -> bool {
         self.caller.is_admin()
     }
 
     #[allow(clippy::result_large_err)]
     fn require_admin(&self, op: &str) -> Result<(), Status> {
-        if self.has_role() && !self.is_admin() {
+        if !self.is_admin() {
             return Err(Status::permission_denied(format!(
                 "forbidden: {op} requires admin role"
             )));
@@ -70,10 +66,9 @@ impl CallerAuth {
 
     #[allow(clippy::result_large_err)]
     fn require_payment_owner(&self, owner_user_id: &str, op: &str) -> Result<(), Status> {
-        if !self.has_role() || self.is_admin() {
-            return Ok(());
-        }
-        if !self.caller.user_id.is_empty() && owner_user_id == self.caller.user_id {
+        if self.is_admin()
+            || (!self.caller.user_id.is_empty() && owner_user_id == self.caller.user_id)
+        {
             return Ok(());
         }
         Err(Status::permission_denied(format!(
@@ -83,7 +78,7 @@ impl CallerAuth {
 
     #[allow(clippy::result_large_err)]
     fn require_seller_shop_access(&self, target_shop_id: &str) -> Result<(), Status> {
-        if !self.has_role() || self.is_admin() {
+        if self.is_admin() {
             return Ok(());
         }
         if self.caller.role == "seller"
@@ -169,6 +164,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                     subtotal_vnd: a.subtotal_vnd,
                     commission_vnd: a.commission_vnd,
                     shipping_fee_vnd: a.shipping_fee_vnd,
+                    platform_discount_vnd: a.platform_discount_vnd,
                 })
                 .collect();
 
@@ -254,13 +250,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 .map_err(|e| e.to_tonic_status())?;
             let order_group_id = non_empty(&req.order_group_id);
 
-            // Defense-in-depth ownership check BEFORE cancelling when caller role metadata is present.
-            if caller.has_role() && !caller.is_admin() {
-                if caller.caller.user_id.is_empty() {
-                    return Err(Status::permission_denied(
-                        "forbidden: missing x-user-id for CancelPayment",
-                    ));
-                }
+            if !caller.is_admin() {
                 let existing = self
                     .service
                     .get_payment(payment_id, order_group_id, None)
@@ -544,6 +534,7 @@ fn to_proto_payment(pwa: PaymentWithAllocations) -> Payment {
             subtotal_vnd: a.subtotal_vnd,
             commission_vnd: a.commission_vnd,
             shipping_fee_vnd: a.shipping_fee_vnd,
+            platform_discount_vnd: a.platform_discount_vnd,
         })
         .collect();
 

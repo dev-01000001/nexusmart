@@ -20,6 +20,7 @@ type Querier interface {
 	CreateShop(ctx context.Context, arg CreateShopParams) (Shop, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteAddress(ctx context.Context, id string) error
+	ExistsActiveShopByPickupAddressID(ctx context.Context, pickupAddressID string) (bool, error)
 	GetAddressByID(ctx context.Context, id string) (Address, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (RefreshToken, error)
 	GetShopByID(ctx context.Context, id string) (Shop, error)
@@ -30,11 +31,14 @@ type Querier interface {
 	GetUserByID(ctx context.Context, id string) (User, error)
 	GetUserByPhone(ctx context.Context, phone string) (User, error)
 	GrantUserSellerShop(ctx context.Context, arg GrantUserSellerShopParams) (User, error)
+	IncrementUserCODRejectedCount(ctx context.Context, id string) (User, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) (AuditLog, error)
+	InsertCODRejection(ctx context.Context, arg InsertCODRejectionParams) (int64, error)
 	ListAddressesByUserID(ctx context.Context, userID string) ([]Address, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
 	ListShops(ctx context.Context, arg ListShopsParams) ([]Shop, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
+	ResubmitShop(ctx context.Context, arg ResubmitShopParams) (Shop, error)
 	RevokeAllUserRefreshTokens(ctx context.Context, userID string) error
 	RevokeRefreshTokenByHash(ctx context.Context, tokenHash string) error
 	RevokeRefreshTokenFamily(ctx context.Context, familyID string) error

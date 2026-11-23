@@ -2156,9 +2156,9 @@ export const PRODUCTS: Product[] = [
     hasVideo: false,
     faqs: [
       {
-        question: "Trong combo 3 chiếc có thể chọn cỡ khác nhau từng chiếc không?",
+        question: "Hộp 3 quần lót boxer sợi Modal gồm những màu nào và chọn cỡ ra sao?",
         answer:
-          "Có. Bạn có thể chọn cỡ riêng cho từng chiếc ngay tại trang chi tiết sản phẩm trước khi thêm vào giỏ.",
+          "Mỗi hộp gồm 3 màu trung tính (Xám nhạt, Xám chì, Đen than) đồng nhất theo kích cỡ bạn đã chọn trên trang sản phẩm.",
       },
     ],
     wishlistCount: 268,

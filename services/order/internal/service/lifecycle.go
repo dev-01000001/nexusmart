@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/nexusmart/core/services/order/internal/store"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const returnWindowDuration = 7 * 24 * time.Hour
@@ -192,21 +194,20 @@ func (s *OrderService) CancelOrder(ctx context.Context, req *orderv1.CancelOrder
 		reason = "Cancelled by " + fallbackStr(caller.Role, "user")
 	}
 
-	wasPaid := statemachine.StringToPaymentMethod(agg.Order.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
-		strings.EqualFold(agg.Order.PaymentStatus, "SUCCEEDED")
-
 	traceID, traceparent := traceMetaFromContext(ctx)
-	updatedAgg, cancelledOrders, err := s.store.TransitionOrderStatus(ctx, store.SingleOrderTransitionParams{
+	res, err := s.store.TransitionOrderStatus(ctx, store.SingleOrderTransitionParams{
 		OrderID:         orderID,
 		TargetStatus:    orderv1.OrderStatus_ORDER_STATUS_CANCELLED,
 		CancelReason:    reason,
+		PaymentStatus:   "", // Computed atomically inside FOR UPDATE TX (review-A P0-4, P2-10, P3-12).
 		ActorID:         caller.UserID,
 		ActorRole:       fallbackStr(caller.Role, "buyer"),
 		Note:            reason,
 		CancelGroupPend: true,
 		BuildOutboxFn: func(ord db.Order) []db.InsertOutboxEventParams {
 			ordPaid := statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
-				strings.EqualFold(ord.PaymentStatus, "SUCCEEDED")
+				strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") &&
+				ord.TotalPayableVND > 0
 			payload, _ := json.Marshal(events.OrderCancelledPayload{
 				OrderID:   ord.ID,
 				OrderCode: ord.OrderCode,
@@ -230,35 +231,27 @@ func (s *OrderService) CancelOrder(ctx context.Context, req *orderv1.CancelOrder
 		return nil, mapStoreError(err)
 	}
 
-	// Execute downstream compensations cleanly.
-	s.compensateCancelledOrder(ctx, agg, prevStatus, wasPaid, reason, len(cancelledOrders))
+	// Execute downstream compensations from the locked pre-transition snapshot (review-A P0-4).
+	s.compensateCancelledOrder(ctx, res.PrevOrder, res.Order.Items, res.HasActiveSibling, reason)
 	s.notifyOutbox()
 
 	return &orderv1.CancelOrderResponse{
-		Order: aggregateToProto(*updatedAgg),
+		Order: aggregateToProto(*res.Order),
 	}, nil
 }
 
 func (s *OrderService) compensateCancelledOrder(
 	ctx context.Context,
-	agg *store.OrderAggregate,
-	prevStatus orderv1.OrderStatus,
-	wasPaid bool,
+	prevOrd db.Order,
+	items []db.OrderItem,
+	hasActiveSibling bool,
 	reason string,
-	_ int,
 ) {
-	groupID := agg.Order.CheckoutGroupID
-	allGroupOrders, err := s.store.ListOrdersByCheckoutGroup(ctx, groupID)
-	hasActiveSibling := false
-	if err == nil {
-		for _, sibling := range allGroupOrders {
-			if sibling.Order.ID != agg.Order.ID &&
-				statemachine.StringToStatus(sibling.Order.Status) != orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
-				hasActiveSibling = true
-				break
-			}
-		}
-	}
+	groupID := prevOrd.CheckoutGroupID
+	prevStatus := statemachine.StringToStatus(prevOrd.Status)
+	wasPaid := statemachine.StringToPaymentMethod(prevOrd.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+		strings.EqualFold(prevOrd.PaymentStatus, "SUCCEEDED") &&
+		prevOrd.TotalPayableVND > 0
 
 	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 	defer cancel()
@@ -266,10 +259,10 @@ func (s *OrderService) compensateCancelledOrder(
 	if prevStatus == orderv1.OrderStatus_ORDER_STATUS_PENDING {
 		s.compensateReleaseStock(ctx, groupID)
 		s.compensateReleasePromotion(ctx, groupID)
-		if agg.Order.PaymentID != "" && s.clients.Payment != nil {
+		if prevOrd.PaymentID != "" && s.clients.Payment != nil {
 			_ = clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
 				_, cErr := s.clients.Payment.CancelPayment(c, &paymentv1.CancelPaymentRequest{
-					PaymentId:    agg.Order.PaymentID,
+					PaymentId:    prevOrd.PaymentID,
 					OrderGroupId: groupID,
 					Reason:       reason,
 				})
@@ -282,40 +275,58 @@ func (s *OrderService) compensateCancelledOrder(
 	// Order was CONFIRMED or PREPARING.
 	if !hasActiveSibling {
 		s.compensateReleasePromotion(ctx, groupID)
-		releasedViaReservation := false
 		if s.clients.Product != nil {
-			resp, rErr := s.clients.Product.ReleaseStock(compCtx, &productv1.ReleaseStockRequest{OrderId: groupID})
-			if rErr == nil && resp != nil && resp.GetReleased() {
-				releasedViaReservation = true
+			var released bool
+			rErr := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
+				resp, err := s.clients.Product.ReleaseStock(c, &productv1.ReleaseStockRequest{OrderId: groupID})
+				if err != nil {
+					if status.Code(err) == codes.NotFound {
+						released = false
+						return nil
+					}
+					return err
+				}
+				released = resp.GetReleased()
+				return nil
+			})
+			if rErr != nil {
+				// Review2-O P1-4a: do NOT fall back to RestockOrderItems on transient ReleaseStock errors
+				// (would create phantom stock if reservation is still RESERVED).
+				s.logger.ErrorContext(ctx, "saga compensation ReleaseStock failed on cancelled order",
+					"order_id", prevOrd.ID, "checkout_group_id", groupID, "error", rErr)
+			} else if !released {
+				s.restockOrderItems(compCtx, prevOrd.ID, items)
 			}
 		}
-		if !releasedViaReservation {
-			s.restockOrderItems(compCtx, agg.Order.ID, agg.Items)
-		}
 	} else {
-		// Only restock this specific cancelled sub-order so active sibling sub-orders keep their stock.
-		s.restockOrderItems(compCtx, agg.Order.ID, agg.Items)
+		// Active sibling exists: release only this sub-order's shop promotions and restock its items.
+		s.compensateReleasePromotionShop(ctx, groupID, prevOrd.ShopID, reason)
+		s.restockOrderItems(compCtx, prevOrd.ID, items)
 	}
 
-	if s.clients.Payment != nil && agg.Order.PaymentID != "" {
+	if s.clients.Payment != nil && prevOrd.PaymentID != "" {
 		if wasPaid {
-			if err := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
-				_, rErr := s.clients.Payment.CreateRefund(c, &paymentv1.CreateRefundRequest{
-					PaymentId:      agg.Order.PaymentID,
-					OrderId:        agg.Order.ID,
-					AmountVnd:      agg.Order.TotalPayableVND,
-					Reason:         reason,
-					IdempotencyKey: "order-cancel-refund:" + agg.Order.ID,
-				})
-				return rErr
-			}); err != nil {
-				s.logger.ErrorContext(ctx, "failed to create refund on cancelled paid order",
-					"order_id", agg.Order.ID, "payment_id", agg.Order.PaymentID, "error", err)
+			// Review-A P0-1: refund only the remaining unrefunded balance.
+			remaining := prevOrd.TotalPayableVND - prevOrd.RefundedVND
+			if remaining > 0 {
+				if err := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
+					_, rErr := s.clients.Payment.CreateRefund(c, &paymentv1.CreateRefundRequest{
+						PaymentId:      prevOrd.PaymentID,
+						OrderId:        prevOrd.ID,
+						AmountVnd:      remaining,
+						Reason:         reason,
+						IdempotencyKey: "order-cancel-refund:" + prevOrd.ID,
+					})
+					return rErr
+				}); err != nil {
+					s.logger.ErrorContext(ctx, "failed to create refund on cancelled paid order",
+						"order_id", prevOrd.ID, "payment_id", prevOrd.PaymentID, "error", err)
+				}
 			}
 		} else if !hasActiveSibling {
 			_ = clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
 				_, cErr := s.clients.Payment.CancelPayment(c, &paymentv1.CancelPaymentRequest{
-					PaymentId:    agg.Order.PaymentID,
+					PaymentId:    prevOrd.PaymentID,
 					OrderGroupId: groupID,
 					Reason:       reason,
 				})
@@ -325,9 +336,9 @@ func (s *OrderService) compensateCancelledOrder(
 	}
 }
 
-func (s *OrderService) restockOrderItems(ctx context.Context, orderID string, items []db.OrderItem) {
+func (s *OrderService) restockOrderItemsErr(ctx context.Context, orderID string, items []db.OrderItem) error {
 	if s.clients.Product == nil || strings.TrimSpace(orderID) == "" || len(items) == 0 {
-		return
+		return nil
 	}
 	qtyBySKU := make(map[string]int32, len(items))
 	for _, it := range items {
@@ -337,7 +348,7 @@ func (s *OrderService) restockOrderItems(ctx context.Context, orderID string, it
 		}
 	}
 	if len(qtyBySKU) == 0 {
-		return
+		return nil
 	}
 
 	skuIDs := make([]string, 0, len(qtyBySKU))
@@ -354,13 +365,17 @@ func (s *OrderService) restockOrderItems(ctx context.Context, orderID string, it
 		})
 	}
 
-	if err := clients.RetryIdempotent(ctx, 3, func(c context.Context) error {
+	return clients.RetryIdempotent(ctx, 3, func(c context.Context) error {
 		_, rErr := s.clients.Product.RestockOrderItems(c, &productv1.RestockOrderItemsRequest{
 			OrderId: orderID,
 			Items:   reqItems,
 		})
 		return rErr
-	}); err != nil {
+	})
+}
+
+func (s *OrderService) restockOrderItems(ctx context.Context, orderID string, items []db.OrderItem) {
+	if err := s.restockOrderItemsErr(ctx, orderID, items); err != nil {
 		s.logger.WarnContext(ctx, "restock RestockOrderItems failed", "order_id", orderID, "error", err)
 	}
 }
@@ -385,7 +400,7 @@ func (s *OrderService) SellerConfirmOrder(ctx context.Context, req *orderv1.Sell
 		return nil, status.Error(codes.PermissionDenied, "only the owning shop seller can confirm this order")
 	}
 
-	updatedAgg, _, err := s.store.TransitionOrderStatus(ctx, store.SingleOrderTransitionParams{
+	res, err := s.store.TransitionOrderStatus(ctx, store.SingleOrderTransitionParams{
 		OrderID:      orderID,
 		TargetStatus: orderv1.OrderStatus_ORDER_STATUS_PREPARING,
 		ActorID:      caller.UserID,
@@ -397,7 +412,7 @@ func (s *OrderService) SellerConfirmOrder(ctx context.Context, req *orderv1.Sell
 	}
 
 	return &orderv1.SellerConfirmOrderResponse{
-		Order: aggregateToProto(*updatedAgg),
+		Order: aggregateToProto(*res.Order),
 	}, nil
 }
 
@@ -426,13 +441,27 @@ func (s *OrderService) SellerShipOrder(ctx context.Context, req *orderv1.SellerS
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
 
-	carrierCode := strings.TrimSpace(req.GetCarrierCode())
-	if carrierCode == "" {
-		carrierCode = agg.Order.CarrierCode
+	reqCarrier := strings.TrimSpace(req.GetCarrierCode())
+	reqService := strings.TrimSpace(req.GetServiceCode())
+	orderCarrier := strings.TrimSpace(agg.Order.CarrierCode)
+	orderService := strings.TrimSpace(agg.Order.ServiceCode)
+
+	if reqCarrier != "" && orderCarrier != "" && !strings.EqualFold(reqCarrier, orderCarrier) {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"carrier_code %q does not match buyer's selected carrier %q", reqCarrier, orderCarrier)
 	}
-	serviceCode := strings.TrimSpace(req.GetServiceCode())
+	if reqService != "" && orderService != "" && !strings.EqualFold(reqService, orderService) {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"service_code %q does not match buyer's selected service %q", reqService, orderService)
+	}
+
+	carrierCode := orderCarrier
+	if carrierCode == "" {
+		carrierCode = reqCarrier
+	}
+	serviceCode := orderService
 	if serviceCode == "" {
-		serviceCode = agg.Order.ServiceCode
+		serviceCode = reqService
 	}
 
 	var codAmountVND int64
@@ -604,11 +633,13 @@ func (s *OrderService) BuyerConfirmReceived(ctx context.Context, req *orderv1.Bu
 	}
 
 	curStatus := statemachine.StringToStatus(agg.Order.Status)
-	if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_COMPLETED); err != nil {
-		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	if curStatus != orderv1.OrderStatus_ORDER_STATUS_DELIVERED {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"buyer can only confirm receipt of a DELIVERED order (current status: %s)",
+			statemachine.StatusToString(curStatus))
 	}
 
-	coinsReward := ComputeRewardCoins(agg.Order.SubtotalVND, s.cfg.RewardCoinsBPS)
+	coinsReward := ComputeOrderRewardCoins(agg.Order, s.cfg.RewardCoinsBPS)
 	traceID, traceparent := traceMetaFromContext(ctx)
 	payloadBytes, err := json.Marshal(events.OrderCompletedPayload{
 		OrderID:         agg.Order.ID,
@@ -750,6 +781,244 @@ func (s *OrderService) MarkPaymentResult(ctx context.Context, req *orderv1.MarkP
 	}
 
 	return &orderv1.MarkPaymentResultResponse{Ok: true}, nil
+}
+
+// RetryPayment validates a pending unexpired VietQR order group and creates a superseding payment,
+// atomically updating payment_id and payment_expires_at across all sub-orders in the group (UC-B25).
+func (s *OrderService) RetryPayment(ctx context.Context, req *orderv1.RetryPaymentRequest) (*orderv1.RetryPaymentResponse, error) {
+	caller, err := requireAuthenticatedCaller(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req == nil || strings.TrimSpace(req.GetPaymentId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "payment_id is required")
+	}
+
+	paymentID := strings.TrimSpace(req.GetPaymentId())
+	if req.GetPaymentMethod() == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
+		return nil, status.Error(codes.FailedPrecondition, "cannot retry or switch to COD via payment retry; create a new checkout instead")
+	}
+	if req.GetPaymentMethod() != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED &&
+		req.GetPaymentMethod() != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR {
+		return nil, status.Error(codes.FailedPrecondition, "only VIETQR payment method is supported for retry")
+	}
+
+	group, err := s.store.GetCheckoutGroupByPaymentID(ctx, paymentID)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			return nil, mapStoreError(err)
+		}
+		// Payment ID may belong to a superseded/stale payment; check PaymentService to return 403/409 accurately.
+		if s.clients.Payment == nil {
+			return nil, status.Error(codes.NotFound, "payment not found")
+		}
+		payResp, pErr := s.clients.Payment.GetPayment(ctx, &paymentv1.GetPaymentRequest{PaymentId: paymentID})
+		if pErr != nil {
+			if status.Code(pErr) == codes.NotFound || status.Code(pErr) == codes.PermissionDenied {
+				return nil, pErr
+			}
+			return nil, status.Error(codes.NotFound, "payment not found")
+		}
+		pay := payResp.GetPayment()
+		if pay == nil {
+			return nil, status.Error(codes.NotFound, "payment not found")
+		}
+		if pay.GetUserId() != "" && pay.GetUserId() != caller.UserID {
+			return nil, status.Error(codes.PermissionDenied, "only the buyer who owns this order group can retry payment")
+		}
+		if pay.GetOrderGroupId() == "" {
+			return nil, status.Error(codes.NotFound, "order group for payment not found")
+		}
+		group, err = s.store.GetCheckoutGroupByID(ctx, pay.GetOrderGroupId())
+		if err != nil {
+			return nil, mapStoreError(err)
+		}
+	}
+
+	if group.BuyerID != caller.UserID {
+		return nil, status.Error(codes.PermissionDenied, "only the buyer who owns this order group can retry payment")
+	}
+
+	// Review2-O P1-3: acquire cross-replica DB advisory lock scoped to checkout_group_id spanning
+	// validation -> Payment.CreatePayment -> UpdateGroupPaymentOnRetry so concurrent retries across
+	// replicas serialize cleanly.
+	var retryResp *orderv1.RetryPaymentResponse
+	err = s.store.WithCheckoutGroupRetryLock(ctx, group.ID, func() error {
+		// Re-load authoritative group & orders under distributed lock.
+		lockedGroup, gErr := s.store.GetCheckoutGroupByID(ctx, group.ID)
+		if gErr != nil {
+			return mapStoreError(gErr)
+		}
+
+		clientKey := strings.TrimSpace(req.GetIdempotencyKey())
+		idemKey := "retry:" + lockedGroup.ID + ":" + paymentID
+		if clientKey != "" {
+			idemKey = "retry:" + lockedGroup.ID + ":" + clientKey
+		}
+
+		if lockedGroup.PaymentID == "" {
+			return status.Error(codes.FailedPrecondition, "payment_id does not match current active payment for this order group")
+		}
+
+		now := s.nowFn()
+		if lockedGroup.PaymentID != paymentID {
+			// Review-A P0-3(c): sequential replay with the same (payment_id, idempotency_key)
+			// returns the already-created payment idempotently while the group is still PENDING & unexpired.
+			if clientKey != "" && lockedGroup.RetryIdempotencyKey == idemKey && lockedGroup.RetryFromPaymentID == paymentID {
+				aggs, lErr := s.store.ListOrdersByCheckoutGroup(ctx, lockedGroup.ID)
+				if lErr != nil {
+					return mapStoreError(lErr)
+				}
+				_, _, exp, vErr := validateRetryableGroupOrders(aggs, lockedGroup.PaymentID, lockedGroup.PaymentExpiresAt, now)
+				if vErr != nil {
+					return vErr
+				}
+				resp := &orderv1.RetryPaymentResponse{
+					CheckoutGroupId: lockedGroup.ID,
+					PaymentId:       lockedGroup.PaymentID,
+				}
+				if exp != nil {
+					resp.PaymentExpiresAt = timestamppb.New(*exp)
+				}
+				retryResp = resp
+				return nil
+			}
+			return status.Error(codes.FailedPrecondition, "payment_id does not match current active payment for this order group")
+		}
+
+		aggs, lErr := s.store.ListOrdersByCheckoutGroup(ctx, lockedGroup.ID)
+		if lErr != nil {
+			return mapStoreError(lErr)
+		}
+		allocs, totalPayableVND, _, vErr := validateRetryableGroupOrders(aggs, paymentID, lockedGroup.PaymentExpiresAt, now)
+		if vErr != nil {
+			return vErr
+		}
+
+		newExpiresAt := now.Add(time.Duration(s.cfg.PaymentExpiryMinutes) * time.Minute)
+		payResp, pErr := s.clients.Payment.CreatePayment(ctx, &paymentv1.CreatePaymentRequest{
+			OrderGroupId:      lockedGroup.ID,
+			OrderId:           lockedGroup.ID,
+			UserId:            lockedGroup.BuyerID,
+			AmountVnd:         totalPayableVND,
+			Method:            paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR,
+			ShopAllocations:   allocs,
+			ExpiresAt:         timestamppb.New(newExpiresAt),
+			IdempotencyKey:    idemKey,
+			SupersedePrevious: true,
+		})
+		if pErr != nil {
+			return pErr
+		}
+
+		newPay := payResp.GetPayment()
+		if newPay == nil || strings.TrimSpace(newPay.GetPaymentId()) == "" {
+			return status.Error(codes.Internal, "payment service returned empty payment on retry")
+		}
+		newPaymentID := newPay.GetPaymentId()
+		// Review2-O P2-7: reject replayed payment records that have already left PENDING state.
+		if newPay.GetStatus() != paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING {
+			return status.Errorf(codes.FailedPrecondition,
+				"cannot retry payment: payment %s is in status %s",
+				newPaymentID, paymentStatusToString(newPay.GetStatus(), newPay.GetStatus().String()))
+		}
+		newPaymentStatus := paymentStatusToString(newPay.GetStatus(), "PENDING")
+		if newPay.GetExpiresAt() != nil {
+			exp := newPay.GetExpiresAt().AsTime().UTC()
+			newExpiresAt = exp
+		}
+
+		// Review-A P0-3(b): persist the newly created superseding payment even if the client disconnects.
+		dbTimeout := s.cfg.GRPCCallTimeout
+		if dbTimeout <= 0 {
+			dbTimeout = 10 * time.Second
+		}
+		dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(ctx), dbTimeout)
+		defer dbCancel()
+
+		if uErr := s.store.UpdateGroupPaymentOnRetry(dbCtx, store.RetryPaymentUpdateParams{
+			CheckoutGroupID:     lockedGroup.ID,
+			ExpectedPaymentID:   paymentID,
+			NewPaymentID:        newPaymentID,
+			PaymentStatus:       newPaymentStatus,
+			QRURL:               newPay.GetQrUrl(),
+			QRCode:              newPay.GetQrCode(),
+			PaymentExpiresAt:    &newExpiresAt,
+			RetryIdempotencyKey: idemKey,
+			Now:                 now,
+		}); uErr != nil {
+			// Review-A P0-3(a): only cancel the newly created payment when order state raced to a
+			// precondition failure (not PENDING or moved to a different payment); never on transient DB errors.
+			if errors.Is(uErr, store.ErrRetryPrecondition) && s.clients.Payment != nil {
+				compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+				defer cancel()
+				_, _ = s.clients.Payment.CancelPayment(compCtx, &paymentv1.CancelPaymentRequest{
+					PaymentId:    newPaymentID,
+					OrderGroupId: lockedGroup.ID,
+					Reason:       "Retry payment DB sync conflict",
+				})
+			}
+			return mapStoreError(uErr)
+		}
+
+		retryResp = &orderv1.RetryPaymentResponse{
+			CheckoutGroupId:  lockedGroup.ID,
+			PaymentId:        newPaymentID,
+			PaymentExpiresAt: timestamppb.New(newExpiresAt),
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, mapStoreError(err)
+	}
+	return retryResp, nil
+}
+
+// validateRetryableGroupOrders verifies every sub-order in a checkout group is PENDING, VIETQR,
+// matches expectedPaymentID, has a retryable payment_status, and is unexpired (review2-O P2-7, P3-9).
+func validateRetryableGroupOrders(
+	aggs []store.OrderAggregate,
+	expectedPaymentID string,
+	groupExpiresAt *time.Time,
+	now time.Time,
+) ([]*paymentv1.ShopAllocation, int64, *time.Time, error) {
+	if len(aggs) == 0 {
+		return nil, 0, nil, status.Error(codes.NotFound, "no orders found for checkout group")
+	}
+	allocs := make([]*paymentv1.ShopAllocation, 0, len(aggs))
+	var totalPayableVND int64
+	var lastExp *time.Time
+	for _, agg := range aggs {
+		ord := agg.Order
+		if ord.PaymentID != expectedPaymentID {
+			return nil, 0, nil, status.Error(codes.FailedPrecondition, "payment_id does not match sub-order current payment")
+		}
+		if statemachine.StringToPaymentMethod(ord.PaymentMethod) != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR {
+			return nil, 0, nil, status.Error(codes.FailedPrecondition, "only VIETQR orders can retry payment")
+		}
+		if statemachine.StringToStatus(ord.Status) != orderv1.OrderStatus_ORDER_STATUS_PENDING {
+			return nil, 0, nil, status.Errorf(codes.FailedPrecondition,
+				"cannot retry payment when order %s is in status %s", ord.ID, ord.Status)
+		}
+		if strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") ||
+			strings.EqualFold(ord.PaymentStatus, "CANCELLED") ||
+			strings.EqualFold(ord.PaymentStatus, "EXPIRED") ||
+			strings.EqualFold(ord.PaymentStatus, "REFUNDED") {
+			return nil, 0, nil, status.Errorf(codes.FailedPrecondition,
+				"cannot retry payment in payment status %s", ord.PaymentStatus)
+		}
+		exp := ord.PaymentExpiresAt
+		if exp == nil {
+			exp = groupExpiresAt
+		}
+		if exp == nil || !exp.After(now) {
+			return nil, 0, nil, status.Error(codes.FailedPrecondition, "payment window has expired; please place a new order")
+		}
+		lastExp = exp
+		allocs = append(allocs, buildShopAllocation(ord))
+		totalPayableVND += ord.TotalPayableVND
+	}
+	return allocs, totalPayableVND, lastExp, nil
 }
 
 func fallbackStr(v, fb string) string {

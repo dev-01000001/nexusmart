@@ -18,7 +18,6 @@ export default async function FlashSalePage() {
     >
       <FlashSaleClient
         flashSlots={data.flashSlots}
-        products={data.products}
         shops={data.shops}
         serverNowMs={data.serverNowMs}
         error={data.error}

@@ -88,7 +88,7 @@ SELECT COUNT(*)::bigint AS cnt
 FROM products p
 WHERE p.deleted_at IS NULL
   AND ($1::text = '' OR p.category_id = $1::text OR p.category_id IN (SELECT c.id FROM categories c WHERE c.parent_id = $1::text))
-  AND ($2::text = '' OR p.name ILIKE '%' || $2::text || '%' OR p.description ILIKE '%' || $2::text || '%')
+  AND ($2::text = '' OR p.search_text LIKE '%' || $2::text || '%' ESCAPE '\')
   AND ($3::text = '' OR p.shop_id = $3::text)
   AND (NOT $4::bool OR p.status IN ('APPROVED', 'OUT_OF_STOCK'))
   AND ($5::text = '' OR p.status = $5::text)
@@ -186,11 +186,11 @@ const createProduct = `-- name: CreateProduct :one
 
 INSERT INTO products (
     id, shop_id, category_id, name, description, images, status,
-    rejection_reason, min_price_vnd, max_price_vnd, slug
+    rejection_reason, min_price_vnd, max_price_vnd, slug, search_text
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
 `
 
 type CreateProductParams struct {
@@ -205,6 +205,7 @@ type CreateProductParams struct {
 	MinPriceVnd     int64
 	MaxPriceVnd     int64
 	Slug            string
+	SearchText      string
 }
 
 // Products
@@ -221,6 +222,7 @@ func (q *Queries) CreateProduct(ctx context.Context, arg CreateProductParams) (P
 		arg.MinPriceVnd,
 		arg.MaxPriceVnd,
 		arg.Slug,
+		arg.SearchText,
 	)
 	var i Product
 	err := row.Scan(
@@ -238,6 +240,7 @@ func (q *Queries) CreateProduct(ctx context.Context, arg CreateProductParams) (P
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Slug,
+		&i.SearchText,
 	)
 	return i, err
 }
@@ -397,7 +400,7 @@ func (q *Queries) GetCategoryByID(ctx context.Context, id string) (Category, err
 
 const getProductByID = `-- name: GetProductByID :one
 SELECT id, shop_id, category_id, name, description, images, status,
-       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
 FROM products
 WHERE id = $1 AND deleted_at IS NULL
 `
@@ -420,13 +423,14 @@ func (q *Queries) GetProductByID(ctx context.Context, id string) (Product, error
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Slug,
+		&i.SearchText,
 	)
 	return i, err
 }
 
 const getProductBySlug = `-- name: GetProductBySlug :one
 SELECT id, shop_id, category_id, name, description, images, status,
-       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
 FROM products
 WHERE slug = $1 AND deleted_at IS NULL
 `
@@ -449,6 +453,7 @@ func (q *Queries) GetProductBySlug(ctx context.Context, slug string) (Product, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Slug,
+		&i.SearchText,
 	)
 	return i, err
 }
@@ -722,6 +727,79 @@ func (q *Queries) ListAllCategories(ctx context.Context) ([]Category, error) {
 	return items, nil
 }
 
+const listAllSKUsByProductID = `-- name: ListAllSKUsByProductID :many
+SELECT
+    s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+FROM skus s
+JOIN products p ON p.id = s.product_id
+JOIN categories c ON c.id = p.category_id
+WHERE s.product_id = $1
+ORDER BY s.created_at ASC, s.id ASC
+`
+
+type ListAllSKUsByProductIDRow struct {
+	ID                string
+	ProductID         string
+	ShopID            string
+	ProductName       string
+	SkuCode           string
+	Name              string
+	Attributes        []byte
+	PriceVnd          int64
+	Stock             int32
+	ReservedStock     int32
+	Version           int64
+	WeightGrams       int32
+	ImageURL          string
+	CategoryID        string
+	CommissionRateBps int32
+	SkuStatus         string
+	ProductStatus     string
+	ProductDeletedAt  *time.Time
+}
+
+func (q *Queries) ListAllSKUsByProductID(ctx context.Context, productID string) ([]ListAllSKUsByProductIDRow, error) {
+	rows, err := q.db.Query(ctx, listAllSKUsByProductID, productID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAllSKUsByProductIDRow{}
+	for rows.Next() {
+		var i ListAllSKUsByProductIDRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProductID,
+			&i.ShopID,
+			&i.ProductName,
+			&i.SkuCode,
+			&i.Name,
+			&i.Attributes,
+			&i.PriceVnd,
+			&i.Stock,
+			&i.ReservedStock,
+			&i.Version,
+			&i.WeightGrams,
+			&i.ImageURL,
+			&i.CategoryID,
+			&i.CommissionRateBps,
+			&i.SkuStatus,
+			&i.ProductStatus,
+			&i.ProductDeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCategoriesByParent = `-- name: ListCategoriesByParent :many
 SELECT id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at
 FROM categories
@@ -760,11 +838,11 @@ func (q *Queries) ListCategoriesByParent(ctx context.Context, parentID pgtype.Te
 
 const listProductsFiltered = `-- name: ListProductsFiltered :many
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
-       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug
+       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug, p.search_text
 FROM products p
 WHERE p.deleted_at IS NULL
   AND ($1::text = '' OR p.category_id = $1::text OR p.category_id IN (SELECT c.id FROM categories c WHERE c.parent_id = $1::text))
-  AND ($2::text = '' OR p.name ILIKE '%' || $2::text || '%' OR p.description ILIKE '%' || $2::text || '%')
+  AND ($2::text = '' OR p.search_text LIKE '%' || $2::text || '%' ESCAPE '\')
   AND ($3::text = '' OR p.shop_id = $3::text)
   AND (NOT $4::bool OR p.status IN ('APPROVED', 'OUT_OF_STOCK'))
   AND ($5::text = '' OR p.status = $5::text)
@@ -837,6 +915,7 @@ func (q *Queries) ListProductsFiltered(ctx context.Context, arg ListProductsFilt
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Slug,
+			&i.SearchText,
 		); err != nil {
 			return nil, err
 		}
@@ -1031,6 +1110,73 @@ func (q *Queries) ListSKUsByProductIDs(ctx context.Context, dollar_1 []string) (
 		return nil, err
 	}
 	return items, nil
+}
+
+const reactivateSKUOptimistic = `-- name: ReactivateSKUOptimistic :one
+UPDATE skus
+SET sku_code = $2,
+    name = $3,
+    attributes = $4,
+    price_vnd = $5,
+    stock = $6,
+    weight_grams = $7,
+    image_url = $8,
+    status = CASE
+        WHEN $6 = 0 THEN 'OUT_OF_STOCK'
+        ELSE 'ACTIVE'
+    END,
+    version = version + 1,
+    updated_at = NOW()
+WHERE id = $1
+  AND version = $9
+  AND status = 'INACTIVE'
+  AND $6 >= reserved_stock
+RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+`
+
+type ReactivateSKUOptimisticParams struct {
+	ID          string
+	SkuCode     string
+	Name        string
+	Attributes  []byte
+	PriceVnd    int64
+	Stock       int32
+	WeightGrams int32
+	ImageURL    string
+	Version     int64
+}
+
+func (q *Queries) ReactivateSKUOptimistic(ctx context.Context, arg ReactivateSKUOptimisticParams) (Sku, error) {
+	row := q.db.QueryRow(ctx, reactivateSKUOptimistic,
+		arg.ID,
+		arg.SkuCode,
+		arg.Name,
+		arg.Attributes,
+		arg.PriceVnd,
+		arg.Stock,
+		arg.WeightGrams,
+		arg.ImageURL,
+		arg.Version,
+	)
+	var i Sku
+	err := row.Scan(
+		&i.ID,
+		&i.ProductID,
+		&i.SkuCode,
+		&i.Name,
+		&i.Attributes,
+		&i.PriceVnd,
+		&i.Stock,
+		&i.ReservedStock,
+		&i.Version,
+		&i.WeightGrams,
+		&i.ImageURL,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const releaseSKUOptimistic = `-- name: ReleaseSKUOptimistic :one
@@ -1288,10 +1434,11 @@ SET category_id = $2,
     min_price_vnd = $8,
     max_price_vnd = $9,
     slug = $10,
+    search_text = $11,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
 `
 
 type UpdateProductParams struct {
@@ -1305,6 +1452,7 @@ type UpdateProductParams struct {
 	MinPriceVnd     int64
 	MaxPriceVnd     int64
 	Slug            string
+	SearchText      string
 }
 
 func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (Product, error) {
@@ -1319,6 +1467,7 @@ func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (P
 		arg.MinPriceVnd,
 		arg.MaxPriceVnd,
 		arg.Slug,
+		arg.SearchText,
 	)
 	var i Product
 	err := row.Scan(
@@ -1336,6 +1485,7 @@ func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (P
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Slug,
+		&i.SearchText,
 	)
 	return i, err
 }
@@ -1347,7 +1497,7 @@ SET status = $2,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
 `
 
 type UpdateProductReviewParams struct {
@@ -1374,6 +1524,7 @@ func (q *Queries) UpdateProductReview(ctx context.Context, arg UpdateProductRevi
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Slug,
+		&i.SearchText,
 	)
 	return i, err
 }
@@ -1395,46 +1546,39 @@ func (q *Queries) UpdateProductStatus(ctx context.Context, arg UpdateProductStat
 	return err
 }
 
-const updateSKUDetails = `-- name: UpdateSKUDetails :one
+const updateSKUMetadata = `-- name: UpdateSKUMetadata :one
 UPDATE skus
 SET sku_code = $2,
     name = $3,
     attributes = $4,
     price_vnd = $5,
-    stock = $6,
-    weight_grams = $7,
-    image_url = $8,
-    status = $9,
-    version = version + 1,
+    weight_grams = $6,
+    image_url = $7,
     updated_at = NOW()
 WHERE id = $1
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
           reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
 `
 
-type UpdateSKUDetailsParams struct {
+type UpdateSKUMetadataParams struct {
 	ID          string
 	SkuCode     string
 	Name        string
 	Attributes  []byte
 	PriceVnd    int64
-	Stock       int32
 	WeightGrams int32
 	ImageURL    string
-	Status      string
 }
 
-func (q *Queries) UpdateSKUDetails(ctx context.Context, arg UpdateSKUDetailsParams) (Sku, error) {
-	row := q.db.QueryRow(ctx, updateSKUDetails,
+func (q *Queries) UpdateSKUMetadata(ctx context.Context, arg UpdateSKUMetadataParams) (Sku, error) {
+	row := q.db.QueryRow(ctx, updateSKUMetadata,
 		arg.ID,
 		arg.SkuCode,
 		arg.Name,
 		arg.Attributes,
 		arg.PriceVnd,
-		arg.Stock,
 		arg.WeightGrams,
 		arg.ImageURL,
-		arg.Status,
 	)
 	var i Sku
 	err := row.Scan(
@@ -1461,7 +1605,6 @@ const updateSKUStockOptimistic = `-- name: UpdateSKUStockOptimistic :one
 UPDATE skus
 SET stock = $1,
     status = CASE
-        WHEN status = 'INACTIVE' THEN 'INACTIVE'
         WHEN $1 = 0 THEN 'OUT_OF_STOCK'
         ELSE 'ACTIVE'
     END,
@@ -1469,6 +1612,7 @@ SET stock = $1,
     updated_at = NOW()
 WHERE id = $2
   AND version = $3
+  AND status <> 'INACTIVE'
   AND $1 >= reserved_stock
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
           reserved_stock, version, weight_grams, image_url, status, created_at, updated_at

@@ -57,21 +57,21 @@ ORDER BY sort_order ASC, name ASC, id ASC;
 -- name: CreateProduct :one
 INSERT INTO products (
     id, shop_id, category_id, name, description, images, status,
-    rejection_reason, min_price_vnd, max_price_vnd, slug
+    rejection_reason, min_price_vnd, max_price_vnd, slug, search_text
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug;
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text;
 
 -- name: GetProductByID :one
 SELECT id, shop_id, category_id, name, description, images, status,
-       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
 FROM products
 WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: GetProductBySlug :one
 SELECT id, shop_id, category_id, name, description, images, status,
-       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
 FROM products
 WHERE slug = $1 AND deleted_at IS NULL;
 
@@ -86,10 +86,11 @@ SET category_id = $2,
     min_price_vnd = $8,
     max_price_vnd = $9,
     slug = $10,
+    search_text = $11,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug;
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text;
 
 -- name: UpdateProductReview :one
 UPDATE products
@@ -98,7 +99,7 @@ SET status = $2,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug;
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text;
 
 -- name: UpdateProductStatus :exec
 UPDATE products
@@ -118,7 +119,7 @@ SELECT COUNT(*)::bigint AS cnt
 FROM products p
 WHERE p.deleted_at IS NULL
   AND (sqlc.arg(category_id)::text = '' OR p.category_id = sqlc.arg(category_id)::text OR p.category_id IN (SELECT c.id FROM categories c WHERE c.parent_id = sqlc.arg(category_id)::text))
-  AND (sqlc.arg(keyword)::text = '' OR p.name ILIKE '%' || sqlc.arg(keyword)::text || '%' OR p.description ILIKE '%' || sqlc.arg(keyword)::text || '%')
+  AND (sqlc.arg(keyword)::text = '' OR p.search_text LIKE '%' || sqlc.arg(keyword)::text || '%' ESCAPE '\')
   AND (sqlc.arg(shop_id)::text = '' OR p.shop_id = sqlc.arg(shop_id)::text)
   AND (NOT sqlc.arg(public_only)::bool OR p.status IN ('APPROVED', 'OUT_OF_STOCK'))
   AND (sqlc.arg(status_filter)::text = '' OR p.status = sqlc.arg(status_filter)::text)
@@ -135,11 +136,11 @@ WHERE p.deleted_at IS NULL
 
 -- name: ListProductsFiltered :many
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
-       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug
+       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug, p.search_text
 FROM products p
 WHERE p.deleted_at IS NULL
   AND (sqlc.arg(category_id)::text = '' OR p.category_id = sqlc.arg(category_id)::text OR p.category_id IN (SELECT c.id FROM categories c WHERE c.parent_id = sqlc.arg(category_id)::text))
-  AND (sqlc.arg(keyword)::text = '' OR p.name ILIKE '%' || sqlc.arg(keyword)::text || '%' OR p.description ILIKE '%' || sqlc.arg(keyword)::text || '%')
+  AND (sqlc.arg(keyword)::text = '' OR p.search_text LIKE '%' || sqlc.arg(keyword)::text || '%' ESCAPE '\')
   AND (sqlc.arg(shop_id)::text = '' OR p.shop_id = sqlc.arg(shop_id)::text)
   AND (NOT sqlc.arg(public_only)::bool OR p.status IN ('APPROVED', 'OUT_OF_STOCK'))
   AND (sqlc.arg(status_filter)::text = '' OR p.status = sqlc.arg(status_filter)::text)
@@ -174,7 +175,20 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 1, $8, $9, $10)
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
           reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
 
--- name: UpdateSKUDetails :one
+-- name: UpdateSKUMetadata :one
+UPDATE skus
+SET sku_code = $2,
+    name = $3,
+    attributes = $4,
+    price_vnd = $5,
+    weight_grams = $6,
+    image_url = $7,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+
+-- name: ReactivateSKUOptimistic :one
 UPDATE skus
 SET sku_code = $2,
     name = $3,
@@ -183,10 +197,16 @@ SET sku_code = $2,
     stock = $6,
     weight_grams = $7,
     image_url = $8,
-    status = $9,
+    status = CASE
+        WHEN $6 = 0 THEN 'OUT_OF_STOCK'
+        ELSE 'ACTIVE'
+    END,
     version = version + 1,
     updated_at = NOW()
 WHERE id = $1
+  AND version = $9
+  AND status = 'INACTIVE'
+  AND $6 >= reserved_stock
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
           reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
 
@@ -213,6 +233,18 @@ JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
 WHERE s.product_id = ANY($1::text[])
   AND s.status <> 'INACTIVE'
+ORDER BY s.created_at ASC, s.id ASC;
+
+-- name: ListAllSKUsByProductID :many
+SELECT
+    s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.weight_grams, s.image_url, p.category_id, c.commission_rate_bps,
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+FROM skus s
+JOIN products p ON p.id = s.product_id
+JOIN categories c ON c.id = p.category_id
+WHERE s.product_id = $1
 ORDER BY s.created_at ASC, s.id ASC;
 
 -- name: GetSKUsBatch :many
@@ -261,7 +293,6 @@ WHERE product_id = $1 AND status <> 'INACTIVE' AND stock > 0;
 UPDATE skus
 SET stock = $1,
     status = CASE
-        WHEN status = 'INACTIVE' THEN 'INACTIVE'
         WHEN $1 = 0 THEN 'OUT_OF_STOCK'
         ELSE 'ACTIVE'
     END,
@@ -269,6 +300,7 @@ SET stock = $1,
     updated_at = NOW()
 WHERE id = $2
   AND version = $3
+  AND status <> 'INACTIVE'
   AND $1 >= reserved_stock
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
           reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;

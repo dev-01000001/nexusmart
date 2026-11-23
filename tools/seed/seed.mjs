@@ -411,11 +411,11 @@ async function listAllAdminShops(adminToken) {
   return all;
 }
 
-async function listAllAdminProducts(adminToken) {
+export async function listAllAdminProducts(adminToken) {
   const all = [];
   let page = 1;
   while (true) {
-    const res = await apiRequest("GET", `/api/v1/products?page=${page}&page_size=100`, {
+    const res = await apiRequest("GET", `/api/v1/admin/products?page=${page}&page_size=100`, {
       token: adminToken,
     });
     const items = Array.isArray(res.data?.items) ? res.data.items : [];
@@ -943,7 +943,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error("Seed failed:", err);
-  process.exit(1);
-});
+if (process.argv[1] && resolve(process.argv[1]) === __filename) {
+  main().catch((err) => {
+    console.error("Seed failed:", err);
+    process.exit(1);
+  });
+}

@@ -30,6 +30,7 @@ type memStore struct {
 	refreshTokens        map[string]db.RefreshToken
 	shops                map[string]db.Shop
 	addresses            map[string]db.Address
+	codRejections        map[string]string
 	auditLogs            []db.AuditLog
 	forceReplaceZeroRows bool
 }
@@ -40,6 +41,7 @@ func newMemStore() *memStore {
 		refreshTokens: make(map[string]db.RefreshToken),
 		shops:         make(map[string]db.Shop),
 		addresses:     make(map[string]db.Address),
+		codRejections: make(map[string]string),
 	}
 }
 
@@ -139,6 +141,30 @@ func (m *memStore) UpdateUserProfile(_ context.Context, arg db.UpdateUserProfile
 	u.FullName = arg.FullName
 	u.Phone = arg.Phone
 	u.AvatarURL = arg.AvatarURL
+	u.PhoneVerified = arg.PhoneVerified
+	u.UpdatedAt = time.Now().UTC()
+	m.users[u.ID] = u
+	return u, nil
+}
+
+func (m *memStore) InsertCODRejection(_ context.Context, arg db.InsertCODRejectionParams) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.codRejections[arg.OrderID]; exists {
+		return 0, nil
+	}
+	m.codRejections[arg.OrderID] = arg.UserID
+	return 1, nil
+}
+
+func (m *memStore) IncrementUserCODRejectedCount(_ context.Context, id string) (db.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u, ok := m.users[id]
+	if !ok {
+		return db.User{}, pgx.ErrNoRows
+	}
+	u.CODRejectedCount++
 	u.UpdatedAt = time.Now().UTC()
 	m.users[u.ID] = u
 	return u, nil
@@ -391,11 +417,33 @@ func (m *memStore) CountShops(ctx context.Context, st string) (int64, error) {
 	return int64(len(list)), err
 }
 
+func (m *memStore) ResubmitShop(_ context.Context, arg db.ResubmitShopParams) (db.Shop, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sh, ok := m.shops[arg.ID]
+	isEligible := ok && (sh.Status == ShopStatusRejected ||
+		(sh.Status == ShopStatusPending && strings.TrimSpace(sh.RejectionReason) != ""))
+	if !isEligible {
+		return db.Shop{}, pgx.ErrNoRows
+	}
+	sh.Name = arg.Name
+	sh.Slug = arg.Slug
+	sh.Description = arg.Description
+	sh.PickupAddressID = arg.PickupAddressID
+	sh.ContactPhone = arg.ContactPhone
+	sh.BusinessLicenseDoc = arg.BusinessLicenseDoc
+	sh.Status = ShopStatusPending
+	sh.RejectionReason = ""
+	sh.UpdatedAt = time.Now().UTC()
+	m.shops[sh.ID] = sh
+	return sh, nil
+}
+
 func (m *memStore) UpdateShopReview(_ context.Context, arg db.UpdateShopReviewParams) (db.Shop, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	sh, ok := m.shops[arg.ID]
-	if !ok {
+	if !ok || sh.Status != ShopStatusPending {
 		return db.Shop{}, pgx.ErrNoRows
 	}
 	sh.Status = arg.Status
@@ -403,6 +451,17 @@ func (m *memStore) UpdateShopReview(_ context.Context, arg db.UpdateShopReviewPa
 	sh.UpdatedAt = time.Now().UTC()
 	m.shops[sh.ID] = sh
 	return sh, nil
+}
+
+func (m *memStore) ExistsActiveShopByPickupAddressID(_ context.Context, pickupAddressID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, sh := range m.shops {
+		if sh.Status == ShopStatusActive && sh.PickupAddressID == pickupAddressID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *memStore) CreateAddress(_ context.Context, arg db.CreateAddressParams) (db.Address, error) {
@@ -1009,10 +1068,11 @@ func TestShopRegisterReviewAndAddressOwnership(t *testing.T) {
 
 	// Register shop -> pending.
 	shopResp, err := srv.RegisterShop(sellerCtx, &userv1.RegisterShopRequest{
-		Name:            "Tech Store VN",
-		Description:     "Electronics",
-		PickupAddressId: addrResp.GetAddress().GetId(),
-		ContactPhone:    "0944444444",
+		Name:               "Tech Store VN",
+		Description:        "Electronics",
+		PickupAddressId:    addrResp.GetAddress().GetId(),
+		ContactPhone:       "0944444444",
+		BusinessLicenseDoc: "GPKD-TECH-001.pdf",
 	})
 	if err != nil || shopResp.GetShop().GetStatus() != userv1.ShopStatus_SHOP_STATUS_PENDING {
 		t.Fatalf("RegisterShop failed: resp=%+v err=%v", shopResp, err)
@@ -1165,10 +1225,29 @@ func TestShopSlugAutoGenerationLookupAndPublicList(t *testing.T) {
 	owner2 := regUser("owner2@example.com", "0972222222")
 	owner3 := regUser("owner3@example.com", "0973333333")
 
+	addPickup := func(ownerID, phone string) string {
+		resp, err := srv.CreateAddress(ctxWithUser(ownerID, RoleBuyer, ""), &userv1.CreateAddressRequest{
+			RecipientName:  "Kho Hang",
+			RecipientPhone: phone,
+			ProvinceCode:   "79",
+			WardCode:       "79001",
+			StreetAddress:  "100 Le Loi",
+			IsDefault:      true,
+		})
+		if err != nil {
+			t.Fatalf("CreateAddress for %s: %v", ownerID, err)
+		}
+		return resp.GetAddress().GetId()
+	}
+	pickup1 := addPickup(owner1, "0971111111")
+	pickup2 := addPickup(owner2, "0972222222")
+	pickup3 := addPickup(owner3, "0973333333")
+
 	// 1. Auto-generated Vietnamese slug from shop name.
 	sh1Resp, err := srv.RegisterShop(ctxWithUser(owner1, RoleBuyer, ""), &userv1.RegisterShopRequest{
 		Name:               "Xưởng Dệt Bạch Đằng",
 		Description:        "Cotton compact 220gsm",
+		PickupAddressId:    pickup1,
 		ContactPhone:       "0971111111",
 		BusinessLicenseDoc: "GPKD-SECRET-001.pdf",
 	})
@@ -1184,6 +1263,7 @@ func TestShopSlugAutoGenerationLookupAndPublicList(t *testing.T) {
 		Name:               "Xưởng Dệt Sông Hồng",
 		Slug:               "xuong-det-song-hong",
 		Description:        "Pending shop",
+		PickupAddressId:    pickup2,
 		ContactPhone:       "0972222222",
 		BusinessLicenseDoc: "GPKD-SECRET-002.pdf",
 	})
@@ -1194,14 +1274,20 @@ func TestShopSlugAutoGenerationLookupAndPublicList(t *testing.T) {
 		t.Fatalf("expected explicit slug xuong-det-song-hong, got %q", sh2Resp.GetShop().GetSlug())
 	}
 	if _, err := srv.RegisterShop(ctxWithUser(owner3, RoleBuyer, ""), &userv1.RegisterShopRequest{
-		Name: "Xưởng Dệt Mới",
-		Slug: "xuong-det-song-hong",
+		Name:               "Xưởng Dệt Mới",
+		Slug:               "xuong-det-song-hong",
+		PickupAddressId:    pickup3,
+		ContactPhone:       "0973333333",
+		BusinessLicenseDoc: "GPKD-SECRET-003.pdf",
 	}); status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("expected AlreadyExists on duplicate shop slug, got %v", err)
 	}
 	if _, err := srv.RegisterShop(ctxWithUser(owner3, RoleBuyer, ""), &userv1.RegisterShopRequest{
-		Name: "Xưởng Dệt Lỗi",
-		Slug: "!!!",
+		Name:               "Xưởng Dệt Lỗi",
+		Slug:               "!!!",
+		PickupAddressId:    pickup3,
+		ContactPhone:       "0973333333",
+		BusinessLicenseDoc: "GPKD-SECRET-003.pdf",
 	}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument on invalid shop slug, got %v", err)
 	}

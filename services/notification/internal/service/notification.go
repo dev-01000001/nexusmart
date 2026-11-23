@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -212,6 +213,9 @@ func (s *NotificationService) ProcessEvent(ctx context.Context, subject string, 
 				n := *plan.inApp
 				n.UserID = userID
 				n.EventID = env.EventID
+				if plan.resolvePaymentLink {
+					n.Link = resolvePaymentOrderLink(ctx, tx, plan.paymentOrderID, plan.paymentOrderGroupID)
+				}
 				if _, insertErr := tx.InsertNotification(ctx, n); insertErr != nil {
 					return insertErr
 				}
@@ -283,14 +287,17 @@ func shouldSendEmail(p store.Preferences, category string) bool {
 }
 
 type eventPlan struct {
-	userID        string
-	lookupOrderID string
-	category      string
-	inApp         *store.Notification
-	email         *mailer.Message
-	forceEmail    bool
-	cacheContact  *store.UserContact
-	cacheOrder    *store.OrderParticipant
+	userID              string
+	lookupOrderID       string
+	category            string
+	inApp               *store.Notification
+	email               *mailer.Message
+	forceEmail          bool
+	cacheContact        *store.UserContact
+	cacheOrder          *store.OrderParticipant
+	resolvePaymentLink  bool
+	paymentOrderID      string
+	paymentOrderGroupID string
 }
 
 func (s *NotificationService) buildNotificationPlan(eventType string, env Envelope) (*eventPlan, error) {
@@ -326,8 +333,8 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 			inApp: &store.Notification{
 				Category:  store.CategorySystem,
 				Title:     "Chào mừng đến với NexusMart",
-				Body:      "Tài khoản của bạn đã được đăng ký. Vui lòng kiểm tra email để nhập mã xác thực OTP.",
-				Link:      "/verify-otp",
+				Body:      "Tài khoản của bạn đã được đăng ký. Vui lòng kiểm tra email để nhập mã xác minh OTP.",
+				Link:      "/dang-ky",
 				CreatedAt: now,
 			},
 			email: &otpMsg,
@@ -344,10 +351,28 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OwnerUserID == "" {
 			return nil, fmt.Errorf("%w: invalid user.shop_reviewed payload", ErrMalformedPayload)
 		}
+		decision := strings.ToUpper(strings.TrimSpace(p.Decision))
+		decisionLabel := shopReviewDecisionLabel(decision)
 		title := fmt.Sprintf("Kết quả duyệt gian hàng %s", p.ShopName)
-		body := fmt.Sprintf("Gian hàng %s đã nhận quyết định: %s.", p.ShopName, p.Decision)
-		if strings.TrimSpace(p.Reason) != "" {
-			body += fmt.Sprintf(" Lý do: %s", p.Reason)
+		link := "/tai-khoan?tab=gian-hang"
+		var body string
+		switch decision {
+		case "APPROVE", "APPROVED":
+			link = "/seller"
+			body = fmt.Sprintf("Gian hàng %s đã được phê duyệt. Bạn có thể quản lý sản phẩm và đơn hàng trên Kênh Người Bán.", p.ShopName)
+		case "REJECT", "REJECTED":
+			body = fmt.Sprintf("Hồ sơ gian hàng %s chưa được duyệt.", p.ShopName)
+		case "REQUEST_INFO":
+			body = fmt.Sprintf("Hồ sơ gian hàng %s cần bổ sung thông tin.", p.ShopName)
+		default:
+			body = fmt.Sprintf("Gian hàng %s có cập nhật trạng thái duyệt: %s.", p.ShopName, decisionLabel)
+		}
+		if reason := strings.TrimSpace(p.Reason); reason != "" {
+			if decision == "REQUEST_INFO" {
+				body += fmt.Sprintf(" Yêu cầu: %s", reason)
+			} else {
+				body += fmt.Sprintf(" Lý do: %s", reason)
+			}
 		}
 		return &eventPlan{
 			userID:   p.OwnerUserID,
@@ -356,17 +381,18 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 				Category:  store.CategorySystem,
 				Title:     title,
 				Body:      body,
-				Link:      "/seller/dashboard",
+				Link:      link,
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
-				Subject: fmt.Sprintf("NexusMart - Shop review update (%s): %s", p.ShopName, p.Decision),
+				Subject: fmt.Sprintf("NexusMart - Kết quả duyệt gian hàng %s: %s", p.ShopName, decisionLabel),
 				Body:    body + "\n",
 			},
 		}, nil
 
 	case "order.created":
 		var p struct {
+			CheckoutGroupID string `json:"checkout_group_id"`
 			OrderID         string `json:"order_id"`
 			OrderCode       string `json:"order_code"`
 			BuyerID         string `json:"buyer_id"`
@@ -378,25 +404,41 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 			return nil, fmt.Errorf("%w: invalid order.created payload", ErrMalformedPayload)
 		}
 		code := orderLabel(p.OrderCode, p.OrderID)
-		body := fmt.Sprintf("Đơn hàng %s đã được tạo (%s) với tổng thanh toán %d VND.", code, p.PaymentMethod, p.TotalPayableVND)
+		amount := FormatVND(p.TotalPayableVND)
+		var title, body, emailSubject string
+		if isCOD(p.PaymentMethod) {
+			title = "Đặt hàng thành công, thanh toán khi nhận hàng"
+			body = fmt.Sprintf("Đặt hàng thành công, thanh toán khi nhận hàng cho đơn %s với tổng thanh toán %s.", code, amount)
+			emailSubject = fmt.Sprintf("NexusMart - Đặt hàng thành công %s (Thanh toán khi nhận hàng)", code)
+		} else {
+			title = fmt.Sprintf("Đặt hàng thành công %s", code)
+			methodLabel := paymentMethodLabel(p.PaymentMethod)
+			if p.TotalPayableVND > 0 {
+				body = fmt.Sprintf("Đơn hàng %s đã được tạo (%s) với tổng thanh toán %s. Vui lòng hoàn tất thanh toán để xác nhận đơn.", code, methodLabel, amount)
+			} else {
+				body = fmt.Sprintf("Đơn hàng %s đã được tạo (%s) với tổng thanh toán %s.", code, methodLabel, amount)
+			}
+			emailSubject = fmt.Sprintf("NexusMart - Đặt hàng thành công %s", code)
+		}
 		return &eventPlan{
 			userID:   p.BuyerID,
 			category: store.CategoryOrder,
 			cacheOrder: &store.OrderParticipant{
-				OrderID:   p.OrderID,
-				BuyerID:   p.BuyerID,
-				ShopID:    p.ShopID,
-				OrderCode: p.OrderCode,
+				OrderID:         p.OrderID,
+				BuyerID:         p.BuyerID,
+				ShopID:          p.ShopID,
+				OrderCode:       p.OrderCode,
+				CheckoutGroupID: p.CheckoutGroupID,
 			},
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
-				Title:     fmt.Sprintf("Đặt hàng thành công %s", code),
+				Title:     title,
 				Body:      body,
-				Link:      "/orders/" + p.OrderID,
+				Link:      orderLink(p.OrderID),
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
-				Subject: fmt.Sprintf("NexusMart - Order Created %s", code),
+				Subject: emailSubject,
 				Body:    body + "\n",
 			},
 		}, nil
@@ -414,7 +456,13 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 			return nil, fmt.Errorf("%w: invalid order.confirmed payload", ErrMalformedPayload)
 		}
 		code := orderLabel(p.OrderCode, p.OrderID)
-		body := fmt.Sprintf("Đơn hàng %s đã được xác nhận (%d VND) và đang chờ người bán chuẩn bị.", code, p.TotalPayableVND)
+		amount := FormatVND(p.TotalPayableVND)
+		var body string
+		if isCOD(p.PaymentMethod) {
+			body = fmt.Sprintf("Đơn hàng %s đã được xác nhận (thanh toán khi nhận hàng: %s) và đang chờ người bán chuẩn bị.", code, amount)
+		} else {
+			body = fmt.Sprintf("Đơn hàng %s đã được xác nhận (%s, tổng thanh toán %s) và đang chờ người bán chuẩn bị.", code, paymentMethodLabel(p.PaymentMethod), amount)
+		}
 		return &eventPlan{
 			userID:   p.BuyerID,
 			category: store.CategoryOrder,
@@ -428,11 +476,11 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 				Category:  store.CategoryOrder,
 				Title:     fmt.Sprintf("Đơn hàng %s đã được xác nhận", code),
 				Body:      body,
-				Link:      "/orders/" + p.OrderID,
+				Link:      orderLink(p.OrderID),
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
-				Subject: fmt.Sprintf("NexusMart - Order Confirmed %s", code),
+				Subject: fmt.Sprintf("NexusMart - Xác nhận đơn hàng %s", code),
 				Body:    body + "\n",
 			},
 		}, nil
@@ -450,8 +498,8 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		}
 		code := orderLabel(p.OrderCode, p.OrderID)
 		body := fmt.Sprintf("Đơn hàng %s đã bị hủy.", code)
-		if strings.TrimSpace(p.Reason) != "" {
-			body += fmt.Sprintf(" Lý do: %s", p.Reason)
+		if reason := localizeReason(p.Reason); reason != "" {
+			body += fmt.Sprintf(" Lý do: %s", reason)
 		}
 		return &eventPlan{
 			userID:   p.BuyerID,
@@ -466,11 +514,11 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 				Category:  store.CategoryOrder,
 				Title:     fmt.Sprintf("Đơn hàng %s đã hủy", code),
 				Body:      body,
-				Link:      "/orders/" + p.OrderID,
+				Link:      orderLink(p.OrderID),
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
-				Subject: fmt.Sprintf("NexusMart - Order Cancelled %s", code),
+				Subject: fmt.Sprintf("NexusMart - Hủy đơn hàng %s", code),
 				Body:    body + "\n",
 			},
 		}, nil
@@ -488,7 +536,7 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 			return nil, fmt.Errorf("%w: invalid order.shipped payload", ErrMalformedPayload)
 		}
 		code := orderLabel(p.OrderCode, p.OrderID)
-		body := fmt.Sprintf("Đơn hàng %s đã được giao cho đơn vị vận chuyển %s (mã vận đơn: %s).", code, p.CarrierCode, p.TrackingCode)
+		body := fmt.Sprintf("Đơn hàng %s đã được bàn giao cho %s (mã vận đơn: %s).", code, carrierLabel(p.CarrierCode), p.TrackingCode)
 		return &eventPlan{
 			userID:   p.BuyerID,
 			category: store.CategoryOrder,
@@ -502,11 +550,11 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 				Category:  store.CategoryOrder,
 				Title:     fmt.Sprintf("Đơn hàng %s đang được giao", code),
 				Body:      body,
-				Link:      "/orders/" + p.OrderID,
+				Link:      orderLink(p.OrderID),
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
-				Subject: fmt.Sprintf("NexusMart - Order Shipped %s", code),
+				Subject: fmt.Sprintf("NexusMart - Đơn hàng %s đang được giao", code),
 				Body:    body + "\n",
 			},
 		}, nil
@@ -537,11 +585,11 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 				Category:  store.CategoryOrder,
 				Title:     fmt.Sprintf("Đơn hàng %s đã giao thành công", code),
 				Body:      body,
-				Link:      "/orders/" + p.OrderID,
+				Link:      orderLink(p.OrderID),
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
-				Subject: fmt.Sprintf("NexusMart - Order Delivered %s", code),
+				Subject: fmt.Sprintf("NexusMart - Đơn hàng %s đã giao thành công", code),
 				Body:    body + "\n",
 			},
 		}, nil
@@ -558,7 +606,12 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 			return nil, fmt.Errorf("%w: invalid order.completed payload", ErrMalformedPayload)
 		}
 		code := orderLabel(p.OrderCode, p.OrderID)
-		body := fmt.Sprintf("Đơn hàng %s đã hoàn tất. Bạn nhận được %d xu thưởng.", code, p.CoinsReward)
+		var body string
+		if p.CoinsReward > 0 {
+			body = fmt.Sprintf("Đơn hàng %s đã hoàn tất. Bạn nhận được %s xu thưởng.", code, FormatInt(p.CoinsReward))
+		} else {
+			body = fmt.Sprintf("Đơn hàng %s đã hoàn tất. Cảm ơn bạn đã mua sắm tại NexusMart.", code)
+		}
 		return &eventPlan{
 			userID:   p.BuyerID,
 			category: store.CategoryOrder,
@@ -572,11 +625,51 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 				Category:  store.CategoryOrder,
 				Title:     fmt.Sprintf("Đơn hàng %s hoàn tất", code),
 				Body:      body,
-				Link:      "/orders/" + p.OrderID,
+				Link:      orderLink(p.OrderID),
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
-				Subject: fmt.Sprintf("NexusMart - Order Completed %s", code),
+				Subject: fmt.Sprintf("NexusMart - Đơn hàng %s đã hoàn tất", code),
+				Body:    body + "\n",
+			},
+		}, nil
+
+	case "order.returned":
+		var p struct {
+			OrderID         string `json:"order_id"`
+			OrderCode       string `json:"order_code"`
+			CheckoutGroupID string `json:"checkout_group_id"`
+			BuyerID         string `json:"buyer_id"`
+			ShopID          string `json:"shop_id"`
+			Reason          string `json:"reason"`
+		}
+		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OrderID == "" || p.BuyerID == "" {
+			return nil, fmt.Errorf("%w: invalid order.returned payload", ErrMalformedPayload)
+		}
+		code := orderLabel(p.OrderCode, p.OrderID)
+		body := fmt.Sprintf("Đơn hàng %s đã được chuyển sang trạng thái hoàn hàng.", code)
+		if reason := localizeReason(p.Reason); reason != "" {
+			body += fmt.Sprintf(" Lý do: %s", reason)
+		}
+		return &eventPlan{
+			userID:   p.BuyerID,
+			category: store.CategoryOrder,
+			cacheOrder: &store.OrderParticipant{
+				OrderID:         p.OrderID,
+				BuyerID:         p.BuyerID,
+				ShopID:          p.ShopID,
+				OrderCode:       p.OrderCode,
+				CheckoutGroupID: p.CheckoutGroupID,
+			},
+			inApp: &store.Notification{
+				Category:  store.CategoryOrder,
+				Title:     fmt.Sprintf("Đơn hàng %s đã hoàn hàng", code),
+				Body:      body,
+				Link:      orderLink(p.OrderID),
+				CreatedAt: now,
+			},
+			email: &mailer.Message{
+				Subject: fmt.Sprintf("NexusMart - Đơn hàng %s đã hoàn hàng", code),
 				Body:    body + "\n",
 			},
 		}, nil
@@ -594,105 +687,138 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.UserID == "" {
 			return nil, fmt.Errorf("%w: invalid payment.succeeded payload", ErrMalformedPayload)
 		}
-		body := fmt.Sprintf("Thanh toán %d VND qua %s thành công (mã giao dịch: %s).", p.AmountVND, p.Method, p.ProviderTxID)
+		amount := FormatVND(p.AmountVND)
+		txSuffix := ""
+		if txID := strings.TrimSpace(p.ProviderTxID); txID != "" {
+			txSuffix = fmt.Sprintf(" (mã giao dịch: %s)", txID)
+		}
+		var title, body, emailSubject string
+		if isCOD(p.Method) {
+			title = "Đã thu tiền thanh toán khi nhận hàng"
+			body = fmt.Sprintf("Đơn hàng của bạn đã được giao và thu tiền thành công số tiền %s qua hình thức thanh toán khi nhận hàng%s.", amount, txSuffix)
+			emailSubject = fmt.Sprintf("NexusMart - Đã thu tiền đơn hàng (%s)", amount)
+		} else {
+			title = "Thanh toán thành công"
+			body = fmt.Sprintf("Thanh toán %s qua %s thành công%s.", amount, paymentMethodLabel(p.Method), txSuffix)
+			emailSubject = fmt.Sprintf("NexusMart - Thanh toán thành công (%s)", amount)
+		}
 		return &eventPlan{
-			userID:   p.UserID,
-			category: store.CategoryOrder,
+			userID:              p.UserID,
+			category:            store.CategoryOrder,
+			resolvePaymentLink:  true,
+			paymentOrderID:      p.OrderID,
+			paymentOrderGroupID: p.OrderGroupID,
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
-				Title:     "Thanh toán thành công",
+				Title:     title,
 				Body:      body,
-				Link:      orderLink(p.OrderID),
+				Link:      "/don-hang",
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
-				Subject: fmt.Sprintf("NexusMart - Payment Succeeded (%d VND)", p.AmountVND),
+				Subject: emailSubject,
 				Body:    body + "\n",
 			},
 		}, nil
 
 	case "payment.failed":
 		var p struct {
-			PaymentID string `json:"payment_id"`
-			OrderID   string `json:"order_id"`
-			UserID    string `json:"user_id"`
-			Reason    string `json:"reason"`
+			PaymentID    string `json:"payment_id"`
+			OrderID      string `json:"order_id"`
+			OrderGroupID string `json:"order_group_id"`
+			UserID       string `json:"user_id"`
+			Reason       string `json:"reason"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.UserID == "" {
 			return nil, fmt.Errorf("%w: invalid payment.failed payload", ErrMalformedPayload)
 		}
-		body := fmt.Sprintf("Thanh toán thất bại cho giao dịch %s. Lý do: %s", p.PaymentID, p.Reason)
+		body := fmt.Sprintf("Thanh toán cho giao dịch %s không thành công.", p.PaymentID)
+		if reason := localizeReason(p.Reason); reason != "" {
+			body += fmt.Sprintf(" Lý do: %s", reason)
+		}
 		return &eventPlan{
-			userID:   p.UserID,
-			category: store.CategoryOrder,
+			userID:              p.UserID,
+			category:            store.CategoryOrder,
+			resolvePaymentLink:  true,
+			paymentOrderID:      p.OrderID,
+			paymentOrderGroupID: p.OrderGroupID,
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     "Thanh toán thất bại",
 				Body:      body,
-				Link:      orderLink(p.OrderID),
+				Link:      "/don-hang",
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
-				Subject: "NexusMart - Payment Failed",
+				Subject: "NexusMart - Thanh toán thất bại",
 				Body:    body + "\n",
 			},
 		}, nil
 
 	case "payment.expired":
 		var p struct {
-			PaymentID string `json:"payment_id"`
-			OrderID   string `json:"order_id"`
-			UserID    string `json:"user_id"`
-			Reason    string `json:"reason"`
+			PaymentID    string `json:"payment_id"`
+			OrderID      string `json:"order_id"`
+			OrderGroupID string `json:"order_group_id"`
+			UserID       string `json:"user_id"`
+			Reason       string `json:"reason"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.UserID == "" {
 			return nil, fmt.Errorf("%w: invalid payment.expired payload", ErrMalformedPayload)
 		}
 		body := fmt.Sprintf("Phiên thanh toán %s đã hết hạn và đơn hàng đã được hủy tự động.", p.PaymentID)
 		return &eventPlan{
-			userID:   p.UserID,
-			category: store.CategoryOrder,
+			userID:              p.UserID,
+			category:            store.CategoryOrder,
+			resolvePaymentLink:  true,
+			paymentOrderID:      p.OrderID,
+			paymentOrderGroupID: p.OrderGroupID,
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     "Thanh toán hết hạn",
 				Body:      body,
-				Link:      orderLink(p.OrderID),
+				Link:      "/don-hang",
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
-				Subject: "NexusMart - Payment Expired",
+				Subject: "NexusMart - Thanh toán đã hết hạn",
 				Body:    body + "\n",
 			},
 		}, nil
 
 	case "payment.refunded":
 		var p struct {
-			RefundID  string `json:"refund_id"`
-			PaymentID string `json:"payment_id"`
-			OrderID   string `json:"order_id"`
-			UserID    string `json:"user_id"`
-			AmountVND int64  `json:"amount_vnd"`
-			Reason    string `json:"reason"`
+			RefundID     string `json:"refund_id"`
+			PaymentID    string `json:"payment_id"`
+			OrderID      string `json:"order_id"`
+			OrderGroupID string `json:"order_group_id"`
+			UserID       string `json:"user_id"`
+			AmountVND    int64  `json:"amount_vnd"`
+			Reason       string `json:"reason"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.UserID == "" {
 			return nil, fmt.Errorf("%w: invalid payment.refunded payload", ErrMalformedPayload)
 		}
-		body := fmt.Sprintf("Khoản hoàn tiền %d VND (mã %s) đã được xử lý.", p.AmountVND, p.RefundID)
-		if strings.TrimSpace(p.Reason) != "" {
-			body += fmt.Sprintf(" Lý do: %s", p.Reason)
+		amount := FormatVND(p.AmountVND)
+		body := fmt.Sprintf("Khoản hoàn tiền %s (mã hoàn tiền: %s) đã được xử lý.", amount, p.RefundID)
+		if reason := localizeReason(p.Reason); reason != "" {
+			body += fmt.Sprintf(" Lý do: %s", reason)
 		}
 		return &eventPlan{
-			userID:   p.UserID,
-			category: store.CategoryOrder,
+			userID:              p.UserID,
+			category:            store.CategoryOrder,
+			resolvePaymentLink:  true,
+			paymentOrderID:      p.OrderID,
+			paymentOrderGroupID: p.OrderGroupID,
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     "Hoàn tiền thành công",
 				Body:      body,
-				Link:      orderLink(p.OrderID),
+				Link:      "/don-hang",
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
-				Subject: fmt.Sprintf("NexusMart - Payment Refunded (%d VND)", p.AmountVND),
+				Subject: fmt.Sprintf("NexusMart - Hoàn tiền thành công (%s)", amount),
 				Body:    body + "\n",
 			},
 		}, nil
@@ -711,9 +837,15 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OrderID == "" {
 			return nil, fmt.Errorf("%w: invalid shipment.updated payload", ErrMalformedPayload)
 		}
-		body := fmt.Sprintf("Vận đơn %s cập nhật trạng thái: %s.", p.TrackingCode, p.Status)
-		if strings.TrimSpace(p.Description) != "" {
-			body += " " + p.Description
+		statusLabel := shipmentStatusLabel(p.Status)
+		var body string
+		if strings.TrimSpace(p.CarrierCode) != "" {
+			body = fmt.Sprintf("Vận đơn %s (%s) cập nhật trạng thái: %s.", p.TrackingCode, carrierLabel(p.CarrierCode), statusLabel)
+		} else {
+			body = fmt.Sprintf("Vận đơn %s cập nhật trạng thái: %s.", p.TrackingCode, statusLabel)
+		}
+		if desc := strings.TrimSpace(p.Description); desc != "" {
+			body += " " + desc
 		}
 		return &eventPlan{
 			userID:        p.BuyerID,
@@ -721,9 +853,9 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 			category:      store.CategoryOrder,
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
-				Title:     fmt.Sprintf("Cập nhật vận chuyển (%s)", p.Status),
+				Title:     fmt.Sprintf("Cập nhật vận chuyển: %s", statusLabel),
 				Body:      body,
-				Link:      "/orders/" + p.OrderID,
+				Link:      orderLink(p.OrderID),
 				CreatedAt: now,
 			},
 		}, nil
@@ -731,6 +863,174 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 	default:
 		// Unknown future subject: acknowledge safely without poisoning DLQ.
 		return &eventPlan{}, nil
+	}
+}
+
+func resolvePaymentOrderLink(ctx context.Context, tx store.TxStore, orderID, orderGroupID string) string {
+	orderID = strings.TrimSpace(orderID)
+	orderGroupID = strings.TrimSpace(orderGroupID)
+
+	// 1. Distinct order_id and order_group_id means the event already carries a real sub-order ID.
+	if orderID != "" && orderGroupID != "" && orderID != orderGroupID {
+		return orderLink(orderID)
+	}
+
+	// 2. If orderID matches a known sub-order directly, link straight to it.
+	if orderID != "" {
+		if _, found, err := tx.GetOrderParticipant(ctx, orderID); err == nil && found {
+			return orderLink(orderID)
+		}
+	}
+
+	// 3. Look up sub-orders belonging to checkout_group_id (orderGroupID, or orderID when group ID is absent).
+	groupLookup := orderGroupID
+	if groupLookup == "" {
+		groupLookup = orderID
+	}
+	if groupLookup != "" {
+		if parts, err := tx.ListOrderParticipantsByGroup(ctx, groupLookup); err == nil && len(parts) > 0 {
+			if len(parts) == 1 {
+				return orderLink(parts[0].OrderID)
+			}
+			// Multi-shop checkout group: link to the orders list rather than a 404 checkout_group_id URL.
+			return "/don-hang"
+		}
+	}
+
+	// 4. Never emit /don-hang/<checkout_group_id> when orderID is missing or known to be checkout_group_id.
+	if orderID == "" || (orderGroupID != "" && orderID == orderGroupID) {
+		return "/don-hang"
+	}
+
+	// 5. Fallback for sub-order refund arriving before order.created is cached (orderGroupID == "").
+	return orderLink(orderID)
+}
+
+// FormatInt formats an integer with Vietnamese dot thousands separators (e.g., 256500 -> "256.500").
+func FormatInt(n int64) string {
+	neg := n < 0
+	var abs uint64
+	if neg {
+		abs = uint64(-(n + 1)) + 1
+	} else {
+		abs = uint64(n)
+	}
+	digits := strconv.FormatUint(abs, 10)
+	if len(digits) <= 3 {
+		if neg {
+			return "-" + digits
+		}
+		return digits
+	}
+	var b strings.Builder
+	b.Grow(len(digits) + (len(digits)-1)/3 + 1)
+	if neg {
+		b.WriteByte('-')
+	}
+	rem := len(digits) % 3
+	if rem == 0 {
+		rem = 3
+	}
+	b.WriteString(digits[:rem])
+	for i := rem; i < len(digits); i += 3 {
+		b.WriteByte('.')
+		b.WriteString(digits[i : i+3])
+	}
+	return b.String()
+}
+
+// FormatVND formats an integer VND amount as Vietnamese currency (e.g., 256500 -> "256.500₫").
+func FormatVND(amount int64) string {
+	return FormatInt(amount) + "₫"
+}
+
+func isCOD(method string) bool {
+	return strings.EqualFold(strings.TrimSpace(method), "COD")
+}
+
+func paymentMethodLabel(method string) string {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case "COD":
+		return "thanh toán khi nhận hàng"
+	case "VIETQR":
+		return "chuyển khoản VietQR"
+	default:
+		return "thanh toán trực tuyến"
+	}
+}
+
+func shopReviewDecisionLabel(decision string) string {
+	switch strings.ToUpper(strings.TrimSpace(decision)) {
+	case "APPROVE", "APPROVED":
+		return "Đã duyệt"
+	case "REJECT", "REJECTED":
+		return "Từ chối"
+	case "REQUEST_INFO":
+		return "Yêu cầu bổ sung thông tin"
+	default:
+		return "Đang cập nhật"
+	}
+}
+
+func shipmentStatusLabel(status string) string {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "CREATED":
+		return "Đã tạo vận đơn"
+	case "PICKING":
+		return "Đang lấy hàng"
+	case "DELIVERING":
+		return "Đang vận chuyển"
+	case "DELIVERED":
+		return "Giao thành công"
+	case "FAILED":
+		return "Giao thất bại"
+	case "RETURNING":
+		return "Đang hoàn hàng"
+	case "RETURNED":
+		return "Đã hoàn về kho"
+	case "CANCELLED":
+		return "Đã hủy vận đơn"
+	default:
+		return "Đang cập nhật"
+	}
+}
+
+func carrierLabel(code string) string {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "GHN":
+		return "Giao Hàng Nhanh"
+	case "GHTK":
+		return "Giao Hàng Tiết Kiệm"
+	case "SPX":
+		return "SPX Express"
+	case "MOCK", "MOCK_EXPRESS", "NEXUS_EXPRESS":
+		return "Vận chuyển tiêu chuẩn NexusMart"
+	default:
+		if trimmed := strings.TrimSpace(code); trimmed != "" {
+			return trimmed
+		}
+		return "đơn vị vận chuyển"
+	}
+}
+
+func localizeReason(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	switch strings.ToLower(trimmed) {
+	case "payment_timeout_expired", "payment expired", "payment expired after timeout", "expired":
+		return "Quá thời hạn thanh toán"
+	case "cancelled", "canceled":
+		return "Giao dịch đã bị hủy"
+	case "payment_failed", "failed":
+		return "Giao dịch không thành công"
+	case "late_payment":
+		return "Thanh toán muộn sau khi đơn đã hủy hoặc đã có giao dịch mới"
+	case "payment initialization failed":
+		return "Khởi tạo thanh toán không thành công"
+	default:
+		return trimmed
 	}
 }
 
@@ -742,8 +1042,9 @@ func orderLabel(code, id string) string {
 }
 
 func orderLink(orderID string) string {
-	if strings.TrimSpace(orderID) == "" {
-		return "/orders"
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" {
+		return "/don-hang"
 	}
-	return "/orders/" + orderID
+	return "/don-hang/" + orderID
 }

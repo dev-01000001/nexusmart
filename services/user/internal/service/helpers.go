@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -20,6 +22,7 @@ import (
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/user/internal/db"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -39,7 +42,20 @@ const (
 	ShopStatusActive    = "ACTIVE"
 	ShopStatusRejected  = "REJECTED"
 	ShopStatusSuspended = "SUSPENDED"
+
+	mdClientIP = "x-client-ip"
 )
+
+var vnPhoneRegexp = regexp.MustCompile(`^(?:0|\+?84)(?:[35789]\d{8}|2\d{9})$`)
+
+func normalizeVNPhone(raw string) string {
+	s := strings.TrimSpace(raw)
+	return strings.NewReplacer(" ", "", "-", "", ".", "").Replace(s)
+}
+
+func isValidVNPhone(phone string) bool {
+	return vnPhoneRegexp.MatchString(phone)
+}
 
 func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
@@ -120,10 +136,45 @@ func normalizePagination(page, pageSize int32) (int32, int32) {
 }
 
 func peerIPFromContext(ctx context.Context) string {
-	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
-		return p.Addr.String()
+	p, ok := peer.FromContext(ctx)
+	if !ok || p.Addr == nil {
+		return ""
 	}
-	return ""
+	raw := p.Addr.String()
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		return host
+	}
+	return raw
+}
+
+// isTrustedAuditIPCaller reports whether the caller is trusted to supply client IP metadata
+// (either authenticated via internal service token or calling over the internal network/gateway).
+func isTrustedAuditIPCaller(ctx context.Context, claims *auth.Claims) bool {
+	if claims != nil && claims.Service != "" {
+		return true
+	}
+	host := peerIPFromContext(ctx)
+	if host == "" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
+}
+
+func auditIPFromContext(ctx context.Context, claims *auth.Claims, explicitIP string) string {
+	if isTrustedAuditIPCaller(ctx, claims) {
+		if ip := strings.TrimSpace(explicitIP); ip != "" {
+			return ip
+		}
+		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			if vals := md.Get(mdClientIP); len(vals) > 0 {
+				if ip := strings.TrimSpace(vals[0]); ip != "" {
+					return ip
+				}
+			}
+		}
+	}
+	return peerIPFromContext(ctx)
 }
 
 func marshalAuditJSON(v any) string {

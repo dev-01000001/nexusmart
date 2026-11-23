@@ -53,6 +53,9 @@ func (r *stubRepo) GetUserContact(_ context.Context, _ string) (store.UserContac
 func (r *stubRepo) GetOrderParticipant(_ context.Context, _ string) (store.OrderParticipant, bool, error) {
 	return store.OrderParticipant{}, false, nil
 }
+func (r *stubRepo) ListOrderParticipantsByGroup(_ context.Context, _ string) ([]store.OrderParticipant, error) {
+	return nil, nil
+}
 func (r *stubRepo) InsertDeadLetter(_ context.Context, _, _ string, _ []byte, _ string, _ int) error {
 	return nil
 }

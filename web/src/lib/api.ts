@@ -177,7 +177,12 @@ export async function authApi<T>(
   return (await res.json()) as T;
 }
 
-export { sanitizeNextPath, sanitizeNextPath as sanitizeClientNextPath } from "@/lib/redirect";
+export {
+  getDefaultPathForRole,
+  resolvePostLoginRedirect,
+  sanitizeNextPath,
+  sanitizeNextPath as sanitizeClientNextPath,
+} from "@/lib/redirect";
 
 export function getErrorMessage(
   err: unknown,

@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -100,9 +98,9 @@ func (l *RedisRateLimiter) Allow(ctx context.Context, key string, limit int, win
 }
 
 // RateLimitByIP enforces per-IP rate limiting (disabled when limitPerMin <= 0).
-func RateLimitByIP(limiter RateLimiter, limitPerMin int, log *slog.Logger) func(http.Handler) http.Handler {
+func RateLimitByIP(limiter RateLimiter, limitPerMin int, log *slog.Logger, tp *TrustedProxies) func(http.Handler) http.Handler {
 	return rateLimitMiddleware(limiter, limitPerMin, time.Minute, log, func(r *http.Request) string {
-		return "rl:ip:" + ClientIP(r)
+		return "rl:ip:" + tp.ClientIP(r)
 	})
 }
 
@@ -117,12 +115,12 @@ func RateLimitByUser(limiter RateLimiter, limitPerMin int, log *slog.Logger) fun
 }
 
 // RateLimitFlashSale enforces stricter rate limits on flash-sale routes (disabled when limitPerMin <= 0).
-func RateLimitFlashSale(limiter RateLimiter, limitPerMin int, log *slog.Logger) func(http.Handler) http.Handler {
+func RateLimitFlashSale(limiter RateLimiter, limitPerMin int, log *slog.Logger, tp *TrustedProxies) func(http.Handler) http.Handler {
 	return rateLimitMiddleware(limiter, limitPerMin, time.Minute, log, func(r *http.Request) string {
 		if uid := auth.UserIDFromContext(r.Context()); uid != "" {
 			return "rl:flash:user:" + uid
 		}
-		return "rl:flash:ip:" + ClientIP(r)
+		return "rl:flash:ip:" + tp.ClientIP(r)
 	})
 }
 
@@ -169,25 +167,4 @@ func rateLimitMiddleware(
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// ClientIP extracts the caller IP from X-Forwarded-For, X-Real-IP, or RemoteAddr.
-func ClientIP(r *http.Request) string {
-	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
-		parts := strings.Split(xff, ",")
-		if first := strings.TrimSpace(parts[0]); first != "" {
-			return first
-		}
-	}
-	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
-		return xri
-	}
-	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
-	if err == nil && host != "" {
-		return host
-	}
-	if r.RemoteAddr != "" {
-		return r.RemoteAddr
-	}
-	return "unknown"
 }

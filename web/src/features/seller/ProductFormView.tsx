@@ -14,7 +14,7 @@ import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconCheck, IconClose, IconPlus, StateView } from "@/components";
 import { formatInt, formatVnd } from "@/lib/format";
 import { SellerShopGate } from "./SellerContext";
-import { getProductStatusMeta } from "./types";
+import { getAllowedSellerStatuses, getProductStatusMeta } from "./types";
 import common from "./SellerCommon.module.css";
 import styles from "./ProductFormView.module.css";
 
@@ -68,38 +68,6 @@ function slugifyUrl(input: string): string {
     .replace(/[^a-zA-Z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
     .toLowerCase();
-}
-
-function getAllowedSellerStatuses(currentStatus: string): Array<{ value: string; label: string }> {
-  switch (currentStatus) {
-    case "APPROVED":
-      return [
-        { value: "APPROVED", label: "Đang bán" },
-        { value: "HIDDEN", label: "Tạm ẩn khỏi sàn" },
-      ];
-    case "OUT_OF_STOCK":
-      return [
-        { value: "OUT_OF_STOCK", label: "Hết hàng" },
-        { value: "HIDDEN", label: "Tạm ẩn khỏi sàn" },
-      ];
-    case "HIDDEN":
-      return [
-        { value: "HIDDEN", label: "Đang ẩn" },
-        { value: "APPROVED", label: "Mở bán lại" },
-      ];
-    case "PENDING":
-      return [
-        { value: "PENDING", label: "Chờ duyệt" },
-        { value: "HIDDEN", label: "Tạm ẩn" },
-      ];
-    case "REJECTED":
-      return [
-        { value: "REJECTED", label: "Bị từ chối" },
-        { value: "PENDING", label: "Gửi duyệt lại" },
-      ];
-    default:
-      return [{ value: currentStatus, label: getProductStatusMeta(currentStatus).label }];
-  }
 }
 
 export interface ProductFormViewProps {
@@ -715,6 +683,7 @@ function ProductFormInner({ mode, productId, shop }: ProductFormViewProps & { sh
                   id="prod-status"
                   className={common.textInput}
                   value={status}
+                  disabled={allowedStatuses.length <= 1}
                   onChange={(e) => setStatus(e.target.value)}
                 >
                   {allowedStatuses.map((opt) => (

@@ -211,6 +211,7 @@ pub fn decide_webhook_action(
     paid_amount_vnd: i64,
     is_failed_webhook: bool,
     order_already_has_succeeded_payment: bool,
+    payment_has_cancelled_allocation: bool,
 ) -> WebhookDecision {
     let (Some(status), Some(expected)) = (payment_status, expected_amount_vnd) else {
         return WebhookDecision::QueueReconciliation {
@@ -229,9 +230,11 @@ pub fn decide_webhook_action(
         };
     }
 
-    // UC-PAY01 / UC-B25: payment expired/cancelled/superseded or order already succeeded -> auto-refund
+    // UC-PAY01 / UC-B25 / review-B P0-3:
+    // payment expired/cancelled/superseded/failed, order already succeeded, or any allocation
+    // already cancelled -> book to refund_payable instead of confirming.
     match status {
-        "expired" | "cancelled" | "superseded" => WebhookDecision::LatePaymentRefund {
+        "expired" | "cancelled" | "superseded" | "failed" => WebhookDecision::LatePaymentRefund {
             reason: "late_payment_after_expired_or_cancelled",
         },
         "succeeded" | "refunded" => WebhookDecision::LatePaymentRefund {
@@ -239,6 +242,9 @@ pub fn decide_webhook_action(
         },
         "pending" if order_already_has_succeeded_payment => WebhookDecision::LatePaymentRefund {
             reason: "order_already_has_succeeded_payment",
+        },
+        "pending" if payment_has_cancelled_allocation => WebhookDecision::LatePaymentRefund {
+            reason: "payment_has_cancelled_allocation",
         },
         "pending" => WebhookDecision::ConfirmPayment,
         _ => WebhookDecision::QueueReconciliation {
@@ -349,8 +355,14 @@ mod tests {
         for _ in 0..10 {
             let tx_id = "SEPAY-TX-99887766".to_string();
             if processed_tx_ids.insert(tx_id) {
-                let decision =
-                    decide_webhook_action(Some("pending"), Some(250_000), 250_000, false, false);
+                let decision = decide_webhook_action(
+                    Some("pending"),
+                    Some(250_000),
+                    250_000,
+                    false,
+                    false,
+                    false,
+                );
                 assert_eq!(decision, WebhookDecision::ConfirmPayment);
                 ledger_post_count += 1;
             }
@@ -361,46 +373,63 @@ mod tests {
     #[test]
     fn test_webhook_amount_mismatch_and_late_payment_decisions() {
         assert_eq!(
-            decide_webhook_action(Some("pending"), Some(100_000), 99_000, false, false),
+            decide_webhook_action(Some("pending"), Some(100_000), 99_000, false, false, false),
             WebhookDecision::QueueReconciliation {
                 reason: "amount_mismatch"
             }
         );
         assert_eq!(
-            decide_webhook_action(Some("pending"), Some(100_000), 150_000, false, false),
+            decide_webhook_action(Some("pending"), Some(100_000), 150_000, false, false, false),
             WebhookDecision::QueueReconciliation {
                 reason: "amount_mismatch"
             }
         );
         assert_eq!(
-            decide_webhook_action(None, None, 100_000, false, false),
+            decide_webhook_action(None, None, 100_000, false, false, false),
             WebhookDecision::QueueReconciliation {
                 reason: "order_not_found"
             }
         );
         assert_eq!(
-            decide_webhook_action(Some("expired"), Some(100_000), 100_000, false, false),
+            decide_webhook_action(Some("expired"), Some(100_000), 100_000, false, false, false),
             WebhookDecision::LatePaymentRefund {
                 reason: "late_payment_after_expired_or_cancelled"
             }
         );
         assert_eq!(
-            decide_webhook_action(Some("superseded"), Some(100_000), 100_000, false, true),
+            decide_webhook_action(
+                Some("superseded"),
+                Some(100_000),
+                100_000,
+                false,
+                true,
+                false
+            ),
             WebhookDecision::LatePaymentRefund {
                 reason: "late_payment_after_expired_or_cancelled"
             }
         );
         // Another intent already succeeded for same order -> automatic refund
         assert_eq!(
-            decide_webhook_action(Some("pending"), Some(100_000), 100_000, false, true),
+            decide_webhook_action(Some("pending"), Some(100_000), 100_000, false, true, false),
             WebhookDecision::LatePaymentRefund {
                 reason: "order_already_has_succeeded_payment"
             }
         );
         // Failed webhook (even with amount_vnd=0) marks payment failed for saga compensation
         assert_eq!(
-            decide_webhook_action(Some("pending"), Some(100_000), 0, true, false),
+            decide_webhook_action(Some("pending"), Some(100_000), 0, true, false, false),
             WebhookDecision::MarkFailed
+        );
+    }
+
+    #[test]
+    fn test_p0_3_pending_payment_with_cancelled_allocation_triggers_late_refund() {
+        assert_eq!(
+            decide_webhook_action(Some("pending"), Some(500_000), 500_000, false, false, true),
+            WebhookDecision::LatePaymentRefund {
+                reason: "payment_has_cancelled_allocation"
+            }
         );
     }
 
@@ -422,5 +451,13 @@ mod tests {
             payload.extracted_order_code().as_deref(),
             Some("NM1A2B3C4D5E")
         );
+    }
+
+    #[test]
+    fn test_failed_payment_late_success_webhook_queues_refund() {
+        assert!(matches!(
+            decide_webhook_action(Some("failed"), Some(255_000), 255_000, false, false, false),
+            WebhookDecision::LatePaymentRefund { .. }
+        ));
     }
 }

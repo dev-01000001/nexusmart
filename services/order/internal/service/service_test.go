@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // --- Thread-safe mock gRPC clients ---
@@ -38,13 +39,16 @@ type authCallSnapshot struct {
 }
 
 type mockUserClient struct {
-	mu               sync.Mutex
-	codRejectedCount int32
-	userStatus       userv1.UserStatus
-	userValid        bool
-	addresses        map[string]*userv1.Address
-	shops            map[string]*userv1.Shop
-	getAddressAuth   map[string]authCallSnapshot
+	mu                sync.Mutex
+	codRejectedCount  int32
+	userStatus        userv1.UserStatus
+	userValid         bool
+	addresses         map[string]*userv1.Address
+	shops             map[string]*userv1.Shop
+	getAddressAuth    map[string]authCallSnapshot
+	codRejectionErr   error
+	codRejectionCalls []*userv1.RecordCODRejectionRequest
+	codRejectionAuth  []authCallSnapshot
 }
 
 func newMockUserClient() *mockUserClient {
@@ -137,11 +141,32 @@ func (m *mockUserClient) GetShop(_ context.Context, req *userv1.GetShopRequest, 
 	return &userv1.GetShopResponse{Shop: s}, nil
 }
 
+func (m *mockUserClient) RecordCODRejection(ctx context.Context, req *userv1.RecordCODRejectionRequest, _ ...grpc.CallOption) (*userv1.RecordCODRejectionResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.codRejectionCalls = append(m.codRejectionCalls, req)
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.codRejectionAuth = append(m.codRejectionAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
+	if m.codRejectionErr != nil {
+		return nil, m.codRejectionErr
+	}
+	m.codRejectedCount++
+	return &userv1.RecordCODRejectionResponse{CodRejectedCount: m.codRejectedCount}, nil
+}
+
 type mockProductClient struct {
 	mu               sync.Mutex
 	skus             map[string]*productv1.SKU
 	reserveErr       error
 	releaseErr       error
+	confirmErr       error
 	restockErr       error
 	releaseReturnsOk bool
 	reserveCalls     []string
@@ -267,6 +292,9 @@ func (m *mockProductClient) ConfirmStock(_ context.Context, req *productv1.Confi
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.confirmCalls = append(m.confirmCalls, req.GetOrderId())
+	if m.confirmErr != nil {
+		return nil, m.confirmErr
+	}
 	return &productv1.ConfirmStockResponse{Confirmed: true}, nil
 }
 
@@ -312,14 +340,18 @@ func (m *mockCartClient) ClearItems(_ context.Context, req *cartv1.ClearItemsReq
 }
 
 type mockPromotionClient struct {
-	mu           sync.Mutex
-	reserveErr   error
-	releaseErr   error
-	breakdown    *promotionv1.DiscountBreakdown
-	flashSales   []*promotionv1.FlashSale
-	reserveCalls []string
-	releaseCalls []string
-	onRelease    func(orderID string)
+	mu               sync.Mutex
+	reserveErr       error
+	releaseErr       error
+	releaseShopErr   error
+	breakdown        *promotionv1.DiscountBreakdown
+	flashSales       []*promotionv1.FlashSale
+	reserveCalls     []string
+	reserveReqs      []*promotionv1.ReservePromotionRequest
+	releaseCalls     []string
+	releaseShopCalls []*promotionv1.ReleasePromotionShopRequest
+	releaseShopAuth  []authCallSnapshot
+	onRelease        func(orderID string)
 }
 
 func (m *mockPromotionClient) ListActiveFlashSales(_ context.Context, _ *promotionv1.ListActiveFlashSalesRequest, _ ...grpc.CallOption) (*promotionv1.ListActiveFlashSalesResponse, error) {
@@ -338,6 +370,7 @@ func (m *mockPromotionClient) ReservePromotion(_ context.Context, req *promotion
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.reserveCalls = append(m.reserveCalls, req.GetOrderId())
+	m.reserveReqs = append(m.reserveReqs, req)
 	if m.reserveErr != nil {
 		return nil, m.reserveErr
 	}
@@ -360,11 +393,33 @@ func (m *mockPromotionClient) ReleasePromotion(_ context.Context, req *promotion
 	return &promotionv1.ReleasePromotionResponse{Released: true}, nil
 }
 
+func (m *mockPromotionClient) ReleasePromotionShop(ctx context.Context, req *promotionv1.ReleasePromotionShopRequest, _ ...grpc.CallOption) (*promotionv1.ReleasePromotionShopResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.releaseShopCalls = append(m.releaseShopCalls, req)
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.releaseShopAuth = append(m.releaseShopAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
+	if m.releaseShopErr != nil {
+		return nil, m.releaseShopErr
+	}
+	return &promotionv1.ReleasePromotionShopResponse{Released: true}, nil
+}
+
 type mockPaymentClient struct {
 	mu                 sync.Mutex
 	createErr          error
 	getPaymentStatus   paymentv1.PaymentStatus
 	getPaymentErr      error
+	paymentsByID       map[string]*paymentv1.Payment
+	paymentsByIdemKey  map[string]*paymentv1.Payment
+	onCreatePayment    func(req *paymentv1.CreatePaymentRequest)
 	createCalls        []*paymentv1.CreatePaymentRequest
 	cancelCalls        []*paymentv1.CancelPaymentRequest
 	refundCalls        []*paymentv1.CreateRefundRequest
@@ -375,29 +430,58 @@ func (m *mockPaymentClient) CreatePayment(_ context.Context, req *paymentv1.Crea
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.createCalls = append(m.createCalls, req)
+	if m.onCreatePayment != nil {
+		m.onCreatePayment(req)
+	}
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
+	if m.paymentsByID == nil {
+		m.paymentsByID = make(map[string]*paymentv1.Payment)
+	}
+	if m.paymentsByIdemKey == nil {
+		m.paymentsByIdemKey = make(map[string]*paymentv1.Payment)
+	}
+	if req.GetIdempotencyKey() != "" {
+		if existing, ok := m.paymentsByIdemKey[req.GetIdempotencyKey()]; ok {
+			cp, _ := proto.Clone(existing).(*paymentv1.Payment)
+			return &paymentv1.CreatePaymentResponse{Payment: cp}, nil
+		}
+	}
 	st := paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING
 	qrURL, qrCode := "https://qr.sandbox/pay-1", "000201010212"
-	if req.GetMethod() == paymentv1.PaymentMethod_PAYMENT_METHOD_COD {
+	if req.GetAmountVnd() == 0 {
 		st = paymentv1.PaymentStatus_PAYMENT_STATUS_SUCCEEDED
 		qrURL, qrCode = "", ""
+	} else if req.GetMethod() == paymentv1.PaymentMethod_PAYMENT_METHOD_COD {
+		st = paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING
+		qrURL, qrCode = "", ""
 	}
-	return &paymentv1.CreatePaymentResponse{
-		Payment: &paymentv1.Payment{
-			PaymentId:    "pay-" + req.GetOrderGroupId(),
-			OrderGroupId: req.GetOrderGroupId(),
-			OrderId:      req.GetOrderId(),
-			UserId:       req.GetUserId(),
-			AmountVnd:    req.GetAmountVnd(),
-			Method:       req.GetMethod(),
-			Status:       st,
-			QrUrl:        qrURL,
-			QrCode:       qrCode,
-			ExpiresAt:    req.GetExpiresAt(),
-		},
-	}, nil
+	payID := "pay-" + req.GetOrderGroupId()
+	if req.GetSupersedePrevious() || len(m.createCalls) > 1 {
+		if _, exists := m.paymentsByID[payID]; exists {
+			payID = "pay-" + req.GetOrderGroupId() + "-" + string(rune('0'+len(m.createCalls)))
+		}
+	}
+	pay := &paymentv1.Payment{
+		PaymentId:       payID,
+		OrderGroupId:    req.GetOrderGroupId(),
+		OrderId:         req.GetOrderId(),
+		UserId:          req.GetUserId(),
+		AmountVnd:       req.GetAmountVnd(),
+		Method:          req.GetMethod(),
+		Status:          st,
+		QrUrl:           qrURL,
+		QrCode:          qrCode,
+		ShopAllocations: req.GetShopAllocations(),
+		ExpiresAt:       req.GetExpiresAt(),
+	}
+	m.paymentsByID[payID] = pay
+	if req.GetIdempotencyKey() != "" {
+		m.paymentsByIdemKey[req.GetIdempotencyKey()] = pay
+	}
+	cp, _ := proto.Clone(pay).(*paymentv1.Payment)
+	return &paymentv1.CreatePaymentResponse{Payment: cp}, nil
 }
 
 func (m *mockPaymentClient) GetPayment(_ context.Context, req *paymentv1.GetPaymentRequest, _ ...grpc.CallOption) (*paymentv1.GetPaymentResponse, error) {
@@ -405,6 +489,12 @@ func (m *mockPaymentClient) GetPayment(_ context.Context, req *paymentv1.GetPaym
 	defer m.mu.Unlock()
 	if m.getPaymentErr != nil {
 		return nil, m.getPaymentErr
+	}
+	if req.GetPaymentId() != "" && m.paymentsByID != nil {
+		if p, ok := m.paymentsByID[req.GetPaymentId()]; ok && m.getPaymentStatus == paymentv1.PaymentStatus_PAYMENT_STATUS_UNSPECIFIED {
+			cp, _ := proto.Clone(p).(*paymentv1.Payment)
+			return &paymentv1.GetPaymentResponse{Payment: cp}, nil
+		}
 	}
 	st := m.getPaymentStatus
 	if st == paymentv1.PaymentStatus_PAYMENT_STATUS_UNSPECIFIED {
@@ -693,7 +783,7 @@ func TestCreateCheckout_MultiShopCOD_WithPromotionsAndFlashSale(t *testing.T) {
 		if al.SubtotalVnd < al.CommissionVnd {
 			t.Fatalf("allocation commission %d exceeds subtotal %d", al.CommissionVnd, al.SubtotalVnd)
 		}
-		allocSum += al.SubtotalVnd + al.ShippingFeeVnd
+		allocSum += al.SubtotalVnd + al.ShippingFeeVnd - al.PlatformDiscountVnd
 	}
 	if allocSum != payReq.AmountVnd {
 		t.Fatalf("payment allocations sum %d != amount_vnd %d", allocSum, payReq.AmountVnd)
@@ -1587,6 +1677,11 @@ func TestUnauthenticatedDirectGRPCRejected(t *testing.T) {
 		CheckoutGroupId: "g1", Status: orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_SUCCEEDED,
 	}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("MarkPaymentResult buyer = %v, want PermissionDenied", err)
+	}
+	if _, err := h.svc.RetryPayment(unauth, &orderv1.RetryPaymentRequest{
+		PaymentId: "pay-1", PaymentMethod: orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR,
+	}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("RetryPayment unauth = %v, want Unauthenticated", err)
 	}
 }
 

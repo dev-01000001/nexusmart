@@ -62,7 +62,7 @@ func TestRateLimitByIPAndDisableWhenNonPositive(t *testing.T) {
 	})
 
 	// Limit of 2 per min -> 1st & 2nd pass, 3rd returns 429 with Retry-After.
-	h := RateLimitByIP(lim, 2, log)(okHandler)
+	h := RateLimitByIP(lim, 2, log, nil)(okHandler)
 	for i := 1; i <= 2; i++ {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/products", nil)
@@ -89,7 +89,7 @@ func TestRateLimitByIPAndDisableWhenNonPositive(t *testing.T) {
 	}
 
 	// Disabled when limit <= 0.
-	disabled := RateLimitByIP(lim, 0, log)(okHandler)
+	disabled := RateLimitByIP(lim, 0, log, nil)(okHandler)
 	for i := 0; i < 5; i++ {
 		r2 := httptest.NewRecorder()
 		req2 := httptest.NewRequest(http.MethodGet, "/api/v1/products", nil)
@@ -190,12 +190,23 @@ func TestClientIPExtraction(t *testing.T) {
 	if got := ClientIP(req); got != "192.168.1.10" {
 		t.Fatalf("got %q, want 192.168.1.10", got)
 	}
+	// Without trusted proxies, forwarded headers must be ignored.
 	req.Header.Set("X-Real-IP", "203.0.113.9")
-	if got := ClientIP(req); got != "203.0.113.9" {
-		t.Fatalf("got %q, want 203.0.113.9", got)
+	if got := ClientIP(req); got != "192.168.1.10" {
+		t.Fatalf("untrusted X-Real-IP: got %q, want 192.168.1.10", got)
 	}
 	req.Header.Set("X-Forwarded-For", "198.51.100.7, 203.0.113.9")
-	if got := ClientIP(req); got != "198.51.100.7" {
-		t.Fatalf("got %q, want 198.51.100.7", got)
+	if got := ClientIP(req); got != "192.168.1.10" {
+		t.Fatalf("untrusted XFF: got %q, want 192.168.1.10", got)
+	}
+
+	// With trusted proxy CIDR, scan XFF right-to-left and pick nearest untrusted IP.
+	tp := NewTrustedProxies("192.168.1.0/24", nil)
+	if got := tp.ClientIP(req); got != "203.0.113.9" {
+		t.Fatalf("trusted XFF right-to-left: got %q, want 203.0.113.9", got)
+	}
+	req.Header.Del("X-Forwarded-For")
+	if got := tp.ClientIP(req); got != "203.0.113.9" {
+		t.Fatalf("trusted X-Real-IP: got %q, want 203.0.113.9", got)
 	}
 }

@@ -13,10 +13,12 @@ import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContex
 import {
   CARRIER_OPTIONS,
   PAYMENT_METHOD_TEXT,
+  buildCarrierSelectOptions,
   canSellerConfirmOrder,
   canSellerShipOrder,
   computeOrderNetVnd,
   getOrderStatusMeta,
+  resolveOrderShippingDefaults,
 } from "@/features/seller/types";
 import { parseUiState } from "@/features/seller/sellerStore";
 import common from "@/features/seller/SellerCommon.module.css";
@@ -147,14 +149,32 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
     });
   }, [orders, filter, paymentFilter, query]);
 
-  const activeCarrierOption = useMemo(
-    () => CARRIER_OPTIONS.find((c) => c.carrierCode === carrierCode) ?? CARRIER_OPTIONS[0],
-    [carrierCode]
+  const shippingOrder = useMemo(
+    () => orders.find((o) => o.id === shippingOrderId) ?? null,
+    [orders, shippingOrderId]
   );
+
+  const carrierOptions = useMemo(() => buildCarrierSelectOptions(shippingOrder), [shippingOrder]);
+
+  const activeCarrierOption = useMemo(
+    () => carrierOptions.find((c) => c.carrierCode === carrierCode) ?? carrierOptions[0],
+    [carrierOptions, carrierCode]
+  );
+
+  const handleToggleShipDrawer = (order: GatewayOrder) => {
+    if (shippingOrderId === order.id) {
+      setShippingOrderId(null);
+      return;
+    }
+    const defaults = resolveOrderShippingDefaults(order);
+    setCarrierCode(defaults.carrierCode);
+    setServiceCode(defaults.serviceCode);
+    setShippingOrderId(order.id);
+  };
 
   const handleCarrierChange = (nextCarrier: string) => {
     setCarrierCode(nextCarrier);
-    const opt = CARRIER_OPTIONS.find((c) => c.carrierCode === nextCarrier);
+    const opt = carrierOptions.find((c) => c.carrierCode === nextCarrier);
     if (opt && opt.services[0]) {
       setServiceCode(opt.services[0].serviceCode);
     }
@@ -481,9 +501,7 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
                                       type="button"
                                       className={styles.rowAdvanceBtn}
                                       disabled={isBusy}
-                                      onClick={() =>
-                                        setShippingOrderId((prev) => (prev === o.id ? null : o.id))
-                                      }
+                                      onClick={() => handleToggleShipDrawer(o)}
                                     >
                                       {showShipDrawer ? "Đóng" : "Giao hàng"}
                                     </button>
@@ -511,7 +529,7 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
                                         onChange={(e) => handleCarrierChange(e.target.value)}
                                         aria-label="Chọn đơn vị vận chuyển"
                                       >
-                                        {CARRIER_OPTIONS.map((c) => (
+                                        {carrierOptions.map((c) => (
                                           <option key={c.carrierCode} value={c.carrierCode}>
                                             {c.carrierLabel}
                                           </option>
@@ -596,9 +614,7 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
                                 type="button"
                                 className={styles.rowAdvanceBtn}
                                 disabled={isBusy}
-                                onClick={() =>
-                                  setShippingOrderId((prev) => (prev === o.id ? null : o.id))
-                                }
+                                onClick={() => handleToggleShipDrawer(o)}
                               >
                                 Giao hàng
                               </button>
@@ -618,7 +634,7 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
                               value={carrierCode}
                               onChange={(e) => handleCarrierChange(e.target.value)}
                             >
-                              {CARRIER_OPTIONS.map((c) => (
+                              {carrierOptions.map((c) => (
                                 <option key={c.carrierCode} value={c.carrierCode}>
                                   {c.carrierLabel}
                                 </option>

@@ -23,6 +23,9 @@ type CheckoutGroup struct {
 	ResponseSnapshotJSON []byte     `json:"response_snapshot_json"`
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
+	RequestHash          string     `json:"request_hash"`
+	RetryIdempotencyKey  string     `json:"retry_idempotency_key"`
+	RetryFromPaymentID   string     `json:"retry_from_payment_id"`
 }
 
 type DeadLetterEvent struct {
@@ -65,6 +68,7 @@ type Order struct {
 	CompletedAt                *time.Time `json:"completed_at"`
 	CreatedAt                  time.Time  `json:"created_at"`
 	UpdatedAt                  time.Time  `json:"updated_at"`
+	RefundedVND                int64      `json:"refunded_vnd"`
 }
 
 type OrderItem struct {

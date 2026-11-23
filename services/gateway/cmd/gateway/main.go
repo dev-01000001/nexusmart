@@ -35,6 +35,7 @@ func main() {
 func run() error {
 	cfg := config.Load()
 	log := logger.New(cfg.ServiceName, logger.WithLevel(parseLogLevel(cfg.LogLevel)))
+	slog.SetDefault(log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -100,6 +101,7 @@ func run() error {
 
 	rateLimiter := middleware.NewRedisRateLimiter(rdb)
 	revocationChecker := middleware.NewRedisRevocationChecker(rdb)
+	trustedProxies := middleware.NewTrustedProxies(cfg.TrustedProxies, log)
 
 	handler := router.New(router.Dependencies{
 		ServiceName:          cfg.ServiceName,
@@ -110,6 +112,7 @@ func run() error {
 		RateLimitIPPerMin:    cfg.RateLimitIPPerMin,
 		RateLimitUserPerMin:  cfg.RateLimitUserPerMin,
 		RateLimitFlashPerMin: cfg.RateLimitFlashPerMin,
+		TrustedProxies:       trustedProxies,
 		RED:                  red,
 		OpsHandler:           opsHandler,
 		PaymentWebhookProxy:  paymentWebhookProxy,

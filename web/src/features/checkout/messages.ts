@@ -171,7 +171,7 @@ export function getPaymentStatusView(rawStatus: string): PaymentStatusView {
         label: "Hết hạn thanh toán",
         tone: "neg",
         description:
-          "Giao dịch chuyển khoản đã quá thời hạn giữ đơn. Bạn có thể thử tạo lại mã VietQR hoặc đặt lại từ giỏ hàng.",
+          "Giao dịch chuyển khoản đã quá thời hạn giữ đơn và đơn hàng đã tự động hủy. Vui lòng đặt lại đơn mới từ giỏ hàng hoặc trang sản phẩm.",
       };
     case "FAILED":
       return {

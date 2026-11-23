@@ -18,8 +18,9 @@ import (
 
 // ErrNotFound is returned when a shipment or resource does not exist.
 var (
-	ErrNotFound     = errors.New("not found")
-	ErrCannotCancel = errors.New("shipment cannot be cancelled in current status")
+	ErrNotFound        = errors.New("not found")
+	ErrCannotCancel    = errors.New("shipment cannot be cancelled in current status")
+	ErrCarrierMismatch = errors.New("webhook carrier does not match shipment carrier")
 )
 
 func isTerminalStatus(status string) bool {
@@ -98,6 +99,7 @@ const (
 // Repository defines persistence operations for the shipping service.
 type Repository interface {
 	ListProvinces(ctx context.Context, query string) ([]address.Province, error)
+	GetProvince(ctx context.Context, provinceCode string) (*address.Province, error)
 	ListWards(ctx context.Context, provinceCode, query string) ([]address.Ward, error)
 	GetWard(ctx context.Context, wardCode string) (*address.Ward, error)
 	MapLegacyAddress(ctx context.Context, legacyProv, legacyDist, legacyWard string) (*address.LegacyMatch, error)
@@ -245,6 +247,25 @@ func (s *PGStore) ListProvinces(ctx context.Context, query string) ([]address.Pr
 		result = append(result, p)
 	}
 	return result, rows.Err()
+}
+
+func (s *PGStore) GetProvince(ctx context.Context, provinceCode string) (*address.Province, error) {
+	if strings.TrimSpace(provinceCode) == "" {
+		return nil, ErrNotFound
+	}
+	var p address.Province
+	err := s.pool.QueryRow(ctx, `
+		SELECT code, name, region, ghn_province_id
+		FROM provinces
+		WHERE code = $1
+	`, provinceCode).Scan(&p.Code, &p.Name, &p.Region, &p.GHNProvinceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get province: %w", err)
+	}
+	return &p, nil
 }
 
 func (s *PGStore) ListWards(ctx context.Context, provinceCode, query string) ([]address.Ward, error) {
@@ -606,7 +627,24 @@ func (s *PGStore) ApplyWebhookEvent(ctx context.Context, params WebhookUpdatePar
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// 1. Idempotency deduplication by event_id.
+	// 1. Lock shipment row by tracking_code (fallback order_id).
+	var sh *Shipment
+	if params.TrackingCode != "" {
+		sh, err = scanShipment(tx.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE tracking_code = $1 FOR UPDATE`, params.TrackingCode))
+	}
+	if (sh == nil || errors.Is(err, ErrNotFound)) && params.OrderID != "" {
+		sh, err = scanShipment(tx.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE order_id = $1 FOR UPDATE`, params.OrderID))
+	}
+	if err != nil {
+		return nil, "", err
+	}
+
+	// 2. Verify webhook path carrier matches the shipment's persisted carrier_code (SHP-B6).
+	if strings.TrimSpace(params.CarrierCode) == "" || !strings.EqualFold(strings.TrimSpace(params.CarrierCode), sh.CarrierCode) {
+		return nil, "", fmt.Errorf("%w: webhook carrier %q does not match shipment carrier %q", ErrCarrierMismatch, params.CarrierCode, sh.CarrierCode)
+	}
+
+	// 3. Idempotency deduplication by event_id (after carrier validation so rejected calls never poison dedup).
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO webhook_events (event_id, carrier_code, tracking_code, raw_status, occurred_at)
 		VALUES ($1, $2, $3, $4, $5)
@@ -622,19 +660,7 @@ func (s *PGStore) ApplyWebhookEvent(ctx context.Context, params WebhookUpdatePar
 		return nil, WebhookOutcomeDuplicate, nil
 	}
 
-	// 2. Lock shipment row by tracking_code (fallback order_id).
-	var sh *Shipment
-	if params.TrackingCode != "" {
-		sh, err = scanShipment(tx.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE tracking_code = $1 FOR UPDATE`, params.TrackingCode))
-	}
-	if (sh == nil || errors.Is(err, ErrNotFound)) && params.OrderID != "" {
-		sh, err = scanShipment(tx.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE order_id = $1 FOR UPDATE`, params.OrderID))
-	}
-	if err != nil {
-		return nil, "", err
-	}
-
-	// 3. Reject out-of-order stale carrier events (UC-SHIP04) and prevent terminal state regressions.
+	// 4. Reject out-of-order stale carrier events (UC-SHIP04) and prevent terminal state regressions.
 	if isTerminalStatus(sh.Status) || (sh.LastEventAt != nil && params.OccurredAt.Before(*sh.LastEventAt)) {
 		if err := tx.Commit(ctx); err != nil {
 			return nil, "", fmt.Errorf("commit stale webhook tx: %w", err)

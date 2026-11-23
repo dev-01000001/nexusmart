@@ -148,9 +148,6 @@ export function ProductCard({
   const primaryBadge = showBadges ? product.badges?.[0] : undefined;
   const visibleColors = product.colors.slice(0, maxVisibleSwatches);
   const extraColorCount = Math.max(0, product.colors.length - maxVisibleSwatches);
-  const isComboProduct = Boolean(
-    product.isCombo || (product.comboSlots && product.comboSlots.length > 0)
-  );
   const isDirectFlashCheckout = Boolean(isFlashSaleItem && flashSaleItemId && flashSaleSkuId);
 
   const ratingInfo = useMemo(() => {
@@ -335,10 +332,6 @@ export function ProductCard({
               >
                 {flashSaleDisabled ? "Đã hết suất" : "Mua ngay ưu đãi"}
               </button>
-            ) : isComboProduct ? (
-              <Link href={productHref} className={styles.comboLink}>
-                Chọn size combo
-              </Link>
             ) : product.sizes.length > 0 ? (
               <>
                 <p className={styles.quickOverlayLabel}>
@@ -487,10 +480,6 @@ export function ProductCard({
               >
                 {flashSaleDisabled ? "Đã hết suất" : "Mua ngay ưu đãi"}
               </button>
-            ) : isComboProduct ? (
-              <Link href={productHref} className={styles.touchQuickBtn}>
-                Chọn size combo
-              </Link>
             ) : (
               <button
                 type="button"

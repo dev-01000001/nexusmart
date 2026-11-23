@@ -352,6 +352,7 @@ mod tests {
                 subtotal_vnd: 220_000,
                 commission_vnd: 11_000,
                 shipping_fee_vnd: 30_000,
+                platform_discount_vnd: 0,
                 escrow_status: "pending".into(),
                 settled_at: None,
                 released_at: None,

@@ -34,16 +34,29 @@ export async function POST(req: NextRequest) {
   });
   if (!result.ok || !result.tokens) {
     const isAuthFailure = result.status === 401 || result.status === 403;
+    const isRateLimited = result.status === 429;
+    const headers: Record<string, string> = { "Cache-Control": "no-store" };
+    if (isRateLimited && result.retryAfter) {
+      headers["Retry-After"] = result.retryAfter;
+    }
     const res = NextResponse.json(
       {
         error: {
-          code: result.code ?? (isAuthFailure ? "UNAUTHENTICATED" : "UNAVAILABLE"),
+          code:
+            result.code ??
+            (isAuthFailure
+              ? "UNAUTHENTICATED"
+              : isRateLimited
+                ? "RESOURCE_EXHAUSTED"
+                : "UNAVAILABLE"),
           message: isAuthFailure
             ? "Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại."
-            : "Hệ thống đang tạm bận, vui lòng thử lại sau ít phút.",
+            : isRateLimited
+              ? "Bạn thao tác quá nhanh, vui lòng thử lại sau ít phút."
+              : "Hệ thống đang tạm bận, vui lòng thử lại sau ít phút.",
         },
       },
-      { status: result.status, headers: { "Cache-Control": "no-store" } }
+      { status: result.status, headers }
     );
     if (isAuthFailure) {
       clearSessionCookies(res);

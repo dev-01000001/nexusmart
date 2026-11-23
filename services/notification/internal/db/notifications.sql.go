@@ -55,19 +55,29 @@ func (q *Queries) DeleteProcessedEvent(ctx context.Context, eventID string) erro
 }
 
 const getOrderParticipant = `-- name: GetOrderParticipant :one
-SELECT order_id, buyer_id, shop_id, order_code, updated_at
+SELECT order_id, buyer_id, shop_id, order_code, checkout_group_id, updated_at
 FROM order_participants
 WHERE order_id = $1
 `
 
-func (q *Queries) GetOrderParticipant(ctx context.Context, orderID string) (OrderParticipant, error) {
+type GetOrderParticipantRow struct {
+	OrderID         string
+	BuyerID         string
+	ShopID          string
+	OrderCode       string
+	CheckoutGroupID string
+	UpdatedAt       pgtype.Timestamptz
+}
+
+func (q *Queries) GetOrderParticipant(ctx context.Context, orderID string) (GetOrderParticipantRow, error) {
 	row := q.db.QueryRow(ctx, getOrderParticipant, orderID)
-	var i OrderParticipant
+	var i GetOrderParticipantRow
 	err := row.Scan(
 		&i.OrderID,
 		&i.BuyerID,
 		&i.ShopID,
 		&i.OrderCode,
+		&i.CheckoutGroupID,
 		&i.UpdatedAt,
 	)
 	return i, err
@@ -287,6 +297,49 @@ func (q *Queries) ListNotifications(ctx context.Context, arg ListNotificationsPa
 	return items, nil
 }
 
+const listOrderParticipantsByCheckoutGroup = `-- name: ListOrderParticipantsByCheckoutGroup :many
+SELECT order_id, buyer_id, shop_id, order_code, checkout_group_id, updated_at
+FROM order_participants
+WHERE checkout_group_id = $1
+ORDER BY order_id ASC
+`
+
+type ListOrderParticipantsByCheckoutGroupRow struct {
+	OrderID         string
+	BuyerID         string
+	ShopID          string
+	OrderCode       string
+	CheckoutGroupID string
+	UpdatedAt       pgtype.Timestamptz
+}
+
+func (q *Queries) ListOrderParticipantsByCheckoutGroup(ctx context.Context, checkoutGroupID string) ([]ListOrderParticipantsByCheckoutGroupRow, error) {
+	rows, err := q.db.Query(ctx, listOrderParticipantsByCheckoutGroup, checkoutGroupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOrderParticipantsByCheckoutGroupRow{}
+	for rows.Next() {
+		var i ListOrderParticipantsByCheckoutGroupRow
+		if err := rows.Scan(
+			&i.OrderID,
+			&i.BuyerID,
+			&i.ShopID,
+			&i.OrderCode,
+			&i.CheckoutGroupID,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markAllNotificationsRead = `-- name: MarkAllNotificationsRead :execrows
 UPDATE notifications
 SET is_read = TRUE
@@ -323,20 +376,22 @@ func (q *Queries) MarkSelectedNotificationsRead(ctx context.Context, arg MarkSel
 }
 
 const upsertOrderParticipant = `-- name: UpsertOrderParticipant :exec
-INSERT INTO order_participants (order_id, buyer_id, shop_id, order_code, updated_at)
-VALUES ($1, $2, $3, $4, NOW())
+INSERT INTO order_participants (order_id, buyer_id, shop_id, order_code, checkout_group_id, updated_at)
+VALUES ($1, $2, $3, $4, $5, NOW())
 ON CONFLICT (order_id) DO UPDATE SET
     buyer_id = CASE WHEN EXCLUDED.buyer_id <> '' THEN EXCLUDED.buyer_id ELSE order_participants.buyer_id END,
     shop_id = CASE WHEN EXCLUDED.shop_id <> '' THEN EXCLUDED.shop_id ELSE order_participants.shop_id END,
     order_code = CASE WHEN EXCLUDED.order_code <> '' THEN EXCLUDED.order_code ELSE order_participants.order_code END,
+    checkout_group_id = CASE WHEN EXCLUDED.checkout_group_id <> '' THEN EXCLUDED.checkout_group_id ELSE order_participants.checkout_group_id END,
     updated_at = NOW()
 `
 
 type UpsertOrderParticipantParams struct {
-	OrderID   string
-	BuyerID   string
-	ShopID    string
-	OrderCode string
+	OrderID         string
+	BuyerID         string
+	ShopID          string
+	OrderCode       string
+	CheckoutGroupID string
 }
 
 func (q *Queries) UpsertOrderParticipant(ctx context.Context, arg UpsertOrderParticipantParams) error {
@@ -345,6 +400,7 @@ func (q *Queries) UpsertOrderParticipant(ctx context.Context, arg UpsertOrderPar
 		arg.BuyerID,
 		arg.ShopID,
 		arg.OrderCode,
+		arg.CheckoutGroupID,
 	)
 	return err
 }

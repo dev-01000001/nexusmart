@@ -17,6 +17,8 @@ import (
 	"github.com/nexusmart/core/services/shipping/internal/carrier"
 	"github.com/nexusmart/core/services/shipping/internal/events"
 	"github.com/nexusmart/core/services/shipping/internal/store"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type memRepo struct {
@@ -54,6 +56,16 @@ func (m *memRepo) ListProvinces(_ context.Context, query string) ([]address.Prov
 		}
 	}
 	return out, nil
+}
+
+func (m *memRepo) GetProvince(_ context.Context, provinceCode string) (*address.Province, error) {
+	for _, p := range m.provinces {
+		if p.Code == provinceCode {
+			cp := p
+			return &cp, nil
+		}
+	}
+	return nil, store.ErrNotFound
 }
 
 func (m *memRepo) ListWards(_ context.Context, provinceCode, query string) ([]address.Ward, error) {
@@ -234,11 +246,6 @@ func (m *memRepo) ApplyWebhookEvent(_ context.Context, params store.WebhookUpdat
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.webhookSeen[params.EventID] {
-		return nil, store.WebhookOutcomeDuplicate, nil
-	}
-	m.webhookSeen[params.EventID] = true
-
 	var sh *store.Shipment
 	if params.TrackingCode != "" {
 		sh = m.byTracking[params.TrackingCode]
@@ -249,6 +256,13 @@ func (m *memRepo) ApplyWebhookEvent(_ context.Context, params store.WebhookUpdat
 	if sh == nil {
 		return nil, "", store.ErrNotFound
 	}
+	if strings.TrimSpace(params.CarrierCode) == "" || !strings.EqualFold(strings.TrimSpace(params.CarrierCode), sh.CarrierCode) {
+		return nil, "", store.ErrCarrierMismatch
+	}
+	if m.webhookSeen[params.EventID] {
+		return nil, store.WebhookOutcomeDuplicate, nil
+	}
+	m.webhookSeen[params.EventID] = true
 
 	if carrier.IsTerminalStatus(sh.Status) || (sh.LastEventAt != nil && params.OccurredAt.Before(*sh.LastEventAt)) {
 		cp := *sh
@@ -584,5 +598,348 @@ func TestOrderCancelledCancelsPrePickupShipment(t *testing.T) {
 	}
 	if ghn.cancelCalls.Load() != 1 {
 		t.Fatalf("expected 1 carrier cancel call, got %d", ghn.cancelCalls.Load())
+	}
+}
+
+func TestCalculateFee_RejectsMissingOriginAndShop(t *testing.T) {
+	repo := newMemRepo()
+	ghn := carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock"})
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)), ghn)
+	svc := NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	_, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
+		ToProvinceCode: "79",
+		ToWardCode:     "79001",
+		WeightGrams:    250,
+		CODAmountVND:   200000,
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument when both shop_id and origin are empty, got err=%v", err)
+	}
+}
+
+func TestCalculateFee_ValidationAndOutOfServiceArea(t *testing.T) {
+	repo := newMemRepo()
+	ghn := carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock"})
+	mockExp := carrier.NewMockExpressAdapter()
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)), ghn, mockExp)
+	svc := NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	cases := []struct {
+		name string
+		req  carrier.FeeRequest
+	}{
+		{
+			name: "zero weight",
+			req: carrier.FeeRequest{
+				FromProvinceCode: "79", FromWardCode: "79001",
+				ToProvinceCode: "79", ToWardCode: "79001",
+				WeightGrams: 0,
+			},
+		},
+		{
+			name: "negative weight",
+			req: carrier.FeeRequest{
+				FromProvinceCode: "79", FromWardCode: "79001",
+				ToProvinceCode: "79", ToWardCode: "79001",
+				WeightGrams: -100,
+			},
+		},
+		{
+			name: "unknown destination province",
+			req: carrier.FeeRequest{
+				FromProvinceCode: "79", FromWardCode: "79001",
+				ToProvinceCode: "99999", ToWardCode: "99999",
+				WeightGrams: 250,
+			},
+		},
+		{
+			name: "legacy unmerged province code not in 34 provinces",
+			req: carrier.FeeRequest{
+				FromProvinceCode: "79", FromWardCode: "79001",
+				ToProvinceCode: "74",
+				WeightGrams:    250,
+			},
+		},
+		{
+			name: "unknown destination ward",
+			req: carrier.FeeRequest{
+				FromProvinceCode: "79", FromWardCode: "79001",
+				ToProvinceCode: "79", ToWardCode: "79999",
+				WeightGrams: 250,
+			},
+		},
+		{
+			name: "destination ward belongs to different province",
+			req: carrier.FeeRequest{
+				FromProvinceCode: "79", FromWardCode: "79001",
+				ToProvinceCode: "79", ToWardCode: "01001",
+				WeightGrams: 250,
+			},
+		},
+		{
+			name: "unknown origin province",
+			req: carrier.FeeRequest{
+				FromProvinceCode: "99999",
+				ToProvinceCode:   "79", ToWardCode: "79001",
+				WeightGrams: 250,
+			},
+		},
+		{
+			name: "unknown origin ward",
+			req: carrier.FeeRequest{
+				FromProvinceCode: "79", FromWardCode: "79999",
+				ToProvinceCode: "79", ToWardCode: "79001",
+				WeightGrams: 250,
+			},
+		},
+		{
+			name: "origin ward belongs to different province",
+			req: carrier.FeeRequest{
+				FromProvinceCode: "79", FromWardCode: "01001",
+				ToProvinceCode: "79", ToWardCode: "79001",
+				WeightGrams: 250,
+			},
+		},
+		{
+			name: "missing destination province",
+			req: carrier.FeeRequest{
+				FromProvinceCode: "79", FromWardCode: "79001",
+				WeightGrams: 250,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			quotes, err := svc.CalculateFee(context.Background(), tc.req)
+			if err == nil {
+				t.Fatalf("expected error for %s, got quotes=%+v", tc.name, quotes)
+			}
+		})
+	}
+}
+
+func TestHandleWebhook_RejectsCarrierMismatch(t *testing.T) {
+	repo := newMemRepo()
+	ghn := carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock"})
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)), ghn)
+	svc := NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	sh, _, err := svc.CreateShipment(context.Background(), CreateShipmentInput{
+		OrderID:     "ord-mismatch-1",
+		ShopID:      "shop-1",
+		CarrierCode: carrier.CodeGHN,
+		WeightGrams: 500,
+	})
+	if err != nil {
+		t.Fatalf("CreateShipment failed: %v", err)
+	}
+
+	_, _, err = svc.HandleWebhook(context.Background(), WebhookInput{
+		EventID:      "evt-wrong-carrier-1",
+		CarrierCode:  "fake_carrier",
+		TrackingCode: sh.TrackingCode,
+		RawStatus:    "delivering",
+		OccurredAt:   time.Now().UTC(),
+	})
+	if err == nil {
+		t.Fatalf("expected error on mismatched webhook carrier, got nil")
+	}
+
+	after, _, getErr := svc.GetShipment(context.Background(), "ord-mismatch-1", "")
+	if getErr != nil {
+		t.Fatalf("GetShipment failed: %v", getErr)
+	}
+	if after.Status != carrier.StatusCreated {
+		t.Fatalf("shipment status must remain created after carrier mismatch, got %s", after.Status)
+	}
+	if len(repo.outbox) != 0 {
+		t.Fatalf("expected 0 outbox events after carrier mismatch, got %d", len(repo.outbox))
+	}
+}
+
+type fakeShopPickup struct {
+	byShop map[string][2]string
+	calls  atomic.Int32
+}
+
+func (f *fakeShopPickup) GetShopPickupCodes(_ context.Context, shopID string) (string, string, error) {
+	f.calls.Add(1)
+	pair, ok := f.byShop[shopID]
+	if !ok {
+		return "", "", status.Error(codes.NotFound, "shop not found")
+	}
+	return pair[0], pair[1], nil
+}
+
+type recordingQuoteCache struct {
+	mu      sync.Mutex
+	getReqs []carrier.FeeRequest
+	setReqs []carrier.FeeRequest
+	entries map[string][]carrier.Quote
+}
+
+func newRecordingQuoteCache() *recordingQuoteCache {
+	return &recordingQuoteCache{entries: make(map[string][]carrier.Quote)}
+}
+
+func (c *recordingQuoteCache) keyOf(req carrier.FeeRequest) string {
+	return req.FromProvinceCode + ":" + req.FromWardCode + ":" + req.ToProvinceCode + ":" + req.ToWardCode
+}
+
+func (c *recordingQuoteCache) Get(_ context.Context, req carrier.FeeRequest) ([]carrier.Quote, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.getReqs = append(c.getReqs, req)
+	q, ok := c.entries[c.keyOf(req)]
+	return q, ok
+}
+
+func (c *recordingQuoteCache) Set(_ context.Context, req carrier.FeeRequest, quotes []carrier.Quote) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.setReqs = append(c.setReqs, req)
+	c.entries[c.keyOf(req)] = quotes
+}
+
+func TestCalculateFee_ResolvesShopPickupAndCachesRealOrigin(t *testing.T) {
+	repo := newMemRepo()
+	ghn := carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock"})
+	mockExp := carrier.NewMockExpressAdapter()
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)), ghn, mockExp)
+	qc := newRecordingQuoteCache()
+	svc := NewShippingService(repo, agg, qc, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	pickup := &fakeShopPickup{
+		byShop: map[string][2]string{
+			"shop-sg":       {"79", "79001"},
+			"shop-no-addr":  {"", ""},
+			"shop-bad-prov": {"99999", "99999"},
+		},
+	}
+	svc.SetShopPickupResolver(pickup)
+
+	// 1. Quote with shop_id only (no from_province_code/from_ward_code) resolves shop pickup (79/79001)
+	//    and returns intra-province TP.HCM quotes (ghn/STANDARD=24000, mock_express/STANDARD=19500).
+	quotesByShop, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
+		ShopID:         "shop-sg",
+		ToProvinceCode: "79",
+		ToWardCode:     "79001",
+		WeightGrams:    250,
+		CODAmountVND:   200000,
+	})
+	if err != nil {
+		t.Fatalf("CalculateFee with shop_id failed: %v", err)
+	}
+
+	// Verify cache lookup and write both used the REAL resolved origin (79/79001), never empty.
+	if len(qc.getReqs) != 1 || qc.getReqs[0].FromProvinceCode != "79" || qc.getReqs[0].FromWardCode != "79001" {
+		t.Fatalf("expected cache Get with real origin 79/79001, got %+v", qc.getReqs)
+	}
+	if len(qc.setReqs) != 1 || qc.setReqs[0].FromProvinceCode != "79" || qc.setReqs[0].FromWardCode != "79001" {
+		t.Fatalf("expected cache Set with real origin 79/79001, got %+v", qc.setReqs)
+	}
+
+	// Compare with explicit origin (what OrderService sends at checkout).
+	quotesExplicit, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
+		ShopID:           "shop-sg",
+		FromProvinceCode: "79",
+		FromWardCode:     "79001",
+		ToProvinceCode:   "79",
+		ToWardCode:       "79001",
+		WeightGrams:      250,
+		CODAmountVND:     200000,
+	})
+	if err != nil {
+		t.Fatalf("CalculateFee with explicit origin failed: %v", err)
+	}
+	if len(quotesByShop) != len(quotesExplicit) {
+		t.Fatalf("quote count mismatch: shop=%d explicit=%d", len(quotesByShop), len(quotesExplicit))
+	}
+	for i := range quotesByShop {
+		if quotesByShop[i] != quotesExplicit[i] {
+			t.Fatalf("quote[%d] mismatch: shop=%+v explicit=%+v", i, quotesByShop[i], quotesExplicit[i])
+		}
+	}
+	// Second call with explicit origin should hit cache (no extra Set, no extra shopPickup call).
+	if len(qc.setReqs) != 1 {
+		t.Fatalf("expected cache hit on explicit origin call, got %d cache Set calls", len(qc.setReqs))
+	}
+	if pickup.calls.Load() != 1 {
+		t.Fatalf("expected 1 shop pickup lookup, got %d", pickup.calls.Load())
+	}
+
+	// Verify intra-province GHN STANDARD fee is 24000 VND (22000 base + 2000 COD), NOT inter-region 40000 VND.
+	var ghnStdFee int64
+	for _, q := range quotesByShop {
+		if q.CarrierCode == carrier.CodeGHN && q.ServiceCode == "STANDARD" {
+			ghnStdFee = q.FeeVND
+		}
+	}
+	if ghnStdFee != 24000 {
+		t.Fatalf("expected GHN STANDARD intra-province fee 24000 VND, got %d", ghnStdFee)
+	}
+
+	// 2. Non-existent shop returns store.ErrNotFound.
+	if _, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
+		ShopID:         "shop-missing",
+		ToProvinceCode: "79",
+		ToWardCode:     "79001",
+		WeightGrams:    250,
+	}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected store.ErrNotFound for missing shop, got %v", err)
+	}
+
+	// 3. Shop with unconfigured pickup address returns ErrInvalidArgument.
+	if _, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
+		ShopID:         "shop-no-addr",
+		ToProvinceCode: "79",
+		ToWardCode:     "79001",
+		WeightGrams:    250,
+	}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument for shop missing pickup address, got %v", err)
+	}
+
+	// 4. Shop whose pickup address is outside 34-province catalog returns ErrOutOfServiceArea.
+	if _, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
+		ShopID:         "shop-bad-prov",
+		ToProvinceCode: "79",
+		ToWardCode:     "79001",
+		WeightGrams:    250,
+	}); !errors.Is(err, ErrOutOfServiceArea) {
+		t.Fatalf("expected ErrOutOfServiceArea for unsupported shop pickup province, got %v", err)
+	}
+}
+
+type nonRetryableCarrier struct{ code string }
+
+func (n *nonRetryableCarrier) Code() string { return n.code }
+func (n *nonRetryableCarrier) Name() string { return n.code }
+func (n *nonRetryableCarrier) IsMock() bool { return true }
+func (n *nonRetryableCarrier) CalculateFee(_ context.Context, _ carrier.FeeRequest) ([]carrier.Quote, error) {
+	return nil, &carrier.NonRetryableError{Err: errors.New("route outside carrier coverage")}
+}
+func (n *nonRetryableCarrier) CreateShipment(_ context.Context, _ carrier.ShipmentRequest) (*carrier.ShipmentResult, error) {
+	return nil, errors.New("unsupported")
+}
+func (n *nonRetryableCarrier) CancelShipment(_ context.Context, _ string) error { return nil }
+func (n *nonRetryableCarrier) GetStatus(_ context.Context, _ string) (*carrier.TrackingStatus, error) {
+	return nil, nil
+}
+
+func TestCalculateFee_AllCarriersRejectOutOfServiceArea(t *testing.T) {
+	repo := newMemRepo()
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)), &nonRetryableCarrier{code: "ghn"})
+	svc := NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	_, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
+		FromProvinceCode: "79",
+		FromWardCode:     "79001",
+		ToProvinceCode:   "96",
+		ToWardCode:       "96003",
+		WeightGrams:      500,
+	})
+	if !errors.Is(err, ErrOutOfServiceArea) {
+		t.Fatalf("expected ErrOutOfServiceArea when all carriers reject route, got %v", err)
 	}
 }

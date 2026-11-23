@@ -61,6 +61,17 @@ func (s *PostgresStore) GetCheckoutGroupByID(ctx context.Context, id string) (*d
 	return &row, nil
 }
 
+func (s *PostgresStore) GetCheckoutGroupByPaymentID(ctx context.Context, paymentID string) (*db.CheckoutGroup, error) {
+	row, err := s.queries.GetCheckoutGroupByPaymentID(ctx, paymentID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &row, nil
+}
+
 func (s *PostgresStore) CreateCheckoutGroup(ctx context.Context, arg db.CreateCheckoutGroupParams) (*db.CheckoutGroup, error) {
 	row, err := s.queries.CreateCheckoutGroup(ctx, arg)
 	if err != nil {
@@ -161,6 +172,94 @@ func (s *PostgresStore) CompleteCheckoutWithPayment(ctx context.Context, arg Upd
 		ResponseSnapshotJSON: arg.ResponseSnapshotJSON,
 	}); err != nil {
 		return fmt.Errorf("complete checkout group: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (s *PostgresStore) WithCheckoutGroupRetryLock(ctx context.Context, checkoutGroupID string, fn func() error) error {
+	// Review2-O P1-3: hold a Postgres transaction-scoped advisory lock across check -> CreatePayment -> DB update
+	// so concurrent RetryPayment calls across replicas serialize cleanly.
+	tx, err := s.pool.Begin(context.WithoutCancel(ctx))
+	if err != nil {
+		return fmt.Errorf("begin retry advisory lock tx: %w", err)
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = tx.Rollback(closeCtx)
+	}()
+
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended('order_retry:' || $1, 0))", checkoutGroupID); err != nil {
+		return fmt.Errorf("acquire retry advisory lock: %w", err)
+	}
+	return fn()
+}
+
+func (s *PostgresStore) UpdateGroupPaymentOnRetry(ctx context.Context, params RetryPaymentUpdateParams) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin retry payment update tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := s.queries.WithTx(tx)
+	orders, err := q.ListOrdersByCheckoutGroupForUpdate(ctx, params.CheckoutGroupID)
+	if err != nil {
+		return err
+	}
+	if len(orders) == 0 {
+		return ErrNotFound
+	}
+	now := params.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	alreadyApplied := params.NewPaymentID != ""
+	for _, ord := range orders {
+		if statemachine.StringToStatus(ord.Status) != orderv1.OrderStatus_ORDER_STATUS_PENDING {
+			return fmt.Errorf("%w: order %s is in status %s", ErrRetryPrecondition, ord.ID, ord.Status)
+		}
+		if statemachine.StringToPaymentMethod(ord.PaymentMethod) != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR {
+			return fmt.Errorf("%w: order %s payment method is %s", ErrRetryPrecondition, ord.ID, ord.PaymentMethod)
+		}
+		if ord.PaymentID != params.NewPaymentID {
+			alreadyApplied = false
+		}
+	}
+	if alreadyApplied {
+		// Review-A P0-3: idempotent success if another replica already committed this exact new payment_id.
+		return tx.Commit(ctx)
+	}
+	for _, ord := range orders {
+		if params.ExpectedPaymentID != "" && ord.PaymentID != params.ExpectedPaymentID {
+			return fmt.Errorf("%w: order %s payment_id mismatch", ErrRetryPrecondition, ord.ID)
+		}
+		if ord.PaymentExpiresAt != nil && !ord.PaymentExpiresAt.After(now) {
+			return fmt.Errorf("%w: order %s payment expired", ErrRetryPrecondition, ord.ID)
+		}
+	}
+
+	if err := q.UpdateOrderPaymentInfoByGroup(ctx, db.UpdateOrderPaymentInfoByGroupParams{
+		CheckoutGroupID:  params.CheckoutGroupID,
+		PaymentID:        params.NewPaymentID,
+		PaymentStatus:    params.PaymentStatus,
+		PaymentExpiresAt: params.PaymentExpiresAt,
+	}); err != nil {
+		return fmt.Errorf("update orders payment info on retry: %w", err)
+	}
+
+	if err := q.UpdateCheckoutGroupPaymentOnRetry(ctx, db.UpdateCheckoutGroupPaymentOnRetryParams{
+		ID:                  params.CheckoutGroupID,
+		PaymentID:           params.NewPaymentID,
+		PaymentStatus:       params.PaymentStatus,
+		QRURL:               params.QRURL,
+		QRCode:              params.QRCode,
+		PaymentExpiresAt:    params.PaymentExpiresAt,
+		RetryIdempotencyKey: params.RetryIdempotencyKey,
+		RetryFromPaymentID:  params.ExpectedPaymentID,
+	}); err != nil {
+		return fmt.Errorf("update checkout group payment on retry: %w", err)
 	}
 
 	return tx.Commit(ctx)
@@ -324,21 +423,32 @@ func (s *PostgresStore) TransitionOrdersPaymentResult(ctx context.Context, param
 	q := s.queries.WithTx(tx)
 
 	if params.EventID != "" {
-		inserted, err := q.TryMarkEventProcessed(ctx, db.TryMarkEventProcessedParams{
-			EventID:   params.EventID,
-			EventType: params.EventType,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("mark event processed: %w", err)
-		}
-		if inserted == 0 {
-			return &PaymentResultTransitionOutcome{AlreadyProcessed: true}, nil
+		if params.SkipMarkProcessed {
+			processed, err := q.IsEventProcessed(ctx, params.EventID)
+			if err != nil {
+				return nil, fmt.Errorf("check event processed: %w", err)
+			}
+			if processed {
+				return &PaymentResultTransitionOutcome{AlreadyProcessed: true}, nil
+			}
+		} else {
+			inserted, err := q.TryMarkEventProcessed(ctx, db.TryMarkEventProcessedParams{
+				EventID:   params.EventID,
+				EventType: params.EventType,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("mark event processed: %w", err)
+			}
+			if inserted == 0 {
+				return &PaymentResultTransitionOutcome{AlreadyProcessed: true}, nil
+			}
 		}
 	}
 
 	groupID := strings.TrimSpace(params.CheckoutGroupID)
 	if groupID == "" && strings.TrimSpace(params.OrderID) != "" {
-		ord, err := q.GetOrderByIDForUpdate(ctx, params.OrderID)
+		// Review2-O P2-6: non-locking lookup first so all locks are acquired in canonical group order below.
+		ord, err := q.GetOrderByID(ctx, params.OrderID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				if grp, gErr := q.GetCheckoutGroupByID(ctx, params.OrderID); gErr == nil {
@@ -368,6 +478,19 @@ func (s *PostgresStore) TransitionOrdersPaymentResult(ctx context.Context, param
 		return nil, err
 	}
 
+	grp, grpErr := q.GetCheckoutGroupByID(ctx, groupID)
+	if grpErr != nil && !errors.Is(grpErr, pgx.ErrNoRows) {
+		return nil, grpErr
+	}
+	if grpErr == nil && params.PaymentID != "" && grp.PaymentID != "" && grp.PaymentID != params.PaymentID {
+		// PAY-B6: ignore payment events belonging to a superseded/non-current payment_id.
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return &PaymentResultTransitionOutcome{CheckoutGroupID: groupID}, nil
+	}
+	groupAlreadyRefunded := grpErr == nil && strings.EqualFold(grp.PaymentStatus, "REFUNDED")
+
 	var targetStatus orderv1.OrderStatus
 	var paymentStatusStr string
 	var defaultNote string
@@ -386,18 +509,13 @@ func (s *PostgresStore) TransitionOrdersPaymentResult(ctx context.Context, param
 		paymentStatusStr = "FAILED"
 		defaultNote = "Payment failed"
 	}
+	if override := strings.TrimSpace(params.PaymentStatusOverride); override != "" {
+		paymentStatusStr = override
+	}
 
 	note := strings.TrimSpace(params.Reason)
 	if note == "" {
 		note = defaultNote
-	}
-
-	if err := q.UpdateCheckoutGroupPaymentStatus(ctx, db.UpdateCheckoutGroupPaymentStatusParams{
-		ID:            groupID,
-		PaymentStatus: paymentStatusStr,
-		PaymentID:     params.PaymentID,
-	}); err != nil {
-		return nil, err
 	}
 
 	outcome := &PaymentResultTransitionOutcome{
@@ -405,18 +523,59 @@ func (s *PostgresStore) TransitionOrdersPaymentResult(ctx context.Context, param
 		Transitioned:    make([]db.Order, 0, len(orders)),
 	}
 
+	codUpdated := 0
+	allActivePaid := true
+	activeOrderCount := 0
+	reqOrderID := strings.TrimSpace(params.OrderID)
+	targetSpecificOrder := reqOrderID != "" && reqOrderID != groupID
+
 	for _, ord := range orders {
+		if params.PaymentID != "" && ord.PaymentID != "" && ord.PaymentID != params.PaymentID {
+			continue
+		}
 		curStatus := statemachine.StringToStatus(ord.Status)
 		if curStatus != orderv1.OrderStatus_ORDER_STATUS_PENDING {
-			// Idempotent: COD orders are already CONFIRMED when payment.succeeded arrives,
-			// and duplicate notifications should never fail or double-emit outbox events.
+			// Review2-O P1-1: signal idempotent downstream completion on retries/redeliveries
+			// regardless of EventID (covers MarkPaymentResult, watchdog->payment.failed rescue,
+			// and payment.succeeded redelivery after seller already shipped the order).
+			if params.ResultStatus == orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_SUCCEEDED {
+				if statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+					(strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") || isOrderRefunded(ord)) &&
+					curStatus != orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+					outcome.NeedsDownstream = true
+				}
+			} else if curStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED &&
+				(isFailedOrExpiredStatus(ord.PaymentStatus) ||
+					(params.PaymentStatusOverride != "" && strings.EqualFold(ord.PaymentStatus, params.PaymentStatusOverride))) {
+				outcome.NeedsDownstream = true
+			}
+			// PAY-B6: never mutate CANCELLED or RETURNED orders on late payment.succeeded.
+			if curStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED ||
+				curStatus == orderv1.OrderStatus_ORDER_STATUS_RETURNED {
+				continue
+			}
+			activeOrderCount++
+			// Review2-O P1-2: treat REFUNDED as already paid so out-of-order payment.succeeded never downgrades it.
+			ordPaid := strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") || isOrderRefunded(ord)
+			// R2 COD: payment.succeeded arrives when a COD sub-order is delivered.
 			if params.ResultStatus == orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_SUCCEEDED &&
-				curStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED &&
-				!strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") {
-				_ = q.UpdateOrderPaymentStatus(ctx, db.UpdateOrderPaymentStatusParams{
+				statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD &&
+				(curStatus == orderv1.OrderStatus_ORDER_STATUS_DELIVERED ||
+					curStatus == orderv1.OrderStatus_ORDER_STATUS_COMPLETED ||
+					curStatus == orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED) &&
+				(!targetSpecificOrder || ord.ID == reqOrderID) &&
+				!ordPaid {
+				if err := q.UpdateOrderPaymentStatus(ctx, db.UpdateOrderPaymentStatusParams{
 					ID:            ord.ID,
 					PaymentStatus: "SUCCEEDED",
-				})
+				}); err != nil {
+					return nil, err
+				}
+				codUpdated++
+				ordPaid = true
+			}
+			if !ordPaid {
+				allActivePaid = false
 			}
 			continue
 		}
@@ -429,12 +588,16 @@ func (s *PostgresStore) TransitionOrdersPaymentResult(ctx context.Context, param
 		if targetStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
 			cancelReason = note
 		}
+		ordPaymentStatus := paymentStatusStr
+		if isOrderRefunded(ord) {
+			ordPaymentStatus = "REFUNDED"
+		}
 
 		updated, err := q.UpdateOrderStatus(ctx, db.UpdateOrderStatusParams{
 			ID:            ord.ID,
 			Status:        statemachine.StatusToString(targetStatus),
 			CancelReason:  cancelReason,
-			PaymentStatus: paymentStatusStr,
+			PaymentStatus: ordPaymentStatus,
 			PaymentID:     params.PaymentID,
 		})
 		if err != nil {
@@ -491,6 +654,32 @@ func (s *PostgresStore) TransitionOrdersPaymentResult(ctx context.Context, param
 		}
 
 		outcome.Transitioned = append(outcome.Transitioned, updated)
+		outcome.NeedsDownstream = true
+	}
+
+	if len(outcome.Transitioned) > 0 || (codUpdated > 0 && activeOrderCount > 0 && allActivePaid) {
+		groupPayStatus := paymentStatusStr
+		if groupAlreadyRefunded {
+			groupPayStatus = "REFUNDED"
+		} else if len(outcome.Transitioned) > 0 {
+			allTransRefunded := true
+			for _, tr := range outcome.Transitioned {
+				if !strings.EqualFold(tr.PaymentStatus, "REFUNDED") {
+					allTransRefunded = false
+					break
+				}
+			}
+			if allTransRefunded {
+				groupPayStatus = "REFUNDED"
+			}
+		}
+		if err := q.UpdateCheckoutGroupPaymentStatus(ctx, db.UpdateCheckoutGroupPaymentStatusParams{
+			ID:            groupID,
+			PaymentStatus: groupPayStatus,
+			PaymentID:     params.PaymentID,
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -499,17 +688,19 @@ func (s *PostgresStore) TransitionOrdersPaymentResult(ctx context.Context, param
 	return outcome, nil
 }
 
-func (s *PostgresStore) TransitionOrderStatus(ctx context.Context, params SingleOrderTransitionParams) (*OrderAggregate, []db.Order, error) {
+func (s *PostgresStore) TransitionOrderStatus(ctx context.Context, params SingleOrderTransitionParams) (*OrderTransitionResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("begin transition order tx: %w", err)
+		return nil, fmt.Errorf("begin transition order tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := s.queries.WithTx(tx)
 
 	var ord db.Order
+	var siblings []db.Order
 	var toCancel []db.Order
+	hasActiveSibling := false
 
 	if params.CancelGroupPend && params.TargetStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
 		// Non-locking lookup of checkout_group_id first, then lock all group rows in deterministic
@@ -517,13 +708,13 @@ func (s *PostgresStore) TransitionOrderStatus(ctx context.Context, params Single
 		peek, err := q.GetOrderByID(ctx, params.OrderID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, nil, ErrNotFound
+				return nil, ErrNotFound
 			}
-			return nil, nil, err
+			return nil, err
 		}
-		siblings, err := q.ListOrdersByCheckoutGroupForUpdate(ctx, peek.CheckoutGroupID)
+		siblings, err = q.ListOrdersByCheckoutGroupForUpdate(ctx, peek.CheckoutGroupID)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		found := false
 		for _, sib := range siblings {
@@ -534,12 +725,12 @@ func (s *PostgresStore) TransitionOrderStatus(ctx context.Context, params Single
 			}
 		}
 		if !found {
-			return nil, nil, ErrNotFound
+			return nil, ErrNotFound
 		}
 
 		curStatus := statemachine.StringToStatus(ord.Status)
 		if err := statemachine.ValidateTransition(curStatus, params.TargetStatus); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
 		if curStatus == orderv1.OrderStatus_ORDER_STATUS_PENDING {
@@ -551,34 +742,63 @@ func (s *PostgresStore) TransitionOrderStatus(ctx context.Context, params Single
 		} else {
 			toCancel = []db.Order{ord}
 		}
+
+		cancellingIDs := make(map[string]struct{}, len(toCancel))
+		for _, c := range toCancel {
+			cancellingIDs[c.ID] = struct{}{}
+		}
+		for _, sib := range siblings {
+			if _, cancelling := cancellingIDs[sib.ID]; cancelling {
+				continue
+			}
+			if statemachine.StringToStatus(sib.Status) != orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+				hasActiveSibling = true
+				break
+			}
+		}
 	} else {
 		var err error
 		ord, err = q.GetOrderByIDForUpdate(ctx, params.OrderID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, nil, ErrNotFound
+				return nil, ErrNotFound
 			}
-			return nil, nil, err
+			return nil, err
 		}
 
 		curStatus := statemachine.StringToStatus(ord.Status)
 		if err := statemachine.ValidateTransition(curStatus, params.TargetStatus); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		toCancel = []db.Order{ord}
 	}
 
+	prevOrder := ord
+	var primaryUpdatedPayStatus string
 	transitioned := make([]db.Order, 0, len(toCancel))
 	for _, targetOrd := range toCancel {
+		payStatus := params.PaymentStatus
+		if params.TargetStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED && payStatus == "" {
+			ordPaid := statemachine.StringToPaymentMethod(targetOrd.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+				strings.EqualFold(targetOrd.PaymentStatus, "SUCCEEDED") &&
+				targetOrd.TotalPayableVND > 0
+			if !ordPaid && (isUnpaidPendingStatus(targetOrd.PaymentStatus) || targetOrd.TotalPayableVND == 0) {
+				payStatus = "CANCELLED"
+			}
+		}
+
 		updated, err := q.UpdateOrderStatus(ctx, db.UpdateOrderStatusParams{
 			ID:            targetOrd.ID,
 			Status:        statemachine.StatusToString(params.TargetStatus),
 			CancelReason:  params.CancelReason,
-			PaymentStatus: params.PaymentStatus,
+			PaymentStatus: payStatus,
 			PaymentID:     targetOrd.PaymentID,
 		})
 		if err != nil {
-			return nil, nil, err
+			return nil, err
+		}
+		if updated.ID == ord.ID {
+			primaryUpdatedPayStatus = updated.PaymentStatus
 		}
 
 		if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
@@ -590,34 +810,70 @@ func (s *PostgresStore) TransitionOrderStatus(ctx context.Context, params Single
 			ActorRole:  params.ActorRole,
 			Note:       params.Note,
 		}); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
 		if params.BuildOutboxFn != nil {
 			for _, ob := range params.BuildOutboxFn(updated) {
 				if err := q.InsertOutboxEvent(ctx, ob); err != nil {
-					return nil, nil, err
+					return nil, err
 				}
 			}
 		}
 		transitioned = append(transitioned, updated)
 	}
 
+	if params.CancelGroupPend && params.TargetStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+		if shouldMarkGroupRefunded(siblings, ord.ID, statemachine.StatusToString(params.TargetStatus), primaryUpdatedPayStatus) {
+			if err := q.UpdateCheckoutGroupPaymentStatus(ctx, db.UpdateCheckoutGroupPaymentStatusParams{
+				ID:            ord.CheckoutGroupID,
+				PaymentStatus: "REFUNDED",
+				PaymentID:     "",
+			}); err != nil {
+				return nil, err
+			}
+		} else if !hasActiveSibling {
+			anyPaidSibling := false
+			for _, sib := range siblings {
+				if statemachine.StringToPaymentMethod(sib.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+					(strings.EqualFold(sib.PaymentStatus, "SUCCEEDED") || strings.EqualFold(sib.PaymentStatus, "REFUNDED")) &&
+					sib.TotalPayableVND > 0 {
+					anyPaidSibling = true
+					break
+				}
+			}
+			if !anyPaidSibling {
+				if err := q.UpdateCheckoutGroupPaymentStatus(ctx, db.UpdateCheckoutGroupPaymentStatusParams{
+					ID:            ord.CheckoutGroupID,
+					PaymentStatus: "CANCELLED",
+					PaymentID:     "",
+				}); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
 	for _, ob := range params.OutboxEvents {
 		if err := q.InsertOutboxEvent(ctx, ob); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	}
 
 	agg, err := loadOrderAggregate(ctx, q, params.OrderID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return agg, transitioned, nil
+	return &OrderTransitionResult{
+		Order:            agg,
+		PrevOrder:        prevOrder,
+		Transitioned:     transitioned,
+		HasActiveSibling: hasActiveSibling,
+	}, nil
 }
 
 func (s *PostgresStore) TransitionOrderShipped(ctx context.Context, params ShipOrderParams) (*OrderAggregate, error) {
@@ -696,8 +952,8 @@ func (s *PostgresStore) TransitionOrderCompleted(ctx context.Context, params Com
 	}
 
 	curStatus := statemachine.StringToStatus(ord.Status)
-	if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_COMPLETED); err != nil {
-		return nil, err
+	if curStatus != orderv1.OrderStatus_ORDER_STATUS_DELIVERED {
+		return nil, fmt.Errorf("%w: buyer confirm received requires DELIVERED, got %s", statemachine.ErrInvalidTransition, statemachine.StatusToString(curStatus))
 	}
 
 	if _, err := q.UpdateOrderCompleted(ctx, params.OrderID); err != nil {
@@ -803,15 +1059,25 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 
 	q := s.queries.WithTx(tx)
 	if params.EventID != "" {
-		inserted, err := q.TryMarkEventProcessed(ctx, db.TryMarkEventProcessedParams{
-			EventID:   params.EventID,
-			EventType: params.EventType,
-		})
-		if err != nil {
-			return nil, err
-		}
-		if inserted == 0 {
-			return &ShipmentUpdateOutcome{AlreadyProcessed: true}, nil
+		if params.SkipMarkProcessed {
+			processed, err := q.IsEventProcessed(ctx, params.EventID)
+			if err != nil {
+				return nil, err
+			}
+			if processed {
+				return &ShipmentUpdateOutcome{AlreadyProcessed: true}, nil
+			}
+		} else {
+			inserted, err := q.TryMarkEventProcessed(ctx, db.TryMarkEventProcessedParams{
+				EventID:   params.EventID,
+				EventType: params.EventType,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if inserted == 0 {
+				return &ShipmentUpdateOutcome{AlreadyProcessed: true}, nil
+			}
 		}
 	}
 
@@ -885,10 +1151,19 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 			if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_RETURNED); err != nil {
 				return nil, err
 			}
-			if _, err := q.UpdateOrderStatus(ctx, db.UpdateOrderStatusParams{
-				ID:     ord.ID,
-				Status: statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURNED),
-			}); err != nil {
+			nextPaymentStatus := ""
+			if curStatus == orderv1.OrderStatus_ORDER_STATUS_SHIPPING &&
+				(ord.TotalPayableVND == 0 ||
+					(statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD &&
+						isUnpaidPendingStatus(ord.PaymentStatus))) {
+				nextPaymentStatus = "CANCELLED"
+			}
+			updated, err := q.UpdateOrderStatus(ctx, db.UpdateOrderStatusParams{
+				ID:            ord.ID,
+				Status:        statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURNED),
+				PaymentStatus: nextPaymentStatus,
+			})
+			if err != nil {
 				return nil, err
 			}
 			if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
@@ -902,7 +1177,47 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 			}); err != nil {
 				return nil, err
 			}
+			wasPaid := strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") && ord.TotalPayableVND > 0
+			payloadBytes, err := json.Marshal(events.OrderReturnedPayload{
+				OrderID:         updated.ID,
+				OrderCode:       updated.OrderCode,
+				CheckoutGroupID: updated.CheckoutGroupID,
+				BuyerID:         updated.BuyerID,
+				ShopID:          updated.ShopID,
+				PaymentMethod:   updated.PaymentMethod,
+				FromStatus:      statemachine.StatusToString(curStatus),
+				TotalPayableVND: updated.TotalPayableVND,
+				Reason:          note,
+				WasPaid:         wasPaid,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if err := q.InsertOutboxEvent(ctx, db.InsertOutboxEventParams{
+				ID:          uuid.NewString(),
+				EventType:   events.SubjectOrderReturned,
+				TraceID:     params.TraceID,
+				Traceparent: params.Traceparent,
+				PayloadJSON: payloadBytes,
+			}); err != nil {
+				return nil, err
+			}
+			outcome.TransitionedFrom = curStatus
 			outcome.TransitionedTo = orderv1.OrderStatus_ORDER_STATUS_RETURNED
+		} else if curStatus == orderv1.OrderStatus_ORDER_STATUS_RETURNED && params.SkipMarkProcessed {
+			// Review-A P1-7 / Review2-O P3-8: redelivery after a transient compensation error.
+			// Recover original FromStatus from timeline without duplicating timeline/outbox rows.
+			outcome.AlreadyReturned = true
+			tls, tlErr := q.ListOrderTimelineByOrderID(ctx, ord.ID)
+			if tlErr != nil {
+				return nil, tlErr
+			}
+			for i := len(tls) - 1; i >= 0; i-- {
+				if statemachine.StringToStatus(tls[i].ToStatus) == orderv1.OrderStatus_ORDER_STATUS_RETURNED {
+					outcome.TransitionedFrom = statemachine.StringToStatus(tls[i].FromStatus)
+					break
+				}
+			}
 		}
 	default:
 		if params.TrackingCode != "" {
@@ -960,18 +1275,78 @@ func (s *PostgresStore) RecordPaymentRefunded(ctx context.Context, params Paymen
 	}
 
 	if params.OrderID != "" {
-		var targets []db.Order
-		ord, err := q.GetOrderByIDForUpdate(ctx, params.OrderID)
+		note := fmt.Sprintf("Refund %s processed: %d VND (%s)", params.RefundID, params.AmountVND, params.Reason)
+		peek, err := q.GetOrderByID(ctx, params.OrderID)
 		if err == nil {
-			targets = []db.Order{ord}
+			// Lock all orders in the group in deterministic order so we can sync checkout_groups.payment_status safely.
+			groupOrders, gErr := q.ListOrdersByCheckoutGroupForUpdate(ctx, peek.CheckoutGroupID)
+			if gErr != nil {
+				return false, gErr
+			}
+			var ord db.Order
+			found := false
+			for _, o := range groupOrders {
+				if o.ID == params.OrderID {
+					ord = o
+					found = true
+					break
+				}
+			}
+			// PAY-B6: ignore refund events for a non-current payment_id.
+			if found && (params.PaymentID == "" || ord.PaymentID == "" || ord.PaymentID == params.PaymentID) {
+				newRefunded := ord.RefundedVND + params.AmountVND
+				nextPayStatus := ""
+				if ord.TotalPayableVND > 0 && newRefunded >= ord.TotalPayableVND {
+					nextPayStatus = "REFUNDED"
+				}
+				if err := q.UpdateOrderRefunded(ctx, db.UpdateOrderRefundedParams{
+					ID:            ord.ID,
+					RefundedVND:   newRefunded,
+					PaymentStatus: nextPayStatus,
+				}); err != nil {
+					return false, err
+				}
+				if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+					ID:         uuid.NewString(),
+					OrderID:    ord.ID,
+					FromStatus: ord.Status,
+					ToStatus:   ord.Status,
+					ActorID:    "payment-service",
+					ActorRole:  "system",
+					Note:       note,
+				}); err != nil {
+					return false, err
+				}
+				// Review2-O P2-5(a)/(b): sync checkout_groups.payment_status = REFUNDED when all
+				// remaining paid sub-orders are REFUNDED and no active 0-VND sub-order remains.
+				if nextPayStatus == "REFUNDED" && shouldMarkGroupRefunded(groupOrders, ord.ID, "", nextPayStatus) {
+					if err := q.UpdateCheckoutGroupPaymentStatus(ctx, db.UpdateCheckoutGroupPaymentStatusParams{
+						ID:            ord.CheckoutGroupID,
+						PaymentStatus: "REFUNDED",
+						PaymentID:     "",
+					}); err != nil {
+						return false, err
+					}
+				}
+			}
 		} else if errors.Is(err, pgx.ErrNoRows) {
 			// Group-level refund: payment.refunded carries checkout_group_id in order_id.
 			groupOrders, gErr := q.ListOrdersByCheckoutGroupForUpdate(ctx, params.OrderID)
 			if gErr != nil {
 				return false, gErr
 			}
-			targets = groupOrders
-			if len(targets) > 0 {
+			matched := make([]db.Order, 0, len(groupOrders))
+			var groupPayable, groupRefunded int64
+			for _, o := range groupOrders {
+				if params.PaymentID != "" && o.PaymentID != "" && o.PaymentID != params.PaymentID {
+					continue
+				}
+				matched = append(matched, o)
+				groupPayable += o.TotalPayableVND
+				groupRefunded += o.RefundedVND
+			}
+			isFullGroupRefund := groupPayable > 0 && groupRefunded+params.AmountVND >= groupPayable
+			if len(matched) > 0 && isFullGroupRefund {
 				if err := q.UpdateCheckoutGroupPaymentStatus(ctx, db.UpdateCheckoutGroupPaymentStatusParams{
 					ID:            params.OrderID,
 					PaymentStatus: "REFUNDED",
@@ -980,29 +1355,51 @@ func (s *PostgresStore) RecordPaymentRefunded(ctx context.Context, params Paymen
 					return false, err
 				}
 			}
+			remainingToRecord := params.AmountVND
+			for _, target := range matched {
+				if isFullGroupRefund {
+					if err := q.UpdateOrderRefunded(ctx, db.UpdateOrderRefundedParams{
+						ID:            target.ID,
+						RefundedVND:   target.TotalPayableVND,
+						PaymentStatus: "REFUNDED",
+					}); err != nil {
+						return false, err
+					}
+				} else if remainingToRecord > 0 {
+					// Review-A P2-8(a) / Review2-O P2-5(c): accumulate partial group-level refunds across
+					// sub-orders and flip a sub-order to REFUNDED once its full payable amount is covered.
+					avail := target.TotalPayableVND - target.RefundedVND
+					if avail > 0 {
+						add := min(remainingToRecord, avail)
+						remainingToRecord -= add
+						newRef := target.RefundedVND + add
+						targetPayStatus := ""
+						if target.TotalPayableVND > 0 && newRef >= target.TotalPayableVND {
+							targetPayStatus = "REFUNDED"
+						}
+						if err := q.UpdateOrderRefunded(ctx, db.UpdateOrderRefundedParams{
+							ID:            target.ID,
+							RefundedVND:   newRef,
+							PaymentStatus: targetPayStatus,
+						}); err != nil {
+							return false, err
+						}
+					}
+				}
+				if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+					ID:         uuid.NewString(),
+					OrderID:    target.ID,
+					FromStatus: target.Status,
+					ToStatus:   target.Status,
+					ActorID:    "payment-service",
+					ActorRole:  "system",
+					Note:       note,
+				}); err != nil {
+					return false, err
+				}
+			}
 		} else {
 			return false, err
-		}
-
-		note := fmt.Sprintf("Refund %s processed: %d VND (%s)", params.RefundID, params.AmountVND, params.Reason)
-		for _, target := range targets {
-			if err := q.UpdateOrderPaymentStatus(ctx, db.UpdateOrderPaymentStatusParams{
-				ID:            target.ID,
-				PaymentStatus: "REFUNDED",
-			}); err != nil {
-				return false, err
-			}
-			if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
-				ID:         uuid.NewString(),
-				OrderID:    target.ID,
-				FromStatus: target.Status,
-				ToStatus:   target.Status,
-				ActorID:    "payment-service",
-				ActorRole:  "system",
-				Note:       note,
-			}); err != nil {
-				return false, err
-			}
 		}
 	}
 
@@ -1017,6 +1414,17 @@ func (s *PostgresStore) IsEventProcessed(ctx context.Context, eventID string) (b
 		return false, nil
 	}
 	return s.queries.IsEventProcessed(ctx, eventID)
+}
+
+func (s *PostgresStore) MarkEventProcessed(ctx context.Context, eventID, eventType string) error {
+	if eventID == "" {
+		return nil
+	}
+	_, err := s.queries.TryMarkEventProcessed(ctx, db.TryMarkEventProcessedParams{
+		EventID:   eventID,
+		EventType: eventType,
+	})
+	return err
 }
 
 func (s *PostgresStore) InsertDeadLetterEvent(ctx context.Context, arg db.InsertDeadLetterEventParams) error {

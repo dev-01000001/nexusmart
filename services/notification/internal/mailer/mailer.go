@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"mime"
 	"net"
 	"net/smtp"
 	"strconv"
@@ -67,7 +68,7 @@ func FormatMessage(from string, msg Message, now time.Time) []byte {
 	b.WriteString(cleanTo)
 	b.WriteString("\r\n")
 	b.WriteString("Subject: ")
-	b.WriteString(cleanSubject)
+	b.WriteString(mime.QEncoding.Encode("UTF-8", cleanSubject))
 	b.WriteString("\r\n")
 	b.WriteString("Date: ")
 	b.WriteString(now.UTC().Format(time.RFC1123Z))
@@ -82,26 +83,39 @@ func FormatMessage(from string, msg Message, now time.Time) []byte {
 	return []byte(b.String())
 }
 
-// FormatOTPEmail formats a clear verification OTP email so users and E2E tests can easily parse the code.
+var vietnamZone = time.FixedZone("GMT+7", 7*3600)
+
+// FormatOTPEmail formats a Vietnamese verification OTP email without leaking the OTP code in the Subject.
 func FormatOTPEmail(to, fullName, otp, expiresAt string) Message {
 	name := strings.TrimSpace(fullName)
 	if name == "" {
-		name = "Customer"
+		name = "Quý khách"
 	}
-	body := fmt.Sprintf(
-		"Hello %s,\n\nYour NexusMart verification OTP code is: %s\n",
-		name, otp,
-	)
-	if strings.TrimSpace(expiresAt) != "" {
-		body += fmt.Sprintf("This OTP expires at: %s\n", expiresAt)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Xin chào %s,\n\n", name)
+	b.WriteString("Cảm ơn bạn đã đăng ký tài khoản tại NexusMart.\n")
+	fmt.Fprintf(&b, "Mã xác thực OTP của bạn là: %s\n", strings.TrimSpace(otp))
+	if exp := formatOTPExpiry(expiresAt); exp != "" {
+		fmt.Fprintf(&b, "Mã có hiệu lực đến: %s\n", exp)
 	}
-	body += "\nIf you did not create a NexusMart account, please ignore this email.\n"
+	b.WriteString("\nVui lòng không chia sẻ mã này cho bất kỳ ai. Nếu bạn không yêu cầu tạo tài khoản NexusMart, vui lòng bỏ qua email này.\n")
 
 	return Message{
 		To:      to,
-		Subject: fmt.Sprintf("NexusMart Verification OTP: %s", sanitizeHeader(otp)),
-		Body:    body,
+		Subject: "Mã xác minh tài khoản NexusMart",
+		Body:    b.String(),
 	}
+}
+
+func formatOTPExpiry(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if parsed, err := time.Parse(time.RFC3339, trimmed); err == nil {
+		return parsed.In(vietnamZone).Format("15:04 ngày 02/01/2006 (GMT+7)")
+	}
+	return trimmed
 }
 
 // Send dials the SMTP server with context timeout and transmits msg.

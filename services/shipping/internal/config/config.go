@@ -16,6 +16,7 @@ type Config struct {
 	DatabaseURL      string
 	RedisAddr        string
 	RedisPassword    string
+	UserGRPCAddr     string
 	NATSURL          string
 	NATSStream       string
 	NATSDLQStream    string
@@ -50,6 +51,7 @@ func Load() Config {
 		DatabaseURL:      env.EnvString("DATABASE_URL", "postgres://nexusmart:nexusmart_dev_password@localhost:5432/shipping_db?sslmode=disable"),
 		RedisAddr:        env.EnvString("REDIS_ADDR", "localhost:6379"),
 		RedisPassword:    env.EnvString("REDIS_PASSWORD", ""),
+		UserGRPCAddr:     env.EnvString("USER_GRPC_ADDR", "localhost:50051"),
 		NATSURL:          env.EnvString("NATS_URL", "nats://localhost:4222"),
 		NATSStream:       env.EnvString("NATS_STREAM", "NEXUSMART"),
 		NATSDLQStream:    env.EnvString("NATS_DLQ_STREAM", "NEXUSMART_DLQ"),

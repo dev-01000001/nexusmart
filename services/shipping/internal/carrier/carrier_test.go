@@ -208,7 +208,10 @@ func TestAggregatorParallelPartialAndFullFallback(t *testing.T) {
 		mockExp := NewResilientCarrier(NewMockExpressAdapter(), DefaultResilienceConfig(discardLogger()))
 		agg := NewAggregator(discardLogger(), ghn, mockExp)
 
-		quotes, usedFallback := agg.CalculateFeeAll(context.Background(), req)
+		quotes, usedFallback, err := agg.CalculateFeeAll(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		if usedFallback {
 			t.Fatalf("expected live/mock carrier quotes, not fallback")
 		}
@@ -233,7 +236,10 @@ func TestAggregatorParallelPartialAndFullFallback(t *testing.T) {
 		mockExp := NewMockExpressAdapter()
 		agg := NewAggregator(discardLogger(), failing, mockExp)
 
-		quotes, usedFallback := agg.CalculateFeeAll(context.Background(), req)
+		quotes, usedFallback, err := agg.CalculateFeeAll(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		if usedFallback {
 			t.Fatalf("expected healthy carrier quotes, not fallback")
 		}
@@ -264,12 +270,41 @@ func TestAggregatorParallelPartialAndFullFallback(t *testing.T) {
 		}
 		agg := NewAggregator(discardLogger(), fail1, fail2)
 
-		quotes, usedFallback := agg.CalculateFeeAll(context.Background(), req)
+		quotes, usedFallback, err := agg.CalculateFeeAll(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error when falling back on transient failures: %v", err)
+		}
 		if !usedFallback {
 			t.Fatalf("expected fallback flag true when all carriers fail")
 		}
 		if len(quotes) != 1 || !quotes[0].IsFallback || quotes[0].FeeVND <= 0 {
 			t.Fatalf("expected 1 valid fallback quote, got %+v", quotes)
+		}
+	})
+
+	t.Run("all carriers rejecting route as non-retryable returns ErrRouteOutOfServiceArea", func(t *testing.T) {
+		reject1 := &stubCarrier{
+			code: "ghn",
+			name: "GHN",
+			feeFn: func(_ context.Context, _ FeeRequest) ([]Quote, error) {
+				return nil, &NonRetryableError{Err: errors.New("route outside GHN coverage")}
+			},
+		}
+		reject2 := &stubCarrier{
+			code: "mock_express",
+			name: "Mock Express",
+			feeFn: func(_ context.Context, _ FeeRequest) ([]Quote, error) {
+				return nil, &NonRetryableError{Err: errors.New("route outside Mock Express coverage")}
+			},
+		}
+		agg := NewAggregator(discardLogger(), reject1, reject2)
+
+		quotes, usedFallback, err := agg.CalculateFeeAll(context.Background(), req)
+		if !errors.Is(err, ErrRouteOutOfServiceArea) {
+			t.Fatalf("expected ErrRouteOutOfServiceArea, got quotes=%+v fallback=%v err=%v", quotes, usedFallback, err)
+		}
+		if usedFallback || len(quotes) != 0 {
+			t.Fatalf("must not serve fallback quotes when all carriers reject route, got quotes=%+v fallback=%v", quotes, usedFallback)
 		}
 	})
 }

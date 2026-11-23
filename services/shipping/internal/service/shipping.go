@@ -16,18 +16,26 @@ import (
 	"github.com/nexusmart/core/services/shipping/internal/carrier"
 	"github.com/nexusmart/core/services/shipping/internal/events"
 	"github.com/nexusmart/core/services/shipping/internal/store"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var (
-	ErrInvalidArgument = errors.New("invalid argument")
-	ErrNotCancellable  = errors.New("shipment cannot be cancelled after pickup")
-	ErrUnknownCarrier  = errors.New("unknown carrier")
-	ErrUnknownStatus   = errors.New("unsupported carrier status")
+	ErrInvalidArgument  = errors.New("invalid argument")
+	ErrOutOfServiceArea = errors.New("address or route outside service area")
+	ErrNotCancellable   = errors.New("shipment cannot be cancelled after pickup")
+	ErrUnknownCarrier   = errors.New("unknown carrier")
+	ErrUnknownStatus    = errors.New("unsupported carrier status")
 )
 
 // OutboxNotifier wakes the outbox relay immediately after a webhook transaction commits.
 type OutboxNotifier interface {
 	Wake()
+}
+
+// ShopPickupResolver resolves a shop's pickup (province_code, ward_code) from UserService.
+type ShopPickupResolver interface {
+	GetShopPickupCodes(ctx context.Context, shopID string) (provinceCode string, wardCode string, err error)
 }
 
 // ShippingService orchestrates address lookup, carrier quoting, shipment lifecycle, and webhooks.
@@ -36,7 +44,13 @@ type ShippingService struct {
 	aggregator *carrier.Aggregator
 	quoteCache cache.QuoteCache
 	outboxWake OutboxNotifier
+	shopPickup ShopPickupResolver
 	logger     *slog.Logger
+}
+
+// SetShopPickupResolver configures the resolver used when CalculateFee receives shop_id without origin codes.
+func (s *ShippingService) SetShopPickupResolver(r ShopPickupResolver) {
+	s.shopPickup = r
 }
 
 // NewShippingService constructs a ShippingService.
@@ -77,42 +91,136 @@ func (s *ShippingService) MapLegacyAddress(ctx context.Context, legacyProv, lega
 	return s.repo.MapLegacyAddress(ctx, legacyProv, legacyDist, legacyWard)
 }
 
-// CalculateFee checks Redis quote cache, then fans out to enabled carriers in parallel with fallback.
+// CalculateFee validates input and service area, resolves shop pickup when origin is omitted,
+// checks Redis quote cache using real origin/destination codes, then fans out to enabled carriers.
 func (s *ShippingService) CalculateFee(ctx context.Context, req carrier.FeeRequest) ([]carrier.Quote, error) {
+	req.ShopID = strings.TrimSpace(req.ShopID)
+	req.FromProvinceCode = strings.TrimSpace(req.FromProvinceCode)
+	req.FromWardCode = strings.TrimSpace(req.FromWardCode)
+	req.ToProvinceCode = strings.TrimSpace(req.ToProvinceCode)
+	req.ToWardCode = strings.TrimSpace(req.ToWardCode)
+
 	if req.WeightGrams <= 0 {
-		req.WeightGrams = 500
+		return nil, fmt.Errorf("%w: weight_grams must be > 0", ErrInvalidArgument)
 	}
 	if req.CODAmountVND < 0 {
 		return nil, fmt.Errorf("%w: cod_amount_vnd must be >= 0", ErrInvalidArgument)
 	}
 
+	// Resolve origin from ward or shop pickup address when from_province_code is omitted (SHP-B1).
+	if req.FromProvinceCode == "" {
+		if req.FromWardCode != "" {
+			w, err := s.repo.GetWard(ctx, req.FromWardCode)
+			if err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					return nil, fmt.Errorf("%w: unsupported origin ward_code %q", ErrOutOfServiceArea, req.FromWardCode)
+				}
+				return nil, err
+			}
+			req.FromProvinceCode = w.ProvinceCode
+		} else if req.ShopID != "" {
+			if s.shopPickup == nil {
+				return nil, fmt.Errorf("shop pickup resolver not configured")
+			}
+			prov, ward, err := s.shopPickup.GetShopPickupCodes(ctx, req.ShopID)
+			if err != nil {
+				switch status.Code(err) {
+				case codes.NotFound:
+					return nil, fmt.Errorf("%w: shop %s not found", store.ErrNotFound, req.ShopID)
+				case codes.InvalidArgument:
+					return nil, fmt.Errorf("%w: %w", ErrInvalidArgument, err)
+				default:
+					return nil, fmt.Errorf("resolve shop pickup address: %w", err)
+				}
+			}
+			if strings.TrimSpace(prov) == "" {
+				return nil, fmt.Errorf("%w: shop %s has no pickup address configured", ErrInvalidArgument, req.ShopID)
+			}
+			req.FromProvinceCode = strings.TrimSpace(prov)
+			req.FromWardCode = strings.TrimSpace(ward)
+		} else {
+			return nil, fmt.Errorf("%w: from_province_code or shop_id is required", ErrInvalidArgument)
+		}
+	}
+
+	// Validate origin province & ward against 34-province catalog and enrich GHN codes (SHP-B7).
+	fromDistrictID, fromGHNWard, err := s.validateAndEnrichAddress(ctx, "origin", req.FromProvinceCode, req.FromWardCode)
+	if err != nil {
+		return nil, err
+	}
+	req.FromDistrictID = fromDistrictID
+	req.FromGHNWardCode = fromGHNWard
+
+	// Resolve destination province from ward when omitted, then validate against 34-province catalog.
+	if req.ToProvinceCode == "" && req.ToWardCode != "" {
+		w, wErr := s.repo.GetWard(ctx, req.ToWardCode)
+		if wErr != nil {
+			if errors.Is(wErr, store.ErrNotFound) {
+				return nil, fmt.Errorf("%w: unsupported destination ward_code %q", ErrOutOfServiceArea, req.ToWardCode)
+			}
+			return nil, wErr
+		}
+		req.ToProvinceCode = w.ProvinceCode
+	}
+	if req.ToProvinceCode == "" {
+		return nil, fmt.Errorf("%w: to_province_code is required", ErrInvalidArgument)
+	}
+	toDistrictID, toGHNWard, err := s.validateAndEnrichAddress(ctx, "destination", req.ToProvinceCode, req.ToWardCode)
+	if err != nil {
+		return nil, err
+	}
+	req.ToDistrictID = toDistrictID
+	req.ToGHNWardCode = toGHNWard
+
+	// Check cache ONLY after resolving and validating real origin/destination codes.
 	if s.quoteCache != nil {
 		if cached, ok := s.quoteCache.Get(ctx, req); ok {
 			return cached, nil
 		}
 	}
 
-	// Enrich GHN district/ward codes from local ward table when available.
-	if w, err := s.repo.GetWard(ctx, req.FromWardCode); err == nil && w != nil {
-		req.FromDistrictID = w.GHNDistrictID
-		req.FromGHNWardCode = w.GHNWardCode
-		if req.FromProvinceCode == "" {
-			req.FromProvinceCode = w.ProvinceCode
+	quotes, isFallback, err := s.aggregator.CalculateFeeAll(ctx, req)
+	if err != nil {
+		if errors.Is(err, carrier.ErrRouteOutOfServiceArea) {
+			return nil, fmt.Errorf("%w: %w", ErrOutOfServiceArea, err)
 		}
+		return nil, err
 	}
-	if w, err := s.repo.GetWard(ctx, req.ToWardCode); err == nil && w != nil {
-		req.ToDistrictID = w.GHNDistrictID
-		req.ToGHNWardCode = w.GHNWardCode
-		if req.ToProvinceCode == "" {
-			req.ToProvinceCode = w.ProvinceCode
-		}
-	}
-
-	quotes, isFallback := s.aggregator.CalculateFeeAll(ctx, req)
 	if !isFallback && s.quoteCache != nil {
 		s.quoteCache.Set(ctx, req, quotes)
 	}
 	return quotes, nil
+}
+
+func (s *ShippingService) validateAndEnrichAddress(ctx context.Context, role, provinceCode, wardCode string) (int, string, error) {
+	prov, err := s.repo.GetProvince(ctx, provinceCode)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return 0, "", fmt.Errorf("%w: unsupported %s province_code %q", ErrOutOfServiceArea, role, provinceCode)
+		}
+		return 0, "", err
+	}
+	if !isSupportedRegion(prov.Region) {
+		return 0, "", fmt.Errorf("%w: %s province %q is outside service area", ErrOutOfServiceArea, role, provinceCode)
+	}
+	if wardCode == "" {
+		return 0, "", nil
+	}
+	w, err := s.repo.GetWard(ctx, wardCode)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return 0, "", fmt.Errorf("%w: unsupported %s ward_code %q", ErrOutOfServiceArea, role, wardCode)
+		}
+		return 0, "", err
+	}
+	if w.ProvinceCode != provinceCode {
+		return 0, "", fmt.Errorf("%w: %s ward_code %q does not belong to province_code %q", ErrInvalidArgument, role, wardCode, provinceCode)
+	}
+	return w.GHNDistrictID, w.GHNWardCode, nil
+}
+
+func isSupportedRegion(region string) bool {
+	return region == address.RegionNorth || region == address.RegionCentral || region == address.RegionSouth
 }
 
 // CreateShipmentInput represents a shipment creation request.
@@ -283,7 +391,13 @@ func (s *ShippingService) HandleWebhook(ctx context.Context, in WebhookInput) (*
 	if strings.TrimSpace(in.EventID) == "" {
 		return nil, "", fmt.Errorf("%w: event_id is required", ErrInvalidArgument)
 	}
-	if strings.TrimSpace(in.TrackingCode) == "" && strings.TrimSpace(in.OrderID) == "" {
+	carrierCode := strings.ToLower(strings.TrimSpace(in.CarrierCode))
+	if carrierCode == "" {
+		return nil, "", fmt.Errorf("%w: carrier is required", ErrInvalidArgument)
+	}
+	trackingCode := strings.TrimSpace(in.TrackingCode)
+	orderID := strings.TrimSpace(in.OrderID)
+	if trackingCode == "" && orderID == "" {
 		return nil, "", fmt.Errorf("%w: tracking_code or order_id is required", ErrInvalidArgument)
 	}
 
@@ -291,6 +405,25 @@ func (s *ShippingService) HandleWebhook(ctx context.Context, in WebhookInput) (*
 	if !ok {
 		return nil, "", fmt.Errorf("%w: %s", ErrUnknownStatus, in.RawStatus)
 	}
+
+	// Verify the webhook path carrier matches the shipment's carrier_code before applying (SHP-B6).
+	var (
+		existing *store.Shipment
+		findErr  error
+	)
+	if trackingCode != "" {
+		existing, findErr = s.repo.GetShipmentByTrackingCode(ctx, trackingCode)
+	}
+	if (existing == nil || errors.Is(findErr, store.ErrNotFound)) && orderID != "" {
+		existing, findErr = s.repo.GetShipmentByOrderID(ctx, orderID)
+	}
+	if findErr != nil {
+		return nil, "", findErr
+	}
+	if !strings.EqualFold(carrierCode, existing.CarrierCode) {
+		return nil, "", fmt.Errorf("%w: webhook carrier %q does not match shipment carrier %q", store.ErrCarrierMismatch, carrierCode, existing.CarrierCode)
+	}
+
 	occurredAt := in.OccurredAt.UTC()
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
@@ -304,9 +437,9 @@ func (s *ShippingService) HandleWebhook(ctx context.Context, in WebhookInput) (*
 	outboxEventID := uuid.NewString()
 	params := store.WebhookUpdateParams{
 		EventID:        in.EventID,
-		CarrierCode:    strings.ToLower(strings.TrimSpace(in.CarrierCode)),
-		TrackingCode:   strings.TrimSpace(in.TrackingCode),
-		OrderID:        strings.TrimSpace(in.OrderID),
+		CarrierCode:    carrierCode,
+		TrackingCode:   trackingCode,
+		OrderID:        orderID,
 		InternalStatus: internalStatus,
 		RawStatus:      strings.TrimSpace(in.RawStatus),
 		Description:    strings.TrimSpace(in.Description),

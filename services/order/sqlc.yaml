@@ -30,6 +30,7 @@ sql:
           shipping_fee_vnd: "ShippingFeeVND"
           commission_vnd: "CommissionVND"
           total_payable_vnd: "TotalPayableVND"
+          refunded_vnd: "RefundedVND"
           unit_price_vnd: "UnitPriceVND"
           effective_unit_price_vnd: "EffectiveUnitPriceVND"
           line_total_vnd: "LineTotalVND"

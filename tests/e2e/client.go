@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -73,7 +74,32 @@ func (c *Client) DoJSON(
 	return c.DoAbsolute(ctx, method, c.cfg.GatewayURL+path, token, extraHeaders, reqBody)
 }
 
+const (
+	rateLimitDefaultRetryAfter = 5 * time.Second
+	rateLimitMaxWait           = 120 * time.Second
+)
+
+func parseRetryAfter(headerVal string) time.Duration {
+	v := strings.TrimSpace(headerVal)
+	if v == "" {
+		return rateLimitDefaultRetryAfter
+	}
+	if sec, err := strconv.Atoi(v); err == nil {
+		if sec > 0 {
+			return time.Duration(sec) * time.Second
+		}
+		return rateLimitDefaultRetryAfter
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return rateLimitDefaultRetryAfter
+}
+
 // DoAbsolute sends an HTTP request to any full URL and returns the raw response.
+// On HTTP 429 it waits per Retry-After (default 5s) and retries up to 120s total wait.
 func (c *Client) DoAbsolute(
 	ctx context.Context,
 	method string,
@@ -82,52 +108,80 @@ func (c *Client) DoAbsolute(
 	extraHeaders map[string]string,
 	reqBody any,
 ) (*RawResponse, error) {
-	var bodyReader io.Reader
-	if reqBody != nil {
+	var bodyBytes []byte
+	hasBody := reqBody != nil
+	if hasBody {
 		switch v := reqBody.(type) {
 		case []byte:
-			bodyReader = bytes.NewReader(v)
+			bodyBytes = v
 		case string:
-			bodyReader = strings.NewReader(v)
+			bodyBytes = []byte(v)
 		default:
 			encoded, err := json.Marshal(reqBody)
 			if err != nil {
 				return nil, fmt.Errorf("marshal request body: %w", err)
 			}
-			bodyReader = bytes.NewReader(encoded)
+			bodyBytes = encoded
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, fullURL, bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("create request %s %s: %w", method, fullURL, err)
-	}
-	if reqBody != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	for k, v := range extraHeaders {
-		req.Header.Set(k, v)
-	}
+	var totalWaited time.Duration
+	for {
+		var bodyReader io.Reader
+		if hasBody {
+			bodyReader = bytes.NewReader(bodyBytes)
+		}
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("execute %s %s: %w", method, fullURL, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+		req, err := http.NewRequestWithContext(ctx, method, fullURL, bodyReader)
+		if err != nil {
+			return nil, fmt.Errorf("create request %s %s: %w", method, fullURL, err)
+		}
+		if hasBody {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		for k, v := range extraHeaders {
+			req.Header.Set(k, v)
+		}
 
-	rawBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response %s %s: %w", method, fullURL, err)
-	}
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("execute %s %s: %w", method, fullURL, err)
+		}
 
-	return &RawResponse{
-		StatusCode: resp.StatusCode,
-		Headers:    resp.Header.Clone(),
-		Body:       rawBytes,
-	}, nil
+		rawBytes, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read response %s %s: %w", method, fullURL, readErr)
+		}
+
+		rawResp := &RawResponse{
+			StatusCode: resp.StatusCode,
+			Headers:    resp.Header.Clone(),
+			Body:       rawBytes,
+		}
+		if resp.StatusCode != http.StatusTooManyRequests {
+			return rawResp, nil
+		}
+
+		wait := parseRetryAfter(resp.Header.Get("Retry-After"))
+		if totalWaited+wait > rateLimitMaxWait {
+			return rawResp, nil
+		}
+		totalWaited += wait
+		log.Printf("[429] %s %s rate limited; waiting %s before retry (total %s/%s)",
+			method, req.URL.Path, wait.Round(time.Millisecond), totalWaited.Round(time.Millisecond), rateLimitMaxWait)
+
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, fmt.Errorf("wait retry-after %s %s: %w", method, req.URL.Path, ctx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 // DecodeJSON unmarshals a RawResponse body into dst with rich error context.

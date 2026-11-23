@@ -77,6 +77,7 @@ func Auth(mgr *auth.Manager, revoker JTIRevocationChecker, log *slog.Logger, req
 				}
 			}
 
+			setRequestLogUserID(r.Context(), claims.UserID())
 			ctx := auth.WithClaims(r.Context(), claims)
 			ctx = auth.WithRawToken(ctx, authHeader)
 			next.ServeHTTP(w, r.WithContext(ctx))

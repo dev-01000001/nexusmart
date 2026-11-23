@@ -447,17 +447,92 @@ func (m *MemoryStore) ReleaseReservation(_ context.Context, orderID string) (boo
 	defer m.mu.Unlock()
 
 	existing, ok := m.reservations[orderID]
-	if !ok || existing.Status == domain.ReservationStatusReleased {
+	if !ok {
 		return true, nil
 	}
 
-	if existing.CoinsUsed > 0 {
+	plan, err := planRemainingRelease(&existing, m.lookupFlashShopLocked)
+	if err != nil {
+		return false, err
+	}
+	if plan.alreadyReleased {
+		return true, nil
+	}
+
+	if plan.coinsToReturn > 0 {
 		releaseRef := "release:" + orderID
-		m.creditCoinsLocked(existing.UserID, existing.CoinsUsed, "order_release", releaseRef)
+		m.creditCoinsLocked(existing.UserID, plan.coinsToReturn, "order_release", releaseRef)
 	}
 
 	now := time.Now().UTC()
-	for _, rv := range existing.Vouchers {
+	m.restoreVouchersAndFlashLocked(plan.vouchersToRelease, plan.flashToRelease, now)
+
+	existing.Status = domain.ReservationStatusReleased
+	existing.ReleasedShops = plan.newReleasedShops
+	existing.ReleasedAt = &now
+	existing.UpdatedAt = now
+	m.reservations[orderID] = existing
+	return false, nil
+}
+
+func (m *MemoryStore) ReleaseReservationShop(_ context.Context, orderID, shopID string) (*ShopReleaseResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	existing, ok := m.reservations[orderID]
+	if !ok {
+		return &ShopReleaseResult{AlreadyReleased: true}, nil
+	}
+
+	plan, err := planShopRelease(&existing, shopID, m.lookupFlashShopLocked)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &ShopReleaseResult{
+		AlreadyReleased:         plan.alreadyReleased,
+		AllReleased:             plan.allReleased,
+		UserID:                  existing.UserID,
+		CoinsReturned:           plan.coinsToReturn,
+		ShopVoucherReleased:     plan.shopVoucherReleased,
+		FlashQuantityReleased:   plan.flashQuantityReleased,
+		PlatformVoucherReleased: plan.platformVoucherReleased,
+		TargetVouchers:          append([]domain.ReservedVoucher(nil), plan.targetVouchersForRedis...),
+		TargetFlash:             append([]domain.ReservedFlashItem(nil), plan.targetFlashForRedis...),
+		AllVouchers:             append([]domain.ReservedVoucher(nil), existing.Vouchers...),
+		AllFlash:                append([]domain.ReservedFlashItem(nil), existing.FlashSaleItems...),
+	}
+	if plan.alreadyReleased {
+		return result, nil
+	}
+
+	if plan.coinsToReturn > 0 {
+		releaseRef := "release:" + orderID + ":shop:" + shopID
+		m.creditCoinsLocked(existing.UserID, plan.coinsToReturn, "order_release", releaseRef)
+	}
+
+	now := time.Now().UTC()
+	m.restoreVouchersAndFlashLocked(plan.vouchersToRelease, plan.flashToRelease, now)
+
+	existing.ReleasedShops = plan.newReleasedShops
+	existing.UpdatedAt = now
+	if plan.allReleased {
+		existing.Status = domain.ReservationStatusReleased
+		existing.ReleasedAt = &now
+	}
+	m.reservations[orderID] = existing
+	return result, nil
+}
+
+func (m *MemoryStore) lookupFlashShopLocked(itemID string) (string, error) {
+	if fi, ok := m.flashItems[itemID]; ok {
+		return fi.ShopID, nil
+	}
+	return "", nil
+}
+
+func (m *MemoryStore) restoreVouchersAndFlashLocked(vouchers []domain.ReservedVoucher, flashItems []domain.ReservedFlashItem, now time.Time) {
+	for _, rv := range vouchers {
 		if v, exists := m.vouchers[rv.VoucherID]; exists {
 			v.UsedCount--
 			if v.UsedCount < 0 {
@@ -471,7 +546,7 @@ func (m *MemoryStore) ReleaseReservation(_ context.Context, orderID string) (boo
 			m.vouchers[rv.VoucherID] = v
 		}
 	}
-	for _, rf := range existing.FlashSaleItems {
+	for _, rf := range flashItems {
 		if fi, exists := m.flashItems[rf.FlashSaleItemID]; exists {
 			fi.RemainingSlots += rf.Quantity
 			if fi.RemainingSlots > fi.TotalSlots {
@@ -481,12 +556,6 @@ func (m *MemoryStore) ReleaseReservation(_ context.Context, orderID string) (boo
 			m.flashItems[rf.FlashSaleItemID] = fi
 		}
 	}
-
-	existing.Status = domain.ReservationStatusReleased
-	existing.ReleasedAt = &now
-	existing.UpdatedAt = now
-	m.reservations[orderID] = existing
-	return false, nil
 }
 
 // AccountBalance returns the stored coin_accounts balance for invariant verification in tests.
@@ -514,6 +583,7 @@ func cloneReservation(r domain.PromotionReservation) domain.PromotionReservation
 	cp.Vouchers = append([]domain.ReservedVoucher(nil), r.Vouchers...)
 	cp.FlashSaleItems = append([]domain.ReservedFlashItem(nil), r.FlashSaleItems...)
 	cp.BreakdownJSON = append([]byte(nil), r.BreakdownJSON...)
+	cp.ReleasedShops = append([]string(nil), r.ReleasedShops...)
 	if r.ReleasedAt != nil {
 		t := *r.ReleasedAt
 		cp.ReleasedAt = &t

@@ -98,7 +98,6 @@ export default async function ProductDetailPage({ params, searchParams }: Produc
         platformVouchers={data.platformVouchers}
         sameShopProducts={data.sameShopProducts}
         similarProducts={data.similarProducts}
-        bundleProducts={data.bundleProducts}
         allProducts={data.allProducts}
         liveFlashBySkuId={data.liveFlashBySkuId}
         provinces={data.provinces}

@@ -248,6 +248,7 @@ services:
       HTTP_PORT: "8087"
       DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/shipping_db?sslmode=disable
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      USER_GRPC_ADDR: user:50051
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
       SHIPPING_WEBHOOK_SECRET: ${SHIPPING_WEBHOOK_SECRET:-dev-only-shipping-webhook-hmac-secret}
@@ -270,6 +271,8 @@ services:
       redis:
         condition: service_healthy
       nats:
+        condition: service_healthy
+      user:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -381,6 +384,7 @@ services:
       RATE_LIMIT_IP_PER_MIN: ${RATE_LIMIT_IP_PER_MIN:-300}
       RATE_LIMIT_USER_PER_MIN: ${RATE_LIMIT_USER_PER_MIN:-180}
       RATE_LIMIT_FLASH_SALE_PER_MIN: ${RATE_LIMIT_FLASH_SALE_PER_MIN:-60}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-web}
       USER_GRPC_ADDR: user:50051
       PRODUCT_GRPC_ADDR: product:50052
       CART_GRPC_ADDR: cart:50053

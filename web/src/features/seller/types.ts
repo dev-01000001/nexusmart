@@ -71,6 +71,108 @@ export const CARRIER_OPTIONS: Array<{
   },
 ];
 
+/**
+ * Allowed seller product status transitions matching ProductService.resolveUpdatedProductStatus.
+ * PENDING products cannot be hidden directly by seller (only APPROVED/OUT_OF_STOCK can be hidden).
+ */
+export function getAllowedSellerStatuses(
+  currentStatus: string
+): Array<{ value: string; label: string }> {
+  switch (currentStatus) {
+    case "APPROVED":
+      return [
+        { value: "APPROVED", label: "Đang bán" },
+        { value: "HIDDEN", label: "Tạm ẩn khỏi sàn" },
+      ];
+    case "OUT_OF_STOCK":
+      return [
+        { value: "OUT_OF_STOCK", label: "Hết hàng" },
+        { value: "HIDDEN", label: "Tạm ẩn khỏi sàn" },
+      ];
+    case "HIDDEN":
+      return [
+        { value: "HIDDEN", label: "Đang ẩn" },
+        { value: "APPROVED", label: "Mở bán lại" },
+      ];
+    case "PENDING":
+      return [{ value: "PENDING", label: "Chờ duyệt" }];
+    case "REJECTED":
+      return [
+        { value: "REJECTED", label: "Bị từ chối" },
+        { value: "PENDING", label: "Gửi duyệt lại" },
+      ];
+    default:
+      return [{ value: currentStatus, label: getProductStatusMeta(currentStatus).label }];
+  }
+}
+
+export function resolveOrderShippingDefaults(
+  order?: Pick<GatewayOrder, "carrier_code" | "service_code"> | null
+): { carrierCode: string; serviceCode: string } {
+  const rawCarrier = (order?.carrier_code ?? "").trim();
+  const rawService = (order?.service_code ?? "").trim();
+
+  if (!rawCarrier) {
+    return {
+      carrierCode: CARRIER_OPTIONS[0].carrierCode,
+      serviceCode: rawService || CARRIER_OPTIONS[0].services[0].serviceCode,
+    };
+  }
+
+  const matchedCarrier = CARRIER_OPTIONS.find(
+    (c) => c.carrierCode.toLowerCase() === rawCarrier.toLowerCase()
+  );
+  if (!matchedCarrier) {
+    return {
+      carrierCode: rawCarrier,
+      serviceCode: rawService || "STANDARD",
+    };
+  }
+
+  const matchedService = rawService
+    ? matchedCarrier.services.find((s) => s.serviceCode.toLowerCase() === rawService.toLowerCase())
+    : undefined;
+
+  return {
+    carrierCode: matchedCarrier.carrierCode,
+    serviceCode:
+      matchedService?.serviceCode || rawService || matchedCarrier.services[0].serviceCode,
+  };
+}
+
+export function buildCarrierSelectOptions(
+  order?: Pick<GatewayOrder, "carrier_code" | "service_code"> | null
+): typeof CARRIER_OPTIONS {
+  const defaults = resolveOrderShippingDefaults(order);
+  const hasCarrier = CARRIER_OPTIONS.some((c) => c.carrierCode === defaults.carrierCode);
+  if (!hasCarrier) {
+    return [
+      ...CARRIER_OPTIONS,
+      {
+        carrierCode: defaults.carrierCode,
+        carrierLabel: defaults.carrierCode,
+        services: [{ serviceCode: defaults.serviceCode, serviceLabel: defaults.serviceCode }],
+      },
+    ];
+  }
+  return CARRIER_OPTIONS.map((c) => {
+    if (
+      c.carrierCode === defaults.carrierCode &&
+      Boolean(defaults.serviceCode) &&
+      !c.services.some((s) => s.serviceCode === defaults.serviceCode)
+    ) {
+      return {
+        ...c,
+        services: [
+          ...c.services,
+          { serviceCode: defaults.serviceCode, serviceLabel: defaults.serviceCode },
+        ],
+      };
+    }
+    return c;
+  });
+}
+
 export function getShopStatusMeta(status: string): StatusMeta {
   return SELLER_SHOP_STATUS_META[status] ?? { label: status || "Chưa rõ", tone: "neutral" };
 }

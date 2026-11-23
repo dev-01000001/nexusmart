@@ -154,8 +154,8 @@ export function PaymentWaitingClient({
                 sang trạng thái Đã xác nhận mà không cần tải lại thủ công.
               </p>
               <p className={styles.stepItem}>
-                Nếu mã hết hạn trước khi bạn kịp chuyển khoản, bạn có thể bấm tạo lại mã VietQR mới
-                hoặc quay lại giỏ hàng để đặt lại.
+                Nếu mã VietQR hết hạn trước khi bạn kịp chuyển khoản, đơn hàng sẽ tự động hủy và
+                hoàn lại tồn kho; bạn hãy quay lại giỏ hàng hoặc trang sản phẩm để đặt lại đơn mới.
               </p>
             </div>
           </div>

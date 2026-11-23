@@ -19,11 +19,13 @@ import {
   CARRIER_OPTIONS,
   PAYMENT_METHOD_TEXT,
   SHIPMENT_STATUS_LABELS,
+  buildCarrierSelectOptions,
   canSellerCancelOrder,
   canSellerConfirmOrder,
   canSellerShipOrder,
   computeOrderNetVnd,
   getOrderStatusMeta,
+  resolveOrderShippingDefaults,
 } from "@/features/seller/types";
 import { EMPTY_DASH, parseUiState } from "@/features/seller/sellerStore";
 import common from "@/features/seller/SellerCommon.module.css";
@@ -77,6 +79,9 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
         return;
       }
       setOrder(orderRes.order);
+      const shippingDefaults = resolveOrderShippingDefaults(orderRes.order);
+      setCarrierCode(shippingDefaults.carrierCode);
+      setServiceCode(shippingDefaults.serviceCode);
 
       const [timelineRes, shipmentRes] = await Promise.all([
         api<{ events: GatewayOrderTimelineEvent[] }>(`orders/${orderId}/timeline`).catch(() => ({
@@ -104,14 +109,16 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
     }
   }, [uiState, loadOrderDetail]);
 
+  const carrierOptions = useMemo(() => buildCarrierSelectOptions(order), [order]);
+
   const activeCarrier = useMemo(
-    () => CARRIER_OPTIONS.find((c) => c.carrierCode === carrierCode) ?? CARRIER_OPTIONS[0],
-    [carrierCode]
+    () => carrierOptions.find((c) => c.carrierCode === carrierCode) ?? carrierOptions[0],
+    [carrierOptions, carrierCode]
   );
 
   const handleCarrierChange = (nextCarrier: string) => {
     setCarrierCode(nextCarrier);
-    const opt = CARRIER_OPTIONS.find((c) => c.carrierCode === nextCarrier);
+    const opt = carrierOptions.find((c) => c.carrierCode === nextCarrier);
     if (opt && opt.services[0]) {
       setServiceCode(opt.services[0].serviceCode);
     }
@@ -331,7 +338,15 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
               className={`${styles.actionBtn36} ${canConfirm ? styles.actionOutline : styles.actionInk}`}
               disabled={actionBusy}
               onClick={() => {
-                setShowShipPanel((prev) => !prev);
+                setShowShipPanel((prev) => {
+                  const next = !prev;
+                  if (next) {
+                    const defaults = resolveOrderShippingDefaults(order);
+                    setCarrierCode(defaults.carrierCode);
+                    setServiceCode(defaults.serviceCode);
+                  }
+                  return next;
+                });
                 setShowCancelPanel(false);
               }}
             >
@@ -368,7 +383,7 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
                   value={carrierCode}
                   onChange={(e) => handleCarrierChange(e.target.value)}
                 >
-                  {CARRIER_OPTIONS.map((c) => (
+                  {carrierOptions.map((c) => (
                     <option key={c.carrierCode} value={c.carrierCode}>
                       {c.carrierLabel}
                     </option>

@@ -781,3 +781,61 @@ table.dataTable tbody tr:last-child td {
   color: var(--ink-secondary);
   line-height: 1.45;
 }
+
+/* Confirmation dialog (flat Frost & Slate surface, role="dialog") */
+.confirmBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(31, 48, 56, 0.48);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.confirmDialog {
+  width: 100%;
+  max-width: 520px;
+  max-height: 90dvh;
+  overflow-y: auto;
+  background: var(--card);
+  outline: 1px solid var(--border);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.confirmTitle {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.015em;
+  color: var(--ink-strong);
+}
+
+.confirmBody {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+}
+
+.confirmList {
+  list-style: none;
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: var(--step-small);
+  color: var(--ink);
+}
+
+.confirmListItem {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}

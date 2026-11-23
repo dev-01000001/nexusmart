@@ -40,6 +40,13 @@ type AuditLog struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+type CodRejection struct {
+	OrderID   string    `json:"order_id"`
+	UserID    string    `json:"user_id"`
+	Reason    string    `json:"reason"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type RefreshToken struct {
 	ID           string     `json:"id"`
 	UserID       string     `json:"user_id"`

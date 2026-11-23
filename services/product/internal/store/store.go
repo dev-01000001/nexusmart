@@ -12,6 +12,7 @@ var (
 	ErrVersionConflict      = errors.New("version conflict")
 	ErrInsufficientStock    = errors.New("insufficient stock")
 	ErrInvalidStock         = errors.New("new stock cannot be less than reserved stock")
+	ErrSKUInactive          = errors.New("sku is inactive")
 	ErrDuplicateReservation = errors.New("duplicate stock reservation")
 )
 
@@ -48,6 +49,7 @@ type Product struct {
 	CategoryID      string
 	Name            string
 	Slug            string
+	SearchText      string
 	Description     string
 	Images          []string
 	Status          string
@@ -158,10 +160,12 @@ type Queries interface {
 	ListProducts(ctx context.Context, filter ListProductsFilter) ([]Product, int64, error)
 
 	CreateSKU(ctx context.Context, s SKU) (SKU, error)
-	UpdateSKUDetails(ctx context.Context, s SKU) (SKU, error)
+	UpdateSKUMetadata(ctx context.Context, s SKU) (SKU, error)
+	ReactivateSKUOptimistic(ctx context.Context, s SKU, expectedVersion int64) (SKU, error)
 	DeactivateSKUsByProduct(ctx context.Context, productID string) error
 	DeactivateSKU(ctx context.Context, skuID string) error
 	ListSKUsByProductIDs(ctx context.Context, productIDs []string) ([]SKU, error)
+	ListAllSKUsByProductID(ctx context.Context, productID string) ([]SKU, error)
 	GetSKUsBatch(ctx context.Context, skuIDs []string) ([]SKU, error)
 	GetSKUWithContext(ctx context.Context, skuID string) (SKU, error)
 	GetSKUWithContextForUpdate(ctx context.Context, skuID string) (SKU, error)

@@ -26,6 +26,7 @@ type UserClient interface {
 	ValidateUser(ctx context.Context, req *userv1.ValidateUserRequest, opts ...grpc.CallOption) (*userv1.ValidateUserResponse, error)
 	GetAddress(ctx context.Context, req *userv1.GetAddressRequest, opts ...grpc.CallOption) (*userv1.GetAddressResponse, error)
 	GetShop(ctx context.Context, req *userv1.GetShopRequest, opts ...grpc.CallOption) (*userv1.GetShopResponse, error)
+	RecordCODRejection(ctx context.Context, req *userv1.RecordCODRejectionRequest, opts ...grpc.CallOption) (*userv1.RecordCODRejectionResponse, error)
 }
 
 // ProductClient defines the subset of ProductService RPCs required by OrderService.
@@ -49,6 +50,7 @@ type PromotionClient interface {
 	PreviewDiscounts(ctx context.Context, req *promotionv1.PreviewDiscountsRequest, opts ...grpc.CallOption) (*promotionv1.PreviewDiscountsResponse, error)
 	ReservePromotion(ctx context.Context, req *promotionv1.ReservePromotionRequest, opts ...grpc.CallOption) (*promotionv1.ReservePromotionResponse, error)
 	ReleasePromotion(ctx context.Context, req *promotionv1.ReleasePromotionRequest, opts ...grpc.CallOption) (*promotionv1.ReleasePromotionResponse, error)
+	ReleasePromotionShop(ctx context.Context, req *promotionv1.ReleasePromotionShopRequest, opts ...grpc.CallOption) (*promotionv1.ReleasePromotionShopResponse, error)
 }
 
 // PaymentClient defines the subset of PaymentService RPCs required by OrderService.

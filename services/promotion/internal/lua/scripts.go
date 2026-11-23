@@ -22,8 +22,12 @@ var (
 	//go:embed release_atomic.lua
 	releaseAtomicLua string
 
-	reserveScript = redis.NewScript(reserveAtomicLua)
-	releaseScript = redis.NewScript(releaseAtomicLua)
+	//go:embed release_partial_atomic.lua
+	releasePartialAtomicLua string
+
+	reserveScript        = redis.NewScript(reserveAtomicLua)
+	releaseScript        = redis.NewScript(releaseAtomicLua)
+	releasePartialScript = redis.NewScript(releasePartialAtomicLua)
 )
 
 // ReservationErrorCode categorizes failures returned by reserve_atomic.lua.
@@ -294,6 +298,43 @@ func (e *Engine) Release(ctx context.Context, orderID string, extraKeys ...strin
 		return ReleaseOutcome{Released: true, AlreadyReleased: true}, nil
 	default:
 		return ReleaseOutcome{}, fmt.Errorf("unknown release_atomic.lua status: %q", parts[0])
+	}
+}
+
+// ReleasePartial idempotently releases only the specified remaining-counter keys from promo:res:<order_id>,
+// leaving unreleased flash items and vouchers intact for subsequent partial or full releases.
+func (e *Engine) ReleasePartial(ctx context.Context, orderID string, targetRemKeys []string, extraKeys ...string) (ReleaseOutcome, error) {
+	if len(targetRemKeys) == 0 {
+		return ReleaseOutcome{Released: true, AlreadyReleased: true}, nil
+	}
+
+	keys := make([]string, 0, 1+len(extraKeys))
+	keys = append(keys, ReservationKey(orderID))
+	keys = append(keys, extraKeys...)
+
+	args := make([]any, 0, 1+len(targetRemKeys))
+	args = append(args, DefaultReservationTTLSeconds)
+	for _, k := range targetRemKeys {
+		args = append(args, k)
+	}
+
+	raw, err := releasePartialScript.Run(ctx, e.rdb, keys, args...).Result()
+	if err != nil {
+		return ReleaseOutcome{}, fmt.Errorf("run release_partial_atomic.lua: %w", err)
+	}
+
+	parts, err := toStringSlice(raw)
+	if err != nil || len(parts) == 0 {
+		return ReleaseOutcome{}, fmt.Errorf("unexpected release_partial_atomic.lua reply: %v", raw)
+	}
+
+	switch parts[0] {
+	case "RELEASED":
+		return ReleaseOutcome{Released: true, AlreadyReleased: false}, nil
+	case "ALREADY_RELEASED":
+		return ReleaseOutcome{Released: true, AlreadyReleased: true}, nil
+	default:
+		return ReleaseOutcome{}, fmt.Errorf("unknown release_partial_atomic.lua status: %q", parts[0])
 	}
 }
 

@@ -57,3 +57,7 @@ func (s *Server) GetOrderTimeline(ctx context.Context, req *orderv1.GetOrderTime
 func (s *Server) MarkPaymentResult(ctx context.Context, req *orderv1.MarkPaymentResultRequest) (*orderv1.MarkPaymentResultResponse, error) {
 	return s.svc.MarkPaymentResult(ctx, req)
 }
+
+func (s *Server) RetryPayment(ctx context.Context, req *orderv1.RetryPaymentRequest) (*orderv1.RetryPaymentResponse, error) {
+	return s.svc.RetryPayment(ctx, req)
+}

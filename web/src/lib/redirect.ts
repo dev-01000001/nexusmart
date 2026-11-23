@@ -45,3 +45,52 @@ export function sanitizeNextPath(raw: string | null | undefined, fallback = "/")
     return fallback;
   }
 }
+
+export function getDefaultPathForRole(role: string | null | undefined): string {
+  switch ((role ?? "").trim().toLowerCase()) {
+    case "admin":
+    case "super_admin":
+      return "/admin";
+    case "seller":
+      return "/seller";
+    default:
+      return "/";
+  }
+}
+
+/**
+ * Resolves the safe post-login redirect path based on backend-verified role and optional `?next=`.
+ * Without an explicit eligible `?next=`, routes seller -> `/seller`, admin/super_admin -> `/admin`,
+ * and buyer -> `/`.
+ */
+export function resolvePostLoginRedirect(
+  role: string | null | undefined,
+  rawNext: string | null | undefined
+): string {
+  const normalizedRole = (role ?? "").trim().toLowerCase();
+  const roleHome = getDefaultPathForRole(normalizedRole);
+  const explicitNext = sanitizeNextPath(rawNext, "");
+
+  if (
+    !explicitNext ||
+    explicitNext === "/" ||
+    explicitNext === "/dang-nhap" ||
+    explicitNext.startsWith("/dang-nhap?") ||
+    explicitNext === "/dang-ky" ||
+    explicitNext.startsWith("/dang-ky?")
+  ) {
+    return roleHome;
+  }
+
+  const isAdminPath = explicitNext === "/admin" || explicitNext.startsWith("/admin/");
+  const isSellerPath = explicitNext === "/seller" || explicitNext.startsWith("/seller/");
+
+  if (normalizedRole === "buyer" && (isAdminPath || isSellerPath)) {
+    return roleHome;
+  }
+  if (normalizedRole === "seller" && isAdminPath) {
+    return roleHome;
+  }
+
+  return explicitNext;
+}

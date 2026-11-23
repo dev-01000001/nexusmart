@@ -98,6 +98,7 @@ type ReservedFlashItem struct {
 	FlashSaleItemID string `json:"flash_sale_item_id"`
 	SKUID           string `json:"sku_id"`
 	Quantity        int32  `json:"quantity"`
+	ShopID          string `json:"shop_id,omitempty"`
 }
 
 // PromotionReservation records an order's promotion reservation in PostgreSQL.
@@ -109,6 +110,7 @@ type PromotionReservation struct {
 	Vouchers       []ReservedVoucher
 	FlashSaleItems []ReservedFlashItem
 	BreakdownJSON  []byte
+	ReleasedShops  []string
 	CreatedAt      time.Time
 	ReleasedAt     *time.Time
 	UpdatedAt      time.Time
