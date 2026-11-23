@@ -5,18 +5,46 @@ import (
 	"errors"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
+
+	"github.com/nexusmart/core/services/shipping/internal/address"
 )
 
 const (
 	CodeFallback = "fallback"
 	NameFallback = "NexusMart Standard Fallback"
+
+	RegionSameProvince = "SAME_PROVINCE"
+	RegionSameRegion   = "SAME_REGION"
+	RegionCrossRegion  = "CROSS_REGION"
 )
 
-// ErrRouteOutOfServiceArea is returned when every enabled carrier explicitly rejects a route as unserviceable.
-var ErrRouteOutOfServiceArea = errors.New("route outside carrier service area")
+var (
+	// ErrRouteOutOfServiceArea is returned when every enabled carrier explicitly rejects a route as unserviceable.
+	ErrRouteOutOfServiceArea = errors.New("route outside carrier service area")
+	// ErrNoEnabledCarriers is returned when no carrier is enabled for quoting.
+	ErrNoEnabledCarriers = errors.New("no shipping carriers enabled")
+)
 
-// Aggregator queries enabled carriers in parallel and falls back to the static fee table
+// FallbackRate defines one region row in the DB-backed fallback fee table (UC-A12).
+type FallbackRate struct {
+	Region             string
+	BaseFeeVND         int64
+	BaseWeightGrams    int32
+	ExtraFeeVNDPer500g int64
+}
+
+// DefaultFallbackRates returns the platform default fallback rates matching the original hardcoded VND table.
+func DefaultFallbackRates() []FallbackRate {
+	return []FallbackRate{
+		{Region: RegionSameProvince, BaseFeeVND: 25000, BaseWeightGrams: 1000, ExtraFeeVNDPer500g: 6000},
+		{Region: RegionSameRegion, BaseFeeVND: 35000, BaseWeightGrams: 1000, ExtraFeeVNDPer500g: 6000},
+		{Region: RegionCrossRegion, BaseFeeVND: 45000, BaseWeightGrams: 1000, ExtraFeeVNDPer500g: 6000},
+	}
+}
+
+// Aggregator queries enabled carriers in parallel and falls back to the DB/static fee table
 // when all enabled carriers fail or have tripped circuit breakers (UC-SHIP02).
 type Aggregator struct {
 	carriers map[string]Carrier
@@ -48,24 +76,53 @@ func NewAggregator(logger *slog.Logger, carriers ...Carrier) *Aggregator {
 
 // Get returns a registered carrier by code.
 func (a *Aggregator) Get(code string) (Carrier, bool) {
-	c, ok := a.carriers[code]
+	c, ok := a.carriers[strings.ToLower(strings.TrimSpace(code))]
 	return c, ok
 }
 
-// DefaultCarrier returns the first registered carrier (GHN when enabled).
-func (a *Aggregator) DefaultCarrier() (Carrier, bool) {
-	if len(a.order) == 0 {
-		return nil, false
-	}
-	return a.carriers[a.order[0]], true
+// ListCodes returns registered carrier codes in registration order.
+func (a *Aggregator) ListCodes() []string {
+	out := make([]string, len(a.order))
+	copy(out, a.order)
+	return out
 }
 
-// CalculateFeeAll fans out CalculateFee to all enabled carriers concurrently via goroutines.
-// Partial carrier failures are omitted; if all carriers fail transiently, FallbackQuotes is returned.
-// If every enabled carrier explicitly rejects the route with a NonRetryableError, ErrRouteOutOfServiceArea is returned.
+// CalculateFeeAll fans out CalculateFee to all registered carriers concurrently via goroutines.
 func (a *Aggregator) CalculateFeeAll(ctx context.Context, req FeeRequest) ([]Quote, bool, error) {
-	if len(a.order) == 0 {
-		return FallbackQuotes(req), true, nil
+	return a.CalculateFeeForCarriers(ctx, req, nil, nil)
+}
+
+// CalculateFeeForCarriers fans out CalculateFee only to the specified allowedCodes (nil = all registered).
+// If allowedCodes is explicitly non-nil and empty, ErrNoEnabledCarriers is returned.
+// Partial carrier failures are omitted; if all queried carriers fail transiently, FallbackQuotesWithRates is returned.
+// If every queried carrier explicitly rejects the route with a NonRetryableError, ErrRouteOutOfServiceArea is returned.
+func (a *Aggregator) CalculateFeeForCarriers(
+	ctx context.Context,
+	req FeeRequest,
+	allowedCodes []string,
+	fallbackRates []FallbackRate,
+) ([]Quote, bool, error) {
+	var targets []Carrier
+	if allowedCodes == nil {
+		for _, code := range a.order {
+			targets = append(targets, a.carriers[code])
+		}
+		if len(targets) == 0 {
+			return FallbackQuotesWithRates(req, fallbackRates), true, nil
+		}
+	} else {
+		allowSet := make(map[string]struct{}, len(allowedCodes))
+		for _, code := range allowedCodes {
+			allowSet[strings.ToLower(strings.TrimSpace(code))] = struct{}{}
+		}
+		for _, code := range a.order {
+			if _, ok := allowSet[code]; ok {
+				targets = append(targets, a.carriers[code])
+			}
+		}
+		if len(targets) == 0 {
+			return nil, false, ErrNoEnabledCarriers
+		}
 	}
 
 	var (
@@ -75,8 +132,7 @@ func (a *Aggregator) CalculateFeeAll(ctx context.Context, req FeeRequest) ([]Quo
 		nonRetryableFailures int
 	)
 
-	for _, code := range a.order {
-		c := a.carriers[code]
+	for _, c := range targets {
 		wg.Add(1)
 		go func(provider Carrier) {
 			defer wg.Done()
@@ -86,7 +142,7 @@ func (a *Aggregator) CalculateFeeAll(ctx context.Context, req FeeRequest) ([]Quo
 					slog.String("carrier", provider.Code()),
 					slog.String("error", err.Error()),
 				)
-				if IsNonRetryable(err) {
+				if IsNonRetryable(err) && !errors.Is(err, ErrInvalidCarrierToken) {
 					mu.Lock()
 					nonRetryableFailures++
 					mu.Unlock()
@@ -104,11 +160,11 @@ func (a *Aggregator) CalculateFeeAll(ctx context.Context, req FeeRequest) ([]Quo
 	wg.Wait()
 
 	if len(quotes) == 0 {
-		if nonRetryableFailures == len(a.order) {
+		if nonRetryableFailures == len(targets) {
 			return nil, false, ErrRouteOutOfServiceArea
 		}
 		a.logger.WarnContext(ctx, "all shipping carriers failed; serving fallback fee table")
-		return FallbackQuotes(req), true, nil
+		return FallbackQuotesWithRates(req, fallbackRates), true, nil
 	}
 
 	sort.Slice(quotes, func(i, j int) bool {
@@ -123,19 +179,50 @@ func (a *Aggregator) CalculateFeeAll(ctx context.Context, req FeeRequest) ([]Quo
 	return quotes, false, nil
 }
 
-// FallbackQuotes returns deterministic integer-VND quotes from the platform fallback fee table (UC-SHIP02).
-func FallbackQuotes(req FeeRequest) []Quote {
-	baseFee, days := routeZoneFee(req.FromProvinceCode, req.ToProvinceCode, 25000, 35000, 45000)
-	weightSurcharge := weightFeeVND(req.WeightGrams, 1000, 500, 6000)
+// FallbackQuotesWithRates calculates integer-VND fallback quotes using DB-configured rates (defaulting to DefaultFallbackRates).
+func FallbackQuotesWithRates(req FeeRequest, rates []FallbackRate) []Quote {
+	region, days := routeRegionAndDays(req.FromProvinceCode, req.ToProvinceCode)
+
+	chosen := defaultRateForRegion(region)
+	for _, r := range rates {
+		if strings.EqualFold(strings.TrimSpace(r.Region), region) {
+			chosen = r
+			break
+		}
+	}
+	baseWeight := chosen.BaseWeightGrams
+	if baseWeight <= 0 {
+		baseWeight = 1000
+	}
+	weightSurcharge := weightFeeVND(req.WeightGrams, baseWeight, 500, chosen.ExtraFeeVNDPer500g)
 	return []Quote{
 		{
 			CarrierCode:   CodeFallback,
 			CarrierName:   NameFallback,
 			ServiceCode:   "FALLBACK_STD",
 			ServiceName:   "Vận chuyển tiêu chuẩn (Bảng phí dự phòng)",
-			FeeVND:        baseFee + weightSurcharge,
+			FeeVND:        chosen.BaseFeeVND + weightSurcharge,
 			EstimatedDays: days + 1,
 			IsFallback:    true,
 		},
 	}
+}
+
+func routeRegionAndDays(fromProv, toProv string) (string, int32) {
+	if fromProv != "" && fromProv == toProv {
+		return RegionSameProvince, 2
+	}
+	if address.RegionOfProvince(fromProv) == address.RegionOfProvince(toProv) {
+		return RegionSameRegion, 3
+	}
+	return RegionCrossRegion, 4
+}
+
+func defaultRateForRegion(region string) FallbackRate {
+	for _, r := range DefaultFallbackRates() {
+		if r.Region == region {
+			return r
+		}
+	}
+	return FallbackRate{Region: RegionCrossRegion, BaseFeeVND: 45000, BaseWeightGrams: 1000, ExtraFeeVNDPer500g: 6000}
 }

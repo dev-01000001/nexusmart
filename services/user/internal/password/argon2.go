@@ -70,6 +70,16 @@ func (h *Hasher) Hash(plain string) (string, error) {
 		argon2.Version, h.memory, h.iterations, h.parallelism, b64Salt, b64Hash), nil
 }
 
+var dummySalt = []byte("nexusmart-dmyslt")
+
+// VerifyDummy runs a full Argon2id derivation with the hasher's parameters
+// to equalize login latency when an email does not exist.
+func (h *Hasher) VerifyDummy(plain string) {
+	computed := argon2.IDKey([]byte(plain), dummySalt, h.iterations, h.memory, h.parallelism, h.keyLength)
+	expected := make([]byte, len(computed))
+	_ = subtle.ConstantTimeCompare(expected, computed)
+}
+
 // Verify checks whether plain matches the PHC-formatted Argon2id hash in constant time.
 func (h *Hasher) Verify(plain, encodedHash string) (bool, error) {
 	parts := strings.Split(encodedHash, "$")

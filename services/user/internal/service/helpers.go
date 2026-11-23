@@ -292,6 +292,7 @@ func toProtoUser(u db.User) *userv1.User {
 		AvatarUrl:        u.AvatarURL,
 		CreatedAt:        timestamppb.New(u.CreatedAt),
 		UpdatedAt:        timestamppb.New(u.UpdatedAt),
+		LockReason:       u.LockReason,
 	}
 }
 
@@ -414,12 +415,28 @@ func auditUserSnapshot(u db.User) map[string]any {
 		shopID = *u.ShopID
 	}
 	return map[string]any{
-		"id":      u.ID,
-		"email":   u.Email,
-		"role":    u.Role,
-		"status":  u.Status,
-		"shop_id": shopID,
+		"id":          u.ID,
+		"email":       u.Email,
+		"role":        u.Role,
+		"status":      u.Status,
+		"shop_id":     shopID,
+		"lock_reason": u.LockReason,
 	}
+}
+
+func effectiveSellerShopID(u db.User) string {
+	if u.Role == RoleSeller && u.ShopID != nil {
+		return *u.ShopID
+	}
+	return ""
+}
+
+func lockedAccountMessage(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason != "" {
+		return fmt.Sprintf("Tài khoản đã bị khóa. Lý do: %s. Vui lòng liên hệ hỗ trợ support@nexusmart.vn để được giải quyết.", reason)
+	}
+	return "Tài khoản đã bị khóa. Vui lòng liên hệ hỗ trợ support@nexusmart.vn để được giải quyết."
 }
 
 func auditShopSnapshot(s db.Shop) map[string]any {

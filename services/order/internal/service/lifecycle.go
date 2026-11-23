@@ -15,6 +15,7 @@ import (
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	shippingv1 "github.com/nexusmart/core/gen/go/nexusmart/shipping/v1"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
+	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/order/internal/clients"
 	"github.com/nexusmart/core/services/order/internal/db"
 	"github.com/nexusmart/core/services/order/internal/events"
@@ -24,8 +25,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
-
-const returnWindowDuration = 7 * 24 * time.Hour
 
 // GetOrder fetches a single order after verifying object-level RBAC (buyer owner, shop owner, or admin).
 func (s *OrderService) GetOrder(ctx context.Context, req *orderv1.GetOrderRequest) (*orderv1.GetOrderResponse, error) {
@@ -101,7 +100,7 @@ func (s *OrderService) ListOrders(ctx context.Context, req *orderv1.ListOrdersRe
 			shopFilter = strings.TrimSpace(req.GetShopId())
 			buyerFilter = strings.TrimSpace(req.GetBuyerId())
 		} else {
-			if caller.ShopID == "" {
+			if caller.Role != "seller" || caller.ShopID == "" {
 				return nil, status.Error(codes.PermissionDenied, "seller shop identity is required")
 			}
 			if req.GetShopId() != "" && req.GetShopId() != caller.ShopID {
@@ -194,50 +193,187 @@ func (s *OrderService) CancelOrder(ctx context.Context, req *orderv1.CancelOrder
 		reason = "Cancelled by " + fallbackStr(caller.Role, "user")
 	}
 
-	traceID, traceparent := traceMetaFromContext(ctx)
-	res, err := s.store.TransitionOrderStatus(ctx, store.SingleOrderTransitionParams{
-		OrderID:         orderID,
-		TargetStatus:    orderv1.OrderStatus_ORDER_STATUS_CANCELLED,
-		CancelReason:    reason,
-		PaymentStatus:   "", // Computed atomically inside FOR UPDATE TX (review-A P0-4, P2-10, P3-12).
-		ActorID:         caller.UserID,
-		ActorRole:       fallbackStr(caller.Role, "buyer"),
-		Note:            reason,
-		CancelGroupPend: true,
-		BuildOutboxFn: func(ord db.Order) []db.InsertOutboxEventParams {
-			ordPaid := statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
-				strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") &&
-				ord.TotalPayableVND > 0
-			payload, _ := json.Marshal(events.OrderCancelledPayload{
-				OrderID:   ord.ID,
-				OrderCode: ord.OrderCode,
-				BuyerID:   ord.BuyerID,
-				ShopID:    ord.ShopID,
-				Reason:    reason,
-				WasPaid:   ordPaid,
-			})
-			return []db.InsertOutboxEventParams{
-				{
-					ID:          uuid.NewString(),
-					EventType:   events.SubjectOrderCancelled,
-					TraceID:     traceID,
-					Traceparent: traceparent,
-					PayloadJSON: payload,
-				},
-			}
-		},
+	cancelledAgg, err := s.cancelOrderInternal(ctx, agg, caller.UserID, fallbackStr(caller.Role, "buyer"), reason, cancelOrderOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	return &orderv1.CancelOrderResponse{
+		Order: aggregateToProto(*cancelledAgg),
+	}, nil
+}
+
+type cancelOrderOptions struct {
+	expectedStatus         orderv1.OrderStatus
+	requireConfirmedBefore *time.Time
+}
+
+func (s *OrderService) cancelForwardShipment(ctx context.Context, orderID, reason string) (cancelledTracking string, notFound bool, err error) {
+	if s.clients.Shipping == nil {
+		return "", false, nil
+	}
+	svcCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+	defer cancel()
+	var respOut *shippingv1.CancelShipmentResponse
+	err = clients.RetryIdempotent(svcCtx, 3, func(c context.Context) error {
+		resp, cErr := s.clients.Shipping.CancelShipment(c, &shippingv1.CancelShipmentRequest{
+			OrderId:   orderID,
+			Reason:    reason,
+			Direction: shippingv1.ShipmentDirection_SHIPMENT_DIRECTION_FORWARD,
+		})
+		if cErr != nil {
+			return cErr
+		}
+		respOut = resp
+		return nil
 	})
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return "", true, nil
+		}
+		return "", false, err
+	}
+	return strings.TrimSpace(respOut.GetShipment().GetTrackingCode()), false, nil
+}
+
+// compensateOrphanForwardShipment cancels a forward shipment orphaned by a concurrent order cancel
+// and clears the durable pending_shipment_cancel flag once resolved.
+// On FailedPrecondition (carrier already picked up), records a durable manual-review flag + timeline
+// event for admin visibility instead of silently clearing the flag; transient errors leave the flag set
+// so ScanPendingOrphanShipmentCancels retries on subsequent sweeps.
+func (s *OrderService) compensateOrphanForwardShipment(ctx context.Context, orderID, reason string) bool {
+	_, _, cErr := s.cancelForwardShipment(ctx, orderID, reason)
+	clearCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+	defer cancel()
+	if cErr != nil {
+		if status.Code(cErr) == codes.FailedPrecondition {
+			note := fmt.Sprintf("MANUAL_REVIEW_REQUIRED: orphan forward shipment could not be cancelled because carrier already picked up (%s: %v)", reason, cErr)
+			s.logger.ErrorContext(ctx, "orphan forward shipment could not be cancelled (already picked up); flagging orphan_shipment_needs_manual_review for admin",
+				"order_id", orderID, "orphan_shipment_needs_manual_review", true, "reason", reason, "error", cErr)
+			if mErr := s.store.MarkOrderOrphanShipmentManualReview(clearCtx, orderID, note); mErr != nil {
+				s.logger.WarnContext(ctx, "failed to record manual review for orphan shipment; watchdog will retry",
+					"order_id", orderID, "error", mErr)
+				return false
+			}
+			return true
+		}
+		s.logger.WarnContext(ctx, "orphan forward shipment cancel failed; watchdog will retry",
+			"order_id", orderID, "error", cErr)
+		return false
+	}
+	if err := s.store.ClearOrderPendingShipmentCancel(clearCtx, orderID); err != nil {
+		s.logger.WarnContext(ctx, "failed to clear pending_shipment_cancel flag; watchdog will retry",
+			"order_id", orderID, "error", err)
+		return false
+	}
+	return true
+}
+
+const maxCancelShipmentAttempts = 3
+
+func (s *OrderService) cancelOrderInternal(ctx context.Context, agg *store.OrderAggregate, actorID, actorRole, reason string, opts cancelOrderOptions) (*store.OrderAggregate, error) {
+	var (
+		cancelledTracking  string
+		knownTracking      = strings.TrimSpace(agg.Order.TrackingCode)
+		lastCancelNotFound bool
+		hasCalledCancel    bool
+	)
+	if knownTracking != "" || agg.Order.PendingShipmentCancel {
+		trk, nf, err := s.cancelForwardShipment(ctx, agg.Order.ID, reason)
+		if err != nil {
+			return nil, err
+		}
+		cancelledTracking = trk
+		lastCancelNotFound = nf
+		hasCalledCancel = true
+	}
+
+	traceID, traceparent := traceMetaFromContext(ctx)
+	runTransition := func(requireNoTracking bool, canTrk, knownTrk string, lastNF, clearPending bool) (*store.OrderTransitionResult, error) {
+		return s.store.TransitionOrderStatus(ctx, store.SingleOrderTransitionParams{
+			OrderID:                    agg.Order.ID,
+			ExpectedStatus:             opts.expectedStatus,
+			RequireConfirmedBefore:     opts.requireConfirmedBefore,
+			TargetStatus:               orderv1.OrderStatus_ORDER_STATUS_CANCELLED,
+			CancelReason:               reason,
+			PaymentStatus:              "", // Computed atomically inside FOR UPDATE TX (review-A P0-4, P2-10, P3-12).
+			ActorID:                    actorID,
+			ActorRole:                  actorRole,
+			Note:                       reason,
+			CancelGroupPend:            true,
+			RequireNoTracking:          requireNoTracking,
+			VerifyShipmentCancel:       s.clients.Shipping != nil,
+			CancelledTrackingCode:      canTrk,
+			KnownTrackingBeforeCancel:  knownTrk,
+			LastCancelNotFound:         lastNF,
+			ClearPendingShipmentCancel: clearPending,
+			Now:                        s.nowFn(),
+			BuildOutboxFn: func(ord db.Order) []db.InsertOutboxEventParams {
+				ordPaid := statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+					strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") &&
+					ord.TotalPayableVND > 0
+				payload, _ := json.Marshal(events.OrderCancelledPayload{
+					OrderID:   ord.ID,
+					OrderCode: ord.OrderCode,
+					BuyerID:   ord.BuyerID,
+					ShopID:    ord.ShopID,
+					Reason:    reason,
+					WasPaid:   ordPaid,
+				})
+				return []db.InsertOutboxEventParams{
+					{
+						ID:          uuid.NewString(),
+						EventType:   events.SubjectOrderCancelled,
+						TraceID:     traceID,
+						Traceparent: traceparent,
+						PayloadJSON: payload,
+					},
+				}
+			},
+		})
+	}
+
+	var res *store.OrderTransitionResult
+	var err error
+	for attempt := 0; attempt < maxCancelShipmentAttempts; attempt++ {
+		res, err = runTransition(!hasCalledCancel, cancelledTracking, knownTracking, lastCancelNotFound, hasCalledCancel && cancelledTracking != "")
+		if !errors.Is(err, store.ErrOrderHasTracking) {
+			break
+		}
+		if attempt == maxCancelShipmentAttempts-1 {
+			return nil, status.Error(codes.FailedPrecondition, "vận đơn đang được tạo, thử lại")
+		}
+		// Refresh observed tracking before retrying CancelShipment so we detect newly attached tracking codes.
+		if latest, gErr := s.store.GetOrderWithDetails(ctx, agg.Order.ID); gErr == nil {
+			knownTracking = strings.TrimSpace(latest.Order.TrackingCode)
+		}
+		// Concurrent SellerShipOrder is creating or attached a tracking code before our FOR UPDATE lock.
+		trk, nf, cErr := s.cancelForwardShipment(ctx, agg.Order.ID, reason)
+		if cErr != nil {
+			return nil, cErr
+		}
+		cancelledTracking = trk
+		lastCancelNotFound = nf
+		hasCalledCancel = true
+	}
 	if err != nil {
 		return nil, mapStoreError(err)
 	}
 
-	// Execute downstream compensations from the locked pre-transition snapshot (review-A P0-4).
-	s.compensateCancelledOrder(ctx, res.PrevOrder, res.Order.Items, res.HasActiveSibling, reason)
+	// Execute downstream compensations from the locked pre-transition snapshot (review-A P0-4, P1-4).
+	// pending_cancel_compensation was set atomically in TransitionOrderStatus; cleared only once all succeed.
+	if compErr := s.compensateCancelledOrder(ctx, res.PrevOrder, res.Order.Items, res.HasActiveSibling, reason); compErr != nil {
+		s.logger.WarnContext(ctx, "post-commit cancel compensation incomplete; watchdog will retry",
+			"order_id", res.PrevOrder.ID, "error", compErr)
+	} else {
+		clearCtx, clearCancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+		defer clearCancel()
+		for _, tr := range res.Transitioned {
+			_ = s.store.ClearOrderPendingCancelCompensation(clearCtx, tr.ID)
+		}
+	}
 	s.notifyOutbox()
-
-	return &orderv1.CancelOrderResponse{
-		Order: aggregateToProto(*res.Order),
-	}, nil
+	return res.Order, nil
 }
 
 func (s *OrderService) compensateCancelledOrder(
@@ -246,7 +382,7 @@ func (s *OrderService) compensateCancelledOrder(
 	items []db.OrderItem,
 	hasActiveSibling bool,
 	reason string,
-) {
+) error {
 	groupID := prevOrd.CheckoutGroupID
 	prevStatus := statemachine.StringToStatus(prevOrd.Status)
 	wasPaid := statemachine.StringToPaymentMethod(prevOrd.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
@@ -256,52 +392,67 @@ func (s *OrderService) compensateCancelledOrder(
 	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 	defer cancel()
 
-	if prevStatus == orderv1.OrderStatus_ORDER_STATUS_PENDING {
-		s.compensateReleaseStock(ctx, groupID)
-		s.compensateReleasePromotion(ctx, groupID)
-		if prevOrd.PaymentID != "" && s.clients.Payment != nil {
-			_ = clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
-				_, cErr := s.clients.Payment.CancelPayment(c, &paymentv1.CancelPaymentRequest{
-					PaymentId:    prevOrd.PaymentID,
-					OrderGroupId: groupID,
-					Reason:       reason,
-				})
-				return cErr
-			})
+	cancelPaymentIgnoreTerminal := func() error {
+		// P1-1: Never call CancelPayment for 0-VND orders (payment already SUCCEEDED) or already-refunded orders.
+		alreadyRefunded := strings.EqualFold(prevOrd.PaymentStatus, "REFUNDED") ||
+			(prevOrd.TotalPayableVND > 0 && prevOrd.RefundedVND >= prevOrd.TotalPayableVND)
+		if prevOrd.PaymentID == "" || s.clients.Payment == nil || prevOrd.TotalPayableVND <= 0 || alreadyRefunded {
+			return nil
 		}
-		return
+		return clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
+			_, cErr := s.clients.Payment.CancelPayment(c, &paymentv1.CancelPaymentRequest{
+				PaymentId:    prevOrd.PaymentID,
+				OrderGroupId: groupID,
+				Reason:       reason,
+			})
+			// P1-1: Rust payment maps PaymentError::Conflict (non-pending payment) to codes.AlreadyExists.
+			if code := status.Code(cErr); code == codes.NotFound || code == codes.FailedPrecondition || code == codes.AlreadyExists {
+				return nil
+			}
+			return cErr
+		})
+	}
+
+	if prevStatus == orderv1.OrderStatus_ORDER_STATUS_PENDING {
+		if _, err := s.releaseStockErr(compCtx, groupID); err != nil {
+			return fmt.Errorf("release stock for cancelled pending order %s: %w", prevOrd.ID, err)
+		}
+		if err := s.releasePromotionErr(compCtx, groupID); err != nil {
+			return fmt.Errorf("release promotion for cancelled pending order %s: %w", prevOrd.ID, err)
+		}
+		if err := cancelPaymentIgnoreTerminal(); err != nil {
+			return fmt.Errorf("cancel payment for cancelled pending order %s: %w", prevOrd.ID, err)
+		}
+		return nil
 	}
 
 	// Order was CONFIRMED or PREPARING.
 	if !hasActiveSibling {
-		s.compensateReleasePromotion(ctx, groupID)
+		if err := s.releasePromotionErr(compCtx, groupID); err != nil {
+			return fmt.Errorf("release promotion for cancelled order %s: %w", prevOrd.ID, err)
+		}
 		if s.clients.Product != nil {
-			var released bool
-			rErr := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
-				resp, err := s.clients.Product.ReleaseStock(c, &productv1.ReleaseStockRequest{OrderId: groupID})
-				if err != nil {
-					if status.Code(err) == codes.NotFound {
-						released = false
-						return nil
-					}
-					return err
-				}
-				released = resp.GetReleased()
-				return nil
-			})
+			released, rErr := s.releaseStockErr(compCtx, groupID)
 			if rErr != nil {
-				// Review2-O P1-4a: do NOT fall back to RestockOrderItems on transient ReleaseStock errors
-				// (would create phantom stock if reservation is still RESERVED).
-				s.logger.ErrorContext(ctx, "saga compensation ReleaseStock failed on cancelled order",
-					"order_id", prevOrd.ID, "checkout_group_id", groupID, "error", rErr)
-			} else if !released {
-				s.restockOrderItems(compCtx, prevOrd.ID, items)
+				// Review2-O P1-4a: do NOT fall back to RestockOrderItems on transient ReleaseStock errors.
+				return fmt.Errorf("ReleaseStock for cancelled order %s: %w", prevOrd.ID, rErr)
+			}
+			if released {
+				_ = s.store.ClearCheckoutGroupPendingStockConfirm(compCtx, groupID)
+			} else {
+				if err := s.restockOrderItemsWithConfirmErr(compCtx, groupID, prevOrd.ID, items); err != nil {
+					return fmt.Errorf("restock cancelled order %s: %w", prevOrd.ID, err)
+				}
 			}
 		}
 	} else {
-		// Active sibling exists: release only this sub-order's shop promotions and restock its items.
-		s.compensateReleasePromotionShop(ctx, groupID, prevOrd.ShopID, reason)
-		s.restockOrderItems(compCtx, prevOrd.ID, items)
+		// Active sibling exists: release only this sub-order's shop promotions and confirm+restock its items.
+		if err := s.releasePromotionShopErr(compCtx, groupID, prevOrd.ShopID, reason); err != nil {
+			return fmt.Errorf("release shop promotion for cancelled order %s: %w", prevOrd.ID, err)
+		}
+		if err := s.restockOrderItemsWithConfirmErr(compCtx, groupID, prevOrd.ID, items); err != nil {
+			return fmt.Errorf("confirm+restock cancelled sub-order %s: %w", prevOrd.ID, err)
+		}
 	}
 
 	if s.clients.Payment != nil && prevOrd.PaymentID != "" {
@@ -319,21 +470,56 @@ func (s *OrderService) compensateCancelledOrder(
 					})
 					return rErr
 				}); err != nil {
-					s.logger.ErrorContext(ctx, "failed to create refund on cancelled paid order",
-						"order_id", prevOrd.ID, "payment_id", prevOrd.PaymentID, "error", err)
+					return fmt.Errorf("create refund on cancelled paid order %s: %w", prevOrd.ID, err)
 				}
 			}
 		} else if !hasActiveSibling {
-			_ = clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
-				_, cErr := s.clients.Payment.CancelPayment(c, &paymentv1.CancelPaymentRequest{
-					PaymentId:    prevOrd.PaymentID,
-					OrderGroupId: groupID,
-					Reason:       reason,
-				})
-				return cErr
-			})
+			if err := cancelPaymentIgnoreTerminal(); err != nil {
+				return fmt.Errorf("cancel payment on cancelled order %s: %w", prevOrd.ID, err)
+			}
 		}
 	}
+	return nil
+}
+
+// restockOrderItemsWithConfirmErr ensures Product.ConfirmStock(checkoutGroupID) succeeds BEFORE
+// calling RestockOrderItems(orderID, items), preventing P0-2 phantom stock or leaked reserved_stock
+// when an earlier checkout ConfirmStock failed transiently. If reservations were already released
+// by ReleaseStock (ConfirmStock returns FailedPrecondition and ReleaseStock reports Released=true),
+// skips RestockOrderItems cleanly without double-adding stock.
+func (s *OrderService) restockOrderItemsWithConfirmErr(ctx context.Context, checkoutGroupID, orderID string, items []db.OrderItem) error {
+	if s.clients.Product == nil || strings.TrimSpace(orderID) == "" || len(items) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(checkoutGroupID) != "" {
+		cErr := clients.RetryIdempotent(ctx, 3, func(c context.Context) error {
+			_, err := s.clients.Product.ConfirmStock(c, &productv1.ConfirmStockRequest{
+				OrderId: checkoutGroupID,
+			})
+			return err
+		})
+		if cErr != nil {
+			if status.Code(cErr) == codes.FailedPrecondition {
+				// Reservation may already have been RELEASED by a sibling's final ReleaseStock(groupID).
+				released, relErr := s.releaseStockErr(ctx, checkoutGroupID)
+				if relErr == nil && released {
+					_ = s.store.ClearCheckoutGroupPendingStockConfirm(ctx, checkoutGroupID)
+					return nil
+				}
+			}
+			if status.Code(cErr) == codes.NotFound {
+				// P2-5: Legacy/seeded order with no stock_reservations row -> clear flag and proceed to RestockOrderItems.
+				s.logger.WarnContext(ctx, "ConfirmStock returned NotFound before RestockOrderItems; proceeding with restock",
+					"checkout_group_id", checkoutGroupID, "order_id", orderID)
+				_ = s.store.ClearCheckoutGroupPendingStockConfirm(ctx, checkoutGroupID)
+			} else {
+				return fmt.Errorf("ConfirmStock(%s) before RestockOrderItems(%s): %w", checkoutGroupID, orderID, cErr)
+			}
+		} else {
+			_ = s.store.ClearCheckoutGroupPendingStockConfirm(ctx, checkoutGroupID)
+		}
+	}
+	return s.restockOrderItemsErr(ctx, orderID, items)
 }
 
 func (s *OrderService) restockOrderItemsErr(ctx context.Context, orderID string, items []db.OrderItem) error {
@@ -374,12 +560,6 @@ func (s *OrderService) restockOrderItemsErr(ctx context.Context, orderID string,
 	})
 }
 
-func (s *OrderService) restockOrderItems(ctx context.Context, orderID string, items []db.OrderItem) {
-	if err := s.restockOrderItemsErr(ctx, orderID, items); err != nil {
-		s.logger.WarnContext(ctx, "restock RestockOrderItems failed", "order_id", orderID, "error", err)
-	}
-}
-
 // SellerConfirmOrder transitions a shop's order from CONFIRMED -> PREPARING.
 func (s *OrderService) SellerConfirmOrder(ctx context.Context, req *orderv1.SellerConfirmOrderRequest) (*orderv1.SellerConfirmOrderResponse, error) {
 	caller, err := requireAuthenticatedCaller(ctx)
@@ -416,7 +596,8 @@ func (s *OrderService) SellerConfirmOrder(ctx context.Context, req *orderv1.Sell
 	}, nil
 }
 
-// SellerShipOrder creates a shipment via ShippingService and transitions CONFIRMED|PREPARING -> SHIPPING.
+// SellerShipOrder creates a shipment via ShippingService and transitions CONFIRMED|PREPARING -> PREPARING with tracking.
+// Calling it again once tracking_code is already assigned on a PREPARING order is idempotent.
 func (s *OrderService) SellerShipOrder(ctx context.Context, req *orderv1.SellerShipOrderRequest) (*orderv1.SellerShipOrderResponse, error) {
 	caller, err := requireAuthenticatedCaller(ctx)
 	if err != nil {
@@ -437,8 +618,10 @@ func (s *OrderService) SellerShipOrder(ctx context.Context, req *orderv1.SellerS
 	}
 
 	curStatus := statemachine.StringToStatus(agg.Order.Status)
-	if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_SHIPPING); err != nil {
-		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	if curStatus != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED && curStatus != orderv1.OrderStatus_ORDER_STATUS_PREPARING {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"invalid order status transition: cannot create shipment from status %s",
+			statemachine.StatusToString(curStatus))
 	}
 
 	reqCarrier := strings.TrimSpace(req.GetCarrierCode())
@@ -446,21 +629,34 @@ func (s *OrderService) SellerShipOrder(ctx context.Context, req *orderv1.SellerS
 	orderCarrier := strings.TrimSpace(agg.Order.CarrierCode)
 	orderService := strings.TrimSpace(agg.Order.ServiceCode)
 
-	if reqCarrier != "" && orderCarrier != "" && !strings.EqualFold(reqCarrier, orderCarrier) {
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"carrier_code %q does not match buyer's selected carrier %q", reqCarrier, orderCarrier)
+	// P2-2: checkout fallback quotes allow seller to select any real enabled carrier/service on shipment creation.
+	isFallbackCarrier := strings.EqualFold(orderCarrier, "fallback")
+	if !isFallbackCarrier {
+		if reqCarrier != "" && orderCarrier != "" && !strings.EqualFold(reqCarrier, orderCarrier) {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"carrier_code %q does not match buyer's selected carrier %q", reqCarrier, orderCarrier)
+		}
+		if reqService != "" && orderService != "" && !strings.EqualFold(reqService, orderService) {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"service_code %q does not match buyer's selected service %q", reqService, orderService)
+		}
 	}
-	if reqService != "" && orderService != "" && !strings.EqualFold(reqService, orderService) {
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"service_code %q does not match buyer's selected service %q", reqService, orderService)
+
+	// Mark durable shipment-creation intent (with fresh TTL timestamp + attempt token) before calling ShippingService
+	// so even a crash or concurrent cancel cannot leave an uncancelled orphan shipment behind.
+	// Retrying SellerShipOrder refreshes pending_shipment_cancel_at; CANCELLED orders fail immediately under FOR UPDATE.
+	markedAt := s.nowFn()
+	creatingToken, err := s.store.MarkOrderShipmentCreating(ctx, agg.Order.ID, markedAt)
+	if err != nil {
+		return nil, mapStoreError(err)
 	}
 
 	carrierCode := orderCarrier
-	if carrierCode == "" {
+	if isFallbackCarrier || carrierCode == "" {
 		carrierCode = reqCarrier
 	}
 	serviceCode := orderService
-	if serviceCode == "" {
+	if isFallbackCarrier || serviceCode == "" {
 		serviceCode = reqService
 	}
 
@@ -469,43 +665,39 @@ func (s *OrderService) SellerShipOrder(ctx context.Context, req *orderv1.SellerS
 		codAmountVND = agg.Order.TotalPayableVND
 	}
 
-	var totalWeight int32
-	summaryParts := make([]string, 0, len(agg.Items))
-	for _, it := range agg.Items {
-		w := it.WeightGrams
-		if w <= 0 {
-			w = 500
-		}
-		totalWeight += w * it.Quantity
-		summaryParts = append(summaryParts, fmt.Sprintf("%s x%d", fallbackStr(it.ProductName, it.SKUID), it.Quantity))
-	}
-	if totalWeight <= 0 {
-		totalWeight = 500
-	}
-
-	var toSnapshot orderv1.OrderAddressSnapshot
-	_ = json.Unmarshal(agg.Order.ShippingAddressJSON, &toSnapshot)
-	toAddr := &shippingv1.ShipmentAddress{
-		Name:          toSnapshot.GetRecipientName(),
-		Phone:         toSnapshot.GetRecipientPhone(),
-		ProvinceCode:  toSnapshot.GetProvinceCode(),
-		WardCode:      toSnapshot.GetWardCode(),
-		StreetAddress: toSnapshot.GetStreetAddress(),
-	}
+	totalWeight, itemsSummary := summarizeOrderParcel(agg.Items)
+	toAddr := orderAddressToShipmentAddress(agg.Order.ShippingAddressJSON)
 	fromAddr := s.resolveShopPickupAddress(ctx, agg.Order.ShopID, toAddr)
 
+	// Guard against a stalled context/goroutine waking up past PendingShipmentCancelTTL before calling CreateShipment.
+	if ctx.Err() != nil || s.nowFn().Sub(markedAt) > store.PendingShipmentCancelTTL {
+		clearCtx, clearCancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+		defer clearCancel()
+		_ = s.store.ClearOrderPendingShipmentCancelByToken(clearCtx, agg.Order.ID, creatingToken)
+		return nil, status.Error(codes.FailedPrecondition, "lượt tạo vận đơn đã quá hạn, vui lòng thử lại")
+	}
+
+	// Always call CreateShipment (idempotent on shipping side: returns live shipment or creates
+	// a replacement if a previous shipment was cancelled during a partial cancel failure).
 	shipResp, err := s.clients.Shipping.CreateShipment(ctx, &shippingv1.CreateShipmentRequest{
 		OrderId:      agg.Order.ID,
 		ShopId:       agg.Order.ShopID,
+		BuyerId:      agg.Order.BuyerID,
 		CarrierCode:  carrierCode,
 		ServiceCode:  serviceCode,
 		CodAmountVnd: codAmountVND,
 		WeightGrams:  totalWeight,
 		FromAddress:  fromAddr,
 		ToAddress:    toAddr,
-		ItemsSummary: strings.Join(summaryParts, ", "),
+		ItemsSummary: itemsSummary,
 	})
 	if err != nil {
+		// P3-2: clear pending_shipment_cancel (scoped by attempt token) on errors that guarantee no shipment was created.
+		if code := status.Code(err); code == codes.InvalidArgument || code == codes.FailedPrecondition || code == codes.PermissionDenied {
+			clearCtx, clearCancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+			defer clearCancel()
+			_ = s.store.ClearOrderPendingShipmentCancelByToken(clearCtx, agg.Order.ID, creatingToken)
+		}
 		return nil, err
 	}
 
@@ -519,46 +711,67 @@ func (s *OrderService) SellerShipOrder(ctx context.Context, req *orderv1.SellerS
 		serviceCode = shipment.GetServiceCode()
 	}
 
-	traceID, traceparent := traceMetaFromContext(ctx)
-	outboxPayload, err := json.Marshal(events.OrderShippedPayload{
-		OrderID:      agg.Order.ID,
-		OrderCode:    agg.Order.OrderCode,
-		BuyerID:      agg.Order.BuyerID,
-		ShopID:       agg.Order.ShopID,
-		CarrierCode:  carrierCode,
-		TrackingCode: trackingCode,
+	updatedAgg, err := s.store.TransitionOrderPreparedForShipment(ctx, store.ShipOrderParams{
+		OrderID:               agg.Order.ID,
+		CarrierCode:           carrierCode,
+		ServiceCode:           serviceCode,
+		TrackingCode:          trackingCode,
+		LabelURL:              labelURL,
+		ExpectedCreatingToken: creatingToken,
+		ActorID:               fallbackStr(caller.UserID, req.GetSellerUserId()),
+		ActorRole:             fallbackStr(caller.Role, "seller"),
+		Note:                  fmt.Sprintf("Shipment created via %s (tracking: %s)", carrierCode, trackingCode),
+		Now:                   s.nowFn(),
 	})
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "marshal order.shipped event: %v", err)
-	}
-
-	updatedAgg, err := s.store.TransitionOrderShipped(ctx, store.ShipOrderParams{
-		OrderID:      agg.Order.ID,
-		CarrierCode:  carrierCode,
-		ServiceCode:  serviceCode,
-		TrackingCode: trackingCode,
-		LabelURL:     labelURL,
-		ActorID:      fallbackStr(caller.UserID, req.GetSellerUserId()),
-		ActorRole:    fallbackStr(caller.Role, "seller"),
-		Note:         fmt.Sprintf("Shipped via %s (tracking: %s)", carrierCode, trackingCode),
-		OutboxEvent: db.InsertOutboxEventParams{
-			ID:          uuid.NewString(),
-			EventType:   events.SubjectOrderShipped,
-			TraceID:     traceID,
-			Traceparent: traceparent,
-			PayloadJSON: outboxPayload,
-		},
-	})
-	if err != nil {
+		if errors.Is(err, store.ErrOrphanShipmentNeedsCancel) {
+			s.compensateOrphanForwardShipment(ctx, agg.Order.ID, "order cancelled concurrently during shipment creation")
+		}
 		return nil, mapStoreError(err)
 	}
 
-	s.notifyOutbox()
 	return &orderv1.SellerShipOrderResponse{
 		Order:        aggregateToProto(*updatedAgg),
-		TrackingCode: trackingCode,
-		LabelUrl:     labelURL,
+		TrackingCode: updatedAgg.Order.TrackingCode,
+		LabelUrl:     updatedAgg.Order.LabelURL,
 	}, nil
+}
+
+func summarizeOrderParcel(items []db.OrderItem) (int32, string) {
+	var totalWeight int32
+	summaryParts := make([]string, 0, len(items))
+	for _, it := range items {
+		w := it.WeightGrams
+		if w <= 0 {
+			w = 500
+		}
+		totalWeight += w * it.Quantity
+		summaryParts = append(summaryParts, fmt.Sprintf("%s x%d", fallbackStr(it.ProductName, it.SKUID), it.Quantity))
+	}
+	if totalWeight <= 0 {
+		totalWeight = 500
+	}
+	return totalWeight, strings.Join(summaryParts, ", ")
+}
+
+func orderAddressToShipmentAddress(raw []byte) *shippingv1.ShipmentAddress {
+	var snap orderv1.OrderAddressSnapshot
+	_ = json.Unmarshal(raw, &snap)
+	return &shippingv1.ShipmentAddress{
+		Name:          snap.GetRecipientName(),
+		Phone:         snap.GetRecipientPhone(),
+		ProvinceCode:  snap.GetProvinceCode(),
+		WardCode:      snap.GetWardCode(),
+		StreetAddress: snap.GetStreetAddress(),
+	}
+}
+
+// stripServiceAuth clears internal service claims before calling public RPCs not listed in internalRPCs (e.g. UserService.GetShop).
+func stripServiceAuth(ctx context.Context) context.Context {
+	if c, ok := auth.ClaimsFromContext(ctx); ok && c.Service != "" {
+		return auth.WithRawToken(auth.WithClaims(ctx, nil), "")
+	}
+	return ctx
 }
 
 func (s *OrderService) resolveShopPickupAddress(ctx context.Context, shopID string, fallback *shippingv1.ShipmentAddress) *shippingv1.ShipmentAddress {
@@ -572,7 +785,7 @@ func (s *OrderService) resolveShopPickupAddress(ctx context.Context, shopID stri
 	if s.clients.User == nil {
 		return res
 	}
-	shopResp, err := s.clients.User.GetShop(ctx, &userv1.GetShopRequest{ShopId: shopID})
+	shopResp, err := s.clients.User.GetShop(stripServiceAuth(ctx), &userv1.GetShopRequest{ShopId: shopID})
 	if err != nil || shopResp.GetShop() == nil {
 		return res
 	}
@@ -612,7 +825,38 @@ func (s *OrderService) resolveShopPickupAddress(ctx context.Context, shopID stri
 	return res
 }
 
-// BuyerConfirmReceived transitions DELIVERED -> COMPLETED, emits order.completed outbox, and releases payment escrow.
+// completeDeliveredOrder is the single shared completion path for BuyerConfirmReceived and the 7-day auto-complete job.
+// Payment escrow settlement and hold release are driven asynchronously via order.completed (no direct ReleaseEscrow RPC).
+func (s *OrderService) completeDeliveredOrder(
+	ctx context.Context,
+	ord db.Order,
+	actorID, actorRole, note string,
+	requireNoReturnRequest bool,
+) (*store.OrderAggregate, error) {
+	traceID, traceparent := traceMetaFromContext(ctx)
+	outboxEv, err := s.buildOrderCompletedOutbox(ord, traceID, traceparent)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+
+	updatedAgg, err := s.store.TransitionOrderCompleted(ctx, store.CompleteOrderParams{
+		OrderID:                ord.ID,
+		ActorID:                actorID,
+		ActorRole:              actorRole,
+		Note:                   note,
+		RequireNoReturnRequest: requireNoReturnRequest,
+		OutboxEvent:            outboxEv,
+		Now:                    s.nowFn(),
+	})
+	if err != nil {
+		return nil, mapStoreError(err)
+	}
+
+	s.notifyOutbox()
+	return updatedAgg, nil
+}
+
+// BuyerConfirmReceived transitions DELIVERED -> COMPLETED and emits order.completed via outbox.
 func (s *OrderService) BuyerConfirmReceived(ctx context.Context, req *orderv1.BuyerConfirmReceivedRequest) (*orderv1.BuyerConfirmReceivedResponse, error) {
 	caller, err := requireAuthenticatedCaller(ctx)
 	if err != nil {
@@ -639,116 +883,20 @@ func (s *OrderService) BuyerConfirmReceived(ctx context.Context, req *orderv1.Bu
 			statemachine.StatusToString(curStatus))
 	}
 
-	coinsReward := ComputeOrderRewardCoins(agg.Order, s.cfg.RewardCoinsBPS)
-	traceID, traceparent := traceMetaFromContext(ctx)
-	payloadBytes, err := json.Marshal(events.OrderCompletedPayload{
-		OrderID:         agg.Order.ID,
-		OrderCode:       agg.Order.OrderCode,
-		BuyerID:         agg.Order.BuyerID,
-		ShopID:          agg.Order.ShopID,
-		SubtotalVND:     agg.Order.SubtotalVND,
-		CommissionVND:   agg.Order.CommissionVND,
-		TotalPayableVND: agg.Order.TotalPayableVND,
-		CoinsReward:     coinsReward,
-	})
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "marshal order.completed event: %v", err)
-	}
-
-	updatedAgg, err := s.store.TransitionOrderCompleted(ctx, store.CompleteOrderParams{
-		OrderID:   agg.Order.ID,
-		ActorID:   fallbackStr(caller.UserID, agg.Order.BuyerID),
-		ActorRole: fallbackStr(caller.Role, "buyer"),
-		Note:      "Buyer confirmed receipt of order",
-		OutboxEvent: db.InsertOutboxEventParams{
-			ID:          uuid.NewString(),
-			EventType:   events.SubjectOrderCompleted,
-			TraceID:     traceID,
-			Traceparent: traceparent,
-			PayloadJSON: payloadBytes,
-		},
-	})
-	if err != nil {
-		return nil, mapStoreError(err)
-	}
-
-	// Best-effort direct ReleaseEscrow alongside idempotent order.completed event.
-	if s.clients.Payment != nil {
-		relCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
-		defer cancel()
-		if err := clients.RetryIdempotent(relCtx, 3, func(c context.Context) error {
-			_, rErr := s.clients.Payment.ReleaseEscrow(c, &paymentv1.ReleaseEscrowRequest{
-				OrderId: agg.Order.ID,
-				ShopId:  agg.Order.ShopID,
-			})
-			return rErr
-		}); err != nil {
-			s.logger.WarnContext(ctx, "direct ReleaseEscrow call failed (will rely on order.completed event)",
-				"order_id", agg.Order.ID, "error", err)
-		}
-	}
-
-	s.notifyOutbox()
-	return &orderv1.BuyerConfirmReceivedResponse{
-		Order: aggregateToProto(*updatedAgg),
-	}, nil
-}
-
-// RequestReturn transitions DELIVERED -> RETURN_REQUESTED and persists a return_requests record.
-func (s *OrderService) RequestReturn(ctx context.Context, req *orderv1.RequestReturnRequest) (*orderv1.RequestReturnResponse, error) {
-	caller, err := requireAuthenticatedCaller(ctx)
+	updatedAgg, err := s.completeDeliveredOrder(
+		ctx,
+		agg.Order,
+		fallbackStr(caller.UserID, agg.Order.BuyerID),
+		fallbackStr(caller.Role, "buyer"),
+		"Buyer confirmed receipt of order",
+		false,
+	)
 	if err != nil {
 		return nil, err
 	}
-	orderID := strings.TrimSpace(req.GetOrderId())
-	if orderID == "" {
-		return nil, status.Error(codes.InvalidArgument, "order_id is required")
-	}
-	reason := strings.TrimSpace(req.GetReason())
-	if reason == "" {
-		return nil, status.Error(codes.InvalidArgument, "return reason is required")
-	}
 
-	agg, err := s.store.GetOrderWithDetails(ctx, orderID)
-	if err != nil {
-		return nil, mapStoreError(err)
-	}
-
-	if !canActAsBuyer(caller, agg.Order, req.GetBuyerId()) {
-		return nil, status.Error(codes.PermissionDenied, "only the buyer who owns this order can request a return")
-	}
-
-	if agg.Order.DeliveredAt != nil && s.nowFn().Sub(*agg.Order.DeliveredAt) > returnWindowDuration {
-		return nil, status.Error(codes.FailedPrecondition, "return request window (7 days) has expired")
-	}
-
-	evidence := req.GetEvidenceUrls()
-	if evidence == nil {
-		evidence = []string{}
-	}
-	evidenceJSON, err := json.Marshal(evidence)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "marshal evidence_urls: %v", err)
-	}
-
-	returnID := uuid.NewString()
-	updatedAgg, _, err := s.store.TransitionOrderReturnRequested(ctx, store.ReturnRequestParams{
-		OrderID:          agg.Order.ID,
-		BuyerID:          agg.Order.BuyerID,
-		ReturnRequestID:  returnID,
-		Reason:           reason,
-		EvidenceURLsJSON: evidenceJSON,
-		ActorID:          fallbackStr(caller.UserID, agg.Order.BuyerID),
-		ActorRole:        fallbackStr(caller.Role, "buyer"),
-		Note:             "Return requested: " + reason,
-	})
-	if err != nil {
-		return nil, mapStoreError(err)
-	}
-
-	return &orderv1.RequestReturnResponse{
-		Order:           aggregateToProto(*updatedAgg),
-		ReturnRequestId: returnID,
+	return &orderv1.BuyerConfirmReceivedResponse{
+		Order: aggregateToProto(*updatedAgg),
 	}, nil
 }
 

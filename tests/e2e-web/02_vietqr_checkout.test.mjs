@@ -5,6 +5,7 @@ import {
   WebClient,
   calculateShippingQuote,
   createBuyerAddress,
+  ensureRateBudget,
   normalizeStatus,
   pickTwoShopSkus,
   pollUntil,
@@ -13,6 +14,7 @@ import {
 } from "./helpers.mjs";
 
 test("02. VietQR mock via BFF: checkout VIETQR -> HMAC webhook to gateway -> payment SUCCEEDED & orders CONFIRMED", async () => {
+  await ensureRateBudget(30, { label: "02-vietqr" });
   const client = new WebClient();
   const buyer = await registerAndLoginBuyer(client, "vietqr");
   const { address, province, ward } = await createBuyerAddress(client, buyer);

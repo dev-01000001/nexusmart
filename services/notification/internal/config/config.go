@@ -21,6 +21,7 @@ type Config struct {
 	SMTPPort         int
 	SMTPFrom         string
 	UserGRPCAddr     string
+	WebBaseURL       string
 	JWTSecret        string
 	OTLPEndpoint     string
 	OTLPInsecure     bool
@@ -46,6 +47,7 @@ func Load() Config {
 		SMTPPort:         env.EnvInt("SMTP_PORT", 1025),
 		SMTPFrom:         env.EnvString("SMTP_FROM", "no-reply@nexusmart.local"),
 		UserGRPCAddr:     env.EnvString("USER_GRPC_ADDR", "user:50051"),
+		WebBaseURL:       strings.TrimRight(strings.TrimSpace(env.EnvString("WEB_BASE_URL", "http://localhost:3000")), "/"),
 		JWTSecret:        env.EnvString("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me"),
 		OTLPEndpoint:     env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		OTLPInsecure:     env.EnvBool("OTEL_EXPORTER_OTLP_INSECURE", true),

@@ -59,14 +59,15 @@ type PaymentClient interface {
 	GetPayment(ctx context.Context, req *paymentv1.GetPaymentRequest, opts ...grpc.CallOption) (*paymentv1.GetPaymentResponse, error)
 	CancelPayment(ctx context.Context, req *paymentv1.CancelPaymentRequest, opts ...grpc.CallOption) (*paymentv1.CancelPaymentResponse, error)
 	CreateRefund(ctx context.Context, req *paymentv1.CreateRefundRequest, opts ...grpc.CallOption) (*paymentv1.CreateRefundResponse, error)
-	ReleaseEscrow(ctx context.Context, req *paymentv1.ReleaseEscrowRequest, opts ...grpc.CallOption) (*paymentv1.ReleaseEscrowResponse, error)
 }
 
 // ShippingClient defines the subset of ShippingService RPCs required by OrderService.
 type ShippingClient interface {
 	CalculateFee(ctx context.Context, req *shippingv1.CalculateFeeRequest, opts ...grpc.CallOption) (*shippingv1.CalculateFeeResponse, error)
 	CreateShipment(ctx context.Context, req *shippingv1.CreateShipmentRequest, opts ...grpc.CallOption) (*shippingv1.CreateShipmentResponse, error)
+	CreateReturnShipment(ctx context.Context, req *shippingv1.CreateReturnShipmentRequest, opts ...grpc.CallOption) (*shippingv1.CreateReturnShipmentResponse, error)
 	CancelShipment(ctx context.Context, req *shippingv1.CancelShipmentRequest, opts ...grpc.CallOption) (*shippingv1.CancelShipmentResponse, error)
+	GetShipment(ctx context.Context, req *shippingv1.GetShipmentRequest, opts ...grpc.CallOption) (*shippingv1.GetShipmentResponse, error)
 }
 
 // Bundle groups all downstream gRPC clients used by OrderService.
@@ -209,6 +210,12 @@ func RetryIdempotent(ctx context.Context, maxAttempts int, fn func(context.Conte
 func isRetryable(err error) bool {
 	code := status.Code(err)
 	return code == codes.Unavailable || code == codes.DeadlineExceeded || code == codes.ResourceExhausted
+}
+
+// AuthClientInterceptor returns the unary client interceptor used by DialAll for
+// default timeouts, service-token minting (WithInternalAdminContext), and end-user JWT forwarding.
+func AuthClientInterceptor(defaultTimeout time.Duration, svc *auth.Manager) grpc.UnaryClientInterceptor {
+	return timeoutAndAuthClientInterceptor(defaultTimeout, svc)
 }
 
 func timeoutAndAuthClientInterceptor(defaultTimeout time.Duration, svc *auth.Manager) grpc.UnaryClientInterceptor {

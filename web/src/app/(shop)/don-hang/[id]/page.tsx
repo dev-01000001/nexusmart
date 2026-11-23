@@ -4,6 +4,8 @@ import type {
   GatewayOrder,
   GatewayOrderTimelineEvent,
   GatewayPublicShop,
+  GatewayRefund,
+  GatewayReturnRequest,
   GatewayShipmentResponse,
   PaginatedResponse,
 } from "@/lib/gateway-types";
@@ -99,25 +101,51 @@ export default async function OrderDetailPage({
 
   const encodedId = encodeURIComponent(order.id);
   const shouldFetchGroupSiblings = Boolean(order.checkout_group_id) && isUnpaidVietQrOrder(order);
-  const [timelineRes, shipmentRes, shopRes, visuals, pendingOrdersRes, groupShopsMap] =
-    await Promise.all([
-      gatewayFetch<{ events: GatewayOrderTimelineEvent[] }>(`/orders/${encodedId}/timeline`).catch(
-        () => null
-      ),
-      gatewayFetch<GatewayShipmentResponse>(`/shipping/shipments/${encodedId}`).catch(() => null),
-      gatewayFetch<{ shop: GatewayPublicShop }>(`/shops/${encodeURIComponent(order.shop_id)}`, {
-        token: false,
-        cache: "no-store",
-      }).catch(() => null),
-      fetchOrderVisualLookup(order.shop_id),
-      shouldFetchGroupSiblings
-        ? gatewayFetch<PaginatedResponse<GatewayOrder>>(
-            "/orders?status=PENDING&page=1&page_size=50",
-            { cache: "no-store" }
-          ).catch(() => null)
-        : Promise.resolve(null),
-      shouldFetchGroupSiblings ? fetchPublicShopsMap() : Promise.resolve({}),
-    ]);
+  const shouldFetchReturn =
+    Boolean(order.return_request_id) ||
+    order.status === "RETURN_REQUESTED" ||
+    order.status === "RETURNED";
+  const [
+    timelineRes,
+    shipmentRes,
+    returnRes,
+    returnShipmentRes,
+    refundsRes,
+    shopRes,
+    visuals,
+    pendingOrdersRes,
+    groupShopsMap,
+  ] = await Promise.all([
+    gatewayFetch<{ events: GatewayOrderTimelineEvent[] }>(`/orders/${encodedId}/timeline`).catch(
+      () => null
+    ),
+    gatewayFetch<GatewayShipmentResponse>(`/shipping/shipments/${encodedId}`).catch(() => null),
+    shouldFetchReturn
+      ? gatewayFetch<{ return_request: GatewayReturnRequest }>(`/orders/${encodedId}/return`).catch(
+          () => null
+        )
+      : Promise.resolve(null),
+    shouldFetchReturn
+      ? gatewayFetch<GatewayShipmentResponse>(
+          `/shipping/shipments/${encodedId}?direction=RETURN`
+        ).catch(() => null)
+      : Promise.resolve(null),
+    gatewayFetch<PaginatedResponse<GatewayRefund>>(
+      `/orders/${encodedId}/refunds?page=1&page_size=20`
+    ).catch(() => null),
+    gatewayFetch<{ shop: GatewayPublicShop }>(`/shops/${encodeURIComponent(order.shop_id)}`, {
+      token: false,
+      cache: "no-store",
+    }).catch(() => null),
+    fetchOrderVisualLookup(order.shop_id),
+    shouldFetchGroupSiblings
+      ? gatewayFetch<PaginatedResponse<GatewayOrder>>(
+          "/orders?status=PENDING&page=1&page_size=50",
+          { cache: "no-store" }
+        ).catch(() => null)
+      : Promise.resolve(null),
+    shouldFetchGroupSiblings ? fetchPublicShopsMap() : Promise.resolve({}),
+  ]);
 
   const initialGroupOrders = shouldFetchGroupSiblings
     ? (pendingOrdersRes?.items ?? []).filter((o) => o.checkout_group_id === order.checkout_group_id)
@@ -135,6 +163,9 @@ export default async function OrderDetailPage({
       initialOrder={order}
       initialTimeline={timeline}
       initialShipment={shipmentRes?.shipment ? shipmentRes : null}
+      initialReturnRequest={returnRes?.return_request ?? null}
+      initialReturnShipment={returnShipmentRes?.shipment ? returnShipmentRes : null}
+      initialRefunds={Array.isArray(refundsRes?.items) ? refundsRes.items : []}
       shop={shopRes?.shop ?? null}
       visuals={visuals}
       orderId={order.id}

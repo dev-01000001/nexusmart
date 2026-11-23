@@ -117,3 +117,26 @@ SELECT order_id, buyer_id, shop_id, order_code, checkout_group_id, updated_at
 FROM order_participants
 WHERE checkout_group_id = $1
 ORDER BY order_id ASC;
+
+-- name: UpsertShopOwner :exec
+INSERT INTO shop_owners (shop_id, owner_user_id, shop_name, updated_at)
+VALUES ($1, $2, $3, NOW())
+ON CONFLICT (shop_id) DO UPDATE SET
+    owner_user_id = CASE WHEN EXCLUDED.owner_user_id <> '' THEN EXCLUDED.owner_user_id ELSE shop_owners.owner_user_id END,
+    shop_name = CASE WHEN EXCLUDED.shop_name <> '' THEN EXCLUDED.shop_name ELSE shop_owners.shop_name END,
+    updated_at = NOW();
+
+-- name: GetShopOwner :one
+SELECT shop_id, owner_user_id, shop_name, updated_at
+FROM shop_owners
+WHERE shop_id = $1;
+
+-- name: InsertEmailDedup :execrows
+INSERT INTO notification_email_dedups (dedup_key, event_id)
+VALUES ($1, $2)
+ON CONFLICT (dedup_key) DO NOTHING;
+
+-- name: GetEmailDedupEventID :one
+SELECT event_id
+FROM notification_email_dedups
+WHERE dedup_key = $1;

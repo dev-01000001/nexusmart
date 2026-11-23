@@ -17,6 +17,7 @@ import (
 	"github.com/nexusmart/core/services/order/internal/clients"
 	"github.com/nexusmart/core/services/order/internal/config"
 	"github.com/nexusmart/core/services/order/internal/db"
+	"github.com/nexusmart/core/services/order/internal/events"
 	"github.com/nexusmart/core/services/order/internal/statemachine"
 	"github.com/nexusmart/core/services/order/internal/store"
 	"google.golang.org/grpc/codes"
@@ -98,7 +99,7 @@ func canViewOrCancelOrder(caller callerIdentity, ord db.Order) bool {
 	if caller.UserID != "" && caller.UserID == ord.BuyerID {
 		return true
 	}
-	if caller.ShopID != "" && caller.ShopID == ord.ShopID {
+	if caller.Role == "seller" && caller.ShopID != "" && caller.ShopID == ord.ShopID {
 		return true
 	}
 	return false
@@ -108,7 +109,7 @@ func canManageShopOrder(caller callerIdentity, ord db.Order, reqShopID string) b
 	if caller.IsPrivileged {
 		return true
 	}
-	if caller.FromAuthCtx && caller.Role != "" && caller.Role != "seller" {
+	if caller.FromAuthCtx && caller.Role != "seller" {
 		return false
 	}
 	if caller.FromAuthCtx && reqShopID != "" && caller.ShopID != "" && reqShopID != caller.ShopID {
@@ -118,9 +119,6 @@ func canManageShopOrder(caller callerIdentity, ord db.Order, reqShopID string) b
 }
 
 func canActAsBuyer(caller callerIdentity, ord db.Order, reqBuyerID string) bool {
-	if caller.IsPrivileged {
-		return true
-	}
 	if caller.FromAuthCtx && reqBuyerID != "" && caller.UserID != "" && reqBuyerID != caller.UserID {
 		return false
 	}
@@ -132,15 +130,83 @@ func mapStoreError(err error) error {
 		return nil
 	}
 	if errors.Is(err, store.ErrNotFound) {
-		return status.Error(codes.NotFound, "order not found")
+		return status.Error(codes.NotFound, "record not found")
 	}
-	if errors.Is(err, statemachine.ErrInvalidTransition) || errors.Is(err, store.ErrRetryPrecondition) {
+	if errors.Is(err, statemachine.ErrInvalidTransition) ||
+		errors.Is(err, statemachine.ErrInvalidReturnTransition) ||
+		errors.Is(err, store.ErrRetryPrecondition) ||
+		errors.Is(err, store.ErrDuplicateReturnRequest) ||
+		errors.Is(err, store.ErrReturnDeadlineNotReached) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	if _, ok := status.FromError(err); ok {
 		return err
 	}
 	return status.Errorf(codes.Internal, "internal order error: %v", err)
+}
+
+func (s *OrderService) autoCompleteDuration() time.Duration {
+	days := s.cfg.AutoCompleteDays
+	if days <= 0 {
+		days = 7
+	}
+	return time.Duration(days) * 24 * time.Hour
+}
+
+func (s *OrderService) sellerConfirmTimeout() time.Duration {
+	hours := s.cfg.SellerConfirmHours
+	if hours <= 0 {
+		hours = 48
+	}
+	return time.Duration(hours) * time.Hour
+}
+
+func (s *OrderService) returnSellerResponseDuration() time.Duration {
+	days := s.cfg.ReturnSellerResponseDays
+	if days <= 0 {
+		days = 3
+	}
+	return time.Duration(days) * 24 * time.Hour
+}
+
+func (s *OrderService) returnShipDuration() time.Duration {
+	days := s.cfg.ReturnShipDays
+	if days <= 0 {
+		days = 5
+	}
+	return time.Duration(days) * 24 * time.Hour
+}
+
+func (s *OrderService) returnInspectDuration() time.Duration {
+	days := s.cfg.ReturnInspectDays
+	if days <= 0 {
+		days = 3
+	}
+	return time.Duration(days) * 24 * time.Hour
+}
+
+func (s *OrderService) buildOrderCompletedOutbox(ord db.Order, traceID, traceparent string) (db.InsertOutboxEventParams, error) {
+	coinsReward := ComputeOrderRewardCoins(ord, s.cfg.RewardCoinsBPS)
+	payloadBytes, err := json.Marshal(events.OrderCompletedPayload{
+		OrderID:         ord.ID,
+		OrderCode:       ord.OrderCode,
+		BuyerID:         ord.BuyerID,
+		ShopID:          ord.ShopID,
+		SubtotalVND:     ord.SubtotalVND,
+		CommissionVND:   ord.CommissionVND,
+		TotalPayableVND: ord.TotalPayableVND,
+		CoinsReward:     coinsReward,
+	})
+	if err != nil {
+		return db.InsertOutboxEventParams{}, fmt.Errorf("marshal order.completed event: %w", err)
+	}
+	return db.InsertOutboxEventParams{
+		ID:          uuid.NewString(),
+		EventType:   events.SubjectOrderCompleted,
+		TraceID:     traceID,
+		Traceparent: traceparent,
+		PayloadJSON: payloadBytes,
+	}, nil
 }
 
 func traceMetaFromContext(ctx context.Context) (string, string) {
@@ -278,6 +344,64 @@ func aggregateToProto(agg store.OrderAggregate) *orderv1.Order {
 	}
 	if ord.PaymentExpiresAt != nil {
 		out.PaymentExpiresAt = timestamppb.New(*ord.PaymentExpiresAt)
+	}
+	if ord.DeliveredAt != nil {
+		out.DeliveredAt = timestamppb.New(*ord.DeliveredAt)
+	}
+	if agg.ReturnRequestID != "" {
+		out.ReturnRequestId = agg.ReturnRequestID
+		out.ReturnStatus = statemachine.StringToReturnStatus(agg.ReturnStatus)
+	}
+	return out
+}
+
+func returnAggregateToProto(agg store.ReturnAggregate) *orderv1.ReturnRequest {
+	rr := agg.Request
+	var evidenceURLs []string
+	if len(rr.EvidenceURLsJSON) > 0 {
+		_ = json.Unmarshal(rr.EvidenceURLsJSON, &evidenceURLs)
+	}
+	var sellerEvidenceURLs []string
+	if len(rr.SellerEvidenceURLsJSON) > 0 {
+		_ = json.Unmarshal(rr.SellerEvidenceURLsJSON, &sellerEvidenceURLs)
+	}
+	evs := make([]*orderv1.ReturnEvent, 0, len(agg.Events))
+	for _, ev := range agg.Events {
+		evs = append(evs, &orderv1.ReturnEvent{
+			Id:         ev.ID,
+			FromStatus: statemachine.StringToReturnStatus(ev.FromStatus),
+			ToStatus:   statemachine.StringToReturnStatus(ev.ToStatus),
+			ActorId:    ev.ActorID,
+			ActorRole:  ev.ActorRole,
+			Note:       ev.Note,
+			CreatedAt:  timestamppb.New(ev.CreatedAt),
+		})
+	}
+	out := &orderv1.ReturnRequest{
+		Id:                 rr.ID,
+		OrderId:            rr.OrderID,
+		OrderCode:          rr.OrderCode,
+		BuyerId:            rr.BuyerID,
+		ShopId:             rr.ShopID,
+		Status:             statemachine.StringToReturnStatus(rr.Status),
+		Reason:             rr.Reason,
+		EvidenceUrls:       evidenceURLs,
+		SellerResponse:     rr.SellerResponse,
+		SellerEvidenceUrls: sellerEvidenceURLs,
+		DisputeReason:      rr.DisputeReason,
+		AdminNote:          rr.AdminNote,
+		RefundAmountVnd:    rr.RefundAmountVND,
+		ReturnTrackingCode: rr.ReturnTrackingCode,
+		ReturnLabelUrl:     rr.ReturnLabelURL,
+		ReturnFeeVnd:       rr.ReturnFeeVND,
+		ReturnFeeBearer:    rr.ReturnFeeBearer,
+		GoodsReceived:      rr.GoodsReceived,
+		CreatedAt:          timestamppb.New(rr.CreatedAt),
+		UpdatedAt:          timestamppb.New(rr.UpdatedAt),
+		Events:             evs,
+	}
+	if rr.DeadlineAt != nil {
+		out.DeadlineAt = timestamppb.New(*rr.DeadlineAt)
 	}
 	return out
 }

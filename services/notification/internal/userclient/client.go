@@ -13,9 +13,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// Resolver looks up user contact information (email + display name) via UserService.
+// Resolver looks up user contact information (email + display name) and shop owner via UserService.
 type Resolver interface {
 	GetUserContact(ctx context.Context, userID string) (email string, fullName string, err error)
+	GetShopOwner(ctx context.Context, shopID string) (ownerUserID string, shopName string, err error)
 }
 
 // Client wraps a gRPC UserService client with timeout and OTel propagation.
@@ -81,4 +82,24 @@ func (c *Client) GetUserContact(ctx context.Context, userID string) (string, str
 		return "", "", nil
 	}
 	return strings.TrimSpace(resp.GetUser().GetEmail()), strings.TrimSpace(resp.GetUser().GetFullName()), nil
+}
+
+// GetShopOwner calls UserService.GetShop to resolve a shop's owner user ID and display name.
+// GetShop is not in internalRPCs (service tokens are rejected by auth.GRPCUnaryServerInterceptor).
+func (c *Client) GetShopOwner(ctx context.Context, shopID string) (string, string, error) {
+	shopID = strings.TrimSpace(shopID)
+	if c == nil || c.client == nil || shopID == "" {
+		return "", "", nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	resp, err := c.client.GetShop(callCtx, &userv1.GetShopRequest{ShopId: shopID})
+	if err != nil {
+		return "", "", err
+	}
+	if resp.GetShop() == nil {
+		return "", "", nil
+	}
+	return strings.TrimSpace(resp.GetShop().GetOwnerUserId()), strings.TrimSpace(resp.GetShop().GetName()), nil
 }

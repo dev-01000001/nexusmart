@@ -13,6 +13,7 @@ import {
   IconFileText,
   IconMenu,
   IconPackage,
+  IconRefresh,
   IconSliders,
   IconStore,
   IconTag,
@@ -33,7 +34,8 @@ interface SellerNavItem {
 
 function SellerShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { user, shop, shopState, pendingOrdersCount, mockShopKey } = useSellerContext();
+  const { user, shop, shopState, pendingOrdersCount, pendingReturnsCount, mockShopKey } =
+    useSellerContext();
   const { chatThreads, toastMessage, dismissToast } = useMockStore();
   const [menuOpen, setMenuOpen] = useState(false);
   const session = useSellerSession();
@@ -61,6 +63,12 @@ function SellerShellInner({ children }: { children: React.ReactNode }) {
       label: "Đơn chờ duyệt",
       icon: <IconStore size={16} />,
       badge: pendingOrdersCount > 0 ? pendingOrdersCount : undefined,
+    },
+    {
+      href: "/seller/tra-hang",
+      label: "Trả hàng & hoàn tiền",
+      icon: <IconRefresh size={16} />,
+      badge: pendingReturnsCount > 0 ? pendingReturnsCount : undefined,
     },
     { href: "/seller/khuyen-mai", label: "Khuyến mãi", icon: <IconTag size={16} /> },
     {

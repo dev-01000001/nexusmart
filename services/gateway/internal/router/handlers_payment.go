@@ -40,14 +40,38 @@ type paymentDTO struct {
 }
 
 type refundDTO struct {
-	RefundID       string `json:"refund_id"`
-	PaymentID      string `json:"payment_id"`
-	OrderID        string `json:"order_id"`
-	AmountVND      int64  `json:"amount_vnd"`
-	Status         string `json:"status"`
-	Reason         string `json:"reason"`
-	IdempotencyKey string `json:"idempotency_key"`
-	CreatedAt      string `json:"created_at,omitempty"`
+	RefundID          string `json:"refund_id"`
+	PaymentID         string `json:"payment_id"`
+	OrderID           string `json:"order_id"`
+	AmountVND         int64  `json:"amount_vnd"`
+	Status            string `json:"status"`
+	Reason            string `json:"reason"`
+	IdempotencyKey    string `json:"idempotency_key"`
+	CreatedAt         string `json:"created_at,omitempty"`
+	BankCode          string `json:"bank_code"`
+	BankAccountMasked string `json:"bank_account_masked"`
+	BankAccountName   string `json:"bank_account_name"`
+	BankAccountNumber string `json:"bank_account_number,omitempty"`
+	ProviderRefundID  string `json:"provider_refund_id"`
+	IsLatePayment     bool   `json:"is_late_payment"`
+	SettledAt         string `json:"settled_at,omitempty"`
+	SettlementNote    string `json:"settlement_note"`
+}
+
+type reconciliationQueueItemDTO struct {
+	ID                string `json:"id"`
+	WebhookEventID    string `json:"webhook_event_id"`
+	Provider          string `json:"provider"`
+	ProviderTxID      string `json:"provider_tx_id"`
+	ExpectedPaymentID string `json:"expected_payment_id"`
+	OrderRef          string `json:"order_ref"`
+	ExpectedAmountVND int64  `json:"expected_amount_vnd"`
+	ActualAmountVND   int64  `json:"actual_amount_vnd"`
+	Reason            string `json:"reason"`
+	ResolutionStatus  string `json:"resolution_status"`
+	Notes             string `json:"notes"`
+	CreatedAt         string `json:"created_at,omitempty"`
+	ResolvedAt        string `json:"resolved_at,omitempty"`
 }
 
 type accountBalanceDTO struct {
@@ -101,19 +125,52 @@ func mapPayment(p *paymentv1.Payment) *paymentDTO {
 	}
 }
 
-func mapRefund(rf *paymentv1.Refund) *refundDTO {
+func mapRefund(rf *paymentv1.Refund, includeFullBankAccount bool) *refundDTO {
 	if rf == nil {
 		return nil
 	}
+	bankNum := ""
+	if includeFullBankAccount {
+		bankNum = rf.GetBankAccountNumber()
+	}
 	return &refundDTO{
-		RefundID:       rf.GetRefundId(),
-		PaymentID:      rf.GetPaymentId(),
-		OrderID:        rf.GetOrderId(),
-		AmountVND:      rf.GetAmountVnd(),
-		Status:         refundStatusString(rf.GetStatus()),
-		Reason:         rf.GetReason(),
-		IdempotencyKey: rf.GetIdempotencyKey(),
-		CreatedAt:      httpx.FormatTimestamp(rf.GetCreatedAt()),
+		RefundID:          rf.GetRefundId(),
+		PaymentID:         rf.GetPaymentId(),
+		OrderID:           rf.GetOrderId(),
+		AmountVND:         rf.GetAmountVnd(),
+		Status:            refundStatusString(rf.GetStatus()),
+		Reason:            rf.GetReason(),
+		IdempotencyKey:    rf.GetIdempotencyKey(),
+		CreatedAt:         httpx.FormatTimestamp(rf.GetCreatedAt()),
+		BankCode:          rf.GetBankCode(),
+		BankAccountMasked: rf.GetBankAccountMasked(),
+		BankAccountName:   rf.GetBankAccountName(),
+		BankAccountNumber: bankNum,
+		ProviderRefundID:  rf.GetProviderRefundId(),
+		IsLatePayment:     rf.GetIsLatePayment(),
+		SettledAt:         httpx.FormatTimestamp(rf.GetSettledAt()),
+		SettlementNote:    rf.GetSettlementNote(),
+	}
+}
+
+func mapReconciliationQueueItem(it *paymentv1.ReconciliationQueueItem) *reconciliationQueueItemDTO {
+	if it == nil {
+		return nil
+	}
+	return &reconciliationQueueItemDTO{
+		ID:                it.GetId(),
+		WebhookEventID:    it.GetWebhookEventId(),
+		Provider:          it.GetProvider(),
+		ProviderTxID:      it.GetProviderTxId(),
+		ExpectedPaymentID: it.GetExpectedPaymentId(),
+		OrderRef:          it.GetOrderRef(),
+		ExpectedAmountVND: it.GetExpectedAmountVnd(),
+		ActualAmountVND:   it.GetActualAmountVnd(),
+		Reason:            it.GetReason(),
+		ResolutionStatus:  it.GetResolutionStatus(),
+		Notes:             it.GetNotes(),
+		CreatedAt:         httpx.FormatTimestamp(it.GetCreatedAt()),
+		ResolvedAt:        httpx.FormatTimestamp(it.GetResolvedAt()),
 	}
 }
 
@@ -157,6 +214,32 @@ func refundStatusString(st paymentv1.RefundStatus) string {
 		return "FAILED"
 	default:
 		return ""
+	}
+}
+
+func parseRefundStatus(s string) paymentv1.RefundStatus {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "PENDING", "REFUND_STATUS_PENDING":
+		return paymentv1.RefundStatus_REFUND_STATUS_PENDING
+	case "DONE", "COMPLETED", "REFUND_STATUS_DONE":
+		return paymentv1.RefundStatus_REFUND_STATUS_DONE
+	case "FAILED", "REFUND_STATUS_FAILED":
+		return paymentv1.RefundStatus_REFUND_STATUS_FAILED
+	default:
+		return paymentv1.RefundStatus_REFUND_STATUS_UNSPECIFIED
+	}
+}
+
+func parseReconciliationAction(s string) paymentv1.ReconciliationAction {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "ASSIGN", "RECONCILIATION_ACTION_ASSIGN":
+		return paymentv1.ReconciliationAction_RECONCILIATION_ACTION_ASSIGN
+	case "REFUND", "RECONCILIATION_ACTION_REFUND":
+		return paymentv1.ReconciliationAction_RECONCILIATION_ACTION_REFUND
+	case "SUSPEND", "RECONCILIATION_ACTION_SUSPEND":
+		return paymentv1.ReconciliationAction_RECONCILIATION_ACTION_SUSPEND
+	default:
+		return paymentv1.ReconciliationAction_RECONCILIATION_ACTION_UNSPECIFIED
 	}
 }
 
@@ -204,7 +287,7 @@ func (h *handler) handleRetryPayment(w http.ResponseWriter, r *http.Request) {
 		Method string `json:"method"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	orderMethod := parseOrderPaymentMethod(body.Method)
@@ -311,7 +394,7 @@ func (h *handler) handleAdminRefundPayment(w http.ResponseWriter, r *http.Reques
 		Reason    string `json:"reason"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 
@@ -330,7 +413,7 @@ func (h *handler) handleAdminRefundPayment(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"refund":          mapRefund(resp.GetRefund()),
+		"refund":          mapRefund(resp.GetRefund(), true),
 		"already_existed": resp.GetAlreadyExisted(),
 	})
 }
@@ -340,7 +423,7 @@ func (h *handler) handleAdminReconcilePayments(w http.ResponseWriter, r *http.Re
 		Date string `json:"date"`
 	}
 	if err := httpx.DecodeOptionalJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 
@@ -372,5 +455,208 @@ func (h *handler) handleAdminReconcilePayments(w http.ResponseWriter, r *http.Re
 		"missing_provider_count": resp.GetMissingProviderCount(),
 		"amount_mismatch_count":  resp.GetAmountMismatchCount(),
 		"items":                  items,
+	})
+}
+
+func (h *handler) handleListOrderRefunds(w http.ResponseWriter, r *http.Request) {
+	orderID := chi.URLParam(r, "id")
+	page, pageSize := httpx.ParsePagination(r)
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	isAdmin := auth.HasRole(claims, "admin", "super_admin")
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	if !isAdmin && h.clients.Order != nil {
+		ordResp, err := h.clients.Order.GetOrder(ctx, &orderv1.GetOrderRequest{
+			OrderId:     orderID,
+			ActorId:     claims.UserID(),
+			ActorRole:   claims.Role,
+			ActorShopId: claims.ShopID,
+		})
+		if err != nil {
+			httpx.WriteGRPCError(w, r, err)
+			return
+		}
+		if ord := ordResp.GetOrder(); ord != nil && ord.GetBuyerId() != "" && ord.GetBuyerId() != claims.UserID() {
+			httpx.WriteError(w, r, http.StatusForbidden, "PERMISSION_DENIED", "cannot access another buyer's order refunds")
+			return
+		}
+	}
+
+	resp, err := h.clients.Payment.ListRefunds(ctx, &paymentv1.ListRefundsRequest{
+		Status:   parseRefundStatus(r.URL.Query().Get("status")),
+		OrderId:  orderID,
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	items := make([]*refundDTO, 0, len(resp.GetRefunds()))
+	for _, rf := range resp.GetRefunds() {
+		items = append(items, mapRefund(rf, isAdmin))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"page":      page,
+		"page_size": pageSize,
+		"total":     resp.GetTotal(),
+	})
+}
+
+func (h *handler) handleSubmitRefundBankAccount(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		BankCode          string `json:"bank_code"`
+		BankAccountNumber string `json:"bank_account_number"`
+		BankAccountName   string `json:"bank_account_name"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Payment.SubmitRefundBankAccount(ctx, &paymentv1.SubmitRefundBankAccountRequest{
+		RefundId:          chi.URLParam(r, "id"),
+		BankCode:          body.BankCode,
+		BankAccountNumber: body.BankAccountNumber,
+		BankAccountName:   body.BankAccountName,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"refund": mapRefund(resp.GetRefund(), false),
+	})
+}
+
+func (h *handler) handleAdminListRefunds(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := httpx.ParsePagination(r)
+	q := r.URL.Query()
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Payment.ListRefunds(ctx, &paymentv1.ListRefundsRequest{
+		Status:   parseRefundStatus(q.Get("status")),
+		OrderId:  q.Get("order_id"),
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	items := make([]*refundDTO, 0, len(resp.GetRefunds()))
+	for _, rf := range resp.GetRefunds() {
+		items = append(items, mapRefund(rf, true))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"page":      page,
+		"page_size": pageSize,
+		"total":     resp.GetTotal(),
+	})
+}
+
+func (h *handler) handleAdminSettleRefund(w http.ResponseWriter, r *http.Request) {
+	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idemKey == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "MISSING_IDEMPOTENCY_KEY", "Idempotency-Key header is required")
+		return
+	}
+	var body struct {
+		ProviderRefundID string `json:"provider_refund_id"`
+		Note             string `json:"note"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context(), "idempotency-key", idemKey)
+	defer cancel()
+
+	resp, err := h.clients.Payment.SettleRefund(ctx, &paymentv1.SettleRefundRequest{
+		RefundId:         chi.URLParam(r, "id"),
+		ProviderRefundId: body.ProviderRefundID,
+		Note:             body.Note,
+		IdempotencyKey:   idemKey,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"refund":          mapRefund(resp.GetRefund(), true),
+		"already_settled": resp.GetAlreadySettled(),
+	})
+}
+
+func (h *handler) handleAdminListReconciliationQueue(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := httpx.ParsePagination(r)
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Payment.ListReconciliationQueue(ctx, &paymentv1.ListReconciliationQueueRequest{
+		Status:   r.URL.Query().Get("status"),
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	items := make([]*reconciliationQueueItemDTO, 0, len(resp.GetItems()))
+	for _, it := range resp.GetItems() {
+		items = append(items, mapReconciliationQueueItem(it))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"page":      page,
+		"page_size": pageSize,
+		"total":     resp.GetTotal(),
+	})
+}
+
+func (h *handler) handleAdminResolveReconciliationItem(w http.ResponseWriter, r *http.Request) {
+	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idemKey == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "MISSING_IDEMPOTENCY_KEY", "Idempotency-Key header is required")
+		return
+	}
+	var body struct {
+		Action    string `json:"action"`
+		PaymentID string `json:"payment_id"`
+		Note      string `json:"note"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context(), "idempotency-key", idemKey)
+	defer cancel()
+
+	resp, err := h.clients.Payment.ResolveReconciliationItem(ctx, &paymentv1.ResolveReconciliationItemRequest{
+		ItemId:         chi.URLParam(r, "id"),
+		Action:         parseReconciliationAction(body.Action),
+		PaymentId:      body.PaymentID,
+		Note:           body.Note,
+		IdempotencyKey: idemKey,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"item":             mapReconciliationQueueItem(resp.GetItem()),
+		"refund":           mapRefund(resp.GetRefund(), true),
+		"already_resolved": resp.GetAlreadyResolved(),
 	})
 }

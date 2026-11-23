@@ -7,13 +7,14 @@ import (
 
 // Event subject constants matching docs/contracts.md Section 5.
 const (
-	SubjectOrderCreated   = "order.created"
-	SubjectOrderConfirmed = "order.confirmed"
-	SubjectOrderCancelled = "order.cancelled"
-	SubjectOrderShipped   = "order.shipped"
-	SubjectOrderDelivered = "order.delivered"
-	SubjectOrderReturned  = "order.returned"
-	SubjectOrderCompleted = "order.completed"
+	SubjectOrderCreated       = "order.created"
+	SubjectOrderConfirmed     = "order.confirmed"
+	SubjectOrderCancelled     = "order.cancelled"
+	SubjectOrderShipped       = "order.shipped"
+	SubjectOrderDelivered     = "order.delivered"
+	SubjectOrderReturned      = "order.returned"
+	SubjectOrderReturnUpdated = "order.return_updated"
+	SubjectOrderCompleted     = "order.completed"
 
 	SubjectPaymentSucceeded = "payment.succeeded"
 	SubjectPaymentFailed    = "payment.failed"
@@ -98,6 +99,22 @@ type OrderReturnedPayload struct {
 	WasPaid         bool   `json:"was_paid"`
 }
 
+// OrderReturnUpdatedPayload matches docs/contracts.md Section 5.
+type OrderReturnUpdatedPayload struct {
+	ReturnRequestID    string `json:"return_request_id"`
+	OrderID            string `json:"order_id"`
+	OrderCode          string `json:"order_code"`
+	CheckoutGroupID    string `json:"checkout_group_id"`
+	BuyerID            string `json:"buyer_id"`
+	ShopID             string `json:"shop_id"`
+	Status             string `json:"status"`
+	PreviousStatus     string `json:"previous_status"`
+	Reason             string `json:"reason"`
+	ReturnTrackingCode string `json:"return_tracking_code"`
+	DeadlineAt         string `json:"deadline_at,omitempty"`
+	ActorRole          string `json:"actor_role"`
+}
+
 // OrderCompletedPayload matches docs/contracts.md Section 5.
 type OrderCompletedPayload struct {
 	OrderID         string `json:"order_id"`
@@ -142,13 +159,16 @@ type PaymentRefundedPayload struct {
 
 // ShipmentUpdatedPayload matches shipment.updated events.
 type ShipmentUpdatedPayload struct {
-	ShipmentID   string `json:"shipment_id"`
-	OrderID      string `json:"order_id"`
-	ShopID       string `json:"shop_id"`
-	CarrierCode  string `json:"carrier_code"`
-	TrackingCode string `json:"tracking_code"`
-	Status       string `json:"status"`
-	RawStatus    string `json:"raw_status"`
-	Description  string `json:"description"`
-	OccurredAt   string `json:"occurred_at"`
+	ShipmentID      string `json:"shipment_id"`
+	OrderID         string `json:"order_id"`
+	ShopID          string `json:"shop_id"`
+	CarrierCode     string `json:"carrier_code"`
+	TrackingCode    string `json:"tracking_code"`
+	Status          string `json:"status"`
+	RawStatus       string `json:"raw_status"`
+	Description     string `json:"description"`
+	OccurredAt      string `json:"occurred_at"`
+	Direction       string `json:"direction"`
+	ReturnRequestID string `json:"return_request_id"`
+	RedeliveryCount int32  `json:"redelivery_count"`
 }

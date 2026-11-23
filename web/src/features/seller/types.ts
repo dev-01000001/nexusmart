@@ -186,16 +186,33 @@ export function getOrderStatusMeta(status: string): StatusMeta {
 }
 
 /**
+ * Seller-facing order status label honoring Wave 2a §1.1:
+ * PREPARING with tracking_code is "Chờ hãng lấy hàng" (awaiting carrier pickup),
+ * transitioning to "Đang giao" only when carrier emits picking/delivering webhook.
+ */
+export function getSellerOrderDisplayMeta(
+  order: Pick<GatewayOrder, "status" | "tracking_code">
+): StatusMeta {
+  if (order.status === "PREPARING" && Boolean((order.tracking_code ?? "").trim())) {
+    return { label: "Chờ hãng lấy hàng", tone: "warn" };
+  }
+  return getOrderStatusMeta(order.status);
+}
+
+/**
  * Valid seller actions by order state machine (docs/contracts.md §6):
  * - PENDING: cancel
- * - CONFIRMED: confirm (→ PREPARING), ship (→ SHIPPING), cancel
- * - PREPARING: ship (→ SHIPPING), cancel
+ * - CONFIRMED: confirm (→ PREPARING), ship (creates shipment, stays PREPARING with tracking_code), cancel
+ * - PREPARING: ship (if no tracking_code yet), cancel (until carrier picks up)
  */
 export function canSellerConfirmOrder(status: string): boolean {
   return status === "CONFIRMED";
 }
 
-export function canSellerShipOrder(status: string): boolean {
+export function canSellerShipOrder(status: string, trackingCode?: string): boolean {
+  if (Boolean((trackingCode ?? "").trim())) {
+    return false;
+  }
   return status === "CONFIRMED" || status === "PREPARING";
 }
 
@@ -204,14 +221,29 @@ export function canSellerCancelOrder(status: string): boolean {
 }
 
 /**
- * Computes integer VND net receivable for a shop sub-order.
+ * Computes seller-borne deductions for a sub-order: flash sale + shop voucher + platform commission.
  */
-export function computeOrderNetVnd(order: GatewayOrder): number {
-  const net =
-    order.subtotal_vnd -
-    order.flash_sale_discount_vnd -
-    order.shop_voucher_discount_vnd -
-    order.commission_vnd;
+export function computeOrderDeductionsVnd(
+  order: Pick<
+    GatewayOrder,
+    "flash_sale_discount_vnd" | "shop_voucher_discount_vnd" | "commission_vnd"
+  >
+): number {
+  return Math.trunc(
+    order.flash_sale_discount_vnd + order.shop_voucher_discount_vnd + order.commission_vnd
+  );
+}
+
+/**
+ * Computes integer VND net receivable for a shop sub-order: subtotal - deductions.
+ */
+export function computeOrderNetVnd(
+  order: Pick<
+    GatewayOrder,
+    "subtotal_vnd" | "flash_sale_discount_vnd" | "shop_voucher_discount_vnd" | "commission_vnd"
+  >
+): number {
+  const net = order.subtotal_vnd - computeOrderDeductionsVnd(order);
   return Math.max(0, Math.trunc(net));
 }
 

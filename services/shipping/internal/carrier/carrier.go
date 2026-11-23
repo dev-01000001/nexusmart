@@ -2,9 +2,13 @@ package carrier
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Canonical internal shipment statuses matching docs/contracts.md & shipping.proto.
@@ -17,7 +21,13 @@ const (
 	StatusReturning  = "returning"
 	StatusReturned   = "returned"
 	StatusCancelled  = "cancelled"
+
+	// DefaultLabelBaseURL is the fallback public label base URL when SHIPPING_LABEL_BASE_URL is unset.
+	DefaultLabelBaseURL = "http://localhost:8080/api/v1/shipping/labels"
 )
+
+// ErrInvalidCarrierToken indicates a carrier rejected or could not accept the provided API token.
+var ErrInvalidCarrierToken = errors.New("invalid carrier API token")
 
 // NonRetryableError wraps errors that should not be retried (e.g., 4xx validation errors).
 type NonRetryableError struct {
@@ -57,6 +67,7 @@ type FeeRequest struct {
 	ToGHNWardCode    string
 	WeightGrams      int32
 	CODAmountVND     int64
+	AllowedCarriers  []string
 }
 
 // Quote represents a shipping option from a carrier or fallback table.
@@ -83,14 +94,15 @@ type Address struct {
 
 // ShipmentRequest contains parameters to create a shipment with a carrier.
 type ShipmentRequest struct {
-	OrderID      string
-	ShopID       string
-	ServiceCode  string
-	CODAmountVND int64
-	WeightGrams  int32
-	FromAddress  Address
-	ToAddress    Address
-	ItemsSummary string
+	OrderID         string
+	ClientOrderCode string
+	ShopID          string
+	ServiceCode     string
+	CODAmountVND    int64
+	WeightGrams     int32
+	FromAddress     Address
+	ToAddress       Address
+	ItemsSummary    string
 }
 
 // ShipmentResult is returned by a carrier after creating a shipment.
@@ -122,16 +134,21 @@ type Carrier interface {
 	CreateShipment(ctx context.Context, req ShipmentRequest) (*ShipmentResult, error)
 	CancelShipment(ctx context.Context, trackingCode string) error
 	GetStatus(ctx context.Context, trackingCode string) (*TrackingStatus, error)
+	RequestRedelivery(ctx context.Context, trackingCode, preferredDate, note string) error
+	TestConnection(ctx context.Context, token string) error
+	SetToken(token string)
 }
 
 // MapCarrierStatus maps raw provider statuses (GHN, Mock Express, or canonical) to internal statuses.
+// Per w2-plan §1.1: "picked" maps to delivering (carrier already holds parcel, no longer cancellable);
+// "ready_to_pick" and "picking" remain picking (cancellable).
 func MapCarrierStatus(raw string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "created", "new":
 		return StatusCreated, true
-	case "ready_to_pick", "picking", "money_collect_picking", "picked":
+	case "ready_to_pick", "picking", "money_collect_picking":
 		return StatusPicking, true
-	case "storing", "transporting", "sorting", "delivering", "money_collect_delivering", "in_transit", "out_for_delivery", "shipping":
+	case "picked", "storing", "transporting", "sorting", "delivering", "money_collect_delivering", "in_transit", "out_for_delivery", "shipping":
 		return StatusDelivering, true
 	case "delivered", "completed":
 		return StatusDelivered, true
@@ -146,6 +163,124 @@ func MapCarrierStatus(raw string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// StatusDescriptionVI returns a natural Vietnamese status description for timeline events and notifications (SHP-B8).
+func StatusDescriptionVI(status string) string {
+	switch status {
+	case StatusCreated:
+		return "Vận đơn đã được tạo"
+	case StatusPicking:
+		return "Đang lấy hàng"
+	case StatusDelivering:
+		return "Đang giao hàng"
+	case StatusDelivered:
+		return "Giao hàng thành công"
+	case StatusFailed:
+		return "Giao hàng thất bại"
+	case StatusReturning:
+		return "Đang hoàn hàng về người bán"
+	case StatusReturned:
+		return "Đã hoàn hàng về người bán"
+	case StatusCancelled:
+		return "Vận đơn đã bị huỷ"
+	default:
+		return "Cập nhật trạng thái vận đơn"
+	}
+}
+
+// ResolveDescriptionVI replaces empty or raw English carrier status strings with Vietnamese descriptions.
+func ResolveDescriptionVI(internalStatus, provided string) string {
+	desc := strings.TrimSpace(provided)
+	if desc == "" {
+		return StatusDescriptionVI(internalStatus)
+	}
+	if _, isRawStatus := MapCarrierStatus(desc); isRawStatus {
+		return StatusDescriptionVI(internalStatus)
+	}
+	if strings.EqualFold(desc, "Synced from GHN status polling") {
+		return StatusDescriptionVI(internalStatus)
+	}
+	return desc
+}
+
+// IsMockTokenRejected validates obvious invalid tokens in mock mode so admin enable/test checks work deterministically.
+func IsMockTokenRejected(token string, requireNonEmpty bool) bool {
+	trimmed := strings.TrimSpace(token)
+	if trimmed == "" {
+		return requireNonEmpty
+	}
+	if len(trimmed) < 6 {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	for _, bad := range []string{"invalid", "wrong", "bad"} {
+		if strings.Contains(lower, bad) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsAlreadyCancelledMessage reports whether a carrier error/message indicates the shipment was already cancelled.
+func IsAlreadyCancelledMessage(msg string) bool {
+	lower := strings.ToLower(strings.TrimSpace(msg))
+	for _, needle := range []string{
+		"already cancel",
+		"already_cancel",
+		"order is cancel",
+		"order_is_cancel",
+		"status is cancel",
+		"status_is_cancel",
+		"đã hủy",
+		"đã huỷ",
+		"da huy",
+		"hủy rồi",
+		"huỷ rồi",
+	} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsDuplicateClientOrderCodeMessage reports whether a carrier error/message indicates client_order_code already exists.
+func IsDuplicateClientOrderCodeMessage(msg string) bool {
+	lower := strings.ToLower(strings.TrimSpace(msg))
+	hasClientCode := strings.Contains(lower, "client_order_code") ||
+		strings.Contains(lower, "client order code") ||
+		strings.Contains(lower, "mã đơn khách hàng") ||
+		strings.Contains(lower, "ma don khach hang")
+	if !hasClientCode {
+		return false
+	}
+	for _, needle := range []string{
+		"exist",
+		"duplicate",
+		"already",
+		"tồn tại",
+		"ton tai",
+		"trùng",
+		"trung",
+	} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// mockTrackingCode produces a deterministic 12-hex-char tracking code keyed by ClientOrderCode
+// so retries or concurrent fallback calls for the same attempt never mint a second tracking code.
+// Falls back to a random UUID suffix when ClientOrderCode is empty.
+func mockTrackingCode(prefix, clientOrderCode string) string {
+	key := strings.TrimSpace(clientOrderCode)
+	if key == "" {
+		return prefix + "-" + strings.ToUpper(strings.ReplaceAll(uuid.NewString(), "-", "")[:12])
+	}
+	sum := sha256.Sum256([]byte(prefix + ":" + key))
+	return prefix + "-" + strings.ToUpper(hex.EncodeToString(sum[:6]))
 }
 
 // IsCancellableStatus reports whether a shipment in status can still be cancelled before pickup.

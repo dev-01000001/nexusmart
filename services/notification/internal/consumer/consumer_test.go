@@ -1,11 +1,13 @@
 package consumer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -41,6 +43,7 @@ func (s stubProcessor) ProcessEvent(ctx context.Context, subject string, env ser
 type dlqRecord struct {
 	eventID  string
 	subject  string
+	payload  []byte
 	errMsg   string
 	attempts int
 }
@@ -52,12 +55,13 @@ type stubDLQ struct {
 	pubData [][]byte
 }
 
-func (d *stubDLQ) InsertDeadLetter(_ context.Context, eventID, subject string, _ []byte, errMsg string, attempts int) error {
+func (d *stubDLQ) InsertDeadLetter(_ context.Context, eventID, subject string, payload []byte, errMsg string, attempts int) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.records = append(d.records, dlqRecord{
 		eventID:  eventID,
 		subject:  subject,
+		payload:  append([]byte(nil), payload...),
 		errMsg:   errMsg,
 		attempts: attempts,
 	})
@@ -144,5 +148,78 @@ func TestConsumerRetriesThenRoutesToDLQAfterMaxAttempts(t *testing.T) {
 	}
 	if len(dlq.pubSubj) != 1 || dlq.pubSubj[0] != "dlq.payment.succeeded" {
 		t.Fatalf("unexpected DLQ NATS subject: %+v", dlq.pubSubj)
+	}
+}
+
+func TestConsumerOutOfOrderShipmentRetriesThenDLQ(t *testing.T) {
+	dlq := &stubDLQ{}
+	c := NewTestableConsumer(
+		stubProcessor{fn: func(_ context.Context, _ string, _ service.Envelope) (bool, error) {
+			return false, service.ErrOrderParticipantNotFound
+		}},
+		dlq,
+		dlq,
+		5,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+
+	raw, _ := json.Marshal(service.Envelope{
+		EventID:   "evt-ooo-ship-1",
+		EventType: "shipment.updated",
+		Payload:   json.RawMessage(`{"order_id":"ord-missing","status":"delivering"}`),
+	})
+
+	for attempt := uint64(1); attempt <= 4; attempt++ {
+		msg := &fakeMsg{subject: "shipment.updated", data: raw, delivered: attempt}
+		c.HandleMessage(context.Background(), msg)
+		if !msg.naked || msg.acked {
+			t.Fatalf("attempt %d: out-of-order shipment.updated must NakWithDelay, acked=%v naked=%v", attempt, msg.acked, msg.naked)
+		}
+		if len(dlq.records) != 0 {
+			t.Fatalf("attempt %d: must not DLQ before maxAttempts", attempt)
+		}
+	}
+
+	finalMsg := &fakeMsg{subject: "shipment.updated", data: raw, delivered: 5}
+	c.HandleMessage(context.Background(), finalMsg)
+	if !finalMsg.acked || len(dlq.records) != 1 || len(dlq.pubSubj) != 1 || dlq.pubSubj[0] != "dlq.shipment.updated" {
+		t.Fatalf("attempt 5 must route to DLQ and Ack: acked=%v records=%+v pub=%+v", finalMsg.acked, dlq.records, dlq.pubSubj)
+	}
+}
+
+func TestConsumerRedactsResetTokenInDLQAndLogs(t *testing.T) {
+	var logBuf bytes.Buffer
+	dlq := &stubDLQ{}
+	c := NewTestableConsumer(
+		stubProcessor{fn: func(_ context.Context, _ string, _ service.Envelope) (bool, error) {
+			return false, errors.New("smtp connection refused")
+		}},
+		dlq,
+		dlq,
+		2,
+		slog.New(slog.NewJSONHandler(&logBuf, nil)),
+	)
+
+	secretToken := "super-secret-reset-token-abc123xyz"
+	raw, _ := json.Marshal(service.Envelope{
+		EventID:   "evt-reset-dlq-1",
+		EventType: "user.password_reset_requested",
+		Payload:   json.RawMessage(`{"user_id":"u-1","email":"u1@nexusmart.local","full_name":"User One","reset_token":"` + secretToken + `","expires_at":"2026-11-23T10:30:00Z"}`),
+	})
+
+	msg := &fakeMsg{subject: "user.password_reset_requested", data: raw, delivered: 2}
+	c.HandleMessage(context.Background(), msg)
+
+	if len(dlq.records) != 1 || len(dlq.pubData) != 1 {
+		t.Fatalf("expected DLQ record and publish, got records=%d pub=%d", len(dlq.records), len(dlq.pubData))
+	}
+	if strings.Contains(string(dlq.records[0].payload), secretToken) {
+		t.Fatalf("SECURITY: reset_token leaked into dead_letter_events payload: %s", string(dlq.records[0].payload))
+	}
+	if strings.Contains(string(dlq.pubData[0]), secretToken) {
+		t.Fatalf("SECURITY: reset_token leaked into NEXUSMART_DLQ payload: %s", string(dlq.pubData[0]))
+	}
+	if strings.Contains(logBuf.String(), secretToken) {
+		t.Fatalf("SECURITY: reset_token leaked into consumer logs: %s", logBuf.String())
 	}
 }

@@ -8,11 +8,13 @@ import type {
   GatewayOrder,
   GatewayOrderTimelineEvent,
   GatewayPublicShop,
+  GatewayRefund,
+  GatewayReturnRequest,
   GatewayShipmentResponse,
   PaginatedResponse,
 } from "@/lib/gateway-types";
 import { api, getErrorMessage } from "@/lib/api";
-import { formatDateTimeVi, formatSignedVnd, formatVnd } from "@/lib/format";
+import { formatDateTimeVi, formatSignedVnd, formatVnDayKey, formatVnd } from "@/lib/format";
 import { useCart } from "@/context/CartContext";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconPackage, StateView } from "@/components";
@@ -24,25 +26,41 @@ import styles from "@/app/(shop)/don-hang/[id]/page.module.css";
 import type { OrderVisualLookup } from "./types";
 import {
   type BadgeTone,
+  MAX_EVIDENCE_URLS,
+  MAX_REDELIVERY_ATTEMPTS,
+  VN_BANK_OPTIONS,
+  buildShippingLabelHref,
   canCancelOrder,
   canConfirmReceived,
+  canRequestRedelivery,
   canRequestReturn,
   formatUnpaidGroupCancelWarning,
   getCarrierLabel,
   getOrderStatusInfo,
   getPaymentMethodLabel,
   getPaymentStatusInfo,
+  getRefundStatusInfo,
+  getReturnFeeBearerLabel,
+  getReturnStatusInfo,
   getShipmentStatusInfo,
   getTimelineEventTitle,
+  isRefundPending,
   localizeTimelineNote,
   needsVietQrPayment,
+  normalizeEnumSuffix,
+  parseSafeEvidenceUrl,
   resolveUnpaidVietQrCancelGroup,
+  validateBankAccountNumber,
+  validateEvidenceUrls,
 } from "./orderMeta";
 
 export interface OrderDetailClientProps {
   initialOrder: GatewayOrder | null;
   initialTimeline: GatewayOrderTimelineEvent[];
   initialShipment: GatewayShipmentResponse | null;
+  initialReturnRequest?: GatewayReturnRequest | null;
+  initialReturnShipment?: GatewayShipmentResponse | null;
+  initialRefunds?: GatewayRefund[];
   shop: GatewayPublicShop | null;
   visuals: OrderVisualLookup;
   orderId: string;
@@ -90,15 +108,96 @@ function getMilestoneIndex(status: string): number {
   }
 }
 
-function isSafeExternalUrl(url: string): boolean {
-  const trimmed = url.trim();
-  return trimmed.startsWith("https://") || trimmed.startsWith("http://");
+function EvidenceUrlInputs({
+  idPrefix,
+  urls,
+  onChange,
+  disabled,
+}: {
+  idPrefix: string;
+  urls: string[];
+  onChange: (next: string[]) => void;
+  disabled: boolean;
+}) {
+  const handleItemChange = (idx: number, val: string) => {
+    const next = [...urls];
+    next[idx] = val;
+    onChange(next);
+  };
+
+  const handleAdd = () => {
+    if (urls.length >= MAX_EVIDENCE_URLS) return;
+    onChange([...urls, ""]);
+  };
+
+  const handleRemove = (idx: number) => {
+    if (urls.length <= 1) {
+      onChange([""]);
+      return;
+    }
+    onChange(urls.filter((_, i) => i !== idx));
+  };
+
+  return (
+    <div className={shared.field}>
+      <span className={shared.fieldLabel}>
+        Liên kết bằng chứng (không bắt buộc, tối đa {MAX_EVIDENCE_URLS} liên kết)
+      </span>
+      <p className={shared.fieldHint}>
+        Hiện chưa hỗ trợ tải ảnh trực tiếp, vui lòng dán liên kết ảnh/video bằng chứng bắt đầu bằng
+        http:// hoặc https:// (tối đa 500 ký tự mỗi liên kết).
+      </p>
+      <div className={styles.evidenceList}>
+        {urls.map((val, idx) => (
+          <div key={`${idPrefix}-${idx}`} className={styles.evidenceRow}>
+            <input
+              id={`${idPrefix}-url-${idx}`}
+              type="url"
+              className={shared.input}
+              value={val}
+              onChange={(e) => handleItemChange(idx, e.target.value)}
+              placeholder={`https://... (liên kết bằng chứng ${idx + 1})`}
+              aria-label={`Liên kết bằng chứng thứ ${idx + 1}`}
+              disabled={disabled}
+            />
+            {urls.length > 1 && (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={disabled}
+                onClick={() => handleRemove(idx)}
+              >
+                Xóa
+              </Button>
+            )}
+          </div>
+        ))}
+      </div>
+      {urls.length < MAX_EVIDENCE_URLS && (
+        <div className={shared.formActions}>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            disabled={disabled}
+            onClick={handleAdd}
+          >
+            Thêm liên kết bằng chứng ({urls.length}/{MAX_EVIDENCE_URLS})
+          </Button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function OrderDetailClient({
   initialOrder,
   initialTimeline,
   initialShipment,
+  initialReturnRequest = null,
+  initialReturnShipment = null,
+  initialRefunds = [],
   shop,
   visuals,
   orderId,
@@ -114,6 +213,13 @@ export function OrderDetailClient({
   const [order, setOrder] = useState<GatewayOrder | null>(initialOrder);
   const [timeline, setTimeline] = useState<GatewayOrderTimelineEvent[]>(initialTimeline);
   const [shipmentData, setShipmentData] = useState<GatewayShipmentResponse | null>(initialShipment);
+  const [returnRequest, setReturnRequest] = useState<GatewayReturnRequest | null>(
+    initialReturnRequest
+  );
+  const [returnShipmentData, setReturnShipmentData] = useState<GatewayShipmentResponse | null>(
+    initialReturnShipment
+  );
+  const [refunds, setRefunds] = useState<GatewayRefund[]>(initialRefunds);
   const [groupOrders, setGroupOrders] = useState<GatewayOrder[]>(initialGroupOrders);
 
   const [cancelReason, setCancelReason] = useState(CANCEL_REASONS[0]);
@@ -127,8 +233,31 @@ export function OrderDetailClient({
 
   const [returnReason, setReturnReason] = useState(RETURN_REASONS[0]);
   const [returnDetail, setReturnDetail] = useState("");
+  const [returnEvidenceUrls, setReturnEvidenceUrls] = useState<string[]>([""]);
   const [returning, setReturning] = useState(false);
   const [returnError, setReturnError] = useState<string | null>(null);
+
+  const [escalateReason, setEscalateReason] = useState("");
+  const [escalateUrls, setEscalateUrls] = useState<string[]>([""]);
+  const [escalating, setEscalating] = useState(false);
+  const [escalateError, setEscalateError] = useState<string | null>(null);
+
+  const [evidenceNote, setEvidenceNote] = useState("");
+  const [evidenceExtraUrls, setEvidenceExtraUrls] = useState<string[]>([""]);
+  const [submittingEvidence, setSubmittingEvidence] = useState(false);
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
+
+  const [redeliveryDate, setRedeliveryDate] = useState("");
+  const [redeliveryNote, setRedeliveryNote] = useState("");
+  const [requestingRedelivery, setRequestingRedelivery] = useState(false);
+  const [redeliveryError, setRedeliveryError] = useState<string | null>(null);
+
+  const [editingBankRefundId, setEditingBankRefundId] = useState<string | null>(null);
+  const [bankCode, setBankCode] = useState(VN_BANK_OPTIONS[0].code);
+  const [bankAccountNumber, setBankAccountNumber] = useState("");
+  const [bankAccountName, setBankAccountName] = useState("");
+  const [savingBank, setSavingBank] = useState(false);
+  const [bankError, setBankError] = useState<string | null>(null);
 
   const [reordering, setReordering] = useState(false);
 
@@ -157,11 +286,19 @@ export function OrderDetailClient({
   const refreshOrder = useCallback(async () => {
     const id = encodeURIComponent(orderId);
     try {
-      const [orderRes, timelineRes, shipRes] = await Promise.all([
-        api<{ order: GatewayOrder }>(`/orders/${id}`),
-        api<{ events: GatewayOrderTimelineEvent[] }>(`/orders/${id}/timeline`).catch(() => null),
-        api<GatewayShipmentResponse>(`/shipping/shipments/${id}`).catch(() => null),
-      ]);
+      const [orderRes, timelineRes, shipRes, returnRes, returnShipRes, refundsRes] =
+        await Promise.all([
+          api<{ order: GatewayOrder }>(`/orders/${id}`),
+          api<{ events: GatewayOrderTimelineEvent[] }>(`/orders/${id}/timeline`).catch(() => null),
+          api<GatewayShipmentResponse>(`/shipping/shipments/${id}`).catch(() => null),
+          api<{ return_request: GatewayReturnRequest }>(`/orders/${id}/return`).catch(() => null),
+          api<GatewayShipmentResponse>(`/shipping/shipments/${id}?direction=RETURN`).catch(
+            () => null
+          ),
+          api<PaginatedResponse<GatewayRefund>>(`/orders/${id}/refunds?page=1&page_size=20`).catch(
+            () => null
+          ),
+        ]);
       if (orderRes?.order) {
         setOrder(orderRes.order);
         if (timelineRes && Array.isArray(timelineRes.events)) {
@@ -172,6 +309,15 @@ export function OrderDetailClient({
       }
       if (shipRes?.shipment) {
         setShipmentData(shipRes);
+      }
+      if (returnRes?.return_request) {
+        setReturnRequest(returnRes.return_request);
+      }
+      if (returnShipRes?.shipment) {
+        setReturnShipmentData(returnShipRes);
+      }
+      if (refundsRes && Array.isArray(refundsRes.items)) {
+        setRefunds(refundsRes.items);
       }
     } catch {
       router.refresh();
@@ -313,6 +459,11 @@ export function OrderDetailClient({
       setReturnError("Vui lòng mô tả ngắn tình trạng sản phẩm cần trả hàng (tối thiểu 6 ký tự).");
       return;
     }
+    const urlCheck = validateEvidenceUrls(returnEvidenceUrls);
+    if (!urlCheck.ok) {
+      setReturnError(urlCheck.error ?? "Liên kết bằng chứng chưa hợp lệ.");
+      return;
+    }
     setReturnError(null);
     setReturning(true);
     try {
@@ -322,7 +473,7 @@ export function OrderDetailClient({
           method: "POST",
           json: {
             reason: `${returnReason}. Ghi chú: ${cleanDetail}`,
-            evidence_urls: [],
+            evidence_urls: urlCheck.urls,
           },
         }
       );
@@ -333,6 +484,7 @@ export function OrderDetailClient({
         }
       }
       setReturnDetail("");
+      setReturnEvidenceUrls([""]);
       showToast("Đã gửi yêu cầu trả hàng đến gian hàng.");
       await refreshOrder();
     } catch (err) {
@@ -341,6 +493,180 @@ export function OrderDetailClient({
       );
     } finally {
       setReturning(false);
+    }
+  };
+
+  const handleEscalateSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!returnRequest || escalating) return;
+    const reason = escalateReason.trim();
+    if (reason.length < 6) {
+      setEscalateError("Vui lòng nêu rõ lý do khiếu nại (tối thiểu 6 ký tự).");
+      return;
+    }
+    const urlCheck = validateEvidenceUrls(escalateUrls);
+    if (!urlCheck.ok) {
+      setEscalateError(urlCheck.error ?? "Liên kết bằng chứng chưa hợp lệ.");
+      return;
+    }
+    setEscalateError(null);
+    setEscalating(true);
+    try {
+      const res = await api<{ return_request: GatewayReturnRequest }>(
+        `/returns/${encodeURIComponent(returnRequest.id)}/escalate`,
+        {
+          method: "POST",
+          json: {
+            reason,
+            evidence_urls: urlCheck.urls,
+          },
+        }
+      );
+      if (res?.return_request) {
+        setReturnRequest(res.return_request);
+      }
+      setEscalateReason("");
+      setEscalateUrls([""]);
+      showToast("Đã gửi khiếu nại lên bộ phận quản trị NexusMart.");
+      await refreshOrder();
+    } catch (err) {
+      setEscalateError(getErrorMessage(err, "Chưa thể mở khiếu nại lúc này. Vui lòng thử lại."));
+    } finally {
+      setEscalating(false);
+    }
+  };
+
+  const handleAddEvidenceSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!returnRequest || submittingEvidence) return;
+    const note = evidenceNote.trim();
+    const urlCheck = validateEvidenceUrls(evidenceExtraUrls);
+    if (!urlCheck.ok) {
+      setEvidenceError(urlCheck.error ?? "Liên kết bằng chứng chưa hợp lệ.");
+      return;
+    }
+    if (note.length < 4 && urlCheck.urls.length === 0) {
+      setEvidenceError("Vui lòng nhập ghi chú bổ sung hoặc ít nhất một liên kết bằng chứng.");
+      return;
+    }
+    setEvidenceError(null);
+    setSubmittingEvidence(true);
+    try {
+      const res = await api<{ return_request: GatewayReturnRequest }>(
+        `/returns/${encodeURIComponent(returnRequest.id)}/evidence`,
+        {
+          method: "POST",
+          json: {
+            note,
+            evidence_urls: urlCheck.urls,
+          },
+        }
+      );
+      if (res?.return_request) {
+        setReturnRequest(res.return_request);
+      }
+      setEvidenceNote("");
+      setEvidenceExtraUrls([""]);
+      showToast("Đã bổ sung bằng chứng cho hồ sơ khiếu nại.");
+      await refreshOrder();
+    } catch (err) {
+      setEvidenceError(
+        getErrorMessage(err, "Chưa thể gửi bằng chứng bổ sung lúc này. Vui lòng thử lại.")
+      );
+    } finally {
+      setSubmittingEvidence(false);
+    }
+  };
+
+  const handleRedeliverySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!order || requestingRedelivery) return;
+    setRedeliveryError(null);
+    setRequestingRedelivery(true);
+    try {
+      await api<{ shipment: GatewayShipmentResponse["shipment"] }>(
+        `/orders/${encodeURIComponent(order.id)}/redelivery`,
+        {
+          method: "POST",
+          json: {
+            preferred_date: redeliveryDate.trim(),
+            note: redeliveryNote.trim(),
+          },
+        }
+      );
+      setRedeliveryDate("");
+      setRedeliveryNote("");
+      showToast("Đã gửi yêu cầu giao lại cho đơn vị vận chuyển.");
+      await refreshOrder();
+    } catch (err) {
+      setRedeliveryError(
+        getErrorMessage(err, "Chưa thể gửi yêu cầu giao lại lúc này. Vui lòng thử lại.")
+      );
+    } finally {
+      setRequestingRedelivery(false);
+    }
+  };
+
+  const handleOpenBankForm = (rf: GatewayRefund) => {
+    setEditingBankRefundId(rf.refund_id);
+    setBankCode(rf.bank_code || VN_BANK_OPTIONS[0].code);
+    setBankAccountNumber("");
+    setBankAccountName(rf.bank_account_name || "");
+    setBankError(null);
+  };
+
+  const handleSubmitBankAccount = async (e: React.FormEvent, rf: GatewayRefund) => {
+    e.preventDefault();
+    if (savingBank) return;
+    const isEditingThis = editingBankRefundId === rf.refund_id;
+    const activeCode = (isEditingThis ? bankCode : rf.bank_code || VN_BANK_OPTIONS[0].code).trim();
+    const cleanNum = (isEditingThis ? bankAccountNumber : "").replace(/\s+/g, "").trim();
+    const cleanName = (isEditingThis ? bankAccountName : rf.bank_account_name || "").trim();
+    if (!activeCode) {
+      setEditingBankRefundId(rf.refund_id);
+      setBankError("Vui lòng chọn ngân hàng nhận tiền.");
+      return;
+    }
+    if (!validateBankAccountNumber(cleanNum)) {
+      setEditingBankRefundId(rf.refund_id);
+      setBankError("Số tài khoản ngân hàng cần gồm 6 đến 19 chữ số.");
+      return;
+    }
+    if (cleanName.length < 2) {
+      setEditingBankRefundId(rf.refund_id);
+      setBankError("Vui lòng nhập đầy đủ họ tên chủ tài khoản ngân hàng.");
+      return;
+    }
+    setBankError(null);
+    setSavingBank(true);
+    try {
+      const res = await api<{ refund: GatewayRefund }>(
+        `/refunds/${encodeURIComponent(rf.refund_id)}/bank-account`,
+        {
+          method: "POST",
+          json: {
+            bank_code: activeCode,
+            bank_account_number: cleanNum,
+            bank_account_name: cleanName,
+          },
+        }
+      );
+      if (res?.refund) {
+        setRefunds((prev) =>
+          prev.map((item) => (item.refund_id === rf.refund_id ? res.refund : item))
+        );
+      }
+      setEditingBankRefundId(null);
+      setBankAccountNumber("");
+      showToast("Đã lưu thông tin tài khoản nhận hoàn tiền.");
+      await refreshOrder();
+    } catch (err) {
+      setEditingBankRefundId(rf.refund_id);
+      setBankError(
+        getErrorMessage(err, "Chưa thể lưu tài khoản ngân hàng lúc này. Vui lòng thử lại.")
+      );
+    } finally {
+      setSavingBank(false);
     }
   };
 
@@ -441,14 +767,18 @@ export function OrderDetailClient({
     order.status === "RETURNED";
   const allowCancel = canCancelOrder(order.status);
   const allowConfirm = canConfirmReceived(order.status);
-  const allowReturn = canRequestReturn(order.status);
+  const allowReturn = canRequestReturn(order.status) && !returnRequest;
+  const awaitingCarrierPickup = order.status === "PREPARING" && Boolean(order.tracking_code);
 
   const milestoneSteps = [
     {
       key: "confirm",
       label: order.status === "PENDING" ? "Chờ thanh toán" : "Đã xác nhận",
     },
-    { key: "preparing", label: "Đang chuẩn bị" },
+    {
+      key: "preparing",
+      label: awaitingCarrierPickup ? "Chờ hãng lấy hàng" : "Đang chuẩn bị",
+    },
     { key: "shipping", label: "Đang giao hàng" },
     {
       key: "done",
@@ -470,6 +800,32 @@ export function OrderDetailClient({
         return tb - ta;
       })
     : [];
+  const forwardShipmentFailed =
+    Boolean(shipment) &&
+    normalizeEnumSuffix(shipment?.status, "SHIPMENT_STATUS_") === "FAILED" &&
+    normalizeEnumSuffix(shipment?.direction || "FORWARD", "SHIPMENT_DIRECTION_") === "FORWARD";
+  const allowRedelivery = canRequestRedelivery(shipment);
+  const minRedeliveryDate = formatVnDayKey(Date.now());
+
+  const returnStatusKey = normalizeEnumSuffix(returnRequest?.status, "RETURN_STATUS_");
+  const returnMeta = returnRequest ? getReturnStatusInfo(returnRequest.status) : null;
+  const returnEvents = Array.isArray(returnRequest?.events)
+    ? [...returnRequest.events].sort((a, b) => {
+        const ta = a.created_at ? Date.parse(a.created_at) : 0;
+        const tb = b.created_at ? Date.parse(b.created_at) : 0;
+        return tb - ta;
+      })
+    : [];
+  const returnShipment = returnShipmentData?.shipment ?? null;
+  const returnShipmentEvents = Array.isArray(returnShipmentData?.events)
+    ? [...returnShipmentData.events].sort((a, b) => {
+        const ta = a.occurred_at ? Date.parse(a.occurred_at) : 0;
+        const tb = b.occurred_at ? Date.parse(b.occurred_at) : 0;
+        return tb - ta;
+      })
+    : [];
+  const showRefundSection =
+    refunds.length > 0 || returnStatusKey === "REFUNDING" || returnStatusKey === "REFUNDED";
 
   const shopName = shop?.name ?? "Gian hàng NexusMart";
 
@@ -661,18 +1017,25 @@ export function OrderDetailClient({
                     )}
                   </dl>
 
-                  {shipment.label_url && isSafeExternalUrl(shipment.label_url) && (
-                    <div className={shared.formActions} style={{ marginTop: 12 }}>
-                      <a
-                        href={shipment.label_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className={shared.breadcrumbLink}
-                      >
-                        Xem phiếu giao hàng
-                      </a>
-                    </div>
-                  )}
+                  {(() => {
+                    const forwardLabelHref = buildShippingLabelHref(shipment.tracking_code);
+                    if (!forwardLabelHref) return null;
+                    return (
+                      <div className={shared.formActions} style={{ marginTop: 12 }}>
+                        <a
+                          href={forwardLabelHref}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={shared.breadcrumbLink}
+                        >
+                          Mở phiếu giao hàng
+                        </a>
+                        <span className={styles.sideMuted}>
+                          (Mở tab mới, nhấn Ctrl+P hoặc ⌘P để in)
+                        </span>
+                      </div>
+                    );
+                  })()}
 
                   {shipmentEvents.length > 0 && (
                     <ol className={styles.eventList}>
@@ -696,6 +1059,615 @@ export function OrderDetailClient({
                       ))}
                     </ol>
                   )}
+
+                  {forwardShipmentFailed && (
+                    <div className={styles.redeliveryBox}>
+                      <div className={shared.sectionHead} style={{ marginBottom: 0 }}>
+                        <h3 className={styles.sideTitle}>Yêu cầu giao lại đơn hàng</h3>
+                        <span className={`${shared.sectionNote} num`}>
+                          Đã yêu cầu {shipment.redelivery_count ?? 0}/{MAX_REDELIVERY_ATTEMPTS} lần
+                        </span>
+                      </div>
+                      {allowRedelivery ? (
+                        <form onSubmit={(e) => void handleRedeliverySubmit(e)} noValidate>
+                          <p className={styles.actionPanelDesc} style={{ marginBottom: 12 }}>
+                            Kiện hàng giao chưa thành công. Chọn ngày nhận mong muốn để hãng sắp xếp
+                            giao lại (tối đa {MAX_REDELIVERY_ATTEMPTS} lần).
+                          </p>
+                          <div className={shared.formGrid}>
+                            <div className={shared.field}>
+                              <label htmlFor="redelivery-date" className={shared.fieldLabel}>
+                                Ngày giao lại mong muốn (không bắt buộc)
+                              </label>
+                              <input
+                                id="redelivery-date"
+                                type="date"
+                                min={minRedeliveryDate}
+                                className={shared.input}
+                                value={redeliveryDate}
+                                onChange={(e) => setRedeliveryDate(e.target.value)}
+                                disabled={requestingRedelivery}
+                              />
+                            </div>
+                            <div className={shared.field}>
+                              <label htmlFor="redelivery-note" className={shared.fieldLabel}>
+                                Ghi chú cho bưu tá (không bắt buộc)
+                              </label>
+                              <input
+                                id="redelivery-note"
+                                type="text"
+                                className={shared.input}
+                                value={redeliveryNote}
+                                onChange={(e) => setRedeliveryNote(e.target.value)}
+                                placeholder="Ví dụ: Giao buổi chiều sau 14h, gọi trước 15 phút"
+                                disabled={requestingRedelivery}
+                              />
+                            </div>
+                          </div>
+                          {redeliveryError && (
+                            <p className={shared.fieldError} role="alert" style={{ marginTop: 8 }}>
+                              {redeliveryError}
+                            </p>
+                          )}
+                          <div className={shared.formActions}>
+                            <Button
+                              type="submit"
+                              variant="primary"
+                              size="md"
+                              disabled={requestingRedelivery}
+                            >
+                              {requestingRedelivery
+                                ? "Đang gửi yêu cầu giao lại..."
+                                : "Gửi yêu cầu giao lại"}
+                            </Button>
+                          </div>
+                        </form>
+                      ) : (
+                        <p className={styles.actionPanelDesc}>
+                          Đơn hàng đã sử dụng hết {MAX_REDELIVERY_ATTEMPTS} lượt yêu cầu giao lại.
+                          Kiện hàng sẽ được xử lý hoàn về gian hàng theo quy định.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Return request progress & buyer dispute/evidence actions */}
+              {returnRequest && returnMeta && (
+                <div className={styles.sheetDivider} data-reveal="">
+                  <div className={styles.returnCardStack}>
+                    <div className={shared.sectionHead} style={{ marginBottom: 0 }}>
+                      <h2 className={shared.sectionTitle}>Tiến trình trả hàng</h2>
+                      <span className={`${shared.statusTag} ${toneClass(returnMeta.tone)}`}>
+                        {returnMeta.label}
+                      </span>
+                    </div>
+
+                    <p className={styles.actionPanelDesc}>{returnMeta.description}</p>
+
+                    <dl className={styles.returnInfoGrid}>
+                      {returnRequest.deadline_at && (
+                        <div className={styles.shipmentMetaItem}>
+                          <dt className={styles.shipmentKey}>Hạn xử lý kế tiếp</dt>
+                          <dd className={`${styles.shipmentVal} num`}>
+                            {formatDateTimeVi(returnRequest.deadline_at)}
+                          </dd>
+                        </div>
+                      )}
+                      {returnRequest.refund_amount_vnd > 0 && (
+                        <div className={styles.shipmentMetaItem}>
+                          <dt className={styles.shipmentKey}>Số tiền hoàn dự kiến</dt>
+                          <dd className={`${styles.shipmentVal} num`}>
+                            {formatVnd(returnRequest.refund_amount_vnd)}
+                          </dd>
+                        </div>
+                      )}
+                      {returnRequest.return_tracking_code && (
+                        <div className={styles.shipmentMetaItem}>
+                          <dt className={styles.shipmentKey}>Mã vận đơn chiều trả</dt>
+                          <dd className={`${styles.shipmentVal} num`}>
+                            {returnRequest.return_tracking_code}
+                          </dd>
+                        </div>
+                      )}
+                      {(returnRequest.return_fee_vnd > 0 || returnRequest.return_fee_bearer) && (
+                        <div className={styles.shipmentMetaItem}>
+                          <dt className={styles.shipmentKey}>Phí vận chuyển trả hàng</dt>
+                          <dd className={`${styles.shipmentVal} num`}>
+                            {returnRequest.return_fee_vnd > 0
+                              ? `${formatVnd(returnRequest.return_fee_vnd)} · `
+                              : ""}
+                            {getReturnFeeBearerLabel(returnRequest.return_fee_bearer)}
+                          </dd>
+                        </div>
+                      )}
+                    </dl>
+
+                    {(() => {
+                      const returnLabelHref = buildShippingLabelHref(
+                        returnRequest.return_tracking_code
+                      );
+                      if (!returnLabelHref) return null;
+                      return (
+                        <div className={shared.formActions}>
+                          <a
+                            href={returnLabelHref}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={shared.breadcrumbLink}
+                          >
+                            Mở / in phiếu gửi hàng trả
+                          </a>
+                          <span className={styles.sideMuted}>
+                            (Mở tab mới, nhấn Ctrl+P hoặc ⌘P để in)
+                          </span>
+                        </div>
+                      );
+                    })()}
+
+                    <div className={styles.returnSubPanel}>
+                      <p className={styles.sideLine}>
+                        <strong>Lý do bạn đã gửi:</strong> {returnRequest.reason}
+                      </p>
+                      {(() => {
+                        const buyerEv = (returnRequest.evidence_urls ?? [])
+                          .map((u) => parseSafeEvidenceUrl(u))
+                          .filter((x): x is NonNullable<typeof x> => x !== null);
+                        if (buyerEv.length === 0) return null;
+                        return (
+                          <div className={styles.evidenceLinkList}>
+                            <span className={styles.shipmentKey}>
+                              Liên kết bằng chứng của bạn (mở trang ngoài)
+                            </span>
+                            {buyerEv.map((ev, idx) => (
+                              <a
+                                key={`${ev.href}-${idx}`}
+                                href={ev.href}
+                                target="_blank"
+                                rel="noopener noreferrer nofollow"
+                                className={styles.evidenceLink}
+                              >
+                                Bằng chứng #{idx + 1} ({ev.hostname})
+                              </a>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                      {returnRequest.seller_response && (
+                        <p className={styles.sideLine}>
+                          <strong>Phản hồi từ gian hàng:</strong> {returnRequest.seller_response}
+                        </p>
+                      )}
+                      {(() => {
+                        const sellerEv = (returnRequest.seller_evidence_urls ?? [])
+                          .map((u) => parseSafeEvidenceUrl(u))
+                          .filter((x): x is NonNullable<typeof x> => x !== null);
+                        if (sellerEv.length === 0) return null;
+                        return (
+                          <div className={styles.evidenceLinkList}>
+                            <span className={styles.shipmentKey}>
+                              Bằng chứng từ gian hàng (mở trang ngoài)
+                            </span>
+                            {sellerEv.map((ev, idx) => (
+                              <a
+                                key={`${ev.href}-${idx}`}
+                                href={ev.href}
+                                target="_blank"
+                                rel="noopener noreferrer nofollow"
+                                className={styles.evidenceLink}
+                              >
+                                Chứng từ gian hàng #{idx + 1} ({ev.hostname})
+                              </a>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                      {returnRequest.dispute_reason && (
+                        <p className={styles.sideLine}>
+                          <strong>Nội dung khiếu nại / báo sai hàng:</strong>{" "}
+                          {returnRequest.dispute_reason}
+                        </p>
+                      )}
+                      {returnRequest.admin_note && (
+                        <p className={styles.sideLine}>
+                          <strong>Kết luận quản trị viên:</strong> {returnRequest.admin_note}
+                        </p>
+                      )}
+                    </div>
+
+                    {returnShipment && (
+                      <div className={styles.returnSubPanel}>
+                        <div className={styles.refundHead}>
+                          <span className={styles.sideTitle}>Vận đơn chiều trả hàng</span>
+                          <span
+                            className={`${shared.statusTag} ${toneClass(
+                              getShipmentStatusInfo(returnShipment.status).tone
+                            )}`}
+                          >
+                            {getShipmentStatusInfo(returnShipment.status).label}
+                          </span>
+                        </div>
+                        <p className={`${styles.sideMuted} num`}>
+                          {getCarrierLabel(returnShipment.carrier_code)} · Mã vận đơn:{" "}
+                          <strong>{returnShipment.tracking_code}</strong>
+                        </p>
+                        {returnShipmentEvents.length > 0 && (
+                          <ol className={styles.eventList} style={{ marginTop: 8 }}>
+                            {returnShipmentEvents.map((ev, idx) => (
+                              <li
+                                key={ev.id || `${ev.occurred_at ?? idx}-${idx}`}
+                                className={`${styles.eventRow} ${idx === 0 ? styles.eventRowLatest : ""}`}
+                              >
+                                <span className={`${styles.eventTime} num`}>
+                                  {ev.occurred_at ? formatDateTimeVi(ev.occurred_at) : "—"}
+                                </span>
+                                <div className={styles.eventBody}>
+                                  <span className={styles.eventTitle}>
+                                    {getShipmentStatusInfo(ev.status).label}
+                                  </span>
+                                  {ev.description && (
+                                    <span className={styles.eventNote}>{ev.description}</span>
+                                  )}
+                                </div>
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+                      </div>
+                    )}
+
+                    {returnEvents.length > 0 && (
+                      <div>
+                        <h3 className={styles.sideTitle}>Lịch sử xử lý yêu cầu trả hàng</h3>
+                        <ol className={styles.eventList}>
+                          {returnEvents.map((ev, idx) => (
+                            <li
+                              key={ev.id || `${ev.created_at ?? idx}-${idx}`}
+                              className={`${styles.eventRow} ${idx === 0 ? styles.eventRowLatest : ""}`}
+                            >
+                              <span className={`${styles.eventTime} num`}>
+                                {ev.created_at ? formatDateTimeVi(ev.created_at) : "—"}
+                              </span>
+                              <div className={styles.eventBody}>
+                                <span className={styles.eventTitle}>
+                                  {getReturnStatusInfo(ev.to_status).label}
+                                </span>
+                                {ev.note && (
+                                  <span className={styles.eventNote}>
+                                    {localizeTimelineNote(ev.note)}
+                                  </span>
+                                )}
+                              </div>
+                            </li>
+                          ))}
+                        </ol>
+                      </div>
+                    )}
+
+                    {/* Buyer escalate when seller rejected */}
+                    {returnStatusKey === "REJECTED" && (
+                      <form
+                        className={styles.returnSubPanel}
+                        onSubmit={(e) => void handleEscalateSubmit(e)}
+                        noValidate
+                      >
+                        <h3 className={styles.sideTitle}>Mở khiếu nại lên NexusMart</h3>
+                        <p className={styles.actionPanelDesc}>
+                          Nếu bạn không đồng ý với lý do từ chối của gian hàng, hãy gửi khiếu nại
+                          cùng liên kết bằng chứng để quản trị viên NexusMart phân xử.
+                        </p>
+                        <div className={shared.field}>
+                          <label htmlFor="escalate-reason" className={shared.fieldLabel}>
+                            Lý do khiếu nại
+                          </label>
+                          <textarea
+                            id="escalate-reason"
+                            className={shared.textarea}
+                            value={escalateReason}
+                            onChange={(e) => setEscalateReason(e.target.value)}
+                            placeholder="Trình bày rõ tình trạng sản phẩm và lý do không đồng ý với phản hồi từ gian hàng..."
+                            disabled={escalating}
+                            required
+                          />
+                        </div>
+                        <EvidenceUrlInputs
+                          idPrefix="escalate"
+                          urls={escalateUrls}
+                          onChange={setEscalateUrls}
+                          disabled={escalating}
+                        />
+                        {escalateError && (
+                          <p className={shared.fieldError} role="alert">
+                            {escalateError}
+                          </p>
+                        )}
+                        <div className={shared.formActions}>
+                          <Button type="submit" variant="primary" size="md" disabled={escalating}>
+                            {escalating ? "Đang gửi khiếu nại..." : "Gửi khiếu nại lên sàn"}
+                          </Button>
+                        </div>
+                      </form>
+                    )}
+
+                    {/* Buyer submit extra evidence when admin requests evidence */}
+                    {returnStatusKey === "EVIDENCE_REQUESTED" && (
+                      <form
+                        className={styles.returnSubPanel}
+                        onSubmit={(e) => void handleAddEvidenceSubmit(e)}
+                        noValidate
+                      >
+                        <h3 className={styles.sideTitle}>Bổ sung bằng chứng theo yêu cầu</h3>
+                        <p className={styles.actionPanelDesc}>
+                          Quản trị viên yêu cầu bổ sung thêm thông tin để hoàn tất phân xử trước hạn
+                          chót.
+                        </p>
+                        <div className={shared.field}>
+                          <label htmlFor="extra-evidence-note" className={shared.fieldLabel}>
+                            Ghi chú bổ sung
+                          </label>
+                          <textarea
+                            id="extra-evidence-note"
+                            className={shared.textarea}
+                            value={evidenceNote}
+                            onChange={(e) => setEvidenceNote(e.target.value)}
+                            placeholder="Mô tả chi tiết bổ sung hoặc ghi chú ảnh/video mở hộp..."
+                            disabled={submittingEvidence}
+                          />
+                        </div>
+                        <EvidenceUrlInputs
+                          idPrefix="extra-evidence"
+                          urls={evidenceExtraUrls}
+                          onChange={setEvidenceExtraUrls}
+                          disabled={submittingEvidence}
+                        />
+                        {evidenceError && (
+                          <p className={shared.fieldError} role="alert">
+                            {evidenceError}
+                          </p>
+                        )}
+                        <div className={shared.formActions}>
+                          <Button
+                            type="submit"
+                            variant="primary"
+                            size="md"
+                            disabled={submittingEvidence}
+                          >
+                            {submittingEvidence
+                              ? "Đang gửi bằng chứng..."
+                              : "Gửi bằng chứng bổ sung"}
+                          </Button>
+                        </div>
+                      </form>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Refund status & buyer bank account form */}
+              {showRefundSection && (
+                <div className={styles.sheetDivider} data-reveal="">
+                  <div className={styles.returnCardStack}>
+                    <div className={shared.sectionHead} style={{ marginBottom: 0 }}>
+                      <h2 className={shared.sectionTitle}>Thông tin hoàn tiền</h2>
+                      <span className={`${shared.sectionNote} num`}>
+                        {refunds.length} khoản hoàn tiền
+                      </span>
+                    </div>
+
+                    {refunds.length === 0 ? (
+                      <p className={styles.actionPanelDesc}>
+                        Yêu cầu hoàn tiền đang được hệ thống khởi tạo. Vui lòng tải lại sau ít phút
+                        để nhập tài khoản ngân hàng nhận tiền.
+                      </p>
+                    ) : (
+                      refunds.map((rf) => {
+                        const rfMeta = getRefundStatusInfo(rf.status);
+                        const pending = isRefundPending(rf.status);
+                        const hasBank = Boolean(rf.bank_code && rf.bank_account_masked);
+                        const formOpen =
+                          pending && (!hasBank || editingBankRefundId === rf.refund_id);
+
+                        return (
+                          <div key={rf.refund_id} className={styles.refundItem}>
+                            <div className={styles.refundHead}>
+                              <span className={`${styles.refundAmount} num`}>
+                                {formatVnd(rf.amount_vnd)}
+                              </span>
+                              <span className={`${shared.statusTag} ${toneClass(rfMeta.tone)}`}>
+                                {rfMeta.label}
+                              </span>
+                            </div>
+
+                            {rf.reason && (
+                              <p className={styles.sideLine}>Lý do hoàn tiền: {rf.reason}</p>
+                            )}
+                            {rf.created_at && (
+                              <p className={`${styles.sideMuted} num`}>
+                                Tạo lúc: {formatDateTimeVi(rf.created_at)}
+                                {rf.settled_at
+                                  ? ` · Đã chuyển khoản lúc: ${formatDateTimeVi(rf.settled_at)}`
+                                  : ""}
+                              </p>
+                            )}
+                            {rf.provider_refund_id && (
+                              <p className={`${styles.sideMuted} num`}>
+                                Mã tham chiếu chuyển khoản: <strong>{rf.provider_refund_id}</strong>
+                              </p>
+                            )}
+
+                            {hasBank && (
+                              <div className={styles.refundHead}>
+                                <p className={`${styles.sideLine} num`}>
+                                  Tài khoản nhận: <strong>{rf.bank_code}</strong> ·{" "}
+                                  <strong>{rf.bank_account_masked}</strong>
+                                  {rf.bank_account_name ? ` · ${rf.bank_account_name}` : ""}
+                                </p>
+                                {pending && editingBankRefundId !== rf.refund_id && (
+                                  <Button
+                                    type="button"
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={() => handleOpenBankForm(rf)}
+                                  >
+                                    Đổi tài khoản nhận
+                                  </Button>
+                                )}
+                              </div>
+                            )}
+
+                            {formOpen && (
+                              <form
+                                onSubmit={(e) => void handleSubmitBankAccount(e, rf)}
+                                noValidate
+                                style={{
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  gap: 12,
+                                  paddingTop: 8,
+                                }}
+                              >
+                                <p className={styles.actionPanelDesc}>
+                                  {hasBank
+                                    ? "Bạn có thể cập nhật tài khoản ngân hàng nhận tiền trước khi quản trị viên tất toán."
+                                    : "Vui lòng nhập tài khoản ngân hàng nhận tiền để bộ phận kế toán NexusMart chuyển khoản hoàn tiền."}
+                                </p>
+                                <div className={shared.formGrid}>
+                                  <div className={shared.field}>
+                                    <label
+                                      htmlFor={`bank-code-${rf.refund_id}`}
+                                      className={shared.fieldLabel}
+                                    >
+                                      Ngân hàng nhận
+                                    </label>
+                                    <select
+                                      id={`bank-code-${rf.refund_id}`}
+                                      className={shared.select}
+                                      value={
+                                        editingBankRefundId === rf.refund_id
+                                          ? bankCode
+                                          : rf.bank_code || VN_BANK_OPTIONS[0].code
+                                      }
+                                      onChange={(e) => {
+                                        if (editingBankRefundId !== rf.refund_id) {
+                                          setEditingBankRefundId(rf.refund_id);
+                                          setBankAccountNumber("");
+                                          setBankAccountName(rf.bank_account_name || "");
+                                          setBankError(null);
+                                        }
+                                        setBankCode(e.target.value);
+                                      }}
+                                      disabled={savingBank}
+                                    >
+                                      {VN_BANK_OPTIONS.map((b) => (
+                                        <option key={b.code} value={b.code}>
+                                          {b.label}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                  <div className={shared.field}>
+                                    <label
+                                      htmlFor={`bank-num-${rf.refund_id}`}
+                                      className={shared.fieldLabel}
+                                    >
+                                      Số tài khoản (6–19 chữ số)
+                                    </label>
+                                    <input
+                                      id={`bank-num-${rf.refund_id}`}
+                                      type="text"
+                                      inputMode="numeric"
+                                      className={`${shared.input} num`}
+                                      value={
+                                        editingBankRefundId === rf.refund_id
+                                          ? bankAccountNumber
+                                          : ""
+                                      }
+                                      onChange={(e) => {
+                                        if (editingBankRefundId !== rf.refund_id) {
+                                          setEditingBankRefundId(rf.refund_id);
+                                          setBankCode(rf.bank_code || VN_BANK_OPTIONS[0].code);
+                                          setBankAccountName(rf.bank_account_name || "");
+                                          setBankError(null);
+                                        }
+                                        setBankAccountNumber(e.target.value.replace(/[^\d]/g, ""));
+                                      }}
+                                      placeholder="Ví dụ: 0123456789"
+                                      disabled={savingBank}
+                                      required
+                                    />
+                                  </div>
+                                  <div className={`${shared.field} ${shared.formFull}`}>
+                                    <label
+                                      htmlFor={`bank-holder-${rf.refund_id}`}
+                                      className={shared.fieldLabel}
+                                    >
+                                      Tên chủ tài khoản
+                                    </label>
+                                    <input
+                                      id={`bank-holder-${rf.refund_id}`}
+                                      type="text"
+                                      className={shared.input}
+                                      value={
+                                        editingBankRefundId === rf.refund_id
+                                          ? bankAccountName
+                                          : rf.bank_account_name || ""
+                                      }
+                                      onChange={(e) => {
+                                        if (editingBankRefundId !== rf.refund_id) {
+                                          setEditingBankRefundId(rf.refund_id);
+                                          setBankCode(rf.bank_code || VN_BANK_OPTIONS[0].code);
+                                          setBankAccountNumber("");
+                                          setBankError(null);
+                                        }
+                                        setBankAccountName(e.target.value);
+                                      }}
+                                      placeholder="Ví dụ: NGUYEN MINH QUAN"
+                                      disabled={savingBank}
+                                      required
+                                    />
+                                  </div>
+                                </div>
+                                {bankError &&
+                                  (editingBankRefundId === rf.refund_id ||
+                                    refunds.length === 1) && (
+                                    <p className={shared.fieldError} role="alert">
+                                      {bankError}
+                                    </p>
+                                  )}
+                                <div className={shared.formActions}>
+                                  <Button
+                                    type="submit"
+                                    variant="primary"
+                                    size="md"
+                                    disabled={savingBank}
+                                  >
+                                    {savingBank
+                                      ? "Đang lưu tài khoản..."
+                                      : "Lưu tài khoản nhận hoàn tiền"}
+                                  </Button>
+                                  {hasBank && (
+                                    <Button
+                                      type="button"
+                                      variant="secondary"
+                                      size="md"
+                                      disabled={savingBank}
+                                      onClick={() => {
+                                        setEditingBankRefundId(null);
+                                        setBankError(null);
+                                      }}
+                                    >
+                                      Hủy
+                                    </Button>
+                                  )}
+                                </div>
+                              </form>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -833,6 +1805,12 @@ export function OrderDetailClient({
                     Các gian hàng trong lần đặt này dùng chung một mã chuyển khoản VietQR nên khi
                     hủy sẽ áp dụng cho toàn bộ đơn đang chờ thanh toán trong nhóm.
                   </div>
+                ) : awaitingCarrierPickup ? (
+                  <p className={styles.actionPanelDesc}>
+                    Đơn hàng đã tạo vận đơn và đang chờ đơn vị vận chuyển lấy hàng. Bạn vẫn có thể
+                    hủy trước khi hãng nhận kiện; nếu hãng đã lấy hàng, hệ thống sẽ thông báo không
+                    thể hủy.
+                  </p>
                 ) : (
                   <p className={styles.actionPanelDesc}>
                     Bạn có thể hủy đơn trước khi bàn giao cho đơn vị vận chuyển. Nếu đơn đã thanh
@@ -971,6 +1949,13 @@ export function OrderDetailClient({
                     disabled={returning}
                   />
                 </div>
+
+                <EvidenceUrlInputs
+                  idPrefix="return-create"
+                  urls={returnEvidenceUrls}
+                  onChange={setReturnEvidenceUrls}
+                  disabled={returning}
+                />
 
                 {returnError && (
                   <p className={shared.fieldError} role="alert">

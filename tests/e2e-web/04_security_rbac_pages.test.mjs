@@ -4,17 +4,43 @@ import { describe, test } from "node:test";
 import {
   ACCESS_COOKIE,
   REFRESH_COOKIE,
+  RateLimitBlockError,
   WebClient,
   calculateShippingQuote,
   config,
   createBuyerAddress,
+  ensureRateBudget,
   listCatalogProducts,
+  parseRetryAfterMs,
   pickSingleShopSku,
+  probeIpRateLimit,
   registerAndLoginBuyer,
+  runAtomicBlockWith429Retry,
 } from "./helpers.mjs";
+
+function throwIfRateLimited(res, label) {
+  if (res.status === 429) {
+    const rawRetry = res.headers.get("retry-after");
+    throw new RateLimitBlockError(
+      `${label} returned HTTP 429`,
+      rawRetry ? parseRetryAfterMs(rawRetry) : null
+    );
+  }
+}
+
+async function throwIfAnonymousRenderDueTo429(label) {
+  const probe = await probeIpRateLimit();
+  if (probe.status === 429 || (probe.remaining !== null && probe.remaining <= 10)) {
+    throw new RateLimitBlockError(
+      `${label} rendered anonymously without Set-Cookie under rate limit (status=${probe.status}, remaining=${probe.remaining})`,
+      probe.retryAfterMs
+    );
+  }
+}
 
 describe("04. Security, RBAC, CSRF, session guards, token rotation & public SSR pages", () => {
   test("4a. Cross-buyer isolation: buyer A cannot read buyer B's order API or leak data via /don-hang/<id>", async () => {
+    await ensureRateBudget(30, { label: "4a" });
     const clientB = new WebClient();
     const clientA = new WebClient();
 
@@ -150,6 +176,7 @@ describe("04. Security, RBAC, CSRF, session guards, token rotation & public SSR 
   });
 
   test("4c. CSRF Origin enforcement: foreign Origin -> 403, missing Origin -> 403", async () => {
+    await ensureRateBudget(20, { label: "4c" });
     const client = new WebClient();
     const buyer = await registerAndLoginBuyer(client, "csrf");
     const picked = await pickSingleShopSku(client, { minStock: 1 });
@@ -320,66 +347,82 @@ describe("04. Security, RBAC, CSRF, session guards, token rotation & public SSR 
   });
 
   test("4g. Refresh token rotation: grace window deduplicates staggered retry, gateway replay revokes family, and logout revokes immediately", async () => {
-    const client = new WebClient();
-    await registerAndLoginBuyer(client, "refresh-reuse");
+    // Steps 1-3 share a short (5s) post-rotation grace window; never retry a single step on 429.
+    await runAtomicBlockWith429Retry(
+      "4g-rotation-grace",
+      async () => {
+        const client = new WebClient();
+        await registerAndLoginBuyer(client, "refresh-reuse");
 
-    const oldRefresh = client.getCookie(REFRESH_COOKIE);
-    const oldAccess = client.getCookie(ACCESS_COOKIE);
-    assert.ok(oldRefresh, "login must issue refresh cookie");
-    assert.ok(oldAccess, "login must issue access cookie");
+        const oldRefresh = client.getCookie(REFRESH_COOKIE);
+        const oldAccess = client.getCookie(ACCESS_COOKIE);
+        assert.ok(oldRefresh, "login must issue refresh cookie");
+        assert.ok(oldAccess, "login must issue access cookie");
 
-    // 1. Legitimate refresh rotates both cookies.
-    const rotateRes = await client.json("POST", "/api/auth/refresh");
-    assert.equal(
-      rotateRes.status,
-      200,
-      `POST /api/auth/refresh expected 200, got ${rotateRes.status}: ${rotateRes.text}`
-    );
-    assert.equal(rotateRes.data?.ok, true);
+        await ensureRateBudget(15, { label: "4g-grace-window" });
 
-    const rotatedRefresh = client.getCookie(REFRESH_COOKIE);
-    assert.ok(rotatedRefresh, "refresh must set new refresh cookie");
-    assert.notEqual(
-      rotatedRefresh,
-      oldRefresh,
-      "refresh must rotate nm_refresh_token to a new value"
-    );
+        // 1. Legitimate refresh rotates both cookies.
+        const rotateRes = await client.json("POST", "/api/auth/refresh", { retry429: false });
+        throwIfRateLimited(rotateRes, "4g rotate");
+        assert.equal(
+          rotateRes.status,
+          200,
+          `POST /api/auth/refresh expected 200, got ${rotateRes.status}: ${rotateRes.text}`
+        );
+        assert.equal(rotateRes.data?.ok, true);
 
-    // 2. Staggered request arriving within the short BFF grace window with the just-rotated
-    // token receives the same rotated pair without falsely killing the session.
-    const graceRes = await client.json("POST", "/api/auth/refresh", {
-      cookieOverride: `${REFRESH_COOKIE}=${oldRefresh}`,
-      updateJar: false,
-    });
-    assert.equal(
-      graceRes.status,
-      200,
-      `staggered refresh within grace window expected 200, got ${graceRes.status}: ${graceRes.text}`
-    );
+        const rotatedRefresh = client.getCookie(REFRESH_COOKIE);
+        assert.ok(rotatedRefresh, "refresh must set new refresh cookie");
+        assert.notEqual(
+          rotatedRefresh,
+          oldRefresh,
+          "refresh must rotate nm_refresh_token to a new value"
+        );
 
-    // 3. Replaying oldRefresh directly at the gateway MUST be rejected (401/403) and revoke
-    // the entire refresh token family (verified via subsequent refresh with rotatedRefresh).
-    const gwReplayRes = await fetch(`${config.gatewayUrl}/api/v1/auth/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ refresh_token: oldRefresh }),
-      signal: AbortSignal.timeout(config.requestTimeoutMs),
-    });
-    assert.ok(
-      gwReplayRes.status === 401 || gwReplayRes.status === 403,
-      `gateway replay of old refresh token expected 401/403, got ${gwReplayRes.status}`
-    );
+        // 2. Staggered request arriving within the short BFF grace window with the just-rotated
+        // token receives the same rotated pair without falsely killing the session.
+        const graceRes = await client.json("POST", "/api/auth/refresh", {
+          cookieOverride: `${REFRESH_COOKIE}=${oldRefresh}`,
+          updateJar: false,
+          retry429: false,
+        });
+        throwIfRateLimited(graceRes, "4g grace retry");
+        assert.equal(
+          graceRes.status,
+          200,
+          `staggered refresh within grace window expected 200, got ${graceRes.status}: ${graceRes.text}`
+        );
 
-    const afterReuseRes = await client.json("POST", "/api/auth/refresh", {
-      cookieOverride: `${REFRESH_COOKIE}=${rotatedRefresh}`,
-      updateJar: false,
-    });
-    assert.ok(
-      afterReuseRes.status === 401 || afterReuseRes.status === 403,
-      `refresh family should be revoked after replay, got ${afterReuseRes.status}: ${afterReuseRes.text}`
+        // 3. Replaying oldRefresh directly at the gateway MUST be rejected (401/403) and revoke
+        // the entire refresh token family (verified via subsequent refresh with rotatedRefresh).
+        const gwReplayRes = await fetch(`${config.gatewayUrl}/api/v1/auth/refresh`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ refresh_token: oldRefresh }),
+          signal: AbortSignal.timeout(config.requestTimeoutMs),
+        });
+        throwIfRateLimited(gwReplayRes, "4g gateway replay");
+        assert.ok(
+          gwReplayRes.status === 401 || gwReplayRes.status === 403,
+          `gateway replay of old refresh token expected 401/403, got ${gwReplayRes.status}`
+        );
+
+        const afterReuseRes = await client.json("POST", "/api/auth/refresh", {
+          cookieOverride: `${REFRESH_COOKIE}=${rotatedRefresh}`,
+          updateJar: false,
+          retry429: false,
+        });
+        throwIfRateLimited(afterReuseRes, "4g after reuse");
+        assert.ok(
+          afterReuseRes.status === 401 || afterReuseRes.status === 403,
+          `refresh family should be revoked after replay, got ${afterReuseRes.status}: ${afterReuseRes.text}`
+        );
+      },
+      { minBudget: 25, maxRetries: 2 }
     );
 
     // 4. Logout on a fresh session clears cookies, purges grace cache, and revokes immediately.
+    await ensureRateBudget(15, { label: "4g-logout" });
     const logoutClient = new WebClient();
     await registerAndLoginBuyer(logoutClient, "logout");
     const preLogoutRefresh = logoutClient.getCookie(REFRESH_COOKIE);
@@ -409,6 +452,7 @@ describe("04. Security, RBAC, CSRF, session guards, token rotation & public SSR 
   });
 
   test("4i. [B1 account] /don-hang/<id> renders real order_code for owner and returns strict 404 for another buyer", async () => {
+    await ensureRateBudget(30, { label: "4i" });
     const clientB = new WebClient();
     const clientA = new WebClient();
     const [buyerB] = await Promise.all([
@@ -455,113 +499,172 @@ describe("04. Security, RBAC, CSRF, session guards, token rotation & public SSR 
     // (a) GET / with only R1 rotates & caches -> POST /api/auth/logout with (A1, R1) ->
     //     GET /tai-khoan with R1 within 5s must NOT return A2 (redirects 307 to /dang-nhap),
     //     and A2 must be rejected (401) at /api/gw/users/me.
-    const c1 = new WebClient();
-    await registerAndLoginBuyer(c1, "unified-logout");
-    const a1 = c1.getCookie(ACCESS_COOKIE);
-    const r1 = c1.getCookie(REFRESH_COOKIE);
-    assert.ok(a1 && r1);
+    await runAtomicBlockWith429Retry(
+      "4j-a-logout-invalidates-grace",
+      async () => {
+        const c1 = new WebClient();
+        await registerAndLoginBuyer(c1, "unified-logout");
+        const a1 = c1.getCookie(ACCESS_COOKIE);
+        const r1 = c1.getCookie(REFRESH_COOKIE);
+        assert.ok(a1 && r1);
 
-    const mwRotate = await c1.page("/", {
-      cookieOverride: `${REFRESH_COOKIE}=${r1}`,
-      updateJar: false,
-    });
-    assert.equal(mwRotate.status, 200, `GET / with R1 expected 200, got ${mwRotate.status}`);
-    const a2 = mwRotate.setCookies.find((c) => c.name === ACCESS_COOKIE)?.value;
-    const r2 = mwRotate.setCookies.find((c) => c.name === REFRESH_COOKIE)?.value;
-    assert.ok(a2 && r2 && r2 !== r1, "middleware must rotate R1 into (A2, R2)");
+        await ensureRateBudget(20, { label: "4j-a-atomic" });
 
-    const logoutRes = await c1.json("POST", "/api/auth/logout", {
-      cookieOverride: `${ACCESS_COOKIE}=${a1}; ${REFRESH_COOKIE}=${r1}`,
-      updateJar: false,
-      body: {},
-    });
-    assert.equal(logoutRes.status, 200, `logout expected 200, got ${logoutRes.status}`);
+        const mwRotate = await c1.page("/", {
+          cookieOverride: `${REFRESH_COOKIE}=${r1}`,
+          updateJar: false,
+          retry429: false,
+        });
+        throwIfRateLimited(mwRotate, "4j(a) GET /");
+        assert.equal(mwRotate.status, 200, `GET / with R1 expected 200, got ${mwRotate.status}`);
+        const a2 = mwRotate.setCookies.find((c) => c.name === ACCESS_COOKIE)?.value;
+        const r2 = mwRotate.setCookies.find((c) => c.name === REFRESH_COOKIE)?.value;
+        if (!a2 || !r2) {
+          await throwIfAnonymousRenderDueTo429("4j(a) GET /");
+        }
+        assert.ok(a2 && r2 && r2 !== r1, "middleware must rotate R1 into (A2, R2)");
 
-    const postLogoutAccount = await c1.page("/tai-khoan", {
-      cookieOverride: `${REFRESH_COOKIE}=${r1}`,
-      updateJar: false,
-    });
-    assert.equal(
-      postLogoutAccount.status,
-      307,
-      `GET /tai-khoan with R1 after logout expected 307 redirect, got ${postLogoutAccount.status}`
-    );
-    assert.ok(
-      postLogoutAccount.location?.includes("/dang-nhap"),
-      `expected redirect to /dang-nhap, got ${postLogoutAccount.location}`
-    );
-    const leakedA2 = postLogoutAccount.setCookies.find((c) => c.name === ACCESS_COOKIE && c.value);
-    assert.equal(leakedA2, undefined, "post-logout middleware must not re-issue cached A2");
+        const logoutRes = await c1.json("POST", "/api/auth/logout", {
+          cookieOverride: `${ACCESS_COOKIE}=${a1}; ${REFRESH_COOKIE}=${r1}`,
+          updateJar: false,
+          retry429: false,
+          body: {},
+        });
+        throwIfRateLimited(logoutRes, "4j(a) logout");
+        assert.equal(logoutRes.status, 200, `logout expected 200, got ${logoutRes.status}`);
 
-    const a2UsersMe = await c1.json("GET", "/api/gw/users/me", {
-      cookieOverride: `${ACCESS_COOKIE}=${a2}`,
-      updateJar: false,
-    });
-    assert.equal(
-      a2UsersMe.status,
-      401,
-      `cached A2 after logout expected 401 at /api/gw/users/me, got ${a2UsersMe.status}`
+        const postLogoutAccount = await c1.page("/tai-khoan", {
+          cookieOverride: `${REFRESH_COOKIE}=${r1}`,
+          updateJar: false,
+          retry429: false,
+        });
+        throwIfRateLimited(postLogoutAccount, "4j(a) GET /tai-khoan");
+        assert.equal(
+          postLogoutAccount.status,
+          307,
+          `GET /tai-khoan with R1 after logout expected 307 redirect, got ${postLogoutAccount.status}`
+        );
+        assert.ok(
+          postLogoutAccount.location?.includes("/dang-nhap"),
+          `expected redirect to /dang-nhap, got ${postLogoutAccount.location}`
+        );
+        const leakedA2 = postLogoutAccount.setCookies.find((c) => c.name === ACCESS_COOKIE && c.value);
+        assert.equal(leakedA2, undefined, "post-logout middleware must not re-issue cached A2");
+
+        const a2UsersMe = await c1.json("GET", "/api/gw/users/me", {
+          cookieOverride: `${ACCESS_COOKIE}=${a2}`,
+          updateJar: false,
+          retry429: false,
+        });
+        throwIfRateLimited(a2UsersMe, "4j(a) GET /api/gw/users/me");
+        assert.equal(
+          a2UsersMe.status,
+          401,
+          `cached A2 after logout expected 401 at /api/gw/users/me, got ${a2UsersMe.status}`
+        );
+      },
+      { minBudget: 35, maxRetries: 2 }
     );
 
     // (b) Parallel GET / (middleware) + POST /api/auth/refresh (/api route) with the same R1
     //     must share single-flight state so gateway does not revoke the token family.
-    const c2 = new WebClient();
-    await registerAndLoginBuyer(c2, "unified-parallel");
-    const parR1 = c2.getCookie(REFRESH_COOKIE);
-    assert.ok(parR1);
+    //     Neither branch retries 429 independently; if any branch hits 429, retry the ENTIRE block with a fresh account.
+    await runAtomicBlockWith429Retry(
+      "4j-b-parallel-refresh",
+      async () => {
+        const c2 = new WebClient();
+        await registerAndLoginBuyer(c2, "unified-parallel");
+        const parR1 = c2.getCookie(REFRESH_COOKIE);
+        assert.ok(parR1);
 
-    const [parPage, parApi] = await Promise.all([
-      c2.page("/", { cookieOverride: `${REFRESH_COOKIE}=${parR1}`, updateJar: false }),
-      c2.json("POST", "/api/auth/refresh", {
-        cookieOverride: `${REFRESH_COOKIE}=${parR1}`,
-        updateJar: false,
-      }),
-    ]);
-    assert.equal(parPage.status, 200, `parallel GET / expected 200, got ${parPage.status}`);
-    assert.equal(parApi.status, 200, `parallel POST /api/auth/refresh expected 200, got ${parApi.status}`);
-    const parR2Page = parPage.setCookies.find((c) => c.name === REFRESH_COOKIE)?.value;
-    const parR2Api = parApi.setCookies.find((c) => c.name === REFRESH_COOKIE)?.value;
-    assert.ok(parR2Page && parR2Api, "both parallel responses must set rotated refresh cookie");
-    assert.equal(parR2Page, parR2Api, "parallel middleware & API refresh must return the exact same rotated token");
+        await ensureRateBudget(25, { label: "4j-b-atomic" });
 
-    const followUp = await c2.json("POST", "/api/auth/refresh", {
-      cookieOverride: `${REFRESH_COOKIE}=${parR2Api}`,
-      updateJar: false,
-    });
-    assert.equal(
-      followUp.status,
-      200,
-      `subsequent refresh with R2 expected 200 (family must not be revoked), got ${followUp.status}: ${followUp.text}`
+        const [parPage, parApi] = await Promise.all([
+          c2.page("/", {
+            cookieOverride: `${REFRESH_COOKIE}=${parR1}`,
+            updateJar: false,
+            retry429: false,
+          }),
+          c2.json("POST", "/api/auth/refresh", {
+            cookieOverride: `${REFRESH_COOKIE}=${parR1}`,
+            updateJar: false,
+            retry429: false,
+          }),
+        ]);
+        if (parPage.status === 429 || parApi.status === 429) {
+          const rawRetry =
+            parApi.headers.get("retry-after") || parPage.headers.get("retry-after");
+          throw new RateLimitBlockError(
+            `4j(b) parallel branch 429 (page=${parPage.status}, api=${parApi.status})`,
+            rawRetry ? parseRetryAfterMs(rawRetry) : null
+          );
+        }
+
+        assert.equal(parPage.status, 200, `parallel GET / expected 200, got ${parPage.status}`);
+        assert.equal(parApi.status, 200, `parallel POST /api/auth/refresh expected 200, got ${parApi.status}`);
+        const parR2Page = parPage.setCookies.find((c) => c.name === REFRESH_COOKIE)?.value;
+        const parR2Api = parApi.setCookies.find((c) => c.name === REFRESH_COOKIE)?.value;
+        if (!parR2Page) {
+          await throwIfAnonymousRenderDueTo429("4j(b) parallel GET /");
+        }
+        assert.ok(parR2Page && parR2Api, "both parallel responses must set rotated refresh cookie");
+        assert.equal(parR2Page, parR2Api, "parallel middleware & API refresh must return the exact same rotated token");
+
+        const followUp = await c2.json("POST", "/api/auth/refresh", {
+          cookieOverride: `${REFRESH_COOKIE}=${parR2Api}`,
+          updateJar: false,
+          retry429: false,
+        });
+        throwIfRateLimited(followUp, "4j(b) follow-up refresh");
+        assert.equal(
+          followUp.status,
+          200,
+          `subsequent refresh with R2 expected 200 (family must not be revoked), got ${followUp.status}: ${followUp.text}`
+        );
+      },
+      { minBudget: 35, maxRetries: 2 }
     );
 
     // (c) GET /api/auth/session with only refresh cookie must be read-only (no rotation, no Set-Cookie).
-    const c3 = new WebClient();
-    await registerAndLoginBuyer(c3, "session-readonly");
-    const roR1 = c3.getCookie(REFRESH_COOKIE);
-    assert.ok(roR1);
+    await runAtomicBlockWith429Retry(
+      "4j-c-session-readonly",
+      async () => {
+        const c3 = new WebClient();
+        await registerAndLoginBuyer(c3, "session-readonly");
+        const roR1 = c3.getCookie(REFRESH_COOKIE);
+        assert.ok(roR1);
 
-    const sessionProbe = await c3.json("GET", "/api/auth/session", {
-      cookieOverride: `${REFRESH_COOKIE}=${roR1}`,
-      updateJar: false,
-    });
-    assert.equal(sessionProbe.status, 200);
-    assert.equal(sessionProbe.data?.user, null);
-    assert.equal(sessionProbe.data?.can_refresh, true);
-    assert.equal(
-      sessionProbe.setCookies.length,
-      0,
-      `GET /api/auth/session must not rotate cookies, got ${sessionProbe.setCookies.length} Set-Cookie headers`
-    );
+        await ensureRateBudget(15, { label: "4j-c-atomic" });
 
-    // Confirm roR1 was NOT rotated by GET /api/auth/session and still works on POST /api/auth/refresh.
-    const postProbeRefresh = await c3.json("POST", "/api/auth/refresh", {
-      cookieOverride: `${REFRESH_COOKIE}=${roR1}`,
-      updateJar: false,
-    });
-    assert.equal(
-      postProbeRefresh.status,
-      200,
-      `POST /api/auth/refresh with unrotated R1 expected 200, got ${postProbeRefresh.status}`
+        const sessionProbe = await c3.json("GET", "/api/auth/session", {
+          cookieOverride: `${REFRESH_COOKIE}=${roR1}`,
+          updateJar: false,
+          retry429: false,
+        });
+        throwIfRateLimited(sessionProbe, "4j(c) GET /api/auth/session");
+        assert.equal(sessionProbe.status, 200);
+        assert.equal(sessionProbe.data?.user, null);
+        assert.equal(sessionProbe.data?.can_refresh, true);
+        assert.equal(
+          sessionProbe.setCookies.length,
+          0,
+          `GET /api/auth/session must not rotate cookies, got ${sessionProbe.setCookies.length} Set-Cookie headers`
+        );
+
+        // Confirm roR1 was NOT rotated by GET /api/auth/session and still works on POST /api/auth/refresh.
+        const postProbeRefresh = await c3.json("POST", "/api/auth/refresh", {
+          cookieOverride: `${REFRESH_COOKIE}=${roR1}`,
+          updateJar: false,
+          retry429: false,
+        });
+        throwIfRateLimited(postProbeRefresh, "4j(c) POST /api/auth/refresh");
+        assert.equal(
+          postProbeRefresh.status,
+          200,
+          `POST /api/auth/refresh with unrotated R1 expected 200, got ${postProbeRefresh.status}`
+        );
+      },
+      { minBudget: 20, maxRetries: 2 }
     );
   });
 });

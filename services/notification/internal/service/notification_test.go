@@ -27,6 +27,8 @@ type memRepo struct {
 	processed    map[string]bool
 	contacts     map[string]store.UserContact
 	participants map[string]store.OrderParticipant
+	shopOwners   map[string]store.ShopOwner
+	emailDedups  map[string]string
 	dlqCount     int
 }
 
@@ -36,6 +38,8 @@ func newMemRepo() *memRepo {
 		processed:    make(map[string]bool),
 		contacts:     make(map[string]store.UserContact),
 		participants: make(map[string]store.OrderParticipant),
+		shopOwners:   make(map[string]store.ShopOwner),
+		emailDedups:  make(map[string]string),
 	}
 }
 
@@ -151,6 +155,22 @@ func (m *memRepo) ListOrderParticipantsByGroup(_ context.Context, checkoutGroupI
 	return out, nil
 }
 
+func (m *memRepo) GetShopOwner(_ context.Context, shopID string) (store.ShopOwner, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	so, ok := m.shopOwners[shopID]
+	return so, ok, nil
+}
+
+func (m *memRepo) RecordEmailDedup(_ context.Context, dedupKey, eventID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.emailDedups[dedupKey]; !exists {
+		m.emailDedups[dedupKey] = eventID
+	}
+	return nil
+}
+
 // ProcessEventTx simulates PostgreSQL transactional rollback on fn error and dedup on event_id.
 func (m *memRepo) ProcessEventTx(_ context.Context, eventID, _ string, fn func(tx store.TxStore) error) (bool, error) {
 	m.mu.Lock()
@@ -167,6 +187,8 @@ func (m *memRepo) ProcessEventTx(_ context.Context, eventID, _ string, fn func(t
 		stagedNotifs: nil,
 		stagedCont:   make(map[string]store.UserContact),
 		stagedPart:   make(map[string]store.OrderParticipant),
+		stagedShops:  make(map[string]store.ShopOwner),
+		stagedDedups: make(map[string]string),
 	}
 	if err := fn(tx); err != nil {
 		// Rollback: do not mark processed or persist staged mutations.
@@ -194,6 +216,21 @@ func (m *memRepo) ProcessEventTx(_ context.Context, eventID, _ string, fn func(t
 		}
 		m.participants[k] = v
 	}
+	for k, v := range tx.stagedShops {
+		existing := m.shopOwners[k]
+		if v.OwnerUserID == "" {
+			v.OwnerUserID = existing.OwnerUserID
+		}
+		if v.ShopName == "" {
+			v.ShopName = existing.ShopName
+		}
+		m.shopOwners[k] = v
+	}
+	for k, v := range tx.stagedDedups {
+		if _, exists := m.emailDedups[k]; !exists {
+			m.emailDedups[k] = v
+		}
+	}
 	return false, nil
 }
 
@@ -209,6 +246,8 @@ type memTxStore struct {
 	stagedNotifs []store.Notification
 	stagedCont   map[string]store.UserContact
 	stagedPart   map[string]store.OrderParticipant
+	stagedShops  map[string]store.ShopOwner
+	stagedDedups map[string]string
 }
 
 func (t *memTxStore) InsertNotification(_ context.Context, n store.Notification) (store.Notification, error) {
@@ -293,6 +332,41 @@ func (t *memTxStore) ListOrderParticipantsByGroup(_ context.Context, checkoutGro
 	return out, nil
 }
 
+func (t *memTxStore) UpsertShopOwner(_ context.Context, s store.ShopOwner) error {
+	if s.ShopID == "" || s.OwnerUserID == "" {
+		return nil
+	}
+	t.stagedShops[s.ShopID] = s
+	return nil
+}
+
+func (t *memTxStore) GetShopOwner(_ context.Context, shopID string) (store.ShopOwner, bool, error) {
+	if s, ok := t.stagedShops[shopID]; ok {
+		return s, true, nil
+	}
+	s, ok := t.parent.shopOwners[shopID]
+	return s, ok, nil
+}
+
+func (t *memTxStore) ClaimEmailDedup(_ context.Context, dedupKey, eventID string) (string, error) {
+	if existing, ok := t.parent.emailDedups[dedupKey]; ok {
+		return existing, nil
+	}
+	if existing, ok := t.stagedDedups[dedupKey]; ok {
+		return existing, nil
+	}
+	t.stagedDedups[dedupKey] = eventID
+	return eventID, nil
+}
+
+func (t *memTxStore) HasEmailDedup(_ context.Context, dedupKey string) (bool, error) {
+	if _, ok := t.stagedDedups[dedupKey]; ok {
+		return true, nil
+	}
+	_, ok := t.parent.emailDedups[dedupKey]
+	return ok, nil
+}
+
 type recordingMailer struct {
 	mu         sync.Mutex
 	sent       []mailer.Message
@@ -315,16 +389,42 @@ func (r *recordingMailer) Send(_ context.Context, msg mailer.Message) error {
 }
 
 type stubUserResolver struct {
-	emails     map[string]string
-	txChecker  *atomic.Bool
-	calledInTx bool
+	mu           sync.Mutex
+	emails       map[string]string
+	shopOwners   map[string]string
+	shopNames    map[string]string
+	shopErr      error
+	userErr      error
+	getShopCalls int
+	getUserCalls int
+	txChecker    *atomic.Bool
+	calledInTx   bool
 }
 
 func (s *stubUserResolver) GetUserContact(_ context.Context, userID string) (string, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.getUserCalls++
 	if s.txChecker != nil && s.txChecker.Load() {
 		s.calledInTx = true
 	}
+	if s.userErr != nil {
+		return "", "", s.userErr
+	}
 	return s.emails[userID], "Resolved User", nil
+}
+
+func (s *stubUserResolver) GetShopOwner(_ context.Context, shopID string) (string, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.getShopCalls++
+	if s.txChecker != nil && s.txChecker.Load() {
+		s.calledInTx = true
+	}
+	if s.shopErr != nil {
+		return "", "", s.shopErr
+	}
+	return s.shopOwners[shopID], s.shopNames[shopID], nil
 }
 
 func TestIdempotentEventDeduplicationAndOTP(t *testing.T) {
@@ -854,13 +954,11 @@ func TestVietnameseEmailsAndNoRawEnumsAcrossEvents(t *testing.T) {
 			t.Fatalf("%s failed: %v", tc.eventType, err)
 		}
 		var combined string
-		if len(repo.notifs) > beforeNotifs {
-			n := repo.notifs[len(repo.notifs)-1]
+		for _, n := range repo.notifs[beforeNotifs:] {
 			combined += n.Title + "\n" + n.Body + "\n"
 		}
-		if len(mail.sent) > beforeMails {
-			m := mail.sent[len(mail.sent)-1]
-			combined += m.Subject + "\n" + m.Body
+		for _, m := range mail.sent[beforeMails:] {
+			combined += m.Subject + "\n" + m.Body + "\n"
 		}
 		for _, bad := range tc.forbidden {
 			if strings.Contains(combined, bad) {

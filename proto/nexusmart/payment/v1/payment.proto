@@ -37,6 +37,13 @@ enum ReconciliationStatus {
   RECONCILIATION_STATUS_AMOUNT_MISMATCH = 4;
 }
 
+enum ReconciliationAction {
+  RECONCILIATION_ACTION_UNSPECIFIED = 0;
+  RECONCILIATION_ACTION_ASSIGN = 1;
+  RECONCILIATION_ACTION_REFUND = 2;
+  RECONCILIATION_ACTION_SUSPEND = 3;
+}
+
 // Per-sub-order financial allocation.
 // subtotal_vnd is seller merchandise revenue after seller-borne discounts (flash sale + shop voucher; R in plan.md).
 // platform_discount_vnd is platform-borne discount for this sub-order (platform voucher + freeship + coins; D in plan.md).
@@ -77,6 +84,15 @@ message Refund {
   string reason = 6;
   string idempotency_key = 7;
   google.protobuf.Timestamp created_at = 8;
+  string bank_code = 9;
+  string bank_account_masked = 10;
+  string bank_account_name = 11;
+  // Populated only for admin/super_admin callers; always empty for buyers.
+  string bank_account_number = 12;
+  string provider_refund_id = 13;
+  bool is_late_payment = 14;
+  google.protobuf.Timestamp settled_at = 15;
+  string settlement_note = 16;
 }
 
 message AccountBalance {
@@ -94,6 +110,22 @@ message ReconciliationItem {
   int64 provider_amount_vnd = 4;
   ReconciliationStatus status = 5;
   string note = 6;
+}
+
+message ReconciliationQueueItem {
+  string id = 1;
+  string webhook_event_id = 2;
+  string provider = 3;
+  string provider_tx_id = 4;
+  string expected_payment_id = 5;
+  string order_ref = 6;
+  int64 expected_amount_vnd = 7;
+  int64 actual_amount_vnd = 8;
+  string reason = 9;
+  string resolution_status = 10;
+  string notes = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp resolved_at = 13;
 }
 
 message CreatePaymentRequest {
@@ -189,6 +221,66 @@ message RunReconciliationResponse {
   repeated ReconciliationItem items = 6;
 }
 
+message ListRefundsRequest {
+  RefundStatus status = 1;
+  string order_id = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message ListRefundsResponse {
+  repeated Refund refunds = 1;
+  int64 total = 2;
+}
+
+message SubmitRefundBankAccountRequest {
+  string refund_id = 1;
+  string bank_code = 2;
+  string bank_account_number = 3;
+  string bank_account_name = 4;
+}
+
+message SubmitRefundBankAccountResponse {
+  Refund refund = 1;
+}
+
+message SettleRefundRequest {
+  string refund_id = 1;
+  string provider_refund_id = 2;
+  string note = 3;
+  string idempotency_key = 4;
+}
+
+message SettleRefundResponse {
+  Refund refund = 1;
+  bool already_settled = 2;
+}
+
+message ListReconciliationQueueRequest {
+  string status = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message ListReconciliationQueueResponse {
+  repeated ReconciliationQueueItem items = 1;
+  int64 total = 2;
+}
+
+message ResolveReconciliationItemRequest {
+  string item_id = 1;
+  ReconciliationAction action = 2;
+  string payment_id = 3;
+  string note = 4;
+  string idempotency_key = 5;
+}
+
+message ResolveReconciliationItemResponse {
+  ReconciliationQueueItem item = 1;
+  Refund refund = 2;
+  bool already_resolved = 3;
+}
+
 service PaymentService {
   rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse);
   rpc GetPayment(GetPaymentRequest) returns (GetPaymentResponse);
@@ -198,4 +290,9 @@ service PaymentService {
   rpc GetSellerBalance(GetSellerBalanceRequest) returns (GetSellerBalanceResponse);
   rpc ReleaseEscrow(ReleaseEscrowRequest) returns (ReleaseEscrowResponse);
   rpc RunReconciliation(RunReconciliationRequest) returns (RunReconciliationResponse);
+  rpc ListRefunds(ListRefundsRequest) returns (ListRefundsResponse);
+  rpc SubmitRefundBankAccount(SubmitRefundBankAccountRequest) returns (SubmitRefundBankAccountResponse);
+  rpc SettleRefund(SettleRefundRequest) returns (SettleRefundResponse);
+  rpc ListReconciliationQueue(ListReconciliationQueueRequest) returns (ListReconciliationQueueResponse);
+  rpc ResolveReconciliationItem(ResolveReconciliationItemRequest) returns (ResolveReconciliationItemResponse);
 }

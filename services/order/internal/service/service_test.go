@@ -413,17 +413,19 @@ func (m *mockPromotionClient) ReleasePromotionShop(ctx context.Context, req *pro
 }
 
 type mockPaymentClient struct {
-	mu                 sync.Mutex
-	createErr          error
-	getPaymentStatus   paymentv1.PaymentStatus
-	getPaymentErr      error
-	paymentsByID       map[string]*paymentv1.Payment
-	paymentsByIdemKey  map[string]*paymentv1.Payment
-	onCreatePayment    func(req *paymentv1.CreatePaymentRequest)
-	createCalls        []*paymentv1.CreatePaymentRequest
-	cancelCalls        []*paymentv1.CancelPaymentRequest
-	refundCalls        []*paymentv1.CreateRefundRequest
-	releaseEscrowCalls []*paymentv1.ReleaseEscrowRequest
+	mu                sync.Mutex
+	createErr         error
+	cancelErr         error
+	refundErr         error
+	getPaymentStatus  paymentv1.PaymentStatus
+	getPaymentErr     error
+	paymentsByID      map[string]*paymentv1.Payment
+	paymentsByIdemKey map[string]*paymentv1.Payment
+	onCreatePayment   func(req *paymentv1.CreatePaymentRequest)
+	createCalls       []*paymentv1.CreatePaymentRequest
+	cancelCalls       []*paymentv1.CancelPaymentRequest
+	refundCalls       []*paymentv1.CreateRefundRequest
+	refundAuth        []authCallSnapshot
 }
 
 func (m *mockPaymentClient) CreatePayment(_ context.Context, req *paymentv1.CreatePaymentRequest, _ ...grpc.CallOption) (*paymentv1.CreatePaymentResponse, error) {
@@ -513,6 +515,9 @@ func (m *mockPaymentClient) CancelPayment(_ context.Context, req *paymentv1.Canc
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cancelCalls = append(m.cancelCalls, req)
+	if m.cancelErr != nil {
+		return nil, m.cancelErr
+	}
 	return &paymentv1.CancelPaymentResponse{
 		Payment: &paymentv1.Payment{
 			PaymentId: req.GetPaymentId(),
@@ -521,35 +526,54 @@ func (m *mockPaymentClient) CancelPayment(_ context.Context, req *paymentv1.Canc
 	}, nil
 }
 
-func (m *mockPaymentClient) CreateRefund(_ context.Context, req *paymentv1.CreateRefundRequest, _ ...grpc.CallOption) (*paymentv1.CreateRefundResponse, error) {
+func (m *mockPaymentClient) CreateRefund(ctx context.Context, req *paymentv1.CreateRefundRequest, _ ...grpc.CallOption) (*paymentv1.CreateRefundResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.refundCalls = append(m.refundCalls, req)
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.refundAuth = append(m.refundAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
+	if m.refundErr != nil {
+		return nil, m.refundErr
+	}
 	return &paymentv1.CreateRefundResponse{
 		Refund: &paymentv1.Refund{
 			RefundId:  "ref-" + req.GetOrderId(),
 			PaymentId: req.GetPaymentId(),
 			OrderId:   req.GetOrderId(),
 			AmountVnd: req.GetAmountVnd(),
-			Status:    paymentv1.RefundStatus_REFUND_STATUS_DONE,
+			Status:    paymentv1.RefundStatus_REFUND_STATUS_PENDING,
 		},
 	}, nil
 }
 
-func (m *mockPaymentClient) ReleaseEscrow(_ context.Context, req *paymentv1.ReleaseEscrowRequest, _ ...grpc.CallOption) (*paymentv1.ReleaseEscrowResponse, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.releaseEscrowCalls = append(m.releaseEscrowCalls, req)
-	return &paymentv1.ReleaseEscrowResponse{Released: true}, nil
-}
-
 type mockShippingClient struct {
-	mu               sync.Mutex
-	quotes           []*shippingv1.CarrierQuote
-	createShipCalls  []*shippingv1.CreateShipmentRequest
-	cancelShipCalls  []*shippingv1.CancelShipmentRequest
-	calculateFeeReqs []*shippingv1.CalculateFeeRequest
-	calculateFeeCall int
+	mu                     sync.Mutex
+	quotes                 []*shippingv1.CarrierQuote
+	createShipCalls        []*shippingv1.CreateShipmentRequest
+	onCreateShipment       func(req *shippingv1.CreateShipmentRequest) (*shippingv1.CreateShipmentResponse, error)
+	createReturnShipCalls  []*shippingv1.CreateReturnShipmentRequest
+	createReturnShipAuth   []authCallSnapshot
+	createReturnShipErr    error
+	onCreateReturnShipment func(req *shippingv1.CreateReturnShipmentRequest) (*shippingv1.CreateReturnShipmentResponse, error)
+	cancelShipCalls        []*shippingv1.CancelShipmentRequest
+	cancelShipAuth         []authCallSnapshot
+	cancelShipErr          error
+	onCancelShipment       func(req *shippingv1.CancelShipmentRequest) error
+	getShipCalls           []*shippingv1.GetShipmentRequest
+	getShipAuth            []authCallSnapshot
+	getShipResp            *shippingv1.GetShipmentResponse
+	getShipErr             error
+	onGetShipment          func(req *shippingv1.GetShipmentRequest) (*shippingv1.GetShipmentResponse, error)
+	calculateFeeReqs       []*shippingv1.CalculateFeeRequest
+	calculateFeeCall       int
+	forwardTrackings       map[string]string
 }
 
 func newMockShippingClient() *mockShippingClient {
@@ -558,6 +582,7 @@ func newMockShippingClient() *mockShippingClient {
 			{CarrierCode: "ghn", CarrierName: "GHN", ServiceCode: "standard", FeeVnd: 30000, EstimatedDays: 3},
 			{CarrierCode: "mock_express", CarrierName: "MockExpress", ServiceCode: "fast", FeeVnd: 45000, EstimatedDays: 1},
 		},
+		forwardTrackings: make(map[string]string),
 	}
 }
 
@@ -571,28 +596,139 @@ func (m *mockShippingClient) CalculateFee(_ context.Context, req *shippingv1.Cal
 
 func (m *mockShippingClient) CreateShipment(_ context.Context, req *shippingv1.CreateShipmentRequest, _ ...grpc.CallOption) (*shippingv1.CreateShipmentResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.createShipCalls = append(m.createShipCalls, req)
-	return &shippingv1.CreateShipmentResponse{
+	hook := m.onCreateShipment
+	m.mu.Unlock()
+	var resp *shippingv1.CreateShipmentResponse
+	var err error
+	if hook != nil {
+		resp, err = hook(req)
+	} else {
+		resp = &shippingv1.CreateShipmentResponse{
+			Shipment: &shippingv1.Shipment{
+				ShipmentId:   "shp-" + req.GetOrderId(),
+				OrderId:      req.GetOrderId(),
+				ShopId:       req.GetShopId(),
+				CarrierCode:  req.GetCarrierCode(),
+				ServiceCode:  req.GetServiceCode(),
+				TrackingCode: "TRK-" + req.GetOrderId()[:8],
+				LabelUrl:     "https://labels.sandbox/" + req.GetOrderId(),
+				Status:       shippingv1.ShipmentStatus_SHIPMENT_STATUS_CREATED,
+				CodAmountVnd: req.GetCodAmountVnd(),
+			},
+		}
+	}
+	if err == nil && resp.GetShipment() != nil && resp.GetShipment().GetTrackingCode() != "" {
+		m.mu.Lock()
+		if m.forwardTrackings == nil {
+			m.forwardTrackings = make(map[string]string)
+		}
+		m.forwardTrackings[req.GetOrderId()] = resp.GetShipment().GetTrackingCode()
+		m.mu.Unlock()
+	}
+	return resp, err
+}
+
+func (m *mockShippingClient) CreateReturnShipment(ctx context.Context, req *shippingv1.CreateReturnShipmentRequest, _ ...grpc.CallOption) (*shippingv1.CreateReturnShipmentResponse, error) {
+	m.mu.Lock()
+	m.createReturnShipCalls = append(m.createReturnShipCalls, req)
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.createReturnShipAuth = append(m.createReturnShipAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
+	hook := m.onCreateReturnShipment
+	retErr := m.createReturnShipErr
+	m.mu.Unlock()
+	if hook != nil {
+		return hook(req)
+	}
+	if retErr != nil {
+		return nil, retErr
+	}
+	prefix := req.GetOrderId()
+	if len(prefix) > 8 {
+		prefix = prefix[:8]
+	}
+	return &shippingv1.CreateReturnShipmentResponse{
 		Shipment: &shippingv1.Shipment{
-			ShipmentId:   "shp-" + req.GetOrderId(),
-			OrderId:      req.GetOrderId(),
-			ShopId:       req.GetShopId(),
-			CarrierCode:  req.GetCarrierCode(),
-			ServiceCode:  req.GetServiceCode(),
-			TrackingCode: "TRK-" + req.GetOrderId()[:8],
-			LabelUrl:     "https://labels.sandbox/" + req.GetOrderId(),
-			Status:       shippingv1.ShipmentStatus_SHIPMENT_STATUS_CREATED,
-			CodAmountVnd: req.GetCodAmountVnd(),
+			ShipmentId:      "rshp-" + req.GetOrderId(),
+			OrderId:         req.GetOrderId(),
+			ShopId:          req.GetShopId(),
+			CarrierCode:     req.GetCarrierCode(),
+			ServiceCode:     req.GetServiceCode(),
+			TrackingCode:    "RET-" + prefix,
+			LabelUrl:        "https://labels.sandbox/return/" + req.GetOrderId(),
+			Status:          shippingv1.ShipmentStatus_SHIPMENT_STATUS_CREATED,
+			FeeVnd:          25000,
+			Direction:       shippingv1.ShipmentDirection_SHIPMENT_DIRECTION_RETURN,
+			ReturnRequestId: req.GetReturnRequestId(),
 		},
 	}, nil
 }
 
-func (m *mockShippingClient) CancelShipment(_ context.Context, req *shippingv1.CancelShipmentRequest, _ ...grpc.CallOption) (*shippingv1.CancelShipmentResponse, error) {
+func (m *mockShippingClient) CancelShipment(ctx context.Context, req *shippingv1.CancelShipmentRequest, _ ...grpc.CallOption) (*shippingv1.CancelShipmentResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.cancelShipCalls = append(m.cancelShipCalls, req)
-	return &shippingv1.CancelShipmentResponse{}, nil
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.cancelShipAuth = append(m.cancelShipAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
+	hook := m.onCancelShipment
+	cancelErr := m.cancelShipErr
+	trk := m.forwardTrackings[req.GetOrderId()]
+	m.mu.Unlock()
+	if hook != nil {
+		if err := hook(req); err != nil {
+			return nil, err
+		}
+		return &shippingv1.CancelShipmentResponse{
+			Shipment: &shippingv1.Shipment{OrderId: req.GetOrderId(), TrackingCode: trk, Status: shippingv1.ShipmentStatus_SHIPMENT_STATUS_CANCELLED},
+		}, nil
+	}
+	if cancelErr != nil {
+		return nil, cancelErr
+	}
+	return &shippingv1.CancelShipmentResponse{
+		Shipment: &shippingv1.Shipment{OrderId: req.GetOrderId(), TrackingCode: trk, Status: shippingv1.ShipmentStatus_SHIPMENT_STATUS_CANCELLED},
+	}, nil
+}
+
+func (m *mockShippingClient) GetShipment(ctx context.Context, req *shippingv1.GetShipmentRequest, _ ...grpc.CallOption) (*shippingv1.GetShipmentResponse, error) {
+	m.mu.Lock()
+	m.getShipCalls = append(m.getShipCalls, req)
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.getShipAuth = append(m.getShipAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
+	hook := m.onGetShipment
+	resp := m.getShipResp
+	err := m.getShipErr
+	m.mu.Unlock()
+	if hook != nil {
+		return hook(req)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if resp != nil {
+		return resp, nil
+	}
+	return nil, status.Error(codes.NotFound, "shipment not found")
 }
 
 type testHarness struct {
@@ -616,13 +752,18 @@ func newTestHarness() *testHarness {
 	sh := newMockShippingClient()
 
 	cfg := config.Config{
-		ServiceName:          "order",
-		CODMaxVND:            5000000,
-		CODMaxRejectedCount:  3,
-		PaymentExpiryMinutes: 15,
-		DefaultCommissionBPS: 500,
-		RewardCoinsBPS:       100,
-		GRPCCallTimeout:      5 * time.Second,
+		ServiceName:              "order",
+		CODMaxVND:                5000000,
+		CODMaxRejectedCount:      3,
+		PaymentExpiryMinutes:     15,
+		DefaultCommissionBPS:     500,
+		RewardCoinsBPS:           100,
+		AutoCompleteDays:         7,
+		SellerConfirmHours:       48,
+		ReturnSellerResponseDays: 3,
+		ReturnShipDays:           5,
+		ReturnInspectDays:        3,
+		GRPCCallTimeout:          5 * time.Second,
 	}
 
 	bundle := &clients.Bundle{
@@ -1170,24 +1311,19 @@ func TestOrderLifecycle_CompleteFlowAndRBAC403(t *testing.T) {
 		t.Fatalf("expected FailedPrecondition for premature BuyerConfirmReceived, got %v", err)
 	}
 
-	// Seller ships: PREPARING -> SHIPPING (passes COD amount = TotalPayableVnd!)
+	// Seller ships: creates shipment and stays PREPARING with tracking_code (passes COD amount = TotalPayableVnd!).
 	shipResp, err := h.svc.SellerShipOrder(seller1Ctx, &orderv1.SellerShipOrderRequest{OrderId: orderID, ShopId: "shop-1"})
 	if err != nil {
 		t.Fatalf("SellerShipOrder failed: %v", err)
 	}
-	if shipResp.Order.Status != orderv1.OrderStatus_ORDER_STATUS_SHIPPING || shipResp.TrackingCode == "" {
+	if shipResp.Order.Status != orderv1.OrderStatus_ORDER_STATUS_PREPARING || shipResp.TrackingCode == "" {
 		t.Fatalf("unexpected SellerShipOrder resp: %+v", shipResp)
 	}
 	if len(h.shipping.createShipCalls) != 1 || h.shipping.createShipCalls[0].CodAmountVnd != resp.Orders[0].TotalPayableVnd {
 		t.Fatalf("expected CreateShipment COD amount %d, got %+v", resp.Orders[0].TotalPayableVnd, h.shipping.createShipCalls)
 	}
 
-	// Cannot cancel once SHIPPING!
-	if _, err := h.svc.CancelOrder(buyerCtx, &orderv1.CancelOrderRequest{OrderId: orderID, Reason: "too late"}); status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("expected FailedPrecondition cancelling SHIPPING order, got %v", err)
-	}
-
-	// Intermediate shipment.updated (delivering) logs timeline without changing status.
+	// Carrier pickup (delivering) transitions PREPARING -> SHIPPING and emits order.shipped.
 	if err := h.svc.HandleShipmentUpdated(context.Background(), "evt-ship-1", events.ShipmentUpdatedPayload{
 		OrderID:      orderID,
 		Status:       "delivering",
@@ -1195,6 +1331,11 @@ func TestOrderLifecycle_CompleteFlowAndRBAC403(t *testing.T) {
 		Description:  "Out for delivery",
 	}); err != nil {
 		t.Fatalf("HandleShipmentUpdated(delivering) failed: %v", err)
+	}
+
+	// Cannot cancel once SHIPPING!
+	if _, err := h.svc.CancelOrder(buyerCtx, &orderv1.CancelOrderRequest{OrderId: orderID, Reason: "too late"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition cancelling SHIPPING order, got %v", err)
 	}
 
 	// Delivered shipment.updated transitions SHIPPING -> DELIVERED + order.delivered outbox.
@@ -1212,13 +1353,10 @@ func TestOrderLifecycle_CompleteFlowAndRBAC403(t *testing.T) {
 		t.Fatalf("expected PermissionDenied for other buyer BuyerConfirmReceived, got %v", err)
 	}
 
-	// Owner buyer confirms received: DELIVERED -> COMPLETED, releases escrow, emits order.completed with coins_reward.
+	// Owner buyer confirms received: DELIVERED -> COMPLETED, emits order.completed with coins_reward (no direct ReleaseEscrow).
 	doneResp, err := h.svc.BuyerConfirmReceived(buyerCtx, &orderv1.BuyerConfirmReceivedRequest{OrderId: orderID})
 	if err != nil || doneResp.Order.Status != orderv1.OrderStatus_ORDER_STATUS_COMPLETED {
 		t.Fatalf("expected COMPLETED, got %v (err=%v)", doneResp, err)
-	}
-	if len(h.payment.releaseEscrowCalls) != 1 || h.payment.releaseEscrowCalls[0].OrderId != orderID {
-		t.Fatalf("expected ReleaseEscrow(%s), got %+v", orderID, h.payment.releaseEscrowCalls)
 	}
 
 	// Verify order.completed outbox payload has exact financial fields & reward coins.
@@ -1316,7 +1454,7 @@ func TestRequestReturnAndShipmentReturned_RestocksAndRefunds(t *testing.T) {
 		PaymentID:    resp.PaymentId,
 		OrderGroupID: resp.CheckoutGroupId,
 	})
-	_, err = h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: orderID, ShopId: "shop-1"})
+	shipResp, err := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: orderID, ShopId: "shop-1"})
 	if err != nil {
 		t.Fatalf("SellerShipOrder failed: %v", err)
 	}
@@ -1325,8 +1463,9 @@ func TestRequestReturnAndShipmentReturned_RestocksAndRefunds(t *testing.T) {
 	}
 
 	_ = h.svc.HandleShipmentUpdated(context.Background(), "evt-ret-deliv", events.ShipmentUpdatedPayload{
-		OrderID: orderID,
-		Status:  "delivered",
+		OrderID:      orderID,
+		TrackingCode: shipResp.TrackingCode,
+		Status:       "delivered",
 	})
 
 	retResp, err := h.svc.RequestReturn(buyerCtx, &orderv1.RequestReturnRequest{
@@ -1338,12 +1477,27 @@ func TestRequestReturnAndShipmentReturned_RestocksAndRefunds(t *testing.T) {
 		t.Fatalf("RequestReturn unexpected result: %+v err=%v", retResp, err)
 	}
 
-	// Shipment returned completes RETURN_REQUESTED -> RETURNED, restocks, and refunds!
+	// Seller accepts return -> RETURN shipment delivered -> seller confirms received -> RETURNED + restock + refund!
+	accResp, err := h.svc.RespondReturn(sellerCtx, &orderv1.RespondReturnRequest{
+		ReturnRequestId: retResp.ReturnRequestId,
+		Decision:        orderv1.ReturnSellerDecision_RETURN_SELLER_DECISION_ACCEPT_RETURN,
+	})
+	if err != nil {
+		t.Fatalf("RespondReturn(ACCEPT_RETURN) failed: %v", err)
+	}
 	if err := h.svc.HandleShipmentUpdated(context.Background(), "evt-ret-done", events.ShipmentUpdatedPayload{
-		OrderID: orderID,
-		Status:  "returned",
+		OrderID:         orderID,
+		Direction:       "RETURN",
+		ReturnRequestID: retResp.ReturnRequestId,
+		TrackingCode:    accResp.ReturnRequest.ReturnTrackingCode,
+		Status:          "delivered",
 	}); err != nil {
-		t.Fatalf("HandleShipmentUpdated(returned) failed: %v", err)
+		t.Fatalf("HandleShipmentUpdated(RETURN delivered) failed: %v", err)
+	}
+	if _, err := h.svc.ConfirmReturnReceived(sellerCtx, &orderv1.ConfirmReturnReceivedRequest{
+		ReturnRequestId: retResp.ReturnRequestId,
+	}); err != nil {
+		t.Fatalf("ConfirmReturnReceived failed: %v", err)
 	}
 
 	got, _ := h.svc.GetOrder(buyerCtx, &orderv1.GetOrderRequest{OrderId: orderID})

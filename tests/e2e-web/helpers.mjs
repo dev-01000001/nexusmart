@@ -136,9 +136,11 @@ export function parseSetCookie(raw) {
 }
 
 const RATE_LIMIT_DEFAULT_RETRY_AFTER_MS = 5_000;
-const RATE_LIMIT_MAX_WAIT_MS = 120_000;
+export const RATE_LIMIT_MAX_WAIT_MS = 150_000;
+export const RATE_LIMIT_SSR_DEFAULT_WAIT_MS = 60_000;
+export const RATE_LIMIT_SSR_TEXT = "Bạn thao tác quá nhanh";
 
-function parseRetryAfterMs(headerVal) {
+export function parseRetryAfterMs(headerVal) {
   const v = String(headerVal ?? "").trim();
   if (!v) return RATE_LIMIT_DEFAULT_RETRY_AFTER_MS;
   if (/^-?\d+$/.test(v)) {
@@ -153,7 +155,130 @@ function parseRetryAfterMs(headerVal) {
   return RATE_LIMIT_DEFAULT_RETRY_AFTER_MS;
 }
 
-async function fetchWith429Retry(url, initFactory) {
+function parseOptionalInt(headerVal) {
+  const v = String(headerVal ?? "").trim();
+  if (!/^\d+$/.test(v)) return null;
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Probes the gateway's shared per-IP rate-limit bucket (`rl:ip:<ip>`) via a lightweight
+ * public BFF proxy endpoint (`/api/gw/shipping/provinces` forwards `x-ratelimit-limit`,
+ * `x-ratelimit-remaining`, and `retry-after` without hitting the per-user bucket).
+ */
+export async function probeIpRateLimit(options = {}) {
+  const probePath = options.probePath ?? "/api/gw/shipping/provinces";
+  const url = `${config.webUrl}${probePath.startsWith("/") ? probePath : `/${probePath}`}`;
+  const res = await fetch(url, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    redirect: "manual",
+    signal: AbortSignal.timeout(options.timeoutMs ?? config.requestTimeoutMs),
+  });
+  await res.body?.cancel().catch(() => {});
+
+  const limit = parseOptionalInt(res.headers.get("x-ratelimit-limit"));
+  const remaining = parseOptionalInt(res.headers.get("x-ratelimit-remaining"));
+  const rawRetryAfter = res.headers.get("retry-after");
+  const retryAfterMs = rawRetryAfter ? parseRetryAfterMs(rawRetryAfter) : null;
+  return {
+    status: res.status,
+    limit,
+    remaining,
+    retryAfterMs,
+  };
+}
+
+/**
+ * Ensures at least `min` requests remain in the shared per-IP rate-limit window before
+ * entering a bursty or atomic concurrent test block. Reads `x-ratelimit-remaining`
+ * (and `Retry-After` on 429) and waits until the sliding window frees enough budget.
+ */
+export async function ensureRateBudget(min = 25, options = {}) {
+  const requested = Math.max(1, Math.trunc(min));
+  const maxWaitMs = options.maxWaitMs ?? RATE_LIMIT_MAX_WAIT_MS;
+  const label = options.label ? ` [${options.label}]` : "";
+  const startMs = Date.now();
+
+  while (true) {
+    const probe = await probeIpRateLimit(options);
+    if (probe.status !== 429 && probe.remaining === null) {
+      return probe;
+    }
+
+    const effectiveMin =
+      probe.limit !== null && probe.limit > 5
+        ? Math.min(requested, probe.limit - 5)
+        : requested;
+    if (probe.status !== 429 && probe.remaining !== null && probe.remaining >= effectiveMin) {
+      return probe;
+    }
+
+    const elapsedMs = Date.now() - startMs;
+    if (elapsedMs >= maxWaitMs) {
+      return probe;
+    }
+
+    let waitMs;
+    if (probe.status === 429) {
+      waitMs = (probe.retryAfterMs ?? 10_000) + 1_500;
+    } else if (probe.remaining === 0) {
+      waitMs = 12_000;
+    } else {
+      waitMs = 10_000;
+    }
+    const sleepMs = Math.min(waitMs, maxWaitMs - elapsedMs);
+    console.log(
+      `[rate-budget]${label} remaining=${probe.remaining ?? 0}/${probe.limit ?? "?"} < ${effectiveMin} (HTTP ${probe.status}); waiting ${Math.ceil(sleepMs / 1000)}s for window reset (elapsed ${Math.ceil(elapsedMs / 1000)}s/${Math.ceil(maxWaitMs / 1000)}s)`
+    );
+    await new Promise((resolve) => setTimeout(resolve, sleepMs));
+  }
+}
+
+export class RateLimitBlockError extends Error {
+  constructor(message, retryAfterMs = null) {
+    super(message);
+    this.name = "RateLimitBlockError";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/**
+ * Executes an atomic / timing-sensitive test block (e.g. parallel refresh or 5s grace window)
+ * after ensuring rate-limit budget. If any branch inside the block still encounters 429,
+ * waits for the window and retries the ENTIRE block from scratch (with a fresh account),
+ * up to `maxRetries` retries (default 2). Non-rate-limit errors fail immediately.
+ */
+export async function runAtomicBlockWith429Retry(label, fn, options = {}) {
+  const minBudget = options.minBudget ?? 30;
+  const maxRetries = options.maxRetries ?? 2;
+  let lastErr = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    await ensureRateBudget(minBudget, { label });
+    try {
+      return await fn(attempt);
+    } catch (err) {
+      if (!(err instanceof RateLimitBlockError)) {
+        throw err;
+      }
+      lastErr = err;
+      if (attempt >= maxRetries) {
+        break;
+      }
+      const waitMs = (err.retryAfterMs ?? 10_000) + 1_500;
+      console.log(
+        `[429] atomic block "${label}" hit rate limit (${err.message}); waiting ${Math.ceil(waitMs / 1000)}s before retrying entire block with fresh account (retry ${attempt + 1}/${maxRetries})`
+      );
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+
+  throw lastErr;
+}
+
+export async function fetchWith429Retry(url, initFactory) {
   let totalWaitedMs = 0;
   const logPath = new URL(url).pathname;
 
@@ -164,7 +289,7 @@ async function fetchWith429Retry(url, initFactory) {
       return res;
     }
 
-    const waitMs = parseRetryAfterMs(res.headers.get("retry-after"));
+    const waitMs = parseRetryAfterMs(res.headers.get("retry-after")) + 250;
     if (totalWaitedMs + waitMs > RATE_LIMIT_MAX_WAIT_MS) {
       return res;
     }
@@ -264,13 +389,17 @@ export class WebClient {
       }
     }
 
-    const res = await fetchWith429Retry(url, () => ({
+    const initFactory = () => ({
       method: upper,
       headers,
       body,
       redirect: options.redirect ?? "manual",
       signal: AbortSignal.timeout(options.timeoutMs ?? config.requestTimeoutMs),
-    }));
+    });
+    const res =
+      options.retry429 === false
+        ? await fetch(url, initFactory())
+        : await fetchWith429Retry(url, initFactory);
 
     const rawSetCookies = typeof res.headers.getSetCookie === "function"
       ? res.headers.getSetCookie()
@@ -309,8 +438,8 @@ export class WebClient {
 
   async page(reqPath, options = {}) {
     const startMs = Date.now();
-    const maxTotalMs = 150_000;
-    const defaultWaitMs = 60_000;
+    const maxTotalMs = RATE_LIMIT_MAX_WAIT_MS;
+    const defaultWaitMs = RATE_LIMIT_SSR_DEFAULT_WAIT_MS;
     const logPath = new URL(
       reqPath.startsWith("http://") || reqPath.startsWith("https://")
         ? reqPath
@@ -324,15 +453,16 @@ export class WebClient {
         ...options,
       });
       if (
+        options.retry429 === false ||
         res.status !== 200 ||
         options.cookieOverride !== undefined ||
         res.setCookies.length > 0 ||
-        !res.text.includes("Bạn thao tác quá nhanh")
+        !res.text.includes(RATE_LIMIT_SSR_TEXT)
       ) {
         return res;
       }
       const rawRetry = res.headers.get("retry-after");
-      const waitMs = rawRetry ? parseRetryAfterMs(rawRetry) : defaultWaitMs;
+      const waitMs = (rawRetry ? parseRetryAfterMs(rawRetry) : defaultWaitMs) + 250;
       const elapsedMs = Date.now() - startMs;
       if (elapsedMs + waitMs > maxTotalMs) {
         return res;

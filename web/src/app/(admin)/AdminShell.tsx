@@ -7,6 +7,7 @@ import { useMockStore } from "@/mock/MockStoreContext";
 import type {
   GatewayLedgerSummary,
   GatewayProduct,
+  GatewayReturnRequest,
   GatewayShop,
   GatewayUser,
   PaginatedResponse,
@@ -49,11 +50,12 @@ export function AdminShell({ user, children }: { user: GatewayUser; children: Re
   const pathname = usePathname();
   const router = useRouter();
   const searchRef = useRef<HTMLInputElement | null>(null);
-  const { disputes, toastMessage, dismissToast } = useMockStore();
+  const { toastMessage, dismissToast } = useMockStore();
   const [menuOpen, setMenuOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [pendingShopsCount, setPendingShopsCount] = useState(0);
   const [pendingProductsCount, setPendingProductsCount] = useState(0);
+  const [openReturnsCount, setOpenReturnsCount] = useState(0);
   const [ledgerUnbalanced, setLedgerUnbalanced] = useState(false);
 
   useEffect(() => {
@@ -63,9 +65,12 @@ export function AdminShell({ user, children }: { user: GatewayUser; children: Re
   useEffect(() => {
     let active = true;
     async function loadBadges() {
-      const [shopsRes, prodsRes, ledgerRes] = await Promise.allSettled([
+      const [shopsRes, prodsRes, returnsRes, ledgerRes] = await Promise.allSettled([
         api<PaginatedResponse<GatewayShop>>("admin/shops?status=PENDING&page=1&page_size=1"),
         api<PaginatedResponse<GatewayProduct>>("admin/products?status=PENDING&page=1&page_size=1"),
+        api<PaginatedResponse<GatewayReturnRequest>>(
+          "admin/returns?status=ESCALATED&page=1&page_size=1"
+        ),
         api<GatewayLedgerSummary>("admin/ledger/summary"),
       ]);
       if (!active) return;
@@ -74,6 +79,9 @@ export function AdminShell({ user, children }: { user: GatewayUser; children: Re
       }
       if (prodsRes.status === "fulfilled") {
         setPendingProductsCount(prodsRes.value.total ?? prodsRes.value.items.length);
+      }
+      if (returnsRes.status === "fulfilled") {
+        setOpenReturnsCount(returnsRes.value.total ?? returnsRes.value.items.length);
       }
       if (ledgerRes.status === "fulfilled") {
         setLedgerUnbalanced(!ledgerRes.value.is_balanced);
@@ -106,8 +114,6 @@ export function AdminShell({ user, children }: { user: GatewayUser; children: Re
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const openDisputes = disputes.filter((d) => d.status !== "da_xu_ly").length;
-
   const opsNavItems: AdminNavItem[] = [
     { href: "/admin", label: "Tổng quan", icon: <IconDashboard size={16} /> },
     {
@@ -126,7 +132,7 @@ export function AdminShell({ user, children }: { user: GatewayUser; children: Re
       href: "/admin/khieu-nai",
       label: "Khiếu nại mở",
       icon: <IconAlert size={16} />,
-      badge: openDisputes > 0 ? openDisputes : undefined,
+      badge: openReturnsCount > 0 ? openReturnsCount : undefined,
     },
     {
       href: "/admin/doi-soat",

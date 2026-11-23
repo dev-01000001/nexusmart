@@ -78,6 +78,13 @@ type OrderParticipant struct {
 	CheckoutGroupID string
 }
 
+// ShopOwner holds cached shop_id -> owner_user_id mapping resolved via UserService.GetShop.
+type ShopOwner struct {
+	ShopID      string
+	OwnerUserID string
+	ShopName    string
+}
+
 // TxStore exposes DB-only operations executed atomically inside an idempotent event transaction.
 type TxStore interface {
 	InsertNotification(ctx context.Context, n Notification) (Notification, error)
@@ -88,6 +95,10 @@ type TxStore interface {
 	UpsertOrderParticipant(ctx context.Context, p OrderParticipant) error
 	GetOrderParticipant(ctx context.Context, orderID string) (OrderParticipant, bool, error)
 	ListOrderParticipantsByGroup(ctx context.Context, checkoutGroupID string) ([]OrderParticipant, error)
+	UpsertShopOwner(ctx context.Context, s ShopOwner) error
+	GetShopOwner(ctx context.Context, shopID string) (ShopOwner, bool, error)
+	ClaimEmailDedup(ctx context.Context, dedupKey, eventID string) (ownerEventID string, err error)
+	HasEmailDedup(ctx context.Context, dedupKey string) (bool, error)
 }
 
 // Repository defines all persistence operations for the notification service.
@@ -101,6 +112,8 @@ type Repository interface {
 	GetUserContact(ctx context.Context, userID string) (UserContact, bool, error)
 	GetOrderParticipant(ctx context.Context, orderID string) (OrderParticipant, bool, error)
 	ListOrderParticipantsByGroup(ctx context.Context, checkoutGroupID string) ([]OrderParticipant, error)
+	GetShopOwner(ctx context.Context, shopID string) (ShopOwner, bool, error)
+	RecordEmailDedup(ctx context.Context, dedupKey, eventID string) error
 	ProcessEventTx(ctx context.Context, eventID, subject string, fn func(tx TxStore) error) (duplicate bool, err error)
 	InsertDeadLetter(ctx context.Context, eventID, subject string, payload []byte, errMsg string, attempts int) error
 }
@@ -270,6 +283,21 @@ func (s *PGStore) ListOrderParticipantsByGroup(ctx context.Context, checkoutGrou
 	return (&pgTxStore{q: s.q}).ListOrderParticipantsByGroup(ctx, checkoutGroupID)
 }
 
+func (s *PGStore) GetShopOwner(ctx context.Context, shopID string) (ShopOwner, bool, error) {
+	return (&pgTxStore{q: s.q}).GetShopOwner(ctx, shopID)
+}
+
+func (s *PGStore) RecordEmailDedup(ctx context.Context, dedupKey, eventID string) error {
+	_, err := s.q.InsertEmailDedup(ctx, db.InsertEmailDedupParams{
+		DedupKey: dedupKey,
+		EventID:  eventID,
+	})
+	if err != nil {
+		return fmt.Errorf("record email dedup: %w", err)
+	}
+	return nil
+}
+
 type pgTxStore struct {
 	q *db.Queries
 }
@@ -387,6 +415,64 @@ func (t *pgTxStore) ListOrderParticipantsByGroup(ctx context.Context, checkoutGr
 		})
 	}
 	return out, nil
+}
+
+func (t *pgTxStore) UpsertShopOwner(ctx context.Context, s ShopOwner) error {
+	if s.ShopID == "" || s.OwnerUserID == "" {
+		return nil
+	}
+	return t.q.UpsertShopOwner(ctx, db.UpsertShopOwnerParams{
+		ShopID:      s.ShopID,
+		OwnerUserID: s.OwnerUserID,
+		ShopName:    s.ShopName,
+	})
+}
+
+func (t *pgTxStore) GetShopOwner(ctx context.Context, shopID string) (ShopOwner, bool, error) {
+	if shopID == "" {
+		return ShopOwner{}, false, nil
+	}
+	row, err := t.q.GetShopOwner(ctx, shopID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ShopOwner{}, false, nil
+		}
+		return ShopOwner{}, false, err
+	}
+	return ShopOwner{
+		ShopID:      row.ShopID,
+		OwnerUserID: row.OwnerUserID,
+		ShopName:    row.ShopName,
+	}, true, nil
+}
+
+func (t *pgTxStore) ClaimEmailDedup(ctx context.Context, dedupKey, eventID string) (string, error) {
+	affected, err := t.q.InsertEmailDedup(ctx, db.InsertEmailDedupParams{
+		DedupKey: dedupKey,
+		EventID:  eventID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("insert email dedup: %w", err)
+	}
+	if affected > 0 {
+		return eventID, nil
+	}
+	existing, err := t.q.GetEmailDedupEventID(ctx, dedupKey)
+	if err != nil {
+		return "", fmt.Errorf("get email dedup: %w", err)
+	}
+	return existing, nil
+}
+
+func (t *pgTxStore) HasEmailDedup(ctx context.Context, dedupKey string) (bool, error) {
+	_, err := t.q.GetEmailDedupEventID(ctx, dedupKey)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check email dedup: %w", err)
+	}
+	return true, nil
 }
 
 func getPreferencesFromQueries(ctx context.Context, q *db.Queries, userID string) (Preferences, error) {

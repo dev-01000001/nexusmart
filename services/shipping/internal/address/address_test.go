@@ -82,3 +82,22 @@ func TestNormalizeName(t *testing.T) {
 		}
 	}
 }
+
+func TestStripDiacritics(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"Thành phố Hà Nội", "thanh pho ha noi"},
+		{"Ha Noi", "ha noi"},
+		{"Thành phố Hồ Chí Minh", "thanh pho ho chi minh"},
+		{"Tỉnh Đắk Lắk", "tinh dak lak"},
+		{"Phường Bến Thành", "phuong ben thanh"},
+		{"Phường Xuân Hương - Đà Lạt", "phuong xuan huong da lat"},
+	}
+	for _, tc := range cases {
+		if got := StripDiacritics(tc.in); got != tc.want {
+			t.Errorf("StripDiacritics(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

@@ -61,3 +61,35 @@ func (s *Server) MarkPaymentResult(ctx context.Context, req *orderv1.MarkPayment
 func (s *Server) RetryPayment(ctx context.Context, req *orderv1.RetryPaymentRequest) (*orderv1.RetryPaymentResponse, error) {
 	return s.svc.RetryPayment(ctx, req)
 }
+
+func (s *Server) GetReturnRequest(ctx context.Context, req *orderv1.GetReturnRequestRequest) (*orderv1.GetReturnRequestResponse, error) {
+	return s.svc.GetReturnRequest(ctx, req)
+}
+
+func (s *Server) ListReturnRequests(ctx context.Context, req *orderv1.ListReturnRequestsRequest) (*orderv1.ListReturnRequestsResponse, error) {
+	return s.svc.ListReturnRequests(ctx, req)
+}
+
+func (s *Server) RespondReturn(ctx context.Context, req *orderv1.RespondReturnRequest) (*orderv1.RespondReturnResponse, error) {
+	return s.svc.RespondReturn(ctx, req)
+}
+
+func (s *Server) EscalateReturn(ctx context.Context, req *orderv1.EscalateReturnRequest) (*orderv1.EscalateReturnResponse, error) {
+	return s.svc.EscalateReturn(ctx, req)
+}
+
+func (s *Server) AddReturnEvidence(ctx context.Context, req *orderv1.AddReturnEvidenceRequest) (*orderv1.AddReturnEvidenceResponse, error) {
+	return s.svc.AddReturnEvidence(ctx, req)
+}
+
+func (s *Server) ConfirmReturnReceived(ctx context.Context, req *orderv1.ConfirmReturnReceivedRequest) (*orderv1.ConfirmReturnReceivedResponse, error) {
+	return s.svc.ConfirmReturnReceived(ctx, req)
+}
+
+func (s *Server) DisputeReturnGoods(ctx context.Context, req *orderv1.DisputeReturnGoodsRequest) (*orderv1.DisputeReturnGoodsResponse, error) {
+	return s.svc.DisputeReturnGoods(ctx, req)
+}
+
+func (s *Server) AdminResolveReturn(ctx context.Context, req *orderv1.AdminResolveReturnRequest) (*orderv1.AdminResolveReturnResponse, error) {
+	return s.svc.AdminResolveReturn(ctx, req)
+}

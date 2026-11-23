@@ -16,7 +16,7 @@ SET status = 'ACTIVE',
     phone_verified = $2,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at
+RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason
 `
 
 type ActivateUserParams struct {
@@ -41,6 +41,7 @@ func (q *Queries) ActivateUser(ctx context.Context, arg ActivateUserParams) (Use
 		&i.AvatarURL,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LockReason,
 	)
 	return i, err
 }
@@ -55,19 +56,6 @@ WHERE user_id = $1 AND is_default = TRUE
 func (q *Queries) ClearUserDefaultAddresses(ctx context.Context, userID string) error {
 	_, err := q.db.Exec(ctx, clearUserDefaultAddresses, userID)
 	return err
-}
-
-const countActiveAdmins = `-- name: CountActiveAdmins :one
-SELECT COUNT(*)::bigint FROM users
-WHERE role IN ('admin', 'super_admin')
-  AND status = 'ACTIVE'
-`
-
-func (q *Queries) CountActiveAdmins(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countActiveAdmins)
-	var column_1 int64
-	err := row.Scan(&column_1)
-	return column_1, err
 }
 
 const countAuditLogs = `-- name: CountAuditLogs :one
@@ -200,6 +188,41 @@ func (q *Queries) CreateAddress(ctx context.Context, arg CreateAddressParams) (A
 	return i, err
 }
 
+const createPasswordReset = `-- name: CreatePasswordReset :one
+INSERT INTO password_resets (
+    id, user_id, token_hash, expires_at
+) VALUES (
+    $1, $2, $3, $4
+)
+RETURNING id, user_id, token_hash, expires_at, used_at, created_at
+`
+
+type CreatePasswordResetParams struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	TokenHash string    `json:"token_hash"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+func (q *Queries) CreatePasswordReset(ctx context.Context, arg CreatePasswordResetParams) (PasswordReset, error) {
+	row := q.db.QueryRow(ctx, createPasswordReset,
+		arg.ID,
+		arg.UserID,
+		arg.TokenHash,
+		arg.ExpiresAt,
+	)
+	var i PasswordReset
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TokenHash,
+		&i.ExpiresAt,
+		&i.UsedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const createRefreshToken = `-- name: CreateRefreshToken :one
 INSERT INTO refresh_tokens (
     id, user_id, family_id, token_hash, expires_at
@@ -296,7 +319,7 @@ INSERT INTO users (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8
 )
-RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at
+RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason
 `
 
 type CreateUserParams struct {
@@ -336,6 +359,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.AvatarURL,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LockReason,
 	)
 	return i, err
 }
@@ -390,6 +414,27 @@ func (q *Queries) GetAddressByID(ctx context.Context, id string) (Address, error
 		&i.IsDefault,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getPasswordResetByHashForUpdate = `-- name: GetPasswordResetByHashForUpdate :one
+SELECT id, user_id, token_hash, expires_at, used_at, created_at FROM password_resets
+WHERE token_hash = $1
+LIMIT 1
+FOR UPDATE
+`
+
+func (q *Queries) GetPasswordResetByHashForUpdate(ctx context.Context, tokenHash string) (PasswordReset, error) {
+	row := q.db.QueryRow(ctx, getPasswordResetByHashForUpdate, tokenHash)
+	var i PasswordReset
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TokenHash,
+		&i.ExpiresAt,
+		&i.UsedAt,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -522,7 +567,7 @@ func (q *Queries) GetShopBySlug(ctx context.Context, slug string) (Shop, error) 
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at FROM users
+SELECT id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason FROM users
 WHERE LOWER(email) = LOWER($1)
 LIMIT 1
 `
@@ -544,12 +589,13 @@ func (q *Queries) GetUserByEmail(ctx context.Context, lower string) (User, error
 		&i.AvatarURL,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LockReason,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at FROM users
+SELECT id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason FROM users
 WHERE id = $1
 LIMIT 1
 `
@@ -571,12 +617,42 @@ func (q *Queries) GetUserByID(ctx context.Context, id string) (User, error) {
 		&i.AvatarURL,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LockReason,
+	)
+	return i, err
+}
+
+const getUserByIDForShare = `-- name: GetUserByIDForShare :one
+SELECT id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason FROM users
+WHERE id = $1
+LIMIT 1
+FOR SHARE
+`
+
+func (q *Queries) GetUserByIDForShare(ctx context.Context, id string) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByIDForShare, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.FullName,
+		&i.Email,
+		&i.Phone,
+		&i.PasswordHash,
+		&i.Role,
+		&i.Status,
+		&i.ShopID,
+		&i.PhoneVerified,
+		&i.CODRejectedCount,
+		&i.AvatarURL,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LockReason,
 	)
 	return i, err
 }
 
 const getUserByPhone = `-- name: GetUserByPhone :one
-SELECT id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at FROM users
+SELECT id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason FROM users
 WHERE phone = $1 AND phone <> ''
 LIMIT 1
 `
@@ -598,6 +674,7 @@ func (q *Queries) GetUserByPhone(ctx context.Context, phone string) (User, error
 		&i.AvatarURL,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LockReason,
 	)
 	return i, err
 }
@@ -608,7 +685,7 @@ SET role = CASE WHEN role = 'buyer' THEN 'seller' ELSE role END,
     shop_id = $2,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at
+RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason
 `
 
 type GrantUserSellerShopParams struct {
@@ -633,6 +710,7 @@ func (q *Queries) GrantUserSellerShop(ctx context.Context, arg GrantUserSellerSh
 		&i.AvatarURL,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LockReason,
 	)
 	return i, err
 }
@@ -642,7 +720,7 @@ UPDATE users
 SET cod_rejected_count = cod_rejected_count + 1,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at
+RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason
 `
 
 func (q *Queries) IncrementUserCODRejectedCount(ctx context.Context, id string) (User, error) {
@@ -662,6 +740,7 @@ func (q *Queries) IncrementUserCODRejectedCount(ctx context.Context, id string) 
 		&i.AvatarURL,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LockReason,
 	)
 	return i, err
 }
@@ -738,6 +817,51 @@ func (q *Queries) InsertCODRejection(ctx context.Context, arg InsertCODRejection
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const invalidateUserPasswordResets = `-- name: InvalidateUserPasswordResets :exec
+UPDATE password_resets
+SET used_at = $2
+WHERE user_id = $1
+  AND used_at IS NULL
+`
+
+type InvalidateUserPasswordResetsParams struct {
+	UserID string     `json:"user_id"`
+	UsedAt *time.Time `json:"used_at"`
+}
+
+func (q *Queries) InvalidateUserPasswordResets(ctx context.Context, arg InvalidateUserPasswordResetsParams) error {
+	_, err := q.db.Exec(ctx, invalidateUserPasswordResets, arg.UserID, arg.UsedAt)
+	return err
+}
+
+const listActiveAdminIDsForUpdate = `-- name: ListActiveAdminIDsForUpdate :many
+SELECT id FROM users
+WHERE role IN ('admin', 'super_admin')
+  AND status = 'ACTIVE'
+ORDER BY id
+FOR UPDATE
+`
+
+func (q *Queries) ListActiveAdminIDsForUpdate(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, listActiveAdminIDsForUpdate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAddressesByUserID = `-- name: ListAddressesByUserID :many
@@ -890,7 +1014,7 @@ func (q *Queries) ListShops(ctx context.Context, arg ListShopsParams) ([]Shop, e
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at FROM users
+SELECT id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason FROM users
 WHERE ($1::text = '' OR full_name ILIKE '%' || $1::text || '%' OR email ILIKE '%' || $1::text || '%' OR phone ILIKE '%' || $1::text || '%')
   AND ($2::text = '' OR role = $2::text)
   AND ($3::text = '' OR status = $3::text)
@@ -935,6 +1059,7 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 			&i.AvatarURL,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.LockReason,
 		); err != nil {
 			return nil, err
 		}
@@ -944,6 +1069,26 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 		return nil, err
 	}
 	return items, nil
+}
+
+const markPasswordResetUsed = `-- name: MarkPasswordResetUsed :execrows
+UPDATE password_resets
+SET used_at = $2
+WHERE id = $1
+  AND used_at IS NULL
+`
+
+type MarkPasswordResetUsedParams struct {
+	ID     string     `json:"id"`
+	UsedAt *time.Time `json:"used_at"`
+}
+
+func (q *Queries) MarkPasswordResetUsed(ctx context.Context, arg MarkPasswordResetUsedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markPasswordResetUsed, arg.ID, arg.UsedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const resubmitShop = `-- name: ResubmitShop :one
@@ -1153,6 +1298,41 @@ func (q *Queries) UpdateShopReview(ctx context.Context, arg UpdateShopReviewPara
 	return i, err
 }
 
+const updateUserPassword = `-- name: UpdateUserPassword :one
+UPDATE users
+SET password_hash = $2,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason
+`
+
+type UpdateUserPasswordParams struct {
+	ID           string `json:"id"`
+	PasswordHash string `json:"password_hash"`
+}
+
+func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (User, error) {
+	row := q.db.QueryRow(ctx, updateUserPassword, arg.ID, arg.PasswordHash)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.FullName,
+		&i.Email,
+		&i.Phone,
+		&i.PasswordHash,
+		&i.Role,
+		&i.Status,
+		&i.ShopID,
+		&i.PhoneVerified,
+		&i.CODRejectedCount,
+		&i.AvatarURL,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LockReason,
+	)
+	return i, err
+}
+
 const updateUserProfile = `-- name: UpdateUserProfile :one
 UPDATE users
 SET full_name = $2,
@@ -1161,7 +1341,7 @@ SET full_name = $2,
     phone_verified = $5,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at
+RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason
 `
 
 type UpdateUserProfileParams struct {
@@ -1195,6 +1375,7 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 		&i.AvatarURL,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LockReason,
 	)
 	return i, err
 }
@@ -1204,7 +1385,7 @@ UPDATE users
 SET role = $2,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at
+RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason
 `
 
 type UpdateUserRoleParams struct {
@@ -1229,6 +1410,7 @@ func (q *Queries) UpdateUserRole(ctx context.Context, arg UpdateUserRoleParams) 
 		&i.AvatarURL,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LockReason,
 	)
 	return i, err
 }
@@ -1236,18 +1418,20 @@ func (q *Queries) UpdateUserRole(ctx context.Context, arg UpdateUserRoleParams) 
 const updateUserStatus = `-- name: UpdateUserStatus :one
 UPDATE users
 SET status = $2,
+    lock_reason = $3,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at
+RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason
 `
 
 type UpdateUserStatusParams struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	ID         string `json:"id"`
+	Status     string `json:"status"`
+	LockReason string `json:"lock_reason"`
 }
 
 func (q *Queries) UpdateUserStatus(ctx context.Context, arg UpdateUserStatusParams) (User, error) {
-	row := q.db.QueryRow(ctx, updateUserStatus, arg.ID, arg.Status)
+	row := q.db.QueryRow(ctx, updateUserStatus, arg.ID, arg.Status, arg.LockReason)
 	var i User
 	err := row.Scan(
 		&i.ID,
@@ -1263,6 +1447,7 @@ func (q *Queries) UpdateUserStatus(ctx context.Context, arg UpdateUserStatusPara
 		&i.AvatarURL,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LockReason,
 	)
 	return i, err
 }

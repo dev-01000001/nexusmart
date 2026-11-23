@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Suspense, useMemo, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -26,8 +26,9 @@ const MEMBER_PERKS = [
     detail: "Miễn phí vận chuyển toàn sàn cho đơn từ 249.000₫, theo dõi hành trình trực tiếp.",
   },
   {
-    title: "Đổi trả tận nơi 45 ngày",
-    detail: "Đổi size hai chiều miễn phí tại nhà, hoàn tiền nhanh vào Thứ Hai và Thứ Năm.",
+    title: "Trả hàng & hoàn tiền minh bạch trong 7 ngày",
+    detail:
+      "Theo dõi tiến trình trả hàng, mã vận đơn chiều trả và hoàn tiền trực tiếp trên đơn hàng.",
   },
   {
     title: "Hoàn 1–6% Xu mọi đơn hàng",
@@ -38,13 +39,24 @@ const MEMBER_PERKS = [
 function LoginPageContent() {
   const searchParams = useSearchParams();
   const viewState = usePageStateParam();
-  const { user, isAuthenticated, login, logout } = useSession();
+  const { user, loading: sessionLoading, isAuthenticated, login, logout } = useSession();
   const { showToast } = useMockStore();
 
   const rawNext = searchParams.get("next");
   const safeNext = sanitizeNextPath(rawNext, "/");
   const verifiedParam = searchParams.get("verified") === "1";
+  const resetParam = searchParams.get("reset") === "1";
+  const expiredParam = searchParams.get("expired") === "1";
   const initialEmail = searchParams.get("email") ?? "";
+
+  useEffect(() => {
+    if (!expiredParam || sessionLoading || isAuthenticated) return;
+    void fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    }).catch(() => {});
+  }, [expiredParam, sessionLoading, isAuthenticated]);
 
   const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState("");
@@ -206,6 +218,33 @@ function LoginPageContent() {
               </div>
             )}
 
+            {resetParam && !isAuthenticated && (
+              <div
+                className={styles.sessionBar}
+                role="status"
+                data-rise=""
+                style={{ "--i": 2 } as React.CSSProperties}
+              >
+                <p className={styles.bodyText}>
+                  Mật khẩu đã được đặt lại thành công. Vui lòng đăng nhập bằng mật khẩu mới.
+                </p>
+              </div>
+            )}
+
+            {expiredParam && !sessionLoading && !isAuthenticated && (
+              <div
+                className={styles.sessionBar}
+                role="status"
+                data-rise=""
+                style={{ "--i": 2 } as React.CSSProperties}
+              >
+                <p className={styles.bodyText}>
+                  Phiên đăng nhập trước đã hết hạn hoặc bị thu hồi. Vui lòng đăng nhập lại để tiếp
+                  tục.
+                </p>
+              </div>
+            )}
+
             {isAuthenticated && user && (
               <div
                 className={styles.sessionBar}
@@ -273,9 +312,22 @@ function LoginPageContent() {
                 data-rise=""
                 style={{ "--i": 4 } as React.CSSProperties}
               >
-                <label htmlFor="login-password" className={shared.fieldLabel}>
-                  Mật khẩu
-                </label>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <label htmlFor="login-password" className={shared.fieldLabel}>
+                    Mật khẩu
+                  </label>
+                  <Link href="/quen-mat-khau" className={styles.switchLink}>
+                    Quên mật khẩu?
+                  </Link>
+                </div>
                 <div className={styles.passwordWrap}>
                   <input
                     id="login-password"

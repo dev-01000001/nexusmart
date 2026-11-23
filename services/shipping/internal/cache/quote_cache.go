@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -53,7 +54,21 @@ func quoteCacheKey(req carrier.FeeRequest) string {
 	if req.CODAmountVND > 0 {
 		codFlag = 1
 	}
-	return fmt.Sprintf("shipping:quotes:v1:%s:%s:%s:%s:%d:%d",
+	carriersPart := "all"
+	if len(req.AllowedCarriers) > 0 {
+		sorted := make([]string, 0, len(req.AllowedCarriers))
+		for _, c := range req.AllowedCarriers {
+			if norm := strings.ToLower(strings.TrimSpace(c)); norm != "" {
+				sorted = append(sorted, norm)
+			}
+		}
+		if len(sorted) > 0 {
+			sort.Strings(sorted)
+			carriersPart = strings.Join(sorted, ",")
+		}
+	}
+	return fmt.Sprintf("shipping:quotes:v2:%s:%s:%s:%s:%s:%d:%d",
+		carriersPart,
 		fromProv,
 		strings.TrimSpace(req.FromWardCode),
 		toProv,

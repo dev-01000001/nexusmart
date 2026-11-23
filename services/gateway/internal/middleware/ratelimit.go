@@ -124,6 +124,20 @@ func RateLimitFlashSale(limiter RateLimiter, limitPerMin int, log *slog.Logger, 
 	})
 }
 
+// RateLimitAuth enforces tighter per-IP rate limiting on sensitive auth endpoints (e.g. forgot/reset password).
+func RateLimitAuth(limiter RateLimiter, limitPerMin int, log *slog.Logger, tp *TrustedProxies) func(http.Handler) http.Handler {
+	return rateLimitMiddleware(limiter, limitPerMin, time.Minute, log, func(r *http.Request) string {
+		return "rl:auth:ip:" + tp.ClientIP(r)
+	})
+}
+
+// RateLimitWebhook enforces a dedicated per-IP rate limit on /webhooks/* routes.
+func RateLimitWebhook(limiter RateLimiter, limitPerMin int, log *slog.Logger, tp *TrustedProxies) func(http.Handler) http.Handler {
+	return rateLimitMiddleware(limiter, limitPerMin, time.Minute, log, func(r *http.Request) string {
+		return "rl:webhook:ip:" + tp.ClientIP(r)
+	})
+}
+
 func rateLimitMiddleware(
 	limiter RateLimiter,
 	limit int,

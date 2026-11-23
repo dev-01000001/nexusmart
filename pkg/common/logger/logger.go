@@ -34,6 +34,8 @@ var sensitiveKeySubstrings = []string{
 	"database_url",
 	"credential",
 	"street_address",
+	"bank_account_number",
+	"account_number",
 }
 
 var (

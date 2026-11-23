@@ -16,8 +16,9 @@ import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
 import {
   PAYMENT_METHOD_TEXT,
+  computeOrderDeductionsVnd,
   computeOrderNetVnd,
-  getOrderStatusMeta,
+  getSellerOrderDisplayMeta,
 } from "@/features/seller/types";
 import { EMPTY_DASH, getShopBankAccount, parseUiState } from "@/features/seller/sellerStore";
 import common from "@/features/seller/SellerCommon.module.css";
@@ -85,8 +86,8 @@ function SellerFinanceInner({ shop }: { shop: GatewayShop }) {
     () => filteredOrders.reduce((s, o) => s + o.subtotal_vnd, 0),
     [filteredOrders]
   );
-  const visibleCommission = useMemo(
-    () => filteredOrders.reduce((s, o) => s + o.commission_vnd, 0),
+  const visibleDeductions = useMemo(
+    () => filteredOrders.reduce((s, o) => s + computeOrderDeductionsVnd(o), 0),
     [filteredOrders]
   );
   const visibleNet = useMemo(
@@ -165,13 +166,15 @@ function SellerFinanceInner({ shop }: { shop: GatewayShop }) {
             </div>
 
             <div className={common.balanceCell}>
-              <span className={common.balanceLabel}>Đang chờ đối soát</span>
+              <span className={common.balanceLabel}>Đang tạm giữ (72 giờ)</span>
               <span
                 className={`${common.balanceValue} ${pendingVnd === 0 ? common.balanceValueZero : ""}`}
               >
                 {formatVnd(pendingVnd)}
               </span>
-              <span className={common.balanceCaption}>Tạm giữ cho các đơn đang xử lý & giao</span>
+              <span className={common.balanceCaption}>
+                Tiền đơn đã hoàn tất đang giữ 72 giờ trước khi tự chuyển sang số dư khả dụng
+              </span>
             </div>
 
             <div className={common.balanceCell}>
@@ -204,8 +207,8 @@ function SellerFinanceInner({ shop }: { shop: GatewayShop }) {
                   Đối chiếu doanh thu theo đơn hàng
                 </h2>
                 <p className={styles.reconFormula}>
-                  Tiền hàng ({formatVnd(visibleSubtotal)}) {TRUE_MINUS} Phí sàn (
-                  {formatVnd(visibleCommission)}) = Thực nhận dự kiến{" "}
+                  Tiền hàng ({formatVnd(visibleSubtotal)}) {TRUE_MINUS} Chiết khấu &amp; phí sàn (
+                  {formatVnd(visibleDeductions)}) = Thực nhận dự kiến{" "}
                   <strong>{formatVnd(visibleNet)}</strong>
                 </p>
               </div>
@@ -252,11 +255,8 @@ function SellerFinanceInner({ shop }: { shop: GatewayShop }) {
                     </thead>
                     <tbody>
                       {filteredOrders.map((order) => {
-                        const meta = getOrderStatusMeta(order.status);
-                        const deductions =
-                          order.flash_sale_discount_vnd +
-                          order.shop_voucher_discount_vnd +
-                          order.commission_vnd;
+                        const meta = getSellerOrderDisplayMeta(order);
+                        const deductions = computeOrderDeductionsVnd(order);
                         const netVnd = computeOrderNetVnd(order);
                         return (
                           <tr key={order.id}>
@@ -309,8 +309,8 @@ function SellerFinanceInner({ shop }: { shop: GatewayShop }) {
                           +{formatVnd(visibleSubtotal)}
                         </td>
                         <td className={common.numCol}>
-                          {visibleCommission > 0
-                            ? `${TRUE_MINUS}${formatVnd(visibleCommission)}`
+                          {visibleDeductions > 0
+                            ? `${TRUE_MINUS}${formatVnd(visibleDeductions)}`
                             : "0₫"}
                         </td>
                         <td className={common.numCol}>{formatVnd(visibleNet)}</td>
@@ -322,7 +322,7 @@ function SellerFinanceInner({ shop }: { shop: GatewayShop }) {
 
                 <div className={common.mobileList}>
                   {filteredOrders.map((order) => {
-                    const meta = getOrderStatusMeta(order.status);
+                    const meta = getSellerOrderDisplayMeta(order);
                     const netVnd = computeOrderNetVnd(order);
                     return (
                       <div key={order.id} className={common.mobileRow}>

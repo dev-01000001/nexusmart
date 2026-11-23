@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,17 +56,19 @@ return 0
 `
 
 var (
-	ErrOTPNotFound           = errors.New("otp not found or expired")
-	ErrOTPInvalid            = errors.New("invalid otp")
-	ErrOTPTooManyAttempts    = errors.New("too many invalid otp attempts")
-	ErrOTPResendLimitReached = errors.New("otp resend limit exceeded")
+	ErrOTPNotFound               = errors.New("otp not found or expired")
+	ErrOTPInvalid                = errors.New("invalid otp")
+	ErrOTPTooManyAttempts        = errors.New("too many invalid otp attempts")
+	ErrOTPResendLimitReached     = errors.New("otp resend limit exceeded")
+	ErrPasswordResetLimitReached = errors.New("too many password reset requests")
 )
 
-// Store manages OTP codes, login brute-force lockouts, and revoked token JTIs.
+// Store manages OTP codes, password reset rate limits, login brute-force lockouts, and token revocations.
 type Store interface {
 	SaveOTP(ctx context.Context, email, code string, ttl time.Duration) error
 	VerifyOTP(ctx context.Context, email, code string) error
 	IncrementOTPResend(ctx context.Context, email string, maxResends int) error
+	IncrementPasswordResetRequest(ctx context.Context, email string, maxRequests int, window time.Duration) error
 
 	IsLoginLocked(ctx context.Context, email string) (bool, error)
 	RecordLoginFailure(ctx context.Context, email string, maxAttempts int, lockout time.Duration) (locked bool, attempts int, err error)
@@ -73,6 +76,9 @@ type Store interface {
 
 	RevokeJTI(ctx context.Context, jti string, ttl time.Duration) error
 	IsJTIRevoked(ctx context.Context, jti string) (bool, error)
+	SetRevokedBefore(ctx context.Context, userID string, unixSec int64, ttl time.Duration) error
+	GetRevokedBefore(ctx context.Context, userID string) (int64, error)
+	IsTokenRevoked(ctx context.Context, userID, jti string, issuedAt *time.Time) (bool, error)
 	Ping(ctx context.Context) error
 }
 
@@ -114,6 +120,14 @@ func loginLockKey(email string) string {
 
 func revokedJTIKey(jti string) string {
 	return "user:revoked_jti:" + jti
+}
+
+func revokedBeforeKey(userID string) string {
+	return "user:revoked_before:" + strings.TrimSpace(userID)
+}
+
+func passwordResetReqKey(email string) string {
+	return "user:pwd_reset_req:" + strings.ToLower(strings.TrimSpace(email))
 }
 
 func hashOTP(email, code string) string {
@@ -236,6 +250,111 @@ func (s *RedisStore) IsJTIRevoked(ctx context.Context, jti string) (bool, error)
 		return false, fmt.Errorf("check revoked jti: %w", err)
 	}
 	return exists > 0, nil
+}
+
+func (s *RedisStore) IncrementPasswordResetRequest(ctx context.Context, email string, maxRequests int, window time.Duration) error {
+	if maxRequests <= 0 {
+		maxRequests = 3
+	}
+	if window <= 0 {
+		window = time.Hour
+	}
+	key := passwordResetReqKey(email)
+	count, err := s.client.Incr(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("incr password reset request: %w", err)
+	}
+	if count == 1 {
+		_ = s.client.Expire(ctx, key, window).Err()
+	}
+	if int(count) > maxRequests {
+		return ErrPasswordResetLimitReached
+	}
+	return nil
+}
+
+func (s *RedisStore) SetRevokedBefore(ctx context.Context, userID string, unixSec int64, ttl time.Duration) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil
+	}
+	if ttl <= 0 {
+		ttl = 16 * time.Minute
+	}
+	if err := s.client.Set(ctx, revokedBeforeKey(userID), strconv.FormatInt(unixSec, 10), ttl).Err(); err != nil {
+		return fmt.Errorf("set revoked_before: %w", err)
+	}
+	return nil
+}
+
+func (s *RedisStore) GetRevokedBefore(ctx context.Context, userID string) (int64, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return 0, nil
+	}
+	val, err := s.client.Get(ctx, revokedBeforeKey(userID)).Result()
+	if errors.Is(err, redis.Nil) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("get revoked_before: %w", err)
+	}
+	ts, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse revoked_before: %w", err)
+	}
+	return ts, nil
+}
+
+func (s *RedisStore) IsTokenRevoked(ctx context.Context, userID, jti string, issuedAt *time.Time) (bool, error) {
+	userID = strings.TrimSpace(userID)
+	jti = strings.TrimSpace(jti)
+	if userID == "" && jti == "" {
+		return false, nil
+	}
+	keys := make([]string, 0, 2)
+	jtiIdx, userIdx := -1, -1
+	if jti != "" {
+		jtiIdx = len(keys)
+		keys = append(keys, revokedJTIKey(jti))
+	}
+	if userID != "" {
+		userIdx = len(keys)
+		keys = append(keys, revokedBeforeKey(userID))
+	}
+	vals, err := s.client.MGet(ctx, keys...).Result()
+	if err != nil {
+		return false, fmt.Errorf("check token revocation: %w", err)
+	}
+	var jtiVal, revokedBeforeVal any
+	if jtiIdx >= 0 && jtiIdx < len(vals) {
+		jtiVal = vals[jtiIdx]
+	}
+	if userIdx >= 0 && userIdx < len(vals) {
+		revokedBeforeVal = vals[userIdx]
+	}
+	return evalTokenRevocation(jtiVal, revokedBeforeVal, issuedAt)
+}
+
+func evalTokenRevocation(jtiVal, revokedBeforeVal any, issuedAt *time.Time) (bool, error) {
+	if jtiVal != nil {
+		return true, nil
+	}
+	if revokedBeforeVal == nil {
+		return false, nil
+	}
+	raw, ok := revokedBeforeVal.(string)
+	if !ok {
+		return false, fmt.Errorf("unexpected revoked_before value type %T", revokedBeforeVal)
+	}
+	revokedBefore, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return false, fmt.Errorf("parse revoked_before: %w", err)
+	}
+	if issuedAt == nil {
+		return true, nil
+	}
+	return issuedAt.Unix() <= revokedBefore, nil
 }
 
 func (s *RedisStore) Ping(ctx context.Context) error {

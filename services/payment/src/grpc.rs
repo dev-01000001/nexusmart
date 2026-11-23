@@ -1,14 +1,17 @@
 use std::time::Instant;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Utc};
 use prost_types::Timestamp;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::auth::{require_payment_read_access, Caller, GrpcAuth};
 use crate::domain::{
-    CreatePaymentInput, CreateRefundInput, PaymentMethod as DomainMethod, PaymentWithAllocations,
-    ReconciliationItemRecord, RefundRecord, ShopAllocationInput,
+    parse_and_validate_reconciliation_date, CreatePaymentInput, CreateRefundInput,
+    ListRefundsFilter, PaymentMethod as DomainMethod, PaymentWithAllocations,
+    ReconciliationActionKind, ReconciliationItemRecord, ReconciliationQueueItem as DomainQueueItem,
+    RefundRecord, ResolveReconciliationInput, SettleRefundInput, ShopAllocationInput,
+    SubmitRefundBankAccountInput,
 };
 use crate::service::PaymentService;
 use crate::telemetry::extract_or_generate_trace_id;
@@ -23,9 +26,13 @@ use pb::{
     AccountBalance, CancelPaymentRequest, CancelPaymentResponse, CreatePaymentRequest,
     CreatePaymentResponse, CreateRefundRequest, CreateRefundResponse, GetLedgerSummaryRequest,
     GetLedgerSummaryResponse, GetPaymentRequest, GetPaymentResponse, GetSellerBalanceRequest,
-    GetSellerBalanceResponse, Payment, PaymentMethod, PaymentStatus, ReconciliationItem,
-    ReconciliationStatus, Refund, RefundStatus, ReleaseEscrowRequest, ReleaseEscrowResponse,
-    RunReconciliationRequest, RunReconciliationResponse, ShopAllocation,
+    GetSellerBalanceResponse, ListReconciliationQueueRequest, ListReconciliationQueueResponse,
+    ListRefundsRequest, ListRefundsResponse, Payment, PaymentMethod, PaymentStatus,
+    ReconciliationAction, ReconciliationItem, ReconciliationQueueItem, ReconciliationStatus,
+    Refund, RefundStatus, ReleaseEscrowRequest, ReleaseEscrowResponse,
+    ResolveReconciliationItemRequest, ResolveReconciliationItemResponse, RunReconciliationRequest,
+    RunReconciliationResponse, SettleRefundRequest, SettleRefundResponse, ShopAllocation,
+    SubmitRefundBankAccountRequest, SubmitRefundBankAccountResponse,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -304,7 +311,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 .map_err(|e| e.to_tonic_status())?;
 
             Ok(Response::new(CreateRefundResponse {
-                refund: Some(to_proto_refund(out.refund)),
+                refund: Some(to_proto_refund(out.refund, caller.is_admin())),
                 already_existed: out.already_existed,
             }))
         }
@@ -428,12 +435,8 @@ impl PaymentServiceTrait for PaymentGrpcServer {
             let caller = caller?;
             caller.require_admin("RunReconciliation")?;
 
-            let run_date = if req.date.trim().is_empty() {
-                Utc::now().date_naive()
-            } else {
-                NaiveDate::parse_from_str(req.date.trim(), "%Y-%m-%d")
-                    .map_err(|_| Status::invalid_argument("date must be formatted as YYYY-MM-DD"))?
-            };
+            let run_date = parse_and_validate_reconciliation_date(&req.date, Utc::now())
+                .map_err(|e| e.to_tonic_status())?;
 
             let report = self
                 .service
@@ -459,6 +462,220 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         .await;
 
         self.record_metrics("RunReconciliation", start, &result);
+        result
+    }
+
+    async fn list_refunds(
+        &self,
+        request: Request<ListRefundsRequest>,
+    ) -> Result<Response<ListRefundsResponse>, Status> {
+        let start = Instant::now();
+        let caller = CallerAuth::from_request(&self.auth, &request, "ListRefunds");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            let status_filter =
+                match RefundStatus::try_from(req.status).unwrap_or(RefundStatus::Unspecified) {
+                    RefundStatus::Unspecified => None,
+                    RefundStatus::Pending => Some("pending".to_string()),
+                    RefundStatus::Done => Some("completed".to_string()),
+                    RefundStatus::Failed => Some("failed".to_string()),
+                };
+
+            let include_full_bank = caller.is_admin();
+            let out = self
+                .service
+                .list_refunds(ListRefundsFilter {
+                    caller_user_id: non_empty(&caller.caller.user_id).map(ToString::to_string),
+                    is_admin: include_full_bank,
+                    status: status_filter,
+                    order_id: non_empty(&req.order_id).map(ToString::to_string),
+                    page: req.page,
+                    page_size: req.page_size,
+                })
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            let refunds = out
+                .refunds
+                .into_iter()
+                .map(|r| to_proto_refund(r, include_full_bank))
+                .collect();
+
+            Ok(Response::new(ListRefundsResponse {
+                refunds,
+                total: out.total,
+            }))
+        }
+        .await;
+
+        self.record_metrics("ListRefunds", start, &result);
+        result
+    }
+
+    async fn submit_refund_bank_account(
+        &self,
+        request: Request<SubmitRefundBankAccountRequest>,
+    ) -> Result<Response<SubmitRefundBankAccountResponse>, Status> {
+        let start = Instant::now();
+        let caller = CallerAuth::from_request(&self.auth, &request, "SubmitRefundBankAccount");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            let refund_id = parse_required_uuid(&req.refund_id, "refund_id")
+                .map_err(|e| e.to_tonic_status())?;
+
+            let updated = self
+                .service
+                .submit_refund_bank_account(SubmitRefundBankAccountInput {
+                    refund_id,
+                    caller_user_id: caller.caller.user_id,
+                    bank_code: req.bank_code,
+                    bank_account_number: req.bank_account_number,
+                    bank_account_name: req.bank_account_name,
+                })
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            // Always mask full bank account number in buyer response.
+            Ok(Response::new(SubmitRefundBankAccountResponse {
+                refund: Some(to_proto_refund(updated, false)),
+            }))
+        }
+        .await;
+
+        self.record_metrics("SubmitRefundBankAccount", start, &result);
+        result
+    }
+
+    async fn settle_refund(
+        &self,
+        request: Request<SettleRefundRequest>,
+    ) -> Result<Response<SettleRefundResponse>, Status> {
+        let start = Instant::now();
+        let trace_id = extract_trace_from_metadata(&request);
+        let caller = CallerAuth::from_request(&self.auth, &request, "SettleRefund");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            caller.require_admin("SettleRefund")?;
+
+            let refund_id = parse_required_uuid(&req.refund_id, "refund_id")
+                .map_err(|e| e.to_tonic_status())?;
+
+            let out = self
+                .service
+                .settle_refund(SettleRefundInput {
+                    refund_id,
+                    provider_refund_id: req.provider_refund_id,
+                    note: req.note,
+                    idempotency_key: req.idempotency_key,
+                    trace_id,
+                })
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            Ok(Response::new(SettleRefundResponse {
+                refund: Some(to_proto_refund(out.refund, true)),
+                already_settled: out.already_settled,
+            }))
+        }
+        .await;
+
+        self.record_metrics("SettleRefund", start, &result);
+        result
+    }
+
+    async fn list_reconciliation_queue(
+        &self,
+        request: Request<ListReconciliationQueueRequest>,
+    ) -> Result<Response<ListReconciliationQueueResponse>, Status> {
+        let start = Instant::now();
+        let caller = CallerAuth::from_request(&self.auth, &request, "ListReconciliationQueue");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            caller.require_admin("ListReconciliationQueue")?;
+
+            let out = self
+                .service
+                .list_reconciliation_queue(non_empty(&req.status), req.page, req.page_size)
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            let items = out
+                .items
+                .into_iter()
+                .map(to_proto_reconciliation_queue_item)
+                .collect();
+
+            Ok(Response::new(ListReconciliationQueueResponse {
+                items,
+                total: out.total,
+            }))
+        }
+        .await;
+
+        self.record_metrics("ListReconciliationQueue", start, &result);
+        result
+    }
+
+    async fn resolve_reconciliation_item(
+        &self,
+        request: Request<ResolveReconciliationItemRequest>,
+    ) -> Result<Response<ResolveReconciliationItemResponse>, Status> {
+        let start = Instant::now();
+        let trace_id = extract_trace_from_metadata(&request);
+        let caller = CallerAuth::from_request(&self.auth, &request, "ResolveReconciliationItem");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            caller.require_admin("ResolveReconciliationItem")?;
+
+            let item_id =
+                parse_required_uuid(&req.item_id, "item_id").map_err(|e| e.to_tonic_status())?;
+            let payment_id = parse_optional_uuid(&req.payment_id, "payment_id")
+                .map_err(|e| e.to_tonic_status())?;
+            let action = match ReconciliationAction::try_from(req.action)
+                .unwrap_or(ReconciliationAction::Unspecified)
+            {
+                ReconciliationAction::Assign => ReconciliationActionKind::Assign,
+                ReconciliationAction::Refund => ReconciliationActionKind::Refund,
+                ReconciliationAction::Suspend => ReconciliationActionKind::Suspend,
+                ReconciliationAction::Unspecified => {
+                    return Err(Status::invalid_argument(
+                        "action must be ASSIGN, REFUND, or SUSPEND",
+                    ));
+                }
+            };
+
+            let out = self
+                .service
+                .resolve_reconciliation_item(ResolveReconciliationInput {
+                    item_id,
+                    action,
+                    payment_id,
+                    note: req.note,
+                    idempotency_key: req.idempotency_key,
+                    trace_id,
+                })
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            Ok(Response::new(ResolveReconciliationItemResponse {
+                item: Some(to_proto_reconciliation_queue_item(out.item)),
+                refund: out.refund.map(|r| to_proto_refund(r, true)),
+                already_resolved: out.already_resolved,
+            }))
+        }
+        .await;
+
+        self.record_metrics("ResolveReconciliationItem", start, &result);
         result
     }
 }
@@ -491,6 +708,11 @@ fn parse_optional_uuid(raw: &str, field: &str) -> crate::error::Result<Option<Uu
     Uuid::parse_str(trimmed)
         .map(Some)
         .map_err(|_| crate::error::PaymentError::Validation(format!("invalid UUID for {field}")))
+}
+
+fn parse_required_uuid(raw: &str, field: &str) -> crate::error::Result<Uuid> {
+    parse_optional_uuid(raw, field)?
+        .ok_or_else(|| crate::error::PaymentError::Validation(format!("{field} is required")))
 }
 
 fn chrono_to_proto(dt: DateTime<Utc>) -> Timestamp {
@@ -557,7 +779,7 @@ fn to_proto_payment(pwa: PaymentWithAllocations) -> Payment {
     }
 }
 
-fn to_proto_refund(r: RefundRecord) -> Refund {
+fn to_proto_refund(r: RefundRecord, include_bank_account_number: bool) -> Refund {
     let status = match r.status.as_str() {
         "pending" => RefundStatus::Pending as i32,
         "completed" | "done" => RefundStatus::Done as i32,
@@ -574,6 +796,42 @@ fn to_proto_refund(r: RefundRecord) -> Refund {
         reason: r.reason,
         idempotency_key: r.idempotency_key,
         created_at: Some(chrono_to_proto(r.created_at)),
+        bank_code: r.bank_code.unwrap_or_default(),
+        bank_account_masked: r.bank_account_masked.unwrap_or_default(),
+        bank_account_name: r.bank_account_name.unwrap_or_default(),
+        bank_account_number: if include_bank_account_number {
+            r.bank_account_number.unwrap_or_default()
+        } else {
+            String::new()
+        },
+        provider_refund_id: r.provider_refund_id.unwrap_or_default(),
+        is_late_payment: r.is_late_payment,
+        settled_at: r.settled_at.map(chrono_to_proto),
+        settlement_note: r.settlement_note.unwrap_or_default(),
+    }
+}
+
+fn to_proto_reconciliation_queue_item(item: DomainQueueItem) -> ReconciliationQueueItem {
+    ReconciliationQueueItem {
+        id: item.id.to_string(),
+        webhook_event_id: item
+            .webhook_event_id
+            .map(|u| u.to_string())
+            .unwrap_or_default(),
+        provider: item.provider,
+        provider_tx_id: item.provider_tx_id,
+        expected_payment_id: item
+            .expected_payment_id
+            .map(|u| u.to_string())
+            .unwrap_or_default(),
+        order_ref: item.order_ref.unwrap_or_default(),
+        expected_amount_vnd: item.expected_amount_vnd.unwrap_or(0),
+        actual_amount_vnd: item.actual_amount_vnd,
+        reason: item.reason,
+        resolution_status: item.resolution_status,
+        notes: item.notes.unwrap_or_default(),
+        created_at: Some(chrono_to_proto(item.created_at)),
+        resolved_at: item.resolved_at.map(chrono_to_proto),
     }
 }
 
@@ -861,5 +1119,191 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn test_w2_new_rpcs_rbac_and_validation() {
+        let (server, _) = test_grpc_server();
+
+        // Future reconciliation date -> InvalidArgument (400)
+        let err = server
+            .run_reconciliation(with_auth(
+                RunReconciliationRequest {
+                    date: "2099-12-31".into(),
+                },
+                "admin",
+                "admin-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        // Buyer cannot call SettleRefund, ListReconciliationQueue, ResolveReconciliationItem
+        let err = server
+            .settle_refund(with_auth(
+                SettleRefundRequest {
+                    refund_id: Uuid::new_v4().to_string(),
+                    provider_refund_id: "REF-1".into(),
+                    note: "manual".into(),
+                    idempotency_key: "k-1".into(),
+                },
+                "buyer",
+                "u-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+
+        let err = server
+            .list_reconciliation_queue(with_auth(
+                ListReconciliationQueueRequest {
+                    status: "pending".into(),
+                    page: 1,
+                    page_size: 20,
+                },
+                "buyer",
+                "u-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+
+        let err = server
+            .resolve_reconciliation_item(with_auth(
+                ResolveReconciliationItemRequest {
+                    item_id: Uuid::new_v4().to_string(),
+                    action: pb::ReconciliationAction::Suspend as i32,
+                    payment_id: String::new(),
+                    note: "hold".into(),
+                    idempotency_key: "k-2".into(),
+                },
+                "seller",
+                "u-2",
+                "shop-1",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+
+        // SubmitRefundBankAccount validates bank account digits (6-19) before DB
+        let err = server
+            .submit_refund_bank_account(with_auth(
+                SubmitRefundBankAccountRequest {
+                    refund_id: Uuid::new_v4().to_string(),
+                    bank_code: "VCB".into(),
+                    bank_account_number: "12345".into(), // too short (<6)
+                    bank_account_name: "NGUYEN VAN A".into(),
+                },
+                "buyer",
+                "u-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        // Unauthenticated ListRefunds -> Unauthenticated
+        let err = server
+            .list_refunds(Request::new(ListRefundsRequest {
+                status: 0,
+                order_id: String::new(),
+                page: 1,
+                page_size: 20,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+        // Service token is rejected on ReleaseEscrow and all new W2a RPCs
+        let svc_tok = crate::auth::sign_hs256(
+            "grpc-test-service-key",
+            serde_json::json!({
+                "sub": "order-service",
+                "role": "admin",
+                "service": "order-service",
+                "exp": Utc::now().timestamp() + 60,
+            }),
+        );
+        let mut req_release = Request::new(ReleaseEscrowRequest {
+            order_id: "ord-1".into(),
+            shop_id: "shop-1".into(),
+        });
+        req_release.metadata_mut().insert(
+            "authorization",
+            MetadataValue::try_from(format!("Bearer {svc_tok}")).unwrap(),
+        );
+        assert_eq!(
+            server.release_escrow(req_release).await.unwrap_err().code(),
+            tonic::Code::PermissionDenied
+        );
+
+        // Admin ResolveReconciliationItem validates action, idempotency_key, suspend note before DB
+        let err = server
+            .resolve_reconciliation_item(with_auth(
+                ResolveReconciliationItemRequest {
+                    item_id: Uuid::new_v4().to_string(),
+                    action: ReconciliationAction::Unspecified as i32,
+                    payment_id: String::new(),
+                    note: String::new(),
+                    idempotency_key: "k-3".into(),
+                },
+                "admin",
+                "admin-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        let err = server
+            .resolve_reconciliation_item(with_auth(
+                ResolveReconciliationItemRequest {
+                    item_id: Uuid::new_v4().to_string(),
+                    action: ReconciliationAction::Suspend as i32,
+                    payment_id: String::new(),
+                    note: "   ".into(),
+                    idempotency_key: "k-4".into(),
+                },
+                "admin",
+                "admin-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        // Buyer response masks full bank account number; admin response includes it
+        let now = Utc::now();
+        let rec = RefundRecord {
+            id: Uuid::new_v4(),
+            payment_id: Uuid::new_v4(),
+            order_id: "ord-1".into(),
+            amount_vnd: 100_000,
+            reason: "return".into(),
+            status: "pending".into(),
+            idempotency_key: "rf-1".into(),
+            provider_refund_id: None,
+            is_late_payment: false,
+            bank_code: Some("VCB".into()),
+            bank_account_number: Some("19034567890123".into()),
+            bank_account_masked: Some("****0123".into()),
+            bank_account_name: Some("NGUYEN VAN A".into()),
+            settled_at: None,
+            settlement_note: None,
+            settlement_idempotency_key: None,
+            affects_escrow: true,
+            created_at: now,
+            updated_at: now,
+        };
+        let buyer_pb = to_proto_refund(rec.clone(), false);
+        assert_eq!(buyer_pb.bank_account_masked, "****0123");
+        assert!(buyer_pb.bank_account_number.is_empty());
+
+        let admin_pb = to_proto_refund(rec, true);
+        assert_eq!(admin_pb.bank_account_masked, "****0123");
+        assert_eq!(admin_pb.bank_account_number, "19034567890123");
     }
 }

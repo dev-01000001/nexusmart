@@ -19,13 +19,20 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ShippingService_ListProvinces_FullMethodName    = "/nexusmart.shipping.v1.ShippingService/ListProvinces"
-	ShippingService_ListWards_FullMethodName        = "/nexusmart.shipping.v1.ShippingService/ListWards"
-	ShippingService_MapLegacyAddress_FullMethodName = "/nexusmart.shipping.v1.ShippingService/MapLegacyAddress"
-	ShippingService_CalculateFee_FullMethodName     = "/nexusmart.shipping.v1.ShippingService/CalculateFee"
-	ShippingService_CreateShipment_FullMethodName   = "/nexusmart.shipping.v1.ShippingService/CreateShipment"
-	ShippingService_CancelShipment_FullMethodName   = "/nexusmart.shipping.v1.ShippingService/CancelShipment"
-	ShippingService_GetShipment_FullMethodName      = "/nexusmart.shipping.v1.ShippingService/GetShipment"
+	ShippingService_ListProvinces_FullMethodName              = "/nexusmart.shipping.v1.ShippingService/ListProvinces"
+	ShippingService_ListWards_FullMethodName                  = "/nexusmart.shipping.v1.ShippingService/ListWards"
+	ShippingService_MapLegacyAddress_FullMethodName           = "/nexusmart.shipping.v1.ShippingService/MapLegacyAddress"
+	ShippingService_CalculateFee_FullMethodName               = "/nexusmart.shipping.v1.ShippingService/CalculateFee"
+	ShippingService_CreateShipment_FullMethodName             = "/nexusmart.shipping.v1.ShippingService/CreateShipment"
+	ShippingService_CancelShipment_FullMethodName             = "/nexusmart.shipping.v1.ShippingService/CancelShipment"
+	ShippingService_GetShipment_FullMethodName                = "/nexusmart.shipping.v1.ShippingService/GetShipment"
+	ShippingService_CreateReturnShipment_FullMethodName       = "/nexusmart.shipping.v1.ShippingService/CreateReturnShipment"
+	ShippingService_RequestRedelivery_FullMethodName          = "/nexusmart.shipping.v1.ShippingService/RequestRedelivery"
+	ShippingService_GetShopShippingSettings_FullMethodName    = "/nexusmart.shipping.v1.ShippingService/GetShopShippingSettings"
+	ShippingService_UpdateShopShippingSettings_FullMethodName = "/nexusmart.shipping.v1.ShippingService/UpdateShopShippingSettings"
+	ShippingService_AdminListCarriers_FullMethodName          = "/nexusmart.shipping.v1.ShippingService/AdminListCarriers"
+	ShippingService_AdminUpdateCarrier_FullMethodName         = "/nexusmart.shipping.v1.ShippingService/AdminUpdateCarrier"
+	ShippingService_AdminTestCarrier_FullMethodName           = "/nexusmart.shipping.v1.ShippingService/AdminTestCarrier"
 )
 
 // ShippingServiceClient is the client API for ShippingService service.
@@ -39,6 +46,13 @@ type ShippingServiceClient interface {
 	CreateShipment(ctx context.Context, in *CreateShipmentRequest, opts ...grpc.CallOption) (*CreateShipmentResponse, error)
 	CancelShipment(ctx context.Context, in *CancelShipmentRequest, opts ...grpc.CallOption) (*CancelShipmentResponse, error)
 	GetShipment(ctx context.Context, in *GetShipmentRequest, opts ...grpc.CallOption) (*GetShipmentResponse, error)
+	CreateReturnShipment(ctx context.Context, in *CreateReturnShipmentRequest, opts ...grpc.CallOption) (*CreateReturnShipmentResponse, error)
+	RequestRedelivery(ctx context.Context, in *RequestRedeliveryRequest, opts ...grpc.CallOption) (*RequestRedeliveryResponse, error)
+	GetShopShippingSettings(ctx context.Context, in *GetShopShippingSettingsRequest, opts ...grpc.CallOption) (*GetShopShippingSettingsResponse, error)
+	UpdateShopShippingSettings(ctx context.Context, in *UpdateShopShippingSettingsRequest, opts ...grpc.CallOption) (*UpdateShopShippingSettingsResponse, error)
+	AdminListCarriers(ctx context.Context, in *AdminListCarriersRequest, opts ...grpc.CallOption) (*AdminListCarriersResponse, error)
+	AdminUpdateCarrier(ctx context.Context, in *AdminUpdateCarrierRequest, opts ...grpc.CallOption) (*AdminUpdateCarrierResponse, error)
+	AdminTestCarrier(ctx context.Context, in *AdminTestCarrierRequest, opts ...grpc.CallOption) (*AdminTestCarrierResponse, error)
 }
 
 type shippingServiceClient struct {
@@ -119,6 +133,76 @@ func (c *shippingServiceClient) GetShipment(ctx context.Context, in *GetShipment
 	return out, nil
 }
 
+func (c *shippingServiceClient) CreateReturnShipment(ctx context.Context, in *CreateReturnShipmentRequest, opts ...grpc.CallOption) (*CreateReturnShipmentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateReturnShipmentResponse)
+	err := c.cc.Invoke(ctx, ShippingService_CreateReturnShipment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *shippingServiceClient) RequestRedelivery(ctx context.Context, in *RequestRedeliveryRequest, opts ...grpc.CallOption) (*RequestRedeliveryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestRedeliveryResponse)
+	err := c.cc.Invoke(ctx, ShippingService_RequestRedelivery_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *shippingServiceClient) GetShopShippingSettings(ctx context.Context, in *GetShopShippingSettingsRequest, opts ...grpc.CallOption) (*GetShopShippingSettingsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetShopShippingSettingsResponse)
+	err := c.cc.Invoke(ctx, ShippingService_GetShopShippingSettings_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *shippingServiceClient) UpdateShopShippingSettings(ctx context.Context, in *UpdateShopShippingSettingsRequest, opts ...grpc.CallOption) (*UpdateShopShippingSettingsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateShopShippingSettingsResponse)
+	err := c.cc.Invoke(ctx, ShippingService_UpdateShopShippingSettings_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *shippingServiceClient) AdminListCarriers(ctx context.Context, in *AdminListCarriersRequest, opts ...grpc.CallOption) (*AdminListCarriersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdminListCarriersResponse)
+	err := c.cc.Invoke(ctx, ShippingService_AdminListCarriers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *shippingServiceClient) AdminUpdateCarrier(ctx context.Context, in *AdminUpdateCarrierRequest, opts ...grpc.CallOption) (*AdminUpdateCarrierResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdminUpdateCarrierResponse)
+	err := c.cc.Invoke(ctx, ShippingService_AdminUpdateCarrier_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *shippingServiceClient) AdminTestCarrier(ctx context.Context, in *AdminTestCarrierRequest, opts ...grpc.CallOption) (*AdminTestCarrierResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdminTestCarrierResponse)
+	err := c.cc.Invoke(ctx, ShippingService_AdminTestCarrier_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ShippingServiceServer is the server API for ShippingService service.
 // All implementations must embed UnimplementedShippingServiceServer
 // for forward compatibility.
@@ -130,6 +214,13 @@ type ShippingServiceServer interface {
 	CreateShipment(context.Context, *CreateShipmentRequest) (*CreateShipmentResponse, error)
 	CancelShipment(context.Context, *CancelShipmentRequest) (*CancelShipmentResponse, error)
 	GetShipment(context.Context, *GetShipmentRequest) (*GetShipmentResponse, error)
+	CreateReturnShipment(context.Context, *CreateReturnShipmentRequest) (*CreateReturnShipmentResponse, error)
+	RequestRedelivery(context.Context, *RequestRedeliveryRequest) (*RequestRedeliveryResponse, error)
+	GetShopShippingSettings(context.Context, *GetShopShippingSettingsRequest) (*GetShopShippingSettingsResponse, error)
+	UpdateShopShippingSettings(context.Context, *UpdateShopShippingSettingsRequest) (*UpdateShopShippingSettingsResponse, error)
+	AdminListCarriers(context.Context, *AdminListCarriersRequest) (*AdminListCarriersResponse, error)
+	AdminUpdateCarrier(context.Context, *AdminUpdateCarrierRequest) (*AdminUpdateCarrierResponse, error)
+	AdminTestCarrier(context.Context, *AdminTestCarrierRequest) (*AdminTestCarrierResponse, error)
 	mustEmbedUnimplementedShippingServiceServer()
 }
 
@@ -160,6 +251,27 @@ func (UnimplementedShippingServiceServer) CancelShipment(context.Context, *Cance
 }
 func (UnimplementedShippingServiceServer) GetShipment(context.Context, *GetShipmentRequest) (*GetShipmentResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetShipment not implemented")
+}
+func (UnimplementedShippingServiceServer) CreateReturnShipment(context.Context, *CreateReturnShipmentRequest) (*CreateReturnShipmentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateReturnShipment not implemented")
+}
+func (UnimplementedShippingServiceServer) RequestRedelivery(context.Context, *RequestRedeliveryRequest) (*RequestRedeliveryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequestRedelivery not implemented")
+}
+func (UnimplementedShippingServiceServer) GetShopShippingSettings(context.Context, *GetShopShippingSettingsRequest) (*GetShopShippingSettingsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetShopShippingSettings not implemented")
+}
+func (UnimplementedShippingServiceServer) UpdateShopShippingSettings(context.Context, *UpdateShopShippingSettingsRequest) (*UpdateShopShippingSettingsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateShopShippingSettings not implemented")
+}
+func (UnimplementedShippingServiceServer) AdminListCarriers(context.Context, *AdminListCarriersRequest) (*AdminListCarriersResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AdminListCarriers not implemented")
+}
+func (UnimplementedShippingServiceServer) AdminUpdateCarrier(context.Context, *AdminUpdateCarrierRequest) (*AdminUpdateCarrierResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AdminUpdateCarrier not implemented")
+}
+func (UnimplementedShippingServiceServer) AdminTestCarrier(context.Context, *AdminTestCarrierRequest) (*AdminTestCarrierResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AdminTestCarrier not implemented")
 }
 func (UnimplementedShippingServiceServer) mustEmbedUnimplementedShippingServiceServer() {}
 func (UnimplementedShippingServiceServer) testEmbeddedByValue()                         {}
@@ -308,6 +420,132 @@ func _ShippingService_GetShipment_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ShippingService_CreateReturnShipment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateReturnShipmentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ShippingServiceServer).CreateReturnShipment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ShippingService_CreateReturnShipment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ShippingServiceServer).CreateReturnShipment(ctx, req.(*CreateReturnShipmentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ShippingService_RequestRedelivery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestRedeliveryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ShippingServiceServer).RequestRedelivery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ShippingService_RequestRedelivery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ShippingServiceServer).RequestRedelivery(ctx, req.(*RequestRedeliveryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ShippingService_GetShopShippingSettings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetShopShippingSettingsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ShippingServiceServer).GetShopShippingSettings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ShippingService_GetShopShippingSettings_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ShippingServiceServer).GetShopShippingSettings(ctx, req.(*GetShopShippingSettingsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ShippingService_UpdateShopShippingSettings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateShopShippingSettingsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ShippingServiceServer).UpdateShopShippingSettings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ShippingService_UpdateShopShippingSettings_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ShippingServiceServer).UpdateShopShippingSettings(ctx, req.(*UpdateShopShippingSettingsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ShippingService_AdminListCarriers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdminListCarriersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ShippingServiceServer).AdminListCarriers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ShippingService_AdminListCarriers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ShippingServiceServer).AdminListCarriers(ctx, req.(*AdminListCarriersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ShippingService_AdminUpdateCarrier_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdminUpdateCarrierRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ShippingServiceServer).AdminUpdateCarrier(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ShippingService_AdminUpdateCarrier_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ShippingServiceServer).AdminUpdateCarrier(ctx, req.(*AdminUpdateCarrierRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ShippingService_AdminTestCarrier_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdminTestCarrierRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ShippingServiceServer).AdminTestCarrier(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ShippingService_AdminTestCarrier_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ShippingServiceServer).AdminTestCarrier(ctx, req.(*AdminTestCarrierRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ShippingService_ServiceDesc is the grpc.ServiceDesc for ShippingService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -342,6 +580,34 @@ var ShippingService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetShipment",
 			Handler:    _ShippingService_GetShipment_Handler,
+		},
+		{
+			MethodName: "CreateReturnShipment",
+			Handler:    _ShippingService_CreateReturnShipment_Handler,
+		},
+		{
+			MethodName: "RequestRedelivery",
+			Handler:    _ShippingService_RequestRedelivery_Handler,
+		},
+		{
+			MethodName: "GetShopShippingSettings",
+			Handler:    _ShippingService_GetShopShippingSettings_Handler,
+		},
+		{
+			MethodName: "UpdateShopShippingSettings",
+			Handler:    _ShippingService_UpdateShopShippingSettings_Handler,
+		},
+		{
+			MethodName: "AdminListCarriers",
+			Handler:    _ShippingService_AdminListCarriers_Handler,
+		},
+		{
+			MethodName: "AdminUpdateCarrier",
+			Handler:    _ShippingService_AdminUpdateCarrier_Handler,
+		},
+		{
+			MethodName: "AdminTestCarrier",
+			Handler:    _ShippingService_AdminTestCarrier_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

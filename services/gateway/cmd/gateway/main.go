@@ -82,6 +82,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init shipping webhook proxy: %w", err)
 	}
+	shippingLabelProxy, err := proxy.NewShippingLabelProxy(cfg.ShippingHTTPURL, log)
+	if err != nil {
+		return fmt.Errorf("init shipping label proxy: %w", err)
+	}
 	paymentSSEProxy, err := proxy.NewSSEProxy(cfg.PaymentHTTPURL, log)
 	if err != nil {
 		return fmt.Errorf("init payment SSE proxy: %w", err)
@@ -104,21 +108,24 @@ func run() error {
 	trustedProxies := middleware.NewTrustedProxies(cfg.TrustedProxies, log)
 
 	handler := router.New(router.Dependencies{
-		ServiceName:          cfg.ServiceName,
-		Clients:              grpcClients,
-		AuthManager:          authMgr,
-		RevocationChecker:    revocationChecker,
-		RateLimiter:          rateLimiter,
-		RateLimitIPPerMin:    cfg.RateLimitIPPerMin,
-		RateLimitUserPerMin:  cfg.RateLimitUserPerMin,
-		RateLimitFlashPerMin: cfg.RateLimitFlashPerMin,
-		TrustedProxies:       trustedProxies,
-		RED:                  red,
-		OpsHandler:           opsHandler,
-		PaymentWebhookProxy:  paymentWebhookProxy,
-		ShippingWebhookProxy: shippingWebhookProxy,
-		PaymentSSEProxy:      paymentSSEProxy,
-		Logger:               log,
+		ServiceName:            cfg.ServiceName,
+		Clients:                grpcClients,
+		AuthManager:            authMgr,
+		RevocationChecker:      revocationChecker,
+		RateLimiter:            rateLimiter,
+		RateLimitIPPerMin:      cfg.RateLimitIPPerMin,
+		RateLimitUserPerMin:    cfg.RateLimitUserPerMin,
+		RateLimitFlashPerMin:   cfg.RateLimitFlashPerMin,
+		RateLimitAuthPerMin:    cfg.RateLimitAuthPerMin,
+		RateLimitWebhookPerMin: cfg.RateLimitWebhookPerMin,
+		TrustedProxies:         trustedProxies,
+		RED:                    red,
+		OpsHandler:             opsHandler,
+		PaymentWebhookProxy:    paymentWebhookProxy,
+		ShippingWebhookProxy:   shippingWebhookProxy,
+		ShippingLabelProxy:     shippingLabelProxy,
+		PaymentSSEProxy:        paymentSSEProxy,
+		Logger:                 log,
 	})
 
 	srv := &http.Server{

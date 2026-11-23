@@ -3,6 +3,7 @@ import type {
   GatewayOrderStatus,
   GatewayOrderTimelineEvent,
   GatewayPaymentMethod,
+  GatewayShipment,
   GatewayShop,
 } from "@/lib/gateway-types";
 import {
@@ -92,7 +93,8 @@ export const ORDER_FILTER_TABS: Array<{ key: "" | GatewayOrderStatus; label: str
   { key: "SHIPPING", label: "Đang giao" },
   { key: "DELIVERED", label: "Đã giao" },
   { key: "COMPLETED", label: "Hoàn tất" },
-  { key: "RETURN_REQUESTED", label: "Trả hàng" },
+  { key: "RETURN_REQUESTED", label: "Yêu cầu trả hàng" },
+  { key: "RETURNED", label: "Đã trả hàng" },
   { key: "CANCELLED", label: "Đã hủy" },
 ];
 
@@ -306,8 +308,17 @@ export function localizeTimelineNote(rawNote: string): string {
   const trimmed = rawNote.trim();
   if (!trimmed) return "";
   const lower = trimmed.toLowerCase();
+  if (lower === "order created awaiting payment" || lower.includes("awaiting payment")) {
+    return "Đơn hàng đã được tạo và đang chờ hoàn tất thanh toán.";
+  }
   if (lower.includes("order created and confirmed (cod)")) {
     return "Đơn hàng thanh toán khi nhận hàng đã được xác nhận, chờ gian hàng chuẩn bị.";
+  }
+  if (lower.includes("order created and confirmed (vietqr)")) {
+    return "Đơn hàng VietQR đã được tạo và xác nhận.";
+  }
+  if (lower.includes("order created and confirmed")) {
+    return "Đơn hàng đã được tạo và xác nhận, chờ gian hàng chuẩn bị.";
   }
   if (lower.includes("awaiting vietqr payment") || lower.includes("order created (vietqr)")) {
     return "Đơn hàng đã được tạo và đang chờ hoàn tất chuyển khoản VietQR.";
@@ -321,8 +332,29 @@ export function localizeTimelineNote(rawNote: string): string {
   if (lower.includes("payment failed")) {
     return "Giao dịch thanh toán chưa thành công.";
   }
+  if (lower.includes("payment refunded") || lower.startsWith("refund ")) {
+    return "Hệ thống đã ghi nhận lệnh hoàn tiền cho đơn hàng.";
+  }
+  if (
+    lower.includes("seller confirmed return") ||
+    lower.includes("confirmed returned goods") ||
+    lower.includes("confirmed receipt of returned")
+  ) {
+    return "Gian hàng đã xác nhận nhận đủ hàng trả và chuyển bước hoàn tiền.";
+  }
   if (lower.includes("seller confirmed")) {
     return "Gian hàng đã xác nhận và bắt đầu đóng gói sản phẩm.";
+  }
+  const shippedMatch = /^shipped\s+via\s+([^\s(]+)(?:\s*\(tracking:\s*([^)]+)\))?/i.exec(trimmed);
+  if (shippedMatch) {
+    const carrierName = getCarrierLabel(shippedMatch[1]);
+    const track = shippedMatch[2]?.trim();
+    return track
+      ? `Gian hàng đã tạo vận đơn qua ${carrierName} (mã vận đơn: ${track}).`
+      : `Gian hàng đã tạo vận đơn qua ${carrierName}.`;
+  }
+  if (lower.includes("shipment created")) {
+    return "Gian hàng đã tạo vận đơn và đang chờ đơn vị vận chuyển lấy hàng.";
   }
   if (lower.includes("seller shipped") || lower.includes("handed to carrier")) {
     return "Gian hàng đã bàn giao kiện hàng cho đơn vị vận chuyển.";
@@ -330,10 +362,265 @@ export function localizeTimelineNote(rawNote: string): string {
   if (lower.includes("buyer confirmed receipt")) {
     return "Người mua đã xác nhận nhận đủ hàng.";
   }
+  if (lower.includes("seller_confirm_timeout") || lower.includes("seller confirm timeout")) {
+    return "Đơn hàng tự động hủy do gian hàng quá hạn xác nhận.";
+  }
+  if (lower.includes("auto-completed") || lower.includes("auto_complete")) {
+    return "Đơn hàng tự động hoàn tất sau 7 ngày kể từ khi giao thành công.";
+  }
   if (lower.startsWith("return requested:")) {
     return `Lý do yêu cầu trả hàng: ${trimmed.slice("return requested:".length).trim()}`;
   }
+  if (lower.startsWith("cancelled by buyer:")) {
+    return `Người mua hủy đơn: ${trimmed.slice("cancelled by buyer:".length).trim()}`;
+  }
+  if (lower.startsWith("cancelled by seller:")) {
+    return `Gian hàng hủy đơn: ${trimmed.slice("cancelled by seller:".length).trim()}`;
+  }
+  if (lower.startsWith("cancelled by admin:")) {
+    return `Quản trị viên hủy đơn: ${trimmed.slice("cancelled by admin:".length).trim()}`;
+  }
+  if (lower.startsWith("shipment status:")) {
+    const st = trimmed.slice("shipment status:".length).trim();
+    return `Cập nhật vận chuyển: ${getShipmentStatusInfo(st).label}.`;
+  }
+  if (lower === "order delivered" || lower === "delivered") {
+    return "Đơn vị vận chuyển đã giao hàng thành công.";
+  }
+  if (lower === "order returned" || lower === "returned") {
+    return "Kiện hàng đã hoàn về gian hàng.";
+  }
   return trimmed;
+}
+
+export const MAX_EVIDENCE_URLS = 5;
+export const MAX_EVIDENCE_URL_LENGTH = 500;
+export const MAX_REDELIVERY_ATTEMPTS = 3;
+
+export interface SafeExternalEvidenceLink {
+  href: string;
+  hostname: string;
+}
+
+/**
+ * Parses an external evidence URL and allows only http/https with a valid hostname.
+ * Returns normalized href + lowercase hostname so UI clearly warns before leaving the site.
+ */
+export function parseSafeEvidenceUrl(
+  raw: string | null | undefined
+): SafeExternalEvidenceLink | null {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    if (!parsed.hostname) return null;
+    return {
+      href: parsed.toString(),
+      hostname: parsed.hostname.toLowerCase(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Builds the same-origin BFF shipping label path so the browser sends HttpOnly session cookies
+ * instead of navigating directly to the gateway origin without a Bearer token.
+ */
+export function buildShippingLabelHref(trackingCode: string | null | undefined): string | null {
+  const clean = (trackingCode ?? "").trim();
+  if (!clean) return null;
+  return `/api/gw/shipping/labels/${encodeURIComponent(clean)}`;
+}
+
+export function validateEvidenceUrls(rawUrls: readonly string[]): {
+  ok: boolean;
+  urls: string[];
+  error?: string;
+} {
+  const cleaned: string[] = [];
+  for (const raw of rawUrls) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    if (trimmed.length > MAX_EVIDENCE_URL_LENGTH) {
+      return {
+        ok: false,
+        urls: [],
+        error: `Mỗi liên kết bằng chứng không được vượt quá ${MAX_EVIDENCE_URL_LENGTH} ký tự.`,
+      };
+    }
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return {
+          ok: false,
+          urls: [],
+          error: "Liên kết bằng chứng phải bắt đầu bằng http:// hoặc https://.",
+        };
+      }
+    } catch {
+      return {
+        ok: false,
+        urls: [],
+        error: `Liên kết bằng chứng chưa đúng định dạng: ${trimmed}`,
+      };
+    }
+    cleaned.push(trimmed);
+  }
+  if (cleaned.length > MAX_EVIDENCE_URLS) {
+    return {
+      ok: false,
+      urls: [],
+      error: `Chỉ được đính kèm tối đa ${MAX_EVIDENCE_URLS} liên kết bằng chứng.`,
+    };
+  }
+  return { ok: true, urls: cleaned };
+}
+
+export function normalizeEnumSuffix(raw: string | undefined, prefix: string): string {
+  const upper = (raw ?? "").trim().toUpperCase();
+  return upper.startsWith(prefix) ? upper.slice(prefix.length) : upper;
+}
+
+export const RETURN_STATUS_INFO: Record<string, StatusMeta> = {
+  PENDING: {
+    label: "Chờ gian hàng phản hồi",
+    tone: "warn",
+    description:
+      "Gian hàng có 3 ngày để phản hồi. Nếu quá hạn chưa phản hồi, hệ thống tự động chấp nhận trả hàng về.",
+  },
+  AWAITING_SHIPMENT: {
+    label: "Chờ gửi hàng trả về",
+    tone: "warn",
+    description:
+      "Vui lòng đóng gói và bàn giao kiện hàng trả theo mã vận đơn trong vòng 5 ngày để tiếp tục hoàn tiền.",
+  },
+  IN_TRANSIT: {
+    label: "Hàng trả đang vận chuyển",
+    tone: "neutral",
+    description: "Đơn vị vận chuyển đã lấy hàng trả và đang chuyển về kho gian hàng.",
+  },
+  RECEIVED: {
+    label: "Gian hàng đã nhận hàng trả",
+    tone: "neutral",
+    description:
+      "Gian hàng có 3 ngày để kiểm tra hàng trả và xác nhận hoàn tiền. Quá hạn hệ thống tự xác nhận.",
+  },
+  REFUNDING: {
+    label: "Đang xử lý hoàn tiền",
+    tone: "warn",
+    description:
+      "Yêu cầu trả hàng đã được duyệt. Hệ thống đang tạo lệnh hoàn tiền cho đơn hàng của bạn.",
+  },
+  REFUNDED: {
+    label: "Đã tạo hoàn tiền",
+    tone: "pos",
+    description:
+      "Đơn hàng đã hoàn tất thủ tục trả hàng và ghi nhận lệnh hoàn tiền. Theo dõi tiến trình chuyển khoản bên dưới.",
+  },
+  REJECTED: {
+    label: "Gian hàng từ chối",
+    tone: "neg",
+    description:
+      "Gian hàng đã từ chối yêu cầu. Bạn có 3 ngày để mở khiếu nại lên NexusMart nếu chưa đồng ý.",
+  },
+  ESCALATED: {
+    label: "Đang khiếu nại lên sàn",
+    tone: "warn",
+    description:
+      "Quản trị viên NexusMart đang xem xét chứng từ hai bên để đưa ra quyết định phân xử.",
+  },
+  EVIDENCE_REQUESTED: {
+    label: "Cần bổ sung bằng chứng",
+    tone: "warn",
+    description:
+      "Quản trị viên yêu cầu bổ sung thêm thông tin hoặc liên kết bằng chứng trong vòng 3 ngày.",
+  },
+  CLOSED: {
+    label: "Đã đóng yêu cầu",
+    tone: "neutral",
+    description: "Yêu cầu trả hàng đã đóng và đơn hàng được chuyển sang trạng thái Hoàn tất.",
+  },
+};
+
+export function getReturnStatusInfo(rawStatus: string | undefined): StatusMeta {
+  const key = normalizeEnumSuffix(rawStatus, "RETURN_STATUS_");
+  return (
+    RETURN_STATUS_INFO[key] ?? {
+      label: "Đang xử lý trả hàng",
+      tone: "neutral",
+      description: "Yêu cầu trả hàng đang được hệ thống cập nhật.",
+    }
+  );
+}
+
+export function getReturnFeeBearerLabel(rawBearer: string | undefined): string {
+  switch ((rawBearer ?? "").trim().toUpperCase()) {
+    case "SELLER":
+      return "Gian hàng chịu phí";
+    case "BUYER":
+      return "Người mua chịu phí";
+    case "PLATFORM":
+      return "Sàn hỗ trợ phí";
+    default:
+      return "Chưa ấn định";
+  }
+}
+
+export function getRefundStatusInfo(rawStatus: string | undefined): {
+  label: string;
+  tone: BadgeTone;
+} {
+  const key = normalizeEnumSuffix(rawStatus, "REFUND_STATUS_");
+  if (key === "DONE" || key === "COMPLETED") {
+    return { label: "Đã chuyển khoản hoàn tiền", tone: "pos" };
+  }
+  if (key === "FAILED") {
+    return { label: "Hoàn tiền thất bại", tone: "neg" };
+  }
+  if (key === "PENDING") {
+    return { label: "Chờ chuyển khoản hoàn tiền", tone: "warn" };
+  }
+  return { label: "Đang cập nhật hoàn tiền", tone: "neutral" };
+}
+
+export function isRefundPending(rawStatus: string | undefined): boolean {
+  return normalizeEnumSuffix(rawStatus, "REFUND_STATUS_") === "PENDING";
+}
+
+export function validateBankAccountNumber(raw: string): boolean {
+  const trimmed = raw.trim();
+  return /^\d{6,19}$/.test(trimmed);
+}
+
+export const VN_BANK_OPTIONS: Array<{ code: string; label: string }> = [
+  { code: "VCB", label: "Vietcombank (VCB)" },
+  { code: "TCB", label: "Techcombank (TCB)" },
+  { code: "MB", label: "MB Bank (MB)" },
+  { code: "ACB", label: "ACB" },
+  { code: "BIDV", label: "BIDV" },
+  { code: "VTB", label: "VietinBank (VTB)" },
+  { code: "TPB", label: "TPBank (TPB)" },
+  { code: "VPB", label: "VPBank (VPB)" },
+  { code: "STB", label: "Sacombank (STB)" },
+  { code: "SHB", label: "SHB" },
+  { code: "VIB", label: "VIB" },
+  { code: "HDB", label: "HDBank (HDB)" },
+  { code: "OCB", label: "OCB" },
+  { code: "MSB", label: "MSB" },
+];
+
+export function canRequestRedelivery(
+  shipment: Pick<GatewayShipment, "status" | "direction" | "redelivery_count"> | null | undefined
+): boolean {
+  if (!shipment) return false;
+  const st = normalizeEnumSuffix(shipment.status, "SHIPMENT_STATUS_");
+  const dir = normalizeEnumSuffix(shipment.direction || "FORWARD", "SHIPMENT_DIRECTION_");
+  if (dir !== "FORWARD" || st !== "FAILED") return false;
+  return (shipment.redelivery_count ?? 0) < MAX_REDELIVERY_ATTEMPTS;
 }
 
 export function getTimelineEventTitle(ev: GatewayOrderTimelineEvent): string {
@@ -475,6 +762,24 @@ export function normalizeNotificationHref(rawLink: string): string | null {
   }
   if (trimmed.startsWith("/orders/")) {
     return `/don-hang/${trimmed.slice("/orders/".length)}`;
+  }
+  if (trimmed === "/verify-otp" || trimmed.startsWith("/verify-otp?")) {
+    return "/dang-ky";
+  }
+  if (trimmed === "/seller/dashboard") {
+    return "/seller";
+  }
+  if (trimmed === "/seller/orders") {
+    return "/seller/don-hang";
+  }
+  if (trimmed.startsWith("/seller/orders/")) {
+    return `/seller/don-hang/${trimmed.slice("/seller/orders/".length)}`;
+  }
+  if (trimmed === "/seller/returns" || trimmed.startsWith("/seller/returns/")) {
+    return "/seller/tra-hang";
+  }
+  if (trimmed === "/admin/returns" || trimmed.startsWith("/admin/returns/")) {
+    return "/admin/khieu-nai";
   }
   return trimmed;
 }

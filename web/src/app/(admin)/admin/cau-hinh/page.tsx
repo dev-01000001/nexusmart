@@ -12,6 +12,7 @@ import {
   useAdminExtendedConfig,
   useAdminExtraConfig,
 } from "@/features/admin/auditStore";
+import { AdminCarriersPanel } from "@/features/admin/AdminCarriersPanel";
 import { AdminCategoriesPanel } from "@/features/admin/AdminCategoriesPanel";
 import { AdminUsersPanel } from "@/features/admin/AdminUsersPanel";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
@@ -20,7 +21,8 @@ import { ToggleSwitch } from "@/features/admin/ToggleSwitch";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
 
-type ConfigTab = "danh_muc" | "nguoi_dung" | "dat_hang" | "doi_tra" | "thanh_toan" | "thong_bao";
+type ConfigTab =
+  "danh_muc" | "nguoi_dung" | "van_chuyen" | "dat_hang" | "doi_tra" | "thanh_toan" | "thong_bao";
 
 function renderNotificationPreview(template: string): string {
   return template
@@ -59,7 +61,6 @@ function PlatformConfigContent() {
     platformConfig.maxCoinRedeemPercent
   );
   const [settlementHoldDays, setSettlementHoldDays] = useState(platformConfig.settlementHoldDays);
-  const [carriersDraft, setCarriersDraft] = useState(extendedConfig.carriers);
 
   // Tab 2: Return standard, exceptions & commissions
   const [standardReturnDays, setStandardReturnDays] = useState(extendedConfig.standardReturnDays);
@@ -137,7 +138,6 @@ function PlatformConfigContent() {
   const sampleMaxCoins = Math.round((sampleOrderVnd * maxCoinRedeemPercent) / 100);
   const sampleFreeshipEligible = sampleOrderVnd >= freeshipMinOrder;
 
-  const enabledCarriersCount = carriersDraft.filter((c) => c.enabled).length;
   const enabledGatewaysCount = [codEnabled, vietqrEnabled, sandboxWalletEnabled].filter(
     Boolean
   ).length;
@@ -161,16 +161,6 @@ function PlatformConfigContent() {
       guestLookupAndCancelEnabled,
     }));
     markSectionSaved("logistics");
-  };
-
-  const handleSaveCarriers = (e: React.FormEvent) => {
-    e.preventDefault();
-    updateAdminExtendedConfig((prev) => ({
-      ...prev,
-      carriers: carriersDraft,
-    }));
-    showToast("Đã lưu cấu hình vùng và hãng vận chuyển.");
-    markSectionSaved("carriers");
   };
 
   const handleAddReturnException = () => {
@@ -319,11 +309,20 @@ function PlatformConfigContent() {
           <button
             type="button"
             role="tab"
+            aria-selected={activeTab === "van_chuyen"}
+            className={`${shared.tabBtn} ${activeTab === "van_chuyen" ? shared.tabBtnActive : ""}`}
+            onClick={() => setActiveTab("van_chuyen")}
+          >
+            Hãng vận chuyển
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={activeTab === "dat_hang"}
             className={`${shared.tabBtn} ${activeTab === "dat_hang" ? shared.tabBtnActive : ""}`}
             onClick={() => setActiveTab("dat_hang")}
           >
-            Đặt hàng & Vận chuyển
+            Đặt hàng & Freeship
           </button>
           <button
             type="button"
@@ -357,6 +356,7 @@ function PlatformConfigContent() {
 
       {activeTab === "danh_muc" && <AdminCategoriesPanel />}
       {activeTab === "nguoi_dung" && <AdminUsersPanel />}
+      {activeTab === "van_chuyen" && <AdminCarriersPanel />}
 
       {/* TAB 1: ĐẶT HÀNG VÃNG LAI, FREESHIP & HÃNG VẬN CHUYỂN */}
       {activeTab === "dat_hang" && (
@@ -512,119 +512,6 @@ function PlatformConfigContent() {
                 </span>
                 <Button type="submit" variant="primary" size="sm" shape="app">
                   Lưu thay đổi
-                </Button>
-              </div>
-            </form>
-          </section>
-
-          <section className={styles.sectionRow} aria-labelledby="cfg-carriers-heading">
-            <div className={styles.labelCol}>
-              <h2 id="cfg-carriers-heading" className={styles.sectionTitle}>
-                Vùng & hãng vận chuyển (SPX / GHN / Giao nhanh)
-              </h2>
-              <p className={styles.sectionDesc}>
-                Bật hoặc tắt từng đối tác vận chuyển trên toàn quốc 34 tỉnh thành, cấu hình cước
-                chuẩn cơ bản và quyền đồng kiểm khi nhận hàng.
-              </p>
-              <dl className={styles.summaryList}>
-                <div className={styles.summaryPair}>
-                  <dt className={styles.summaryKey}>Đối tác đang bật</dt>
-                  <dd className={styles.summaryVal}>
-                    {enabledCarriersCount} / {carriersDraft.length} hãng
-                  </dd>
-                </div>
-                <div className={styles.summaryPair}>
-                  <dt className={styles.summaryKey}>Đồng kiểm khi nhận</dt>
-                  <dd className={styles.summaryVal}>Mặc định bật toàn sàn</dd>
-                </div>
-              </dl>
-            </div>
-
-            <form className={styles.settingsPanel} onSubmit={handleSaveCarriers}>
-              <div className={styles.commissionTableWrap}>
-                <table className={styles.commissionTable}>
-                  <thead>
-                    <tr>
-                      <th>Hãng & vùng phục vụ</th>
-                      <th>Thời gian giao</th>
-                      <th className={shared.colNum}>Cước chuẩn (₫)</th>
-                      <th className={shared.colAction}>Bật/tắt</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {carriersDraft.map((car) => (
-                      <tr key={car.id}>
-                        <td>
-                          <div>{car.name}</div>
-                          <div className={styles.fieldHint}>{car.zones}</div>
-                        </td>
-                        <td>{car.slaDays}</td>
-                        <td className={shared.colNum}>
-                          <input
-                            type="number"
-                            min={10000}
-                            step={1000}
-                            className={styles.compactInput}
-                            value={car.baseFeeVnd}
-                            onChange={(e) =>
-                              setCarriersDraft((prev) =>
-                                prev.map((c) =>
-                                  c.id === car.id
-                                    ? { ...c, baseFeeVnd: Number(e.target.value) || 0 }
-                                    : c
-                                )
-                              )
-                            }
-                            aria-label={`Cước chuẩn ${car.name}`}
-                          />
-                        </td>
-                        <td className={shared.colAction}>
-                          <ToggleSwitch
-                            id={`sw-car-${car.id}`}
-                            checked={car.enabled}
-                            label={`Bật hoặc tắt ${car.name}`}
-                            onChange={(next) =>
-                              setCarriersDraft((prev) =>
-                                prev.map((c) => (c.id === car.id ? { ...c, enabled: next } : c))
-                              )
-                            }
-                          />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className={styles.commissionMobileList}>
-                {carriersDraft.map((car) => (
-                  <div key={car.id} className={styles.commissionMobileCard}>
-                    <div className={shared.mobileLine1}>
-                      <span className={styles.fieldLabel}>{car.name}</span>
-                      <ToggleSwitch
-                        id={`sw-carm-${car.id}`}
-                        checked={car.enabled}
-                        label={`Bật hoặc tắt ${car.name}`}
-                        onChange={(next) =>
-                          setCarriersDraft((prev) =>
-                            prev.map((c) => (c.id === car.id ? { ...c, enabled: next } : c))
-                          )
-                        }
-                      />
-                    </div>
-                    <span className={styles.fieldHint}>
-                      {car.zones} · {car.slaDays} · {formatVnd(car.baseFeeVnd)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              <div className={styles.panelFooter}>
-                <span className={styles.savedStamp}>
-                  {savedNotice.carriers ?? "Phí thực tế cộng theo từng kho gian hàng khi tách đơn."}
-                </span>
-                <Button type="submit" variant="ink" size="sm" shape="app">
-                  Lưu cấu hình vận chuyển
                 </Button>
               </div>
             </form>

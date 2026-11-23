@@ -19,14 +19,19 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PaymentService_CreatePayment_FullMethodName     = "/nexusmart.payment.v1.PaymentService/CreatePayment"
-	PaymentService_GetPayment_FullMethodName        = "/nexusmart.payment.v1.PaymentService/GetPayment"
-	PaymentService_CancelPayment_FullMethodName     = "/nexusmart.payment.v1.PaymentService/CancelPayment"
-	PaymentService_CreateRefund_FullMethodName      = "/nexusmart.payment.v1.PaymentService/CreateRefund"
-	PaymentService_GetLedgerSummary_FullMethodName  = "/nexusmart.payment.v1.PaymentService/GetLedgerSummary"
-	PaymentService_GetSellerBalance_FullMethodName  = "/nexusmart.payment.v1.PaymentService/GetSellerBalance"
-	PaymentService_ReleaseEscrow_FullMethodName     = "/nexusmart.payment.v1.PaymentService/ReleaseEscrow"
-	PaymentService_RunReconciliation_FullMethodName = "/nexusmart.payment.v1.PaymentService/RunReconciliation"
+	PaymentService_CreatePayment_FullMethodName             = "/nexusmart.payment.v1.PaymentService/CreatePayment"
+	PaymentService_GetPayment_FullMethodName                = "/nexusmart.payment.v1.PaymentService/GetPayment"
+	PaymentService_CancelPayment_FullMethodName             = "/nexusmart.payment.v1.PaymentService/CancelPayment"
+	PaymentService_CreateRefund_FullMethodName              = "/nexusmart.payment.v1.PaymentService/CreateRefund"
+	PaymentService_GetLedgerSummary_FullMethodName          = "/nexusmart.payment.v1.PaymentService/GetLedgerSummary"
+	PaymentService_GetSellerBalance_FullMethodName          = "/nexusmart.payment.v1.PaymentService/GetSellerBalance"
+	PaymentService_ReleaseEscrow_FullMethodName             = "/nexusmart.payment.v1.PaymentService/ReleaseEscrow"
+	PaymentService_RunReconciliation_FullMethodName         = "/nexusmart.payment.v1.PaymentService/RunReconciliation"
+	PaymentService_ListRefunds_FullMethodName               = "/nexusmart.payment.v1.PaymentService/ListRefunds"
+	PaymentService_SubmitRefundBankAccount_FullMethodName   = "/nexusmart.payment.v1.PaymentService/SubmitRefundBankAccount"
+	PaymentService_SettleRefund_FullMethodName              = "/nexusmart.payment.v1.PaymentService/SettleRefund"
+	PaymentService_ListReconciliationQueue_FullMethodName   = "/nexusmart.payment.v1.PaymentService/ListReconciliationQueue"
+	PaymentService_ResolveReconciliationItem_FullMethodName = "/nexusmart.payment.v1.PaymentService/ResolveReconciliationItem"
 )
 
 // PaymentServiceClient is the client API for PaymentService service.
@@ -41,6 +46,11 @@ type PaymentServiceClient interface {
 	GetSellerBalance(ctx context.Context, in *GetSellerBalanceRequest, opts ...grpc.CallOption) (*GetSellerBalanceResponse, error)
 	ReleaseEscrow(ctx context.Context, in *ReleaseEscrowRequest, opts ...grpc.CallOption) (*ReleaseEscrowResponse, error)
 	RunReconciliation(ctx context.Context, in *RunReconciliationRequest, opts ...grpc.CallOption) (*RunReconciliationResponse, error)
+	ListRefunds(ctx context.Context, in *ListRefundsRequest, opts ...grpc.CallOption) (*ListRefundsResponse, error)
+	SubmitRefundBankAccount(ctx context.Context, in *SubmitRefundBankAccountRequest, opts ...grpc.CallOption) (*SubmitRefundBankAccountResponse, error)
+	SettleRefund(ctx context.Context, in *SettleRefundRequest, opts ...grpc.CallOption) (*SettleRefundResponse, error)
+	ListReconciliationQueue(ctx context.Context, in *ListReconciliationQueueRequest, opts ...grpc.CallOption) (*ListReconciliationQueueResponse, error)
+	ResolveReconciliationItem(ctx context.Context, in *ResolveReconciliationItemRequest, opts ...grpc.CallOption) (*ResolveReconciliationItemResponse, error)
 }
 
 type paymentServiceClient struct {
@@ -131,6 +141,56 @@ func (c *paymentServiceClient) RunReconciliation(ctx context.Context, in *RunRec
 	return out, nil
 }
 
+func (c *paymentServiceClient) ListRefunds(ctx context.Context, in *ListRefundsRequest, opts ...grpc.CallOption) (*ListRefundsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRefundsResponse)
+	err := c.cc.Invoke(ctx, PaymentService_ListRefunds_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) SubmitRefundBankAccount(ctx context.Context, in *SubmitRefundBankAccountRequest, opts ...grpc.CallOption) (*SubmitRefundBankAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubmitRefundBankAccountResponse)
+	err := c.cc.Invoke(ctx, PaymentService_SubmitRefundBankAccount_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) SettleRefund(ctx context.Context, in *SettleRefundRequest, opts ...grpc.CallOption) (*SettleRefundResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SettleRefundResponse)
+	err := c.cc.Invoke(ctx, PaymentService_SettleRefund_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) ListReconciliationQueue(ctx context.Context, in *ListReconciliationQueueRequest, opts ...grpc.CallOption) (*ListReconciliationQueueResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListReconciliationQueueResponse)
+	err := c.cc.Invoke(ctx, PaymentService_ListReconciliationQueue_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) ResolveReconciliationItem(ctx context.Context, in *ResolveReconciliationItemRequest, opts ...grpc.CallOption) (*ResolveReconciliationItemResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResolveReconciliationItemResponse)
+	err := c.cc.Invoke(ctx, PaymentService_ResolveReconciliationItem_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PaymentServiceServer is the server API for PaymentService service.
 // All implementations must embed UnimplementedPaymentServiceServer
 // for forward compatibility.
@@ -143,6 +203,11 @@ type PaymentServiceServer interface {
 	GetSellerBalance(context.Context, *GetSellerBalanceRequest) (*GetSellerBalanceResponse, error)
 	ReleaseEscrow(context.Context, *ReleaseEscrowRequest) (*ReleaseEscrowResponse, error)
 	RunReconciliation(context.Context, *RunReconciliationRequest) (*RunReconciliationResponse, error)
+	ListRefunds(context.Context, *ListRefundsRequest) (*ListRefundsResponse, error)
+	SubmitRefundBankAccount(context.Context, *SubmitRefundBankAccountRequest) (*SubmitRefundBankAccountResponse, error)
+	SettleRefund(context.Context, *SettleRefundRequest) (*SettleRefundResponse, error)
+	ListReconciliationQueue(context.Context, *ListReconciliationQueueRequest) (*ListReconciliationQueueResponse, error)
+	ResolveReconciliationItem(context.Context, *ResolveReconciliationItemRequest) (*ResolveReconciliationItemResponse, error)
 	mustEmbedUnimplementedPaymentServiceServer()
 }
 
@@ -176,6 +241,21 @@ func (UnimplementedPaymentServiceServer) ReleaseEscrow(context.Context, *Release
 }
 func (UnimplementedPaymentServiceServer) RunReconciliation(context.Context, *RunReconciliationRequest) (*RunReconciliationResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RunReconciliation not implemented")
+}
+func (UnimplementedPaymentServiceServer) ListRefunds(context.Context, *ListRefundsRequest) (*ListRefundsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListRefunds not implemented")
+}
+func (UnimplementedPaymentServiceServer) SubmitRefundBankAccount(context.Context, *SubmitRefundBankAccountRequest) (*SubmitRefundBankAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SubmitRefundBankAccount not implemented")
+}
+func (UnimplementedPaymentServiceServer) SettleRefund(context.Context, *SettleRefundRequest) (*SettleRefundResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SettleRefund not implemented")
+}
+func (UnimplementedPaymentServiceServer) ListReconciliationQueue(context.Context, *ListReconciliationQueueRequest) (*ListReconciliationQueueResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListReconciliationQueue not implemented")
+}
+func (UnimplementedPaymentServiceServer) ResolveReconciliationItem(context.Context, *ResolveReconciliationItemRequest) (*ResolveReconciliationItemResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ResolveReconciliationItem not implemented")
 }
 func (UnimplementedPaymentServiceServer) mustEmbedUnimplementedPaymentServiceServer() {}
 func (UnimplementedPaymentServiceServer) testEmbeddedByValue()                        {}
@@ -342,6 +422,96 @@ func _PaymentService_RunReconciliation_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PaymentService_ListRefunds_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRefundsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).ListRefunds(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_ListRefunds_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).ListRefunds(ctx, req.(*ListRefundsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_SubmitRefundBankAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubmitRefundBankAccountRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).SubmitRefundBankAccount(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_SubmitRefundBankAccount_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).SubmitRefundBankAccount(ctx, req.(*SubmitRefundBankAccountRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_SettleRefund_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SettleRefundRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).SettleRefund(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_SettleRefund_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).SettleRefund(ctx, req.(*SettleRefundRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_ListReconciliationQueue_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListReconciliationQueueRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).ListReconciliationQueue(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_ListReconciliationQueue_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).ListReconciliationQueue(ctx, req.(*ListReconciliationQueueRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_ResolveReconciliationItem_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveReconciliationItemRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).ResolveReconciliationItem(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_ResolveReconciliationItem_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).ResolveReconciliationItem(ctx, req.(*ResolveReconciliationItemRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PaymentService_ServiceDesc is the grpc.ServiceDesc for PaymentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -380,6 +550,26 @@ var PaymentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RunReconciliation",
 			Handler:    _PaymentService_RunReconciliation_Handler,
+		},
+		{
+			MethodName: "ListRefunds",
+			Handler:    _PaymentService_ListRefunds_Handler,
+		},
+		{
+			MethodName: "SubmitRefundBankAccount",
+			Handler:    _PaymentService_SubmitRefundBankAccount_Handler,
+		},
+		{
+			MethodName: "SettleRefund",
+			Handler:    _PaymentService_SettleRefund_Handler,
+		},
+		{
+			MethodName: "ListReconciliationQueue",
+			Handler:    _PaymentService_ListReconciliationQueue_Handler,
+		},
+		{
+			MethodName: "ResolveReconciliationItem",
+			Handler:    _PaymentService_ResolveReconciliationItem_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -11,6 +11,12 @@ SELECT * FROM users
 WHERE id = $1
 LIMIT 1;
 
+-- name: GetUserByIDForShare :one
+SELECT * FROM users
+WHERE id = $1
+LIMIT 1
+FOR SHARE;
+
 -- name: GetUserByEmail :one
 SELECT * FROM users
 WHERE LOWER(email) = LOWER($1)
@@ -54,6 +60,14 @@ RETURNING *;
 -- name: UpdateUserStatus :one
 UPDATE users
 SET status = $2,
+    lock_reason = $3,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: UpdateUserPassword :one
+UPDATE users
+SET password_hash = $2,
     updated_at = NOW()
 WHERE id = $1
 RETURNING *;
@@ -73,10 +87,12 @@ SET role = CASE WHEN role = 'buyer' THEN 'seller' ELSE role END,
 WHERE id = $1
 RETURNING *;
 
--- name: CountActiveAdmins :one
-SELECT COUNT(*)::bigint FROM users
+-- name: ListActiveAdminIDsForUpdate :many
+SELECT id FROM users
 WHERE role IN ('admin', 'super_admin')
-  AND status = 'ACTIVE';
+  AND status = 'ACTIVE'
+ORDER BY id
+FOR UPDATE;
 
 -- name: ListUsers :many
 SELECT * FROM users
@@ -129,6 +145,32 @@ UPDATE refresh_tokens
 SET revoked_at = NOW()
 WHERE user_id = $1
   AND revoked_at IS NULL;
+
+-- name: InvalidateUserPasswordResets :exec
+UPDATE password_resets
+SET used_at = $2
+WHERE user_id = $1
+  AND used_at IS NULL;
+
+-- name: CreatePasswordReset :one
+INSERT INTO password_resets (
+    id, user_id, token_hash, expires_at
+) VALUES (
+    $1, $2, $3, $4
+)
+RETURNING *;
+
+-- name: GetPasswordResetByHashForUpdate :one
+SELECT * FROM password_resets
+WHERE token_hash = $1
+LIMIT 1
+FOR UPDATE;
+
+-- name: MarkPasswordResetUsed :execrows
+UPDATE password_resets
+SET used_at = $2
+WHERE id = $1
+  AND used_at IS NULL;
 
 -- name: CreateShop :one
 INSERT INTO shops (

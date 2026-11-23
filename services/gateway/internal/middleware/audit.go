@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
+	"github.com/nexusmart/core/pkg/common/logger"
 )
 
 const (
@@ -48,6 +50,7 @@ type auditResponseWriter struct {
 	status      int
 	wroteHeader bool
 	capture     bytes.Buffer
+	truncated   bool
 }
 
 func (w *auditResponseWriter) WriteHeader(code int) {
@@ -66,10 +69,41 @@ func (w *auditResponseWriter) Write(b []byte) (int, error) {
 		n := len(b)
 		if n > remaining {
 			n = remaining
+			w.truncated = true
 		}
 		_, _ = w.capture.Write(b[:n])
+	} else if len(b) > 0 {
+		w.truncated = true
 	}
 	return w.ResponseWriter.Write(b)
+}
+
+type cappedCaptureReadCloser struct {
+	rc        io.ReadCloser
+	limit     int
+	buf       bytes.Buffer
+	truncated bool
+}
+
+func (c *cappedCaptureReadCloser) Read(p []byte) (int, error) {
+	n, err := c.rc.Read(p)
+	if n > 0 {
+		if remaining := c.limit - c.buf.Len(); remaining > 0 {
+			toWrite := n
+			if toWrite > remaining {
+				toWrite = remaining
+				c.truncated = true
+			}
+			_, _ = c.buf.Write(p[:toWrite])
+		} else {
+			c.truncated = true
+		}
+	}
+	return n, err
+}
+
+func (c *cappedCaptureReadCloser) Close() error {
+	return c.rc.Close()
 }
 
 func (w *auditResponseWriter) Flush() {
@@ -119,6 +153,12 @@ func AdminAudit(cfg AdminAuditConfig) func(http.Handler) http.Handler {
 				return
 			}
 
+			var reqCapture *cappedCaptureReadCloser
+			if r.Body != nil {
+				reqCapture = &cappedCaptureReadCloser{rc: r.Body, limit: auditResponseCaptureLimit}
+				r.Body = reqCapture
+			}
+
 			aw := &auditResponseWriter{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(aw, r)
 
@@ -142,6 +182,13 @@ func AdminAudit(cfg AdminAuditConfig) func(http.Handler) http.Handler {
 				return
 			}
 
+			var reqBytes []byte
+			reqTrunc := false
+			if reqCapture != nil {
+				reqBytes = reqCapture.buf.Bytes()
+				reqTrunc = reqCapture.truncated
+			}
+
 			auditReq := &userv1.WriteAuditLogRequest{
 				ActorId:    claims.UserID(),
 				ActorRole:  claims.Role,
@@ -149,7 +196,7 @@ func AdminAudit(cfg AdminAuditConfig) func(http.Handler) http.Handler {
 				TargetType: auditTargetType(routePattern),
 				TargetId:   auditTargetID(r, aw.capture.Bytes(), routePattern),
 				BeforeJson: "{}",
-				AfterJson:  "{}",
+				AfterJson:  buildAuditAfterJSON(reqBytes, reqTrunc, aw.capture.Bytes(), aw.truncated),
 				IpAddress:  cfg.TrustedProxies.ClientIP(r),
 			}
 
@@ -250,6 +297,14 @@ func auditTargetType(routePattern string) string {
 		return "coin"
 	case "payments":
 		return "payment"
+	case "refunds":
+		return "refund"
+	case "reconciliation":
+		return "reconciliation_item"
+	case "returns":
+		return "return_request"
+	case "carriers":
+		return "carrier"
 	case "users":
 		return "user"
 	case "shops":
@@ -264,7 +319,7 @@ func auditTargetType(routePattern string) string {
 
 func auditTargetID(r *http.Request, respBody []byte, routePattern string) string {
 	if rctx := chi.RouteContext(r.Context()); rctx != nil {
-		for _, key := range []string{"id", "item_id"} {
+		for _, key := range []string{"id", "item_id", "code"} {
 			if val := strings.TrimSpace(rctx.URLParam(key)); val != "" {
 				return val
 			}
@@ -293,14 +348,14 @@ func extractTargetIDFromJSON(raw []byte) string {
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return ""
 	}
-	for _, key := range []string{"id", "run_id", "user_id", "refund_id"} {
+	for _, key := range []string{"id", "run_id", "user_id", "refund_id", "carrier_code"} {
 		if s, ok := obj[key].(string); ok && strings.TrimSpace(s) != "" {
 			return strings.TrimSpace(s)
 		}
 	}
-	for _, nestedKey := range []string{"category", "voucher", "flash_sale", "product", "item", "refund"} {
+	for _, nestedKey := range []string{"category", "voucher", "flash_sale", "product", "item", "refund", "return_request", "carrier"} {
 		if nested, ok := obj[nestedKey].(map[string]any); ok {
-			for _, idKey := range []string{"id", "refund_id"} {
+			for _, idKey := range []string{"id", "refund_id", "carrier_code"} {
 				if s, ok := nested[idKey].(string); ok && strings.TrimSpace(s) != "" {
 					return strings.TrimSpace(s)
 				}
@@ -308,4 +363,97 @@ func extractTargetIDFromJSON(raw []byte) string {
 		}
 	}
 	return ""
+}
+
+const auditRedactedValue = "[REDACTED]"
+
+var auditSensitiveSubstrings = []string{
+	"password",
+	"passwd",
+	"secret",
+	"token",
+	"api_key",
+	"apikey",
+	"authorization",
+	"private_key",
+	"credential",
+	"signature",
+	"hmac",
+	"cookie",
+	"otp",
+	"bank_account_number",
+	"account_number",
+	"bank_account",
+	"credit_card",
+	"cvv",
+}
+
+func isSensitiveAuditKey(key string) bool {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	switch lower {
+	case "token_configured", "bank_account_masked":
+		return false
+	}
+	for _, sub := range auditSensitiveSubstrings {
+		if strings.Contains(lower, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeAuditValue(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(val))
+		for k, item := range val {
+			if isSensitiveAuditKey(k) {
+				out[k] = auditRedactedValue
+			} else {
+				out[k] = sanitizeAuditValue(item)
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(val))
+		for i, item := range val {
+			out[i] = sanitizeAuditValue(item)
+		}
+		return out
+	case string:
+		return logger.ScrubSecrets(val)
+	default:
+		return val
+	}
+}
+
+func parseAndSanitizeJSON(raw []byte, truncated bool) (any, bool) {
+	if truncated || len(bytes.TrimSpace(raw)) == 0 {
+		return nil, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var parsed any
+	if err := dec.Decode(&parsed); err != nil {
+		return nil, false
+	}
+	return sanitizeAuditValue(parsed), true
+}
+
+func buildAuditAfterJSON(reqRaw []byte, reqTrunc bool, respRaw []byte, respTrunc bool) string {
+	payload := make(map[string]any, 2)
+	if reqVal, ok := parseAndSanitizeJSON(reqRaw, reqTrunc); ok {
+		payload["request"] = reqVal
+	}
+	if respVal, ok := parseAndSanitizeJSON(respRaw, respTrunc); ok {
+		payload["response"] = respVal
+	}
+	if len(payload) == 0 {
+		return "{}"
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
 }

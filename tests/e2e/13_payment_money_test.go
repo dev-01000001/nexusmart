@@ -248,9 +248,10 @@ func TestE2E_PaymentMoney_PAY_B4_CODLifecycle(t *testing.T) {
 	env.mustDoJSON(t, http.MethodPost, confirmRecPath, buyer.AccessToken, nil, nil, http.StatusOK)
 
 	wantSellerNet := ord2.SubtotalVND - ord2.CommissionVND
-	env.pollUntil(t, env.cfg.PollTimeout, 300*time.Millisecond, "COD seller balance credited after completion", func() (bool, string) {
+	env.pollUntil(t, env.cfg.PollTimeout, 300*time.Millisecond, "COD seller pending balance credited after completion", func() (bool, string) {
 		bal := payFixGetSellerBalance(t, env, seller)
-		return bal.AvailableVND == wantSellerNet, fmt.Sprintf("got=%+v want_available=%d", bal, wantSellerNet)
+		return bal.PendingVND == wantSellerNet && bal.AvailableVND == 0 && bal.TotalEarnedVND == wantSellerNet,
+			fmt.Sprintf("got=%+v want_pending=%d", bal, wantSellerNet)
 	})
 
 	summary := env.getLedgerSummary(t)
@@ -356,20 +357,22 @@ func TestE2E_PaymentMoney_PAY_B2_RefundAndEscrowInvariant(t *testing.T) {
 		buyer.AccessToken, nil, nil, http.StatusOK)
 
 	wantSeller2Net := ord2.SubtotalVND - ord2.CommissionVND - partialBeforeVND
-	env.pollUntil(t, env.cfg.PollTimeout, 300*time.Millisecond, "PAY-B2 Case A seller2 net reflects partial refund", func() (bool, string) {
+	env.pollUntil(t, env.cfg.PollTimeout, 300*time.Millisecond, "PAY-B2 Case A seller2 pending net reflects partial refund", func() (bool, string) {
 		bal := payFixGetSellerBalance(t, env, seller2)
-		return bal.AvailableVND == wantSeller2Net, fmt.Sprintf("got=%+v want_available=%d", bal, wantSeller2Net)
+		return bal.PendingVND == wantSeller2Net && bal.AvailableVND == 0 && bal.TotalEarnedVND == wantSeller2Net,
+			fmt.Sprintf("got=%+v want_pending=%d", bal, wantSeller2Net)
 	})
 
-	// Case B: Complete Shop 1 first -> escrow released to seller1 -> refund 5,000 VND AFTER completion.
+	// Case B: Complete Shop 1 first -> escrow settled to seller1 pending -> refund 5,000 VND AFTER completion.
 	payFixShipAndDeliver(t, env, seller1, buyer, ord1.ID, quote1)
 	env.mustDoJSON(t, http.MethodPost, fmt.Sprintf("/api/v1/orders/%s/confirm-received", url.PathEscape(ord1.ID)),
 		buyer.AccessToken, nil, nil, http.StatusOK)
 
 	wantSeller1Full := ord1.SubtotalVND - ord1.CommissionVND
-	env.pollUntil(t, env.cfg.PollTimeout, 300*time.Millisecond, "PAY-B2 Case B seller1 receives full net before post-settle refund", func() (bool, string) {
+	env.pollUntil(t, env.cfg.PollTimeout, 300*time.Millisecond, "PAY-B2 Case B seller1 receives full net in pending before post-settle refund", func() (bool, string) {
 		bal := payFixGetSellerBalance(t, env, seller1)
-		return bal.AvailableVND == wantSeller1Full, fmt.Sprintf("got=%+v want_available=%d", bal, wantSeller1Full)
+		return bal.PendingVND == wantSeller1Full && bal.AvailableVND == 0 && bal.TotalEarnedVND == wantSeller1Full,
+			fmt.Sprintf("got=%+v want_pending=%d", bal, wantSeller1Full)
 	})
 
 	escrowBeforePostSettle, _ := payFixFindAccount(env.getLedgerSummary(t), "escrow_liability")
@@ -390,8 +393,8 @@ func TestE2E_PaymentMoney_PAY_B2_RefundAndEscrowInvariant(t *testing.T) {
 
 	bal1After := payFixGetSellerBalance(t, env, seller1)
 	wantSeller1After := wantSeller1Full - postSettleRefundVND
-	if bal1After.AvailableVND != wantSeller1After {
-		t.Fatalf("PAY-B2 Case B: expected seller1 available_vnd=%d (clawed back %d), got %+v",
+	if bal1After.PendingVND != wantSeller1After || bal1After.AvailableVND != 0 {
+		t.Fatalf("PAY-B2 Case B: expected seller1 pending_vnd=%d available_vnd=0 (clawed back %d), got %+v",
 			wantSeller1After, postSettleRefundVND, bal1After)
 	}
 
@@ -559,9 +562,30 @@ func TestE2E_PaymentMoney_R1_And_LatePayment(t *testing.T) {
 			t.Fatalf("R3: expected late_payment_refund_queued for superseded P1, got %+v", lateRes)
 		}
 
-		// ReleaseEscrow for P2 -> seller gets full 217,550 VND (R - C) and platform_promo_expense booked.
+		// P1-4: order.completed settles held -> pending_release (booking platform_promo_expense),
+		// then admin ReleaseEscrow moves pending_release -> released (available_vnd = 217,550).
 		summaryBefore := env.getLedgerSummary(t)
 		promoBefore, _ := payFixFindAccount(summaryBefore, "platform_promo_expense")
+
+		payFixPublishNATSEvent(t, "order.completed", map[string]any{
+			"order_id":          orderID,
+			"order_code":        orderID,
+			"buyer_id":          buyerID,
+			"shop_id":           shopID,
+			"subtotal_vnd":      int64(229000),
+			"commission_vnd":    int64(11450),
+			"total_payable_vnd": int64(225000),
+			"coins_reward":      int64(0),
+		})
+		env.pollUntil(t, 10*time.Second, 150*time.Millisecond, "R1 P2 settled to pending_release", func() (bool, string) {
+			b, bErr := payClient.GetSellerBalance(payFixAuthCtx(ctx, adminTok), &paymentv1.GetSellerBalanceRequest{
+				ShopId: shopID,
+			})
+			if bErr != nil {
+				return false, bErr.Error()
+			}
+			return b.GetPendingVnd() == 217550, fmt.Sprintf("pending=%d available=%d", b.GetPendingVnd(), b.GetAvailableVnd())
+		})
 
 		relResp, err := payClient.ReleaseEscrow(payFixAuthCtx(ctx, adminTok), &paymentv1.ReleaseEscrowRequest{
 			OrderId: orderID,
@@ -647,7 +671,28 @@ func TestE2E_PaymentMoney_R1_And_LatePayment(t *testing.T) {
 			t.Fatalf("expected conflict refunding 0 VND payment, got %v", rErr)
 		}
 
-		// ReleaseEscrow -> seller still receives R - C = 190,000 VND via platform_promo_expense.
+		// P1-4: order.completed settles 0 VND held allocation -> pending_release via platform_promo_expense,
+		// then admin ReleaseEscrow moves R - C = 190,000 VND to available_vnd.
+		payFixPublishNATSEvent(t, "order.completed", map[string]any{
+			"order_id":          orderID,
+			"order_code":        orderID,
+			"buyer_id":          buyerID,
+			"shop_id":           shopID,
+			"subtotal_vnd":      int64(200000),
+			"commission_vnd":    int64(10000),
+			"total_payable_vnd": int64(0),
+			"coins_reward":      int64(0),
+		})
+		env.pollUntil(t, 10*time.Second, 150*time.Millisecond, "0 VND order settled to pending_release", func() (bool, string) {
+			b, bErr := payClient.GetSellerBalance(payFixAuthCtx(ctx, adminTok), &paymentv1.GetSellerBalanceRequest{
+				ShopId: shopID,
+			})
+			if bErr != nil {
+				return false, bErr.Error()
+			}
+			return b.GetPendingVnd() == 190000, fmt.Sprintf("pending=%d available=%d", b.GetPendingVnd(), b.GetAvailableVnd())
+		})
+
 		relResp, err := payClient.ReleaseEscrow(payFixAuthCtx(ctx, adminTok), &paymentv1.ReleaseEscrowRequest{
 			OrderId: orderID,
 			ShopId:  shopID,
@@ -664,8 +709,8 @@ func TestE2E_PaymentMoney_R1_And_LatePayment(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetSellerBalance failed: %v", err)
 		}
-		if balResp.GetAvailableVnd() != 190000 {
-			t.Fatalf("expected 0 VND seller available=190000, got %+v", balResp)
+		if balResp.GetAvailableVnd() != 190000 || balResp.GetPendingVnd() != 0 {
+			t.Fatalf("expected 0 VND seller available=190000 pending=0, got %+v", balResp)
 		}
 	})
 
@@ -762,7 +807,7 @@ func TestE2E_PaymentMoney_R1_And_LatePayment(t *testing.T) {
 }
 
 // TestE2E_PaymentMoney_Round2_ReviewB verifies review-B findings end-to-end:
-// - P0-1: COD ReleaseEscrow beating NATS order.delivered auto-collects COD idempotently and pays seller.
+// - P0-1 / P1-4: COD ReleaseEscrow before order.delivered/order.completed returns 409 (AlreadyExists) with zero ledger postings.
 // - P0-2: CreatePayment idempotency_key rejects cross-user / mismatched parameter reuse (409 / AlreadyExists).
 // - P2-7: CreatePayment(supersede_previous=true) rejects cancelled/failed/expired payment groups.
 // - P2-8: CreateRefund idempotency_key rejects reuse across different payment_id / order_id / amount.
@@ -805,31 +850,41 @@ func TestE2E_PaymentMoney_Round2_ReviewB(t *testing.T) {
 			t.Fatalf("expected COD PENDING before delivery, got %v", createResp.GetPayment().GetStatus())
 		}
 
-		// Simulate sync ReleaseEscrow arriving BEFORE async NATS order.delivered!
-		codRecBefore, _ := payFixFindAccount(env.getLedgerSummary(t), "cod_receivable")
-		relResp, err := payClient.ReleaseEscrow(payFixAuthCtx(ctx, adminTok), &paymentv1.ReleaseEscrowRequest{
+		// P1-4: ReleaseEscrow arriving BEFORE order.delivered/order.completed must be rejected with 409 (AlreadyExists)
+		// and post zero ledger entries (payment stays PENDING, seller pending/available stay 0).
+		sumBefore := env.getLedgerSummary(t)
+		codRecBefore, _ := payFixFindAccount(sumBefore, "cod_receivable")
+		escrowBefore, _ := payFixFindAccount(sumBefore, "escrow_liability")
+		_, err = payClient.ReleaseEscrow(payFixAuthCtx(ctx, adminTok), &paymentv1.ReleaseEscrowRequest{
 			OrderId: orderID,
 			ShopId:  shopID,
 		})
-		if err != nil {
-			t.Fatalf("P0-1: ReleaseEscrow failed: %v", err)
-		}
-		if !relResp.GetReleased() || relResp.GetReleasedAmountVnd() != 190000 {
-			t.Fatalf("P0-1: expected ReleaseEscrow to auto-collect COD and release 190000, got %+v", relResp)
+		if status.Code(err) != codes.AlreadyExists {
+			t.Fatalf("P1-4: expected ReleaseEscrow before delivered/completed to return AlreadyExists (409), got %v", err)
 		}
 
 		getResp, err := payClient.GetPayment(payFixAuthCtx(ctx, adminTok), &paymentv1.GetPaymentRequest{PaymentId: payID})
 		if err != nil {
 			t.Fatalf("GetPayment failed: %v", err)
 		}
-		if getResp.GetPayment().GetStatus() != paymentv1.PaymentStatus_PAYMENT_STATUS_SUCCEEDED {
-			t.Fatalf("P0-1: expected COD payment SUCCEEDED after ReleaseEscrow auto-collect, got %v", getResp.GetPayment().GetStatus())
+		if getResp.GetPayment().GetStatus() != paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING {
+			t.Fatalf("P1-4: expected COD payment to remain PENDING after rejected ReleaseEscrow, got %v", getResp.GetPayment().GetStatus())
 		}
 
-		codRecAfter, _ := payFixFindAccount(env.getLedgerSummary(t), "cod_receivable")
-		if codRecAfter.DebitTotalVND-codRecBefore.DebitTotalVND != 225000 {
-			t.Fatalf("P0-1: expected cod_receivable debit delta=225000, got %d",
-				codRecAfter.DebitTotalVND-codRecBefore.DebitTotalVND)
+		sumAfter := env.getLedgerSummary(t)
+		if !sumAfter.IsBalanced {
+			t.Fatalf("P1-4: ledger imbalanced after rejected ReleaseEscrow: %+v", sumAfter)
+		}
+		codRecAfter, _ := payFixFindAccount(sumAfter, "cod_receivable")
+		escrowAfter, _ := payFixFindAccount(sumAfter, "escrow_liability")
+		if codRecAfter.DebitTotalVND != codRecBefore.DebitTotalVND ||
+			escrowAfter.CreditTotalVND != escrowBefore.CreditTotalVND ||
+			sumAfter.TotalDebitsVND != sumBefore.TotalDebitsVND ||
+			sumAfter.TotalCreditsVND != sumBefore.TotalCreditsVND {
+			t.Fatalf("P1-4: rejected ReleaseEscrow must post zero ledger entries (cod_debit %d->%d, escrow_credit %d->%d, total_debits %d->%d)",
+				codRecBefore.DebitTotalVND, codRecAfter.DebitTotalVND,
+				escrowBefore.CreditTotalVND, escrowAfter.CreditTotalVND,
+				sumBefore.TotalDebitsVND, sumAfter.TotalDebitsVND)
 		}
 
 		balResp, err := payClient.GetSellerBalance(payFixAuthCtx(ctx, adminTok), &paymentv1.GetSellerBalanceRequest{
@@ -838,8 +893,8 @@ func TestE2E_PaymentMoney_Round2_ReviewB(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetSellerBalance failed: %v", err)
 		}
-		if balResp.GetAvailableVnd() != 190000 || balResp.GetPendingVnd() != 0 {
-			t.Fatalf("P0-1: expected seller available=190000 pending=0, got %+v", balResp)
+		if balResp.GetAvailableVnd() != 0 || balResp.GetPendingVnd() != 0 {
+			t.Fatalf("P1-4: expected seller available=0 pending=0 after rejected ReleaseEscrow, got %+v", balResp)
 		}
 	})
 
@@ -1048,7 +1103,12 @@ func TestE2E_PaymentMoney_Round2_ReviewB(t *testing.T) {
 
 		// Publish ONLY the first sub-order's `order.cancelled` event (simulating race before ord2).
 		payFixPublishNATSEvent(t, "order.cancelled", map[string]any{
-			"order_id": ord1,
+			"order_id":   ord1,
+			"order_code": ord1,
+			"buyer_id":   buyerID,
+			"shop_id":    "shop-p03-1",
+			"reason":     "e2e_cancel_suborder",
+			"was_paid":   false,
 		})
 
 		// Wait briefly for consumer to process order.cancelled(ord1) (either cancels payment or marks alloc1 cancelled).
@@ -1219,8 +1279,16 @@ func TestE2E_PaymentMoney_Round2_ReviewB(t *testing.T) {
 
 		// Publish failed-delivery `order.returned` (from_status = SHIPPING).
 		payFixPublishNATSEvent(t, "order.returned", map[string]any{
-			"order_id":    ordID,
-			"from_status": "SHIPPING",
+			"order_id":          ordID,
+			"order_code":        ordID,
+			"checkout_group_id": grpID,
+			"buyer_id":          buyerID,
+			"shop_id":           shopID,
+			"payment_method":    "VIETQR",
+			"from_status":       "SHIPPING",
+			"total_payable_vnd": int64(0),
+			"reason":            "delivery_failed",
+			"was_paid":          false,
 		})
 
 		env.pollUntil(t, 5*time.Second, 150*time.Millisecond, "P2-6 0 VND payment CANCELLED after failed delivery", func() (bool, string) {
@@ -1288,7 +1356,14 @@ func TestE2E_PaymentMoney_Round2_ReviewB(t *testing.T) {
 
 		// Transition allocation `held -> pending_release` via `order.completed` event.
 		payFixPublishNATSEvent(t, "order.completed", map[string]any{
-			"order_id": ordID,
+			"order_id":          ordID,
+			"order_code":        ordID,
+			"buyer_id":          buyerID,
+			"shop_id":           shopID,
+			"subtotal_vnd":      int64(100000),
+			"commission_vnd":    int64(0),
+			"total_payable_vnd": int64(100000),
+			"coins_reward":      int64(0),
 		})
 		env.pollUntil(t, 5*time.Second, 150*time.Millisecond, "P2-9 seller_pending == 100000", func() (bool, string) {
 			bal, bErr := payClient.GetSellerBalance(payFixAuthCtx(ctx, adminTok), &paymentv1.GetSellerBalanceRequest{ShopId: shopID})
@@ -1367,7 +1442,14 @@ func TestE2E_PaymentMoney_Round3_Review2P(t *testing.T) {
 
 		// Publish ONLY `order.completed` (simulating lost/delayed `order.delivered` and failed best-effort ReleaseEscrow).
 		payFixPublishNATSEvent(t, "order.completed", map[string]any{
-			"order_id": ordID,
+			"order_id":          ordID,
+			"order_code":        ordID,
+			"buyer_id":          buyerID,
+			"shop_id":           shopID,
+			"subtotal_vnd":      int64(200000),
+			"commission_vnd":    int64(10000),
+			"total_payable_vnd": int64(225000),
+			"coins_reward":      int64(0),
 		})
 
 		env.pollUntil(t, 5*time.Second, 150*time.Millisecond, "P1-2 COD payment SUCCEEDED and seller_pending == 190000", func() (bool, string) {
@@ -1436,7 +1518,12 @@ func TestE2E_PaymentMoney_Round3_Review2P(t *testing.T) {
 				defer wg.Done()
 				// Cancel via order.cancelled event racing with supersede_previous=true.
 				payFixPublishNATSEvent(t, "order.cancelled", map[string]any{
-					"order_id": ordID,
+					"order_id":   ordID,
+					"order_code": ordID,
+					"buyer_id":   buyerID,
+					"shop_id":    "shop-p13",
+					"reason":     "e2e_cancel_race",
+					"was_paid":   false,
 				})
 			}()
 			wg.Wait()
@@ -1462,8 +1549,10 @@ func TestE2E_PaymentMoney_Round3_Review2P(t *testing.T) {
 
 		for round := 0; round < pairs; round++ {
 			ordIDs := make([]string, 2)
+			buyerIDs := make([]string, 2)
 			for i := 0; i < 2; i++ {
 				buyerID := fmt.Sprintf("payfix-r3-p24-b-%d-%d-%s", round, i, uuid.NewString())
+				buyerIDs[i] = buyerID
 				tok := MintAccessToken(env.cfg.JWTSecret, buyerID, "buyer")
 				grpID := fmt.Sprintf("payfix-r3-p24-g-%d-%d-%s", round, i, uuid.NewString())
 				ordID := fmt.Sprintf("payfix-r3-p24-o-%d-%d-%s", round, i, uuid.NewString())
@@ -1499,7 +1588,28 @@ func TestE2E_PaymentMoney_Round3_Review2P(t *testing.T) {
 				expectedTotalAvailable += 95000
 			}
 
-			// Fire both ReleaseEscrow calls simultaneously for the SAME shop (both still in `held` state).
+			// P1-4: Settle both orders to pending_release via order.completed before concurrent ReleaseEscrow.
+			for i := 0; i < 2; i++ {
+				payFixPublishNATSEvent(t, "order.completed", map[string]any{
+					"order_id":          ordIDs[i],
+					"order_code":        ordIDs[i],
+					"buyer_id":          buyerIDs[i],
+					"shop_id":           shopID,
+					"subtotal_vnd":      int64(100000),
+					"commission_vnd":    int64(5000),
+					"total_payable_vnd": int64(100000),
+					"coins_reward":      int64(0),
+				})
+			}
+			env.pollUntil(t, 10*time.Second, 150*time.Millisecond, fmt.Sprintf("P2-4 round %d pending_release=190000", round), func() (bool, string) {
+				b, bErr := payClient.GetSellerBalance(payFixAuthCtx(ctx, adminTok), &paymentv1.GetSellerBalanceRequest{ShopId: shopID})
+				if bErr != nil {
+					return false, bErr.Error()
+				}
+				return b.GetPendingVnd() == 190000, fmt.Sprintf("pending=%d available=%d", b.GetPendingVnd(), b.GetAvailableVnd())
+			})
+
+			// Fire both ReleaseEscrow calls simultaneously for the SAME shop (both in `pending_release` state).
 			var wg sync.WaitGroup
 			startGate := make(chan struct{})
 			errCh := make(chan error, 2)
@@ -1594,6 +1704,31 @@ func TestE2E_PaymentMoney_Round3_Review2P(t *testing.T) {
 		sumBefore := env.getLedgerSummary(t)
 		codBefore, _ := payFixFindAccount(sumBefore, "cod_receivable")
 		escrowBefore, _ := payFixFindAccount(sumBefore, "escrow_liability")
+
+		// P1-4: Publish order.completed to auto-collect COD and settle both allocations to pending_release,
+		// then call ReleaseEscrow to move both shops' balances to available_vnd.
+		payFixPublishNATSEvent(t, "order.completed", map[string]any{
+			"order_id":          grpID,
+			"order_code":        grpID,
+			"buyer_id":          buyerID,
+			"shop_id":           shop1,
+			"subtotal_vnd":      int64(300000),
+			"commission_vnd":    int64(15000),
+			"total_payable_vnd": int64(300000),
+			"coins_reward":      int64(0),
+		})
+		env.pollUntil(t, 10*time.Second, 150*time.Millisecond, "P2-7 both shops settled to pending_release", func() (bool, string) {
+			b1, err1 := payClient.GetSellerBalance(payFixAuthCtx(ctx, adminTok), &paymentv1.GetSellerBalanceRequest{ShopId: shop1})
+			if err1 != nil {
+				return false, err1.Error()
+			}
+			b2, err2 := payClient.GetSellerBalance(payFixAuthCtx(ctx, adminTok), &paymentv1.GetSellerBalanceRequest{ShopId: shop2})
+			if err2 != nil {
+				return false, err2.Error()
+			}
+			return b1.GetPendingVnd() == 95000 && b2.GetPendingVnd() == 190000,
+				fmt.Sprintf("shop1_pending=%d shop2_pending=%d", b1.GetPendingVnd(), b2.GetPendingVnd())
+		})
 
 		rel, err := payClient.ReleaseEscrow(payFixAuthCtx(ctx, adminTok), &paymentv1.ReleaseEscrowRequest{
 			OrderId: grpID,
@@ -1737,8 +1872,16 @@ func TestE2E_PaymentMoney_Round3_Review2P(t *testing.T) {
 
 		// Now 0 VND sub-order fails delivery (`SHIPPING -> RETURNED`) -> payment MUST transition to REFUNDED.
 		payFixPublishNATSEvent(t, "order.returned", map[string]any{
-			"order_id":    ordZero,
-			"from_status": "SHIPPING",
+			"order_id":          ordZero,
+			"order_code":        ordZero,
+			"checkout_group_id": grpID,
+			"buyer_id":          buyerID,
+			"shop_id":           "shop-p39-2",
+			"payment_method":    "VIETQR",
+			"from_status":       "SHIPPING",
+			"total_payable_vnd": int64(0),
+			"reason":            "delivery_failed",
+			"was_paid":          false,
 		})
 
 		env.pollUntil(t, 5*time.Second, 150*time.Millisecond, "P3-9 payment transitions to REFUNDED after 0 VND sibling returned", func() (bool, string) {
@@ -1773,7 +1916,7 @@ func payFixPublishNATSEvent(t *testing.T, eventType string, payload map[string]a
 		"event_type":  eventType,
 		"trace_id":    "e2e-round2-" + uuid.NewString(),
 		"occurred_at": time.Now().UTC().Format(time.RFC3339Nano),
-		"payload":     payload,
+		"payload":     fillCanonicalEventPayload(eventType, payload),
 	})
 	if err != nil {
 		t.Fatalf("marshal NATS envelope: %v", err)

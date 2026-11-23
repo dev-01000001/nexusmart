@@ -7,12 +7,14 @@ import {
   WebClient,
   calculateShippingQuote,
   createBuyerAddress,
+  ensureRateBudget,
   normalizeStatus,
   pickTwoShopSkus,
   registerAndLoginBuyer,
 } from "./helpers.mjs";
 
 test("01. Buyer flow via BFF: register -> OTP -> login -> 2-shop cart -> NEXUS10 preview -> COD checkout -> orders", async () => {
+  await ensureRateBudget(30, { label: "01-cod" });
   const client = new WebClient();
 
   // 1. Register -> Mailpit OTP -> Verify OTP -> Login via BFF.

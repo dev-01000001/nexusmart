@@ -124,3 +124,60 @@ func TestSSEProxyRewritesPathAndFlushes(t *testing.T) {
 		t.Fatalf("expected Authorization %q forwarded, got %q", expectedAuth, gotAuth)
 	}
 }
+
+func TestShippingLabelProxyForwardsAuthAndStripsIdentityHeaders(t *testing.T) {
+	var gotPath string
+	var gotHeaders http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Security-Policy", "default-src *")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<!doctype html><html><body>Label GHN-123</body></html>"))
+	}))
+	defer upstream.Close()
+
+	log := logger.New("proxy-test", logger.WithWriter(io.Discard))
+	lp, err := NewShippingLabelProxy(upstream.URL, log)
+	if err != nil {
+		t.Fatalf("NewShippingLabelProxy failed: %v", err)
+	}
+
+	const expectedAuth = "Bearer test-seller-token"
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/shipping/labels/GHN-123", nil)
+	ctx := auth.WithRawToken(req.Context(), expectedAuth)
+	req = req.WithContext(ctx)
+	req.Header.Set("X-User-Id", "spoofed")
+	req.Header.Set("X-User-Role", "admin")
+	req.Header.Set("X-Shop-Id", "spoofed-shop")
+
+	rec := httptest.NewRecorder()
+	lp.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/api/v1/shipping/labels/GHN-123" {
+		t.Fatalf("expected path /api/v1/shipping/labels/GHN-123, got %q", gotPath)
+	}
+	if !strings.Contains(rec.Body.String(), "Label GHN-123") {
+		t.Fatalf("expected label HTML body, got %q", rec.Body.String())
+	}
+	for _, hdr := range []string{"X-User-Id", "X-User-Role", "X-Shop-Id"} {
+		if vals := gotHeaders.Values(hdr); len(vals) != 0 {
+			t.Fatalf("expected %s to be stripped, got %v", hdr, vals)
+		}
+	}
+	if gotAuth := gotHeaders.Get("Authorization"); gotAuth != expectedAuth {
+		t.Fatalf("expected Authorization %q forwarded, got %q", expectedAuth, gotAuth)
+	}
+	const wantLabelCSP = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'"
+	if gotCSP := rec.Header().Values("Content-Security-Policy"); len(gotCSP) != 1 || gotCSP[0] != wantLabelCSP {
+		t.Fatalf("Content-Security-Policy values = %q, want single [%q]", gotCSP, wantLabelCSP)
+	}
+	if gotNosniff := rec.Header().Values("X-Content-Type-Options"); len(gotNosniff) != 1 || gotNosniff[0] != "nosniff" {
+		t.Fatalf("X-Content-Type-Options values = %q, want single [nosniff]", gotNosniff)
+	}
+}

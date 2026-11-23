@@ -100,7 +100,7 @@ func (h *handler) handleAddCartItem(w http.ResponseWriter, r *http.Request) {
 		Quantity int32  `json:"quantity"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -126,7 +126,7 @@ func (h *handler) handleUpdateCartItem(w http.ResponseWriter, r *http.Request) {
 		Quantity int32 `json:"quantity"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -167,7 +167,7 @@ func (h *handler) handleClearCart(w http.ResponseWriter, r *http.Request) {
 		SKUIDs []string `json:"sku_ids"`
 	}
 	if err := httpx.DecodeOptionalJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())

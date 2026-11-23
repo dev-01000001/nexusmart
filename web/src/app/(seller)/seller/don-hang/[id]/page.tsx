@@ -6,13 +6,15 @@ import { useParams, useSearchParams } from "next/navigation";
 import type {
   GatewayOrder,
   GatewayOrderTimelineEvent,
+  GatewayProduct,
   GatewayShipmentResponse,
   GatewayShop,
 } from "@/lib/gateway-types";
 import { ApiError, api, getErrorMessage } from "@/lib/api";
 import { useMockStore } from "@/mock/MockStoreContext";
-import { Button, IconCheck, IconFileText, IconTruck, StateView } from "@/components";
+import { Button, IconCheck, IconFileText, IconPackage, IconTruck, StateView } from "@/components";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
+import { buildShippingLabelHref, localizeTimelineNote } from "@/features/account/orderMeta";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
 import {
@@ -23,8 +25,10 @@ import {
   canSellerCancelOrder,
   canSellerConfirmOrder,
   canSellerShipOrder,
+  computeOrderDeductionsVnd,
   computeOrderNetVnd,
   getOrderStatusMeta,
+  getSellerOrderDisplayMeta,
   resolveOrderShippingDefaults,
 } from "@/features/seller/types";
 import { EMPTY_DASH, parseUiState } from "@/features/seller/sellerStore";
@@ -50,6 +54,7 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
   const [order, setOrder] = useState<GatewayOrder | null>(null);
   const [timeline, setTimeline] = useState<GatewayOrderTimelineEvent[]>([]);
   const [shipmentData, setShipmentData] = useState<GatewayShipmentResponse | null>(null);
+  const [coverImageUrl, setCoverImageUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -83,14 +88,26 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
       setCarrierCode(shippingDefaults.carrierCode);
       setServiceCode(shippingDefaults.serviceCode);
 
-      const [timelineRes, shipmentRes] = await Promise.all([
+      const firstItem = orderRes.order.items?.[0];
+      const [timelineRes, shipmentRes, productRes] = await Promise.all([
         api<{ events: GatewayOrderTimelineEvent[] }>(`orders/${orderId}/timeline`).catch(() => ({
           events: orderRes.order?.timeline ?? [],
         })),
         api<GatewayShipmentResponse>(`shipping/shipments/${orderId}`).catch(() => null),
+        firstItem?.product_id
+          ? api<{ product: GatewayProduct | null }>(
+              `seller/products/${encodeURIComponent(firstItem.product_id)}`
+            ).catch(() => null)
+          : Promise.resolve(null),
       ]);
       setTimeline(timelineRes.events ?? orderRes.order.timeline ?? []);
       setShipmentData(shipmentRes);
+      const prod = productRes?.product;
+      const skuImg =
+        firstItem?.sku_id && prod?.skus
+          ? prod.skus.find((s) => s.id === firstItem.sku_id)?.image_url
+          : undefined;
+      setCoverImageUrl(skuImg || prod?.images?.[0] || null);
     } catch (err) {
       if (err instanceof ApiError && (err.status === 404 || err.status === 403)) {
         setNotFound(true);
@@ -160,8 +177,8 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
       await Promise.all([loadOrderDetail(), refreshPendingOrders()]);
       showToast(
         res.tracking_code
-          ? `Đã tạo vận đơn ${res.tracking_code} và chuyển đơn sang Đang giao.`
-          : `Đã chuyển đơn ${order.order_code} sang trạng thái Đang giao.`
+          ? `Đã tạo vận đơn ${res.tracking_code}. Đơn chuyển sang trạng thái Chờ hãng lấy hàng.`
+          : `Đã tạo vận đơn cho đơn ${order.order_code}. Trạng thái: Chờ hãng lấy hàng.`
       );
     } catch (err) {
       showToast(getErrorMessage(err, "Không thể tạo vận đơn giao hàng lúc này."));
@@ -248,16 +265,16 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
     );
   }
 
-  const meta = getOrderStatusMeta(order.status);
+  const meta = getSellerOrderDisplayMeta(order);
   const netReceivable = computeOrderNetVnd(order);
   const totalQty = (order.items ?? []).reduce((s, i) => s + i.quantity, 0);
-  const totalDeductions =
-    order.flash_sale_discount_vnd + order.shop_voucher_discount_vnd + order.commission_vnd;
+  const totalDeductions = computeOrderDeductionsVnd(order);
   const canConfirm = canSellerConfirmOrder(order.status);
-  const canShip = canSellerShipOrder(order.status);
+  const canShip = canSellerShipOrder(order.status, order.tracking_code);
   const canCancel = canSellerCancelOrder(order.status);
   const shipment = shipmentData?.shipment ?? null;
   const shipmentEvents = shipmentData?.events ?? [];
+  const labelHref = buildShippingLabelHref(shipment?.tracking_code || order.tracking_code);
 
   const handleCopyCode = () => {
     if (typeof navigator !== "undefined" && navigator.clipboard) {
@@ -276,13 +293,28 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
 
       <header className={styles.objectHeader}>
         <div className={styles.objectIdentity}>
-          <img
-            src="/products/ao-thun-cotton-trang.png"
-            alt={order.order_code}
-            className={styles.objectCover}
-            width={50}
-            height={62}
-          />
+          {coverImageUrl ? (
+            <img
+              src={coverImageUrl}
+              alt={order.items?.[0]?.product_name || order.order_code}
+              className={styles.objectCover}
+              width={50}
+              height={62}
+            />
+          ) : (
+            <span
+              className={styles.objectCover}
+              aria-hidden="true"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "var(--muted)",
+              }}
+            >
+              <IconPackage size={20} />
+            </span>
+          )}
           <div className={styles.objectText}>
             <div className={styles.objectTitleRow}>
               <h1 className={styles.objectTitle}>{order.order_code}</h1>
@@ -351,8 +383,28 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
               }}
             >
               <IconTruck size={14} />
-              <span>{showShipPanel ? "Đóng form giao" : "Tạo vận đơn & giao hàng"}</span>
+              <span>{showShipPanel ? "Đóng form vận đơn" : "Tạo vận đơn"}</span>
             </button>
+          )}
+          {labelHref && (
+            <a
+              href={labelHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`${styles.actionBtn36} ${styles.actionOutline}`}
+              title="Mở nhãn vận đơn ở tab mới — nhấn Ctrl+P (hoặc ⌘P) để in"
+            >
+              <IconFileText size={14} />
+              <span>In nhãn vận đơn</span>
+            </a>
+          )}
+          {order.return_request_id && (
+            <Link
+              href={`/seller/tra-hang?selected=${encodeURIComponent(order.return_request_id)}`}
+              className={`${styles.actionBtn36} ${styles.actionOutline}`}
+            >
+              Xử lý trả hàng
+            </Link>
           )}
         </div>
       </header>
@@ -362,7 +414,8 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
           <div className={common.cardHeader}>
             <h2 className={common.cardTitle}>Chọn đơn vị vận chuyển & tạo vận đơn</h2>
             <span className={common.cardMeta}>
-              Trạng thái đơn sẽ chuyển sang Đang giao ngay sau khi tạo vận đơn thành công
+              Sau khi tạo vận đơn, đơn chuyển sang Chờ hãng lấy hàng và tự động sang Đang giao khi
+              hãng xác nhận đã lấy kiện
             </span>
           </div>
           <div className={styles.opsReplyBox}>
@@ -418,7 +471,7 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
                 Hủy
               </Button>
               <Button type="submit" variant="ink" size="sm" shape="app" disabled={actionBusy}>
-                {actionBusy ? "Đang tạo vận đơn..." : "Xác nhận giao hàng"}
+                {actionBusy ? "Đang tạo vận đơn..." : "Xác nhận tạo vận đơn"}
               </Button>
             </div>
           </div>
@@ -430,7 +483,9 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
           <div className={common.cardHeader}>
             <h2 className={common.cardTitle}>Hủy đơn hàng {order.order_code}</h2>
             <span className={common.cardMeta}>
-              Tồn kho SKU sẽ được hoàn trả tự động sau khi hủy
+              {order.tracking_code
+                ? "Chỉ hủy được trước khi hãng vận chuyển đã lấy kiện hàng (nếu hãng đã lấy sẽ báo không thể hủy)"
+                : "Tồn kho sản phẩm sẽ được hoàn trả tự động sau khi hủy"}
             </span>
           </div>
           <div className={styles.opsReplyBox}>
@@ -717,10 +772,20 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
                     <span className={styles.kvKey}>Thu hộ COD</span>
                     <span className={styles.kvVal}>{formatVnd(shipment.cod_amount_vnd)}</span>
                   </div>
-                  {shipment.label_url && (
+                  {labelHref && (
                     <div className={styles.kvRow}>
                       <span className={styles.kvKey}>Phiếu giao hàng</span>
-                      <span className={styles.kvVal}>{shipment.label_url}</span>
+                      <span className={styles.kvVal}>
+                        <a
+                          href={labelHref}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={common.cardLink}
+                        >
+                          Mở nhãn giao hàng
+                        </a>{" "}
+                        <span className={common.cardMeta}>(Mở tab mới, nhấn Ctrl+P để in)</span>
+                      </span>
                     </div>
                   )}
                 </div>
@@ -783,7 +848,9 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
                           {fromMeta ? `${fromMeta.label} → ${toMeta.label}` : toMeta.label}
                         </div>
                         <p className={styles.timelineNote}>
-                          {ev.note || `Cập nhật bởi ${ev.actor_role || "hệ thống"}`}
+                          {ev.note
+                            ? localizeTimelineNote(ev.note)
+                            : `Cập nhật bởi ${ev.actor_role || "hệ thống"}`}
                         </p>
                       </div>
                       <span className={pillCls(toMeta.tone)}>{toMeta.label}</span>

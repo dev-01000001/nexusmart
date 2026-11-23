@@ -138,6 +138,15 @@ func (s *PostgresStore) PersistCheckoutBatch(ctx context.Context, batch Checkout
 		})
 	}
 
+	if batch.PendingStockConfirm {
+		if err := q.SetCheckoutGroupPendingStockConfirm(ctx, db.SetCheckoutGroupPendingStockConfirmParams{
+			ID:                  batch.CheckoutGroupID,
+			PendingStockConfirm: true,
+		}); err != nil {
+			return nil, fmt.Errorf("mark checkout group pending stock confirm: %w", err)
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit persist checkout batch tx: %w", err)
 	}
@@ -298,6 +307,13 @@ func (s *PostgresStore) CancelCheckoutGroupOrders(ctx context.Context, params Ca
 		if err != nil {
 			return nil, err
 		}
+		if err := q.SetOrderPendingCancelCompensation(ctx, db.SetOrderPendingCancelCompensationParams{
+			ID:                        ord.ID,
+			PendingCancelCompensation: true,
+		}); err != nil {
+			return nil, err
+		}
+		updated.PendingCancelCompensation = true
 
 		if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
 			ID:         uuid.NewString(),
@@ -342,6 +358,12 @@ func (s *PostgresStore) CancelCheckoutGroupOrders(ctx context.Context, params Ca
 	}); err != nil {
 		return nil, err
 	}
+	if err := q.SetCheckoutGroupPendingStockConfirm(ctx, db.SetCheckoutGroupPendingStockConfirmParams{
+		ID:                  params.CheckoutGroupID,
+		PendingStockConfirm: false,
+	}); err != nil {
+		return nil, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -359,6 +381,14 @@ func (s *PostgresStore) ListOrdersByCheckoutGroup(ctx context.Context, checkoutG
 		return nil, err
 	}
 	aggs := make([]OrderAggregate, 0, len(rows))
+	orderIDs := make([]string, 0, len(rows))
+	for _, ord := range rows {
+		orderIDs = append(orderIDs, ord.ID)
+	}
+	retByOrder, err := loadReturnSummaries(ctx, s.queries, orderIDs)
+	if err != nil {
+		return nil, err
+	}
 	for _, ord := range rows {
 		items, err := s.queries.ListOrderItemsByOrderID(ctx, ord.ID)
 		if err != nil {
@@ -368,7 +398,14 @@ func (s *PostgresStore) ListOrdersByCheckoutGroup(ctx context.Context, checkoutG
 		if err != nil {
 			return nil, err
 		}
-		aggs = append(aggs, OrderAggregate{Order: ord, Items: items, Timeline: tl})
+		ret := retByOrder[ord.ID]
+		aggs = append(aggs, OrderAggregate{
+			Order:           ord,
+			Items:           items,
+			Timeline:        tl,
+			ReturnRequestID: ret.ID,
+			ReturnStatus:    ret.Status,
+		})
 	}
 	return aggs, nil
 }
@@ -394,6 +431,15 @@ func (s *PostgresStore) ListOrdersFiltered(ctx context.Context, buyerID, shopID,
 		return nil, 0, err
 	}
 
+	orderIDs := make([]string, 0, len(rows))
+	for _, ord := range rows {
+		orderIDs = append(orderIDs, ord.ID)
+	}
+	retByOrder, err := loadReturnSummaries(ctx, s.queries, orderIDs)
+	if err != nil {
+		return nil, 0, err
+	}
+
 	aggs := make([]OrderAggregate, 0, len(rows))
 	for _, ord := range rows {
 		items, err := s.queries.ListOrderItemsByOrderID(ctx, ord.ID)
@@ -404,7 +450,14 @@ func (s *PostgresStore) ListOrdersFiltered(ctx context.Context, buyerID, shopID,
 		if err != nil {
 			return nil, 0, err
 		}
-		aggs = append(aggs, OrderAggregate{Order: ord, Items: items, Timeline: tl})
+		ret := retByOrder[ord.ID]
+		aggs = append(aggs, OrderAggregate{
+			Order:           ord,
+			Items:           items,
+			Timeline:        tl,
+			ReturnRequestID: ret.ID,
+			ReturnStatus:    ret.Status,
+		})
 	}
 	return aggs, total, nil
 }
@@ -681,6 +734,25 @@ func (s *PostgresStore) TransitionOrdersPaymentResult(ctx context.Context, param
 			return nil, err
 		}
 	}
+	if len(outcome.Transitioned) > 0 {
+		if targetStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
+			if err := q.SetCheckoutGroupPendingStockConfirm(ctx, db.SetCheckoutGroupPendingStockConfirmParams{
+				ID:                  groupID,
+				PendingStockConfirm: true,
+			}); err != nil {
+				return nil, err
+			}
+		} else if targetStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+			for _, tr := range outcome.Transitioned {
+				if err := q.SetOrderPendingCancelCompensation(ctx, db.SetOrderPendingCancelCompensationParams{
+					ID:                        tr.ID,
+					PendingCancelCompensation: true,
+				}); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -701,6 +773,10 @@ func (s *PostgresStore) TransitionOrderStatus(ctx context.Context, params Single
 	var siblings []db.Order
 	var toCancel []db.Order
 	hasActiveSibling := false
+	now := params.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 
 	if params.CancelGroupPend && params.TargetStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
 		// Non-locking lookup of checkout_group_id first, then lock all group rows in deterministic
@@ -729,7 +805,25 @@ func (s *PostgresStore) TransitionOrderStatus(ctx context.Context, params Single
 		}
 
 		curStatus := statemachine.StringToStatus(ord.Status)
+		if params.ExpectedStatus != orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED && curStatus != params.ExpectedStatus {
+			return nil, fmt.Errorf("%w: expected order status %s, got %s",
+				statemachine.ErrInvalidTransition,
+				statemachine.StatusToString(params.ExpectedStatus),
+				statemachine.StatusToString(curStatus))
+		}
+		if params.RequireConfirmedBefore != nil {
+			confirmTS := ord.UpdatedAt
+			if ord.ConfirmedAt != nil {
+				confirmTS = *ord.ConfirmedAt
+			}
+			if confirmTS.After(*params.RequireConfirmedBefore) {
+				return nil, fmt.Errorf("%w: order confirmation timestamp has not exceeded timeout", statemachine.ErrInvalidTransition)
+			}
+		}
 		if err := statemachine.ValidateTransition(curStatus, params.TargetStatus); err != nil {
+			return nil, err
+		}
+		if err := checkCancelShipmentGuard(ord, params, now); err != nil {
 			return nil, err
 		}
 
@@ -767,14 +861,31 @@ func (s *PostgresStore) TransitionOrderStatus(ctx context.Context, params Single
 		}
 
 		curStatus := statemachine.StringToStatus(ord.Status)
+		if params.ExpectedStatus != orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED && curStatus != params.ExpectedStatus {
+			return nil, fmt.Errorf("%w: expected order status %s, got %s",
+				statemachine.ErrInvalidTransition,
+				statemachine.StatusToString(params.ExpectedStatus),
+				statemachine.StatusToString(curStatus))
+		}
+		if params.RequireConfirmedBefore != nil {
+			confirmTS := ord.UpdatedAt
+			if ord.ConfirmedAt != nil {
+				confirmTS = *ord.ConfirmedAt
+			}
+			if confirmTS.After(*params.RequireConfirmedBefore) {
+				return nil, fmt.Errorf("%w: order confirmation timestamp has not exceeded timeout", statemachine.ErrInvalidTransition)
+			}
+		}
 		if err := statemachine.ValidateTransition(curStatus, params.TargetStatus); err != nil {
+			return nil, err
+		}
+		if err := checkCancelShipmentGuard(ord, params, now); err != nil {
 			return nil, err
 		}
 		toCancel = []db.Order{ord}
 	}
 
 	prevOrder := ord
-	var primaryUpdatedPayStatus string
 	transitioned := make([]db.Order, 0, len(toCancel))
 	for _, targetOrd := range toCancel {
 		payStatus := params.PaymentStatus
@@ -797,8 +908,27 @@ func (s *PostgresStore) TransitionOrderStatus(ctx context.Context, params Single
 		if err != nil {
 			return nil, err
 		}
-		if updated.ID == ord.ID {
-			primaryUpdatedPayStatus = updated.PaymentStatus
+		if shouldClearPendingShipmentCancelOnCancel(targetOrd, params, now) {
+			if err := q.SetOrderPendingShipmentCancel(ctx, db.SetOrderPendingShipmentCancelParams{
+				ID:                    targetOrd.ID,
+				PendingShipmentCancel: false,
+				MarkedAt:              time.Time{},
+				Token:                 "",
+			}); err != nil {
+				return nil, err
+			}
+			updated.PendingShipmentCancel = false
+			updated.PendingShipmentCancelAt = nil
+			updated.PendingShipmentCancelToken = ""
+		}
+		if params.TargetStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+			if err := q.SetOrderPendingCancelCompensation(ctx, db.SetOrderPendingCancelCompensationParams{
+				ID:                        targetOrd.ID,
+				PendingCancelCompensation: true,
+			}); err != nil {
+				return nil, err
+			}
+			updated.PendingCancelCompensation = true
 		}
 
 		if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
@@ -824,25 +954,19 @@ func (s *PostgresStore) TransitionOrderStatus(ctx context.Context, params Single
 	}
 
 	if params.CancelGroupPend && params.TargetStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
-		if shouldMarkGroupRefunded(siblings, ord.ID, statemachine.StatusToString(params.TargetStatus), primaryUpdatedPayStatus) {
-			if err := q.UpdateCheckoutGroupPaymentStatus(ctx, db.UpdateCheckoutGroupPaymentStatusParams{
-				ID:            ord.CheckoutGroupID,
-				PaymentStatus: "REFUNDED",
-				PaymentID:     "",
-			}); err != nil {
-				return nil, err
-			}
-		} else if !hasActiveSibling {
-			anyPaidSibling := false
-			for _, sib := range siblings {
-				if statemachine.StringToPaymentMethod(sib.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
-					(strings.EqualFold(sib.PaymentStatus, "SUCCEEDED") || strings.EqualFold(sib.PaymentStatus, "REFUNDED")) &&
-					sib.TotalPayableVND > 0 {
-					anyPaidSibling = true
-					break
+		mergedSiblings := mergeUpdatedOrders(siblings, transitioned)
+		if shouldMarkGroupRefunded(mergedSiblings, "", "", "") {
+			if _, gErr := q.GetCheckoutGroupByIDForUpdate(ctx, ord.CheckoutGroupID); gErr == nil {
+				if err := q.UpdateCheckoutGroupPaymentStatus(ctx, db.UpdateCheckoutGroupPaymentStatusParams{
+					ID:            ord.CheckoutGroupID,
+					PaymentStatus: "REFUNDED",
+					PaymentID:     "",
+				}); err != nil {
+					return nil, err
 				}
 			}
-			if !anyPaidSibling {
+		} else if shouldMarkGroupCancelled(mergedSiblings, "", "", "") {
+			if _, gErr := q.GetCheckoutGroupByIDForUpdate(ctx, ord.CheckoutGroupID); gErr == nil {
 				if err := q.UpdateCheckoutGroupPaymentStatus(ctx, db.UpdateCheckoutGroupPaymentStatusParams{
 					ID:            ord.CheckoutGroupID,
 					PaymentStatus: "CANCELLED",
@@ -876,10 +1000,150 @@ func (s *PostgresStore) TransitionOrderStatus(ctx context.Context, params Single
 	}, nil
 }
 
-func (s *PostgresStore) TransitionOrderShipped(ctx context.Context, params ShipOrderParams) (*OrderAggregate, error) {
+func (s *PostgresStore) MarkOrderShipmentCreating(ctx context.Context, orderID string, now time.Time) (string, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("begin ship order tx: %w", err)
+		return "", fmt.Errorf("begin mark shipment creating tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := s.queries.WithTx(tx)
+	ord, err := q.GetOrderByIDForUpdate(ctx, orderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+	curStatus := statemachine.StringToStatus(ord.Status)
+	if curStatus != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED && curStatus != orderv1.OrderStatus_ORDER_STATUS_PREPARING {
+		return "", fmt.Errorf("%w: cannot create shipment from status %s", statemachine.ErrInvalidTransition, statemachine.StatusToString(curStatus))
+	}
+	// Always refresh pending_shipment_cancel_at and rotate token on every SellerShipOrder attempt/retry.
+	token := uuid.NewString()
+	if err := q.SetOrderPendingShipmentCancel(ctx, db.SetOrderPendingShipmentCancelParams{
+		ID:                    ord.ID,
+		PendingShipmentCancel: true,
+		MarkedAt:              now,
+		Token:                 token,
+	}); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func (s *PostgresStore) ClearOrderPendingShipmentCancel(ctx context.Context, orderID string) error {
+	return s.queries.SetOrderPendingShipmentCancel(ctx, db.SetOrderPendingShipmentCancelParams{
+		ID:                    orderID,
+		PendingShipmentCancel: false,
+		MarkedAt:              time.Time{},
+		Token:                 "",
+	})
+}
+
+func (s *PostgresStore) ClearOrderPendingShipmentCancelByToken(ctx context.Context, orderID, token string) error {
+	_, err := s.queries.ClearOrderPendingShipmentCancelByToken(ctx, db.ClearOrderPendingShipmentCancelByTokenParams{
+		ID:                         orderID,
+		PendingShipmentCancelToken: token,
+	})
+	return err
+}
+
+func (s *PostgresStore) ClearStaleOrderPendingShipmentCancel(ctx context.Context, orderID, expectedToken string, cutoff time.Time) (bool, error) {
+	rows, err := s.queries.ClearStaleOrderPendingShipmentCancel(ctx, db.ClearStaleOrderPendingShipmentCancelParams{
+		ID:                         orderID,
+		PendingShipmentCancelToken: expectedToken,
+		Cutoff:                     cutoff,
+	})
+	return rows > 0, err
+}
+
+func (s *PostgresStore) MarkOrderOrphanShipmentManualReview(ctx context.Context, orderID, note string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin orphan manual review tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := s.queries.WithTx(tx)
+	ord, err := q.GetOrderByIDForUpdate(ctx, orderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if err := q.MarkOrderOrphanShipmentManualReview(ctx, ord.ID); err != nil {
+		return err
+	}
+	if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+		ID:         uuid.NewString(),
+		OrderID:    ord.ID,
+		FromStatus: ord.Status,
+		ToStatus:   ord.Status,
+		ActorID:    "order-service",
+		ActorRole:  "system",
+		Note:       note,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *PostgresStore) ClearCheckoutGroupPendingStockConfirm(ctx context.Context, checkoutGroupID string) error {
+	return s.queries.SetCheckoutGroupPendingStockConfirm(ctx, db.SetCheckoutGroupPendingStockConfirmParams{
+		ID:                  checkoutGroupID,
+		PendingStockConfirm: false,
+	})
+}
+
+func (s *PostgresStore) ClearOrderPendingCancelCompensation(ctx context.Context, orderID string) error {
+	return s.queries.SetOrderPendingCancelCompensation(ctx, db.SetOrderPendingCancelCompensationParams{
+		ID:                        orderID,
+		PendingCancelCompensation: false,
+	})
+}
+
+func (s *PostgresStore) ClearOrderPendingReturnCompensation(ctx context.Context, orderID string) error {
+	return s.queries.SetOrderPendingReturnCompensation(ctx, db.SetOrderPendingReturnCompensationParams{
+		ID:                        orderID,
+		PendingReturnCompensation: false,
+	})
+}
+
+func (s *PostgresStore) FindCancelledOrdersPendingShipmentCancel(ctx context.Context, limit int32) ([]string, error) {
+	return s.queries.FindCancelledOrdersPendingShipmentCancel(ctx, limit)
+}
+
+func (s *PostgresStore) FindActiveOrdersWithStalePendingShipmentCancel(ctx context.Context, cutoff time.Time, limit int32) ([]string, error) {
+	return s.queries.FindActiveOrdersWithStalePendingShipmentCancel(ctx, db.FindActiveOrdersWithStalePendingShipmentCancelParams{
+		Cutoff:     cutoff,
+		BatchLimit: limit,
+	})
+}
+
+func (s *PostgresStore) FindCheckoutGroupsPendingStockConfirm(ctx context.Context, limit int32) ([]string, error) {
+	return s.queries.FindCheckoutGroupsPendingStockConfirm(ctx, limit)
+}
+
+func (s *PostgresStore) FindCancelledOrdersPendingCompensation(ctx context.Context, limit int32) ([]string, error) {
+	return s.queries.FindCancelledOrdersPendingCompensation(ctx, limit)
+}
+
+func (s *PostgresStore) FindReturnedOrdersPendingCompensation(ctx context.Context, limit int32) ([]string, error) {
+	return s.queries.FindReturnedOrdersPendingCompensation(ctx, limit)
+}
+
+func (s *PostgresStore) TransitionOrderPreparedForShipment(ctx context.Context, params ShipOrderParams) (*OrderAggregate, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin prepare shipment tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -892,12 +1156,86 @@ func (s *PostgresStore) TransitionOrderShipped(ctx context.Context, params ShipO
 		return nil, err
 	}
 
+	now := params.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	curStatus := statemachine.StringToStatus(ord.Status)
-	if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_SHIPPING); err != nil {
-		return nil, err
+	if curStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+		// Record durable flag before returning so transient CancelShipment failures are retried by watchdog.
+		if err := q.SetOrderPendingShipmentCancel(ctx, db.SetOrderPendingShipmentCancelParams{
+			ID:                    ord.ID,
+			PendingShipmentCancel: true,
+			MarkedAt:              now,
+			Token:                 "",
+		}); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return nil, ErrOrphanShipmentNeedsCancel
+	}
+	// P3-3: if delivering webhook beat TransitionOrderPreparedForShipment with the same tracking code,
+	// persist label_url / clear pending_shipment_cancel idempotently without downgrading SHIPPING.
+	if curStatus == orderv1.OrderStatus_ORDER_STATUS_SHIPPING &&
+		strings.TrimSpace(params.TrackingCode) != "" &&
+		strings.EqualFold(strings.TrimSpace(ord.TrackingCode), strings.TrimSpace(params.TrackingCode)) {
+		if _, err := q.UpdateOrderShippingLabel(ctx, db.UpdateOrderShippingLabelParams{
+			ID:          ord.ID,
+			CarrierCode: params.CarrierCode,
+			ServiceCode: params.ServiceCode,
+			LabelURL:    params.LabelURL,
+		}); err != nil {
+			return nil, err
+		}
+		agg, err := loadOrderAggregate(ctx, q, params.OrderID)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return agg, nil
+	}
+	if curStatus != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED && curStatus != orderv1.OrderStatus_ORDER_STATUS_PREPARING {
+		return nil, fmt.Errorf("%w: cannot create shipment from status %s", statemachine.ErrInvalidTransition, statemachine.StatusToString(curStatus))
 	}
 
-	if _, err := q.UpdateOrderShipped(ctx, db.UpdateOrderShippedParams{
+	// Idempotent replay only when shipping returned the exact same live shipment details.
+	if curStatus == orderv1.OrderStatus_ORDER_STATUS_PREPARING &&
+		strings.TrimSpace(ord.TrackingCode) != "" &&
+		ord.TrackingCode == params.TrackingCode &&
+		ord.LabelURL == params.LabelURL &&
+		ord.CarrierCode == params.CarrierCode &&
+		ord.ServiceCode == params.ServiceCode {
+		if ord.PendingShipmentCancel &&
+			(params.ExpectedCreatingToken == "" || ord.PendingShipmentCancelToken == params.ExpectedCreatingToken) {
+			if err := q.SetOrderPendingShipmentCancel(ctx, db.SetOrderPendingShipmentCancelParams{
+				ID:                    ord.ID,
+				PendingShipmentCancel: false,
+				MarkedAt:              time.Time{},
+				Token:                 "",
+			}); err != nil {
+				return nil, err
+			}
+		}
+		agg, err := loadOrderAggregate(ctx, q, params.OrderID)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return agg, nil
+	}
+
+	// Guard against stale/expired SellerShipOrder attempts whose flag was cleared or superseded by a newer retry.
+	if params.ExpectedCreatingToken != "" && ord.PendingShipmentCancelToken != params.ExpectedCreatingToken {
+		return nil, ErrStaleShipmentAttempt
+	}
+
+	if _, err := q.UpdateOrderPreparingWithShipment(ctx, db.UpdateOrderPreparingWithShipmentParams{
 		ID:           params.OrderID,
 		CarrierCode:  params.CarrierCode,
 		ServiceCode:  params.ServiceCode,
@@ -911,18 +1249,12 @@ func (s *PostgresStore) TransitionOrderShipped(ctx context.Context, params ShipO
 		ID:         uuid.NewString(),
 		OrderID:    params.OrderID,
 		FromStatus: ord.Status,
-		ToStatus:   statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_SHIPPING),
+		ToStatus:   statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_PREPARING),
 		ActorID:    params.ActorID,
 		ActorRole:  params.ActorRole,
 		Note:       params.Note,
 	}); err != nil {
 		return nil, err
-	}
-
-	if params.OutboxEvent.ID != "" {
-		if err := q.InsertOutboxEvent(ctx, params.OutboxEvent); err != nil {
-			return nil, err
-		}
 	}
 
 	agg, err := loadOrderAggregate(ctx, q, params.OrderID)
@@ -933,6 +1265,36 @@ func (s *PostgresStore) TransitionOrderShipped(ctx context.Context, params ShipO
 		return nil, err
 	}
 	return agg, nil
+}
+
+func completeOrderInTx(
+	ctx context.Context,
+	q *db.Queries,
+	ord db.Order,
+	actorID, actorRole, note string,
+	outboxEvent db.InsertOutboxEventParams,
+) (db.Order, error) {
+	updated, err := q.UpdateOrderCompleted(ctx, ord.ID)
+	if err != nil {
+		return db.Order{}, err
+	}
+	if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+		ID:         uuid.NewString(),
+		OrderID:    ord.ID,
+		FromStatus: ord.Status,
+		ToStatus:   statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_COMPLETED),
+		ActorID:    actorID,
+		ActorRole:  actorRole,
+		Note:       note,
+	}); err != nil {
+		return db.Order{}, err
+	}
+	if outboxEvent.ID != "" {
+		if err := q.InsertOutboxEvent(ctx, outboxEvent); err != nil {
+			return db.Order{}, err
+		}
+	}
+	return updated, nil
 }
 
 func (s *PostgresStore) TransitionOrderCompleted(ctx context.Context, params CompleteOrderParams) (*OrderAggregate, error) {
@@ -953,29 +1315,20 @@ func (s *PostgresStore) TransitionOrderCompleted(ctx context.Context, params Com
 
 	curStatus := statemachine.StringToStatus(ord.Status)
 	if curStatus != orderv1.OrderStatus_ORDER_STATUS_DELIVERED {
-		return nil, fmt.Errorf("%w: buyer confirm received requires DELIVERED, got %s", statemachine.ErrInvalidTransition, statemachine.StatusToString(curStatus))
+		return nil, fmt.Errorf("%w: completing delivered order requires DELIVERED, got %s", statemachine.ErrInvalidTransition, statemachine.StatusToString(curStatus))
 	}
-
-	if _, err := q.UpdateOrderCompleted(ctx, params.OrderID); err != nil {
-		return nil, err
-	}
-
-	if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
-		ID:         uuid.NewString(),
-		OrderID:    params.OrderID,
-		FromStatus: ord.Status,
-		ToStatus:   statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_COMPLETED),
-		ActorID:    params.ActorID,
-		ActorRole:  params.ActorRole,
-		Note:       params.Note,
-	}); err != nil {
-		return nil, err
-	}
-
-	if params.OutboxEvent.ID != "" {
-		if err := q.InsertOutboxEvent(ctx, params.OutboxEvent); err != nil {
+	if params.RequireNoReturnRequest {
+		hasRet, err := q.HasActiveReturnRequestForOrder(ctx, ord.ID)
+		if err != nil {
 			return nil, err
 		}
+		if hasRet {
+			return nil, fmt.Errorf("%w: order %s has an active return request", statemachine.ErrInvalidTransition, ord.ID)
+		}
+	}
+
+	if _, err := completeOrderInTx(ctx, q, ord, params.ActorID, params.ActorRole, params.Note, params.OutboxEvent); err != nil {
+		return nil, err
 	}
 
 	agg, err := loadOrderAggregate(ctx, q, params.OrderID)
@@ -988,7 +1341,7 @@ func (s *PostgresStore) TransitionOrderCompleted(ctx context.Context, params Com
 	return agg, nil
 }
 
-func (s *PostgresStore) TransitionOrderReturnRequested(ctx context.Context, params ReturnRequestParams) (*OrderAggregate, *db.ReturnRequest, error) {
+func (s *PostgresStore) TransitionOrderReturnRequested(ctx context.Context, params ReturnRequestParams) (*OrderAggregate, *ReturnAggregate, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("begin return request tx: %w", err)
@@ -1008,6 +1361,13 @@ func (s *PostgresStore) TransitionOrderReturnRequested(ctx context.Context, para
 	if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED); err != nil {
 		return nil, nil, err
 	}
+	hasRet, err := q.HasReturnRequestForOrder(ctx, ord.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if hasRet {
+		return nil, nil, ErrDuplicateReturnRequest
+	}
 
 	if _, err := q.UpdateOrderStatus(ctx, db.UpdateOrderStatusParams{
 		ID:     params.OrderID,
@@ -1016,13 +1376,47 @@ func (s *PostgresStore) TransitionOrderReturnRequested(ctx context.Context, para
 		return nil, nil, err
 	}
 
+	refundAmt := params.RefundAmountVND
+	if refundAmt < 0 {
+		refundAmt = 0
+	}
+	orderCode := params.OrderCode
+	if orderCode == "" {
+		orderCode = ord.OrderCode
+	}
+	shopID := params.ShopID
+	if shopID == "" {
+		shopID = ord.ShopID
+	}
+
 	retReq, err := q.InsertReturnRequest(ctx, db.InsertReturnRequestParams{
 		ID:               params.ReturnRequestID,
 		OrderID:          params.OrderID,
+		OrderCode:        orderCode,
 		BuyerID:          params.BuyerID,
+		ShopID:           shopID,
 		Reason:           params.Reason,
 		EvidenceURLsJSON: params.EvidenceURLsJSON,
-		Status:           "PENDING",
+		Status:           statemachine.ReturnStatusToString(orderv1.ReturnStatus_RETURN_STATUS_PENDING),
+		RefundAmountVND:  refundAmt,
+		DeadlineAt:       params.DeadlineAt,
+	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, nil, ErrDuplicateReturnRequest
+		}
+		return nil, nil, err
+	}
+
+	retEv, err := q.InsertReturnEvent(ctx, db.InsertReturnEventParams{
+		ID:              uuid.NewString(),
+		ReturnRequestID: retReq.ID,
+		FromStatus:      "UNSPECIFIED",
+		ToStatus:        retReq.Status,
+		ActorID:         params.ActorID,
+		ActorRole:       params.ActorRole,
+		Note:            params.Reason,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -1040,6 +1434,12 @@ func (s *PostgresStore) TransitionOrderReturnRequested(ctx context.Context, para
 		return nil, nil, err
 	}
 
+	if params.OutboxEvent.ID != "" {
+		if err := q.InsertOutboxEvent(ctx, params.OutboxEvent); err != nil {
+			return nil, nil, err
+		}
+	}
+
 	agg, err := loadOrderAggregate(ctx, q, params.OrderID)
 	if err != nil {
 		return nil, nil, err
@@ -1047,7 +1447,54 @@ func (s *PostgresStore) TransitionOrderReturnRequested(ctx context.Context, para
 	if err := tx.Commit(ctx); err != nil {
 		return nil, nil, err
 	}
-	return agg, &retReq, nil
+	return agg, &ReturnAggregate{Request: retReq, Events: []db.ReturnEvent{retEv}}, nil
+}
+
+func transitionOrderToShippingInTx(
+	ctx context.Context,
+	q *db.Queries,
+	ord db.Order,
+	trackingCode, note, traceID, traceparent string,
+) (db.Order, error) {
+	updated, err := q.UpdateOrderShippedFromWebhook(ctx, db.UpdateOrderShippedFromWebhookParams{
+		ID:           ord.ID,
+		TrackingCode: trackingCode,
+	})
+	if err != nil {
+		return db.Order{}, err
+	}
+	if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+		ID:         uuid.NewString(),
+		OrderID:    ord.ID,
+		FromStatus: ord.Status,
+		ToStatus:   statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_SHIPPING),
+		ActorID:    "shipping-service",
+		ActorRole:  "system",
+		Note:       note,
+	}); err != nil {
+		return db.Order{}, err
+	}
+	payloadBytes, err := json.Marshal(events.OrderShippedPayload{
+		OrderID:      updated.ID,
+		OrderCode:    updated.OrderCode,
+		BuyerID:      updated.BuyerID,
+		ShopID:       updated.ShopID,
+		CarrierCode:  updated.CarrierCode,
+		TrackingCode: updated.TrackingCode,
+	})
+	if err != nil {
+		return db.Order{}, err
+	}
+	if err := q.InsertOutboxEvent(ctx, db.InsertOutboxEventParams{
+		ID:          uuid.NewString(),
+		EventType:   events.SubjectOrderShipped,
+		TraceID:     traceID,
+		Traceparent: traceparent,
+		PayloadJSON: payloadBytes,
+	}); err != nil {
+		return db.Order{}, err
+	}
+	return updated, nil
 }
 
 func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params ShipmentUpdateParams) (*ShipmentUpdateOutcome, error) {
@@ -1101,8 +1548,96 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 
 	outcome := &ShipmentUpdateOutcome{}
 
+	// P1-5: Match tracking_code when the order already has one assigned (ignore stale replaced shipments).
+	curTracking := strings.TrimSpace(ord.TrackingCode)
+	evTracking := strings.TrimSpace(params.TrackingCode)
+	if curTracking != "" && (evTracking == "" || !strings.EqualFold(evTracking, curTracking)) {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return outcome, nil
+	}
+
+	// P1-5: Ignore FORWARD events on terminal or post-delivery orders (preserving AlreadyReturned redelivery path).
+	switch curStatus {
+	case orderv1.OrderStatus_ORDER_STATUS_PENDING,
+		orderv1.OrderStatus_ORDER_STATUS_CANCELLED,
+		orderv1.OrderStatus_ORDER_STATUS_COMPLETED,
+		orderv1.OrderStatus_ORDER_STATUS_DELIVERED,
+		orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED:
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return outcome, nil
+	case orderv1.OrderStatus_ORDER_STATUS_RETURNED:
+		if !(shipStatus == "returned" && params.SkipMarkProcessed) {
+			if err := tx.Commit(ctx); err != nil {
+				return nil, err
+			}
+			return outcome, nil
+		}
+	}
+
 	switch shipStatus {
+	case "delivering", "failed", "returning":
+		if curStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED || curStatus == orderv1.OrderStatus_ORDER_STATUS_PREPARING {
+			shipNote := note
+			if shipStatus != "delivering" {
+				shipNote = "Shipment in transit (" + shipStatus + ")"
+			}
+			updated, err := transitionOrderToShippingInTx(ctx, q, ord, params.TrackingCode, shipNote, params.TraceID, params.Traceparent)
+			if err != nil {
+				return nil, err
+			}
+			ord = updated
+			outcome.TransitionedFrom = curStatus
+			outcome.TransitionedTo = orderv1.OrderStatus_ORDER_STATUS_SHIPPING
+			outcome.EmittedOutbox = true
+			if shipStatus != "delivering" {
+				if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+					ID:         uuid.NewString(),
+					OrderID:    ord.ID,
+					FromStatus: ord.Status,
+					ToStatus:   ord.Status,
+					ActorID:    "shipping-service",
+					ActorRole:  "system",
+					Note:       fmt.Sprintf("[%s] %s", shipStatus, note),
+				}); err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			if params.TrackingCode != "" {
+				if err := q.UpdateOrderTrackingCode(ctx, db.UpdateOrderTrackingCodeParams{
+					ID:           ord.ID,
+					TrackingCode: params.TrackingCode,
+				}); err != nil {
+					return nil, err
+				}
+			}
+			if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+				ID:         uuid.NewString(),
+				OrderID:    ord.ID,
+				FromStatus: ord.Status,
+				ToStatus:   ord.Status,
+				ActorID:    "shipping-service",
+				ActorRole:  "system",
+				Note:       fmt.Sprintf("[%s] %s", shipStatus, note),
+			}); err != nil {
+				return nil, err
+			}
+		}
+
 	case "delivered":
+		if curStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED || curStatus == orderv1.OrderStatus_ORDER_STATUS_PREPARING {
+			updated, err := transitionOrderToShippingInTx(ctx, q, ord, params.TrackingCode, "Shipment picked up and in transit", params.TraceID, params.Traceparent)
+			if err != nil {
+				return nil, err
+			}
+			ord = updated
+			curStatus = orderv1.OrderStatus_ORDER_STATUS_SHIPPING
+			outcome.EmittedOutbox = true
+		}
 		if curStatus == orderv1.OrderStatus_ORDER_STATUS_SHIPPING {
 			if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_DELIVERED); err != nil {
 				return nil, err
@@ -1145,17 +1680,27 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 				return nil, err
 			}
 			outcome.TransitionedTo = orderv1.OrderStatus_ORDER_STATUS_DELIVERED
+			outcome.EmittedOutbox = true
 		}
+
 	case "returned":
-		if curStatus == orderv1.OrderStatus_ORDER_STATUS_SHIPPING || curStatus == orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED {
+		if curStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED || curStatus == orderv1.OrderStatus_ORDER_STATUS_PREPARING {
+			updated, err := transitionOrderToShippingInTx(ctx, q, ord, params.TrackingCode, "Shipment picked up and in transit", params.TraceID, params.Traceparent)
+			if err != nil {
+				return nil, err
+			}
+			ord = updated
+			curStatus = orderv1.OrderStatus_ORDER_STATUS_SHIPPING
+			outcome.EmittedOutbox = true
+		}
+		if curStatus == orderv1.OrderStatus_ORDER_STATUS_SHIPPING {
 			if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_RETURNED); err != nil {
 				return nil, err
 			}
 			nextPaymentStatus := ""
-			if curStatus == orderv1.OrderStatus_ORDER_STATUS_SHIPPING &&
-				(ord.TotalPayableVND == 0 ||
-					(statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD &&
-						isUnpaidPendingStatus(ord.PaymentStatus))) {
+			if ord.TotalPayableVND == 0 ||
+				(statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD &&
+					isUnpaidPendingStatus(ord.PaymentStatus)) {
 				nextPaymentStatus = "CANCELLED"
 			}
 			updated, err := q.UpdateOrderStatus(ctx, db.UpdateOrderStatusParams{
@@ -1165,6 +1710,34 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 			})
 			if err != nil {
 				return nil, err
+			}
+			// P1-3: set durable pending_return_compensation inside the same TX so watchdog retries if NATS DLQs.
+			if err := q.SetOrderPendingReturnCompensation(ctx, db.SetOrderPendingReturnCompensationParams{
+				ID:                        ord.ID,
+				PendingReturnCompensation: true,
+			}); err != nil {
+				return nil, err
+			}
+			updated.PendingReturnCompensation = true
+			// P3-1(a): serialize checkout_groups payment_status sync via group row lock (orders -> checkout_groups order).
+			if nextPaymentStatus != "" {
+				if _, gErr := q.GetCheckoutGroupByIDForUpdate(ctx, ord.CheckoutGroupID); gErr == nil {
+					if siblings, sErr := q.ListOrdersByCheckoutGroup(ctx, ord.CheckoutGroupID); sErr == nil {
+						if shouldMarkGroupRefunded(siblings, updated.ID, updated.Status, updated.PaymentStatus) {
+							if err := q.UpdateCheckoutGroupPaymentStatus(ctx, db.UpdateCheckoutGroupPaymentStatusParams{
+								ID: ord.CheckoutGroupID, PaymentStatus: "REFUNDED", PaymentID: "",
+							}); err != nil {
+								return nil, err
+							}
+						} else if shouldMarkGroupCancelled(siblings, updated.ID, updated.Status, updated.PaymentStatus) {
+							if err := q.UpdateCheckoutGroupPaymentStatus(ctx, db.UpdateCheckoutGroupPaymentStatusParams{
+								ID: ord.CheckoutGroupID, PaymentStatus: "CANCELLED", PaymentID: "",
+							}); err != nil {
+								return nil, err
+							}
+						}
+					}
+				}
 			}
 			if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
 				ID:         uuid.NewString(),
@@ -1204,6 +1777,7 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 			}
 			outcome.TransitionedFrom = curStatus
 			outcome.TransitionedTo = orderv1.OrderStatus_ORDER_STATUS_RETURNED
+			outcome.EmittedOutbox = true
 		} else if curStatus == orderv1.OrderStatus_ORDER_STATUS_RETURNED && params.SkipMarkProcessed {
 			// Review-A P1-7 / Review2-O P3-8: redelivery after a transient compensation error.
 			// Recover original FromStatus from timeline without duplicating timeline/outbox rows.
@@ -1219,6 +1793,7 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 				}
 			}
 		}
+
 	default:
 		if params.TrackingCode != "" {
 			if err := q.UpdateOrderTrackingCode(ctx, db.UpdateOrderTrackingCodeParams{
@@ -1469,14 +2044,7 @@ func (s *PostgresStore) ProcessPendingOutbox(ctx context.Context, limit int32, p
 }
 
 func (s *PostgresStore) FindExpiredPendingGroups(ctx context.Context, limit int32) ([]ExpiredGroupCandidate, error) {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	q := s.queries.WithTx(tx)
-	rows, err := q.LockExpiredPendingOrders(ctx, limit)
+	rows, err := s.queries.FindExpiredPendingOrders(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1493,33 +2061,29 @@ func (s *PostgresStore) FindExpiredPendingGroups(ctx context.Context, limit int3
 			PaymentID:       row.PaymentID,
 		})
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
 	return candidates, nil
 }
 
 func (s *PostgresStore) FindStaleInProgressCheckoutGroups(ctx context.Context, olderThan time.Duration, limit int32) ([]string, error) {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	q := s.queries.WithTx(tx)
-	ids, err := q.LockStaleInProgressCheckoutGroups(ctx, db.LockStaleInProgressCheckoutGroupsParams{
+	return s.queries.FindStaleInProgressCheckoutGroups(ctx, db.FindStaleInProgressCheckoutGroupsParams{
 		StaleAfterMs: olderThan.Milliseconds(),
 		BatchLimit:   limit,
 	})
+}
+
+func loadReturnSummaries(ctx context.Context, q *db.Queries, orderIDs []string) (map[string]db.ListReturnSummariesByOrderIDsRow, error) {
+	out := make(map[string]db.ListReturnSummariesByOrderIDsRow)
+	if len(orderIDs) == 0 {
+		return out, nil
+	}
+	rows, err := q.ListReturnSummariesByOrderIDs(ctx, orderIDs)
 	if err != nil {
 		return nil, err
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
+	for _, r := range rows {
+		out[r.OrderID] = r
 	}
-	return ids, nil
+	return out, nil
 }
 
 func loadOrderAggregate(ctx context.Context, q *db.Queries, orderID string) (*OrderAggregate, error) {
@@ -1538,9 +2102,16 @@ func loadOrderAggregate(ctx context.Context, q *db.Queries, orderID string) (*Or
 	if err != nil {
 		return nil, err
 	}
-	return &OrderAggregate{
+	agg := &OrderAggregate{
 		Order:    ord,
 		Items:    items,
 		Timeline: tl,
-	}, nil
+	}
+	if rr, rErr := q.GetReturnRequestByOrderID(ctx, orderID); rErr == nil {
+		agg.ReturnRequestID = rr.ID
+		agg.ReturnStatus = rr.Status
+	} else if !errors.Is(rErr, pgx.ErrNoRows) {
+		return nil, rErr
+	}
+	return agg, nil
 }

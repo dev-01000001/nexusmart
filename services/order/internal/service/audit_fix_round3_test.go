@@ -812,11 +812,12 @@ func TestReview2O_P3_8_ShippingReturnedZeroPayableOrder_SetsPaymentStatusCancell
 		t.Fatalf("CreateCheckout 0 VND: %v", err)
 	}
 	ordID := resp.Orders[0].Id
-	if _, err := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ordID, ShopId: "shop-1"}); err != nil {
+	shipResp, err := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ordID, ShopId: "shop-1"})
+	if err != nil {
 		t.Fatalf("SellerShipOrder: %v", err)
 	}
 	if err := h.svc.HandleShipmentUpdated(context.Background(), "evt-r3-p38-ret", events.ShipmentUpdatedPayload{
-		OrderID: ordID, Status: "returned", Description: "delivery failed on 0 VND order",
+		OrderID: ordID, TrackingCode: shipResp.TrackingCode, Status: "returned", Description: "delivery failed on 0 VND order",
 	}); err != nil {
 		t.Fatalf("HandleShipmentUpdated(returned): %v", err)
 	}

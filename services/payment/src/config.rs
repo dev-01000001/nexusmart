@@ -59,6 +59,8 @@ pub struct Config {
     pub expiration_scan_interval: Duration,
     pub outbox_poll_interval: Duration,
     pub reconciliation_interval: Duration,
+    pub seller_hold_hours: i64,
+    pub escrow_hold_scan_interval: Duration,
 }
 
 /// Custom Debug implementation that redacts all secrets and credentials.
@@ -92,6 +94,8 @@ impl fmt::Debug for Config {
             .field("expiration_scan_interval", &self.expiration_scan_interval)
             .field("outbox_poll_interval", &self.outbox_poll_interval)
             .field("reconciliation_interval", &self.reconciliation_interval)
+            .field("seller_hold_hours", &self.seller_hold_hours)
+            .field("escrow_hold_scan_interval", &self.escrow_hold_scan_interval)
             .finish()
     }
 }
@@ -141,6 +145,10 @@ impl Config {
                 "RECONCILIATION_INTERVAL_SECS",
                 86_400,
             )),
+            seller_hold_hours: env_i64("PAYMENT_SELLER_HOLD_HOURS", 72).max(0),
+            escrow_hold_scan_interval: Duration::from_secs(
+                env_u64("ESCROW_HOLD_SCAN_INTERVAL_SECS", 60).max(1),
+            ),
         }
     }
 }

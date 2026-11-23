@@ -236,7 +236,7 @@ func (h *handler) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 		SortOrder         int32  `json:"sort_order"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -265,7 +265,7 @@ func (h *handler) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 		SortOrder         int32  `json:"sort_order"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -530,7 +530,7 @@ func (h *handler) handleSellerCreateProduct(w http.ResponseWriter, r *http.Reque
 		SKUs        []skuInputBody `json:"skus"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -563,7 +563,7 @@ func (h *handler) handleSellerUpdateProduct(w http.ResponseWriter, r *http.Reque
 		SKUs        []skuInputBody `json:"skus"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -608,7 +608,7 @@ func (h *handler) handleSellerUpdateStock(w http.ResponseWriter, r *http.Request
 		ExpectedVersion int64 `json:"expected_version"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -680,7 +680,7 @@ func (h *handler) handleAdminReviewProduct(w http.ResponseWriter, r *http.Reques
 		Reason   string `json:"reason"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())

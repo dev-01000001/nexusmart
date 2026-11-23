@@ -1,8 +1,11 @@
-use chrono::{DateTime, NaiveDate, Utc};
+use std::fmt;
+
+use chrono::{DateTime, FixedOffset, NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::{PaymentError, Result};
+use crate::telemetry::mask_bank_account;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -138,7 +141,11 @@ pub struct PaymentWithAllocations {
     pub allocations: Vec<ShopAllocationRecord>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct RefundRecord {
     pub id: Uuid,
     pub payment_id: Uuid,
@@ -150,8 +157,53 @@ pub struct RefundRecord {
     pub provider_refund_id: Option<String>,
     #[serde(default)]
     pub is_late_payment: bool,
+    #[serde(default)]
+    pub bank_code: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub bank_account_number: Option<String>,
+    #[serde(default)]
+    pub bank_account_masked: Option<String>,
+    #[serde(default)]
+    pub bank_account_name: Option<String>,
+    #[serde(default)]
+    pub settled_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub settlement_note: Option<String>,
+    #[serde(default)]
+    pub settlement_idempotency_key: Option<String>,
+    #[serde(default = "default_true")]
+    pub affects_escrow: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Custom Debug redacting full `bank_account_number` so it can never leak into logs.
+impl fmt::Debug for RefundRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RefundRecord")
+            .field("id", &self.id)
+            .field("payment_id", &self.payment_id)
+            .field("order_id", &self.order_id)
+            .field("amount_vnd", &self.amount_vnd)
+            .field("reason", &self.reason)
+            .field("status", &self.status)
+            .field("idempotency_key", &self.idempotency_key)
+            .field("provider_refund_id", &self.provider_refund_id)
+            .field("is_late_payment", &self.is_late_payment)
+            .field("bank_code", &self.bank_code)
+            .field(
+                "bank_account_number",
+                &self.bank_account_number.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("bank_account_masked", &self.bank_account_masked)
+            .field("bank_account_name", &self.bank_account_name)
+            .field("settled_at", &self.settled_at)
+            .field("settlement_note", &self.settlement_note)
+            .field("affects_escrow", &self.affects_escrow)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,6 +222,98 @@ pub struct CreateRefundOutput {
     pub already_existed: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct ListRefundsFilter {
+    pub caller_user_id: Option<String>,
+    pub is_admin: bool,
+    pub status: Option<String>,
+    pub order_id: Option<String>,
+    pub page: i32,
+    pub page_size: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ListRefundsResult {
+    pub refunds: Vec<RefundRecord>,
+    pub total: i64,
+}
+
+#[derive(Clone)]
+pub struct SubmitRefundBankAccountInput {
+    pub refund_id: Uuid,
+    pub caller_user_id: String,
+    pub bank_code: String,
+    pub bank_account_number: String,
+    pub bank_account_name: String,
+}
+
+impl fmt::Debug for SubmitRefundBankAccountInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SubmitRefundBankAccountInput")
+            .field("refund_id", &self.refund_id)
+            .field("caller_user_id", &self.caller_user_id)
+            .field("bank_code", &self.bank_code)
+            .field("bank_account_number", &"[REDACTED]")
+            .field("bank_account_name", &self.bank_account_name)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SettleRefundInput {
+    pub refund_id: Uuid,
+    pub provider_refund_id: String,
+    pub note: String,
+    pub idempotency_key: String,
+    pub trace_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SettleRefundOutput {
+    pub refund: RefundRecord,
+    pub already_settled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconciliationActionKind {
+    Assign,
+    Refund,
+    Suspend,
+}
+
+impl ReconciliationActionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Assign => "ASSIGN",
+            Self::Refund => "REFUND",
+            Self::Suspend => "SUSPEND",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ListReconciliationQueueResult {
+    pub items: Vec<ReconciliationQueueItem>,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolveReconciliationInput {
+    pub item_id: Uuid,
+    pub action: ReconciliationActionKind,
+    pub payment_id: Option<Uuid>,
+    pub note: String,
+    pub idempotency_key: String,
+    pub trace_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolveReconciliationOutput {
+    pub item: ReconciliationQueueItem,
+    pub refund: Option<RefundRecord>,
+    pub already_resolved: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ReconciliationQueueItem {
     pub id: Uuid,
@@ -183,6 +327,16 @@ pub struct ReconciliationQueueItem {
     pub reason: String,
     pub resolution_status: String,
     pub notes: Option<String>,
+    #[serde(default)]
+    pub resolution_idempotency_key: Option<String>,
+    #[serde(default)]
+    pub resolution_refund_id: Option<Uuid>,
+    #[serde(default)]
+    pub resolution_action: Option<String>,
+    #[serde(default)]
+    pub resolution_payment_id: Option<Uuid>,
+    #[serde(default)]
+    pub occurred_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub resolved_at: Option<DateTime<Utc>>,
 }
@@ -307,6 +461,7 @@ pub fn validate_refund_idempotency_match(
         ));
     }
     if !existing.idempotency_key.starts_with("order-cancel-refund:")
+        && !existing.idempotency_key.starts_with("order-return-refund:")
         && existing.amount_vnd != requested_amount_vnd
     {
         return Err(PaymentError::Conflict(
@@ -316,11 +471,202 @@ pub fn validate_refund_idempotency_match(
     Ok(())
 }
 
+/// Canonical ingress normalization for `provider_tx_id` (review2 P0-1):
+/// trims leading/trailing whitespace and rejects empty/blank identifiers once at the boundary.
+pub fn normalize_provider_tx_id(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(PaymentError::Validation(
+            "provider_tx_id is required".to_string(),
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Returns true iff `status` is already a terminal unpaid state so `CancelPayment` can succeed
+/// idempotently without stranding order cancel compensation watchdogs (review2 P1-3).
+/// Paid states (`succeeded`, `refunded`) return false and remain `409 Conflict`.
+pub fn is_payment_already_cancelled_terminal(status: &str) -> bool {
+    matches!(status, "cancelled" | "expired" | "failed" | "superseded")
+}
+
+/// Orders candidate provider transaction indices for an expired pending payment (review2 P1-2):
+/// exact-amount transfers come first (preserving feed order), followed by mismatched transfers,
+/// so an earlier wrong-amount transfer never masks a subsequent exact-amount payment.
+pub fn order_expiry_candidate_indices(amounts: &[i64], expected_amount_vnd: i64) -> Vec<usize> {
+    let mut exact = Vec::new();
+    let mut mismatched = Vec::new();
+    for (idx, &amt) in amounts.iter().enumerate() {
+        if amt == expected_amount_vnd {
+            exact.push(idx);
+        } else {
+            mismatched.push(idx);
+        }
+    }
+    exact.extend(mismatched);
+    exact
+}
+
 /// Canonical idempotency key for late/duplicate payment refunds across ALL paths
 /// (webhook, expiration scanner, and reconciliation) so a single `provider_tx_id`
 /// never creates duplicate `refunds` rows (review2-P P1-1).
 pub fn late_payment_refund_key(provider_tx_id: &str) -> String {
     format!("late-webhook:{}", provider_tx_id.trim())
+}
+
+/// Canonical idempotency key for reconciliation queue `REFUND` keyed by `provider_tx_id`
+/// (never by `item.id`) so a single provider transfer can never be refunded twice.
+pub fn reconciliation_refund_key(provider_tx_id: &str) -> String {
+    format!("recon-refund:{}", provider_tx_id.trim())
+}
+
+/// Canonical idempotency key for reconciliation queue `ASSIGN` overpayment excess refund
+/// keyed by `provider_tx_id` (never by `item.id`).
+pub fn reconciliation_overpay_key(provider_tx_id: &str) -> String {
+    format!("recon-overpay:{}", provider_tx_id.trim())
+}
+
+/// Unified provider-transfer accounting status across all `gateway_clearing` debit paths (P0-1):
+/// a `provider_tx_id` is already accounted for if it appears on `payments.provider_tx_id`,
+/// on a finalized (`assigned`/`refunded`) `reconciliation_queue` row, or on a tx-scoped refund
+/// (`late-webhook:`, `recon-refund:`, `recon-overpay:`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProviderTxAccountingState {
+    pub on_payment: bool,
+    pub recon_queue_finalized: bool,
+    pub has_tx_refund: bool,
+}
+
+impl ProviderTxAccountingState {
+    pub fn is_accounted(self) -> bool {
+        self.on_payment || self.recon_queue_finalized || self.has_tx_refund
+    }
+}
+
+/// Rejects reconciliation resolution if `provider_tx_id` has already been accounted for by
+/// another finalized queue item, a confirmed payment, or an existing provider-tx refund.
+pub fn validate_reconciliation_provider_tx_accountable(
+    provider_tx_id: &str,
+    state: ProviderTxAccountingState,
+) -> Result<()> {
+    if state.recon_queue_finalized {
+        return Err(PaymentError::Conflict(format!(
+            "another reconciliation item for provider_tx_id '{provider_tx_id}' is already finalized"
+        )));
+    }
+    if state.on_payment {
+        return Err(PaymentError::Conflict(format!(
+            "provider_tx_id '{provider_tx_id}' is already recorded on a payment"
+        )));
+    }
+    if state.has_tx_refund {
+        return Err(PaymentError::Conflict(format!(
+            "provider_tx_id '{provider_tx_id}' already has an accrued refund"
+        )));
+    }
+    Ok(())
+}
+
+/// Computes the maximum VND releasable from `seller_pending` for a `pending_release` allocation
+/// without releasing funds reserved for other still-unmatured `pending_release` allocations of
+/// the same shop after a post-settlement clawback drained `seller_pending` (review2 P2-4).
+pub fn compute_capped_escrow_release_vnd(
+    alloc_seller_net_vnd: i64,
+    pending_balance_vnd: i64,
+    unmatured_hold_vnd: i64,
+) -> i64 {
+    let releasable_pool = pending_balance_vnd
+        .saturating_sub(unmatured_hold_vnd.max(0))
+        .max(0);
+    alloc_seller_net_vnd.max(0).min(releasable_pool)
+}
+
+/// Validates that a `SettleRefund` replay with the same `Idempotency-Key` matches the
+/// original `refund_id` and `provider_refund_id` (409 on mismatch).
+pub fn validate_settle_refund_idempotency_match(
+    existing: &RefundRecord,
+    requested_refund_id: Uuid,
+    requested_provider_refund_id: &str,
+) -> Result<()> {
+    if existing.id != requested_refund_id {
+        return Err(PaymentError::Conflict(
+            "idempotency_key already used to settle a different refund".to_string(),
+        ));
+    }
+    let existing_ref = existing
+        .provider_refund_id
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("");
+    if existing_ref != requested_provider_refund_id.trim() {
+        return Err(PaymentError::Conflict(
+            "idempotency_key already used with a different provider_refund_id".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Validates that a `ResolveReconciliationItem` replay with the same `Idempotency-Key` matches
+/// the original `item_id`, `action`, and `payment_id` (409 on mismatch).
+pub fn validate_resolve_reconciliation_idempotency_match(
+    existing: &ReconciliationQueueItem,
+    requested_item_id: Uuid,
+    requested_action: ReconciliationActionKind,
+    requested_payment_id: Option<Uuid>,
+) -> Result<()> {
+    if existing.id != requested_item_id {
+        return Err(PaymentError::Conflict(
+            "idempotency_key already used for a different reconciliation item".to_string(),
+        ));
+    }
+    let stored_action = existing.resolution_action.as_deref().unwrap_or(
+        match existing.resolution_status.as_str() {
+            "assigned" => "ASSIGN",
+            "refunded" => "REFUND",
+            "suspended" => "SUSPEND",
+            _ => "",
+        },
+    );
+    if !stored_action.eq_ignore_ascii_case(requested_action.as_str()) {
+        return Err(PaymentError::Conflict(
+            "idempotency_key already used with a different reconciliation action".to_string(),
+        ));
+    }
+    if existing.resolution_payment_id != requested_payment_id {
+        return Err(PaymentError::Conflict(
+            "idempotency_key already used with a different payment_id".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Snapshots the buyer's masked bank account into `settlement_note` at settlement time so
+/// the audit trail records the exact destination account used without exposing raw digits.
+///
+/// ponytail: keeps `SettleRefundRequest` proto unchanged (no contract bump); upgrade path is
+/// adding an optional `expected_bank_account_masked` or `expected_updated_at` concurrency token
+/// to `SettleRefundRequest` so settlement rejects if buyer edited account after admin viewed it.
+pub fn format_settlement_note_with_masked_account(
+    note: &str,
+    bank_code: Option<&str>,
+    bank_account_masked: Option<&str>,
+) -> Option<String> {
+    let trimmed_note = note.trim();
+    let masked = bank_account_masked.map(str::trim).filter(|s| !s.is_empty());
+    let code = bank_code.map(str::trim).filter(|s| !s.is_empty());
+
+    let snapshot = match (code, masked) {
+        (Some(c), Some(m)) => Some(format!("[settled_to: {c} {m}]")),
+        (None, Some(m)) => Some(format!("[settled_to: {m}]")),
+        _ => None,
+    };
+
+    match (trimmed_note.is_empty(), snapshot) {
+        (true, None) => None,
+        (true, Some(snap)) => Some(snap),
+        (false, None) => Some(trimmed_note.to_string()),
+        (false, Some(snap)) => Some(format!("{trimmed_note} {snap}")),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -721,31 +1067,191 @@ pub fn compute_post_settlement_clawback(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReturnAllocationAction {
+    /// Cancel uncollected COD on failed delivery (`SHIPPING`) or 0 VND allocation.
     CancelAllocation,
+    /// Post-delivery return (`RETURN_REQUESTED`) on uncollected COD (`awaiting_collection`, `P > 0`):
+    /// buyer paid cash upon delivery (`order.delivered` may be delayed/DLQ), so collect COD into
+    /// `held` idempotently so `order`'s `CreateRefund` succeeds.
+    CollectCodForRefund,
+    /// Paid collected order (`held`, `P > 0`) or already `refunded`/`cancelled`: no-op in consumer.
     DeferPostDeliveryReturn,
 }
 
-/// Decides how `order.returned` affects an allocation (R2 / review-B P2-6):
-/// - Failed delivery (`from_status != Some("RETURN_REQUESTED")`):
-///   - Uncollected COD (`method == "COD"` and `escrow_status == "awaiting_collection"`) -> cancel allocation.
-///   - Zero-payable sub-order (`buyer_payable_vnd == 0` and `escrow_status == "held"`, COD or VietQR) -> cancel allocation.
-/// - Post-delivery return (`RETURN_REQUESTED`) or already-collected paid order -> deferred to Wave 2 (`ponytail:`).
+/// Decides how `order.returned` affects an allocation (R2 / Wave 2a review fix):
+/// - Zero-payable sub-order (`buyer_payable_vnd == 0`) in `held`/`awaiting_collection`: `CancelAllocation`.
+/// - Failed delivery (`from_status != RETURN_REQUESTED`) on uncollected COD (`awaiting_collection`): `CancelAllocation`.
+/// - Post-delivery return (`from_status == RETURN_REQUESTED`) on uncollected COD (`awaiting_collection`, `P > 0`):
+///   `CollectCodForRefund` (collect COD into `held` idempotently so `order`'s `CreateRefund` succeeds).
+/// - Paid collected orders (`held`, `P > 0`) or already `refunded`/`cancelled`: `DeferPostDeliveryReturn`.
 pub fn decide_return_allocation_action(
     method: &str,
     from_status: Option<&str>,
     escrow_status: &str,
     buyer_payable_vnd: i64,
 ) -> ReturnAllocationAction {
-    let normalized = from_status.map(|s| s.trim().to_ascii_uppercase());
-    if normalized.as_deref() == Some("RETURN_REQUESTED") {
-        return ReturnAllocationAction::DeferPostDeliveryReturn;
+    if buyer_payable_vnd == 0 && matches!(escrow_status, "held" | "awaiting_collection") {
+        return ReturnAllocationAction::CancelAllocation;
     }
-    if (method.eq_ignore_ascii_case("COD") && escrow_status == "awaiting_collection")
-        || (buyer_payable_vnd == 0 && escrow_status == "held")
+    if method.eq_ignore_ascii_case("COD") && escrow_status == "awaiting_collection" {
+        let is_post_delivery = from_status
+            .map(|s| s.trim().eq_ignore_ascii_case("RETURN_REQUESTED"))
+            .unwrap_or(false);
+        return if is_post_delivery {
+            ReturnAllocationAction::CollectCodForRefund
+        } else {
+            ReturnAllocationAction::CancelAllocation
+        };
+    }
+    ReturnAllocationAction::DeferPostDeliveryReturn
+}
+
+// =============================================================================
+// Wave 2a Pure Domain Helpers (Hold Period, Bank Account, Assign Split, VN Date)
+// =============================================================================
+
+/// Fixed UTC+07:00 offset for `Asia/Ho_Chi_Minh` (Vietnam has no DST).
+pub fn vn_offset() -> FixedOffset {
+    FixedOffset::east_opt(7 * 3600).expect("valid +07:00 offset")
+}
+
+/// Converts a UTC timestamp to its calendar date in `Asia/Ho_Chi_Minh`.
+pub fn utc_to_vn_date(dt: DateTime<Utc>) -> NaiveDate {
+    dt.with_timezone(&vn_offset()).date_naive()
+}
+
+/// Returns today's calendar date in `Asia/Ho_Chi_Minh` for a given UTC clock reading.
+pub fn vn_today(now: DateTime<Utc>) -> NaiveDate {
+    utc_to_vn_date(now)
+}
+
+/// Converts a Vietnam calendar date (`Asia/Ho_Chi_Minh`) to the half-open UTC interval `[start, end)`.
+/// Example: `2026-11-23` -> `[2026-11-22T17:00:00Z, 2026-11-23T17:00:00Z)`.
+pub fn vn_day_utc_bounds(vn_date: NaiveDate) -> (DateTime<Utc>, DateTime<Utc>) {
+    let vn = vn_offset();
+    let start_local = vn_date
+        .and_hms_opt(0, 0, 0)
+        .expect("00:00:00 is always valid");
+    let next_day = vn_date.succ_opt().expect("next date in valid range");
+    let end_local = next_day
+        .and_hms_opt(0, 0, 0)
+        .expect("00:00:00 is always valid");
+    let start_utc = vn
+        .from_local_datetime(&start_local)
+        .single()
+        .expect("unambiguous +07:00")
+        .with_timezone(&Utc);
+    let end_utc = vn
+        .from_local_datetime(&end_local)
+        .single()
+        .expect("unambiguous +07:00")
+        .with_timezone(&Utc);
+    (start_utc, end_utc)
+}
+
+/// Parses and validates an optional `YYYY-MM-DD` reconciliation date against `Asia/Ho_Chi_Minh` today.
+/// Empty input defaults to VN today; invalid format or future date returns `Validation` (400).
+pub fn parse_and_validate_reconciliation_date(raw: &str, now: DateTime<Utc>) -> Result<NaiveDate> {
+    let today_vn = vn_today(now);
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(today_vn);
+    }
+    let parsed = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d").map_err(|_| {
+        PaymentError::Validation("date must be formatted as YYYY-MM-DD".to_string())
+    })?;
+    if parsed.format("%Y-%m-%d").to_string() != trimmed {
+        return Err(PaymentError::Validation(
+            "date must be formatted as YYYY-MM-DD".to_string(),
+        ));
+    }
+    if parsed > today_vn {
+        return Err(PaymentError::Validation(format!(
+            "reconciliation date {parsed} cannot be in the future (today in Asia/Ho_Chi_Minh is {today_vn})"
+        )));
+    }
+    Ok(parsed)
+}
+
+/// Validates buyer refund receiving bank account details (PAY-B11 / UC-PAY04).
+/// - `bank_code`: non-empty, 2..=32 ASCII alphanumeric / `_` / `-` / space
+/// - `bank_account_number`: strictly ASCII digits, 6..=19 characters
+/// - `bank_account_name`: non-empty, 2..=120 chars
+///
+/// Returns `(bank_code, bank_account_number, bank_account_masked, bank_account_name)`.
+pub fn validate_refund_bank_account(
+    bank_code: &str,
+    account_number: &str,
+    account_name: &str,
+) -> Result<(String, String, String, String)> {
+    let code = bank_code.trim();
+    if code.len() < 2
+        || code.len() > 32
+        || !code
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ' '))
     {
-        ReturnAllocationAction::CancelAllocation
+        return Err(PaymentError::Validation(
+            "bank_code must be 2-32 ASCII alphanumeric characters".to_string(),
+        ));
+    }
+
+    let number = account_number.trim();
+    if !(6..=19).contains(&number.len()) || !number.chars().all(|c| c.is_ascii_digit()) {
+        return Err(PaymentError::Validation(
+            "bank_account_number must contain 6 to 19 ASCII digits".to_string(),
+        ));
+    }
+
+    let name = account_name.trim();
+    let name_len = name.chars().count();
+    if !(2..=120).contains(&name_len) {
+        return Err(PaymentError::Validation(
+            "bank_account_name must be between 2 and 120 characters".to_string(),
+        ));
+    }
+
+    let masked = mask_bank_account(number);
+    Ok((
+        code.to_string(),
+        number.to_string(),
+        masked,
+        name.to_string(),
+    ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignAmountSplit {
+    Exact { confirm_vnd: i64 },
+    Overpaid { confirm_vnd: i64, excess_vnd: i64 },
+}
+
+/// Splits a mismatched transfer amount when resolving a reconciliation queue item with `ASSIGN` (PAY-B9):
+/// - `actual < expected` -> `409 Conflict` (underpayment cannot confirm order)
+/// - `actual == expected` -> `Exact { confirm_vnd }`
+/// - `actual > expected` -> `Overpaid { confirm_vnd, excess_vnd }` (confirm + pending refund for excess)
+pub fn compute_reconciliation_assign_split(
+    expected_amount_vnd: i64,
+    actual_amount_vnd: i64,
+) -> Result<AssignAmountSplit> {
+    if expected_amount_vnd <= 0 || actual_amount_vnd <= 0 {
+        return Err(PaymentError::Validation(
+            "expected and actual amounts must be positive VND".to_string(),
+        ));
+    }
+    if actual_amount_vnd < expected_amount_vnd {
+        return Err(PaymentError::Conflict(format!(
+            "underpayment cannot be assigned: actual_vnd={actual_amount_vnd} < expected_vnd={expected_amount_vnd}"
+        )));
+    }
+    if actual_amount_vnd == expected_amount_vnd {
+        Ok(AssignAmountSplit::Exact {
+            confirm_vnd: expected_amount_vnd,
+        })
     } else {
-        ReturnAllocationAction::DeferPostDeliveryReturn
+        Ok(AssignAmountSplit::Overpaid {
+            confirm_vnd: expected_amount_vnd,
+            excess_vnd: actual_amount_vnd - expected_amount_vnd,
+        })
     }
 }
 
@@ -1315,20 +1821,51 @@ mod tests {
             decide_return_allocation_action("VIETQR", Some("SHIPPING"), "held", 0),
             ReturnAllocationAction::CancelAllocation
         );
-        // Post-delivery return (RETURN_REQUESTED) -> deferred to Wave 2 (even for 0 VND or awaiting)
+        // Post-delivery return (RETURN_REQUESTED):
+        // - Paid collected order (P > 0, held) -> handled by order's CreateRefund (DeferPostDeliveryReturn)
+        // - 0 VND held order -> CancelAllocation (no CreateRefund called by order)
+        // - Uncollected COD (awaiting_collection) -> CancelAllocation
         assert_eq!(
             decide_return_allocation_action("COD", Some("RETURN_REQUESTED"), "held", 250_000),
             ReturnAllocationAction::DeferPostDeliveryReturn
         );
         assert_eq!(
-            decide_return_allocation_action("VIETQR", Some("RETURN_REQUESTED"), "held", 0),
+            decide_return_allocation_action("VIETQR", Some("RETURN_REQUESTED"), "held", 250_000),
             ReturnAllocationAction::DeferPostDeliveryReturn
+        );
+        assert_eq!(
+            decide_return_allocation_action("VIETQR", Some("RETURN_REQUESTED"), "held", 0),
+            ReturnAllocationAction::CancelAllocation
+        );
+        assert_eq!(
+            decide_return_allocation_action("COD", Some("RETURN_REQUESTED"), "held", 0),
+            ReturnAllocationAction::CancelAllocation
         );
         assert_eq!(
             decide_return_allocation_action(
                 "COD",
                 Some("RETURN_REQUESTED"),
                 "awaiting_collection",
+                250_000
+            ),
+            ReturnAllocationAction::CollectCodForRefund,
+            "RETURN_REQUESTED on P > 0 uncollected COD must collect COD for refund, NOT cancel"
+        );
+        assert_eq!(
+            decide_return_allocation_action(
+                "COD",
+                Some("RETURN_REQUESTED"),
+                "awaiting_collection",
+                0
+            ),
+            ReturnAllocationAction::CancelAllocation
+        );
+        // Already refunded allocation on RETURN_REQUESTED -> no-op (no double booking)
+        assert_eq!(
+            decide_return_allocation_action(
+                "VIETQR",
+                Some("RETURN_REQUESTED"),
+                "refunded",
                 250_000
             ),
             ReturnAllocationAction::DeferPostDeliveryReturn
@@ -1471,10 +2008,18 @@ mod tests {
             order_id: "ord-1".into(),
             amount_vnd: 50_000,
             reason: "admin_partial".into(),
-            status: "completed".into(),
+            status: "pending".into(),
             idempotency_key: "admin-key-1".into(),
             provider_refund_id: None,
             is_late_payment: false,
+            bank_code: None,
+            bank_account_number: None,
+            bank_account_masked: None,
+            bank_account_name: None,
+            settled_at: None,
+            settlement_note: None,
+            settlement_idempotency_key: None,
+            affects_escrow: true,
             created_at: now,
             updated_at: now,
         };
@@ -1593,5 +2138,391 @@ mod tests {
             ]),
             GroupPaymentSelection::Found(1)
         );
+    }
+
+    #[test]
+    fn test_w2_reconciliation_assign_split_exact_overpaid_underpaid() {
+        assert_eq!(
+            compute_reconciliation_assign_split(250_000, 250_000).unwrap(),
+            AssignAmountSplit::Exact {
+                confirm_vnd: 250_000
+            }
+        );
+        assert_eq!(
+            compute_reconciliation_assign_split(250_000, 275_000).unwrap(),
+            AssignAmountSplit::Overpaid {
+                confirm_vnd: 250_000,
+                excess_vnd: 25_000
+            }
+        );
+        // Underpayment -> 409 Conflict
+        assert!(matches!(
+            compute_reconciliation_assign_split(250_000, 249_999),
+            Err(PaymentError::Conflict(_))
+        ));
+        assert!(matches!(
+            compute_reconciliation_assign_split(250_000, 100_000),
+            Err(PaymentError::Conflict(_))
+        ));
+        // Non-positive amounts -> 400 Validation
+        assert!(matches!(
+            compute_reconciliation_assign_split(0, 100_000),
+            Err(PaymentError::Validation(_))
+        ));
+        assert!(matches!(
+            compute_reconciliation_assign_split(100_000, 0),
+            Err(PaymentError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn test_w2_capped_escrow_release_protects_unmatured_holds() {
+        // Review P2-4 scenario:
+        // ord-1 (100k) matured after clawback drained pending to 0, then ord-2 (100k, unmatured)
+        // settled so pending = 100k. Releasing ord-1 MUST yield 0 so ord-2 stays held 72h.
+        assert_eq!(
+            compute_capped_escrow_release_vnd(100_000, 100_000, 100_000),
+            0
+        );
+        // Partial clawback (40k): pending=160k, ord-2 unmatured=100k -> ord-1 can release 60k.
+        assert_eq!(
+            compute_capped_escrow_release_vnd(100_000, 160_000, 100_000),
+            60_000
+        );
+        // Normal case (no clawback): pending=200k, ord-2 unmatured=100k -> ord-1 releases full 100k.
+        assert_eq!(
+            compute_capped_escrow_release_vnd(100_000, 200_000, 100_000),
+            100_000
+        );
+        // Once ord-2 matures (unmatured=0), full pending=100k releases.
+        assert_eq!(
+            compute_capped_escrow_release_vnd(100_000, 100_000, 0),
+            100_000
+        );
+        // Negative / underflow guard
+        assert_eq!(
+            compute_capped_escrow_release_vnd(100_000, 50_000, 120_000),
+            0
+        );
+        assert_eq!(compute_capped_escrow_release_vnd(100_000, -10_000, 0), 0);
+    }
+
+    #[test]
+    fn test_w2_refund_bank_account_validation_and_redaction() {
+        // Valid 6-digit and 19-digit account numbers
+        let (code, num, masked, name) =
+            validate_refund_bank_account(" VCB ", " 123456 ", " NGUYEN VAN A ").unwrap();
+        assert_eq!(code, "VCB");
+        assert_eq!(num, "123456");
+        assert_eq!(masked, "****3456");
+        assert_eq!(name, "NGUYEN VAN A");
+
+        let (_, num19, masked19, _) =
+            validate_refund_bank_account("MB", "1234567890123456789", "TRAN THI B").unwrap();
+        assert_eq!(num19.len(), 19);
+        assert_eq!(masked19, "****6789");
+
+        // Invalid account numbers: too short, too long, non-digit, spaces inside
+        for bad_num in [
+            "",
+            "12345",
+            "12345678901234567890",
+            "12345A",
+            "123 456",
+            "123-456",
+        ] {
+            assert!(
+                matches!(
+                    validate_refund_bank_account("VCB", bad_num, "NGUYEN VAN A"),
+                    Err(PaymentError::Validation(_))
+                ),
+                "expected Validation error for account_number={bad_num:?}"
+            );
+        }
+        // Invalid bank_code / account_name
+        assert!(validate_refund_bank_account("", "123456", "NGUYEN VAN A").is_err());
+        assert!(validate_refund_bank_account("V", "123456", "NGUYEN VAN A").is_err());
+        assert!(validate_refund_bank_account("VCB", "123456", "").is_err());
+        assert!(validate_refund_bank_account("VCB", "123456", "A").is_err());
+
+        // Custom Debug on RefundRecord never leaks bank_account_number
+        let now = Utc::now();
+        let rec = RefundRecord {
+            id: Uuid::new_v4(),
+            payment_id: Uuid::new_v4(),
+            order_id: "ord-1".into(),
+            amount_vnd: 50_000,
+            reason: "test".into(),
+            status: "pending".into(),
+            idempotency_key: "k1".into(),
+            provider_refund_id: None,
+            is_late_payment: false,
+            bank_code: Some("VCB".into()),
+            bank_account_number: Some("19034567890123".into()),
+            bank_account_masked: Some("****0123".into()),
+            bank_account_name: Some("NGUYEN VAN A".into()),
+            settled_at: None,
+            settlement_note: None,
+            settlement_idempotency_key: None,
+            affects_escrow: true,
+            created_at: now,
+            updated_at: now,
+        };
+        let dbg = format!("{rec:?}");
+        assert!(!dbg.contains("19034567890123"));
+        assert!(dbg.contains("[REDACTED]"));
+        assert!(dbg.contains("****0123"));
+    }
+
+    #[test]
+    fn test_w2_vn_date_utc_bounds_and_00_to_07_boundary() {
+        let d22 = NaiveDate::from_ymd_opt(2026, 11, 22).unwrap();
+        let d23 = NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
+        let d24 = NaiveDate::from_ymd_opt(2026, 11, 24).unwrap();
+
+        // 2026-11-22T16:59:59Z == 2026-11-22 23:59:59 +07:00 -> VN date 2026-11-22
+        let t_before = DateTime::parse_from_rfc3339("2026-11-22T16:59:59Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(utc_to_vn_date(t_before), d22);
+
+        // 2026-11-22T17:00:00Z == 2026-11-23 00:00:00 +07:00 -> VN date 2026-11-23 (00:00 VN)
+        let t_midnight_vn = DateTime::parse_from_rfc3339("2026-11-22T17:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(utc_to_vn_date(t_midnight_vn), d23);
+
+        // 2026-11-22T18:22:00Z == 2026-11-23 01:22:00 +07:00 (exact PAY-B8 bug time!) -> VN date 2026-11-23
+        let t_0122_vn = DateTime::parse_from_rfc3339("2026-11-22T18:22:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(utc_to_vn_date(t_0122_vn), d23);
+
+        // 2026-11-22T23:59:59Z == 2026-11-23 06:59:59 +07:00 -> VN date 2026-11-23
+        let t_0659_vn = DateTime::parse_from_rfc3339("2026-11-22T23:59:59Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(utc_to_vn_date(t_0659_vn), d23);
+
+        // 2026-11-23T00:00:00Z == 2026-11-23 07:00:00 +07:00 -> VN date 2026-11-23
+        let t_0700_vn = DateTime::parse_from_rfc3339("2026-11-23T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(utc_to_vn_date(t_0700_vn), d23);
+
+        // 2026-11-23T17:00:00Z == 2026-11-24 00:00:00 +07:00 -> VN date 2026-11-24
+        let t_next_midnight_vn = DateTime::parse_from_rfc3339("2026-11-23T17:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(utc_to_vn_date(t_next_midnight_vn), d24);
+
+        let (start, end) = vn_day_utc_bounds(d23);
+        assert_eq!(start, t_midnight_vn);
+        assert_eq!(end, t_next_midnight_vn);
+        assert!(t_before < start);
+        assert!(t_midnight_vn >= start && t_midnight_vn < end);
+        assert!(t_0122_vn >= start && t_0122_vn < end);
+        assert!(t_0659_vn >= start && t_0659_vn < end);
+        assert!(t_0700_vn >= start && t_0700_vn < end);
+        assert!(t_next_midnight_vn >= end);
+
+        // Empty date at 2026-11-22T18:22:00Z defaults to VN today (2026-11-23), NOT UTC 2026-11-22
+        assert_eq!(
+            parse_and_validate_reconciliation_date("", t_0122_vn).unwrap(),
+            d23
+        );
+        // Same-day VN date allowed, past date allowed, tomorrow VN date -> 400 Validation
+        assert_eq!(
+            parse_and_validate_reconciliation_date("2026-11-23", t_0122_vn).unwrap(),
+            d23
+        );
+        assert_eq!(
+            parse_and_validate_reconciliation_date("2026-11-22", t_0122_vn).unwrap(),
+            d22
+        );
+        assert!(matches!(
+            parse_and_validate_reconciliation_date("2026-11-24", t_0122_vn),
+            Err(PaymentError::Validation(_))
+        ));
+        assert!(matches!(
+            parse_and_validate_reconciliation_date("23-11-2026", t_0122_vn),
+            Err(PaymentError::Validation(_))
+        ));
+        assert!(matches!(
+            parse_and_validate_reconciliation_date("2026-02-30", t_0122_vn),
+            Err(PaymentError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn test_w2_review_fixes_keys_guards_idempotency_and_note_snapshot() {
+        // Point 2 / P0-1: provider_tx_id-scoped keys and unified accounting state guard
+        assert_eq!(reconciliation_refund_key(" TX-1 "), "recon-refund:TX-1");
+        assert_eq!(reconciliation_overpay_key(" TX-1 "), "recon-overpay:TX-1");
+        let clean = ProviderTxAccountingState::default();
+        assert!(!clean.is_accounted());
+        assert!(validate_reconciliation_provider_tx_accountable("TX-1", clean).is_ok());
+
+        for state in [
+            ProviderTxAccountingState {
+                recon_queue_finalized: true,
+                ..Default::default()
+            },
+            ProviderTxAccountingState {
+                on_payment: true,
+                ..Default::default()
+            },
+            ProviderTxAccountingState {
+                has_tx_refund: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(state.is_accounted());
+            assert!(matches!(
+                validate_reconciliation_provider_tx_accountable("TX-1", state),
+                Err(PaymentError::Conflict(_))
+            ));
+        }
+
+        // Point 4: SettleRefund and ResolveReconciliationItem idempotency parameter mismatch -> 409
+        let now = Utc::now();
+        let rf_id = Uuid::new_v4();
+        let rf = RefundRecord {
+            id: rf_id,
+            payment_id: Uuid::new_v4(),
+            order_id: "ord-1".into(),
+            amount_vnd: 50_000,
+            reason: "r".into(),
+            status: "completed".into(),
+            idempotency_key: "rf-k".into(),
+            provider_refund_id: Some("FT-1".into()),
+            is_late_payment: false,
+            bank_code: Some("VCB".into()),
+            bank_account_number: Some("19034567890123".into()),
+            bank_account_masked: Some("****0123".into()),
+            bank_account_name: Some("BUYER".into()),
+            settled_at: Some(now),
+            settlement_note: None,
+            settlement_idempotency_key: Some("settle-k".into()),
+            affects_escrow: true,
+            created_at: now,
+            updated_at: now,
+        };
+        assert!(validate_settle_refund_idempotency_match(&rf, rf_id, "FT-1").is_ok());
+        assert!(matches!(
+            validate_settle_refund_idempotency_match(&rf, rf_id, "FT-2"),
+            Err(PaymentError::Conflict(_))
+        ));
+        assert!(matches!(
+            validate_settle_refund_idempotency_match(&rf, Uuid::new_v4(), "FT-1"),
+            Err(PaymentError::Conflict(_))
+        ));
+
+        let item_id = Uuid::new_v4();
+        let p1 = Uuid::new_v4();
+        let p2 = Uuid::new_v4();
+        let qi = ReconciliationQueueItem {
+            id: item_id,
+            webhook_event_id: None,
+            provider: "vietqr_mock".into(),
+            provider_tx_id: "TX-1".into(),
+            expected_payment_id: Some(p1),
+            order_ref: Some("grp-1".into()),
+            expected_amount_vnd: Some(100_000),
+            actual_amount_vnd: 90_000,
+            reason: "amount_mismatch".into(),
+            resolution_status: "refunded".into(),
+            notes: None,
+            resolution_idempotency_key: Some("rq-k".into()),
+            resolution_refund_id: Some(rf_id),
+            resolution_action: Some("REFUND".into()),
+            resolution_payment_id: Some(p1),
+            occurred_at: Some(now),
+            created_at: now,
+            resolved_at: Some(now),
+        };
+        assert!(validate_resolve_reconciliation_idempotency_match(
+            &qi,
+            item_id,
+            ReconciliationActionKind::Refund,
+            Some(p1)
+        )
+        .is_ok());
+        assert!(matches!(
+            validate_resolve_reconciliation_idempotency_match(
+                &qi,
+                item_id,
+                ReconciliationActionKind::Assign,
+                Some(p1)
+            ),
+            Err(PaymentError::Conflict(_))
+        ));
+        assert!(matches!(
+            validate_resolve_reconciliation_idempotency_match(
+                &qi,
+                item_id,
+                ReconciliationActionKind::Refund,
+                Some(p2)
+            ),
+            Err(PaymentError::Conflict(_))
+        ));
+        assert!(matches!(
+            validate_resolve_reconciliation_idempotency_match(
+                &qi,
+                item_id,
+                ReconciliationActionKind::Refund,
+                None
+            ),
+            Err(PaymentError::Conflict(_))
+        ));
+
+        // Point 5: settlement_note snapshots masked destination bank account
+        assert_eq!(
+            format_settlement_note_with_masked_account("Manual FT", Some("VCB"), Some("****0123")),
+            Some("Manual FT [settled_to: VCB ****0123]".to_string())
+        );
+        assert_eq!(
+            format_settlement_note_with_masked_account("  ", Some("MB"), Some("****9999")),
+            Some("[settled_to: MB ****9999]".to_string())
+        );
+        assert_eq!(
+            format_settlement_note_with_masked_account("Cash counter", None, None),
+            Some("Cash counter".to_string())
+        );
+    }
+
+    #[test]
+    fn test_w2_review2_normalize_tx_id_cancel_terminal_and_expiry_ordering() {
+        // P0-1: normalize_provider_tx_id
+        assert_eq!(normalize_provider_tx_id("  TX-99 \t\n").unwrap(), "TX-99");
+        assert!(matches!(
+            normalize_provider_tx_id(""),
+            Err(PaymentError::Validation(_))
+        ));
+        assert!(matches!(
+            normalize_provider_tx_id("   \t  "),
+            Err(PaymentError::Validation(_))
+        ));
+
+        // P1-3: terminal unpaid statuses are idempotently cancelled; paid states stay Conflict
+        for st in ["cancelled", "expired", "failed", "superseded"] {
+            assert!(
+                is_payment_already_cancelled_terminal(st),
+                "expected {st} to be idempotently cancelled"
+            );
+        }
+        for st in ["pending", "succeeded", "refunded"] {
+            assert!(
+                !is_payment_already_cancelled_terminal(st),
+                "expected {st} NOT to be treated as already-cancelled"
+            );
+        }
+
+        // P1-2: exact-amount transfer prioritized ahead of earlier wrong-amount transfer
+        let ordered =
+            order_expiry_candidate_indices(&[150_000, 200_000, 250_000, 200_000], 200_000);
+        assert_eq!(ordered, vec![1, 3, 0, 2]);
+        assert_eq!(order_expiry_candidate_indices(&[150_000], 200_000), vec![0]);
+        assert!(order_expiry_candidate_indices(&[], 200_000).is_empty());
     }
 }

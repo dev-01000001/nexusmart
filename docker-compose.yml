@@ -216,6 +216,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
       PAYMENT_EXPIRY_MINUTES: ${PAYMENT_EXPIRY_MINUTES:-15}
+      PAYMENT_SELLER_HOLD_HOURS: ${PAYMENT_SELLER_HOLD_HOURS:-72}
       PAYOS_CLIENT_ID: ${PAYOS_CLIENT_ID:-sandbox-client-id}
       PAYOS_API_KEY: ${PAYOS_API_KEY:-sandbox-api-key}
       PAYOS_CHECKSUM_KEY: ${PAYOS_CHECKSUM_KEY:-sandbox-checksum-key}
@@ -252,12 +253,14 @@ services:
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
       SHIPPING_WEBHOOK_SECRET: ${SHIPPING_WEBHOOK_SECRET:-dev-only-shipping-webhook-hmac-secret}
-      GHN_ENABLED: ${GHN_ENABLED:-true}
+      SHIPPING_MAX_REDELIVERY: ${SHIPPING_MAX_REDELIVERY:-3}
+      # Dev-only 32-byte base64 key for encrypting carrier tokens; replace in production.
+      SHIPPING_CONFIG_KEY: ${SHIPPING_CONFIG_KEY:-ZGV2LW9ubHktc2hpcHBpbmctY29uZmlnLWtleS0zMmI=}
+      SHIPPING_LABEL_BASE_URL: ${SHIPPING_LABEL_BASE_URL:-${WEB_BASE_URL:-http://localhost:${WEB_PORT:-3000}}/api/gw/shipping/labels}
       GHN_MODE: ${GHN_MODE:-mock}
       GHN_BASE_URL: ${GHN_BASE_URL:-https://dev-online-gateway.ghn.vn/shiip/public-api}
       GHN_TOKEN: ${GHN_TOKEN:-sandbox-ghn-token}
       GHN_SHOP_ID: ${GHN_SHOP_ID:-0}
-      MOCK_CARRIER_ENABLED: ${MOCK_CARRIER_ENABLED:-true}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
@@ -297,6 +300,7 @@ services:
       SMTP_PORT: ${SMTP_PORT:-1025}
       SMTP_FROM: ${SMTP_FROM:-no-reply@nexusmart.local}
       USER_GRPC_ADDR: user:50051
+      WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:${WEB_PORT:-3000}}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
@@ -310,6 +314,8 @@ services:
       nats:
         condition: service_healthy
       mailpit:
+        condition: service_healthy
+      user:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -340,6 +346,11 @@ services:
       ORDER_COD_MAX_REJECTED_COUNT: ${ORDER_COD_MAX_REJECTED_COUNT:-3}
       ORDER_PAYMENT_EXPIRY_MINUTES: ${ORDER_PAYMENT_EXPIRY_MINUTES:-15}
       ORDER_DEFAULT_COMMISSION_BPS: ${ORDER_DEFAULT_COMMISSION_BPS:-500}
+      ORDER_AUTO_COMPLETE_DAYS: ${ORDER_AUTO_COMPLETE_DAYS:-7}
+      ORDER_SELLER_CONFIRM_HOURS: ${ORDER_SELLER_CONFIRM_HOURS:-48}
+      ORDER_RETURN_SELLER_RESPONSE_DAYS: ${ORDER_RETURN_SELLER_RESPONSE_DAYS:-3}
+      ORDER_RETURN_SHIP_DAYS: ${ORDER_RETURN_SHIP_DAYS:-5}
+      ORDER_RETURN_INSPECT_DAYS: ${ORDER_RETURN_INSPECT_DAYS:-3}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
@@ -384,6 +395,8 @@ services:
       RATE_LIMIT_IP_PER_MIN: ${RATE_LIMIT_IP_PER_MIN:-300}
       RATE_LIMIT_USER_PER_MIN: ${RATE_LIMIT_USER_PER_MIN:-180}
       RATE_LIMIT_FLASH_SALE_PER_MIN: ${RATE_LIMIT_FLASH_SALE_PER_MIN:-60}
+      RATE_LIMIT_AUTH_PER_MIN: ${RATE_LIMIT_AUTH_PER_MIN:-10}
+      RATE_LIMIT_WEBHOOK_PER_MIN: ${RATE_LIMIT_WEBHOOK_PER_MIN:-600}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-web}
       USER_GRPC_ADDR: user:50051
       PRODUCT_GRPC_ADDR: product:50052

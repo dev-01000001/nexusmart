@@ -5,7 +5,12 @@ import type {
   GatewayLedgerSummary,
   GatewayOrder,
   GatewayReconcileResponse,
+  GatewayReconciliationAction,
+  GatewayReconciliationQueueItem,
+  GatewayRefund,
   GatewayRefundResponse,
+  GatewayResolveReconciliationResponse,
+  GatewaySettleRefundResponse,
   PaginatedResponse,
 } from "@/lib/gateway-types";
 import type { PaymentMethod, PaymentReconciliationRow } from "@/data";
@@ -22,23 +27,41 @@ import {
   formatVnd,
 } from "@/lib/format";
 import { CHANNEL_META, RECON_STATUS_META } from "@/features/admin/adminMeta";
-import { RECONCILE_ITEM_STATUS_META } from "@/features/admin/types";
+import {
+  RECONCILE_ITEM_STATUS_META,
+  getAdminOrderStatusMeta,
+  getAdminRefundStatusMeta,
+  getReconciliationQueueStatusMeta,
+} from "@/features/admin/types";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { StatusPill } from "@/features/admin/StatusPill";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
 
-type DoiSoatTab = "so_cai" | "hoan_tien" | "phien_mau";
+type DoiSoatTab = "so_cai" | "hang_doi" | "hoan_tien" | "phien_mau";
 
 function todayDateIso(): string {
   return formatVnDayKey(Date.now());
 }
 
-function generateRefundIdempotencyKey(): string {
+function generateIdempotencyKey(prefix: string): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `refund-${crypto.randomUUID()}`;
+    return `${prefix}-${crypto.randomUUID()}`;
   }
-  return `refund-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isQueueItemActionable(status: string): boolean {
+  const s = (status ?? "").trim().toLowerCase();
+  return s === "pending" || s === "suspended";
+}
+
+function isRefundPendingStatus(status: string): boolean {
+  const s = (status ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/^REFUND_STATUS_/, "");
+  return s === "PENDING";
 }
 
 function ReconciliationContent() {
@@ -51,12 +74,42 @@ function ReconciliationContent() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Real reconcile run state
+  // Real reconcile run state (Vietnam date default)
   const [reconcileDate, setReconcileDate] = useState(todayDateIso);
   const [reconciling, setReconciling] = useState(false);
+  const [reconcileError, setReconcileError] = useState<string | null>(null);
   const [reconcileResult, setReconcileResult] = useState<GatewayReconcileResponse | null>(null);
 
-  // Real refund form state (fresh Idempotency-Key each time the form is opened; retries reuse the same key)
+  // Mismatched reconciliation queue state
+  const [queueItems, setQueueItems] = useState<GatewayReconciliationQueueItem[]>([]);
+  const [queueTotal, setQueueTotal] = useState(0);
+  const [queuePendingTotal, setQueuePendingTotal] = useState(0);
+  const [queueStatusFilter, setQueueStatusFilter] = useState("");
+  const [queueLoading, setQueueLoading] = useState(false);
+  const [queueError, setQueueError] = useState<string | null>(null);
+  const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null);
+  const [resolveAction, setResolveAction] = useState<GatewayReconciliationAction>("ASSIGN");
+  const [resolvePaymentId, setResolvePaymentId] = useState("");
+  const [resolveNote, setResolveNote] = useState("");
+  const [resolveIdempotencyKey, setResolveIdempotencyKey] = useState("");
+  const [resolvingQueue, setResolvingQueue] = useState(false);
+  const [resolveQueueError, setResolveQueueError] = useState<string | null>(null);
+
+  // Pending refunds settlement queue state
+  const [refundsList, setRefundsList] = useState<GatewayRefund[]>([]);
+  const [refundsTotal, setRefundsTotal] = useState(0);
+  const [pendingRefundsCount, setPendingRefundsCount] = useState(0);
+  const [refundStatusFilter, setRefundStatusFilter] = useState("pending");
+  const [refundsLoading, setRefundsLoading] = useState(false);
+  const [refundsError, setRefundsError] = useState<string | null>(null);
+  const [settlingRefundId, setSettlingRefundId] = useState<string | null>(null);
+  const [settleProviderRef, setSettleProviderRef] = useState("");
+  const [settleNote, setSettleNote] = useState("");
+  const [settleIdempotencyKey, setSettleIdempotencyKey] = useState("");
+  const [settleBusy, setSettleBusy] = useState(false);
+  const [settleError, setSettleError] = useState<string | null>(null);
+
+  // Manual refund form state
   const [refundFormOpen, setRefundFormOpen] = useState(false);
   const [refundIdempotencyKey, setRefundIdempotencyKey] = useState<string>("");
   const [refundPaymentId, setRefundPaymentId] = useState("");
@@ -68,6 +121,66 @@ function ReconciliationContent() {
   const [refundResult, setRefundResult] = useState<GatewayRefundResponse | null>(null);
 
   const [mockChannelFilter, setMockChannelFilter] = useState<"all" | PaymentMethod>("all");
+
+  const loadQueue = useCallback(async () => {
+    setQueueLoading(true);
+    setQueueError(null);
+    try {
+      const qs = new URLSearchParams();
+      qs.set("page", "1");
+      qs.set("page_size", "50");
+      if (queueStatusFilter) qs.set("status", queueStatusFilter);
+
+      const [listRes, openRes] = await Promise.all([
+        api<PaginatedResponse<GatewayReconciliationQueueItem>>(
+          `admin/reconciliation/queue?${qs.toString()}`
+        ),
+        api<PaginatedResponse<GatewayReconciliationQueueItem>>(
+          "admin/reconciliation/queue?status=pending&page=1&page_size=1"
+        ).catch(() => null),
+      ]);
+      const items = listRes.items ?? [];
+      setQueueItems(items);
+      setQueueTotal(listRes.total ?? items.length);
+      if (openRes) {
+        setQueuePendingTotal(openRes.total ?? openRes.items.length);
+      }
+    } catch (err) {
+      setQueueError(getErrorMessage(err, "Không thể tải hàng đợi giao dịch không khớp lúc này."));
+    } finally {
+      setQueueLoading(false);
+    }
+  }, [queueStatusFilter]);
+
+  const loadRefundsQueue = useCallback(async () => {
+    setRefundsLoading(true);
+    setRefundsError(null);
+    try {
+      const qs = new URLSearchParams();
+      qs.set("page", "1");
+      qs.set("page_size", "50");
+      if (refundStatusFilter) qs.set("status", refundStatusFilter);
+
+      const [listRes, pendRes] = await Promise.all([
+        api<PaginatedResponse<GatewayRefund>>(`admin/refunds?${qs.toString()}`),
+        api<PaginatedResponse<GatewayRefund>>(
+          "admin/refunds?status=pending&page=1&page_size=1"
+        ).catch(() => null),
+      ]);
+      const items = listRes.items ?? [];
+      setRefundsList(items);
+      setRefundsTotal(listRes.total ?? items.length);
+      if (pendRes) {
+        setPendingRefundsCount(pendRes.total ?? pendRes.items.length);
+      }
+    } catch (err) {
+      setRefundsError(
+        getErrorMessage(err, "Không thể tải danh sách khoản hoàn tiền chờ tất toán lúc này.")
+      );
+    } finally {
+      setRefundsLoading(false);
+    }
+  }, [refundStatusFilter]);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -95,9 +208,18 @@ function ReconciliationContent() {
     void loadData();
   }, [loadData]);
 
+  useEffect(() => {
+    void loadQueue();
+  }, [loadQueue]);
+
+  useEffect(() => {
+    void loadRefundsQueue();
+  }, [loadRefundsQueue]);
+
   const handleRunReconcile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!reconcileDate || reconciling) return;
+    setReconcileError(null);
     setReconciling(true);
     try {
       const res = await api<GatewayReconcileResponse>("admin/payments/reconcile", {
@@ -106,16 +228,139 @@ function ReconciliationContent() {
       });
       setReconcileResult(res);
       showToast(`Đã hoàn tất phiên đối soát ngày ${reconcileDate}.`);
-      await loadData();
+      await Promise.all([loadData(), loadQueue()]);
     } catch (err) {
-      showToast(getErrorMessage(err, "Không thể chạy đối soát ngày đã chọn."));
+      const msg = getErrorMessage(err, "Không thể chạy đối soát ngày đã chọn.");
+      setReconcileError(msg);
+      showToast(msg);
     } finally {
       setReconciling(false);
     }
   };
 
+  const handleSelectQueueItem = (item: GatewayReconciliationQueueItem) => {
+    if (selectedQueueId === item.id) {
+      setSelectedQueueId(null);
+      setResolveQueueError(null);
+      return;
+    }
+    setSelectedQueueId(item.id);
+    setResolveAction("ASSIGN");
+    setResolvePaymentId(item.expected_payment_id || "");
+    setResolveNote(item.notes || "");
+    setResolveIdempotencyKey(generateIdempotencyKey("recon-resolve"));
+    setResolveQueueError(null);
+  };
+
+  const handleResolveQueueSubmit = async (
+    e: React.FormEvent,
+    item: GatewayReconciliationQueueItem
+  ) => {
+    e.preventDefault();
+    if (resolvingQueue) return;
+
+    const cleanPaymentId = resolvePaymentId.trim();
+    const cleanNote = resolveNote.trim();
+
+    if ((resolveAction === "ASSIGN" || resolveAction === "REFUND") && !cleanPaymentId) {
+      setResolveQueueError("Vui lòng nhập mã giao dịch thanh toán (payment_id) cần gắn xử lý.");
+      return;
+    }
+    if (resolveAction === "SUSPEND" && cleanNote.length < 4) {
+      setResolveQueueError("Vui lòng ghi chú lý do tạm treo (tối thiểu 4 ký tự).");
+      return;
+    }
+
+    const activeKey = resolveIdempotencyKey || generateIdempotencyKey("recon-resolve");
+    if (!resolveIdempotencyKey) setResolveIdempotencyKey(activeKey);
+
+    setResolveQueueError(null);
+    setResolvingQueue(true);
+    try {
+      const res = await api<GatewayResolveReconciliationResponse>(
+        `admin/reconciliation/queue/${encodeURIComponent(item.id)}/resolve`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": activeKey },
+          json: {
+            action: resolveAction,
+            payment_id: cleanPaymentId,
+            note: cleanNote,
+          },
+        }
+      );
+      setResolveIdempotencyKey(generateIdempotencyKey("recon-resolve"));
+      setSelectedQueueId(null);
+      showToast(
+        res.already_resolved
+          ? "Bản ghi đối soát này đã được xử lý trước đó."
+          : "Đã xử lý giao dịch đối soát thành công."
+      );
+      await Promise.all([loadQueue(), loadRefundsQueue(), loadData()]);
+    } catch (err) {
+      setResolveQueueError(getErrorMessage(err, "Không thể xử lý giao dịch đối soát này lúc này."));
+    } finally {
+      setResolvingQueue(false);
+    }
+  };
+
+  const handleOpenSettle = (rf: GatewayRefund) => {
+    if (settlingRefundId === rf.refund_id) {
+      setSettlingRefundId(null);
+      setSettleError(null);
+      return;
+    }
+    setSettlingRefundId(rf.refund_id);
+    setSettleProviderRef(rf.provider_refund_id || "");
+    setSettleNote(rf.settlement_note || "");
+    setSettleIdempotencyKey(generateIdempotencyKey("settle-refund"));
+    setSettleError(null);
+  };
+
+  const handleSubmitSettle = async (e: React.FormEvent, rf: GatewayRefund) => {
+    e.preventDefault();
+    if (settleBusy) return;
+    const cleanRef = settleProviderRef.trim();
+    const cleanNote = settleNote.trim();
+    if (cleanRef.length < 3) {
+      setSettleError("Vui lòng nhập mã giao dịch chuyển khoản ngân hàng (tối thiểu 3 ký tự).");
+      return;
+    }
+
+    const activeKey = settleIdempotencyKey || generateIdempotencyKey("settle-refund");
+    if (!settleIdempotencyKey) setSettleIdempotencyKey(activeKey);
+
+    setSettleError(null);
+    setSettleBusy(true);
+    try {
+      const res = await api<GatewaySettleRefundResponse>(
+        `admin/refunds/${encodeURIComponent(rf.refund_id)}/settle`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": activeKey },
+          json: {
+            provider_refund_id: cleanRef,
+            note: cleanNote,
+          },
+        }
+      );
+      setSettleIdempotencyKey(generateIdempotencyKey("settle-refund"));
+      setSettlingRefundId(null);
+      showToast(
+        res.already_settled
+          ? "Khoản hoàn tiền này đã được tất toán trước đó."
+          : `Đã tất toán chuyển khoản hoàn tiền ${formatVnd(rf.amount_vnd)}.`
+      );
+      await Promise.all([loadRefundsQueue(), loadData()]);
+    } catch (err) {
+      setSettleError(getErrorMessage(err, "Không thể tất toán khoản hoàn tiền lúc này."));
+    } finally {
+      setSettleBusy(false);
+    }
+  };
+
   const handleOpenRefundForm = (presetOrder?: GatewayOrder) => {
-    setRefundIdempotencyKey(generateRefundIdempotencyKey());
+    setRefundIdempotencyKey(generateIdempotencyKey("refund"));
     setRefundError(null);
     setRefundResult(null);
     if (presetOrder) {
@@ -158,7 +403,7 @@ function ReconciliationContent() {
       return;
     }
 
-    const activeKey = refundIdempotencyKey || generateRefundIdempotencyKey();
+    const activeKey = refundIdempotencyKey || generateIdempotencyKey("refund");
     if (!refundIdempotencyKey) {
       setRefundIdempotencyKey(activeKey);
     }
@@ -181,13 +426,13 @@ function ReconciliationContent() {
         }
       );
       setRefundResult(res);
-      setRefundIdempotencyKey(generateRefundIdempotencyKey());
+      setRefundIdempotencyKey(generateIdempotencyKey("refund"));
       showToast(
         res.already_existed
           ? "Yêu cầu hoàn tiền với khóa hiện tại đã được ghi nhận trước đó."
           : `Đã tạo lệnh hoàn tiền ${formatVnd(amountVnd)} thành công.`
       );
-      await loadData();
+      await Promise.all([loadData(), loadRefundsQueue()]);
     } catch (err) {
       setRefundError(getErrorMessage(err, "Không thể thực hiện hoàn tiền lúc này."));
     } finally {
@@ -204,6 +449,16 @@ function ReconciliationContent() {
     if (mockChannelFilter === "all") return reconciliationRows;
     return reconciliationRows.filter((r) => r.channel === mockChannelFilter);
   }, [reconciliationRows, mockChannelFilter]);
+
+  const selectedQueueItem = useMemo(
+    () => queueItems.find((item) => item.id === selectedQueueId) ?? null,
+    [queueItems, selectedQueueId]
+  );
+
+  const settlingRefund = useMemo(
+    () => refundsList.find((rf) => rf.refund_id === settlingRefundId) ?? null,
+    [refundsList, settlingRefundId]
+  );
 
   if (loading) {
     return (
@@ -261,8 +516,13 @@ function ReconciliationContent() {
           </p>
         </div>
         <div className={shared.titleActions}>
-          <Button variant="outline" size="sm" shape="app" onClick={() => void loadData()}>
-            Làm mới sổ cái
+          <Button
+            variant="outline"
+            size="sm"
+            shape="app"
+            onClick={() => void Promise.all([loadData(), loadQueue(), loadRefundsQueue()])}
+          >
+            Làm mới dữ liệu
           </Button>
           <Button variant="primary" size="sm" shape="app" onClick={() => handleOpenRefundForm()}>
             Tạo phiếu hoàn tiền
@@ -305,10 +565,16 @@ function ReconciliationContent() {
         </div>
 
         <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Đơn hàng gần nhất</span>
-          <span className={shared.kpiValue}>{formatInt(orders.length)}</span>
+          <span className={shared.kpiLabel}>Hàng đợi cần xử lý</span>
+          <span
+            className={`${shared.kpiValue} ${
+              queuePendingTotal + pendingRefundsCount > 0 ? shared.kpiValueNegative : ""
+            }`}
+          >
+            {formatInt(queuePendingTotal + pendingRefundsCount)}
+          </span>
           <span className={shared.kpiCaption}>
-            {formatInt(orders.filter((o) => Boolean(o.payment_id)).length)} đơn có mã thanh toán
+            {formatInt(queuePendingTotal)} lệch khớp · {formatInt(pendingRefundsCount)} chờ hoàn
           </span>
         </div>
       </section>
@@ -327,11 +593,24 @@ function ReconciliationContent() {
           <button
             type="button"
             role="tab"
+            aria-selected={activeTab === "hang_doi"}
+            className={`${shared.tabBtn} ${activeTab === "hang_doi" ? shared.tabBtnActive : ""}`}
+            onClick={() => setActiveTab("hang_doi")}
+          >
+            <span>Giao dịch không khớp</span>
+            {queuePendingTotal > 0 && <span className={shared.tabCount}>{queuePendingTotal}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={activeTab === "hoan_tien"}
             className={`${shared.tabBtn} ${activeTab === "hoan_tien" ? shared.tabBtnActive : ""}`}
             onClick={() => setActiveTab("hoan_tien")}
           >
-            Hoàn tiền giao dịch
+            <span>Hoàn tiền & Tất toán</span>
+            {pendingRefundsCount > 0 && (
+              <span className={shared.tabCount}>{pendingRefundsCount}</span>
+            )}
           </button>
           <button
             type="button"
@@ -352,7 +631,7 @@ function ReconciliationContent() {
           <section className={shared.panel} aria-labelledby="reconcile-trigger-heading">
             <div className={shared.panelHeader}>
               <h2 id="reconcile-trigger-heading" className={shared.panelTitle}>
-                Chạy đối soát thanh toán theo ngày
+                Chạy đối soát thanh toán theo ngày (giờ Việt Nam UTC+7)
               </h2>
               <StatusPill
                 label={ledger.is_balanced ? "Sổ cái cân bằng" : "Sổ cái có chênh lệch"}
@@ -360,11 +639,8 @@ function ReconciliationContent() {
               />
             </div>
 
-            <form
-              onSubmit={(e) => void handleRunReconcile(e)}
-              style={{ display: "flex", alignItems: "flex-end", gap: 12, flexWrap: "wrap" }}
-            >
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 200 }}>
+            <form onSubmit={(e) => void handleRunReconcile(e)} className={styles.inlineFormRow}>
+              <div className={styles.dateField}>
                 <label htmlFor="recon-date" className={shared.fieldLabel}>
                   Chọn ngày chốt sao kê
                 </label>
@@ -381,6 +657,12 @@ function ReconciliationContent() {
                 {reconciling ? "Đang chạy đối soát..." : "Chạy đối soát"}
               </Button>
             </form>
+
+            {reconcileError && (
+              <p className={styles.alertError} role="alert">
+                {reconcileError}
+              </p>
+            )}
 
             {reconcileResult && (
               <div className={shared.detailWell} style={{ marginTop: 16 }}>
@@ -501,13 +783,603 @@ function ReconciliationContent() {
         </div>
       )}
 
-      {/* TAB 2: Real Refund Flow */}
+      {/* TAB 2: Mismatched Reconciliation Queue */}
+      {activeTab === "hang_doi" && (
+        <div className={shared.sectionStack}>
+          <section className={shared.panel} aria-labelledby="recon-queue-heading">
+            <div className={shared.panelHeader}>
+              <div>
+                <h2 id="recon-queue-heading" className={shared.panelTitle}>
+                  Hàng đợi giao dịch không khớp ({formatInt(queueTotal)})
+                </h2>
+                <span className={shared.panelMeta}>
+                  Xử lý webhook chuyển khoản lệch số tiền hoặc sai mã tham chiếu bằng Gán khớp, Hoàn
+                  tiền hoặc Tạm treo.
+                </span>
+              </div>
+              <div className={styles.filterGroup}>
+                <select
+                  className={shared.toolbarSelect}
+                  value={queueStatusFilter}
+                  onChange={(e) => setQueueStatusFilter(e.target.value)}
+                  aria-label="Lọc trạng thái giao dịch không khớp"
+                >
+                  <option value="">Tất cả trạng thái</option>
+                  <option value="pending">Chờ xử lý</option>
+                  <option value="suspended">Đang tạm treo</option>
+                  <option value="assigned">Đã gán khớp</option>
+                  <option value="refunded">Đã tạo hoàn tiền</option>
+                </select>
+                <Button variant="outline" size="sm" shape="app" onClick={() => void loadQueue()}>
+                  Làm mới
+                </Button>
+              </div>
+            </div>
+
+            {queueLoading ? (
+              <StateView
+                kind="loading"
+                surface="app"
+                title="Đang tải hàng đợi giao dịch không khớp..."
+                rows={4}
+              />
+            ) : queueError ? (
+              <StateView
+                kind="error"
+                surface="app"
+                title="Không thể tải hàng đợi giao dịch không khớp"
+                message={queueError}
+                actionLabel="Thử lại"
+                onAction={() => void loadQueue()}
+              />
+            ) : queueItems.length === 0 ? (
+              <p className={shared.emptyRow}>
+                Không có giao dịch không khớp nào trong trạng thái đã chọn.
+              </p>
+            ) : (
+              <>
+                <div className={shared.tableWrap}>
+                  <table className={shared.dataTable}>
+                    <thead>
+                      <tr>
+                        <th>Mã GD đối tác & đơn tham chiếu</th>
+                        <th className={shared.colNum}>Kỳ vọng</th>
+                        <th className={shared.colNum}>Thực nhận</th>
+                        <th>Lý do lệch</th>
+                        <th>Trạng thái</th>
+                        <th className={shared.colAction}>Thao tác</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {queueItems.map((item) => {
+                        const stMeta = getReconciliationQueueStatusMeta(item.resolution_status);
+                        const isSelected = selectedQueueId === item.id;
+                        const actionable = isQueueItemActionable(item.resolution_status);
+                        const diff = item.actual_amount_vnd - item.expected_amount_vnd;
+                        return (
+                          <tr
+                            key={item.id}
+                            className={`${shared.rowInteractive} ${isSelected ? shared.rowSelected : ""}`}
+                            onClick={() => handleSelectQueueItem(item)}
+                          >
+                            <td>
+                              <div className={shared.cellPrimary}>
+                                {item.provider_tx_id || item.id.slice(0, 8)}
+                              </div>
+                              <div className={shared.cellSub}>
+                                {item.provider} ·{" "}
+                                {item.order_ref || item.expected_payment_id || "—"}
+                              </div>
+                            </td>
+                            <td className={shared.colNum}>{formatVnd(item.expected_amount_vnd)}</td>
+                            <td
+                              className={`${shared.colNum} ${
+                                diff !== 0 ? shared.numNegative : shared.numPositive
+                              }`}
+                            >
+                              {formatVnd(item.actual_amount_vnd)}
+                            </td>
+                            <td>
+                              <div>{item.reason || "—"}</div>
+                              {item.notes && <div className={shared.cellSub}>{item.notes}</div>}
+                            </td>
+                            <td>
+                              <StatusPill label={stMeta.label} tone={stMeta.tone} />
+                            </td>
+                            <td className={shared.colAction}>
+                              <button
+                                type="button"
+                                className={shared.rowActionBtn}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSelectQueueItem(item);
+                                }}
+                              >
+                                {isSelected ? "Đóng" : actionable ? "Xử lý" : "Xem"}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className={shared.mobileList}>
+                  {queueItems.map((item) => {
+                    const stMeta = getReconciliationQueueStatusMeta(item.resolution_status);
+                    const isSelected = selectedQueueId === item.id;
+                    return (
+                      <div key={item.id} className={shared.mobileItem}>
+                        <button
+                          type="button"
+                          className={shared.mobileItemBtn}
+                          onClick={() => handleSelectQueueItem(item)}
+                          aria-expanded={isSelected}
+                        >
+                          <div className={shared.mobileLine1}>
+                            <span className={shared.mobileIdentity}>
+                              {item.provider_tx_id || item.order_ref || item.id.slice(0, 8)}
+                            </span>
+                            <span className={shared.mobileMetric}>
+                              {formatVnd(item.actual_amount_vnd)}
+                            </span>
+                          </div>
+                          <div className={shared.mobileLine2}>
+                            <span className={shared.mobileMetaText}>
+                              Kỳ vọng {formatVnd(item.expected_amount_vnd)} · {item.reason}
+                            </span>
+                            <StatusPill label={stMeta.label} tone={stMeta.tone} />
+                          </div>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {selectedQueueItem && (
+                  <div className={shared.detailWell} style={{ marginTop: 16 }}>
+                    <div className={shared.detailHeader}>
+                      <h3 className={shared.detailHeading}>
+                        Xử lý giao dịch: {selectedQueueItem.provider_tx_id || selectedQueueItem.id}
+                      </h3>
+                      <StatusPill
+                        label={
+                          getReconciliationQueueStatusMeta(selectedQueueItem.resolution_status)
+                            .label
+                        }
+                        tone={
+                          getReconciliationQueueStatusMeta(selectedQueueItem.resolution_status).tone
+                        }
+                      />
+                    </div>
+
+                    <div className={shared.detailGrid}>
+                      <div className={shared.detailField}>
+                        <span className={shared.detailKey}>Cổng / Mã đối tác</span>
+                        <span className={shared.detailVal}>
+                          {selectedQueueItem.provider} · {selectedQueueItem.provider_tx_id || "—"}
+                        </span>
+                      </div>
+                      <div className={shared.detailField}>
+                        <span className={shared.detailKey}>Kỳ vọng / Thực nhận</span>
+                        <span className={`${shared.detailVal} num`}>
+                          {formatVnd(selectedQueueItem.expected_amount_vnd)} /{" "}
+                          {formatVnd(selectedQueueItem.actual_amount_vnd)}
+                        </span>
+                      </div>
+                      <div className={shared.detailField}>
+                        <span className={shared.detailKey}>Thời điểm ghi nhận</span>
+                        <span className={`${shared.detailValPlain} num`}>
+                          {selectedQueueItem.created_at
+                            ? formatDateTimeVi(selectedQueueItem.created_at)
+                            : "—"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {isQueueItemActionable(selectedQueueItem.resolution_status) ? (
+                      <form
+                        onSubmit={(e) => void handleResolveQueueSubmit(e, selectedQueueItem)}
+                        className={styles.resolveStack}
+                      >
+                        <div className={shared.detailGrid}>
+                          <div className={shared.detailField}>
+                            <label htmlFor="rq-action" className={shared.fieldLabel}>
+                              Hướng xử lý
+                            </label>
+                            <select
+                              id="rq-action"
+                              className={styles.fullSelect}
+                              value={resolveAction}
+                              onChange={(e) =>
+                                setResolveAction(e.target.value as GatewayReconciliationAction)
+                              }
+                              disabled={resolvingQueue}
+                            >
+                              <option value="ASSIGN">
+                                Gán khớp vào thanh toán (ASSIGN — báo lỗi nếu thiếu tiền)
+                              </option>
+                              <option value="REFUND">Tạo khoản hoàn tiền cho khách (REFUND)</option>
+                              <option value="SUSPEND">Tạm treo chờ kiểm tra thêm (SUSPEND)</option>
+                            </select>
+                          </div>
+                          <div className={shared.detailField}>
+                            <label htmlFor="rq-payment-id" className={shared.fieldLabel}>
+                              Mã thanh toán (payment_id)
+                            </label>
+                            <input
+                              id="rq-payment-id"
+                              type="text"
+                              className={shared.textInput}
+                              value={resolvePaymentId}
+                              onChange={(e) => setResolvePaymentId(e.target.value)}
+                              placeholder="Nhập payment_id liên quan..."
+                              disabled={resolvingQueue}
+                              required={resolveAction === "ASSIGN" || resolveAction === "REFUND"}
+                            />
+                          </div>
+                          <div className={shared.detailField}>
+                            <label htmlFor="rq-note" className={shared.fieldLabel}>
+                              Ghi chú kế toán
+                            </label>
+                            <input
+                              id="rq-note"
+                              type="text"
+                              className={shared.textInput}
+                              value={resolveNote}
+                              onChange={(e) => setResolveNote(e.target.value)}
+                              placeholder="Ví dụ: Khách chuyển dư 20.000₫, gán khớp và hoàn phần dư..."
+                              disabled={resolvingQueue}
+                            />
+                          </div>
+                        </div>
+
+                        {resolveQueueError && (
+                          <p className={shared.validationError} role="alert">
+                            {resolveQueueError}
+                          </p>
+                        )}
+
+                        <div className={shared.detailActionBar}>
+                          <span className={shared.savedStamp}>
+                            Khóa chống trùng lặp: {resolveIdempotencyKey}
+                          </span>
+                          <div className={shared.detailButtons}>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              shape="app"
+                              disabled={resolvingQueue}
+                              onClick={() => setSelectedQueueId(null)}
+                            >
+                              Đóng
+                            </Button>
+                            <Button
+                              type="submit"
+                              variant="primary"
+                              size="sm"
+                              shape="app"
+                              disabled={resolvingQueue}
+                            >
+                              {resolvingQueue ? "Đang xử lý..." : "Xác nhận xử lý"}
+                            </Button>
+                          </div>
+                        </div>
+                      </form>
+                    ) : (
+                      <p className={shared.savedStamp}>
+                        Giao dịch này đã hoàn tất xử lý
+                        {selectedQueueItem.resolved_at
+                          ? ` lúc ${formatDateTimeVi(selectedQueueItem.resolved_at)}`
+                          : ""}
+                        {selectedQueueItem.notes ? ` · Ghi chú: ${selectedQueueItem.notes}` : "."}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+        </div>
+      )}
+
+      {/* TAB 3: Refunds Settlement Queue + Manual Refund Flow */}
       {activeTab === "hoan_tien" && (
         <div className={shared.sectionStack}>
+          {/* Pending Refunds Settlement Queue */}
+          <section className={shared.panel} aria-labelledby="refund-queue-heading">
+            <div className={shared.panelHeader}>
+              <div>
+                <h2 id="refund-queue-heading" className={shared.panelTitle}>
+                  Hàng đợi hoàn tiền chờ chuyển khoản ({formatInt(refundsTotal)})
+                </h2>
+                <span className={shared.panelMeta}>
+                  Kiểm tra số tài khoản nhận hoàn tiền người mua đã cung cấp và xác nhận tất toán
+                  sau khi chuyển khoản.
+                </span>
+              </div>
+              <div className={styles.filterGroup}>
+                <select
+                  className={shared.toolbarSelect}
+                  value={refundStatusFilter}
+                  onChange={(e) => setRefundStatusFilter(e.target.value)}
+                  aria-label="Lọc trạng thái khoản hoàn tiền"
+                >
+                  <option value="pending">Chờ chuyển khoản</option>
+                  <option value="completed">Đã tất toán</option>
+                  <option value="failed">Thất bại</option>
+                  <option value="">Tất cả trạng thái</option>
+                </select>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  shape="app"
+                  onClick={() => void loadRefundsQueue()}
+                >
+                  Làm mới
+                </Button>
+              </div>
+            </div>
+
+            {refundsLoading ? (
+              <StateView
+                kind="loading"
+                surface="app"
+                title="Đang tải danh sách khoản hoàn tiền..."
+                rows={4}
+              />
+            ) : refundsError ? (
+              <StateView
+                kind="error"
+                surface="app"
+                title="Không thể tải danh sách hoàn tiền"
+                message={refundsError}
+                actionLabel="Thử lại"
+                onAction={() => void loadRefundsQueue()}
+              />
+            ) : refundsList.length === 0 ? (
+              <p className={shared.emptyRow}>
+                Không có khoản hoàn tiền nào trong trạng thái đã chọn.
+              </p>
+            ) : (
+              <>
+                <div className={shared.tableWrap}>
+                  <table className={shared.dataTable}>
+                    <thead>
+                      <tr>
+                        <th>Mã hoàn & đơn hàng</th>
+                        <th className={shared.colNum}>Số tiền</th>
+                        <th>Tài khoản nhận của người mua</th>
+                        <th>Trạng thái</th>
+                        <th className={shared.colAction}>Thao tác</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {refundsList.map((rf) => {
+                        const rfMeta = getAdminRefundStatusMeta(rf.status);
+                        const pending = isRefundPendingStatus(rf.status);
+                        const isSelected = settlingRefundId === rf.refund_id;
+                        const accountDisplay =
+                          rf.bank_account_number || rf.bank_account_masked || "";
+                        return (
+                          <tr
+                            key={rf.refund_id}
+                            className={`${shared.rowInteractive} ${isSelected ? shared.rowSelected : ""}`}
+                            onClick={() => handleOpenSettle(rf)}
+                          >
+                            <td>
+                              <div className={shared.cellPrimary}>
+                                {rf.refund_id.slice(0, 8)} · Đơn {rf.order_id.slice(0, 8)}
+                              </div>
+                              <div className={shared.cellSub}>
+                                {rf.is_late_payment ? "Thanh toán trễ · " : ""}
+                                {rf.reason || "Hoàn tiền đơn hàng"}
+                              </div>
+                            </td>
+                            <td className={shared.colNum}>{formatVnd(rf.amount_vnd)}</td>
+                            <td>
+                              {rf.bank_code && accountDisplay ? (
+                                <>
+                                  <div className={`${shared.cellPrimary} num`}>
+                                    {rf.bank_code} · {accountDisplay}
+                                  </div>
+                                  <div className={shared.cellSub}>
+                                    {rf.bank_account_name || "Chưa có tên chủ TK"}
+                                  </div>
+                                </>
+                              ) : (
+                                <span className={shared.numMuted}>
+                                  Người mua chưa cung cấp tài khoản
+                                </span>
+                              )}
+                            </td>
+                            <td>
+                              <StatusPill label={rfMeta.label} tone={rfMeta.tone} />
+                            </td>
+                            <td className={shared.colAction}>
+                              <button
+                                type="button"
+                                className={shared.rowActionBtn}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenSettle(rf);
+                                }}
+                              >
+                                {isSelected ? "Đóng" : pending ? "Tất toán" : "Xem"}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className={shared.mobileList}>
+                  {refundsList.map((rf) => {
+                    const rfMeta = getAdminRefundStatusMeta(rf.status);
+                    const isSelected = settlingRefundId === rf.refund_id;
+                    const accountDisplay = rf.bank_account_number || rf.bank_account_masked || "";
+                    return (
+                      <div key={rf.refund_id} className={shared.mobileItem}>
+                        <button
+                          type="button"
+                          className={shared.mobileItemBtn}
+                          onClick={() => handleOpenSettle(rf)}
+                          aria-expanded={isSelected}
+                        >
+                          <div className={shared.mobileLine1}>
+                            <span className={shared.mobileIdentity}>
+                              Hoàn #{rf.refund_id.slice(0, 8)}
+                            </span>
+                            <span className={shared.mobileMetric}>{formatVnd(rf.amount_vnd)}</span>
+                          </div>
+                          <div className={shared.mobileLine2}>
+                            <span className={shared.mobileMetaText}>
+                              {rf.bank_code && accountDisplay
+                                ? `${rf.bank_code} · ${accountDisplay}`
+                                : "Chưa có STK người mua"}
+                            </span>
+                            <StatusPill label={rfMeta.label} tone={rfMeta.tone} />
+                          </div>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {settlingRefund && (
+                  <div className={shared.detailWell} style={{ marginTop: 16 }}>
+                    <div className={shared.detailHeader}>
+                      <h3 className={shared.detailHeading}>
+                        Chi tiết khoản hoàn tiền: {settlingRefund.refund_id}
+                      </h3>
+                      <StatusPill
+                        label={getAdminRefundStatusMeta(settlingRefund.status).label}
+                        tone={getAdminRefundStatusMeta(settlingRefund.status).tone}
+                      />
+                    </div>
+
+                    <div className={shared.detailGrid}>
+                      <div className={shared.detailField}>
+                        <span className={shared.detailKey}>Số tiền hoàn</span>
+                        <span className={`${shared.detailVal} num`}>
+                          {formatVnd(settlingRefund.amount_vnd)}
+                        </span>
+                      </div>
+                      <div className={shared.detailField}>
+                        <span className={shared.detailKey}>Đơn hàng / Thanh toán</span>
+                        <span className={`${shared.detailValPlain} num`}>
+                          {settlingRefund.order_id}
+                        </span>
+                      </div>
+                      <div className={shared.detailField}>
+                        <span className={shared.detailKey}>Ngân hàng & số tài khoản nhận</span>
+                        <span className={`${shared.detailVal} num`}>
+                          {settlingRefund.bank_code &&
+                          (settlingRefund.bank_account_number || settlingRefund.bank_account_masked)
+                            ? `${settlingRefund.bank_code} · ${settlingRefund.bank_account_number || settlingRefund.bank_account_masked} · ${settlingRefund.bank_account_name || ""}`
+                            : "Người mua chưa nhập tài khoản nhận"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {isRefundPendingStatus(settlingRefund.status) ? (
+                      <form
+                        onSubmit={(e) => void handleSubmitSettle(e, settlingRefund)}
+                        className={styles.resolveStack}
+                      >
+                        <div className={shared.detailGrid}>
+                          <div className={shared.detailField}>
+                            <label htmlFor="settle-ref" className={shared.fieldLabel}>
+                              Mã giao dịch chuyển khoản ngân hàng (bắt buộc)
+                            </label>
+                            <input
+                              id="settle-ref"
+                              type="text"
+                              className={shared.textInput}
+                              value={settleProviderRef}
+                              onChange={(e) => setSettleProviderRef(e.target.value)}
+                              placeholder="Ví dụ: FT261123000188"
+                              disabled={settleBusy}
+                              required
+                            />
+                          </div>
+                          <div className={`${shared.detailField} ${styles.spanTwo}`}>
+                            <label htmlFor="settle-note" className={shared.fieldLabel}>
+                              Ghi chú tất toán (tùy chọn)
+                            </label>
+                            <input
+                              id="settle-note"
+                              type="text"
+                              className={shared.textInput}
+                              value={settleNote}
+                              onChange={(e) => setSettleNote(e.target.value)}
+                              placeholder="Ví dụ: Đã chuyển khoản hoàn trả qua Vietcombank..."
+                              disabled={settleBusy}
+                            />
+                          </div>
+                        </div>
+
+                        {settleError && (
+                          <p className={shared.validationError} role="alert">
+                            {settleError}
+                          </p>
+                        )}
+
+                        <div className={shared.detailActionBar}>
+                          <span className={shared.savedStamp}>
+                            Khóa chống trùng lặp: {settleIdempotencyKey}
+                          </span>
+                          <div className={shared.detailButtons}>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              shape="app"
+                              disabled={settleBusy}
+                              onClick={() => setSettlingRefundId(null)}
+                            >
+                              Đóng
+                            </Button>
+                            <Button
+                              type="submit"
+                              variant="primary"
+                              size="sm"
+                              shape="app"
+                              disabled={settleBusy}
+                            >
+                              {settleBusy ? "Đang tất toán..." : "Xác nhận đã chuyển khoản"}
+                            </Button>
+                          </div>
+                        </div>
+                      </form>
+                    ) : (
+                      <p className={shared.savedStamp}>
+                        {settlingRefund.settled_at
+                          ? `Đã tất toán lúc ${formatDateTimeVi(settlingRefund.settled_at)}`
+                          : "Khoản hoàn tiền đã xử lý xong."}
+                        {settlingRefund.provider_refund_id
+                          ? ` · Mã chuyển khoản: ${settlingRefund.provider_refund_id}`
+                          : ""}
+                        {settlingRefund.settlement_note
+                          ? ` · ${settlingRefund.settlement_note}`
+                          : ""}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+
+          {/* Manual Refund Creation Panel */}
           <section className={shared.panel} aria-labelledby="refund-panel-heading">
             <div className={shared.panelHeader}>
               <h2 id="refund-panel-heading" className={shared.panelTitle}>
-                Phiếu hoàn tiền giao dịch thanh toán
+                Tạo phiếu hoàn tiền thủ công
               </h2>
               <Button
                 variant={refundFormOpen ? "outline" : "primary"}
@@ -622,8 +1494,8 @@ function ReconciliationContent() {
                     <StatusPill
                       label={
                         refundResult.already_existed
-                          ? `Đã ghi nhận trước đó (${refundResult.refund.status})`
-                          : `Hoàn tiền thành công (${refundResult.refund.status})`
+                          ? `Đã ghi nhận trước đó (${getAdminRefundStatusMeta(refundResult.refund.status).label})`
+                          : `Tạo khoản hoàn tiền thành công (${getAdminRefundStatusMeta(refundResult.refund.status).label})`
                       }
                       tone="positive"
                     />
@@ -660,35 +1532,38 @@ function ReconciliationContent() {
                     </tr>
                   </thead>
                   <tbody>
-                    {orders.slice(0, 20).map((ord) => (
-                      <tr key={ord.id}>
-                        <td>
-                          <div className={shared.cellPrimary}>{ord.order_code}</div>
-                          <div className={shared.cellSub}>
-                            {ord.created_at ? formatDateTimeVi(ord.created_at) : ord.id}
-                          </div>
-                        </td>
-                        <td>
-                          <div>{ord.payment_method}</div>
-                          <div className={shared.cellSub}>
-                            {ord.payment_id || "Chưa có mã giao dịch thanh toán"}
-                          </div>
-                        </td>
-                        <td className={shared.colNum}>{formatVnd(ord.total_payable_vnd)}</td>
-                        <td>
-                          <StatusPill label={ord.status} tone="neutral" />
-                        </td>
-                        <td className={shared.colAction}>
-                          <button
-                            type="button"
-                            className={shared.rowActionBtn}
-                            onClick={() => handleOpenRefundForm(ord)}
-                          >
-                            Điền phiếu hoàn
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {orders.slice(0, 20).map((ord) => {
+                      const stMeta = getAdminOrderStatusMeta(ord.status);
+                      return (
+                        <tr key={ord.id}>
+                          <td>
+                            <div className={shared.cellPrimary}>{ord.order_code}</div>
+                            <div className={shared.cellSub}>
+                              {ord.created_at ? formatDateTimeVi(ord.created_at) : ord.id}
+                            </div>
+                          </td>
+                          <td>
+                            <div>{ord.payment_method}</div>
+                            <div className={shared.cellSub}>
+                              {ord.payment_id || "Chưa có mã giao dịch thanh toán"}
+                            </div>
+                          </td>
+                          <td className={shared.colNum}>{formatVnd(ord.total_payable_vnd)}</td>
+                          <td>
+                            <StatusPill label={stMeta.label} tone={stMeta.tone} />
+                          </td>
+                          <td className={shared.colAction}>
+                            <button
+                              type="button"
+                              className={shared.rowActionBtn}
+                              onClick={() => handleOpenRefundForm(ord)}
+                            >
+                              Điền phiếu hoàn
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -697,7 +1572,7 @@ function ReconciliationContent() {
         </div>
       )}
 
-      {/* TAB 3: Historical Mock Batches (kept separated) */}
+      {/* TAB 4: Historical Mock Batches (kept separated) */}
       {activeTab === "phien_mau" && (
         <div className={shared.sectionStack}>
           <section className={shared.panel} aria-label="Lịch sử phiên đối soát tham khảo">
@@ -773,7 +1648,7 @@ function ReconciliationRoute() {
   return (
     <AdminStateGate
       title="Đối soát thanh toán & sổ cái"
-      subtitle="Theo dõi cân đối sổ cái ghi kép, chạy đối soát theo ngày và xử lý hoàn tiền."
+      subtitle="Theo dõi cân đối sổ cái ghi kép, xử lý giao dịch không khớp và tất toán hoàn tiền."
       emptyTitle="Chưa có phiên đối soát trong kỳ chọn"
       emptyMessage="Các bản ghi sổ cái sẽ xuất hiện tại đây khi có giao dịch thanh toán."
       errorTitle="Không thể tải sổ đối soát thanh toán"

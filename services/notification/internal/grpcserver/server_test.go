@@ -56,6 +56,12 @@ func (r *stubRepo) GetOrderParticipant(_ context.Context, _ string) (store.Order
 func (r *stubRepo) ListOrderParticipantsByGroup(_ context.Context, _ string) ([]store.OrderParticipant, error) {
 	return nil, nil
 }
+func (r *stubRepo) GetShopOwner(_ context.Context, _ string) (store.ShopOwner, bool, error) {
+	return store.ShopOwner{}, false, nil
+}
+func (r *stubRepo) RecordEmailDedup(_ context.Context, _, _ string) error {
+	return nil
+}
 func (r *stubRepo) InsertDeadLetter(_ context.Context, _, _ string, _ []byte, _ string, _ int) error {
 	return nil
 }
@@ -115,5 +121,34 @@ func TestNotificationGRPCAuthAndOwnershipRBAC(t *testing.T) {
 	adminCtx := ctxWithUser("admin-1", "admin")
 	if _, err := srv.ListNotifications(adminCtx, &notificationv1.ListNotificationsRequest{UserId: "user-1"}); err != nil {
 		t.Fatalf("admin ListNotifications failed: %v", err)
+	}
+
+	// 5. UC-B23: attempting to disable ALL notification channels still keeps order_in_app & system_in_app true on both Update & Get.
+	allOff, err := srv.UpdatePreferences(buyer1Ctx, &notificationv1.UpdatePreferencesRequest{
+		UserId: "user-1",
+		Preferences: &notificationv1.NotificationPreferences{
+			OrderInApp:     false,
+			OrderEmail:     false,
+			OrderPush:      false,
+			PromotionInApp: false,
+			PromotionEmail: false,
+			PromotionPush:  false,
+			SystemInApp:    false,
+			SystemEmail:    false,
+			SystemPush:     false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("all-off UpdatePreferences failed: %v", err)
+	}
+	if !allOff.GetPreferences().GetOrderInApp() || !allOff.GetPreferences().GetSystemInApp() {
+		t.Fatalf("UC-B23: UpdatePreferences must force order_in_app & system_in_app true, got %+v", allOff.GetPreferences())
+	}
+	gotPrefs, err := srv.GetPreferences(buyer1Ctx, &notificationv1.GetPreferencesRequest{UserId: "user-1"})
+	if err != nil {
+		t.Fatalf("GetPreferences failed: %v", err)
+	}
+	if !gotPrefs.GetPreferences().GetOrderInApp() || !gotPrefs.GetPreferences().GetSystemInApp() {
+		t.Fatalf("UC-B23: GetPreferences must enforce order_in_app & system_in_app true, got %+v", gotPrefs.GetPreferences())
 	}
 }

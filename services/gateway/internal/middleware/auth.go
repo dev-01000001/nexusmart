@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/nexusmart/core/pkg/common/auth"
@@ -12,38 +13,74 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// JTIRevocationChecker checks whether an access token JTI has been revoked (e.g. on logout).
-type JTIRevocationChecker interface {
-	IsJTIRevoked(ctx context.Context, jti string) (bool, error)
+// TokenRevocationChecker checks whether an access token has been revoked either individually
+// (by JTI, e.g. on logout) or globally for its subject (user:revoked_before:<sub>).
+type TokenRevocationChecker interface {
+	IsTokenRevoked(ctx context.Context, claims *auth.Claims) (bool, error)
 }
 
-// RedisRevocationChecker checks `user:revoked_jti:<jti>` in Redis.
+// RedisRevocationChecker checks `user:revoked_jti:<jti>` and `user:revoked_before:<sub>`
+// in Redis using a single MGET round-trip.
 type RedisRevocationChecker struct {
 	client *redis.Client
 }
 
-// NewRedisRevocationChecker creates a Redis-backed JTI revocation checker.
+// NewRedisRevocationChecker creates a Redis-backed token revocation checker.
 func NewRedisRevocationChecker(client *redis.Client) *RedisRevocationChecker {
 	return &RedisRevocationChecker{client: client}
 }
 
-func (c *RedisRevocationChecker) IsJTIRevoked(ctx context.Context, jti string) (bool, error) {
-	jti = strings.TrimSpace(jti)
-	if jti == "" {
+func (c *RedisRevocationChecker) IsTokenRevoked(ctx context.Context, claims *auth.Claims) (bool, error) {
+	if claims == nil {
 		return false, nil
 	}
-	exists, err := c.client.Exists(ctx, "user:revoked_jti:"+jti).Result()
-	if err != nil {
-		return false, fmt.Errorf("check revoked jti: %w", err)
+	jti := strings.TrimSpace(claims.JTI())
+	userID := strings.TrimSpace(claims.UserID())
+
+	keys := make([]string, 0, 2)
+	jtiIdx, beforeIdx := -1, -1
+	if jti != "" {
+		jtiIdx = len(keys)
+		keys = append(keys, "user:revoked_jti:"+jti)
 	}
-	return exists > 0, nil
+	if userID != "" {
+		beforeIdx = len(keys)
+		keys = append(keys, "user:revoked_before:"+userID)
+	}
+	if len(keys) == 0 {
+		return false, nil
+	}
+
+	vals, err := c.client.MGet(ctx, keys...).Result()
+	if err != nil {
+		return false, fmt.Errorf("check token revocation: %w", err)
+	}
+
+	if jtiIdx >= 0 && jtiIdx < len(vals) && vals[jtiIdx] != nil {
+		return true, nil
+	}
+	if beforeIdx >= 0 && beforeIdx < len(vals) && vals[beforeIdx] != nil {
+		if claims.IssuedAt == nil || claims.IssuedAt.Time.IsZero() {
+			return true, nil
+		}
+		raw := strings.TrimSpace(fmt.Sprint(vals[beforeIdx]))
+		revokedBefore, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil {
+			// Fail closed on corrupt revocation timestamp value.
+			return true, nil
+		}
+		if claims.IssuedAt.Unix() <= revokedBefore {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
-// Auth validates Bearer JWT tokens (including Redis JTI revocation checks when revoker is set)
+// Auth validates Bearer JWT tokens (including Redis JTI & user revoked_before checks when revoker is set)
 // and writes standard NexusMart error envelopes on 401.
 // When required is false, requests without Authorization pass through unauthenticated,
-// while invalid or revoked Authorization tokens still return 401.
-func Auth(mgr *auth.Manager, revoker JTIRevocationChecker, log *slog.Logger, required bool) func(http.Handler) http.Handler {
+// while invalid or revoked Authorization tokens still return 401 (and Redis errors fail closed with 503).
+func Auth(mgr *auth.Manager, revoker TokenRevocationChecker, log *slog.Logger, required bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
@@ -62,11 +99,11 @@ func Auth(mgr *auth.Manager, revoker JTIRevocationChecker, log *slog.Logger, req
 				return
 			}
 
-			if revoker != nil && claims.JTI() != "" {
-				revoked, rErr := revoker.IsJTIRevoked(r.Context(), claims.JTI())
+			if revoker != nil {
+				revoked, rErr := revoker.IsTokenRevoked(r.Context(), claims)
 				if rErr != nil {
 					if log != nil {
-						log.ErrorContext(r.Context(), "jti revocation check failed", slog.String("error", rErr.Error()))
+						log.ErrorContext(r.Context(), "token revocation check failed", slog.String("error", rErr.Error()))
 					}
 					httpx.WriteError(w, r, http.StatusServiceUnavailable, "UNAVAILABLE", "authentication service unavailable")
 					return

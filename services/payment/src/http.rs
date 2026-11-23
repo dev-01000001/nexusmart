@@ -17,6 +17,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::auth::{require_payment_read_access, Caller, GrpcAuth};
+use crate::domain::vn_today;
 use crate::error::PaymentError;
 use crate::metrics::red_metrics_middleware;
 use crate::service::PaymentService;
@@ -283,8 +284,14 @@ async fn internal_reconciliation_queue(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, PaymentError> {
     require_admin(&state, &headers, "InternalReconciliationQueue")?;
-    let items = state.service.list_reconciliation_queue().await?;
-    Ok((StatusCode::OK, Json(json!({ "items": items }))))
+    let res = state
+        .service
+        .list_reconciliation_queue(None, 1, 100)
+        .await?;
+    Ok((
+        StatusCode::OK,
+        Json(json!({ "items": res.items, "total": res.total })),
+    ))
 }
 
 async fn internal_reconciliation_run(
@@ -296,7 +303,7 @@ async fn internal_reconciliation_run(
         user_id = %caller.user_id,
         "admin triggered payment reconciliation"
     );
-    let today = Utc::now().date_naive();
+    let today = vn_today(Utc::now());
     let report = state.service.run_reconciliation(today).await?;
     Ok((StatusCode::OK, Json(report)))
 }

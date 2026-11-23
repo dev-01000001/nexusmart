@@ -167,12 +167,14 @@ func TestCODPaymentStatus_PendingAtCheckout_SucceededOnDeliveredEvent(t *testing
 	}
 
 	// Ship & deliver only sub-order 1.
-	if _, err := h.svc.SellerShipOrder(seller1Ctx, &orderv1.SellerShipOrderRequest{OrderId: o1.Id, ShopId: "shop-1"}); err != nil {
+	ship1, err := h.svc.SellerShipOrder(seller1Ctx, &orderv1.SellerShipOrderRequest{OrderId: o1.Id, ShopId: "shop-1"})
+	if err != nil {
 		t.Fatalf("SellerShipOrder failed: %v", err)
 	}
 	if err := h.svc.HandleShipmentUpdated(context.Background(), "evt-cod-deliv-1", events.ShipmentUpdatedPayload{
-		OrderID: o1.Id,
-		Status:  "delivered",
+		OrderID:      o1.Id,
+		TrackingCode: ship1.TrackingCode,
+		Status:       "delivered",
 	}); err != nil {
 		t.Fatalf("HandleShipmentUpdated(delivered) failed: %v", err)
 	}
@@ -215,13 +217,15 @@ func TestOrderReturnedEvent_EmittedOnShippingAndReturnRequested(t *testing.T) {
 			t.Fatalf("CreateCheckout failed: %v", err)
 		}
 		ord := resp.Orders[0]
-		if _, err := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ord.Id, ShopId: "shop-1"}); err != nil {
+		shipResp, err := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ord.Id, ShopId: "shop-1"})
+		if err != nil {
 			t.Fatalf("SellerShipOrder failed: %v", err)
 		}
 		if err := h.svc.HandleShipmentUpdated(context.Background(), "evt-ret-ship-1", events.ShipmentUpdatedPayload{
-			OrderID:     ord.Id,
-			Status:      "returned",
-			Description: "Buyer refused COD delivery",
+			OrderID:      ord.Id,
+			TrackingCode: shipResp.TrackingCode,
+			Status:       "returned",
+			Description:  "Buyer refused COD delivery",
 		}); err != nil {
 			t.Fatalf("HandleShipmentUpdated(returned) failed: %v", err)
 		}
@@ -264,15 +268,20 @@ func TestOrderReturnedEvent_EmittedOnShippingAndReturnRequested(t *testing.T) {
 		_ = h.svc.HandlePaymentSucceeded(context.Background(), "evt-ret-ev-pay", events.PaymentSucceededPayload{
 			PaymentID: resp.PaymentId, OrderGroupID: resp.CheckoutGroupId,
 		})
-		_, _ = h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ord.Id, ShopId: "shop-1"})
+		shipResp, _ := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ord.Id, ShopId: "shop-1"})
 		_ = h.svc.HandleShipmentUpdated(context.Background(), "evt-ret-ev-deliv", events.ShipmentUpdatedPayload{
-			OrderID: ord.Id, Status: "delivered",
+			OrderID: ord.Id, TrackingCode: shipResp.TrackingCode, Status: "delivered",
 		})
-		_, _ = h.svc.RequestReturn(buyerCtx, &orderv1.RequestReturnRequest{OrderId: ord.Id, Reason: "damaged"})
-		if err := h.svc.HandleShipmentUpdated(context.Background(), "evt-ret-ev-done", events.ShipmentUpdatedPayload{
-			OrderID: ord.Id, Status: "returned", Description: "Return parcel delivered to shop",
+		retResp, err := h.svc.RequestReturn(buyerCtx, &orderv1.RequestReturnRequest{OrderId: ord.Id, Reason: "damaged"})
+		if err != nil {
+			t.Fatalf("RequestReturn failed: %v", err)
+		}
+		if _, err := h.svc.RespondReturn(sellerCtx, &orderv1.RespondReturnRequest{
+			ReturnRequestId: retResp.ReturnRequestId,
+			Decision:        orderv1.ReturnSellerDecision_RETURN_SELLER_DECISION_ACCEPT_REFUND,
+			Note:            "Approved refund",
 		}); err != nil {
-			t.Fatalf("HandleShipmentUpdated(returned) failed: %v", err)
+			t.Fatalf("RespondReturn(ACCEPT_REFUND) failed: %v", err)
 		}
 
 		var got map[string]any
@@ -611,11 +620,12 @@ func TestPromotionRelease_SubOrderVsLastOrder_ReturnedAndFlashShopID(t *testing.
 	}
 
 	// 2. Sub-order 1 ships and is RETURNED -> calls ReleasePromotionShop(group, shop-1).
-	if _, err := h.svc.SellerShipOrder(seller1Ctx, &orderv1.SellerShipOrderRequest{OrderId: o1.Id, ShopId: "shop-1"}); err != nil {
+	ship1, err := h.svc.SellerShipOrder(seller1Ctx, &orderv1.SellerShipOrderRequest{OrderId: o1.Id, ShopId: "shop-1"})
+	if err != nil {
 		t.Fatalf("SellerShipOrder(o1) failed: %v", err)
 	}
 	if err := h.svc.HandleShipmentUpdated(context.Background(), "evt-r5-ret", events.ShipmentUpdatedPayload{
-		OrderID: o1.Id, Status: "returned", Description: "refused",
+		OrderID: o1.Id, TrackingCode: ship1.TrackingCode, Status: "returned", Description: "refused",
 	}); err != nil {
 		t.Fatalf("HandleShipmentUpdated(returned) failed: %v", err)
 	}
@@ -672,9 +682,9 @@ func TestCODRejection_ShippingToReturnedCallsRecordCODRejection(t *testing.T) {
 			t.Fatalf("CreateCheckout failed: %v", err)
 		}
 		ord := resp.Orders[0]
-		_, _ = h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ord.Id, ShopId: "shop-1"})
+		shipResp, _ := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ord.Id, ShopId: "shop-1"})
 		if err := h.svc.HandleShipmentUpdated(context.Background(), "evt-cod-rej-1", events.ShipmentUpdatedPayload{
-			OrderID: ord.Id, Status: "returned", Description: "Customer refused COD parcel",
+			OrderID: ord.Id, TrackingCode: shipResp.TrackingCode, Status: "returned", Description: "Customer refused COD parcel",
 		}); err != nil {
 			t.Fatalf("HandleShipmentUpdated(returned) failed: %v", err)
 		}
@@ -700,14 +710,20 @@ func TestCODRejection_ShippingToReturnedCallsRecordCODRejection(t *testing.T) {
 			PaymentMethod:  orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD,
 		})
 		ord := resp.Orders[0]
-		_, _ = h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ord.Id, ShopId: "shop-1"})
+		shipResp, _ := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ord.Id, ShopId: "shop-1"})
 		_ = h.svc.HandleShipmentUpdated(context.Background(), "evt-cod-deliv-2", events.ShipmentUpdatedPayload{
-			OrderID: ord.Id, Status: "delivered",
+			OrderID: ord.Id, TrackingCode: shipResp.TrackingCode, Status: "delivered",
 		})
-		_, _ = h.svc.RequestReturn(buyerCtx, &orderv1.RequestReturnRequest{OrderId: ord.Id, Reason: "wrong size"})
-		_ = h.svc.HandleShipmentUpdated(context.Background(), "evt-cod-ret-2", events.ShipmentUpdatedPayload{
-			OrderID: ord.Id, Status: "returned",
-		})
+		retResp, err := h.svc.RequestReturn(buyerCtx, &orderv1.RequestReturnRequest{OrderId: ord.Id, Reason: "wrong size"})
+		if err != nil {
+			t.Fatalf("RequestReturn failed: %v", err)
+		}
+		if _, err := h.svc.RespondReturn(sellerCtx, &orderv1.RespondReturnRequest{
+			ReturnRequestId: retResp.ReturnRequestId,
+			Decision:        orderv1.ReturnSellerDecision_RETURN_SELLER_DECISION_ACCEPT_REFUND,
+		}); err != nil {
+			t.Fatalf("RespondReturn(ACCEPT_REFUND) failed: %v", err)
+		}
 		if len(h.user.codRejectionCalls) != 0 {
 			t.Fatalf("RETURN_REQUESTED -> RETURNED must NOT call RecordCODRejection, got %d", len(h.user.codRejectionCalls))
 		}
@@ -835,9 +851,9 @@ func TestBuyerConfirmReceived_OnlyFromDelivered_RejectsReturnRequested(t *testin
 		t.Fatalf("CreateCheckout failed: %v", err)
 	}
 	ordID := resp.Orders[0].Id
-	_, _ = h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ordID, ShopId: "shop-1"})
+	shipResp, _ := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ordID, ShopId: "shop-1"})
 	_ = h.svc.HandleShipmentUpdated(context.Background(), "evt-ordb7-deliv", events.ShipmentUpdatedPayload{
-		OrderID: ordID, Status: "delivered",
+		OrderID: ordID, TrackingCode: shipResp.TrackingCode, Status: "delivered",
 	})
 	if _, err := h.svc.RequestReturn(buyerCtx, &orderv1.RequestReturnRequest{
 		OrderId: ordID, Reason: "broken item",
@@ -947,9 +963,9 @@ func TestRewardCoins_ComputedOnActualMerchPaidAndZeroForZeroPayable(t *testing.T
 			t.Fatalf("CreateCheckout failed: %v", err)
 		}
 		ordID := resp.Orders[0].Id
-		_, _ = h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ordID, ShopId: "shop-1"})
+		shipResp, _ := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ordID, ShopId: "shop-1"})
 		_ = h.svc.HandleShipmentUpdated(context.Background(), "evt-prmb2-deliv", events.ShipmentUpdatedPayload{
-			OrderID: ordID, Status: "delivered",
+			OrderID: ordID, TrackingCode: shipResp.TrackingCode, Status: "delivered",
 		})
 		if _, err := h.svc.BuyerConfirmReceived(buyerCtx, &orderv1.BuyerConfirmReceivedRequest{OrderId: ordID}); err != nil {
 			t.Fatalf("BuyerConfirmReceived failed: %v", err)
@@ -998,9 +1014,9 @@ func TestRewardCoins_ComputedOnActualMerchPaidAndZeroForZeroPayable(t *testing.T
 			t.Fatalf("CreateCheckout failed: %v", err)
 		}
 		ordID := resp.Orders[0].Id
-		_, _ = h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ordID, ShopId: "shop-1"})
+		shipResp, _ := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ordID, ShopId: "shop-1"})
 		_ = h.svc.HandleShipmentUpdated(context.Background(), "evt-prmb2-z-deliv", events.ShipmentUpdatedPayload{
-			OrderID: ordID, Status: "delivered",
+			OrderID: ordID, TrackingCode: shipResp.TrackingCode, Status: "delivered",
 		})
 		if _, err := h.svc.BuyerConfirmReceived(buyerCtx, &orderv1.BuyerConfirmReceivedRequest{OrderId: ordID}); err != nil {
 			t.Fatalf("BuyerConfirmReceived failed: %v", err)

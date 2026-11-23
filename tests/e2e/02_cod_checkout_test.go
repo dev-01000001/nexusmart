@@ -258,23 +258,24 @@ func TestE2E_MultiShopCheckout_COD(t *testing.T) {
 	if err := DecodeJSON(shipResp, &shipOut); err != nil {
 		t.Fatalf("decode seller ship: %v", err)
 	}
-	if !StatusEquals(shipOut.Order.Status, "SHIPPING") {
-		t.Fatalf("expected status SHIPPING after seller ship, got %q", shipOut.Order.Status)
+	if !StatusEquals(shipOut.Order.Status, "PREPARING") {
+		t.Fatalf("expected status PREPARING after seller ship (awaiting carrier pickup), got %q", shipOut.Order.Status)
 	}
 	if shipOut.TrackingCode == "" {
 		t.Fatalf("expected non-empty tracking_code after seller ship: %s", string(shipResp.Body))
 	}
 
-	// 15. Shipping webhook (HMAC-signed) transitions delivering -> delivered.
+	// 15. Shipping webhook (HMAC-signed) transitions PREPARING -> SHIPPING (delivering) -> DELIVERED (delivered).
 	webhookPath := fmt.Sprintf("/webhooks/shipping/%s", url.PathEscape(shipCarrier))
 	now := time.Now().UTC()
 	for _, step := range []struct {
 		rawStatus  string
 		desc       string
+		wantOrder  string
 		occurredAt time.Time
 	}{
-		{"delivering", "Shipper is out for delivery", now.Add(-2 * time.Second)},
-		{"delivered", "Package delivered successfully", now},
+		{"delivering", "Shipper is out for delivery", "SHIPPING", now.Add(-2 * time.Second)},
+		{"delivered", "Package delivered successfully", "DELIVERED", now},
 	} {
 		whResp, err := env.client.PostSignedWebhook(ctx, webhookPath, ShippingWebhookPayload{
 			EventID:      "e2e-ship-" + uuid.NewString(),
@@ -290,12 +291,11 @@ func TestE2E_MultiShopCheckout_COD(t *testing.T) {
 		if whResp.StatusCode != http.StatusOK {
 			t.Fatalf("POST %s (%s) returned HTTP %d: %s", webhookPath, step.rawStatus, whResp.StatusCode, string(whResp.Body))
 		}
+		env.pollUntil(t, env.cfg.PollTimeout, 400*time.Millisecond, "order1 status "+step.wantOrder, func() (bool, string) {
+			o := env.getOrder(t, buyer.AccessToken, shop1Order.ID)
+			return StatusEquals(o.Status, step.wantOrder), fmt.Sprintf("status=%s", o.Status)
+		})
 	}
-
-	env.pollUntil(t, env.cfg.PollTimeout, 400*time.Millisecond, "order1 status DELIVERED", func() (bool, string) {
-		o := env.getOrder(t, buyer.AccessToken, shop1Order.ID)
-		return StatusEquals(o.Status, "DELIVERED"), fmt.Sprintf("status=%s", o.Status)
-	})
 
 	// Record coin balance & seller1 balance before buyer confirms received.
 	coinsBeforeComplete := env.getCoinBalance(t, buyer.AccessToken)
@@ -339,14 +339,19 @@ func TestE2E_MultiShopCheckout_COD(t *testing.T) {
 		return after > coinsBeforeComplete, fmt.Sprintf("before=%d after=%d", coinsBeforeComplete, after)
 	})
 
-	// Verify seller1 balance updated after escrow release on completion.
-	env.pollUntil(t, env.cfg.PollTimeout, 400*time.Millisecond, "seller1 balance updated after completion", func() (bool, string) {
+	// Verify seller1 pending balance updated on completion (funds remain held in pending_vnd during hold period).
+	var sellerBalAfter SellerBalanceResponse
+	env.pollUntil(t, env.cfg.PollTimeout, 400*time.Millisecond, "seller1 pending balance updated after completion", func() (bool, string) {
 		bResp := env.mustDoJSON(t, http.MethodGet, "/api/v1/seller/balance", seller1.AccessToken, nil, nil, http.StatusOK)
 		var bal SellerBalanceResponse
 		if err := DecodeJSON(bResp, &bal); err != nil {
 			return false, err.Error()
 		}
-		updated := bal.AvailableVND > sellerBalBefore.AvailableVND || bal.TotalEarnedVND > sellerBalBefore.TotalEarnedVND
+		sellerBalAfter = bal
+		updated := bal.PendingVND > sellerBalBefore.PendingVND && bal.TotalEarnedVND > sellerBalBefore.TotalEarnedVND
 		return updated, fmt.Sprintf("before=%+v after=%+v", sellerBalBefore, bal)
 	})
+	if sellerBalAfter.AvailableVND != sellerBalBefore.AvailableVND {
+		t.Fatalf("expected seller1 available_vnd unchanged (%d) during hold period, got %+v", sellerBalBefore.AvailableVND, sellerBalAfter)
+	}
 }

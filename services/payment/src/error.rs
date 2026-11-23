@@ -39,6 +39,9 @@ pub enum PaymentError {
     #[error("external provider error: {0}")]
     Provider(String),
 
+    #[error("{0}")]
+    ProviderUnsupported(String),
+
     #[error("provider circuit breaker is open")]
     CircuitOpen,
 
@@ -56,7 +59,8 @@ impl PaymentError {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Conflict(_)
             | Self::InsufficientBalance { .. }
-            | Self::RefundExceedsPaid { .. } => StatusCode::CONFLICT,
+            | Self::RefundExceedsPaid { .. }
+            | Self::ProviderUnsupported(_) => StatusCode::CONFLICT,
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::Provider(_) | Self::CircuitOpen => StatusCode::BAD_GATEWAY,
@@ -77,6 +81,7 @@ impl PaymentError {
             Self::InsufficientBalance { .. } => "INSUFFICIENT_BALANCE",
             Self::RefundExceedsPaid { .. } => "REFUND_EXCEEDS_PAID",
             Self::Provider(_) => "PROVIDER_ERROR",
+            Self::ProviderUnsupported(_) => "PROVIDER_UNSUPPORTED",
             Self::CircuitOpen => "PROVIDER_CIRCUIT_OPEN",
             Self::Database(_) => "DATABASE_ERROR",
             Self::Internal(_) => "INTERNAL_ERROR",
@@ -94,6 +99,7 @@ impl PaymentError {
                 tonic::Status::failed_precondition(self.to_string())
             }
             Self::Provider(m) => tonic::Status::unavailable(m.clone()),
+            Self::ProviderUnsupported(m) => tonic::Status::failed_precondition(m.clone()),
             Self::CircuitOpen => tonic::Status::unavailable("payment provider circuit open"),
             Self::LedgerInvariant(m) => tonic::Status::internal(m.clone()),
             Self::Database(_) => tonic::Status::internal("database error"),

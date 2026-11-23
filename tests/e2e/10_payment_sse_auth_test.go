@@ -21,22 +21,46 @@ type sseEventFrame struct {
 }
 
 func openSSERequest(ctx context.Context, targetURL, token string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create SSE request %s: %w", targetURL, err)
-	}
-	req.Header.Set("Accept", "text/event-stream")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
 	// Do not set a global http.Client Timeout on SSE streams; rely on request context cancellation.
 	sseClient := &http.Client{}
-	return sseClient.Do(req)
+	var totalWaited time.Duration
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create SSE request %s: %w", targetURL, err)
+		}
+		req.Header.Set("Accept", "text/event-stream")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := sseClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusTooManyRequests {
+			return resp, nil
+		}
+		wait := parseRetryAfter(resp.Header.Get("Retry-After")) + 250*time.Millisecond
+		if totalWaited+wait > rateLimitMaxWait {
+			return resp, nil
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		totalWaited += wait
+
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, fmt.Errorf("wait retry-after SSE %s: %w", targetURL, ctx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 func assertSSEStatus(t *testing.T, targetURL, token string, wantStatus int) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
 	resp, err := openSSERequest(ctx, targetURL, token)
@@ -53,7 +77,7 @@ func assertSSEStatus(t *testing.T, targetURL, token string, wantStatus int) {
 
 func assertSSEFirstPendingEvent(t *testing.T, targetURL, token, wantPaymentID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
 	resp, err := openSSERequest(ctx, targetURL, token)

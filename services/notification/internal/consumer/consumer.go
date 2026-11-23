@@ -250,6 +250,7 @@ func (c *Consumer) HandleMessage(baseCtx context.Context, msg Message) {
 }
 
 func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw []byte, errMsg string, attempts int) {
+	safeRaw := sanitizeDLQPayload(subject, raw)
 	c.logger.WarnContext(ctx, "routing poison message to DLQ",
 		slog.String("event_id", eventID),
 		slog.String("subject", subject),
@@ -258,7 +259,7 @@ func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw 
 	)
 
 	if c.dlqStore != nil {
-		if err := c.dlqStore.InsertDeadLetter(ctx, eventID, subject, raw, errMsg, attempts); err != nil {
+		if err := c.dlqStore.InsertDeadLetter(ctx, eventID, subject, safeRaw, errMsg, attempts); err != nil {
 			c.logger.ErrorContext(ctx, "failed to save dead_letter_events record",
 				slog.String("event_id", eventID),
 				slog.String("error", err.Error()),
@@ -273,7 +274,7 @@ func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw 
 			"error":            errMsg,
 			"attempts":         attempts,
 			"failed_at":        time.Now().UTC().Format(time.RFC3339),
-			"original_payload": string(raw),
+			"original_payload": string(safeRaw),
 		})
 		dlqSubject := "dlq." + subject
 		if err := c.dlqPub.PublishDLQ(dlqSubject, dlqPayload); err != nil {
@@ -283,6 +284,44 @@ func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw 
 			)
 		}
 	}
+}
+
+var sensitivePayloadFields = []string{"reset_token", "otp"}
+
+// sanitizeDLQPayload redacts secret tokens (e.g. reset_token, otp) before persisting to dead_letter_events or NEXUSMART_DLQ.
+func sanitizeDLQPayload(subject string, raw []byte) []byte {
+	var top map[string]any
+	if err := json.Unmarshal(raw, &top); err != nil {
+		if subject == "user.password_reset_requested" || subject == "user.registered" {
+			return []byte(`{"redacted":true}`)
+		}
+		return raw
+	}
+	changed := redactMapFields(top)
+	if payloadMap, ok := top["payload"].(map[string]any); ok {
+		if redactMapFields(payloadMap) {
+			changed = true
+		}
+	}
+	if !changed {
+		return raw
+	}
+	encoded, err := json.Marshal(top)
+	if err != nil {
+		return []byte(`{"redacted":true}`)
+	}
+	return encoded
+}
+
+func redactMapFields(m map[string]any) bool {
+	changed := false
+	for _, field := range sensitivePayloadFields {
+		if _, exists := m[field]; exists {
+			m[field] = "[REDACTED]"
+			changed = true
+		}
+	}
+	return changed
 }
 
 type natsMessageAdapter struct {

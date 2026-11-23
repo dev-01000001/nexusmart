@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::Sha256;
 use uuid::Uuid;
 
+use crate::domain::normalize_provider_tx_id;
 use crate::error::{PaymentError, Result};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -97,11 +98,23 @@ fn parse_timestamp(raw: &str) -> Result<DateTime<Utc>> {
         .map_err(|_| PaymentError::Unauthorized("invalid X-Timestamp format".to_string()))
 }
 
+fn deserialize_trimmed_string<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    Ok(raw.trim().to_string())
+}
+
 /// Incoming webhook JSON payload aligned with `docs/contracts.md` section 4.9,
 /// plus payOS / SePay field aliases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncomingWebhookPayload {
-    #[serde(alias = "transaction_id", alias = "tx_id")]
+    #[serde(
+        alias = "transaction_id",
+        alias = "tx_id",
+        deserialize_with = "deserialize_trimmed_string"
+    )]
     pub provider_tx_id: String,
     #[serde(default)]
     pub payment_id: Option<String>,
@@ -119,7 +132,12 @@ pub struct IncomingWebhookPayload {
     pub status: String,
     #[serde(default)]
     pub provider: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "transactionDate",
+        alias = "transaction_date",
+        alias = "transactionDateTime"
+    )]
     pub occurred_at: Option<String>,
 }
 
@@ -128,12 +146,9 @@ fn default_succeeded() -> String {
 }
 
 impl IncomingWebhookPayload {
-    pub fn validate(&self) -> Result<()> {
-        if self.provider_tx_id.trim().is_empty() {
-            return Err(PaymentError::Validation(
-                "provider_tx_id is required".to_string(),
-            ));
-        }
+    /// Normalizes `provider_tx_id` (trim + reject empty) and validates amount invariants once at ingress.
+    pub fn normalize_and_validate(&mut self) -> Result<()> {
+        self.provider_tx_id = normalize_provider_tx_id(&self.provider_tx_id)?;
         if !self.is_failed_event() && self.amount_vnd <= 0 {
             return Err(PaymentError::Validation(
                 "amount_vnd must be positive integer VND".to_string(),
@@ -459,5 +474,50 @@ mod tests {
             decide_webhook_action(Some("failed"), Some(255_000), 255_000, false, false, false),
             WebhookDecision::LatePaymentRefund { .. }
         ));
+    }
+
+    #[test]
+    fn test_p0_1_and_p3_2_webhook_trims_provider_tx_id_and_parses_occurred_at_aliases() {
+        // P0-1: whitespace around provider_tx_id must be normalized at parse boundary
+        let sepay_json = r#"{
+            "provider_tx_id": "  TX-TRIM-99  ",
+            "transferAmount": 200000,
+            "content": "NM1234567890",
+            "transactionDate": "2026-11-23 00:05:00"
+        }"#;
+        let payload: IncomingWebhookPayload = serde_json::from_str(sepay_json).unwrap();
+        assert_eq!(
+            payload.provider_tx_id, "TX-TRIM-99",
+            "P0-1: provider_tx_id must be trimmed at webhook parse boundary"
+        );
+        assert_eq!(
+            payload.occurred_at.as_deref(),
+            Some("2026-11-23 00:05:00"),
+            "P3-2: transactionDate alias must deserialize into occurred_at"
+        );
+
+        let payos_json = r#"{
+            "tx_id": "PAYOS-1",
+            "amount": 150000,
+            "transactionDateTime": "2026-11-22T23:58:00+07:00"
+        }"#;
+        let payos_payload: IncomingWebhookPayload = serde_json::from_str(payos_json).unwrap();
+        assert_eq!(
+            payos_payload.occurred_at.as_deref(),
+            Some("2026-11-22T23:58:00+07:00"),
+            "P3-2: transactionDateTime alias must deserialize into occurred_at"
+        );
+
+        let snake_json = r#"{
+            "provider_tx_id": "SNAKE-1",
+            "amount_vnd": 150000,
+            "transaction_date": "2026-11-23 01:02:03"
+        }"#;
+        let snake_payload: IncomingWebhookPayload = serde_json::from_str(snake_json).unwrap();
+        assert_eq!(
+            snake_payload.occurred_at.as_deref(),
+            Some("2026-11-23 01:02:03"),
+            "P3-2: transaction_date alias must deserialize into occurred_at"
+        );
     }
 }

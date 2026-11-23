@@ -1,15 +1,16 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import type { GatewayShop } from "@/lib/gateway-types";
+import type { GatewayShop, GatewayShopShippingSettings } from "@/lib/gateway-types";
 import type { SellerSizeChartRow } from "@/data";
+import { api, getErrorMessage } from "@/lib/api";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconCheck, IconPlus, StateView } from "@/components";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
-import { getShopStatusMeta } from "@/features/seller/types";
+import { CARRIER_OPTIONS, getShopStatusMeta } from "@/features/seller/types";
 import {
   addShopCollectionItem,
   getShopFactoryProfileWithSession,
@@ -158,6 +159,110 @@ function SellerProfileOpsInner({
   const [simHeight, setSimHeight] = useState(174);
   const [simWeight, setSimWeight] = useState(70);
   const [simShape, setSimShape] = useState<BodyShape>("vua");
+
+  // Real seller shipping settings (GET / PUT /api/v1/seller/shipping-settings)
+  const [shipSettingsLoading, setShipSettingsLoading] = useState(false);
+  const [shipSettingsSaving, setShipSettingsSaving] = useState(false);
+  const [shipSettingsError, setShipSettingsError] = useState<string | null>(null);
+  const [shipSettingsUpdatedAt, setShipSettingsUpdatedAt] = useState<string | undefined>(undefined);
+  const [enabledCarriers, setEnabledCarriers] = useState<string[]>(["ghn", "mock_express"]);
+  const [defaultWeightStr, setDefaultWeightStr] = useState("500");
+  const [defaultLengthStr, setDefaultLengthStr] = useState("25");
+  const [defaultWidthStr, setDefaultWidthStr] = useState("20");
+  const [defaultHeightStr, setDefaultHeightStr] = useState("10");
+
+  const loadShippingSettings = useCallback(async () => {
+    setShipSettingsLoading(true);
+    setShipSettingsError(null);
+    try {
+      const res = await api<{ settings: GatewayShopShippingSettings }>("seller/shipping-settings");
+      if (res?.settings) {
+        setEnabledCarriers(
+          res.settings.enabled_carrier_codes?.length
+            ? res.settings.enabled_carrier_codes
+            : ["ghn", "mock_express"]
+        );
+        setDefaultWeightStr(String(res.settings.default_weight_grams || 500));
+        setDefaultLengthStr(String(res.settings.default_length_cm || 25));
+        setDefaultWidthStr(String(res.settings.default_width_cm || 20));
+        setDefaultHeightStr(String(res.settings.default_height_cm || 10));
+        setShipSettingsUpdatedAt(res.settings.updated_at);
+      }
+    } catch (err) {
+      setShipSettingsError(
+        getErrorMessage(err, "Chưa thể tải cấu hình vận chuyển gian hàng lúc này.")
+      );
+    } finally {
+      setShipSettingsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!uiState && tab === "shipping") {
+      void loadShippingSettings();
+    }
+  }, [uiState, tab, loadShippingSettings]);
+
+  const carrierChoices = useMemo(() => {
+    const known = new Map(CARRIER_OPTIONS.map((c) => [c.carrierCode, c.carrierLabel]));
+    for (const code of enabledCarriers) {
+      if (!known.has(code)) {
+        known.set(code, code.toUpperCase());
+      }
+    }
+    return Array.from(known.entries()).map(([code, label]) => ({ code, label }));
+  }, [enabledCarriers]);
+
+  const toggleCarrierCode = (code: string, checked: boolean) => {
+    setEnabledCarriers((prev) => {
+      if (checked) {
+        return prev.includes(code) ? prev : [...prev, code];
+      }
+      return prev.filter((c) => c !== code);
+    });
+  };
+
+  const handleSaveShippingSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (shipSettingsSaving) return;
+    if (enabledCarriers.length === 0) {
+      setShipSettingsError("Gian hàng cần bật ít nhất một hãng vận chuyển.");
+      return;
+    }
+    const weight = Math.trunc(Number(defaultWeightStr) || 0);
+    const length = Math.trunc(Number(defaultLengthStr) || 0);
+    const width = Math.trunc(Number(defaultWidthStr) || 0);
+    const height = Math.trunc(Number(defaultHeightStr) || 0);
+    if (weight <= 0 || length <= 0 || width <= 0 || height <= 0) {
+      setShipSettingsError("Khối lượng và kích thước kiện hàng mặc định phải lớn hơn 0.");
+      return;
+    }
+    setShipSettingsError(null);
+    setShipSettingsSaving(true);
+    try {
+      const res = await api<{ settings: GatewayShopShippingSettings }>("seller/shipping-settings", {
+        method: "PUT",
+        json: {
+          enabled_carrier_codes: enabledCarriers,
+          default_weight_grams: weight,
+          default_length_cm: length,
+          default_width_cm: width,
+          default_height_cm: height,
+        },
+      });
+      if (res?.settings) {
+        setEnabledCarriers(res.settings.enabled_carrier_codes ?? enabledCarriers);
+        setShipSettingsUpdatedAt(res.settings.updated_at);
+      }
+      onNotify("Đã lưu cấu hình hãng vận chuyển và kích thước kiện hàng mặc định.");
+    } catch (err) {
+      setShipSettingsError(
+        getErrorMessage(err, "Không thể lưu cấu hình vận chuyển gian hàng lúc này.")
+      );
+    } finally {
+      setShipSettingsSaving(false);
+    }
+  };
 
   // Tab 3: Shipping & Return 45 days drafts
   const [freeShipStr, setFreeShipStr] = useState(String(opsConfig.freeShipThresholdVnd));
@@ -884,218 +989,382 @@ function SellerProfileOpsInner({
             </div>
           )}
 
-          {/* TAB 3: Shipping threshold, Fast inner-city delivery & 45-day Return / 2-Way Exchange */}
+          {/* TAB 3: Real Shipping Settings + Storefront Policy Preview */}
           {tab === "shipping" && (
-            <div className={styles.twoCol}>
+            <div className={styles.colStack}>
               <form
                 className={common.card}
-                onSubmit={handleSaveOps}
-                aria-labelledby="shipping-ops-heading"
+                onSubmit={(e) => void handleSaveShippingSettings(e)}
+                aria-labelledby="real-shipping-settings-heading"
               >
                 <div className={common.cardHeader}>
-                  <h2 id="shipping-ops-heading" className={common.cardTitle}>
-                    Cấu hình vận chuyển và cam kết đổi trả
-                  </h2>
-                  <span className={common.cardMeta}>
-                    Áp dụng trên giỏ hàng, bước thanh toán và huy hiệu trang sản phẩm
-                  </span>
+                  <div>
+                    <h2 id="real-shipping-settings-heading" className={common.cardTitle}>
+                      Cấu hình hãng vận chuyển & kiện hàng mặc định
+                    </h2>
+                    <span className={common.cardMeta}>
+                      Dữ liệu đồng bộ trực tiếp với dịch vụ tính phí vận chuyển và tạo vận đơn
+                      {shipSettingsUpdatedAt
+                        ? ` · Cập nhật lúc ${formatDateTimeVi(shipSettingsUpdatedAt)}`
+                        : ""}
+                    </span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    shape="app"
+                    disabled={shipSettingsLoading}
+                    onClick={() => void loadShippingSettings()}
+                  >
+                    Tải lại
+                  </Button>
                 </div>
 
-                <div className={styles.fieldStack}>
-                  <div className={styles.fields3}>
-                    <div className={common.field}>
-                      <label htmlFor="ops-freeship" className={common.fieldLabel}>
-                        Ngưỡng freeship riêng của shop (VND)
-                      </label>
-                      <input
-                        id="ops-freeship"
-                        type="number"
-                        step={10000}
-                        min={99000}
-                        className={common.textInput}
-                        value={freeShipStr}
-                        onChange={(e) => setFreeShipStr(e.target.value)}
-                      />
-                      <span className={common.fieldHint}>
-                        Ngưỡng toàn sàn: 249.000₫ (hiển thị {formatVnd(liveFreeShip)})
+                {shipSettingsLoading ? (
+                  <StateView
+                    kind="loading"
+                    surface="app"
+                    title="Đang tải cấu hình vận chuyển gian hàng..."
+                    rows={3}
+                  />
+                ) : (
+                  <div className={styles.fieldStack}>
+                    <div>
+                      <span className={common.fieldLabel}>
+                        Hãng vận chuyển gian hàng cho phép (bật ít nhất 1 hãng)
                       </span>
+                      {carrierChoices.map((car) => {
+                        const checked = enabledCarriers.includes(car.code);
+                        return (
+                          <div key={car.code} className={styles.switchRow}>
+                            <div className={styles.switchText}>
+                              <span className={styles.switchTitle}>{car.label}</span>
+                              <span className={styles.switchDesc}>
+                                Mã hãng: {car.code} · Chỉ báo giá khi cả sàn và gian hàng đều bật
+                              </span>
+                            </div>
+                            <input
+                              type="checkbox"
+                              className={common.toggleSwitch}
+                              checked={checked}
+                              onChange={(e) => toggleCarrierCode(car.code, e.target.checked)}
+                              aria-label={`Bật hoặc tắt hãng ${car.label}`}
+                              disabled={shipSettingsSaving}
+                            />
+                          </div>
+                        );
+                      })}
                     </div>
 
-                    <div className={common.field}>
-                      <label htmlFor="ops-shipfee" className={common.fieldLabel}>
-                        Cước giao chuẩn (VND)
-                      </label>
-                      <input
-                        id="ops-shipfee"
-                        type="number"
-                        step={1000}
-                        min={0}
-                        className={common.textInput}
-                        value={shipFeeStr}
-                        onChange={(e) => setShipFeeStr(e.target.value)}
-                      />
-                    </div>
-
-                    <div className={common.field}>
-                      <label htmlFor="ops-sla" className={common.fieldLabel}>
-                        Hạn chuẩn bị hàng (giờ)
-                      </label>
-                      <input
-                        id="ops-sla"
-                        type="number"
-                        min={2}
-                        max={48}
-                        className={common.textInput}
-                        value={prepHoursStr}
-                        onChange={(e) => setPrepHoursStr(e.target.value)}
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className={styles.switchRow}>
-                      <div className={styles.switchText}>
-                        <span className={styles.switchTitle}>Giao nhanh nội thành (2-4 giờ)</span>
-                        <span className={styles.switchDesc}>
-                          Cho phép khách cùng tỉnh thành chọn giao gấp ngay tại bước thanh toán.
+                    <div className={styles.fields2}>
+                      <div className={common.field}>
+                        <label htmlFor="ship-def-weight" className={common.fieldLabel}>
+                          Khối lượng mặc định (gram)
+                        </label>
+                        <input
+                          id="ship-def-weight"
+                          type="number"
+                          min={50}
+                          max={50000}
+                          step={50}
+                          className={common.textInput}
+                          value={defaultWeightStr}
+                          onChange={(e) => setDefaultWeightStr(e.target.value)}
+                          disabled={shipSettingsSaving}
+                          required
+                        />
+                        <span className={common.fieldHint}>
+                          Dùng khi sản phẩm chưa khai báo khối lượng riêng.
                         </span>
                       </div>
-                      <input
-                        type="checkbox"
-                        className={common.toggleSwitch}
-                        checked={fastEnabled}
-                        onChange={(e) => setFastEnabled(e.target.checked)}
-                        aria-label="Bật hoặc tắt giao nhanh nội thành"
-                      />
+                      <div className={common.field}>
+                        <label htmlFor="ship-def-length" className={common.fieldLabel}>
+                          Chiều dài kiện mặc định (cm)
+                        </label>
+                        <input
+                          id="ship-def-length"
+                          type="number"
+                          min={1}
+                          max={200}
+                          className={common.textInput}
+                          value={defaultLengthStr}
+                          onChange={(e) => setDefaultLengthStr(e.target.value)}
+                          disabled={shipSettingsSaving}
+                          required
+                        />
+                      </div>
+                      <div className={common.field}>
+                        <label htmlFor="ship-def-width" className={common.fieldLabel}>
+                          Chiều rộng kiện mặc định (cm)
+                        </label>
+                        <input
+                          id="ship-def-width"
+                          type="number"
+                          min={1}
+                          max={200}
+                          className={common.textInput}
+                          value={defaultWidthStr}
+                          onChange={(e) => setDefaultWidthStr(e.target.value)}
+                          disabled={shipSettingsSaving}
+                          required
+                        />
+                      </div>
+                      <div className={common.field}>
+                        <label htmlFor="ship-def-height" className={common.fieldLabel}>
+                          Chiều cao kiện mặc định (cm)
+                        </label>
+                        <input
+                          id="ship-def-height"
+                          type="number"
+                          min={1}
+                          max={200}
+                          className={common.textInput}
+                          value={defaultHeightStr}
+                          onChange={(e) => setDefaultHeightStr(e.target.value)}
+                          disabled={shipSettingsSaving}
+                          required
+                        />
+                      </div>
                     </div>
 
-                    {fastEnabled && (
-                      <div className={styles.fields2} style={{ marginBottom: 12 }}>
-                        <div className={common.field}>
-                          <label htmlFor="ops-fast-area" className={common.fieldLabel}>
-                            Khu vực giao nhanh
-                          </label>
-                          <input
-                            id="ops-fast-area"
-                            type="text"
-                            className={common.textInput}
-                            value={fastArea}
-                            onChange={(e) => setFastArea(e.target.value)}
-                          />
-                        </div>
-                        <div className={common.field}>
-                          <label htmlFor="ops-fast-cutoff" className={common.fieldLabel}>
-                            Khung giờ cắt đơn trong ngày
-                          </label>
-                          <input
-                            id="ops-fast-cutoff"
-                            type="text"
-                            className={common.textInput}
-                            value={fastCutoff}
-                            onChange={(e) => setFastCutoff(e.target.value)}
-                          />
-                        </div>
-                      </div>
+                    {shipSettingsError && (
+                      <p className={common.fieldError} role="alert">
+                        {shipSettingsError}
+                      </p>
                     )}
 
-                    <div className={styles.switchRow}>
-                      <div className={styles.switchText}>
-                        <span className={styles.switchTitle}>
-                          Cam kết đổi trả miễn phí 45 ngày (Huy hiệu xưởng)
+                    <div className={styles.formActions}>
+                      <Button
+                        type="submit"
+                        variant="ink"
+                        size="sm"
+                        shape="app"
+                        disabled={shipSettingsSaving}
+                      >
+                        <IconCheck size={14} />
+                        <span>
+                          {shipSettingsSaving ? "Đang lưu cấu hình..." : "Lưu cấu hình vận chuyển"}
                         </span>
-                        <span className={styles.switchDesc}>
-                          Hiển thị huy hiệu Đổi trả 45 ngày trên trang gian hàng và các sản phẩm áp
-                          dụng.
-                        </span>
-                      </div>
-                      <input
-                        type="checkbox"
-                        className={common.toggleSwitch}
-                        checked={return45}
-                        onChange={(e) => setReturn45(e.target.checked)}
-                        aria-label="Bật cam kết đổi trả 45 ngày"
-                      />
-                    </div>
-
-                    <div className={styles.switchRow}>
-                      <div className={styles.switchText}>
-                        <span className={styles.switchTitle}>Hỗ trợ đổi size 2 chiều tận nơi</span>
-                        <span className={styles.switchDesc}>
-                          Bưu tá giao size mới và thu hồi hàng đổi trong cùng 1 chuyến tại nhà
-                          khách.
-                        </span>
-                      </div>
-                      <input
-                        type="checkbox"
-                        className={common.toggleSwitch}
-                        checked={twoWayEx}
-                        onChange={(e) => setTwoWayEx(e.target.checked)}
-                        aria-label="Bật đổi size 2 chiều tận nơi"
-                      />
+                      </Button>
                     </div>
                   </div>
-
-                  <div className={common.field}>
-                    <label htmlFor="ops-exc" className={common.fieldLabel}>
-                      Ghi chú ngoại lệ đổi trả (theo khung sàn)
-                    </label>
-                    <textarea
-                      id="ops-exc"
-                      className={common.textArea}
-                      value={exceptionNote}
-                      onChange={(e) => setExceptionNote(e.target.value)}
-                    />
-                  </div>
-
-                  <div className={styles.formActions}>
-                    <Button type="submit" variant="ink" size="sm" shape="app">
-                      <IconCheck size={14} />
-                      <span>Lưu cấu hình vận hành</span>
-                    </Button>
-                  </div>
-                </div>
+                )}
               </form>
 
-              {/* Right preview showing buyer-facing badges & cart freeship bar */}
-              <section className={common.card} aria-labelledby="badge-preview-heading">
-                <div className={common.cardHeader}>
-                  <h2 id="badge-preview-heading" className={common.cardTitle}>
-                    Xem trước huy hiệu xưởng trên trang mua hàng
-                  </h2>
-                </div>
-
-                <div className={styles.badgePreviewList}>
-                  {opsConfig.verifiedWorkshopBadge && (
-                    <span className={`${common.pill} ${common.pillPos}`}>Xưởng chuẩn QC</span>
-                  )}
-                  {return45 && (
-                    <span className={`${common.pill} ${common.pillPos}`}>Đổi trả 45 ngày</span>
-                  )}
-                  {twoWayEx && (
-                    <span className={`${common.pill} ${common.pillPos}`}>
-                      Đổi size 2 chiều tận nơi
+              <div className={styles.twoCol}>
+                <form
+                  className={common.card}
+                  onSubmit={handleSaveOps}
+                  aria-labelledby="shipping-ops-heading"
+                >
+                  <div className={common.cardHeader}>
+                    <h2 id="shipping-ops-heading" className={common.cardTitle}>
+                      Cấu hình vận chuyển và cam kết đổi trả
+                    </h2>
+                    <span className={common.cardMeta}>
+                      Áp dụng trên giỏ hàng, bước thanh toán và huy hiệu trang sản phẩm
                     </span>
-                  )}
-                  {fastEnabled && <span className={common.pill}>Giao nhanh nội thành</span>}
-                </div>
+                  </div>
 
-                <div className={styles.previewWell}>
-                  <span className={styles.previewHeading}>Thanh tiến độ Freeship gian hàng</span>
-                  <p className={styles.previewLine}>
-                    Miễn phí vận chuyển cho đơn từ <strong>{formatVnd(liveFreeShip)}</strong> tại{" "}
-                    {shopShortName} (tiết kiệm {formatVnd(liveShipFee)} phí giao tiêu chuẩn).
-                  </p>
-                  <p className={styles.previewLine}>
-                    Thời gian chuẩn bị tại kho: tối đa {prepHoursStr || "12"} giờ làm việc.
-                  </p>
-                  {fastEnabled && (
+                  <div className={styles.fieldStack}>
+                    <div className={styles.fields3}>
+                      <div className={common.field}>
+                        <label htmlFor="ops-freeship" className={common.fieldLabel}>
+                          Ngưỡng freeship riêng của shop (VND)
+                        </label>
+                        <input
+                          id="ops-freeship"
+                          type="number"
+                          step={10000}
+                          min={99000}
+                          className={common.textInput}
+                          value={freeShipStr}
+                          onChange={(e) => setFreeShipStr(e.target.value)}
+                        />
+                        <span className={common.fieldHint}>
+                          Ngưỡng toàn sàn: 249.000₫ (hiển thị {formatVnd(liveFreeShip)})
+                        </span>
+                      </div>
+
+                      <div className={common.field}>
+                        <label htmlFor="ops-shipfee" className={common.fieldLabel}>
+                          Cước giao chuẩn (VND)
+                        </label>
+                        <input
+                          id="ops-shipfee"
+                          type="number"
+                          step={1000}
+                          min={0}
+                          className={common.textInput}
+                          value={shipFeeStr}
+                          onChange={(e) => setShipFeeStr(e.target.value)}
+                        />
+                      </div>
+
+                      <div className={common.field}>
+                        <label htmlFor="ops-sla" className={common.fieldLabel}>
+                          Hạn chuẩn bị hàng (giờ)
+                        </label>
+                        <input
+                          id="ops-sla"
+                          type="number"
+                          min={2}
+                          max={48}
+                          className={common.textInput}
+                          value={prepHoursStr}
+                          onChange={(e) => setPrepHoursStr(e.target.value)}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className={styles.switchRow}>
+                        <div className={styles.switchText}>
+                          <span className={styles.switchTitle}>Giao nhanh nội thành (2-4 giờ)</span>
+                          <span className={styles.switchDesc}>
+                            Cho phép khách cùng tỉnh thành chọn giao gấp ngay tại bước thanh toán.
+                          </span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          className={common.toggleSwitch}
+                          checked={fastEnabled}
+                          onChange={(e) => setFastEnabled(e.target.checked)}
+                          aria-label="Bật hoặc tắt giao nhanh nội thành"
+                        />
+                      </div>
+
+                      {fastEnabled && (
+                        <div className={styles.fields2} style={{ marginBottom: 12 }}>
+                          <div className={common.field}>
+                            <label htmlFor="ops-fast-area" className={common.fieldLabel}>
+                              Khu vực giao nhanh
+                            </label>
+                            <input
+                              id="ops-fast-area"
+                              type="text"
+                              className={common.textInput}
+                              value={fastArea}
+                              onChange={(e) => setFastArea(e.target.value)}
+                            />
+                          </div>
+                          <div className={common.field}>
+                            <label htmlFor="ops-fast-cutoff" className={common.fieldLabel}>
+                              Khung giờ cắt đơn trong ngày
+                            </label>
+                            <input
+                              id="ops-fast-cutoff"
+                              type="text"
+                              className={common.textInput}
+                              value={fastCutoff}
+                              onChange={(e) => setFastCutoff(e.target.value)}
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      <div className={styles.switchRow}>
+                        <div className={styles.switchText}>
+                          <span className={styles.switchTitle}>
+                            Cam kết đổi trả miễn phí 45 ngày (Huy hiệu xưởng)
+                          </span>
+                          <span className={styles.switchDesc}>
+                            Hiển thị huy hiệu Đổi trả 45 ngày trên trang gian hàng và các sản phẩm
+                            áp dụng.
+                          </span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          className={common.toggleSwitch}
+                          checked={return45}
+                          onChange={(e) => setReturn45(e.target.checked)}
+                          aria-label="Bật cam kết đổi trả 45 ngày"
+                        />
+                      </div>
+
+                      <div className={styles.switchRow}>
+                        <div className={styles.switchText}>
+                          <span className={styles.switchTitle}>
+                            Hỗ trợ đổi size 2 chiều tận nơi
+                          </span>
+                          <span className={styles.switchDesc}>
+                            Bưu tá giao size mới và thu hồi hàng đổi trong cùng 1 chuyến tại nhà
+                            khách.
+                          </span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          className={common.toggleSwitch}
+                          checked={twoWayEx}
+                          onChange={(e) => setTwoWayEx(e.target.checked)}
+                          aria-label="Bật đổi size 2 chiều tận nơi"
+                        />
+                      </div>
+                    </div>
+
+                    <div className={common.field}>
+                      <label htmlFor="ops-exc" className={common.fieldLabel}>
+                        Ghi chú ngoại lệ đổi trả (theo khung sàn)
+                      </label>
+                      <textarea
+                        id="ops-exc"
+                        className={common.textArea}
+                        value={exceptionNote}
+                        onChange={(e) => setExceptionNote(e.target.value)}
+                      />
+                    </div>
+
+                    <div className={styles.formActions}>
+                      <Button type="submit" variant="ink" size="sm" shape="app">
+                        <IconCheck size={14} />
+                        <span>Lưu cấu hình vận hành</span>
+                      </Button>
+                    </div>
+                  </div>
+                </form>
+
+                {/* Right preview showing buyer-facing badges & cart freeship bar */}
+                <section className={common.card} aria-labelledby="badge-preview-heading">
+                  <div className={common.cardHeader}>
+                    <h2 id="badge-preview-heading" className={common.cardTitle}>
+                      Xem trước huy hiệu xưởng trên trang mua hàng
+                    </h2>
+                  </div>
+
+                  <div className={styles.badgePreviewList}>
+                    {opsConfig.verifiedWorkshopBadge && (
+                      <span className={`${common.pill} ${common.pillPos}`}>Xưởng chuẩn QC</span>
+                    )}
+                    {return45 && (
+                      <span className={`${common.pill} ${common.pillPos}`}>Đổi trả 45 ngày</span>
+                    )}
+                    {twoWayEx && (
+                      <span className={`${common.pill} ${common.pillPos}`}>
+                        Đổi size 2 chiều tận nơi
+                      </span>
+                    )}
+                    {fastEnabled && <span className={common.pill}>Giao nhanh nội thành</span>}
+                  </div>
+
+                  <div className={styles.previewWell}>
+                    <span className={styles.previewHeading}>Thanh tiến độ Freeship gian hàng</span>
                     <p className={styles.previewLine}>
-                      Giao nhanh nội thành: {fastArea} ({fastCutoff}).
+                      Miễn phí vận chuyển cho đơn từ <strong>{formatVnd(liveFreeShip)}</strong> tại{" "}
+                      {shopShortName} (tiết kiệm {formatVnd(liveShipFee)} phí giao tiêu chuẩn).
                     </p>
-                  )}
-                  <p className={styles.previewLine}>{exceptionNote}</p>
-                </div>
-              </section>
+                    <p className={styles.previewLine}>
+                      Thời gian chuẩn bị tại kho: tối đa {prepHoursStr || "12"} giờ làm việc.
+                    </p>
+                    {fastEnabled && (
+                      <p className={styles.previewLine}>
+                        Giao nhanh nội thành: {fastArea} ({fastCutoff}).
+                      </p>
+                    )}
+                    <p className={styles.previewLine}>{exceptionNote}</p>
+                  </div>
+                </section>
+              </div>
             </div>
           )}
         </>

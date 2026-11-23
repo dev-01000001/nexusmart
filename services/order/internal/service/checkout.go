@@ -358,7 +358,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		// Full Saga compensation: cancel persisted orders, release promotions, release stock.
 		compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 		defer cancel()
-		_, cancelErr := s.store.CancelCheckoutGroupOrders(compCtx, store.CancelGroupOrdersParams{
+		cancelledOrders, cancelErr := s.store.CancelCheckoutGroupOrders(compCtx, store.CancelGroupOrdersParams{
 			CheckoutGroupID: checkoutGroupID,
 			Reason:          "Payment initialization failed",
 			ActorID:         "order-service",
@@ -371,10 +371,22 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 			s.logger.ErrorContext(ctx, "failed to cancel sub-orders during payment failure compensation",
 				"checkout_group_id", checkoutGroupID, "error", cancelErr)
 		}
+		var compFailed bool
 		if promoReserved {
-			s.compensateReleasePromotion(ctx, checkoutGroupID)
+			if err := s.releasePromotionErr(compCtx, checkoutGroupID); err != nil {
+				s.logger.ErrorContext(ctx, "saga compensation ReleasePromotion failed", "checkout_group_id", checkoutGroupID, "error", err)
+				compFailed = true
+			}
 		}
-		s.compensateReleaseStock(ctx, checkoutGroupID)
+		if _, err := s.releaseStockErr(compCtx, checkoutGroupID); err != nil {
+			s.logger.ErrorContext(ctx, "saga compensation ReleaseStock failed", "checkout_group_id", checkoutGroupID, "error", err)
+			compFailed = true
+		}
+		if !compFailed {
+			for _, co := range cancelledOrders {
+				_ = s.store.ClearOrderPendingCancelCompensation(compCtx, co.ID)
+			}
+		}
 		s.notifyOutbox()
 		return nil, payErr
 	}
@@ -390,8 +402,12 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	}
 
 	// For COD (or zero-payable), stock is immediately confirmed because sub-orders start CONFIRMED.
+	// pending_stock_confirm was set atomically in PersistCheckoutBatch; cleared only when ConfirmStock succeeds.
 	if initialStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
-		s.confirmStockBestEffort(ctx, checkoutGroupID)
+		if err := s.confirmGroupStockAndClear(ctx, checkoutGroupID); err != nil {
+			s.logger.WarnContext(ctx, "ConfirmStock after checkout failed; watchdog will retry",
+				"checkout_group_id", checkoutGroupID, "error", err)
+		}
 	}
 
 	// Build final response & persist snapshot atomically into checkout_groups.
@@ -832,7 +848,11 @@ func (s *OrderService) calculateShippingFees(
 	}
 
 	for _, plan := range plans {
-		fromProvince, fromWard := s.resolveShopPickupCodes(ctx, plan.shopID, toAddr.GetProvinceCode(), toAddr.GetWardCode())
+		pickup := s.resolveShopPickupAddress(ctx, plan.shopID, &shippingv1.ShipmentAddress{
+			ProvinceCode: toAddr.GetProvinceCode(),
+			WardCode:     toAddr.GetWardCode(),
+		})
+		fromProvince, fromWard := pickup.GetProvinceCode(), pickup.GetWardCode()
 		var codEstimate int64
 		if paymentMethod == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
 			codEstimate = plan.subtotalVND
@@ -861,37 +881,6 @@ func (s *OrderService) calculateShippingFees(
 		plan.shippingFeeVND = chosen.GetFeeVnd()
 	}
 	return nil
-}
-
-func (s *OrderService) resolveShopPickupCodes(ctx context.Context, shopID, fallbackProvince, fallbackWard string) (string, string) {
-	if s.clients.User == nil {
-		return fallbackProvince, fallbackWard
-	}
-	shopResp, err := s.clients.User.GetShop(ctx, &userv1.GetShopRequest{ShopId: shopID})
-	if err != nil || shopResp.GetShop() == nil {
-		return fallbackProvince, fallbackWard
-	}
-	shop := shopResp.GetShop()
-	if shop.GetPickupAddressId() == "" || shop.GetOwnerUserId() == "" {
-		return fallbackProvince, fallbackWard
-	}
-	pickupResp, err := s.clients.User.GetAddress(clients.WithInternalAdminContext(ctx), &userv1.GetAddressRequest{
-		UserId:    shop.GetOwnerUserId(),
-		AddressId: shop.GetPickupAddressId(),
-	})
-	if err != nil || pickupResp.GetAddress() == nil {
-		return fallbackProvince, fallbackWard
-	}
-	pAddr := pickupResp.GetAddress()
-	prov := pAddr.GetProvinceCode()
-	ward := pAddr.GetWardCode()
-	if prov == "" {
-		prov = fallbackProvince
-	}
-	if ward == "" {
-		ward = fallbackWard
-	}
-	return prov, ward
 }
 
 func pickShippingQuote(quotes []*shippingv1.CarrierQuote, choice *orderv1.ShopShippingChoice) *shippingv1.CarrierQuote {
@@ -1098,12 +1087,19 @@ func buildCheckoutBatch(
 	traceID, traceparent string,
 ) (store.CheckoutBatch, error) {
 	batch := store.CheckoutBatch{
-		CheckoutGroupID: checkoutGroupID,
-		Orders:          make([]store.NewOrderRecord, 0, len(plans)),
+		CheckoutGroupID:     checkoutGroupID,
+		Orders:              make([]store.NewOrderRecord, 0, len(plans)),
+		PendingStockConfirm: initialStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED,
+		Now:                 now,
 	}
 
 	statusStr := statemachine.StatusToString(initialStatus)
 	methodStr := statemachine.PaymentMethodToString(paymentMethod)
+	var confirmedAt *time.Time
+	if initialStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
+		ts := now
+		confirmedAt = &ts
+	}
 
 	for _, p := range plans {
 		orderID := uuid.NewString()
@@ -1135,6 +1131,7 @@ func buildCheckoutBatch(
 			CancelReason:               "",
 			ShippingAddressJSON:        addrJSON,
 			PaymentExpiresAt:           paymentExpiresAt,
+			ConfirmedAt:                confirmedAt,
 		}
 
 		itemParams := make([]db.InsertOrderItemParams, 0, len(p.items))
@@ -1293,19 +1290,48 @@ func paymentStatusToString(ps paymentv1.PaymentStatus, fallback string) string {
 	}
 }
 
+func (s *OrderService) releaseStockErr(ctx context.Context, checkoutGroupID string) (bool, error) {
+	if s.clients.Product == nil || strings.TrimSpace(checkoutGroupID) == "" {
+		return false, nil
+	}
+	var released bool
+	err := clients.RetryIdempotent(ctx, 3, func(c context.Context) error {
+		resp, rErr := s.clients.Product.ReleaseStock(c, &productv1.ReleaseStockRequest{OrderId: checkoutGroupID})
+		if rErr != nil {
+			if status.Code(rErr) == codes.NotFound {
+				released = false
+				return nil
+			}
+			return rErr
+		}
+		released = resp.GetReleased()
+		return nil
+	})
+	return released, err
+}
+
 func (s *OrderService) compensateReleaseStock(ctx context.Context, checkoutGroupID string) {
 	if s.clients.Product == nil {
 		return
 	}
 	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 	defer cancel()
-	err := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
-		_, err := s.clients.Product.ReleaseStock(c, &productv1.ReleaseStockRequest{OrderId: checkoutGroupID})
-		return err
-	})
-	if err != nil {
+	if _, err := s.releaseStockErr(compCtx, checkoutGroupID); err != nil {
 		s.logger.ErrorContext(ctx, "saga compensation ReleaseStock failed", "checkout_group_id", checkoutGroupID, "error", err)
 	}
+}
+
+func (s *OrderService) releasePromotionErr(ctx context.Context, checkoutGroupID string) error {
+	if s.clients.Promotion == nil || strings.TrimSpace(checkoutGroupID) == "" {
+		return nil
+	}
+	return clients.RetryIdempotent(ctx, 3, func(c context.Context) error {
+		_, err := s.clients.Promotion.ReleasePromotion(c, &promotionv1.ReleasePromotionRequest{OrderId: checkoutGroupID})
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		return err
+	})
 }
 
 func (s *OrderService) compensateReleasePromotion(ctx context.Context, checkoutGroupID string) {
@@ -1314,14 +1340,7 @@ func (s *OrderService) compensateReleasePromotion(ctx context.Context, checkoutG
 	}
 	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 	defer cancel()
-	err := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
-		_, err := s.clients.Promotion.ReleasePromotion(c, &promotionv1.ReleasePromotionRequest{OrderId: checkoutGroupID})
-		if status.Code(err) == codes.NotFound {
-			return nil
-		}
-		return err
-	})
-	if err != nil {
+	if err := s.releasePromotionErr(compCtx, checkoutGroupID); err != nil {
 		s.logger.ErrorContext(ctx, "saga compensation ReleasePromotion failed", "checkout_group_id", checkoutGroupID, "error", err)
 	}
 }
@@ -1343,31 +1362,37 @@ func (s *OrderService) releasePromotionShopErr(ctx context.Context, checkoutGrou
 	})
 }
 
-func (s *OrderService) compensateReleasePromotionShop(ctx context.Context, checkoutGroupID, shopID, reason string) {
-	if s.clients.Promotion == nil || strings.TrimSpace(checkoutGroupID) == "" || strings.TrimSpace(shopID) == "" {
-		return
-	}
-	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
-	defer cancel()
-	if err := s.releasePromotionShopErr(compCtx, checkoutGroupID, shopID, reason); err != nil {
-		s.logger.ErrorContext(ctx, "saga compensation ReleasePromotionShop failed",
-			"checkout_group_id", checkoutGroupID, "shop_id", shopID, "error", err)
-	}
-}
-
-func (s *OrderService) confirmStockBestEffort(ctx context.Context, checkoutGroupID string) {
-	if s.clients.Product == nil {
-		return
+func (s *OrderService) confirmGroupStockAndClear(ctx context.Context, checkoutGroupID string) error {
+	if s.clients.Product == nil || strings.TrimSpace(checkoutGroupID) == "" {
+		return nil
 	}
 	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 	defer cancel()
 	err := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
-		_, err := s.clients.Product.ConfirmStock(c, &productv1.ConfirmStockRequest{OrderId: checkoutGroupID})
-		return err
+		_, cErr := s.clients.Product.ConfirmStock(c, &productv1.ConfirmStockRequest{OrderId: checkoutGroupID})
+		return cErr
 	})
 	if err != nil {
-		s.logger.ErrorContext(ctx, "ConfirmStock failed", "checkout_group_id", checkoutGroupID, "error", err)
+		// P2-5: Reservation already released by a concurrent cancel -> skip cleanly and clear flag.
+		if status.Code(err) == codes.FailedPrecondition {
+			if released, relErr := s.releaseStockErr(compCtx, checkoutGroupID); relErr == nil && released {
+				_ = s.store.ClearCheckoutGroupPendingStockConfirm(compCtx, checkoutGroupID)
+				return nil
+			}
+		}
+		// P2-5: Legacy/seeded order with no stock_reservations row -> warn and clear flag so consumer/watchdog don't spin.
+		if status.Code(err) == codes.NotFound {
+			s.logger.WarnContext(ctx, "ConfirmStock returned NotFound (no reservation row); clearing pending_stock_confirm",
+				"checkout_group_id", checkoutGroupID)
+			_ = s.store.ClearCheckoutGroupPendingStockConfirm(compCtx, checkoutGroupID)
+			return nil
+		}
+		return err
 	}
+	if clrErr := s.store.ClearCheckoutGroupPendingStockConfirm(compCtx, checkoutGroupID); clrErr != nil {
+		return clrErr
+	}
+	return nil
 }
 
 func maxInt64(a, b int64) int64 {

@@ -20,8 +20,11 @@ type memRevoker struct {
 	revoked map[string]bool
 }
 
-func (m *memRevoker) IsJTIRevoked(_ context.Context, jti string) (bool, error) {
-	return m.revoked[jti], nil
+func (m *memRevoker) IsTokenRevoked(_ context.Context, claims *auth.Claims) (bool, error) {
+	if claims == nil {
+		return false, nil
+	}
+	return m.revoked[claims.JTI()], nil
 }
 
 type memRateLimiter struct {

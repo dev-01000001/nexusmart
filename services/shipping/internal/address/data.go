@@ -87,8 +87,9 @@ func RegionOfProvince(provinceCode string) string {
 	return RegionCentral
 }
 
-// NormalizeName strips Vietnamese diacritics, lowercases, and strips common administrative prefixes.
-func NormalizeName(input string) string {
+// StripDiacritics lowercases input, removes Vietnamese diacritics/d-stroke, and collapses punctuation/whitespace.
+// Suitable for accent-insensitive substring search (SHP-B8).
+func StripDiacritics(input string) string {
 	s := strings.TrimSpace(strings.ToLower(input))
 	if s == "" {
 		return ""
@@ -106,7 +107,15 @@ func NormalizeName(input string) string {
 	// Replace punctuation separators with spaces.
 	replacer := strings.NewReplacer(".", " ", "-", " ", ",", " ", "_", " ")
 	s = replacer.Replace(s)
-	s = strings.Join(strings.Fields(s), " ")
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// NormalizeName strips Vietnamese diacritics, lowercases, and strips common administrative prefixes.
+func NormalizeName(input string) string {
+	s := StripDiacritics(input)
+	if s == "" {
+		return ""
+	}
 
 	// Handle common abbreviations and administrative prefixes.
 	aliases := map[string]string{

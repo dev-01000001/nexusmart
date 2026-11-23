@@ -20,7 +20,10 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-var errRefreshTokenConcurrentReplay = errors.New("refresh token concurrent replay")
+var (
+	errRefreshTokenConcurrentReplay = errors.New("refresh token concurrent replay")
+	errRefreshTokenAccountInactive  = errors.New("refresh token account inactive")
+)
 
 // AddressCatalog validates Vietnamese 2-level province/ward codes (backed by ShippingService).
 type AddressCatalog interface {
@@ -28,15 +31,21 @@ type AddressCatalog interface {
 	ListWards(ctx context.Context, in *shippingv1.ListWardsRequest, opts ...grpc.CallOption) (*shippingv1.ListWardsResponse, error)
 }
 
+const errMsgInvalidOrExpiredOTP = "invalid or expired otp"
+
 // Options configures auth/security timings and optional collaborators for Server.
 type Options struct {
-	AccessTTL              time.Duration
-	RefreshTTL             time.Duration
-	OTPTTL                 time.Duration
-	OTPMaxResends          int
-	LoginMaxFailedAttempts int
-	LoginLockoutDuration   time.Duration
-	AddressCatalog         AddressCatalog
+	AccessTTL               time.Duration
+	RefreshTTL              time.Duration
+	OTPTTL                  time.Duration
+	OTPMaxResends           int
+	PasswordResetTTL        time.Duration
+	PasswordResetMaxPerHour int
+	PasswordResetRateWindow time.Duration
+	LoginMaxFailedAttempts  int
+	LoginLockoutDuration    time.Duration
+	AddressCatalog          AddressCatalog
+	Now                     func() time.Time
 }
 
 func (o Options) withDefaults() Options {
@@ -52,11 +61,23 @@ func (o Options) withDefaults() Options {
 	if o.OTPMaxResends <= 0 {
 		o.OTPMaxResends = 3
 	}
+	if o.PasswordResetTTL <= 0 {
+		o.PasswordResetTTL = 15 * time.Minute
+	}
+	if o.PasswordResetMaxPerHour <= 0 {
+		o.PasswordResetMaxPerHour = 3
+	}
+	if o.PasswordResetRateWindow <= 0 {
+		o.PasswordResetRateWindow = time.Hour
+	}
 	if o.LoginMaxFailedAttempts <= 0 {
 		o.LoginMaxFailedAttempts = 5
 	}
 	if o.LoginLockoutDuration <= 0 {
 		o.LoginLockoutDuration = 15 * time.Minute
+	}
+	if o.Now == nil {
+		o.Now = func() time.Time { return time.Now().UTC() }
 	}
 	return o
 }
@@ -97,16 +118,59 @@ func NewServer(
 	}
 }
 
+func (s *Server) now() time.Time {
+	return s.opts.Now().UTC()
+}
+
+func (s *Server) revokedBeforeTTL() time.Duration {
+	return s.opts.AccessTTL + time.Minute
+}
+
+func (s *Server) waitPastRevokedBefore(ctx context.Context, userID string) error {
+	if s.sec == nil {
+		return nil
+	}
+	revokedBefore, err := s.sec.GetRevokedBefore(ctx, userID)
+	if err != nil {
+		return status.Error(codes.Unavailable, "authentication service unavailable")
+	}
+	if revokedBefore <= 0 {
+		return nil
+	}
+	// SignAccessToken stamps iat in integer Unix seconds using wall clock.
+	// If Login runs in the same second as a revoke (e.g. right after ResetPassword),
+	// wait until the next second so the fresh token has iat > revoked_before.
+	wait := time.Until(time.Unix(revokedBefore+1, int64(10*time.Millisecond)))
+	if wait <= 0 || wait > 1100*time.Millisecond {
+		return nil
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return status.FromContextError(ctx.Err()).Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func (s *Server) requireAuthClaims(ctx context.Context) (*auth.Claims, error) {
 	claims, err := requireAuthClaims(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if s.sec != nil && claims.Service == "" && claims.JTI() != "" {
-		revoked, rErr := s.sec.IsJTIRevoked(ctx, claims.JTI())
+	if s.sec != nil && claims.Service == "" {
+		var issuedAt *time.Time
+		if claims.IssuedAt != nil {
+			t := claims.IssuedAt.Time
+			issuedAt = &t
+		}
+		revoked, rErr := s.sec.IsTokenRevoked(ctx, claims.UserID(), claims.JTI(), issuedAt)
 		if rErr != nil {
-			s.log.WarnContext(ctx, "failed to check revoked jti", slog.String("error", rErr.Error()))
-		} else if revoked {
+			s.log.ErrorContext(ctx, "failed to check token revocation", slog.String("error", rErr.Error()))
+			return nil, status.Error(codes.Unavailable, "authentication service unavailable")
+		}
+		if revoked {
 			return nil, status.Error(codes.Unauthenticated, "access token has been revoked")
 		}
 	}
@@ -232,20 +296,19 @@ func (s *Server) VerifyOTP(ctx context.Context, req *userv1.VerifyOTPRequest) (*
 	user, err := s.store.GetUserByEmail(ctx, email)
 	if err != nil {
 		if isNotFoundErr(err) {
-			return nil, status.Error(codes.NotFound, "user not found")
+			return nil, status.Error(codes.InvalidArgument, errMsgInvalidOrExpiredOTP)
 		}
 		return nil, status.Error(codes.Internal, "failed to lookup user")
 	}
 	if user.Status != StatusPendingVerification {
-		return nil, status.Error(codes.FailedPrecondition, "account is not pending verification")
+		return nil, status.Error(codes.InvalidArgument, errMsgInvalidOrExpiredOTP)
 	}
 
 	if err := s.sec.VerifyOTP(ctx, email, otp); err != nil {
 		switch {
-		case errors.Is(err, security.ErrOTPNotFound), errors.Is(err, security.ErrOTPInvalid):
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		case errors.Is(err, security.ErrOTPTooManyAttempts):
-			return nil, status.Error(codes.ResourceExhausted, err.Error())
+		case errors.Is(err, security.ErrOTPNotFound), errors.Is(err, security.ErrOTPInvalid), errors.Is(err, security.ErrOTPTooManyAttempts):
+			// Return identical 400 error even when the 5th failure deletes the OTP so email state cannot be enumerated.
+			return nil, status.Error(codes.InvalidArgument, errMsgInvalidOrExpiredOTP)
 		default:
 			return nil, status.Error(codes.Internal, "failed to verify otp")
 		}
@@ -272,22 +335,22 @@ func (s *Server) ResendOTP(ctx context.Context, req *userv1.ResendOTPRequest) (*
 		return nil, status.Error(codes.InvalidArgument, "valid email is required")
 	}
 
-	user, err := s.store.GetUserByEmail(ctx, email)
-	if err != nil {
-		if isNotFoundErr(err) {
-			return nil, status.Error(codes.NotFound, "user not found")
-		}
-		return nil, status.Error(codes.Internal, "failed to lookup user")
-	}
-	if user.Status != StatusPendingVerification {
-		return nil, status.Error(codes.FailedPrecondition, "account is not pending verification")
-	}
-
 	if err := s.sec.IncrementOTPResend(ctx, email, s.opts.OTPMaxResends); err != nil {
 		if errors.Is(err, security.ErrOTPResendLimitReached) {
 			return nil, status.Error(codes.ResourceExhausted, err.Error())
 		}
 		return nil, status.Error(codes.Internal, "failed to track otp resend")
+	}
+
+	user, err := s.store.GetUserByEmail(ctx, email)
+	if err != nil {
+		if isNotFoundErr(err) {
+			return &userv1.ResendOTPResponse{Sent: true}, nil
+		}
+		return nil, status.Error(codes.Internal, "failed to lookup user")
+	}
+	if user.Status != StatusPendingVerification {
+		return &userv1.ResendOTPResponse{Sent: true}, nil
 	}
 
 	otpCode, err := generateOTP()
@@ -299,13 +362,14 @@ func (s *Server) ResendOTP(ctx context.Context, req *userv1.ResendOTPRequest) (*
 	}
 
 	if s.pub != nil {
-		expiresAt := time.Now().UTC().Add(s.opts.OTPTTL).Format(time.RFC3339)
+		expiresAt := s.now().Add(s.opts.OTPTTL).Format(time.RFC3339)
 		if err := s.pub.PublishUserRegistered(ctx, events.UserRegisteredPayload{
 			UserID:    user.ID,
 			Email:     user.Email,
 			FullName:  user.FullName,
 			OTP:       otpCode,
 			ExpiresAt: expiresAt,
+			IsResend:  true,
 		}); err != nil {
 			s.log.ErrorContext(ctx, "failed to publish resent otp event", slog.String("user_id", user.ID), slog.String("error", err.Error()))
 			return nil, status.Error(codes.Internal, "failed to emit otp event")
@@ -313,6 +377,175 @@ func (s *Server) ResendOTP(ctx context.Context, req *userv1.ResendOTPRequest) (*
 	}
 
 	return &userv1.ResendOTPResponse{Sent: true}, nil
+}
+
+func (s *Server) ForgotPassword(ctx context.Context, req *userv1.ForgotPasswordRequest) (*userv1.ForgotPasswordResponse, error) {
+	email := normalizeEmail(req.GetEmail())
+	if !isValidEmail(email) {
+		return nil, status.Error(codes.InvalidArgument, "valid email is required")
+	}
+
+	if err := s.sec.IncrementPasswordResetRequest(ctx, email, s.opts.PasswordResetMaxPerHour, s.opts.PasswordResetRateWindow); err != nil {
+		if errors.Is(err, security.ErrPasswordResetLimitReached) {
+			return nil, status.Error(codes.ResourceExhausted, err.Error())
+		}
+		return nil, status.Error(codes.Unavailable, "failed to check password reset rate limit")
+	}
+
+	user, err := s.store.GetUserByEmail(ctx, email)
+	if err != nil {
+		if isNotFoundErr(err) {
+			return &userv1.ForgotPasswordResponse{Sent: true}, nil
+		}
+		return nil, status.Error(codes.Internal, "failed to lookup user")
+	}
+	if user.Status != StatusActive {
+		return &userv1.ForgotPasswordResponse{Sent: true}, nil
+	}
+
+	resetPlain, resetHash, err := generateOpaqueToken()
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to generate password reset token")
+	}
+	resetID := uuid.NewString()
+	now := s.now()
+	expiresAt := now.Add(s.opts.PasswordResetTTL)
+
+	err = s.store.WithTx(ctx, func(q db.Querier) error {
+		if txErr := q.InvalidateUserPasswordResets(ctx, db.InvalidateUserPasswordResetsParams{
+			UserID: user.ID,
+			UsedAt: &now,
+		}); txErr != nil {
+			return txErr
+		}
+		_, txErr := q.CreatePasswordReset(ctx, db.CreatePasswordResetParams{
+			ID:        resetID,
+			UserID:    user.ID,
+			TokenHash: resetHash,
+			ExpiresAt: expiresAt,
+		})
+		return txErr
+	})
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to persist password reset request")
+	}
+
+	if s.pub != nil {
+		if err := s.pub.PublishPasswordResetRequested(ctx, events.PasswordResetRequestedPayload{
+			UserID:     user.ID,
+			Email:      user.Email,
+			FullName:   user.FullName,
+			ResetToken: resetPlain,
+			ExpiresAt:  expiresAt.Format(time.RFC3339),
+		}); err != nil {
+			s.log.ErrorContext(ctx, "failed to publish user.password_reset_requested", slog.String("user_id", user.ID), slog.String("error", err.Error()))
+			invAt := s.now()
+			if _, invErr := s.store.MarkPasswordResetUsed(ctx, db.MarkPasswordResetUsedParams{
+				ID:     resetID,
+				UsedAt: &invAt,
+			}); invErr != nil {
+				s.log.WarnContext(ctx, "failed to invalidate password reset after publish error", slog.String("user_id", user.ID), slog.String("error", invErr.Error()))
+			}
+			// Return identical 200 {"sent":true} so transient NATS failures cannot enumerate emails.
+			return &userv1.ForgotPasswordResponse{Sent: true}, nil
+		}
+	}
+
+	s.log.InfoContext(ctx, "password reset requested", slog.String("user_id", user.ID))
+	return &userv1.ForgotPasswordResponse{Sent: true}, nil
+}
+
+func (s *Server) ResetPassword(ctx context.Context, req *userv1.ResetPasswordRequest) (*userv1.ResetPasswordResponse, error) {
+	rawToken := strings.TrimSpace(req.GetToken())
+	newPassword := req.GetNewPassword()
+	if rawToken == "" {
+		return nil, status.Error(codes.InvalidArgument, "token is required")
+	}
+	if err := password.ValidateStrength(newPassword); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	tokenHash := hashToken(rawToken)
+	var resetUser db.User
+	err := s.store.WithTx(ctx, func(q db.Querier) error {
+		rec, txErr := q.GetPasswordResetByHashForUpdate(ctx, tokenHash)
+		if txErr != nil {
+			if isNotFoundErr(txErr) {
+				return status.Error(codes.InvalidArgument, "invalid or expired reset token")
+			}
+			return txErr
+		}
+		if rec.UsedAt != nil || !s.now().Before(rec.ExpiresAt) {
+			return status.Error(codes.InvalidArgument, "invalid or expired reset token")
+		}
+		user, txErr := q.GetUserByID(ctx, rec.UserID)
+		if txErr != nil {
+			if isNotFoundErr(txErr) {
+				return status.Error(codes.InvalidArgument, "invalid or expired reset token")
+			}
+			return txErr
+		}
+		if user.Status == StatusLocked {
+			return status.Error(codes.PermissionDenied, lockedAccountMessage(user.LockReason))
+		}
+		if user.Status != StatusActive {
+			return status.Error(codes.InvalidArgument, "invalid or expired reset token")
+		}
+
+		newHash, hashErr := s.hasher.Hash(newPassword)
+		if hashErr != nil {
+			return status.Error(codes.Internal, "failed to hash password")
+		}
+		// Update users first to acquire the row lock and serialize with Login/RefreshToken FOR SHARE.
+		if _, txErr = q.UpdateUserPassword(ctx, db.UpdateUserPasswordParams{
+			ID:           user.ID,
+			PasswordHash: newHash,
+		}); txErr != nil {
+			return txErr
+		}
+		// Sample revokedAt AFTER holding the users row lock so revoked_before >= iat of any prior session.
+		revokedAt := s.now()
+		rows, txErr := q.MarkPasswordResetUsed(ctx, db.MarkPasswordResetUsedParams{
+			ID:     rec.ID,
+			UsedAt: &revokedAt,
+		})
+		if txErr != nil {
+			return txErr
+		}
+		if rows == 0 {
+			return status.Error(codes.InvalidArgument, "invalid or expired reset token")
+		}
+		// Invalidate every other open password reset token for this user in the same transaction.
+		if txErr = q.InvalidateUserPasswordResets(ctx, db.InvalidateUserPasswordResetsParams{
+			UserID: user.ID,
+			UsedAt: &revokedAt,
+		}); txErr != nil {
+			return txErr
+		}
+		if txErr = q.RevokeAllUserRefreshTokens(ctx, user.ID); txErr != nil {
+			return txErr
+		}
+		if s.sec != nil {
+			if rErr := s.sec.SetRevokedBefore(ctx, user.ID, revokedAt.Unix(), s.revokedBeforeTTL()); rErr != nil {
+				s.log.ErrorContext(ctx, "failed to set revoked_before on password reset", slog.String("user_id", user.ID), slog.String("error", rErr.Error()))
+				return status.Error(codes.Unavailable, "failed to revoke active sessions")
+			}
+		}
+		resetUser = user
+		return nil
+	})
+	if err != nil {
+		if _, ok := status.FromError(err); ok {
+			return nil, err
+		}
+		return nil, status.Error(codes.Internal, "failed to reset password")
+	}
+
+	if s.sec != nil && resetUser.Email != "" {
+		_ = s.sec.ClearLoginFailures(ctx, resetUser.Email)
+	}
+	s.log.InfoContext(ctx, "user password reset completed", slog.String("user_id", resetUser.ID))
+	return &userv1.ResetPasswordResponse{Ok: true}, nil
 }
 
 func (s *Server) Login(ctx context.Context, req *userv1.LoginRequest) (*userv1.LoginResponse, error) {
@@ -333,6 +566,7 @@ func (s *Server) Login(ctx context.Context, req *userv1.LoginRequest) (*userv1.L
 	user, err := s.store.GetUserByEmail(ctx, email)
 	if err != nil {
 		if isNotFoundErr(err) {
+			s.hasher.VerifyDummy(plainPassword)
 			nowLocked, _, _ := s.sec.RecordLoginFailure(ctx, email, s.opts.LoginMaxFailedAttempts, s.opts.LoginLockoutDuration)
 			if nowLocked {
 				return nil, status.Error(codes.ResourceExhausted, "account temporarily locked due to too many failed login attempts")
@@ -358,45 +592,78 @@ func (s *Server) Login(ctx context.Context, req *userv1.LoginRequest) (*userv1.L
 	case StatusPendingVerification:
 		return nil, status.Error(codes.FailedPrecondition, "account pending verification")
 	case StatusLocked:
-		return nil, status.Error(codes.PermissionDenied, "account is locked")
+		return nil, status.Error(codes.PermissionDenied, lockedAccountMessage(user.LockReason))
 	case StatusActive:
 	default:
 		return nil, status.Error(codes.PermissionDenied, "account is not active")
 	}
 
-	_ = s.sec.ClearLoginFailures(ctx, email)
-
-	var shopID string
-	if user.ShopID != nil {
-		shopID = *user.ShopID
-	}
-	accessToken, _, _, err := s.authMgr.SignAccessToken(user.ID, user.Role, shopID)
-	if err != nil {
-		return nil, status.Error(codes.Internal, "failed to sign access token")
+	if err := s.waitPastRevokedBefore(ctx, user.ID); err != nil {
+		return nil, err
 	}
 
-	refreshPlain, refreshHash, err := generateOpaqueToken()
-	if err != nil {
-		return nil, status.Error(codes.Internal, "failed to generate refresh token")
-	}
-	familyID := uuid.NewString()
-	_, err = s.store.CreateRefreshToken(ctx, db.CreateRefreshTokenParams{
-		ID:        uuid.NewString(),
-		UserID:    user.ID,
-		FamilyID:  familyID,
-		TokenHash: refreshHash,
-		ExpiresAt: time.Now().UTC().Add(s.opts.RefreshTTL),
+	var (
+		freshUser    db.User
+		accessToken  string
+		refreshPlain string
+	)
+	err = s.store.WithTx(ctx, func(q db.Querier) error {
+		u, txErr := q.GetUserByIDForShare(ctx, user.ID)
+		if txErr != nil {
+			if isNotFoundErr(txErr) {
+				return status.Error(codes.Unauthenticated, "invalid email or password")
+			}
+			return txErr
+		}
+		if u.PasswordHash != user.PasswordHash {
+			return status.Error(codes.Unauthenticated, "invalid email or password")
+		}
+		switch u.Status {
+		case StatusPendingVerification:
+			return status.Error(codes.FailedPrecondition, "account pending verification")
+		case StatusLocked:
+			return status.Error(codes.PermissionDenied, lockedAccountMessage(u.LockReason))
+		case StatusActive:
+		default:
+			return status.Error(codes.PermissionDenied, "account is not active")
+		}
+
+		tok, _, _, signErr := s.authMgr.SignAccessToken(u.ID, u.Role, effectiveSellerShopID(u))
+		if signErr != nil {
+			return status.Error(codes.Internal, "failed to sign access token")
+		}
+		rPlain, rHash, genErr := generateOpaqueToken()
+		if genErr != nil {
+			return status.Error(codes.Internal, "failed to generate refresh token")
+		}
+		if _, txErr = q.CreateRefreshToken(ctx, db.CreateRefreshTokenParams{
+			ID:        uuid.NewString(),
+			UserID:    u.ID,
+			FamilyID:  uuid.NewString(),
+			TokenHash: rHash,
+			ExpiresAt: s.now().Add(s.opts.RefreshTTL),
+		}); txErr != nil {
+			return txErr
+		}
+		freshUser = u
+		accessToken = tok
+		refreshPlain = rPlain
+		return nil
 	})
 	if err != nil {
-		return nil, status.Error(codes.Internal, "failed to persist refresh token")
+		if _, ok := status.FromError(err); ok {
+			return nil, err
+		}
+		return nil, status.Error(codes.Internal, "failed to issue login session")
 	}
 
-	s.log.InfoContext(ctx, "user logged in", slog.String("user_id", user.ID), slog.String("role", user.Role))
+	_ = s.sec.ClearLoginFailures(ctx, email)
+	s.log.InfoContext(ctx, "user logged in", slog.String("user_id", freshUser.ID), slog.String("role", freshUser.Role))
 	return &userv1.LoginResponse{
 		AccessToken:      accessToken,
 		RefreshToken:     refreshPlain,
 		ExpiresInSeconds: int64(s.opts.AccessTTL.Seconds()),
-		User:             toProtoUser(user),
+		User:             toProtoUser(freshUser),
 	}, nil
 }
 
@@ -424,21 +691,13 @@ func (s *Server) RefreshToken(ctx context.Context, req *userv1.RefreshTokenReque
 		return nil, status.Error(codes.Unauthenticated, "refresh token reuse detected; session revoked")
 	}
 
-	if time.Now().UTC().After(existing.ExpiresAt) {
+	if s.now().After(existing.ExpiresAt) {
 		_ = s.store.RevokeRefreshTokenByHash(ctx, tokenHash)
 		return nil, status.Error(codes.Unauthenticated, "refresh token expired")
 	}
 
-	user, err := s.store.GetUserByID(ctx, existing.UserID)
-	if err != nil {
-		if isNotFoundErr(err) {
-			return nil, status.Error(codes.Unauthenticated, "user not found")
-		}
-		return nil, status.Error(codes.Internal, "failed to lookup user")
-	}
-	if user.Status != StatusActive {
-		_ = s.store.RevokeRefreshTokenFamily(ctx, existing.FamilyID)
-		return nil, status.Error(codes.PermissionDenied, "account is not active")
+	if err := s.waitPastRevokedBefore(ctx, existing.UserID); err != nil {
+		return nil, err
 	}
 
 	newPlain, newHash, err := generateOpaqueToken()
@@ -446,9 +705,17 @@ func (s *Server) RefreshToken(ctx context.Context, req *userv1.RefreshTokenReque
 		return nil, status.Error(codes.Internal, "failed to generate refresh token")
 	}
 	newID := uuid.NewString()
-	newExpires := time.Now().UTC().Add(s.opts.RefreshTTL)
 
+	var accessToken string
 	err = s.store.WithTx(ctx, func(q db.Querier) error {
+		// Lock users FOR SHARE first (same lock order users -> refresh_tokens as lock/role/reset).
+		user, txErr := q.GetUserByIDForShare(ctx, existing.UserID)
+		if txErr != nil {
+			if isNotFoundErr(txErr) {
+				return status.Error(codes.Unauthenticated, "user not found")
+			}
+			return txErr
+		}
 		rows, txErr := q.RevokeRefreshTokenWithReplacement(ctx, db.RevokeRefreshTokenWithReplacementParams{
 			ID:           existing.ID,
 			ReplacedByID: &newID,
@@ -460,14 +727,25 @@ func (s *Server) RefreshToken(ctx context.Context, req *userv1.RefreshTokenReque
 			// Return sentinel so WithTx rolls back cleanly; family revocation runs outside the rolled-back tx.
 			return errRefreshTokenConcurrentReplay
 		}
-		_, txErr = q.CreateRefreshToken(ctx, db.CreateRefreshTokenParams{
+		if user.Status != StatusActive {
+			return errRefreshTokenAccountInactive
+		}
+
+		tok, _, _, signErr := s.authMgr.SignAccessToken(user.ID, user.Role, effectiveSellerShopID(user))
+		if signErr != nil {
+			return status.Error(codes.Internal, "failed to sign access token")
+		}
+		if _, txErr = q.CreateRefreshToken(ctx, db.CreateRefreshTokenParams{
 			ID:        newID,
 			UserID:    user.ID,
 			FamilyID:  existing.FamilyID,
 			TokenHash: newHash,
-			ExpiresAt: newExpires,
-		})
-		return txErr
+			ExpiresAt: s.now().Add(s.opts.RefreshTTL),
+		}); txErr != nil {
+			return txErr
+		}
+		accessToken = tok
+		return nil
 	})
 	if err != nil {
 		if errors.Is(err, errRefreshTokenConcurrentReplay) {
@@ -477,19 +755,14 @@ func (s *Server) RefreshToken(ctx context.Context, req *userv1.RefreshTokenReque
 			s.log.WarnContext(ctx, "concurrent refresh token replay detected; family revoked", slog.String("user_id", existing.UserID), slog.String("family_id", existing.FamilyID))
 			return nil, status.Error(codes.Unauthenticated, "refresh token reuse detected; session revoked")
 		}
+		if errors.Is(err, errRefreshTokenAccountInactive) {
+			_ = s.store.RevokeRefreshTokenFamily(ctx, existing.FamilyID)
+			return nil, status.Error(codes.PermissionDenied, "account is not active")
+		}
 		if _, ok := status.FromError(err); ok {
 			return nil, err
 		}
 		return nil, status.Error(codes.Internal, "failed to rotate refresh token")
-	}
-
-	var shopID string
-	if user.ShopID != nil {
-		shopID = *user.ShopID
-	}
-	accessToken, _, _, err := s.authMgr.SignAccessToken(user.ID, user.Role, shopID)
-	if err != nil {
-		return nil, status.Error(codes.Internal, "failed to sign access token")
 	}
 
 	return &userv1.RefreshTokenResponse{
@@ -638,15 +911,11 @@ func (s *Server) ValidateUser(ctx context.Context, req *userv1.ValidateUserReque
 		return nil, status.Error(codes.Internal, "failed to validate user")
 	}
 
-	var shopID string
-	if user.ShopID != nil {
-		shopID = *user.ShopID
-	}
 	return &userv1.ValidateUserResponse{
 		Valid:            user.Status == StatusActive,
 		Role:             roleToProto(user.Role),
 		Status:           statusToProto(user.Status),
-		ShopId:           shopID,
+		ShopId:           effectiveSellerShopID(user),
 		PhoneVerified:    user.PhoneVerified,
 		CodRejectedCount: user.CODRejectedCount,
 	}, nil
@@ -711,33 +980,40 @@ func (s *Server) AdminUpdateUserStatus(ctx context.Context, req *userv1.AdminUpd
 		return nil, status.Error(codes.FailedPrecondition, "admin cannot lock own account")
 	}
 
-	target, err := s.store.GetUserByID(ctx, targetID)
-	if err != nil {
-		if isNotFoundErr(err) {
-			return nil, status.Error(codes.NotFound, "target user not found")
-		}
-		return nil, status.Error(codes.Internal, "failed to load target user")
-	}
-
-	if target.Role == RoleSuperAdmin && !strings.EqualFold(claims.Role, RoleSuperAdmin) {
-		return nil, status.Error(codes.PermissionDenied, "only super_admin can modify a super_admin account")
+	reason := strings.TrimSpace(req.GetReason())
+	lockReason := ""
+	if newStatus == StatusLocked {
+		lockReason = reason
 	}
 
 	var updated db.User
 	err = s.store.WithTx(ctx, func(q db.Querier) error {
-		if isAdminRole(target.Role) && target.Status == StatusActive && newStatus == StatusLocked {
-			activeAdmins, txErr := q.CountActiveAdmins(ctx)
+		var activeAdmins []string
+		if newStatus == StatusLocked {
+			var txErr error
+			activeAdmins, txErr = q.ListActiveAdminIDsForUpdate(ctx)
 			if txErr != nil {
 				return txErr
 			}
-			if activeAdmins <= 1 {
-				return status.Error(codes.FailedPrecondition, "cannot lock the last active admin")
-			}
 		}
-		var txErr error
+		target, txErr := q.GetUserByID(ctx, targetID)
+		if txErr != nil {
+			if isNotFoundErr(txErr) {
+				return status.Error(codes.NotFound, "target user not found")
+			}
+			return txErr
+		}
+		if target.Role == RoleSuperAdmin && !strings.EqualFold(claims.Role, RoleSuperAdmin) {
+			return status.Error(codes.PermissionDenied, "only super_admin can modify a super_admin account")
+		}
+		if isAdminRole(target.Role) && target.Status == StatusActive && newStatus == StatusLocked && len(activeAdmins) <= 1 {
+			return status.Error(codes.FailedPrecondition, "cannot lock the last active admin")
+		}
+
 		updated, txErr = q.UpdateUserStatus(ctx, db.UpdateUserStatusParams{
-			ID:     target.ID,
-			Status: newStatus,
+			ID:         target.ID,
+			Status:     newStatus,
+			LockReason: lockReason,
 		})
 		if txErr != nil {
 			return txErr
@@ -747,7 +1023,7 @@ func (s *Server) AdminUpdateUserStatus(ctx context.Context, req *userv1.AdminUpd
 				return txErr
 			}
 		}
-		_, txErr = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
+		if _, txErr = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
 			ID:         uuid.NewString(),
 			ActorID:    actorID,
 			ActorRole:  claims.Role,
@@ -756,10 +1032,18 @@ func (s *Server) AdminUpdateUserStatus(ctx context.Context, req *userv1.AdminUpd
 			TargetID:   target.ID,
 			BeforeJSON: marshalAuditJSON(auditUserSnapshot(target)),
 			AfterJSON:  marshalAuditJSON(auditUserSnapshot(updated)),
-			Reason:     strings.TrimSpace(req.GetReason()),
+			Reason:     reason,
 			IPAddress:  auditIPFromContext(ctx, claims, ""),
-		})
-		return txErr
+		}); txErr != nil {
+			return txErr
+		}
+		if newStatus == StatusLocked && s.sec != nil {
+			if rErr := s.sec.SetRevokedBefore(ctx, target.ID, s.now().Unix(), s.revokedBeforeTTL()); rErr != nil {
+				s.log.ErrorContext(ctx, "failed to set revoked_before on user lock", slog.String("user_id", target.ID), slog.String("error", rErr.Error()))
+				return status.Error(codes.Unavailable, "failed to revoke active sessions")
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		if _, ok := status.FromError(err); ok {
@@ -791,34 +1075,35 @@ func (s *Server) AdminUpdateUserRole(ctx context.Context, req *userv1.AdminUpdat
 	}
 
 	actorID := claims.UserID()
-	target, err := s.store.GetUserByID(ctx, targetID)
-	if err != nil {
-		if isNotFoundErr(err) {
-			return nil, status.Error(codes.NotFound, "target user not found")
-		}
-		return nil, status.Error(codes.Internal, "failed to load target user")
-	}
-
-	if target.Role == RoleSuperAdmin && !strings.EqualFold(claims.Role, RoleSuperAdmin) {
-		return nil, status.Error(codes.PermissionDenied, "only super_admin can modify a super_admin account")
-	}
-
-	if actorID == target.ID && isAdminRole(target.Role) && !isAdminRole(newRole) {
-		return nil, status.Error(codes.FailedPrecondition, "admin cannot demote own admin role")
-	}
+	reason := strings.TrimSpace(req.GetReason())
 
 	var updated db.User
 	err = s.store.WithTx(ctx, func(q db.Querier) error {
-		if isAdminRole(target.Role) && !isAdminRole(newRole) && target.Status == StatusActive {
-			activeAdmins, txErr := q.CountActiveAdmins(ctx)
+		var activeAdmins []string
+		if !isAdminRole(newRole) {
+			var txErr error
+			activeAdmins, txErr = q.ListActiveAdminIDsForUpdate(ctx)
 			if txErr != nil {
 				return txErr
 			}
-			if activeAdmins <= 1 {
-				return status.Error(codes.FailedPrecondition, "cannot demote the last active admin")
-			}
 		}
-		var txErr error
+		target, txErr := q.GetUserByID(ctx, targetID)
+		if txErr != nil {
+			if isNotFoundErr(txErr) {
+				return status.Error(codes.NotFound, "target user not found")
+			}
+			return txErr
+		}
+		if target.Role == RoleSuperAdmin && !strings.EqualFold(claims.Role, RoleSuperAdmin) {
+			return status.Error(codes.PermissionDenied, "only super_admin can modify a super_admin account")
+		}
+		if actorID == target.ID && isAdminRole(target.Role) && !isAdminRole(newRole) {
+			return status.Error(codes.FailedPrecondition, "admin cannot demote own admin role")
+		}
+		if isAdminRole(target.Role) && !isAdminRole(newRole) && target.Status == StatusActive && len(activeAdmins) <= 1 {
+			return status.Error(codes.FailedPrecondition, "cannot demote the last active admin")
+		}
+
 		updated, txErr = q.UpdateUserRole(ctx, db.UpdateUserRoleParams{
 			ID:   target.ID,
 			Role: newRole,
@@ -826,7 +1111,10 @@ func (s *Server) AdminUpdateUserRole(ctx context.Context, req *userv1.AdminUpdat
 		if txErr != nil {
 			return txErr
 		}
-		_, txErr = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
+		if txErr = q.RevokeAllUserRefreshTokens(ctx, target.ID); txErr != nil {
+			return txErr
+		}
+		if _, txErr = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
 			ID:         uuid.NewString(),
 			ActorID:    actorID,
 			ActorRole:  claims.Role,
@@ -835,10 +1123,18 @@ func (s *Server) AdminUpdateUserRole(ctx context.Context, req *userv1.AdminUpdat
 			TargetID:   target.ID,
 			BeforeJSON: marshalAuditJSON(auditUserSnapshot(target)),
 			AfterJSON:  marshalAuditJSON(auditUserSnapshot(updated)),
-			Reason:     strings.TrimSpace(req.GetReason()),
+			Reason:     reason,
 			IPAddress:  auditIPFromContext(ctx, claims, ""),
-		})
-		return txErr
+		}); txErr != nil {
+			return txErr
+		}
+		if s.sec != nil {
+			if rErr := s.sec.SetRevokedBefore(ctx, target.ID, s.now().Unix(), s.revokedBeforeTTL()); rErr != nil {
+				s.log.ErrorContext(ctx, "failed to set revoked_before on role change", slog.String("user_id", target.ID), slog.String("error", rErr.Error()))
+				return status.Error(codes.Unavailable, "failed to revoke active sessions")
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		if _, ok := status.FromError(err); ok {

@@ -9,7 +9,7 @@ use tokio::time::interval;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::domain::EventEnvelope;
+use crate::domain::{vn_today, EventEnvelope};
 use crate::service::PaymentService;
 use crate::telemetry::format_traceparent;
 
@@ -269,9 +269,37 @@ pub async fn run_reconciliation_scheduler(
                 break;
             }
             _ = ticker.tick() => {
-                let today = Utc::now().date_naive();
+                let today = vn_today(Utc::now());
                 if let Err(e) = service.run_reconciliation(today).await {
                     error!(error = %e, "scheduled reconciliation failed");
+                }
+            }
+        }
+    }
+}
+
+/// Background worker 5: Releases matured seller escrow holds (`pending_release -> released`)
+/// every 60 seconds once `settled_at + PAYMENT_SELLER_HOLD_HOURS` has elapsed (PAY-B7 / ORD-B9).
+pub async fn run_escrow_hold_releaser(
+    service: PaymentService,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut ticker = interval(service.config().escrow_hold_scan_interval);
+    info!(
+        interval_secs = service.config().escrow_hold_scan_interval.as_secs(),
+        hold_hours = service.config().seller_hold_hours,
+        "started seller escrow hold release worker"
+    );
+
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => {
+                info!("stopping seller escrow hold release worker");
+                break;
+            }
+            _ = ticker.tick() => {
+                if let Err(e) = service.release_matured_escrow_holds().await {
+                    error!(error = %e, "seller escrow hold release scan error");
                 }
             }
         }

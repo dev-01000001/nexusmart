@@ -37,12 +37,19 @@ export async function getServerSession(): Promise<GatewayUser | null> {
 }
 
 export async function requireUser(currentPath?: string): Promise<GatewayUser> {
+  const store = await cookies();
+  const hadAccessCookie = Boolean(store.get(ACCESS_COOKIE)?.value);
   const user = await getServerSession();
   if (!user) {
-    const target = currentPath
-      ? `/dang-nhap?next=${encodeURIComponent(currentPath)}`
-      : "/dang-nhap";
-    redirect(target);
+    const params = new URLSearchParams();
+    if (currentPath) {
+      params.set("next", currentPath);
+    }
+    if (hadAccessCookie) {
+      params.set("expired", "1");
+    }
+    const qs = params.toString();
+    redirect(qs ? `/dang-nhap?${qs}` : "/dang-nhap");
   }
   return user;
 }

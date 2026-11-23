@@ -444,6 +444,87 @@
   font-weight: 600;
 }
 
+/* Wave 2a: Return request, evidence links, redelivery & refund bank account */
+.evidenceList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.evidenceRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.evidenceLinkList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.evidenceLink {
+  color: var(--accent);
+  font-size: var(--step-small);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  word-break: break-all;
+}
+
+.returnCardStack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.returnInfoGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 20px;
+}
+
+.returnSubPanel {
+  padding: 16px 18px;
+  background: var(--surface-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.refundItem {
+  padding: 16px 18px;
+  background: var(--surface-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.refundHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.refundAmount {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+
+.redeliveryBox {
+  margin-top: 16px;
+  padding: 16px 18px;
+  background: var(--surface-subtle);
+  border-left: 4px solid var(--amber);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 @media (max-width: 1024px) {
   .detailGrid {
     grid-template-columns: 1fr;
@@ -453,6 +534,11 @@
 @media (max-width: 768px) {
   .milestoneGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .shipmentMetaGrid,
+  .returnInfoGrid {
+    grid-template-columns: 1fr;
   }
 
   .exchangeTypeGrid {

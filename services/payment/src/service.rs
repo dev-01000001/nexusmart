@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use chrono::{Duration, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -8,29 +8,41 @@ use tokio::sync::broadcast;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::config::Config;
+use crate::config::{Config, VietQrMode};
 use crate::domain::{
-    allocation_buyer_payable_vnd, compute_post_settlement_clawback, compute_settlement_split,
-    compute_suborder_refund_amount, decide_reconciliation_match_action,
-    decide_return_allocation_action, late_payment_refund_key, order_cancel_refund_key,
-    plan_initial_payment, resolve_cod_payment_status, select_payment_for_group_action,
-    validate_allocations_sum, validate_group_can_create_payment,
-    validate_payment_idempotency_match, validate_refund_eligibility,
-    validate_refund_idempotency_match, validate_suborder_refund_cap, CreatePaymentInput,
-    CreateRefundInput, CreateRefundOutput, GroupPaymentSelection, PaymentMethod, PaymentRecord,
-    PaymentSseEvent, PaymentWithAllocations, ReconciliationDecision, ReconciliationItemRecord,
+    allocation_buyer_payable_vnd, compute_capped_escrow_release_vnd,
+    compute_post_settlement_clawback, compute_reconciliation_assign_split,
+    compute_settlement_split, compute_suborder_refund_amount, decide_reconciliation_match_action,
+    decide_return_allocation_action, format_settlement_note_with_masked_account,
+    is_payment_already_cancelled_terminal, late_payment_refund_key, order_cancel_refund_key,
+    order_expiry_candidate_indices, plan_initial_payment, reconciliation_overpay_key,
+    reconciliation_refund_key, resolve_cod_payment_status, select_payment_for_group_action,
+    utc_to_vn_date, validate_allocations_sum, validate_group_can_create_payment,
+    validate_payment_idempotency_match, validate_reconciliation_provider_tx_accountable,
+    validate_refund_bank_account, validate_refund_eligibility, validate_refund_idempotency_match,
+    validate_resolve_reconciliation_idempotency_match, validate_settle_refund_idempotency_match,
+    validate_suborder_refund_cap, vn_day_utc_bounds, vn_today, AssignAmountSplit,
+    CreatePaymentInput, CreateRefundInput, CreateRefundOutput, GroupPaymentSelection,
+    ListReconciliationQueueResult, ListRefundsFilter, ListRefundsResult, PaymentMethod,
+    PaymentRecord, PaymentSseEvent, PaymentWithAllocations, ProviderTxAccountingState,
+    ReconciliationActionKind, ReconciliationDecision, ReconciliationItemRecord,
     ReconciliationQueueItem, ReconciliationReport, ReconciliationRunRecord, RefundRecord,
-    ReturnAllocationAction, SellerPayoutRecord, ShopAllocationRecord,
+    ResolveReconciliationInput, ResolveReconciliationOutput, ReturnAllocationAction,
+    SellerPayoutRecord, SettleRefundInput, SettleRefundOutput, ShopAllocationRecord,
+    SubmitRefundBankAccountInput,
 };
 use crate::error::{PaymentError, Result};
 use crate::ledger::{
     self, build_cod_collect_tx, build_escrow_release_tx, build_escrow_settle_tx,
-    build_late_payment_refund_tx, build_post_settlement_refund_tx, build_refund_tx,
-    build_seller_payout_tx, build_vietqr_confirm_tx, LedgerSummary, SellerBalance,
+    build_late_payment_refund_tx, build_post_settlement_refund_tx, build_reconciliation_refund_tx,
+    build_refund_settle_tx, build_refund_tx, build_seller_payout_tx, build_vietqr_confirm_tx,
+    LedgerSummary, SellerBalance,
 };
 use crate::metrics::Metrics;
 use crate::telemetry::mask_bank_account;
-use crate::vietqr::{ProviderTransaction, VietQrAdapter};
+use crate::vietqr::{
+    extract_occurred_at_from_json, parse_provider_timestamp, ProviderTransaction, VietQrAdapter,
+};
 use crate::webhook_security::{decide_webhook_action, IncomingWebhookPayload, WebhookDecision};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -534,7 +546,9 @@ impl PaymentService {
             ));
         };
 
-        if payment.status == "cancelled" {
+        // P1-3: Terminal unpaid states (`cancelled`, `expired`, `failed`, `superseded`) are
+        // already cancelled (idempotent success); paid states (`succeeded`, `refunded`) stay Conflict.
+        if is_payment_already_cancelled_terminal(&payment.status) {
             let allocations = fetch_allocations_tx(&mut tx, payment.id).await?;
             tx.commit().await?;
             return Ok(PaymentWithAllocations {
@@ -631,12 +645,12 @@ impl PaymentService {
     /// returning `Ok(WebhookProcessResult { duplicate: true, .. })` on all repeats.
     pub async fn process_verified_webhook(
         &self,
-        payload: IncomingWebhookPayload,
+        mut payload: IncomingWebhookPayload,
         raw_json: serde_json::Value,
         default_provider: &str,
         trace_id: &str,
     ) -> Result<WebhookProcessResult> {
-        payload.validate()?;
+        payload.normalize_and_validate()?;
 
         let provider = payload
             .provider
@@ -647,8 +661,16 @@ impl PaymentService {
         let parsed_payment_id = payload.parsed_payment_id();
         let extracted_code = payload.extracted_order_code();
         let order_ref = payload.effective_order_ref().map(ToString::to_string);
+        let webhook_occurred_at = payload
+            .occurred_at
+            .as_deref()
+            .and_then(parse_provider_timestamp);
 
         let mut tx = self.pool.begin().await?;
+
+        // P0-1: Serialize all gateway_clearing accounting paths per provider_tx_id BEFORE acquiring
+        // any table/group row locks to guarantee zero AB-BA deadlocks and zero double debits.
+        lock_provider_tx_xact(&mut tx, &payload.provider_tx_id).await?;
 
         // Step 1: Atomic DB-level deduplication by unique `provider_tx_id`
         let inserted_event_id: Option<Uuid> = sqlx::query_scalar(
@@ -715,6 +737,39 @@ impl PaymentService {
             (None, false, false)
         };
 
+        // P0-1: If this provider_tx_id was already accounted for by reconciliation/expiry/queue
+        // (on payments, finalized reconciliation_queue, or tx-scoped refunds), skip double debit.
+        if !payload.is_failed_event() {
+            let acct = check_provider_tx_accounting_tx(&mut tx, &payload.provider_tx_id).await?;
+            if acct.is_accounted() {
+                sqlx::query(
+                    r#"
+                    UPDATE webhook_events
+                    SET payment_id = $1, status = 'processed', processed_at = NOW()
+                    WHERE id = $2
+                    "#,
+                )
+                .bind(payment.as_ref().map(|p| p.id))
+                .bind(webhook_event_id)
+                .execute(&mut *tx)
+                .await?;
+
+                tx.commit().await?;
+                self.metrics.record_webhook("already_accounted");
+                info!(
+                    trace_id = %trace_id,
+                    provider_tx_id = %payload.provider_tx_id,
+                    "webhook skipped idempotently because provider_tx_id is already accounted for"
+                );
+                return Ok(WebhookProcessResult {
+                    status: "already_accounted".to_string(),
+                    provider_tx_id: payload.provider_tx_id,
+                    payment_id: payment.map(|p| p.id),
+                    duplicate: true,
+                });
+            }
+        }
+
         let decision = if payment.as_ref().is_some_and(|p| p.method == "COD") {
             WebhookDecision::QueueReconciliation {
                 reason: "unexpected_cod_webhook",
@@ -732,24 +787,20 @@ impl PaymentService {
 
         match decision {
             WebhookDecision::QueueReconciliation { reason } => {
-                sqlx::query(
-                    r#"
-                    INSERT INTO reconciliation_queue (
-                        webhook_event_id, provider, provider_tx_id, expected_payment_id,
-                        order_ref, expected_amount_vnd, actual_amount_vnd, reason
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                    "#,
+                // P1-1: Deduplicate via advisory lock + WHERE NOT EXISTS + ON CONFLICT DO NOTHING
+                // (never aborts tx with 25P02, works with or without unique index on provider_tx_id).
+                enqueue_reconciliation_item_tx(
+                    &mut tx,
+                    Some(webhook_event_id),
+                    &provider,
+                    &payload.provider_tx_id,
+                    payment.as_ref().map(|p| p.id),
+                    order_ref.as_deref().or(extracted_code.as_deref()),
+                    payment.as_ref().map(|p| p.amount_vnd),
+                    payload.amount_vnd,
+                    reason,
+                    webhook_occurred_at,
                 )
-                .bind(webhook_event_id)
-                .bind(&provider)
-                .bind(&payload.provider_tx_id)
-                .bind(payment.as_ref().map(|p| p.id))
-                .bind(order_ref.as_deref().or(extracted_code.as_deref()))
-                .bind(payment.as_ref().map(|p| p.amount_vnd))
-                .bind(payload.amount_vnd)
-                .bind(reason)
-                .execute(&mut *tx)
                 .await?;
 
                 sqlx::query(
@@ -797,15 +848,16 @@ impl PaymentService {
                     .execute(&mut *tx)
                     .await?;
 
+                    // P1-1: Do NOT store provider_tx_id on failed payments so failed webhooks
+                    // never occupy payments.provider_tx_id UNIQUE or mask a subsequent real transfer.
                     let row = sqlx::query_as::<_, PaymentRecord>(
                         r#"
                         UPDATE payments
-                        SET status = 'failed', provider_tx_id = $1, updated_at = NOW()
-                        WHERE id = $2
+                        SET status = 'failed', updated_at = NOW()
+                        WHERE id = $1
                         RETURNING *
                         "#,
                     )
-                    .bind(&payload.provider_tx_id)
                     .bind(p.id)
                     .fetch_one(&mut *tx)
                     .await?;
@@ -870,6 +922,7 @@ impl PaymentService {
                     &payload.provider_tx_id,
                     payload.amount_vnd,
                     pending_next_status,
+                    "auto_closed:webhook_late_refund",
                     &self.metrics,
                 )
                 .await?;
@@ -911,6 +964,8 @@ impl PaymentService {
                     &mut tx,
                     &p,
                     &payload.provider_tx_id,
+                    webhook_occurred_at,
+                    Some("auto_closed:webhook_confirm"),
                     trace_id,
                     &self.metrics,
                 )
@@ -929,14 +984,6 @@ impl PaymentService {
                 .await?;
 
                 tx.commit().await?;
-
-                self.vietqr.record_mock_transaction(ProviderTransaction {
-                    provider_tx_id: payload.provider_tx_id.clone(),
-                    provider_order_code: updated.provider_order_code.clone(),
-                    amount_vnd: updated.amount_vnd,
-                    status: "succeeded".to_string(),
-                    occurred_at: Utc::now(),
-                });
 
                 self.metrics.record_webhook("confirmed");
                 self.emit_sse(&updated);
@@ -1100,6 +1147,7 @@ impl PaymentService {
             FROM refunds
             WHERE payment_id = $1
               AND status IN ('pending', 'completed', 'manual_review')
+              AND affects_escrow
               AND NOT is_late_payment
             "#,
         )
@@ -1149,9 +1197,10 @@ impl PaymentService {
         let refund_insert = sqlx::query_as::<_, RefundRecord>(
             r#"
             INSERT INTO refunds (
-                payment_id, order_id, amount_vnd, reason, status, idempotency_key, is_late_payment
+                payment_id, order_id, amount_vnd, reason, status, idempotency_key,
+                is_late_payment, affects_escrow
             )
-            VALUES ($1, $2, $3, $4, 'completed', $5, FALSE)
+            VALUES ($1, $2, $3, $4, 'pending', $5, FALSE, TRUE)
             RETURNING *
             "#,
         )
@@ -1264,11 +1313,388 @@ impl PaymentService {
             refund_id = %refund.id,
             payment_id = %payment.id,
             amount_vnd = refund.amount_vnd,
-            "refund created and posted to double-entry ledger"
+            "pending refund created and accrued in double-entry ledger"
         );
         Ok(CreateRefundOutput {
             refund,
             already_existed: false,
+        })
+    }
+
+    /// Lists refunds with pagination.
+    /// - Admins see all matching refunds.
+    /// - Non-admins (buyers) are strictly scoped to payments owned by `caller_user_id`; querying an
+    ///   `order_id` belonging solely to another user returns `Forbidden` (403).
+    pub async fn list_refunds(&self, filter: ListRefundsFilter) -> Result<ListRefundsResult> {
+        let page = filter.page.max(1);
+        let page_size = if filter.page_size <= 0 {
+            20
+        } else {
+            filter.page_size.min(100)
+        };
+        let offset = i64::from(page - 1) * i64::from(page_size);
+
+        let status_filter = filter
+            .status
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let order_filter = filter
+            .order_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
+        let owner_filter: Option<&str> = if filter.is_admin {
+            None
+        } else {
+            let uid = filter
+                .caller_user_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    PaymentError::Unauthorized("authenticated user_id required".to_string())
+                })?;
+
+            // Defense-in-depth: if buyer queries a specific order_id belonging to another user, reject 403.
+            if let Some(oid) = order_filter {
+                let row = sqlx::query(
+                    r#"
+                    SELECT
+                        COALESCE(BOOL_OR(p.user_id = $2), FALSE) AS owns_any,
+                        COUNT(*)::BIGINT AS total_matches
+                    FROM payments p
+                    LEFT JOIN payment_shop_allocations a ON a.payment_id = p.id
+                    WHERE p.order_id = $1 OR p.order_group_id = $1 OR a.order_id = $1
+                    "#,
+                )
+                .bind(oid)
+                .bind(uid)
+                .fetch_one(&self.pool)
+                .await?;
+                let owns_any: bool = row.try_get("owns_any")?;
+                let total_matches: i64 = row.try_get("total_matches")?;
+                if total_matches > 0 && !owns_any {
+                    return Err(PaymentError::Forbidden(
+                        "cannot access refunds for another user's order".to_string(),
+                    ));
+                }
+            }
+            Some(uid)
+        };
+
+        let total: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)::BIGINT
+            FROM refunds r
+            JOIN payments p ON p.id = r.payment_id
+            WHERE ($1::TEXT IS NULL OR p.user_id = $1)
+              AND ($2::TEXT IS NULL OR r.status = $2)
+              AND (
+                  $3::TEXT IS NULL
+                  OR r.order_id = $3
+                  OR p.order_group_id = $3
+                  OR (
+                      (r.is_late_payment OR NOT r.affects_escrow)
+                      AND EXISTS (
+                          SELECT 1
+                          FROM payment_shop_allocations a
+                          WHERE a.payment_id = p.id AND a.order_id = $3
+                      )
+                  )
+              )
+            "#,
+        )
+        .bind(owner_filter)
+        .bind(status_filter)
+        .bind(order_filter)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let refunds = sqlx::query_as::<_, RefundRecord>(
+            r#"
+            SELECT r.*
+            FROM refunds r
+            JOIN payments p ON p.id = r.payment_id
+            WHERE ($1::TEXT IS NULL OR p.user_id = $1)
+              AND ($2::TEXT IS NULL OR r.status = $2)
+              AND (
+                  $3::TEXT IS NULL
+                  OR r.order_id = $3
+                  OR p.order_group_id = $3
+                  OR (
+                      (r.is_late_payment OR NOT r.affects_escrow)
+                      AND EXISTS (
+                          SELECT 1
+                          FROM payment_shop_allocations a
+                          WHERE a.payment_id = p.id AND a.order_id = $3
+                      )
+                  )
+              )
+            ORDER BY r.created_at DESC, r.id DESC
+            LIMIT $4 OFFSET $5
+            "#,
+        )
+        .bind(owner_filter)
+        .bind(status_filter)
+        .bind(order_filter)
+        .bind(i64::from(page_size))
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(ListRefundsResult { refunds, total })
+    }
+
+    /// Saves or updates the buyer's receiving bank account on a `pending` refund (PAY-B11 / UC-PAY04).
+    /// Strictly enforces payment ownership (`payment.user_id == caller_user_id`), editable until settled.
+    pub async fn submit_refund_bank_account(
+        &self,
+        input: SubmitRefundBankAccountInput,
+    ) -> Result<RefundRecord> {
+        let caller_uid = input.caller_user_id.trim();
+        if caller_uid.is_empty() {
+            return Err(PaymentError::Unauthorized(
+                "authenticated user_id is required".to_string(),
+            ));
+        }
+        let (bank_code, bank_account_number, bank_account_masked, bank_account_name) =
+            validate_refund_bank_account(
+                &input.bank_code,
+                &input.bank_account_number,
+                &input.bank_account_name,
+            )?;
+
+        let mut tx = self.pool.begin().await?;
+
+        let row = sqlx::query(
+            r#"
+            SELECT r.status AS refund_status, p.user_id AS payment_user_id
+            FROM refunds r
+            JOIN payments p ON p.id = r.payment_id
+            WHERE r.id = $1
+            FOR UPDATE OF r
+            "#,
+        )
+        .bind(input.refund_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| PaymentError::NotFound("refund not found".to_string()))?;
+
+        let refund_status: String = row.try_get("refund_status")?;
+        let payment_user_id: String = row.try_get("payment_user_id")?;
+
+        if payment_user_id != caller_uid {
+            return Err(PaymentError::Forbidden(
+                "cannot submit bank account for another user's refund".to_string(),
+            ));
+        }
+        if refund_status != "pending" {
+            return Err(PaymentError::Conflict(format!(
+                "cannot update bank account for refund in status '{refund_status}'"
+            )));
+        }
+
+        let updated = sqlx::query_as::<_, RefundRecord>(
+            r#"
+            UPDATE refunds
+            SET bank_code = $1,
+                bank_account_number = $2,
+                bank_account_masked = $3,
+                bank_account_name = $4,
+                updated_at = NOW()
+            WHERE id = $5
+            RETURNING *
+            "#,
+        )
+        .bind(&bank_code)
+        .bind(&bank_account_number)
+        .bind(&bank_account_masked)
+        .bind(&bank_account_name)
+        .bind(input.refund_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        info!(
+            refund_id = %updated.id,
+            bank_code = %bank_code,
+            bank_account_masked = %bank_account_masked,
+            "buyer submitted refund receiving bank account"
+        );
+        Ok(updated)
+    }
+
+    /// Settles a `pending` refund after bank transfer disbursement (PAY-B11 / UC-PAY04).
+    /// Admin-only; idempotent by `idempotency_key` and refund state; posts Debit `refund_payable`
+    /// / Credit `gateway_clearing` (`build_refund_settle_tx`) and emits `payment.refund_settled`.
+    pub async fn settle_refund(&self, input: SettleRefundInput) -> Result<SettleRefundOutput> {
+        let provider_refund_id = input.provider_refund_id.trim();
+        let idempotency_key = input.idempotency_key.trim();
+        let note = input.note.trim();
+
+        if idempotency_key.is_empty() {
+            return Err(PaymentError::Validation(
+                "idempotency_key is required to settle refund".to_string(),
+            ));
+        }
+        if provider_refund_id.is_empty() {
+            return Err(PaymentError::Validation(
+                "provider_refund_id (transfer reference) is required".to_string(),
+            ));
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        if let Some(existing) = sqlx::query_as::<_, RefundRecord>(
+            "SELECT * FROM refunds WHERE settlement_idempotency_key = $1 FOR UPDATE",
+        )
+        .bind(idempotency_key)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            validate_settle_refund_idempotency_match(
+                &existing,
+                input.refund_id,
+                provider_refund_id,
+            )?;
+            tx.commit().await?;
+            return Ok(SettleRefundOutput {
+                refund: existing,
+                already_settled: true,
+            });
+        }
+
+        let refund =
+            sqlx::query_as::<_, RefundRecord>("SELECT * FROM refunds WHERE id = $1 FOR UPDATE")
+                .bind(input.refund_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| PaymentError::NotFound("refund not found".to_string()))?;
+
+        if refund.settlement_idempotency_key.as_deref() == Some(idempotency_key) {
+            validate_settle_refund_idempotency_match(&refund, input.refund_id, provider_refund_id)?;
+            tx.commit().await?;
+            return Ok(SettleRefundOutput {
+                refund,
+                already_settled: true,
+            });
+        }
+        if refund.status == "completed" {
+            return Err(PaymentError::Conflict(format!(
+                "refund {} is already settled with a different idempotency_key",
+                refund.id
+            )));
+        }
+        if refund.status != "pending" {
+            return Err(PaymentError::Conflict(format!(
+                "cannot settle refund in status '{}'",
+                refund.status
+            )));
+        }
+
+        let has_bank_account = refund
+            .bank_account_number
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
+        if !has_bank_account && note.is_empty() {
+            return Err(PaymentError::Conflict(
+                "buyer receiving bank account or manual transfer note is required before settling refund"
+                    .to_string(),
+            ));
+        }
+
+        let effective_settlement_note = format_settlement_note_with_masked_account(
+            note,
+            refund.bank_code.as_deref(),
+            refund.bank_account_masked.as_deref(),
+        );
+
+        let update_res = sqlx::query_as::<_, RefundRecord>(
+            r#"
+            UPDATE refunds
+            SET status = 'completed',
+                provider_refund_id = $1,
+                settlement_note = $2,
+                settlement_idempotency_key = $3,
+                settled_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $4
+            RETURNING *
+            "#,
+        )
+        .bind(provider_refund_id)
+        .bind(effective_settlement_note.as_deref())
+        .bind(idempotency_key)
+        .bind(refund.id)
+        .fetch_one(&mut *tx)
+        .await;
+
+        let updated = match update_res {
+            Ok(r) => r,
+            Err(err) if is_unique_violation(&err, "settlement_idempotency_key") => {
+                let _ = tx.rollback().await;
+                if let Some(existing) = sqlx::query_as::<_, RefundRecord>(
+                    "SELECT * FROM refunds WHERE settlement_idempotency_key = $1",
+                )
+                .bind(idempotency_key)
+                .fetch_optional(&self.pool)
+                .await?
+                {
+                    validate_settle_refund_idempotency_match(
+                        &existing,
+                        input.refund_id,
+                        provider_refund_id,
+                    )?;
+                    return Ok(SettleRefundOutput {
+                        refund: existing,
+                        already_settled: true,
+                    });
+                }
+                return Err(PaymentError::Database(err));
+            }
+            Err(err) => return Err(PaymentError::Database(err)),
+        };
+
+        let draft = build_refund_settle_tx(updated.id, updated.amount_vnd);
+        if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
+            self.metrics.record_ledger_tx("refund_settle");
+        }
+
+        let payment_user_id: String =
+            sqlx::query_scalar("SELECT user_id FROM payments WHERE id = $1")
+                .bind(updated.payment_id)
+                .fetch_one(&mut *tx)
+                .await?;
+
+        insert_outbox_event(
+            &mut tx,
+            "payment.refund_settled",
+            &updated.order_id,
+            &input.trace_id,
+            json!({
+                "refund_id": updated.id.to_string(),
+                "payment_id": updated.payment_id.to_string(),
+                "order_id": updated.order_id,
+                "user_id": payment_user_id,
+                "amount_vnd": updated.amount_vnd,
+            }),
+        )
+        .await?;
+
+        tx.commit().await?;
+        info!(
+            trace_id = %input.trace_id,
+            refund_id = %updated.id,
+            payment_id = %updated.payment_id,
+            amount_vnd = updated.amount_vnd,
+            provider_refund_id = %provider_refund_id,
+            "refund settled and posted to double-entry ledger"
+        );
+        Ok(SettleRefundOutput {
+            refund: updated,
+            already_settled: false,
         })
     }
 
@@ -1281,9 +1707,10 @@ impl PaymentService {
         Ok(settled)
     }
 
-    /// Releases escrow for `order_id` (optionally scoped to `shop_id`) to `seller_available:<shop_id>`.
-    /// If allocations are still `held`, settles `escrow_liability -> seller_pending:<shop_id>` first,
-    /// then moves `seller_pending:<shop_id> -> seller_available:<shop_id>`. Fully idempotent.
+    /// Releases escrow for `order_id` (optionally scoped to `shop_id`) from `seller_pending:<shop_id>`
+    /// to `seller_available:<shop_id>` (early release override for admin).
+    /// Review P1-4: ONLY allows allocations already settled to `pending_release` (after `order.completed`);
+    /// rejects with `409 Conflict` if any active allocation is still `awaiting_collection` or `held`.
     pub async fn release_escrow(
         &self,
         order_id: &str,
@@ -1296,52 +1723,14 @@ impl PaymentService {
 
         let mut tx = self.pool.begin().await?;
 
-        // P0-1: If sync ReleaseEscrow arrives before async `order.delivered` on a COD order,
-        // idempotently collect COD (`cod-collect:{payment_id}:{order_id}` + outbox `payment.succeeded`)
-        // before settling, since ReleaseEscrow is only called once an order passed DELIVERED -> COMPLETED.
-        let cod_sse =
-            collect_cod_order_allocations_tx(&mut tx, order_id, shop_filter, "", &self.metrics)
-                .await?;
-
-        // review2-P P2-4: Lock target allocations in ascending id order and acquire FOR UPDATE
-        // locks on each shop's ledger accounts (`seller_available`, `seller_pending`) BEFORE
-        // `settle_order_to_pending_tx` inserts into `ledger_entries` (which would otherwise take
-        // `FOR KEY SHARE` on `seller_pending` first and deadlock on lock upgrade to `FOR UPDATE`).
-        let mut target_shop_ids: Vec<String> = sqlx::query_scalar(
-            r#"
-            SELECT a.shop_id
-            FROM payment_shop_allocations a
-            JOIN payments p ON p.id = a.payment_id
-            WHERE (a.order_id = $1 OR p.order_id = $1 OR p.order_group_id = $1)
-              AND ($2::TEXT IS NULL OR a.shop_id = $2)
-              AND (p.status IN ('succeeded', 'refunded') OR (p.method = 'COD' AND p.status = 'pending'))
-              AND a.escrow_status IN ('held', 'pending_release')
-            ORDER BY a.id ASC
-            FOR UPDATE OF a
-            "#,
-        )
-        .bind(order_id)
-        .bind(shop_filter)
-        .fetch_all(&mut *tx)
-        .await?;
-        target_shop_ids.sort();
-        target_shop_ids.dedup();
-        for shop_id in &target_shop_ids {
-            let _ = ledger::lock_and_get_seller_balances_tx(&mut tx, shop_id).await?;
-        }
-
-        // First settle any `held` allocations for this order to `pending_release`
-        let _ = settle_order_to_pending_tx(&mut tx, order_id, shop_filter, &self.metrics).await?;
-
-        let pending_allocs = sqlx::query_as::<_, ShopAllocationRecord>(
+        let active_allocs = sqlx::query_as::<_, ShopAllocationRecord>(
             r#"
             SELECT a.*
             FROM payment_shop_allocations a
             JOIN payments p ON p.id = a.payment_id
             WHERE (a.order_id = $1 OR p.order_id = $1 OR p.order_group_id = $1)
               AND ($2::TEXT IS NULL OR a.shop_id = $2)
-              AND (p.status IN ('succeeded', 'refunded') OR (p.method = 'COD' AND p.status = 'pending'))
-              AND a.escrow_status = 'pending_release'
+              AND p.status NOT IN ('cancelled', 'expired', 'failed', 'superseded')
             ORDER BY a.id ASC
             FOR UPDATE OF a
             "#,
@@ -1351,28 +1740,25 @@ impl PaymentService {
         .fetch_all(&mut *tx)
         .await?;
 
-        if pending_allocs.is_empty() {
-            let already_released: bool = sqlx::query_scalar(
-                r#"
-                SELECT EXISTS(
-                    SELECT 1
-                    FROM payment_shop_allocations a
-                    JOIN payments p ON p.id = a.payment_id
-                    WHERE (a.order_id = $1 OR p.order_id = $1 OR p.order_group_id = $1)
-                      AND ($2::TEXT IS NULL OR a.shop_id = $2)
-                      AND a.escrow_status = 'released'
-                )
-                "#,
-            )
-            .bind(order_id)
-            .bind(shop_filter)
-            .fetch_one(&mut *tx)
-            .await?;
+        if let Some(unsettled) = active_allocs
+            .iter()
+            .find(|a| matches!(a.escrow_status.as_str(), "awaiting_collection" | "held"))
+        {
+            return Err(PaymentError::Conflict(format!(
+                "cannot release escrow for order {order_id}: allocation {} is in status '{}' (order must be completed and settled to pending_release first)",
+                unsettled.id, unsettled.escrow_status
+            )));
+        }
 
+        let pending_allocs: Vec<ShopAllocationRecord> = active_allocs
+            .iter()
+            .filter(|a| a.escrow_status == "pending_release")
+            .cloned()
+            .collect();
+
+        if pending_allocs.is_empty() {
+            let already_released = active_allocs.iter().any(|a| a.escrow_status == "released");
             tx.commit().await?;
-            if let Some(ref u) = cod_sse {
-                self.emit_sse(u);
-            }
             return Ok(EscrowReleaseResult {
                 order_id: order_id.to_string(),
                 released: already_released,
@@ -1381,58 +1767,27 @@ impl PaymentService {
             });
         }
 
+        // Pre-lock each shop's ledger accounts in deterministic sorted order to prevent AB-BA deadlocks.
+        let mut target_shop_ids: Vec<String> =
+            pending_allocs.iter().map(|a| a.shop_id.clone()).collect();
+        target_shop_ids.sort();
+        target_shop_ids.dedup();
+        for shop_id in &target_shop_ids {
+            let _ = ledger::lock_and_get_seller_balances_tx(&mut tx, shop_id).await?;
+        }
+
         let mut total_released_vnd = 0_i64;
         for alloc in pending_allocs {
-            let (payment_order_id, alloc_count) =
-                fetch_payment_order_meta_tx(&mut tx, alloc.payment_id).await?;
-            let suborder_refunded = sum_suborder_refunded_tx(
+            total_released_vnd += release_pending_allocation_tx(
                 &mut tx,
-                alloc.payment_id,
-                &alloc.order_id,
-                &payment_order_id,
-                alloc_count == 1,
+                &alloc,
+                self.config.seller_hold_hours,
+                &self.metrics,
             )
-            .await?;
-
-            let split = compute_settlement_split(
-                &alloc.order_id,
-                &alloc.shop_id,
-                alloc.subtotal_vnd,
-                alloc.commission_vnd,
-                alloc.shipping_fee_vnd,
-                alloc.platform_discount_vnd,
-                suborder_refunded,
-            )?;
-
-            let (pending_bal, _) =
-                ledger::lock_and_get_seller_balances_tx(&mut tx, &alloc.shop_id).await?;
-            let release_amount = split.seller_net_vnd.min(pending_bal.max(0));
-
-            if release_amount > 0 {
-                let draft =
-                    build_escrow_release_tx(&alloc.order_id, &alloc.shop_id, release_amount)?;
-                if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
-                    self.metrics.record_ledger_tx("escrow_release");
-                }
-                total_released_vnd += release_amount;
-            }
-
-            sqlx::query(
-                r#"
-                UPDATE payment_shop_allocations
-                SET escrow_status = 'released', released_at = NOW()
-                WHERE id = $1
-                "#,
-            )
-            .bind(alloc.id)
-            .execute(&mut *tx)
             .await?;
         }
 
         tx.commit().await?;
-        if let Some(ref u) = cod_sse {
-            self.emit_sse(u);
-        }
 
         info!(
             order_id = %order_id,
@@ -1446,6 +1801,108 @@ impl PaymentService {
             released_amount_vnd: total_released_vnd,
             already_released: false,
         })
+    }
+
+    /// Background sweep releasing matured `pending_release` allocations whose
+    /// `settled_at + PAYMENT_SELLER_HOLD_HOURS <= NOW()` on PostgreSQL clock (PAY-B7 / P3-2).
+    /// Safe across multiple replicas (`FOR UPDATE OF a SKIP LOCKED`), reuses
+    /// `release_pending_allocation_tx`, and preserves lock order (`allocation -> seller ledger accounts`).
+    pub async fn release_matured_escrow_holds(&self) -> Result<usize> {
+        let hold_hours_i32 = clamp_hold_hours(self.config.seller_hold_hours);
+        let candidate_ids: Vec<Uuid> = sqlx::query_scalar(
+            r#"
+            SELECT a.id
+            FROM payment_shop_allocations a
+            JOIN payments p ON p.id = a.payment_id
+            WHERE a.escrow_status = 'pending_release'
+              AND a.settled_at IS NOT NULL
+              AND a.settled_at <= NOW() - make_interval(hours => $1)
+              AND (p.status IN ('succeeded', 'refunded') OR (p.method = 'COD' AND p.status = 'pending'))
+            ORDER BY a.settled_at ASC, a.id ASC
+            LIMIT 50
+            "#,
+        )
+        .bind(hold_hours_i32)
+        .fetch_all(&self.pool)
+        .await?;
+
+        if candidate_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut released_count = 0usize;
+        for alloc_id in candidate_ids {
+            match self
+                .release_single_matured_allocation(alloc_id, hold_hours_i32)
+                .await
+            {
+                Ok(true) => released_count += 1,
+                Ok(false) => {}
+                Err(e) => {
+                    warn!(
+                        allocation_id = %alloc_id,
+                        error = %e,
+                        "failed releasing matured escrow hold allocation; will retry next tick"
+                    );
+                }
+            }
+        }
+
+        if released_count > 0 {
+            info!(
+                released_count = released_count,
+                hold_hours = self.config.seller_hold_hours,
+                "released matured seller escrow holds"
+            );
+        }
+        Ok(released_count)
+    }
+
+    async fn release_single_matured_allocation(
+        &self,
+        alloc_id: Uuid,
+        hold_hours_i32: i32,
+    ) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        let alloc_opt = sqlx::query_as::<_, ShopAllocationRecord>(
+            r#"
+            SELECT a.*
+            FROM payment_shop_allocations a
+            JOIN payments p ON p.id = a.payment_id
+            WHERE a.id = $1
+              AND a.escrow_status = 'pending_release'
+              AND a.settled_at IS NOT NULL
+              AND a.settled_at <= NOW() - make_interval(hours => $2)
+              AND (p.status IN ('succeeded', 'refunded') OR (p.method = 'COD' AND p.status = 'pending'))
+            FOR UPDATE OF a SKIP LOCKED
+            "#,
+        )
+        .bind(alloc_id)
+        .bind(hold_hours_i32)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some(alloc) = alloc_opt else {
+            tx.commit().await?;
+            return Ok(false);
+        };
+
+        let released_vnd = release_pending_allocation_tx(
+            &mut tx,
+            &alloc,
+            self.config.seller_hold_hours,
+            &self.metrics,
+        )
+        .await?;
+        tx.commit().await?;
+        info!(
+            allocation_id = %alloc.id,
+            order_id = %alloc.order_id,
+            shop_id = %alloc.shop_id,
+            released_vnd = released_vnd,
+            "matured escrow hold released to seller available balance"
+        );
+        Ok(true)
     }
 
     /// Creates a seller payout from `seller_available:<shop_id>` (UC-PAY05).
@@ -1524,13 +1981,537 @@ impl PaymentService {
         ledger::get_seller_balance(&self.pool, shop_id).await
     }
 
-    pub async fn list_reconciliation_queue(&self) -> Result<Vec<ReconciliationQueueItem>> {
-        let rows = sqlx::query_as::<_, ReconciliationQueueItem>(
-            "SELECT * FROM reconciliation_queue ORDER BY created_at DESC LIMIT 100",
+    pub async fn list_reconciliation_queue(
+        &self,
+        status_filter: Option<&str>,
+        page: i32,
+        page_size: i32,
+    ) -> Result<ListReconciliationQueueResult> {
+        let normalized_status = match status_filter.map(str::trim).filter(|s| !s.is_empty()) {
+            None => None,
+            Some(raw) => {
+                let lower = raw.to_ascii_lowercase();
+                if !matches!(
+                    lower.as_str(),
+                    "pending" | "assigned" | "refunded" | "suspended"
+                ) {
+                    return Err(PaymentError::Validation(format!(
+                        "invalid reconciliation queue status '{raw}'; expected pending|assigned|refunded|suspended"
+                    )));
+                }
+                Some(lower)
+            }
+        };
+
+        let page = page.max(1);
+        let page_size = if page_size <= 0 {
+            20
+        } else {
+            page_size.min(100)
+        };
+        let offset = i64::from(page - 1) * i64::from(page_size);
+
+        let total: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)::BIGINT
+            FROM reconciliation_queue
+            WHERE ($1::TEXT IS NULL OR resolution_status = $1)
+            "#,
         )
+        .bind(normalized_status.as_deref())
+        .fetch_one(&self.pool)
+        .await?;
+
+        let items = sqlx::query_as::<_, ReconciliationQueueItem>(
+            r#"
+            SELECT *
+            FROM reconciliation_queue
+            WHERE ($1::TEXT IS NULL OR resolution_status = $1)
+            ORDER BY created_at DESC, id DESC
+            LIMIT $2 OFFSET $3
+            "#,
+        )
+        .bind(normalized_status.as_deref())
+        .bind(i64::from(page_size))
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows)
+
+        Ok(ListReconciliationQueueResult { items, total })
+    }
+
+    /// Resolves a mismatched transaction in `reconciliation_queue` (PAY-B9 / UC-A14):
+    /// - `ASSIGN`: validates payment group (same rules/lock order as webhook), rejects underpayment
+    ///   or cancelled/already-paid group with 409, confirms exact amount, or confirms + creates a
+    ///   pending excess refund (`Debit gateway_clearing / Credit refund_payable`) on overpayment.
+    /// - `REFUND`: requires target `payment_id` (explicit or `expected_payment_id`), posts
+    ///   `Debit gateway_clearing / Credit refund_payable` and creates a `pending` refund.
+    /// - `SUSPEND`: marks item `suspended` with required note; may be resolved again later.
+    ///
+    /// Idempotent by `idempotency_key`; finalized (`assigned`/`refunded`) items reject new attempts with 409.
+    pub async fn resolve_reconciliation_item(
+        &self,
+        input: ResolveReconciliationInput,
+    ) -> Result<ResolveReconciliationOutput> {
+        let idempotency_key = input.idempotency_key.trim();
+        let note = input.note.trim();
+
+        if idempotency_key.is_empty() {
+            return Err(PaymentError::Validation(
+                "idempotency_key is required to resolve reconciliation item".to_string(),
+            ));
+        }
+        if input.action == ReconciliationActionKind::Suspend && note.is_empty() {
+            return Err(PaymentError::Validation(
+                "note is required when suspending a reconciliation item".to_string(),
+            ));
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        // Read-only idempotency lookup BEFORE acquiring advisory/row locks so already-committed
+        // replays return immediately without blocking or creating lock-order inversions.
+        if let Some(existing) = sqlx::query_as::<_, ReconciliationQueueItem>(
+            "SELECT * FROM reconciliation_queue WHERE resolution_idempotency_key = $1",
+        )
+        .bind(idempotency_key)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            validate_resolve_reconciliation_idempotency_match(
+                &existing,
+                input.item_id,
+                input.action,
+                input.payment_id,
+            )?;
+            let refund = match existing.resolution_refund_id {
+                Some(rid) => {
+                    sqlx::query_as::<_, RefundRecord>("SELECT * FROM refunds WHERE id = $1")
+                        .bind(rid)
+                        .fetch_optional(&mut *tx)
+                        .await?
+                }
+                None => None,
+            };
+            tx.commit().await?;
+            return Ok(ResolveReconciliationOutput {
+                item: existing,
+                refund,
+                already_resolved: true,
+            });
+        }
+
+        // Locate provider_tx_id read-only first, then acquire the transaction-scoped advisory
+        // lock per provider_tx_id BEFORE locking reconciliation_queue or payments rows (P0-1).
+        let target_provider_tx_id: String =
+            sqlx::query_scalar("SELECT provider_tx_id FROM reconciliation_queue WHERE id = $1")
+                .bind(input.item_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| {
+                    PaymentError::NotFound("reconciliation queue item not found".to_string())
+                })?;
+
+        lock_provider_tx_xact(&mut tx, &target_provider_tx_id).await?;
+
+        let locked_siblings = sqlx::query_as::<_, ReconciliationQueueItem>(
+            r#"
+            SELECT * FROM reconciliation_queue
+            WHERE provider_tx_id = $1
+            ORDER BY id ASC
+            FOR UPDATE
+            "#,
+        )
+        .bind(&target_provider_tx_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let item = locked_siblings
+            .iter()
+            .find(|row| row.id == input.item_id)
+            .cloned()
+            .ok_or_else(|| {
+                PaymentError::NotFound("reconciliation queue item not found".to_string())
+            })?;
+
+        // Handles concurrent identical retry that raced past the initial idempotency lookup
+        // before the winning transaction committed.
+        if item.resolution_idempotency_key.as_deref() == Some(idempotency_key) {
+            validate_resolve_reconciliation_idempotency_match(
+                &item,
+                input.item_id,
+                input.action,
+                input.payment_id,
+            )?;
+            let refund = match item.resolution_refund_id {
+                Some(rid) => {
+                    sqlx::query_as::<_, RefundRecord>("SELECT * FROM refunds WHERE id = $1")
+                        .bind(rid)
+                        .fetch_optional(&mut *tx)
+                        .await?
+                }
+                None => None,
+            };
+            tx.commit().await?;
+            return Ok(ResolveReconciliationOutput {
+                item,
+                refund,
+                already_resolved: true,
+            });
+        }
+
+        if !matches!(item.resolution_status.as_str(), "pending" | "suspended") {
+            return Err(PaymentError::Conflict(format!(
+                "reconciliation item {} is already finalized with status '{}'",
+                item.id, item.resolution_status
+            )));
+        }
+
+        let acct = check_provider_tx_accounting_tx(&mut tx, &item.provider_tx_id).await?;
+        validate_reconciliation_provider_tx_accountable(&item.provider_tx_id, acct)?;
+
+        match input.action {
+            ReconciliationActionKind::Suspend => {
+                // P1-5: Validate optional payment_id against payments before writing FK column.
+                if let Some(pid) = input.payment_id {
+                    let exists: bool =
+                        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM payments WHERE id = $1)")
+                            .bind(pid)
+                            .fetch_one(&mut *tx)
+                            .await?;
+                    if !exists {
+                        return Err(PaymentError::NotFound(
+                            "target payment not found".to_string(),
+                        ));
+                    }
+                }
+
+                let updated = sqlx::query_as::<_, ReconciliationQueueItem>(
+                    r#"
+                    UPDATE reconciliation_queue
+                    SET resolution_status = 'suspended',
+                        notes = $1,
+                        resolution_idempotency_key = $2,
+                        resolution_action = $3,
+                        resolution_payment_id = $4
+                    WHERE id = $5
+                    RETURNING *
+                    "#,
+                )
+                .bind(note)
+                .bind(idempotency_key)
+                .bind(input.action.as_str())
+                .bind(input.payment_id)
+                .bind(item.id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(map_recon_idempotency_conflict)?;
+
+                tx.commit().await?;
+                info!(
+                    trace_id = %input.trace_id,
+                    item_id = %updated.id,
+                    "reconciliation queue item suspended"
+                );
+                Ok(ResolveReconciliationOutput {
+                    item: updated,
+                    refund: None,
+                    already_resolved: false,
+                })
+            }
+
+            ReconciliationActionKind::Assign => {
+                let target_payment_id =
+                    input
+                        .payment_id
+                        .or(item.expected_payment_id)
+                        .ok_or_else(|| {
+                            PaymentError::Validation(
+                                "payment_id is required for ASSIGN".to_string(),
+                            )
+                        })?;
+
+                let found =
+                    sqlx::query_as::<_, PaymentRecord>("SELECT * FROM payments WHERE id = $1")
+                        .bind(target_payment_id)
+                        .fetch_optional(&mut *tx)
+                        .await?
+                        .ok_or_else(|| {
+                            PaymentError::NotFound("target payment not found".to_string())
+                        })?;
+
+                // Lock entire checkout group in ascending id order (identical to webhook confirmation path).
+                let group =
+                    lock_payment_group_tx(&mut tx, &found.order_id, &found.order_group_id).await?;
+                let locked = group
+                    .iter()
+                    .find(|p| p.id == found.id)
+                    .cloned()
+                    .unwrap_or(found);
+
+                if locked.method != "VIETQR" {
+                    return Err(PaymentError::Conflict(
+                        "can only assign mismatched transfer to a VIETQR payment".to_string(),
+                    ));
+                }
+                let order_already_succeeded = group.iter().any(|p| {
+                    p.id != locked.id && matches!(p.status.as_str(), "succeeded" | "refunded")
+                });
+                let group_has_terminal_unpaid = group
+                    .iter()
+                    .any(|p| matches!(p.status.as_str(), "cancelled" | "expired" | "failed"));
+                let has_cancelled_alloc = has_cancelled_allocation_tx(&mut tx, locked.id).await?;
+
+                if locked.status != "pending"
+                    || order_already_succeeded
+                    || group_has_terminal_unpaid
+                    || has_cancelled_alloc
+                {
+                    return Err(PaymentError::Conflict(format!(
+                        "cannot assign transfer to payment {} (status='{}', group_cancelled={}, already_succeeded={})",
+                        locked.id,
+                        locked.status,
+                        group_has_terminal_unpaid || has_cancelled_alloc,
+                        order_already_succeeded
+                    )));
+                }
+
+                let split =
+                    compute_reconciliation_assign_split(locked.amount_vnd, item.actual_amount_vnd)?;
+
+                // P1-3: Preserve actual transfer timestamp (item.occurred_at -> webhook_events -> item.created_at)
+                // so assigning a prior-day transfer on the next day does not trigger false missing_provider.
+                let transfer_paid_at = match item.occurred_at {
+                    Some(ts) => Some(ts),
+                    None => sqlx::query(
+                        r#"
+                        SELECT raw_payload, received_at
+                        FROM webhook_events
+                        WHERE ($1::UUID IS NOT NULL AND id = $1)
+                           OR provider_tx_id = $2
+                        ORDER BY CASE WHEN id = $1 THEN 0 ELSE 1 END
+                        LIMIT 1
+                        "#,
+                    )
+                    .bind(item.webhook_event_id)
+                    .bind(&item.provider_tx_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .map(|row| {
+                        let raw_payload: serde_json::Value =
+                            row.try_get("raw_payload").unwrap_or_default();
+                        let received_at: DateTime<Utc> =
+                            row.try_get("received_at").unwrap_or(item.created_at);
+                        extract_occurred_at_from_json(&raw_payload).unwrap_or(received_at)
+                    })
+                    .or(Some(item.created_at)),
+                };
+
+                let confirmed = confirm_vietqr_payment_tx(
+                    &mut tx,
+                    &locked,
+                    &item.provider_tx_id,
+                    transfer_paid_at,
+                    None,
+                    &input.trace_id,
+                    &self.metrics,
+                )
+                .await?;
+
+                let excess_refund = match split {
+                    AssignAmountSplit::Exact { .. } => None,
+                    AssignAmountSplit::Overpaid { excess_vnd, .. } => {
+                        let rf_key = reconciliation_overpay_key(&item.provider_tx_id);
+                        let rf_reason = if note.is_empty() {
+                            "reconciliation_overpayment".to_string()
+                        } else {
+                            format!("reconciliation_overpayment: {note}")
+                        };
+                        let draft = build_reconciliation_refund_tx(
+                            &rf_key,
+                            &item.provider_tx_id,
+                            excess_vnd,
+                            &format!(
+                                "Overpayment excess {excess_vnd} VND for provider_tx_id {}",
+                                item.provider_tx_id
+                            ),
+                        );
+                        if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
+                            self.metrics.record_ledger_tx("reconciliation_refund");
+                        }
+
+                        let rf = sqlx::query_as::<_, RefundRecord>(
+                            r#"
+                            INSERT INTO refunds (
+                                payment_id, order_id, amount_vnd, reason, status, idempotency_key,
+                                is_late_payment, affects_escrow
+                            )
+                            VALUES ($1, $2, $3, $4, 'pending', $5, FALSE, FALSE)
+                            ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = NOW()
+                            RETURNING *
+                            "#,
+                        )
+                        .bind(locked.id)
+                        .bind(&locked.order_id)
+                        .bind(excess_vnd)
+                        .bind(&rf_reason)
+                        .bind(&rf_key)
+                        .fetch_one(&mut *tx)
+                        .await?;
+                        Some(rf)
+                    }
+                };
+
+                let updated_item = sqlx::query_as::<_, ReconciliationQueueItem>(
+                    r#"
+                    UPDATE reconciliation_queue
+                    SET resolution_status = 'assigned',
+                        expected_payment_id = $1,
+                        expected_amount_vnd = $2,
+                        notes = COALESCE(NULLIF($3, ''), notes),
+                        resolution_idempotency_key = $4,
+                        resolution_refund_id = $5,
+                        resolution_action = $6,
+                        resolution_payment_id = $7,
+                        resolved_at = NOW()
+                    WHERE id = $8
+                    RETURNING *
+                    "#,
+                )
+                .bind(confirmed.id)
+                .bind(confirmed.amount_vnd)
+                .bind(note)
+                .bind(idempotency_key)
+                .bind(excess_refund.as_ref().map(|r| r.id))
+                .bind(input.action.as_str())
+                .bind(input.payment_id)
+                .bind(item.id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(map_recon_idempotency_conflict)?;
+
+                tx.commit().await?;
+                self.emit_sse(&confirmed);
+                info!(
+                    trace_id = %input.trace_id,
+                    item_id = %updated_item.id,
+                    payment_id = %confirmed.id,
+                    excess_refund_id = ?excess_refund.as_ref().map(|r| r.id),
+                    "reconciliation queue item resolved via ASSIGN"
+                );
+                Ok(ResolveReconciliationOutput {
+                    item: updated_item,
+                    refund: excess_refund,
+                    already_resolved: false,
+                })
+            }
+
+            ReconciliationActionKind::Refund => {
+                let target_payment_id =
+                    input
+                        .payment_id
+                        .or(item.expected_payment_id)
+                        .ok_or_else(|| {
+                            PaymentError::Validation(
+                                "payment_id is required for REFUND".to_string(),
+                            )
+                        })?;
+                if item.actual_amount_vnd <= 0 {
+                    return Err(PaymentError::Conflict(
+                        "cannot refund reconciliation item with non-positive actual_amount_vnd"
+                            .to_string(),
+                    ));
+                }
+
+                let target_payment =
+                    sqlx::query_as::<_, PaymentRecord>("SELECT * FROM payments WHERE id = $1")
+                        .bind(target_payment_id)
+                        .fetch_optional(&mut *tx)
+                        .await?
+                        .ok_or_else(|| {
+                            PaymentError::NotFound("target payment not found".to_string())
+                        })?;
+
+                let rf_key = reconciliation_refund_key(&item.provider_tx_id);
+                let rf_reason = if note.is_empty() {
+                    "reconciliation_refund".to_string()
+                } else {
+                    note.to_string()
+                };
+                let draft = build_reconciliation_refund_tx(
+                    &rf_key,
+                    &item.provider_tx_id,
+                    item.actual_amount_vnd,
+                    &format!(
+                        "Mismatched transfer {} booked to refund_payable via reconciliation item {}",
+                        item.provider_tx_id, item.id
+                    ),
+                );
+                if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
+                    self.metrics.record_ledger_tx("reconciliation_refund");
+                }
+
+                let refund = sqlx::query_as::<_, RefundRecord>(
+                    r#"
+                    INSERT INTO refunds (
+                        payment_id, order_id, amount_vnd, reason, status, idempotency_key,
+                        is_late_payment, affects_escrow
+                    )
+                    VALUES ($1, $2, $3, $4, 'pending', $5, FALSE, FALSE)
+                    ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = NOW()
+                    RETURNING *
+                    "#,
+                )
+                .bind(target_payment.id)
+                .bind(&target_payment.order_id)
+                .bind(item.actual_amount_vnd)
+                .bind(&rf_reason)
+                .bind(&rf_key)
+                .fetch_one(&mut *tx)
+                .await?;
+
+                let updated_item = sqlx::query_as::<_, ReconciliationQueueItem>(
+                    r#"
+                    UPDATE reconciliation_queue
+                    SET resolution_status = 'refunded',
+                        expected_payment_id = $1,
+                        notes = COALESCE(NULLIF($2, ''), notes),
+                        resolution_idempotency_key = $3,
+                        resolution_refund_id = $4,
+                        resolution_action = $5,
+                        resolution_payment_id = $6,
+                        resolved_at = NOW()
+                    WHERE id = $7
+                    RETURNING *
+                    "#,
+                )
+                .bind(target_payment.id)
+                .bind(note)
+                .bind(idempotency_key)
+                .bind(refund.id)
+                .bind(input.action.as_str())
+                .bind(input.payment_id)
+                .bind(item.id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(map_recon_idempotency_conflict)?;
+
+                tx.commit().await?;
+                info!(
+                    trace_id = %input.trace_id,
+                    item_id = %updated_item.id,
+                    payment_id = %target_payment.id,
+                    refund_id = %refund.id,
+                    amount_vnd = refund.amount_vnd,
+                    "reconciliation queue item resolved via REFUND"
+                );
+                Ok(ResolveReconciliationOutput {
+                    item: updated_item,
+                    refund: Some(refund),
+                    already_resolved: false,
+                })
+            }
+        }
     }
 
     /// Background scanner for expired pending VietQR payments (UC-PAY06).
@@ -1556,45 +2537,106 @@ impl PaymentService {
             return Ok(0);
         }
 
+        // P1-2: Fetch SePay/Mock batch feed ONCE per scanner tick instead of N+1 per payment.
+        // On feed failure, defer expiry safely and log warning.
+        let batch_feed_by_code: Option<HashMap<String, Vec<ProviderTransaction>>> = match self
+            .vietqr
+            .list_recent_transactions_for_expiry()
+            .await
+        {
+            Ok(Some(list)) => {
+                let mut by_code: HashMap<String, Vec<ProviderTransaction>> = HashMap::new();
+                for ptx in list {
+                    if !ptx.provider_order_code.is_empty() {
+                        by_code
+                            .entry(ptx.provider_order_code.clone())
+                            .or_default()
+                            .push(ptx);
+                    }
+                }
+                Some(by_code)
+            }
+            Ok(None) => None, // PayOS: per-payment status endpoint
+            Err(e) => {
+                warn!(
+                    candidate_count = expired_candidates.len(),
+                    error = %e,
+                    "provider batch feed unreachable during expiration scan; deferring expiry for this tick"
+                );
+                return Ok(0);
+            }
+        };
+
         let mut expired_count = 0usize;
 
         for candidate in expired_candidates {
-            let provider_status = match self
-                .vietqr
-                .check_payment_status(&candidate.provider_order_code)
-                .await
-            {
-                Ok(res) => res,
-                Err(e) => {
-                    warn!(
-                        payment_id = %candidate.id,
-                        error = %e,
-                        "provider unreachable during expiration check; deferring expiry"
+            let matching_txs: Vec<ProviderTransaction> = match &batch_feed_by_code {
+                Some(by_code) => by_code
+                    .get(&candidate.provider_order_code)
+                    .cloned()
+                    .unwrap_or_default(),
+                None => match self
+                    .vietqr
+                    .check_payment_status(&candidate.provider_order_code)
+                    .await
+                {
+                    Ok(Some(ptx)) => vec![ptx],
+                    Ok(None) => Vec::new(),
+                    Err(e) => {
+                        warn!(
+                            payment_id = %candidate.id,
+                            error = %e,
+                            "provider unreachable during expiration check; deferring expiry"
+                        );
+                        continue;
+                    }
+                },
+            };
+
+            // P1-2: Prioritize exact-amount transfers ahead of mismatched transfers, and skip
+            // any already-accounted transfer so an earlier wrong/refunded transfer never hides
+            // a valid subsequent payment for the same order code.
+            let amounts: Vec<i64> = matching_txs.iter().map(|t| t.amount_vnd).collect();
+            let ordered_indices = order_expiry_candidate_indices(&amounts, candidate.amount_vnd);
+
+            let mut handled = false;
+            for idx in ordered_indices {
+                let provider_tx = &matching_txs[idx];
+                let mut tx = self.pool.begin().await?;
+                // P0-1: Acquire per-provider_tx_id advisory lock BEFORE payment group lock.
+                lock_provider_tx_xact(&mut tx, &provider_tx.provider_tx_id).await?;
+                let group =
+                    lock_payment_group_tx(&mut tx, &candidate.order_id, &candidate.order_group_id)
+                        .await?;
+                let Some(payment) = group.iter().find(|p| p.id == candidate.id).cloned() else {
+                    tx.commit().await?;
+                    handled = true;
+                    break;
+                };
+                if payment.status != "pending" {
+                    tx.commit().await?;
+                    handled = true;
+                    break;
+                }
+
+                let acct =
+                    check_provider_tx_accounting_tx(&mut tx, &provider_tx.provider_tx_id).await?;
+                if acct.is_accounted() {
+                    info!(
+                        payment_id = %payment.id,
+                        provider_tx_id = %provider_tx.provider_tx_id,
+                        "candidate provider_tx_id is already accounted for; checking remaining transfers"
                     );
+                    tx.commit().await?;
                     continue;
                 }
-            };
 
-            let mut tx = self.pool.begin().await?;
-            let group =
-                lock_payment_group_tx(&mut tx, &candidate.order_id, &candidate.order_group_id)
-                    .await?;
-            let Some(payment) = group.iter().find(|p| p.id == candidate.id).cloned() else {
-                tx.commit().await?;
-                continue;
-            };
-            if payment.status != "pending" {
-                tx.commit().await?;
-                continue;
-            }
-
-            let order_already_succeeded = group.iter().any(|p| {
-                p.id != payment.id && matches!(p.status.as_str(), "succeeded" | "refunded")
-            });
-            let has_cancelled_alloc = has_cancelled_allocation_tx(&mut tx, payment.id).await?;
-
-            match provider_status {
-                Some(provider_tx) if provider_tx.amount_vnd == payment.amount_vnd => {
+                if provider_tx.amount_vnd == payment.amount_vnd {
+                    let order_already_succeeded = group.iter().any(|p| {
+                        p.id != payment.id && matches!(p.status.as_str(), "succeeded" | "refunded")
+                    });
+                    let has_cancelled_alloc =
+                        has_cancelled_allocation_tx(&mut tx, payment.id).await?;
                     if order_already_succeeded || has_cancelled_alloc {
                         let next_status = if has_cancelled_alloc {
                             "cancelled"
@@ -1607,6 +2649,7 @@ impl PaymentService {
                             &provider_tx.provider_tx_id,
                             provider_tx.amount_vnd,
                             Some(next_status),
+                            "auto_closed:expiry_scan_late_refund",
                             &self.metrics,
                         )
                         .await?;
@@ -1616,6 +2659,8 @@ impl PaymentService {
                             &mut tx,
                             &payment,
                             &provider_tx.provider_tx_id,
+                            Some(provider_tx.occurred_at),
+                            Some("auto_closed:expiry_scan_confirm"),
                             &payment.trace_id,
                             &self.metrics,
                         )
@@ -1623,13 +2668,50 @@ impl PaymentService {
                         tx.commit().await?;
                         self.emit_sse(&confirmed);
                     }
-                    continue;
+                    handled = true;
+                    break;
                 }
-                Some(_) => {
-                    tx.commit().await?;
-                    continue;
-                }
-                None => {}
+
+                // P2-7: Unaccounted mismatched transfer — enqueue once into reconciliation_queue
+                // and continue checking (will expire below if no exact transfer matches).
+                enqueue_reconciliation_item_tx(
+                    &mut tx,
+                    None,
+                    &payment.provider,
+                    &provider_tx.provider_tx_id,
+                    Some(payment.id),
+                    Some(&payment.order_id),
+                    Some(payment.amount_vnd),
+                    provider_tx.amount_vnd,
+                    "expired_amount_mismatch",
+                    Some(provider_tx.occurred_at),
+                )
+                .await?;
+                tx.commit().await?;
+                warn!(
+                    payment_id = %payment.id,
+                    provider_tx_id = %provider_tx.provider_tx_id,
+                    expected_amount_vnd = payment.amount_vnd,
+                    actual_amount_vnd = provider_tx.amount_vnd,
+                    "expired payment had mismatched provider transfer; queued for reconciliation"
+                );
+            }
+
+            if handled {
+                continue;
+            }
+
+            let mut tx = self.pool.begin().await?;
+            let group =
+                lock_payment_group_tx(&mut tx, &candidate.order_id, &candidate.order_group_id)
+                    .await?;
+            let Some(payment) = group.iter().find(|p| p.id == candidate.id).cloned() else {
+                tx.commit().await?;
+                continue;
+            };
+            if payment.status != "pending" {
+                tx.commit().await?;
+                continue;
             }
 
             sqlx::query(
@@ -1689,22 +2771,20 @@ impl PaymentService {
         Ok(expired_count)
     }
 
-    /// Runs reconciliation comparing local VietQR payments vs provider transaction feed (UC-PAY07).
-    /// review2-P P2-5: processes each matched provider transaction in its own short group-locked
-    /// transaction (in deterministic `(order_group_id, payment_id)` order) so concurrent
-    /// reconciliation runs cannot AB-BA deadlock across groups and one item error never rolls back
-    /// the whole batch.
+    /// Runs reconciliation comparing local VietQR payments vs provider transaction feed (UC-PAY07 / PAY-B8).
+    /// - Evaluates `run_date` strictly in `Asia/Ho_Chi_Minh` (`vn_day_utc_bounds`), rejecting future dates (400).
+    /// - In `VietQrMode::Mock`, reads recorded provider transactions from `webhook_events` in Postgres (bounded by `received_at`).
+    /// - On ANY error after creating the `reconciliation_runs` row, transitions `status = 'failed'` (P1-1).
+    /// - Processes each matched provider transaction in its own short advisory-locked + group-locked transaction (P0-1 / P2-5).
     pub async fn run_reconciliation(&self, run_date: NaiveDate) -> Result<ReconciliationReport> {
-        let provider_name = self.vietqr.mode().as_str().to_string();
-        // Filter provider transactions to `run_date` to match `local_payments` (`created_at::date = $1`).
-        let provider_txs: Vec<ProviderTransaction> = self
-            .vietqr
-            .list_provider_transactions()
-            .await?
-            .into_iter()
-            .filter(|ptx| ptx.occurred_at.date_naive() == run_date)
-            .collect();
+        let today_vn = vn_today(Utc::now());
+        if run_date > today_vn {
+            return Err(PaymentError::Validation(format!(
+                "reconciliation date {run_date} cannot be in the future (today in Asia/Ho_Chi_Minh is {today_vn})"
+            )));
+        }
 
+        let provider_name = self.vietqr.mode().as_str().to_string();
         let run_id: Uuid = sqlx::query_scalar(
             r#"
             INSERT INTO reconciliation_runs (provider, run_date, status)
@@ -1717,21 +2797,108 @@ impl PaymentService {
         .fetch_one(&self.pool)
         .await?;
 
-        let local_payments = sqlx::query_as::<_, PaymentRecord>(
+        match self
+            .execute_reconciliation_run(run_id, &provider_name, run_date)
+            .await
+        {
+            Ok(report) => Ok(report),
+            Err(err) => {
+                let _ = sqlx::query(
+                    "UPDATE reconciliation_runs SET status = 'failed', completed_at = NOW() WHERE id = $1 AND status = 'running'",
+                )
+                .bind(run_id)
+                .execute(&self.pool)
+                .await;
+                warn!(
+                    run_id = %run_id,
+                    provider = %provider_name,
+                    run_date = %run_date,
+                    error = %err,
+                    "reconciliation run failed; marked status='failed'"
+                );
+                Err(err)
+            }
+        }
+    }
+
+    async fn execute_reconciliation_run(
+        &self,
+        run_id: Uuid,
+        provider_name: &str,
+        run_date: NaiveDate,
+    ) -> Result<ReconciliationReport> {
+        let provider_txs: Vec<ProviderTransaction> = match self.vietqr.mode() {
+            VietQrMode::Mock => {
+                self.load_mock_provider_transactions_for_vn_date(run_date)
+                    .await?
+            }
+            VietQrMode::PayOs | VietQrMode::Sepay => self
+                .vietqr
+                .list_provider_transactions(run_date)
+                .await?
+                .into_iter()
+                .filter(|ptx| utc_to_vn_date(ptx.occurred_at) == run_date)
+                .collect(),
+        };
+
+        let (start_utc, end_utc) = vn_day_utc_bounds(run_date);
+
+        // Manager review P2-3 (cross-midnight) + independent review P2-1 & P3-3:
+        // 1. Look up local payments matching the provider feed by `provider_tx_id` or
+        //    `provider_order_code` WITHOUT restricting `created_at`.
+        // 2. For `missing_provider`, check BOTH `succeeded` and `refunded` VietQR payments
+        //    using an index-aligned split predicate (`idx_payments_vietqr_paid_at`).
+        let feed_tx_ids: Vec<String> = provider_txs
+            .iter()
+            .map(|t| t.provider_tx_id.clone())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let feed_order_codes: Vec<String> = provider_txs
+            .iter()
+            .map(|t| t.provider_order_code.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let matched_candidates = if feed_tx_ids.is_empty() && feed_order_codes.is_empty() {
+            Vec::new()
+        } else {
+            sqlx::query_as::<_, PaymentRecord>(
+                r#"
+                SELECT * FROM payments
+                WHERE method = 'VIETQR'
+                  AND amount_vnd > 0
+                  AND (
+                      provider_tx_id = ANY($1)
+                      OR provider_order_code = ANY($2)
+                  )
+                "#,
+            )
+            .bind(&feed_tx_ids)
+            .bind(&feed_order_codes)
+            .fetch_all(&self.pool)
+            .await?
+        };
+
+        let local_paid_payments = sqlx::query_as::<_, PaymentRecord>(
             r#"
             SELECT * FROM payments
             WHERE method = 'VIETQR'
               AND amount_vnd > 0
-              AND created_at::date = $1
+              AND status IN ('succeeded', 'refunded')
+              AND (
+                  (paid_at >= $1 AND paid_at < $2)
+                  OR (paid_at IS NULL AND created_at >= $1 AND created_at < $2)
+              )
             "#,
         )
-        .bind(run_date)
+        .bind(start_utc)
+        .bind(end_utc)
         .fetch_all(&self.pool)
         .await?;
 
         let mut by_tx_id: HashMap<String, &PaymentRecord> = HashMap::new();
         let mut by_order_code: HashMap<String, &PaymentRecord> = HashMap::new();
-        for p in &local_payments {
+        for p in &matched_candidates {
             if let Some(ref ptx) = p.provider_tx_id {
                 by_tx_id.insert(ptx.clone(), p);
             }
@@ -1767,22 +2934,63 @@ impl PaymentService {
 
         for (ptx, local_opt) in ordered_txs {
             let mut tx = self.pool.begin().await?;
+            // P0-1: Serialize per provider_tx_id BEFORE acquiring payment group locks.
+            lock_provider_tx_xact(&mut tx, &ptx.provider_tx_id).await?;
+
             match local_opt {
                 None => {
-                    missing_local_count += 1;
-                    items.push(
-                        insert_reconciliation_item(
+                    let acct =
+                        check_provider_tx_accounting_tx(&mut tx, &ptx.provider_tx_id).await?;
+                    if acct.is_accounted() {
+                        matched_count += 1;
+                        items.push(
+                            insert_reconciliation_item(
+                                &mut tx,
+                                run_id,
+                                "matched",
+                                None,
+                                Some(&ptx.provider_tx_id),
+                                None,
+                                Some(ptx.amount_vnd),
+                                "already accounted for via manual reconciliation or refund",
+                            )
+                            .await?,
+                        );
+                    } else {
+                        missing_local_count += 1;
+                        items.push(
+                            insert_reconciliation_item(
+                                &mut tx,
+                                run_id,
+                                "missing_local",
+                                None,
+                                Some(&ptx.provider_tx_id),
+                                None,
+                                Some(ptx.amount_vnd),
+                                "present in provider feed but missing in local payments",
+                            )
+                            .await?,
+                        );
+                        // P2-3(a): Enqueue missing_local into manual reconciliation_queue.
+                        let order_ref = if ptx.provider_order_code.trim().is_empty() {
+                            None
+                        } else {
+                            Some(ptx.provider_order_code.as_str())
+                        };
+                        enqueue_reconciliation_item_tx(
                             &mut tx,
-                            run_id,
-                            "missing_local",
                             None,
-                            Some(&ptx.provider_tx_id),
+                            provider_name,
+                            &ptx.provider_tx_id,
                             None,
-                            Some(ptx.amount_vnd),
-                            "present in provider feed but missing in local payments",
+                            order_ref,
+                            None,
+                            ptx.amount_vnd,
+                            "reconciliation_missing_local",
+                            Some(ptx.occurred_at),
                         )
-                        .await?,
-                    );
+                        .await?;
+                    }
                     tx.commit().await?;
                 }
                 Some(local) => {
@@ -1796,6 +3004,45 @@ impl PaymentService {
                         .find(|p| p.id == local.id)
                         .cloned()
                         .unwrap_or_else(|| local.clone());
+
+                    // P0-1 & P2-2: If this provider_tx_id is ALREADY accounted for (recorded on a
+                    // payment, finalized assigned/refunded in reconciliation_queue, or refunded
+                    // via late-webhook/recon-refund/recon-overpay), skip all gateway_clearing writes
+                    // and classify as matched instead of repeating amount_mismatch or double-booking.
+                    let acct =
+                        check_provider_tx_accounting_tx(&mut tx, &ptx.provider_tx_id).await?;
+                    if acct.is_accounted() {
+                        let matches_local_confirmed_tx =
+                            current.provider_tx_id.as_deref() == Some(ptx.provider_tx_id.as_str());
+                        if matches_local_confirmed_tx
+                            || !matches!(current.status.as_str(), "succeeded" | "refunded")
+                        {
+                            matched_payment_ids.insert(local.id);
+                        }
+                        matched_count += 1;
+                        let detail =
+                            if matches_local_confirmed_tx && current.amount_vnd == ptx.amount_vnd {
+                                "matched"
+                            } else {
+                                "already accounted for (manual reconciliation or refund)"
+                            };
+                        items.push(
+                            insert_reconciliation_item(
+                                &mut tx,
+                                run_id,
+                                "matched",
+                                Some(current.id),
+                                Some(&ptx.provider_tx_id),
+                                Some(current.amount_vnd),
+                                Some(ptx.amount_vnd),
+                                detail,
+                            )
+                            .await?,
+                        );
+                        tx.commit().await?;
+                        continue;
+                    }
+
                     let order_already_succeeded = group.iter().any(|p| {
                         p.id != current.id && matches!(p.status.as_str(), "succeeded" | "refunded")
                     });
@@ -1839,22 +3086,18 @@ impl PaymentService {
                                 .await?,
                             );
 
-                            sqlx::query(
-                                r#"
-                                INSERT INTO reconciliation_queue (
-                                    provider, provider_tx_id, expected_payment_id, order_ref,
-                                    expected_amount_vnd, actual_amount_vnd, reason
-                                )
-                                VALUES ($1, $2, $3, $4, $5, $6, 'reconciliation_amount_mismatch')
-                                "#,
+                            enqueue_reconciliation_item_tx(
+                                &mut tx,
+                                None,
+                                provider_name,
+                                &ptx.provider_tx_id,
+                                Some(current.id),
+                                Some(&current.order_id),
+                                Some(current.amount_vnd),
+                                ptx.amount_vnd,
+                                "reconciliation_amount_mismatch",
+                                Some(ptx.occurred_at),
                             )
-                            .bind(&provider_name)
-                            .bind(&ptx.provider_tx_id)
-                            .bind(current.id)
-                            .bind(&current.order_id)
-                            .bind(current.amount_vnd)
-                            .bind(ptx.amount_vnd)
-                            .execute(&mut *tx)
                             .await?;
                         }
                         ReconciliationDecision::AutoHealAndMatch => {
@@ -1862,6 +3105,8 @@ impl PaymentService {
                                 &mut tx,
                                 &current,
                                 &ptx.provider_tx_id,
+                                Some(ptx.occurred_at),
+                                Some("auto_closed:reconciliation_auto_heal"),
                                 &current.trace_id,
                                 &self.metrics,
                             )
@@ -1899,6 +3144,7 @@ impl PaymentService {
                                 &ptx.provider_tx_id,
                                 ptx.amount_vnd,
                                 pending_next_status,
+                                "auto_closed:reconciliation_late_refund",
                                 &self.metrics,
                             )
                             .await?;
@@ -1944,8 +3190,8 @@ impl PaymentService {
         }
 
         let mut tx = self.pool.begin().await?;
-        for local in &local_payments {
-            if local.status == "succeeded" && !matched_payment_ids.contains(&local.id) {
+        for local in &local_paid_payments {
+            if !matched_payment_ids.contains(&local.id) {
                 missing_provider_count += 1;
                 items.push(
                     insert_reconciliation_item(
@@ -1956,7 +3202,7 @@ impl PaymentService {
                         local.provider_tx_id.as_deref(),
                         Some(local.amount_vnd),
                         None,
-                        "local succeeded payment absent from provider report",
+                        "local succeeded/refunded payment absent from provider report",
                     )
                     .await?,
                 );
@@ -1999,6 +3245,75 @@ impl PaymentService {
         );
 
         Ok(ReconciliationReport { run, items })
+    }
+
+    /// Reads durable mock provider transactions from `webhook_events` for the given VN date (PAY-B8 / P3-1).
+    /// Bounds SQL scan on `w.received_at` by `vn_day_utc_bounds(run_date)` ± 1 day before filtering exact `occurred_at`.
+    async fn load_mock_provider_transactions_for_vn_date(
+        &self,
+        run_date: NaiveDate,
+    ) -> Result<Vec<ProviderTransaction>> {
+        let (start_utc, end_utc) = vn_day_utc_bounds(run_date);
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                w.provider_tx_id,
+                w.amount_vnd,
+                w.order_ref,
+                w.raw_payload,
+                w.received_at,
+                p.provider_order_code AS payment_order_code
+            FROM webhook_events w
+            LEFT JOIN payments p ON p.id = w.payment_id
+            WHERE w.signature_verified = TRUE
+              AND w.amount_vnd > 0
+              AND w.received_at >= $1 - INTERVAL '1 day'
+              AND w.received_at < $2 + INTERVAL '1 day'
+              AND COALESCE(LOWER(w.raw_payload->>'status'), 'succeeded')
+                  NOT IN ('failed', 'cancelled', 'canceled', 'expired')
+            ORDER BY w.received_at ASC
+            "#,
+        )
+        .bind(start_utc)
+        .bind(end_utc)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            let provider_tx_id: String = row.try_get("provider_tx_id")?;
+            let amount_vnd: i64 = row.try_get("amount_vnd")?;
+            let order_ref: Option<String> = row.try_get("order_ref")?;
+            let raw_payload: serde_json::Value = row.try_get("raw_payload")?;
+            let received_at: chrono::DateTime<Utc> = row.try_get("received_at")?;
+            let payment_order_code: Option<String> = row.try_get("payment_order_code")?;
+
+            let occurred_at = extract_occurred_at_from_json(&raw_payload).unwrap_or(received_at);
+            if utc_to_vn_date(occurred_at) != run_date {
+                continue;
+            }
+
+            let provider_order_code = payment_order_code
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    serde_json::from_value::<IncomingWebhookPayload>(raw_payload.clone())
+                        .ok()
+                        .and_then(|p| p.extracted_order_code())
+                })
+                .or(order_ref)
+                .unwrap_or_default();
+
+            if let Ok(ptx) = ProviderTransaction::new(
+                provider_tx_id,
+                provider_order_code,
+                amount_vnd,
+                "succeeded".to_string(),
+                occurred_at,
+            ) {
+                out.push(ptx);
+            }
+        }
+        Ok(out)
     }
 
     /// Atomically claims `event_id` in `processed_nats_events` and settles `order.completed`
@@ -2058,12 +3373,13 @@ impl PaymentService {
         Ok(true)
     }
 
-    /// Atomically claims `event_id` in `processed_nats_events` and handles `order.returned` (R2 / P2-6):
-    /// - Failed delivery (`from_status != RETURN_REQUESTED`) for uncollected COD (`awaiting_collection`)
-    ///   OR zero-payable COD/VietQR (`P == 0`, `held`): marks allocation `'cancelled'` and updates parent
+    /// Atomically claims `event_id` in `processed_nats_events` and handles `order.returned` (R2 / Wave 2a):
+    /// - Uncollected COD (`awaiting_collection`) or zero-payable (`P == 0`, `held`) allocations for
+    ///   both `SHIPPING` and `RETURN_REQUESTED`: marks allocation `'cancelled'` and syncs parent
     ///   payment status with zero ledger postings.
-    /// - Post-delivery returns (`from_status == RETURN_REQUESTED`) or already-collected paid orders:
-    ///   deferred to Wave 2 (`ponytail:`) so no incorrect ledger entries are created.
+    /// - Paid collected allocations (`P > 0`, `held`) or already-`refunded` allocations: no-op
+    ///   (for `RETURN_REQUESTED`, `order` calls idempotent `CreateRefund` for remaining `P - refunded_vnd`,
+    ///   moving allocation to `'refunded'`, so no double booking occurs regardless of arrival order).
     pub async fn process_order_returned_event(
         &self,
         event_id: &str,
@@ -2118,6 +3434,46 @@ impl PaymentService {
         .await?;
 
         let mut cancelled_any = false;
+        let mut need_cod_collect = false;
+        let mut sse_updated: Option<PaymentRecord> = None;
+
+        if allocs.is_empty() && payment.method == "COD" && payment.status == "pending" {
+            // P2-6: Legacy single-order COD without payment_shop_allocations rows.
+            let total_allocs: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*)::BIGINT FROM payment_shop_allocations WHERE payment_id = $1",
+            )
+            .bind(payment.id)
+            .fetch_one(&mut *tx)
+            .await?;
+
+            if total_allocs == 0 {
+                match decide_return_allocation_action(
+                    &payment.method,
+                    from_status,
+                    "awaiting_collection",
+                    payment.amount_vnd,
+                ) {
+                    ReturnAllocationAction::CollectCodForRefund => {
+                        need_cod_collect = true;
+                    }
+                    ReturnAllocationAction::CancelAllocation => {
+                        sse_updated = sqlx::query_as::<_, PaymentRecord>(
+                            r#"
+                            UPDATE payments
+                            SET status = 'cancelled', updated_at = NOW()
+                            WHERE id = $1 AND status = 'pending'
+                            RETURNING *
+                            "#,
+                        )
+                        .bind(payment.id)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                    }
+                    ReturnAllocationAction::DeferPostDeliveryReturn => {}
+                }
+            }
+        }
+
         for alloc in allocs {
             let buyer_payable = allocation_buyer_payable_vnd(&alloc)?;
             match decide_return_allocation_action(
@@ -2139,31 +3495,51 @@ impl PaymentService {
                     .await?;
                     cancelled_any = true;
                 }
+                ReturnAllocationAction::CollectCodForRefund => {
+                    // Manager review P1-1: post-delivery return (`RETURN_REQUESTED`) on P > 0 COD
+                    // means buyer already paid cash (`order.delivered` delayed/DLQ); collect COD
+                    // into `held` idempotently so `order`'s `CreateRefund` succeeds.
+                    need_cod_collect = true;
+                }
                 ReturnAllocationAction::DeferPostDeliveryReturn => {
-                    // ponytail: post-delivery return refund/reversal (`RETURN_REQUESTED -> RETURNED`)
-                    // is deferred to Wave 2 (Đợt 2); leave ledger untouched rather than posting wrong entries.
+                    // Paid collected order (`P > 0`, handled by `order`'s idempotent `CreateRefund`)
+                    // or already refunded/cancelled allocation -> no-op to avoid double booking.
                     info!(
                         trace_id = %trace_id,
                         payment_id = %payment.id,
                         order_id = %order_id,
                         from_status = ?from_status,
                         escrow_status = %alloc.escrow_status,
-                        "post-delivery or paid return deferred to Wave 2"
+                        "order.returned requires no additional consumer mutation for allocation"
                     );
                 }
             }
         }
 
-        let mut sse_updated: Option<PaymentRecord> = None;
+        if need_cod_collect {
+            sse_updated =
+                collect_cod_order_allocations_tx(&mut tx, order_id, None, trace_id, &self.metrics)
+                    .await?;
+        }
         if cancelled_any {
             if payment.method == "COD" && payment.status == "pending" {
-                sse_updated =
-                    sync_cod_payment_status_tx(&mut tx, payment.id, &payment.status).await?;
+                let current_status = sse_updated
+                    .as_ref()
+                    .map(|p| p.status.as_str())
+                    .unwrap_or(payment.status.as_str());
+                if let Some(u) =
+                    sync_cod_payment_status_tx(&mut tx, payment.id, current_status).await?
+                {
+                    sse_updated = Some(u);
+                }
             } else if payment.status == "succeeded" {
                 // review2-P P3-9 + ponytail: handles both 0 VND payment -> cancelled AND
                 // multi-shop VietQR (paid sibling 100% refunded + 0 VND sub-order returned) -> refunded.
-                sse_updated =
-                    sync_succeeded_payment_after_alloc_cancel_tx(&mut tx, &payment).await?;
+                if let Some(u) =
+                    sync_succeeded_payment_after_alloc_cancel_tx(&mut tx, &payment).await?
+                {
+                    sse_updated = Some(u);
+                }
             }
         }
 
@@ -2324,6 +3700,7 @@ impl PaymentService {
                     FROM refunds
                     WHERE payment_id = $1
                       AND status IN ('pending', 'completed', 'manual_review')
+                      AND affects_escrow
                       AND NOT is_late_payment
                     "#,
                 )
@@ -2408,9 +3785,10 @@ impl PaymentService {
                     let inserted_refund = sqlx::query_as::<_, RefundRecord>(
                         r#"
                         INSERT INTO refunds (
-                            payment_id, order_id, amount_vnd, reason, status, idempotency_key, is_late_payment
+                            payment_id, order_id, amount_vnd, reason, status, idempotency_key,
+                            is_late_payment, affects_escrow
                         )
-                        VALUES ($1, $2, $3, 'order_cancelled_auto_refund', 'completed', $4, FALSE)
+                        VALUES ($1, $2, $3, 'order_cancelled_auto_refund', 'pending', $4, FALSE, TRUE)
                         ON CONFLICT (idempotency_key) DO NOTHING
                         RETURNING *
                         "#,
@@ -2514,6 +3892,16 @@ fn is_unique_violation(err: &sqlx::Error, constraint_substr: &str) -> bool {
         }
     }
     false
+}
+
+fn map_recon_idempotency_conflict(err: sqlx::Error) -> PaymentError {
+    if is_unique_violation(&err, "resolution_idempotency_key") {
+        PaymentError::Conflict(
+            "idempotency_key already used for a different reconciliation item".to_string(),
+        )
+    } else {
+        PaymentError::Database(err)
+    }
 }
 
 async fn claim_nats_event_tx(
@@ -2680,6 +4068,7 @@ async fn sync_succeeded_payment_after_alloc_cancel_tx(
             FROM refunds
             WHERE payment_id = $1
               AND status IN ('pending', 'completed', 'manual_review')
+              AND affects_escrow
               AND NOT is_late_payment
             "#,
         )
@@ -2937,14 +4326,178 @@ async fn collect_cod_order_allocations_tx(
     Ok(sse_updated)
 }
 
+fn clamp_hold_hours(hours: i64) -> i32 {
+    hours.clamp(0, 24 * 365 * 10) as i32
+}
+
+/// P0-1: Transaction-scoped PostgreSQL advisory lock per normalized `provider_tx_id`.
+/// MUST always be acquired at the start of the transaction BEFORE locking `reconciliation_queue`
+/// or `payments` group rows so the global lock graph remains strictly acyclic.
+async fn lock_provider_tx_xact(
+    tx: &mut Transaction<'_, Postgres>,
+    provider_tx_id: &str,
+) -> Result<()> {
+    if provider_tx_id.is_empty() {
+        return Ok(());
+    }
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 7071))")
+        .bind(provider_tx_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// P0-1 & P1-1: Single canonical check across ALL `gateway_clearing` debit paths whether
+/// `provider_tx_id` has already been accounted for on paid `payments` (`succeeded`/`refunded`),
+/// finalized `reconciliation_queue` (`assigned`/`refunded`), or tx-scoped `refunds`
+/// (`late-webhook:`, `recon-refund:`, `recon-overpay:`).
+async fn check_provider_tx_accounting_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    provider_tx_id: &str,
+) -> Result<ProviderTxAccountingState> {
+    if provider_tx_id.is_empty() {
+        return Ok(ProviderTxAccountingState::default());
+    }
+    let row = sqlx::query(
+        r#"
+        SELECT
+            EXISTS(
+                SELECT 1 FROM payments
+                WHERE provider_tx_id = $1
+                  AND status IN ('succeeded', 'refunded')
+            ) AS on_payment,
+            EXISTS(
+                SELECT 1 FROM reconciliation_queue
+                WHERE provider_tx_id = $1
+                  AND resolution_status IN ('assigned', 'refunded')
+            ) AS recon_queue_finalized,
+            EXISTS(
+                SELECT 1 FROM refunds
+                WHERE idempotency_key IN ($2, $3, $4)
+            ) AS has_tx_refund
+        "#,
+    )
+    .bind(provider_tx_id)
+    .bind(late_payment_refund_key(provider_tx_id))
+    .bind(reconciliation_refund_key(provider_tx_id))
+    .bind(reconciliation_overpay_key(provider_tx_id))
+    .fetch_one(&mut **tx)
+    .await?;
+
+    Ok(ProviderTxAccountingState {
+        on_payment: row.try_get("on_payment")?,
+        recon_queue_finalized: row.try_get("recon_queue_finalized")?,
+        has_tx_refund: row.try_get("has_tx_refund")?,
+    })
+}
+
+/// P2-1: Auto-closes any open (`pending`/`suspended`) `reconciliation_queue` rows for
+/// `provider_tx_id` inside the SAME advisory-locked transaction when the transfer is accounted
+/// via webhook, reconciliation, or expiration scanner so queue rows never stay stuck in `pending`.
+#[allow(clippy::too_many_arguments)]
+async fn auto_close_reconciliation_queue_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    provider_tx_id: &str,
+    resolution_status: &str,
+    payment_id: Uuid,
+    expected_amount_vnd: i64,
+    refund_id: Option<Uuid>,
+    source_note: &str,
+) -> Result<()> {
+    let action = if resolution_status == "assigned" {
+        "ASSIGN"
+    } else {
+        "REFUND"
+    };
+    sqlx::query(
+        r#"
+        UPDATE reconciliation_queue
+        SET resolution_status = $1,
+            expected_payment_id = COALESCE(expected_payment_id, $2),
+            expected_amount_vnd = COALESCE(expected_amount_vnd, $3),
+            resolution_refund_id = COALESCE(resolution_refund_id, $4),
+            resolution_action = $5,
+            resolution_payment_id = COALESCE(resolution_payment_id, $2),
+            notes = CASE
+                WHEN COALESCE(BTRIM(notes), '') = '' THEN $6
+                ELSE notes || ' | ' || $6
+            END,
+            resolved_at = NOW()
+        WHERE provider_tx_id = $7
+          AND resolution_status IN ('pending', 'suspended')
+        "#,
+    )
+    .bind(resolution_status)
+    .bind(payment_id)
+    .bind(expected_amount_vnd)
+    .bind(refund_id)
+    .bind(action)
+    .bind(source_note)
+    .bind(provider_tx_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// P1-1: Inserts a `reconciliation_queue` row idempotently per `provider_tx_id` using
+/// `WHERE NOT EXISTS (...) ON CONFLICT DO NOTHING` (never triggers `25P02` tx abort, requires no
+/// `SAVEPOINT`, and works safely even if the conditional unique index in 0004 was skipped).
+#[allow(clippy::too_many_arguments)]
+async fn enqueue_reconciliation_item_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    webhook_event_id: Option<Uuid>,
+    provider: &str,
+    provider_tx_id: &str,
+    expected_payment_id: Option<Uuid>,
+    order_ref: Option<&str>,
+    expected_amount_vnd: Option<i64>,
+    actual_amount_vnd: i64,
+    reason: &str,
+    occurred_at: Option<DateTime<Utc>>,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO reconciliation_queue (
+            webhook_event_id, provider, provider_tx_id, expected_payment_id,
+            order_ref, expected_amount_vnd, actual_amount_vnd, reason, occurred_at
+        )
+        SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9
+        WHERE NOT EXISTS (
+            SELECT 1 FROM reconciliation_queue WHERE provider_tx_id = $3
+        )
+        ON CONFLICT DO NOTHING
+        "#,
+    )
+    .bind(webhook_event_id)
+    .bind(provider)
+    .bind(provider_tx_id)
+    .bind(expected_payment_id)
+    .bind(order_ref)
+    .bind(expected_amount_vnd)
+    .bind(actual_amount_vnd)
+    .bind(reason)
+    .bind(occurred_at)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 async fn record_late_payment_refund_tx(
     tx: &mut Transaction<'_, Postgres>,
     payment: &PaymentRecord,
     provider_tx_id: &str,
     amount_vnd: i64,
     pending_next_status: Option<&str>,
+    accounting_source: &str,
     metrics: &Metrics,
 ) -> Result<()> {
+    // P0-1 defense-in-depth: never debit gateway_clearing or insert a second refund if this
+    // provider_tx_id was already accounted for by payments, reconciliation_queue, or refunds.
+    let acct = check_provider_tx_accounting_tx(tx, provider_tx_id).await?;
+    if acct.is_accounted() {
+        return Ok(());
+    }
+
     if let Some(next_status) = pending_next_status {
         sqlx::query(
             r#"
@@ -2977,12 +4530,13 @@ async fn record_late_payment_refund_tx(
 
     // review2-P P1-1: single canonical idempotency key across webhook, expiry scanner, and reconciliation.
     let refund_key = late_payment_refund_key(provider_tx_id);
-    let _refund = sqlx::query_as::<_, RefundRecord>(
+    let refund = sqlx::query_as::<_, RefundRecord>(
         r#"
         INSERT INTO refunds (
-            payment_id, order_id, amount_vnd, reason, status, idempotency_key, is_late_payment
+            payment_id, order_id, amount_vnd, reason, status, idempotency_key,
+            is_late_payment, affects_escrow
         )
-        VALUES ($1, $2, $3, 'late_payment', 'pending', $4, TRUE)
+        VALUES ($1, $2, $3, 'late_payment', 'pending', $4, TRUE, FALSE)
         ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = NOW()
         RETURNING *
         "#,
@@ -2992,6 +4546,18 @@ async fn record_late_payment_refund_tx(
     .bind(amount_vnd)
     .bind(&refund_key)
     .fetch_one(&mut **tx)
+    .await?;
+
+    // P2-1: Auto-close any open reconciliation_queue item for this provider_tx_id in same tx.
+    auto_close_reconciliation_queue_tx(
+        tx,
+        provider_tx_id,
+        "refunded",
+        payment.id,
+        payment.amount_vnd,
+        Some(refund.id),
+        accounting_source,
+    )
     .await?;
 
     // R3 / PAY-B6: Never emit payment.succeeded or payment.refunded for late/superseded payments.
@@ -3085,34 +4651,61 @@ async fn find_payment_for_webhook_tx(
     Ok(None)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn confirm_vietqr_payment_tx(
     tx: &mut Transaction<'_, Postgres>,
     payment: &PaymentRecord,
     provider_tx_id: &str,
+    paid_at: Option<DateTime<Utc>>,
+    accounting_source: Option<&str>,
     trace_id: &str,
     metrics: &Metrics,
 ) -> Result<PaymentRecord> {
-    let updated = sqlx::query_as::<_, PaymentRecord>(
+    // P0-1 defense-in-depth: refuse to debit gateway_clearing for a provider_tx_id already
+    // accounted for on payments, finalized reconciliation_queue, or tx-scoped refunds.
+    let acct = check_provider_tx_accounting_tx(tx, provider_tx_id).await?;
+    if acct.is_accounted() {
+        return Err(PaymentError::Conflict(format!(
+            "provider_tx_id '{provider_tx_id}' is already accounted for"
+        )));
+    }
+
+    let updated = match sqlx::query_as::<_, PaymentRecord>(
         r#"
         UPDATE payments
         SET status = 'succeeded',
             provider_tx_id = $1,
-            paid_at = NOW(),
+            paid_at = COALESCE($2, NOW()),
             updated_at = NOW()
-        WHERE id = $2 AND status = 'pending'
+        WHERE id = $3 AND status = 'pending'
         RETURNING *
         "#,
     )
     .bind(provider_tx_id)
+    .bind(paid_at)
     .bind(payment.id)
     .fetch_optional(&mut **tx)
-    .await?
-    .ok_or_else(|| {
-        PaymentError::Conflict(format!(
-            "payment {} is no longer pending and cannot be confirmed",
-            payment.id
-        ))
-    })?;
+    .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return Err(PaymentError::Conflict(format!(
+                "payment {} is no longer pending and cannot be confirmed",
+                payment.id
+            )));
+        }
+        Err(err)
+            if is_unique_violation(&err, "provider_tx_id")
+                || is_unique_violation(&err, "idx_payments_one_succeeded_per_order")
+                || is_unique_violation(&err, "idx_payments_one_succeeded_per_group") =>
+        {
+            return Err(PaymentError::Conflict(format!(
+                "payment {} conflicts with an existing succeeded payment or provider_tx_id",
+                payment.id
+            )));
+        }
+        Err(err) => return Err(PaymentError::Database(err)),
+    };
 
     sqlx::query(
         r#"
@@ -3130,6 +4723,20 @@ async fn confirm_vietqr_payment_tx(
         if ledger::post_transaction(tx, &draft).await?.is_some() {
             metrics.record_ledger_tx("payment_vietqr");
         }
+    }
+
+    // P2-1: Auto-close any open reconciliation_queue item for this provider_tx_id in same tx.
+    if let Some(source) = accounting_source {
+        auto_close_reconciliation_queue_tx(
+            tx,
+            provider_tx_id,
+            "assigned",
+            updated.id,
+            updated.amount_vnd,
+            None,
+            source,
+        )
+        .await?;
     }
 
     insert_outbox_event(
@@ -3188,6 +4795,7 @@ async fn sum_suborder_refunded_tx(
         WHERE payment_id = $1
           AND (order_id = $2 OR ($4 AND order_id = $3))
           AND status IN ('pending', 'completed', 'manual_review')
+          AND affects_escrow
           AND NOT is_late_payment
         "#,
     )
@@ -3198,6 +4806,139 @@ async fn sum_suborder_refunded_tx(
     .fetch_one(&mut **tx)
     .await?;
     Ok(sum)
+}
+
+/// Shared release helper for a single locked `pending_release` allocation:
+/// acquires deterministic shop ledger account locks (`seller_available`, `seller_pending`),
+/// protects other still-unmatured `pending_release` allocations of the same shop (P2-4),
+/// posts `build_escrow_release_tx`, and marks the allocation `'released'`.
+async fn release_pending_allocation_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    alloc: &ShopAllocationRecord,
+    hold_hours: i64,
+    metrics: &Metrics,
+) -> Result<i64> {
+    let (payment_order_id, alloc_count) = fetch_payment_order_meta_tx(tx, alloc.payment_id).await?;
+    let suborder_refunded = sum_suborder_refunded_tx(
+        tx,
+        alloc.payment_id,
+        &alloc.order_id,
+        &payment_order_id,
+        alloc_count == 1,
+    )
+    .await?;
+
+    let split = compute_settlement_split(
+        &alloc.order_id,
+        &alloc.shop_id,
+        alloc.subtotal_vnd,
+        alloc.commission_vnd,
+        alloc.shipping_fee_vnd,
+        alloc.platform_discount_vnd,
+        suborder_refunded,
+    )?;
+
+    let (pending_bal, _) = ledger::lock_and_get_seller_balances_tx(tx, &alloc.shop_id).await?;
+
+    // P2-4 & P3-1: Sum seller_net of OTHER still-unmatured `pending_release` allocations for
+    // this shop in ONE aggregated SQL query (no N+1 while holding ledger_accounts FOR UPDATE).
+    let hold_hours_i32 = clamp_hold_hours(hold_hours);
+    let unmatured_hold_vnd = if hold_hours_i32 > 0 {
+        let rows = sqlx::query(
+            r#"
+            WITH unmatured AS (
+                SELECT
+                    a.id,
+                    a.payment_id,
+                    a.order_id,
+                    a.shop_id,
+                    a.subtotal_vnd,
+                    a.commission_vnd,
+                    a.shipping_fee_vnd,
+                    a.platform_discount_vnd,
+                    p.order_id AS payment_order_id,
+                    (SELECT COUNT(*)::BIGINT FROM payment_shop_allocations a2 WHERE a2.payment_id = a.payment_id) AS alloc_count
+                FROM payment_shop_allocations a
+                JOIN payments p ON p.id = a.payment_id
+                WHERE a.shop_id = $1
+                  AND a.id <> $2
+                  AND a.escrow_status = 'pending_release'
+                  AND a.settled_at IS NOT NULL
+                  AND a.settled_at > NOW() - make_interval(hours => $3)
+                  AND (p.status IN ('succeeded', 'refunded') OR (p.method = 'COD' AND p.status = 'pending'))
+            )
+            SELECT
+                u.order_id,
+                u.shop_id,
+                u.subtotal_vnd,
+                u.commission_vnd,
+                u.shipping_fee_vnd,
+                u.platform_discount_vnd,
+                COALESCE(SUM(r.amount_vnd), 0)::BIGINT AS refunded_vnd
+            FROM unmatured u
+            LEFT JOIN refunds r
+                ON r.payment_id = u.payment_id
+               AND (r.order_id = u.order_id OR (u.alloc_count = 1 AND r.order_id = u.payment_order_id))
+               AND r.status IN ('pending', 'completed', 'manual_review')
+               AND r.affects_escrow
+               AND NOT r.is_late_payment
+            GROUP BY
+                u.id, u.order_id, u.shop_id, u.subtotal_vnd, u.commission_vnd, u.shipping_fee_vnd, u.platform_discount_vnd
+            "#,
+        )
+        .bind(&alloc.shop_id)
+        .bind(alloc.id)
+        .bind(hold_hours_i32)
+        .fetch_all(&mut **tx)
+        .await?;
+
+        let mut reserved = 0_i64;
+        for row in rows {
+            let sib_order_id: String = row.try_get("order_id")?;
+            let sib_shop_id: String = row.try_get("shop_id")?;
+            let sib_subtotal: i64 = row.try_get("subtotal_vnd")?;
+            let sib_commission: i64 = row.try_get("commission_vnd")?;
+            let sib_shipping: i64 = row.try_get("shipping_fee_vnd")?;
+            let sib_discount: i64 = row.try_get("platform_discount_vnd")?;
+            let sib_refunded: i64 = row.try_get("refunded_vnd")?;
+            let sib_split = compute_settlement_split(
+                &sib_order_id,
+                &sib_shop_id,
+                sib_subtotal,
+                sib_commission,
+                sib_shipping,
+                sib_discount,
+                sib_refunded,
+            )?;
+            reserved = reserved.saturating_add(sib_split.seller_net_vnd.max(0));
+        }
+        reserved
+    } else {
+        0
+    };
+
+    let release_amount =
+        compute_capped_escrow_release_vnd(split.seller_net_vnd, pending_bal, unmatured_hold_vnd);
+
+    if release_amount > 0 {
+        let draft = build_escrow_release_tx(&alloc.order_id, &alloc.shop_id, release_amount)?;
+        if ledger::post_transaction(tx, &draft).await?.is_some() {
+            metrics.record_ledger_tx("escrow_release");
+        }
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE payment_shop_allocations
+        SET escrow_status = 'released', released_at = NOW()
+        WHERE id = $1
+        "#,
+    )
+    .bind(alloc.id)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(release_amount)
 }
 
 async fn settle_order_to_pending_tx(

@@ -18,6 +18,19 @@ enum ShipmentStatus {
   SHIPMENT_STATUS_CANCELLED = 8;
 }
 
+enum ShipmentDirection {
+  SHIPMENT_DIRECTION_UNSPECIFIED = 0;
+  SHIPMENT_DIRECTION_FORWARD = 1;
+  SHIPMENT_DIRECTION_RETURN = 2;
+}
+
+enum ShippingRegion {
+  SHIPPING_REGION_UNSPECIFIED = 0;
+  SHIPPING_REGION_SAME_PROVINCE = 1;
+  SHIPPING_REGION_SAME_REGION = 2;
+  SHIPPING_REGION_CROSS_REGION = 3;
+}
+
 message Province {
   string code = 1;
   string name = 2;
@@ -60,6 +73,35 @@ message Shipment {
   int64 cod_amount_vnd = 10;
   google.protobuf.Timestamp created_at = 11;
   google.protobuf.Timestamp updated_at = 12;
+  ShipmentDirection direction = 13;
+  string return_request_id = 14;
+  int32 redelivery_count = 15;
+}
+
+message FallbackRate {
+  ShippingRegion region = 1;
+  int64 base_fee_vnd = 2;
+  int32 base_weight_grams = 3;
+  int64 extra_fee_vnd_per_500g = 4;
+}
+
+message CarrierConfig {
+  string carrier_code = 1;
+  string name = 2;
+  bool enabled = 3;
+  bool token_configured = 4;
+  repeated FallbackRate fallback_rates = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+message ShopShippingSettings {
+  string shop_id = 1;
+  repeated string enabled_carrier_codes = 2;
+  int32 default_weight_grams = 3;
+  int32 default_length_cm = 4;
+  int32 default_width_cm = 5;
+  int32 default_height_cm = 6;
+  google.protobuf.Timestamp updated_at = 7;
 }
 
 message ShipmentEvent {
@@ -129,6 +171,9 @@ message CreateShipmentRequest {
   ShipmentAddress from_address = 7;
   ShipmentAddress to_address = 8;
   string items_summary = 9;
+  // Populated by order service from the order record; shipping never trusts buyer_id from end-user clients
+  // and stores it so RequestRedelivery can verify buyer ownership. Not returned on Shipment.
+  string buyer_id = 10;
 }
 
 message CreateShipmentResponse {
@@ -139,6 +184,8 @@ message CreateShipmentResponse {
 message CancelShipmentRequest {
   string order_id = 1;
   string reason = 2;
+  // SHIPMENT_DIRECTION_UNSPECIFIED defaults to SHIPMENT_DIRECTION_FORWARD.
+  ShipmentDirection direction = 3;
 }
 
 message CancelShipmentResponse {
@@ -148,11 +195,94 @@ message CancelShipmentResponse {
 message GetShipmentRequest {
   string order_id = 1;
   string tracking_code = 2;
+  // SHIPMENT_DIRECTION_UNSPECIFIED defaults to SHIPMENT_DIRECTION_FORWARD.
+  ShipmentDirection direction = 3;
 }
 
 message GetShipmentResponse {
   Shipment shipment = 1;
   repeated ShipmentEvent events = 2;
+}
+
+message CreateReturnShipmentRequest {
+  string order_id = 1;
+  string return_request_id = 2;
+  string shop_id = 3;
+  // Buyer pickup address.
+  ShipmentAddress from_address = 4;
+  // Shop warehouse return address.
+  ShipmentAddress to_address = 5;
+  int32 weight_grams = 6;
+  string carrier_code = 7;
+  string service_code = 8;
+  string items_summary = 9;
+  // Populated by order service from the order record; shipping never trusts buyer_id from end-user clients.
+  // Not returned on Shipment.
+  string buyer_id = 10;
+}
+
+message CreateReturnShipmentResponse {
+  Shipment shipment = 1;
+  bool already_existed = 2;
+}
+
+message RequestRedeliveryRequest {
+  string order_id = 1;
+  // Preferred redelivery date (YYYY-MM-DD, optional).
+  string preferred_date = 2;
+  string note = 3;
+}
+
+message RequestRedeliveryResponse {
+  Shipment shipment = 1;
+}
+
+message GetShopShippingSettingsRequest {
+  string shop_id = 1;
+}
+
+message GetShopShippingSettingsResponse {
+  ShopShippingSettings settings = 1;
+}
+
+message UpdateShopShippingSettingsRequest {
+  string shop_id = 1;
+  repeated string enabled_carrier_codes = 2;
+  int32 default_weight_grams = 3;
+  int32 default_length_cm = 4;
+  int32 default_width_cm = 5;
+  int32 default_height_cm = 6;
+}
+
+message UpdateShopShippingSettingsResponse {
+  ShopShippingSettings settings = 1;
+}
+
+message AdminListCarriersRequest {}
+
+message AdminListCarriersResponse {
+  repeated CarrierConfig carriers = 1;
+}
+
+message AdminUpdateCarrierRequest {
+  string carrier_code = 1;
+  bool enabled = 2;
+  // Write-only carrier API token (encrypted at rest; empty preserves existing token).
+  string api_token = 3;
+  repeated FallbackRate fallback_rates = 4;
+}
+
+message AdminUpdateCarrierResponse {
+  CarrierConfig carrier = 1;
+}
+
+message AdminTestCarrierRequest {
+  string carrier_code = 1;
+}
+
+message AdminTestCarrierResponse {
+  bool ok = 1;
+  string message = 2;
 }
 
 service ShippingService {
@@ -163,4 +293,11 @@ service ShippingService {
   rpc CreateShipment(CreateShipmentRequest) returns (CreateShipmentResponse);
   rpc CancelShipment(CancelShipmentRequest) returns (CancelShipmentResponse);
   rpc GetShipment(GetShipmentRequest) returns (GetShipmentResponse);
+  rpc CreateReturnShipment(CreateReturnShipmentRequest) returns (CreateReturnShipmentResponse);
+  rpc RequestRedelivery(RequestRedeliveryRequest) returns (RequestRedeliveryResponse);
+  rpc GetShopShippingSettings(GetShopShippingSettingsRequest) returns (GetShopShippingSettingsResponse);
+  rpc UpdateShopShippingSettings(UpdateShopShippingSettingsRequest) returns (UpdateShopShippingSettingsResponse);
+  rpc AdminListCarriers(AdminListCarriersRequest) returns (AdminListCarriersResponse);
+  rpc AdminUpdateCarrier(AdminUpdateCarrierRequest) returns (AdminUpdateCarrierResponse);
+  rpc AdminTestCarrier(AdminTestCarrierRequest) returns (AdminTestCarrierResponse);
 }

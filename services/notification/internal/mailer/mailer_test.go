@@ -177,3 +177,31 @@ func TestFormatOTPEmailHidesOTPFromSubjectAndUsesVietnamese(t *testing.T) {
 		t.Errorf("decoded Subject mismatch: got %q, want %q", decodedSubject, msg.Subject)
 	}
 }
+
+func TestFormatPasswordResetEmailVietnameseAndHidesTokenFromSubject(t *testing.T) {
+	token := "secret-reset-tok-9988776655"
+	link := "https://shop.nexusmart.vn/dat-lai-mat-khau?token=" + token
+
+	msg := FormatPasswordResetEmail("user@nexusmart.local", "Trần Minh Quân", link, "2026-11-23T10:30:00Z")
+	if msg.To != "user@nexusmart.local" {
+		t.Errorf("To = %q, want user@nexusmart.local", msg.To)
+	}
+	if msg.Subject == "" || strings.Contains(msg.Subject, token) || strings.Contains(strings.ToLower(msg.Subject), "reset password") {
+		t.Errorf("password reset Subject must be Vietnamese and never contain token, got %q", msg.Subject)
+	}
+	if !strings.Contains(msg.Body, link) {
+		t.Errorf("password reset Body must contain reset link %q, got %q", link, msg.Body)
+	}
+	if !strings.Contains(msg.Body, "Trần Minh Quân") || !strings.Contains(msg.Body, "17:30 ngày 23/11/2026 (GMT+7)") {
+		t.Errorf("password reset Body must greet user and format GMT+7 expiry, got %q", msg.Body)
+	}
+
+	raw := FormatMessage("no-reply@nexusmart.local", msg, time.Date(2026, 11, 23, 10, 15, 0, 0, time.UTC))
+	parsed, err := mail.ReadMessage(strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatalf("parse RFC 5322 message: %v", err)
+	}
+	if strings.Contains(parsed.Header.Get("Subject"), token) {
+		t.Errorf("raw Subject header must never contain token, got %q", parsed.Header.Get("Subject"))
+	}
+}

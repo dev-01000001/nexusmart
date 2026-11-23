@@ -88,7 +88,7 @@ func (e *testEnv) uniqueCode(prefix string) string {
 
 func (e *testEnv) ctx(t *testing.T) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	t.Cleanup(cancel)
 	return ctx
 }

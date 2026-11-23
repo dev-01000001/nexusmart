@@ -169,3 +169,51 @@ func TestLoggerRedactsNonStringErrorsEmbeddedTokensAndExpandedKeys(t *testing.T)
 		}
 	}
 }
+
+func TestLoggerRedactsBankAccountNumberWithoutRedactingMasked(t *testing.T) {
+	var buf bytes.Buffer
+	log := New("payment-service", WithWriter(&buf), WithLevel(slog.LevelDebug))
+
+	log.InfoContext(
+		context.Background(),
+		"refund bank details recorded",
+		slog.String("bank_account_number", "19036123456789"),
+		slog.String("account_number", "001122334455"),
+		slog.String("bank_account_masked", "**********6789"),
+		slog.String("bank_code", "TCB"),
+	)
+
+	raw := buf.String()
+	for _, leaked := range []string{"19036123456789", "001122334455"} {
+		if strings.Contains(raw, leaked) {
+			t.Fatalf("log output leaked sensitive bank account %q: %s", leaked, raw)
+		}
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+		t.Fatalf("invalid JSON log: %v\nraw=%s", err, raw)
+	}
+	if parsed["bank_account_number"] != redactedMask {
+		t.Fatalf("bank_account_number = %v, want %s", parsed["bank_account_number"], redactedMask)
+	}
+	if parsed["account_number"] != redactedMask {
+		t.Fatalf("account_number = %v, want %s", parsed["account_number"], redactedMask)
+	}
+	if parsed["bank_account_masked"] != "**********6789" {
+		t.Fatalf("bank_account_masked = %v, want **********6789 (must not be redacted)", parsed["bank_account_masked"])
+	}
+	if parsed["bank_code"] != "TCB" {
+		t.Fatalf("bank_code = %v, want TCB", parsed["bank_code"])
+	}
+
+	if got := RedactValue("bank_account_number", "19036123456789"); got != redactedMask {
+		t.Fatalf("RedactValue(bank_account_number) = %q, want %s", got, redactedMask)
+	}
+	if got := RedactValue("account_number", "001122334455"); got != redactedMask {
+		t.Fatalf("RedactValue(account_number) = %q, want %s", got, redactedMask)
+	}
+	if got := RedactValue("bank_account_masked", "**********6789"); got != "**********6789" {
+		t.Fatalf("RedactValue(bank_account_masked) = %q, want **********6789", got)
+	}
+}

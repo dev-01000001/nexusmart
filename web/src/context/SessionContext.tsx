@@ -1,8 +1,30 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { GatewayUser, SessionResponse } from "@/lib/gateway-types";
-import { SESSION_EXPIRED_EVENT, authApi, refreshSessionOnce } from "@/lib/api";
+import { SESSION_EXPIRED_EVENT, authApi, refreshSessionOnce, sanitizeNextPath } from "@/lib/api";
+
+const AUTH_PUBLIC_PATHS = new Set([
+  "/dang-nhap",
+  "/dang-ky",
+  "/quen-mat-khau",
+  "/dat-lai-mat-khau",
+]);
+const PROTECTED_PREFIXES = ["/tai-khoan", "/don-hang", "/thanh-toan", "/seller", "/admin"];
+
+function isProtectedBrowserPath(pathname: string): boolean {
+  return PROTECTED_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+  );
+}
 
 export interface SessionContextValue {
   user: GatewayUser | null;
@@ -19,6 +41,36 @@ const SessionContext = createContext<SessionContextValue | null>(null);
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<GatewayUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const handlingExpiryRef = useRef(false);
+
+  const performCleanExpiredLogout = useCallback(async (redirectToLogin: boolean) => {
+    if (handlingExpiryRef.current) return;
+    handlingExpiryRef.current = true;
+    setUser(null);
+    setLoading(false);
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+    } catch {
+      // Best effort: cookies cleared when reachable; still redirect to login below.
+    }
+    if (redirectToLogin && typeof window !== "undefined") {
+      const currentPathname = window.location.pathname;
+      if (!AUTH_PUBLIC_PATHS.has(currentPathname)) {
+        const nextPath = sanitizeNextPath(`${currentPathname}${window.location.search}`, "/");
+        const params = new URLSearchParams({ expired: "1" });
+        if (nextPath && nextPath !== "/") {
+          params.set("next", nextPath);
+        }
+        window.location.assign(`/dang-nhap?${params.toString()}`);
+        return;
+      }
+    }
+    handlingExpiryRef.current = false;
+  }, []);
 
   const fetchSessionProbe = useCallback(async (): Promise<SessionResponse | null> => {
     const res = await fetch("/api/auth/session", {
@@ -52,6 +104,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           setUser(retryUser);
           return retryUser;
         }
+        const onProtected =
+          typeof window !== "undefined" && isProtectedBrowserPath(window.location.pathname);
+        await performCleanExpiredLogout(onProtected);
+        return null;
       }
       setUser(null);
       return null;
@@ -60,7 +116,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, [fetchSessionProbe]);
+  }, [fetchSessionProbe, performCleanExpiredLogout]);
 
   useEffect(() => {
     void refreshSession();
@@ -68,11 +124,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const onExpired = () => {
-      setUser(null);
+      void performCleanExpiredLogout(true);
     };
     window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
-  }, []);
+  }, [performCleanExpiredLogout]);
 
   const login = useCallback(async (email: string, password: string): Promise<GatewayUser> => {
     const data = await authApi<{ user: GatewayUser }>("login", {

@@ -22,12 +22,13 @@ type Config struct {
 	NATSDLQStream    string
 	JWTSecret        string
 	WebhookSecret    string
-	GHNEnabled       bool
+	MaxRedelivery    int32
+	ConfigKey        string
+	LabelBaseURL     string
 	GHNMode          string
 	GHNBaseURL       string
 	GHNToken         string
 	GHNShopID        int
-	MockCarrierOn    bool
 	QuoteCacheTTL    time.Duration
 	CarrierTimeout   time.Duration
 	CarrierRetries   int
@@ -57,12 +58,13 @@ func Load() Config {
 		NATSDLQStream:    env.EnvString("NATS_DLQ_STREAM", "NEXUSMART_DLQ"),
 		JWTSecret:        env.EnvString("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me"),
 		WebhookSecret:    env.EnvString("SHIPPING_WEBHOOK_SECRET", "dev-only-shipping-webhook-hmac-secret"),
-		GHNEnabled:       env.EnvBool("GHN_ENABLED", true),
+		MaxRedelivery:    int32(maxInt(env.EnvInt("SHIPPING_MAX_REDELIVERY", 3), 1)),
+		ConfigKey:        env.EnvString("SHIPPING_CONFIG_KEY", "ZGV2LW9ubHktc2hpcHBpbmctY29uZmlnLWtleS0zMmI="),
+		LabelBaseURL:     strings.TrimRight(env.EnvString("SHIPPING_LABEL_BASE_URL", "http://localhost:8080/api/v1/shipping/labels"), "/"),
 		GHNMode:          strings.ToLower(env.EnvString("GHN_MODE", "mock")),
 		GHNBaseURL:       env.EnvString("GHN_BASE_URL", "https://dev-online-gateway.ghn.vn/shiip/public-api"),
 		GHNToken:         env.EnvString("GHN_TOKEN", "sandbox-ghn-token"),
 		GHNShopID:        env.EnvInt("GHN_SHOP_ID", 0),
-		MockCarrierOn:    env.EnvBool("MOCK_CARRIER_ENABLED", true),
 		QuoteCacheTTL:    env.EnvDuration("QUOTE_CACHE_TTL", 5*time.Minute),
 		CarrierTimeout:   env.EnvDuration("CARRIER_TIMEOUT", 3*time.Second),
 		CarrierRetries:   env.EnvInt("CARRIER_MAX_RETRIES", 3),

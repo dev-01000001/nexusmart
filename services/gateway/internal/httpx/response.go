@@ -138,12 +138,15 @@ func WriteGRPCError(w http.ResponseWriter, r *http.Request, err error) {
 	WriteError(w, r, httpStatus, code, msg)
 }
 
-// DecodeJSON decodes a required JSON request body (max 2 MiB).
+// MaxBodyBytes is the maximum allowed HTTP request body size (2 MiB).
+const MaxBodyBytes = 2 << 20
+
+// DecodeJSON decodes a required JSON request body (max MaxBodyBytes).
 func DecodeJSON(r *http.Request, dst any) error {
 	if r.Body == nil {
 		return errors.New("request body is required")
 	}
-	dec := json.NewDecoder(io.LimitReader(r.Body, 2<<20))
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, MaxBodyBytes))
 	if err := dec.Decode(dst); err != nil {
 		return err
 	}
@@ -155,7 +158,7 @@ func DecodeOptionalJSON(r *http.Request, dst any) error {
 	if r.Body == nil {
 		return nil
 	}
-	dec := json.NewDecoder(io.LimitReader(r.Body, 2<<20))
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, MaxBodyBytes))
 	if err := dec.Decode(dst); err != nil {
 		if errors.Is(err, io.EOF) {
 			return nil
@@ -163,6 +166,17 @@ func DecodeOptionalJSON(r *http.Request, dst any) error {
 		return err
 	}
 	return nil
+}
+
+// WriteDecodeError writes 413 PAYLOAD_TOO_LARGE when err is caused by an oversized body,
+// and 400 INVALID_JSON for all other JSON decode errors.
+func WriteDecodeError(w http.ResponseWriter, r *http.Request, err error) {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		WriteError(w, r, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "request body too large")
+		return
+	}
+	WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 }
 
 // ParsePagination parses page and page_size query params with defaults (1, 20).

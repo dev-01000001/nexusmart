@@ -73,7 +73,14 @@ func run() error {
 	}
 	defer pool.Close()
 
-	pgStore := store.NewPGStore(pool)
+	lockPool, err := store.NewLockPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		log.Error("failed to init postgres advisory lock pool", slog.String("error", err.Error()))
+		return err
+	}
+	defer lockPool.Close()
+
+	pgStore := store.NewPGStoreWithLockPool(pool, lockPool)
 	if err := pgStore.MigrateAndSeed(ctx); err != nil {
 		log.Error("failed to migrate and seed shipping_db", slog.String("error", err.Error()))
 		return err
@@ -104,20 +111,26 @@ func run() error {
 		CBHalfOpenLimit: 2,
 		Logger:          log,
 	}
-	var enabledCarriers []carrier.Carrier
-	if cfg.GHNEnabled {
-		ghn := carrier.NewGHNAdapter(carrier.GHNConfig{
-			Mode:    cfg.GHNMode,
-			BaseURL: cfg.GHNBaseURL,
-			Token:   cfg.GHNToken,
-			ShopID:  cfg.GHNShopID,
-		})
-		enabledCarriers = append(enabledCarriers, carrier.NewResilientCarrier(ghn, resCfg))
+	// Always register all built-in carrier adapters so admin can toggle enabled/disabled at runtime (UC-A12).
+	ghn := carrier.NewGHNAdapter(carrier.GHNConfig{
+		Mode:         cfg.GHNMode,
+		BaseURL:      cfg.GHNBaseURL,
+		Token:        cfg.GHNToken,
+		ShopID:       cfg.GHNShopID,
+		LabelBaseURL: cfg.LabelBaseURL,
+	})
+	mockExp := carrier.NewMockExpressAdapterWithLabelBase(cfg.LabelBaseURL)
+	enabledCarriers := []carrier.Carrier{
+		carrier.NewResilientCarrier(ghn, resCfg),
+		carrier.NewResilientCarrier(mockExp, resCfg),
 	}
-	if cfg.MockCarrierOn {
-		mockExp := carrier.NewMockExpressAdapter()
-		enabledCarriers = append(enabledCarriers, carrier.NewResilientCarrier(mockExp, resCfg))
+
+	tokenCipher, err := service.NewTokenCipherFromBase64(cfg.ConfigKey)
+	if err != nil {
+		log.Error("failed to init shipping token cipher (SHIPPING_CONFIG_KEY)", slog.String("error", err.Error()))
+		return err
 	}
+
 	// Metrics & Auth.
 	red := metrics.NewRED(cfg.ServiceName, prometheus.DefaultRegisterer)
 	jwtMgr, err := auth.NewManager(cfg.JWTSecret, auth.DefaultAccessTTL)
@@ -136,6 +149,15 @@ func run() error {
 	quoteCache := cache.NewRedisQuoteCache(rdb, cfg.QuoteCacheTTL, log)
 	outboxRelay := events.NewOutboxRelay(pgStore, js, cfg.OutboxInterval, log)
 	svc := service.NewShippingService(pgStore, agg, quoteCache, outboxRelay, log)
+	svc.SetTokenCipher(tokenCipher)
+	svc.SetMaxRedelivery(cfg.MaxRedelivery)
+
+	if err := svc.InitCarrierConfigs(ctx, map[string]string{
+		carrier.CodeGHN: cfg.GHNToken,
+	}); err != nil {
+		log.Error("failed to initialize carrier configs from DB", slog.String("error", err.Error()))
+		return err
+	}
 
 	if uc, ucErr := userclient.New(cfg.UserGRPCAddr, cfg.ServiceName, svcMgr); ucErr == nil {
 		defer func() { _ = uc.Close() }()
@@ -197,6 +219,7 @@ func run() error {
 	}
 	opsHandler := metrics.NewOpsHandler(cfg.ServiceName, readyFn, prometheus.DefaultGatherer)
 	whHandler := webhook.NewHandler(cfg.WebhookSecret, svc, log)
+	labelHandler := webhook.NewLabelHandler(svc)
 
 	router := chi.NewRouter()
 	router.Use(telemetry.HTTPMiddleware(cfg.ServiceName))
@@ -205,6 +228,11 @@ func run() error {
 	router.Handle("/readyz", opsHandler)
 	router.Handle("/metrics", opsHandler)
 	router.Post("/webhooks/shipping/{carrier}", whHandler.ServeHTTP)
+	router.Group(func(authed chi.Router) {
+		authed.Use(auth.HTTPMiddleware(jwtMgr, true))
+		authed.Get("/labels/{tracking_code}", labelHandler.ServeHTTP)
+		authed.Get("/api/v1/shipping/labels/{tracking_code}", labelHandler.ServeHTTP)
+	})
 
 	httpSrv := &http.Server{
 		Addr:              ":" + cfg.HTTPPort,

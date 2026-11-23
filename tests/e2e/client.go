@@ -76,7 +76,7 @@ func (c *Client) DoJSON(
 
 const (
 	rateLimitDefaultRetryAfter = 5 * time.Second
-	rateLimitMaxWait           = 120 * time.Second
+	rateLimitMaxWait           = 150 * time.Second
 )
 
 func parseRetryAfter(headerVal string) time.Duration {
@@ -99,7 +99,7 @@ func parseRetryAfter(headerVal string) time.Duration {
 }
 
 // DoAbsolute sends an HTTP request to any full URL and returns the raw response.
-// On HTTP 429 it waits per Retry-After (default 5s) and retries up to 120s total wait.
+// On HTTP 429 it waits per Retry-After (default 5s) and retries up to 150s total wait.
 func (c *Client) DoAbsolute(
 	ctx context.Context,
 	method string,
@@ -166,7 +166,7 @@ func (c *Client) DoAbsolute(
 			return rawResp, nil
 		}
 
-		wait := parseRetryAfter(resp.Header.Get("Retry-After"))
+		wait := parseRetryAfter(resp.Header.Get("Retry-After")) + 250*time.Millisecond
 		if totalWaited+wait > rateLimitMaxWait {
 			return rawResp, nil
 		}

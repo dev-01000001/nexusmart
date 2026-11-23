@@ -3,6 +3,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type {
   GatewayOrder,
+  GatewayReturnRequest,
   GatewayShop,
   GatewayUser,
   PaginatedResponse,
@@ -21,9 +22,11 @@ export interface SellerContextValue {
   shopState: SellerShopState;
   shopError: string | null;
   pendingOrdersCount: number;
+  pendingReturnsCount: number;
   mockShopKey: string;
   reloadShop: () => Promise<void>;
   refreshPendingOrders: () => Promise<void>;
+  refreshPendingReturns: () => Promise<void>;
   setPendingOrdersCount: React.Dispatch<React.SetStateAction<number>>;
 }
 
@@ -55,6 +58,7 @@ export function SellerProvider({
   const [shopState, setShopState] = useState<SellerShopState>("loading");
   const [shopError, setShopError] = useState<string | null>(null);
   const [pendingOrdersCount, setPendingOrdersCount] = useState(0);
+  const [pendingReturnsCount, setPendingReturnsCount] = useState(0);
 
   const refreshPendingOrders = useCallback(async () => {
     try {
@@ -64,6 +68,17 @@ export function SellerProvider({
       setPendingOrdersCount(typeof res.total === "number" ? res.total : res.items.length);
     } catch {
       // Keep previous badge count when background badge poll fails
+    }
+  }, []);
+
+  const refreshPendingReturns = useCallback(async () => {
+    try {
+      const res = await api<PaginatedResponse<GatewayReturnRequest>>(
+        "seller/returns?status=PENDING&page=1&page_size=1"
+      );
+      setPendingReturnsCount(typeof res.total === "number" ? res.total : res.items.length);
+    } catch {
+      // Keep previous badge count when returns endpoint is unavailable
     }
   }, []);
 
@@ -97,6 +112,7 @@ export function SellerProvider({
           setShopState(nextState);
           if (nextState === "ready") {
             void refreshPendingOrders();
+            void refreshPendingReturns();
           }
           return;
         }
@@ -119,6 +135,7 @@ export function SellerProvider({
         setShopState(nextState);
         if (nextState === "ready") {
           void refreshPendingOrders();
+          void refreshPendingReturns();
         }
         return;
       }
@@ -134,7 +151,7 @@ export function SellerProvider({
       setShopState("error");
       setShopError(getErrorMessage(err, "Không thể tải thông tin gian hàng lúc này."));
     }
-  }, [user.shop_id, refreshPendingOrders]);
+  }, [user.shop_id, refreshPendingOrders, refreshPendingReturns]);
 
   useEffect(() => {
     void loadShop();
@@ -149,9 +166,11 @@ export function SellerProvider({
       shopState,
       shopError,
       pendingOrdersCount,
+      pendingReturnsCount,
       mockShopKey,
       reloadShop: loadShop,
       refreshPendingOrders,
+      refreshPendingReturns,
       setPendingOrdersCount,
     }),
     [
@@ -160,9 +179,11 @@ export function SellerProvider({
       shopState,
       shopError,
       pendingOrdersCount,
+      pendingReturnsCount,
       mockShopKey,
       loadShop,
       refreshPendingOrders,
+      refreshPendingReturns,
     ]
   );
 

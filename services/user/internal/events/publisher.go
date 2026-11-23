@@ -28,6 +28,17 @@ type UserRegisteredPayload struct {
 	FullName  string `json:"full_name"`
 	OTP       string `json:"otp"`
 	ExpiresAt string `json:"expires_at"`
+	IsResend  bool   `json:"is_resend,omitempty"`
+}
+
+// PasswordResetRequestedPayload is emitted on `user.password_reset_requested`.
+// SECURITY: ResetToken must never be logged by publisher or consumer.
+type PasswordResetRequestedPayload struct {
+	UserID     string `json:"user_id"`
+	Email      string `json:"email"`
+	FullName   string `json:"full_name"`
+	ResetToken string `json:"reset_token"`
+	ExpiresAt  string `json:"expires_at"`
 }
 
 // ShopReviewedPayload is emitted on `user.shop_reviewed`.
@@ -42,6 +53,7 @@ type ShopReviewedPayload struct {
 // Publisher publishes domain events to NATS JetStream.
 type Publisher interface {
 	PublishUserRegistered(ctx context.Context, payload UserRegisteredPayload) error
+	PublishPasswordResetRequested(ctx context.Context, payload PasswordResetRequestedPayload) error
 	PublishShopReviewed(ctx context.Context, payload ShopReviewedPayload) error
 }
 
@@ -90,6 +102,10 @@ func ensureStream(js nats.JetStreamContext, stream string) error {
 
 func (p *NATSPublisher) PublishUserRegistered(ctx context.Context, payload UserRegisteredPayload) error {
 	return p.publish(ctx, "user.registered", payload)
+}
+
+func (p *NATSPublisher) PublishPasswordResetRequested(ctx context.Context, payload PasswordResetRequestedPayload) error {
+	return p.publish(ctx, "user.password_reset_requested", payload)
 }
 
 func (p *NATSPublisher) PublishShopReviewed(ctx context.Context, payload ShopReviewedPayload) error {

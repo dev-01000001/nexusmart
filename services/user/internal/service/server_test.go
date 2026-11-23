@@ -26,43 +26,276 @@ import (
 
 type memStore struct {
 	mu                   sync.Mutex
+	userLocks            map[string]*sync.RWMutex
 	users                map[string]db.User
 	refreshTokens        map[string]db.RefreshToken
+	passwordResets       map[string]db.PasswordReset
 	shops                map[string]db.Shop
 	addresses            map[string]db.Address
 	codRejections        map[string]string
 	auditLogs            []db.AuditLog
 	forceReplaceZeroRows bool
+	onUpdateUserPassword func(userID string)
 }
 
 func newMemStore() *memStore {
 	return &memStore{
-		users:         make(map[string]db.User),
-		refreshTokens: make(map[string]db.RefreshToken),
-		shops:         make(map[string]db.Shop),
-		addresses:     make(map[string]db.Address),
-		codRejections: make(map[string]string),
+		userLocks:      make(map[string]*sync.RWMutex),
+		users:          make(map[string]db.User),
+		refreshTokens:  make(map[string]db.RefreshToken),
+		passwordResets: make(map[string]db.PasswordReset),
+		shops:          make(map[string]db.Shop),
+		addresses:      make(map[string]db.Address),
+		codRejections:  make(map[string]string),
 	}
+}
+
+func (m *memStore) userLock(userID string) *sync.RWMutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l, ok := m.userLocks[userID]
+	if !ok {
+		l = &sync.RWMutex{}
+		m.userLocks[userID] = l
+	}
+	return l
 }
 
 func (m *memStore) Ping(_ context.Context) error { return nil }
 
-func (m *memStore) WithTx(_ context.Context, fn func(q db.Querier) error) error {
-	// Snapshot refreshTokens so any error returned by fn genuinely rolls back TX mutations.
-	m.mu.Lock()
-	snapshot := make(map[string]db.RefreshToken, len(m.refreshTokens))
-	for k, v := range m.refreshTokens {
-		snapshot[k] = v
-	}
-	m.mu.Unlock()
+// memTx models PostgreSQL per-user FOR SHARE vs UPDATE row locking and per-tx rollback.
+type memTx struct {
+	*memStore
+	shared map[string]*sync.RWMutex
+	excl   map[string]*sync.RWMutex
+	undo   []func()
+}
 
-	if err := fn(m); err != nil {
-		m.mu.Lock()
-		m.refreshTokens = snapshot
-		m.mu.Unlock()
+func (t *memTx) lockShared(userID string) {
+	if _, ok := t.shared[userID]; ok {
+		return
+	}
+	if _, ok := t.excl[userID]; ok {
+		return
+	}
+	l := t.userLock(userID)
+	l.RLock()
+	t.shared[userID] = l
+}
+
+func (t *memTx) lockExcl(userID string) {
+	if _, ok := t.excl[userID]; ok {
+		return
+	}
+	if l, ok := t.shared[userID]; ok {
+		l.RUnlock()
+		delete(t.shared, userID)
+	}
+	l := t.userLock(userID)
+	l.Lock()
+	t.excl[userID] = l
+}
+
+func (t *memTx) release() {
+	for id, l := range t.excl {
+		l.Unlock()
+		delete(t.excl, id)
+	}
+	for id, l := range t.shared {
+		l.RUnlock()
+		delete(t.shared, id)
+	}
+}
+
+func (t *memTx) GetUserByIDForShare(ctx context.Context, id string) (db.User, error) {
+	t.lockShared(id)
+	return t.memStore.GetUserByID(ctx, id)
+}
+
+func (t *memTx) UpdateUserStatus(ctx context.Context, arg db.UpdateUserStatusParams) (db.User, error) {
+	t.lockExcl(arg.ID)
+	t.mu.Lock()
+	prev, hadPrev := t.users[arg.ID]
+	t.mu.Unlock()
+	u, err := t.memStore.UpdateUserStatus(ctx, arg)
+	if err == nil && hadPrev {
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			t.users[arg.ID] = prev
+			t.mu.Unlock()
+		})
+	}
+	return u, err
+}
+
+func (t *memTx) UpdateUserRole(ctx context.Context, arg db.UpdateUserRoleParams) (db.User, error) {
+	t.lockExcl(arg.ID)
+	t.mu.Lock()
+	prev, hadPrev := t.users[arg.ID]
+	t.mu.Unlock()
+	u, err := t.memStore.UpdateUserRole(ctx, arg)
+	if err == nil && hadPrev {
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			t.users[arg.ID] = prev
+			t.mu.Unlock()
+		})
+	}
+	return u, err
+}
+
+func (t *memTx) UpdateUserPassword(ctx context.Context, arg db.UpdateUserPasswordParams) (db.User, error) {
+	t.lockExcl(arg.ID)
+	t.mu.Lock()
+	prev, hadPrev := t.users[arg.ID]
+	t.mu.Unlock()
+	u, err := t.memStore.UpdateUserPassword(ctx, arg)
+	if err == nil && hadPrev {
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			t.users[arg.ID] = prev
+			t.mu.Unlock()
+		})
+	}
+	return u, err
+}
+
+func (t *memTx) CreateRefreshToken(ctx context.Context, arg db.CreateRefreshTokenParams) (db.RefreshToken, error) {
+	rt, err := t.memStore.CreateRefreshToken(ctx, arg)
+	if err == nil {
+		id := rt.ID
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			delete(t.refreshTokens, id)
+			t.mu.Unlock()
+		})
+	}
+	return rt, err
+}
+
+func (t *memTx) RevokeRefreshTokenWithReplacement(ctx context.Context, arg db.RevokeRefreshTokenWithReplacementParams) (int64, error) {
+	t.mu.Lock()
+	prev, hadPrev := t.refreshTokens[arg.ID]
+	t.mu.Unlock()
+	rows, err := t.memStore.RevokeRefreshTokenWithReplacement(ctx, arg)
+	if err == nil && rows > 0 && hadPrev {
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			t.refreshTokens[arg.ID] = prev
+			t.mu.Unlock()
+		})
+	}
+	return rows, err
+}
+
+func (t *memTx) RevokeAllUserRefreshTokens(ctx context.Context, userID string) error {
+	t.mu.Lock()
+	var prevs []db.RefreshToken
+	for _, rt := range t.refreshTokens {
+		if rt.UserID == userID && rt.RevokedAt == nil {
+			prevs = append(prevs, rt)
+		}
+	}
+	t.mu.Unlock()
+	err := t.memStore.RevokeAllUserRefreshTokens(ctx, userID)
+	if err == nil && len(prevs) > 0 {
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			for _, p := range prevs {
+				t.refreshTokens[p.ID] = p
+			}
+			t.mu.Unlock()
+		})
+	}
+	return err
+}
+
+func (t *memTx) CreatePasswordReset(ctx context.Context, arg db.CreatePasswordResetParams) (db.PasswordReset, error) {
+	pr, err := t.memStore.CreatePasswordReset(ctx, arg)
+	if err == nil {
+		id := pr.ID
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			delete(t.passwordResets, id)
+			t.mu.Unlock()
+		})
+	}
+	return pr, err
+}
+
+func (t *memTx) MarkPasswordResetUsed(ctx context.Context, arg db.MarkPasswordResetUsedParams) (int64, error) {
+	t.mu.Lock()
+	prev, hadPrev := t.passwordResets[arg.ID]
+	t.mu.Unlock()
+	rows, err := t.memStore.MarkPasswordResetUsed(ctx, arg)
+	if err == nil && rows > 0 && hadPrev {
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			t.passwordResets[arg.ID] = prev
+			t.mu.Unlock()
+		})
+	}
+	return rows, err
+}
+
+func (t *memTx) InvalidateUserPasswordResets(ctx context.Context, arg db.InvalidateUserPasswordResetsParams) error {
+	t.mu.Lock()
+	var prevs []db.PasswordReset
+	for _, pr := range t.passwordResets {
+		if pr.UserID == arg.UserID && pr.UsedAt == nil {
+			prevs = append(prevs, pr)
+		}
+	}
+	t.mu.Unlock()
+	err := t.memStore.InvalidateUserPasswordResets(ctx, arg)
+	if err == nil && len(prevs) > 0 {
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			for _, p := range prevs {
+				t.passwordResets[p.ID] = p
+			}
+			t.mu.Unlock()
+		})
+	}
+	return err
+}
+
+func (t *memTx) InsertAuditLog(ctx context.Context, arg db.InsertAuditLogParams) (db.AuditLog, error) {
+	l, err := t.memStore.InsertAuditLog(ctx, arg)
+	if err == nil {
+		id := l.ID
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			for i := len(t.auditLogs) - 1; i >= 0; i-- {
+				if t.auditLogs[i].ID == id {
+					t.auditLogs = append(t.auditLogs[:i], t.auditLogs[i+1:]...)
+					break
+				}
+			}
+			t.mu.Unlock()
+		})
+	}
+	return l, err
+}
+
+func (m *memStore) WithTx(_ context.Context, fn func(q db.Querier) error) error {
+	tx := &memTx{
+		memStore: m,
+		shared:   make(map[string]*sync.RWMutex),
+		excl:     make(map[string]*sync.RWMutex),
+	}
+	defer tx.release()
+	if err := fn(tx); err != nil {
+		for i := len(tx.undo) - 1; i >= 0; i-- {
+			tx.undo[i]()
+		}
 		return err
 	}
 	return nil
+}
+
+func (m *memStore) GetUserByIDForShare(ctx context.Context, id string) (db.User, error) {
+	return m.GetUserByID(ctx, id)
 }
 
 func (m *memStore) CreateUser(_ context.Context, arg db.CreateUserParams) (db.User, error) {
@@ -178,6 +411,26 @@ func (m *memStore) UpdateUserStatus(_ context.Context, arg db.UpdateUserStatusPa
 		return db.User{}, pgx.ErrNoRows
 	}
 	u.Status = arg.Status
+	u.LockReason = arg.LockReason
+	u.UpdatedAt = time.Now().UTC()
+	m.users[u.ID] = u
+	return u, nil
+}
+
+func (m *memStore) UpdateUserPassword(_ context.Context, arg db.UpdateUserPasswordParams) (db.User, error) {
+	m.mu.Lock()
+	hook := m.onUpdateUserPassword
+	m.mu.Unlock()
+	if hook != nil {
+		hook(arg.ID)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u, ok := m.users[arg.ID]
+	if !ok {
+		return db.User{}, pgx.ErrNoRows
+	}
+	u.PasswordHash = arg.PasswordHash
 	u.UpdatedAt = time.Now().UTC()
 	m.users[u.ID] = u
 	return u, nil
@@ -212,16 +465,16 @@ func (m *memStore) GrantUserSellerShop(_ context.Context, arg db.GrantUserSeller
 	return u, nil
 }
 
-func (m *memStore) CountActiveAdmins(_ context.Context) (int64, error) {
+func (m *memStore) ListActiveAdminIDsForUpdate(_ context.Context) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var n int64
+	var ids []string
 	for _, u := range m.users {
 		if isAdminRole(u.Role) && u.Status == StatusActive {
-			n++
+			ids = append(ids, u.ID)
 		}
 	}
-	return n, nil
+	return ids, nil
 }
 
 func (m *memStore) ListUsers(_ context.Context, arg db.ListUsersParams) ([]db.User, error) {
@@ -333,6 +586,55 @@ func (m *memStore) RevokeAllUserRefreshTokens(_ context.Context, userID string) 
 		}
 	}
 	return nil
+}
+
+func (m *memStore) InvalidateUserPasswordResets(_ context.Context, arg db.InvalidateUserPasswordResetsParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, pr := range m.passwordResets {
+		if pr.UserID == arg.UserID && pr.UsedAt == nil {
+			pr.UsedAt = arg.UsedAt
+			m.passwordResets[id] = pr
+		}
+	}
+	return nil
+}
+
+func (m *memStore) CreatePasswordReset(_ context.Context, arg db.CreatePasswordResetParams) (db.PasswordReset, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pr := db.PasswordReset{
+		ID:        arg.ID,
+		UserID:    arg.UserID,
+		TokenHash: arg.TokenHash,
+		ExpiresAt: arg.ExpiresAt,
+		CreatedAt: time.Now().UTC(),
+	}
+	m.passwordResets[pr.ID] = pr
+	return pr, nil
+}
+
+func (m *memStore) GetPasswordResetByHashForUpdate(_ context.Context, tokenHash string) (db.PasswordReset, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, pr := range m.passwordResets {
+		if pr.TokenHash == tokenHash {
+			return pr, nil
+		}
+	}
+	return db.PasswordReset{}, pgx.ErrNoRows
+}
+
+func (m *memStore) MarkPasswordResetUsed(_ context.Context, arg db.MarkPasswordResetUsedParams) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pr, ok := m.passwordResets[arg.ID]
+	if !ok || pr.UsedAt != nil {
+		return 0, nil
+	}
+	pr.UsedAt = arg.UsedAt
+	m.passwordResets[pr.ID] = pr
+	return 1, nil
 }
 
 func (m *memStore) CreateShop(_ context.Context, arg db.CreateShopParams) (db.Shop, error) {
@@ -604,23 +906,46 @@ type memOTP struct {
 	expiresAt time.Time
 }
 
+type memPwdResetRate struct {
+	count     int
+	expiresAt time.Time
+}
+
 type memSecurity struct {
-	mu          sync.Mutex
-	otps        map[string]memOTP
-	resends     map[string]int
-	loginFails  map[string]int
-	loginLocks  map[string]time.Time
-	revokedJTIs map[string]bool
+	mu                   sync.Mutex
+	otps                 map[string]memOTP
+	resends              map[string]int
+	pwdResetReqs         map[string]memPwdResetRate
+	loginFails           map[string]int
+	loginLocks           map[string]time.Time
+	revokedJTIs          map[string]bool
+	revokedBefore        map[string]int64
+	revokedBeforeTTL     map[string]time.Duration
+	nowFn                func() time.Time
+	setRevokedBeforeErr  error
+	isTokenRevokedErr    error
+	passwordResetRateErr error
+	onGetRevokedBefore   func(userID string)
 }
 
 func newMemSecurity() *memSecurity {
 	return &memSecurity{
-		otps:        make(map[string]memOTP),
-		resends:     make(map[string]int),
-		loginFails:  make(map[string]int),
-		loginLocks:  make(map[string]time.Time),
-		revokedJTIs: make(map[string]bool),
+		otps:             make(map[string]memOTP),
+		resends:          make(map[string]int),
+		pwdResetReqs:     make(map[string]memPwdResetRate),
+		loginFails:       make(map[string]int),
+		loginLocks:       make(map[string]time.Time),
+		revokedJTIs:      make(map[string]bool),
+		revokedBefore:    make(map[string]int64),
+		revokedBeforeTTL: make(map[string]time.Duration),
 	}
+}
+
+func (s *memSecurity) now() time.Time {
+	if s.nowFn != nil {
+		return s.nowFn().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func (s *memSecurity) SaveOTP(_ context.Context, email, code string, ttl time.Duration) error {
@@ -693,6 +1018,32 @@ func (s *memSecurity) ClearLoginFailures(_ context.Context, email string) error 
 	return nil
 }
 
+func (s *memSecurity) IncrementPasswordResetRequest(_ context.Context, email string, maxRequests int, window time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.passwordResetRateErr != nil {
+		return s.passwordResetRateErr
+	}
+	if maxRequests <= 0 {
+		maxRequests = 3
+	}
+	if window <= 0 {
+		window = time.Hour
+	}
+	k := normalizeEmail(email)
+	now := s.now()
+	rec, ok := s.pwdResetReqs[k]
+	if !ok || !now.Before(rec.expiresAt) {
+		rec = memPwdResetRate{count: 0, expiresAt: now.Add(window)}
+	}
+	rec.count++
+	s.pwdResetReqs[k] = rec
+	if rec.count > maxRequests {
+		return security.ErrPasswordResetLimitReached
+	}
+	return nil
+}
+
 func (s *memSecurity) RevokeJTI(_ context.Context, jti string, _ time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -706,18 +1057,71 @@ func (s *memSecurity) IsJTIRevoked(_ context.Context, jti string) (bool, error) 
 	return s.revokedJTIs[jti], nil
 }
 
+func (s *memSecurity) SetRevokedBefore(_ context.Context, userID string, unixSec int64, ttl time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.setRevokedBeforeErr != nil {
+		return s.setRevokedBeforeErr
+	}
+	s.revokedBefore[userID] = unixSec
+	s.revokedBeforeTTL[userID] = ttl
+	return nil
+}
+
+func (s *memSecurity) GetRevokedBefore(_ context.Context, userID string) (int64, error) {
+	s.mu.Lock()
+	hook := s.onGetRevokedBefore
+	s.mu.Unlock()
+	if hook != nil {
+		hook(userID)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revokedBefore[userID], nil
+}
+
+func (s *memSecurity) IsTokenRevoked(_ context.Context, userID, jti string, issuedAt *time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.isTokenRevokedErr != nil {
+		return false, s.isTokenRevokedErr
+	}
+	if jti != "" && s.revokedJTIs[jti] {
+		return true, nil
+	}
+	if ts, ok := s.revokedBefore[userID]; ok {
+		if issuedAt == nil {
+			return true, nil
+		}
+		return issuedAt.Unix() <= ts, nil
+	}
+	return false, nil
+}
+
 func (s *memSecurity) Ping(_ context.Context) error { return nil }
 
 type memPublisher struct {
-	mu             sync.Mutex
-	userRegistered []events.UserRegisteredPayload
-	shopReviewed   []events.ShopReviewedPayload
+	mu                      sync.Mutex
+	userRegistered          []events.UserRegisteredPayload
+	passwordResetRequested  []events.PasswordResetRequestedPayload
+	shopReviewed            []events.ShopReviewedPayload
+	publishPasswordResetErr error
 }
 
 func (p *memPublisher) PublishUserRegistered(_ context.Context, payload events.UserRegisteredPayload) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.userRegistered = append(p.userRegistered, payload)
+	return nil
+}
+
+func (p *memPublisher) PublishPasswordResetRequested(_ context.Context, payload events.PasswordResetRequestedPayload) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.publishPasswordResetErr != nil {
+		return p.publishPasswordResetErr
+	}
+	p.passwordResetRequested = append(p.passwordResetRequested, payload)
 	return nil
 }
 
@@ -1123,9 +1527,9 @@ func TestLogoutRevokesAccessJTIAndVerifyOTPRejectsNonPending(t *testing.T) {
 	if _, err := srv.VerifyOTP(ctx, &userv1.VerifyOTPRequest{Email: "revoke@example.com", Otp: otp}); err != nil {
 		t.Fatalf("VerifyOTP: %v", err)
 	}
-	// Re-verifying OTP on already active user must fail with FailedPrecondition.
-	if _, err := srv.VerifyOTP(ctx, &userv1.VerifyOTPRequest{Email: "revoke@example.com", Otp: otp}); status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("expected FailedPrecondition on VerifyOTP for active user, got %v", err)
+	// Re-verifying OTP on already active user must return generic InvalidArgument (USR-B8 anti-enumeration).
+	if _, err := srv.VerifyOTP(ctx, &userv1.VerifyOTPRequest{Email: "revoke@example.com", Otp: otp}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument on VerifyOTP for active user, got %v", err)
 	}
 
 	loginResp, err := srv.Login(ctx, &userv1.LoginRequest{Email: "revoke@example.com", Password: "Password123!"})

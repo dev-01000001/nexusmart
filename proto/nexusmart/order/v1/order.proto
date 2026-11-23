@@ -32,6 +32,35 @@ enum PaymentResultStatus {
   PAYMENT_RESULT_STATUS_EXPIRED = 3;
 }
 
+enum ReturnStatus {
+  RETURN_STATUS_UNSPECIFIED = 0;
+  RETURN_STATUS_PENDING = 1;
+  RETURN_STATUS_AWAITING_SHIPMENT = 2;
+  RETURN_STATUS_IN_TRANSIT = 3;
+  RETURN_STATUS_RECEIVED = 4;
+  RETURN_STATUS_REFUNDING = 5;
+  RETURN_STATUS_REFUNDED = 6;
+  RETURN_STATUS_REJECTED = 7;
+  RETURN_STATUS_ESCALATED = 8;
+  RETURN_STATUS_EVIDENCE_REQUESTED = 9;
+  RETURN_STATUS_CLOSED = 10;
+}
+
+enum ReturnSellerDecision {
+  RETURN_SELLER_DECISION_UNSPECIFIED = 0;
+  RETURN_SELLER_DECISION_ACCEPT_REFUND = 1;
+  RETURN_SELLER_DECISION_ACCEPT_RETURN = 2;
+  RETURN_SELLER_DECISION_REJECT = 3;
+}
+
+enum ReturnAdminDecision {
+  RETURN_ADMIN_DECISION_UNSPECIFIED = 0;
+  RETURN_ADMIN_DECISION_REFUND = 1;
+  RETURN_ADMIN_DECISION_RETURN_AND_REFUND = 2;
+  RETURN_ADMIN_DECISION_REJECT = 3;
+  RETURN_ADMIN_DECISION_REQUEST_EVIDENCE = 4;
+}
+
 message OrderItem {
   string id = 1;
   string order_id = 2;
@@ -98,6 +127,45 @@ message Order {
   google.protobuf.Timestamp payment_expires_at = 27;
   google.protobuf.Timestamp created_at = 28;
   google.protobuf.Timestamp updated_at = 29;
+  google.protobuf.Timestamp delivered_at = 30;
+  string return_request_id = 31;
+  ReturnStatus return_status = 32;
+}
+
+message ReturnEvent {
+  string id = 1;
+  ReturnStatus from_status = 2;
+  ReturnStatus to_status = 3;
+  string actor_id = 4;
+  string actor_role = 5;
+  string note = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message ReturnRequest {
+  string id = 1;
+  string order_id = 2;
+  string order_code = 3;
+  string buyer_id = 4;
+  string shop_id = 5;
+  ReturnStatus status = 6;
+  string reason = 7;
+  repeated string evidence_urls = 8;
+  string seller_response = 9;
+  repeated string seller_evidence_urls = 10;
+  string dispute_reason = 11;
+  string admin_note = 12;
+  int64 refund_amount_vnd = 13;
+  string return_tracking_code = 14;
+  string return_label_url = 15;
+  int64 return_fee_vnd = 16;
+  // Valid values: SELLER, BUYER, PLATFORM (empty before assigned).
+  string return_fee_bearer = 17;
+  bool goods_received = 18;
+  google.protobuf.Timestamp deadline_at = 19;
+  google.protobuf.Timestamp created_at = 20;
+  google.protobuf.Timestamp updated_at = 21;
+  repeated ReturnEvent events = 22;
 }
 
 message CheckoutItemInput {
@@ -256,6 +324,89 @@ message RetryPaymentResponse {
   google.protobuf.Timestamp payment_expires_at = 3;
 }
 
+message GetReturnRequestRequest {
+  string return_request_id = 1;
+  string order_id = 2;
+}
+
+message GetReturnRequestResponse {
+  ReturnRequest return_request = 1;
+}
+
+message ListReturnRequestsRequest {
+  // Valid values: buyer, seller, admin.
+  string role_scope = 1;
+  ReturnStatus status = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message ListReturnRequestsResponse {
+  repeated ReturnRequest return_requests = 1;
+  int64 total = 2;
+}
+
+message RespondReturnRequest {
+  string return_request_id = 1;
+  ReturnSellerDecision decision = 2;
+  string note = 3;
+  repeated string evidence_urls = 4;
+}
+
+message RespondReturnResponse {
+  ReturnRequest return_request = 1;
+}
+
+message EscalateReturnRequest {
+  string return_request_id = 1;
+  string reason = 2;
+  repeated string evidence_urls = 3;
+}
+
+message EscalateReturnResponse {
+  ReturnRequest return_request = 1;
+}
+
+message AddReturnEvidenceRequest {
+  string return_request_id = 1;
+  string note = 2;
+  repeated string evidence_urls = 3;
+}
+
+message AddReturnEvidenceResponse {
+  ReturnRequest return_request = 1;
+}
+
+message ConfirmReturnReceivedRequest {
+  string return_request_id = 1;
+}
+
+message ConfirmReturnReceivedResponse {
+  ReturnRequest return_request = 1;
+}
+
+message DisputeReturnGoodsRequest {
+  string return_request_id = 1;
+  string reason = 2;
+  repeated string evidence_urls = 3;
+}
+
+message DisputeReturnGoodsResponse {
+  ReturnRequest return_request = 1;
+}
+
+message AdminResolveReturnRequest {
+  string return_request_id = 1;
+  ReturnAdminDecision decision = 2;
+  string note = 3;
+  // Valid values: SELLER, BUYER, PLATFORM.
+  string return_fee_bearer = 4;
+}
+
+message AdminResolveReturnResponse {
+  ReturnRequest return_request = 1;
+}
+
 service OrderService {
   rpc CreateCheckout(CreateCheckoutRequest) returns (CreateCheckoutResponse);
   rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
@@ -268,4 +419,12 @@ service OrderService {
   rpc GetOrderTimeline(GetOrderTimelineRequest) returns (GetOrderTimelineResponse);
   rpc MarkPaymentResult(MarkPaymentResultRequest) returns (MarkPaymentResultResponse);
   rpc RetryPayment(RetryPaymentRequest) returns (RetryPaymentResponse);
+  rpc GetReturnRequest(GetReturnRequestRequest) returns (GetReturnRequestResponse);
+  rpc ListReturnRequests(ListReturnRequestsRequest) returns (ListReturnRequestsResponse);
+  rpc RespondReturn(RespondReturnRequest) returns (RespondReturnResponse);
+  rpc EscalateReturn(EscalateReturnRequest) returns (EscalateReturnResponse);
+  rpc AddReturnEvidence(AddReturnEvidenceRequest) returns (AddReturnEvidenceResponse);
+  rpc ConfirmReturnReceived(ConfirmReturnReceivedRequest) returns (ConfirmReturnReceivedResponse);
+  rpc DisputeReturnGoods(DisputeReturnGoodsRequest) returns (DisputeReturnGoodsResponse);
+  rpc AdminResolveReturn(AdminResolveReturnRequest) returns (AdminResolveReturnResponse);
 }

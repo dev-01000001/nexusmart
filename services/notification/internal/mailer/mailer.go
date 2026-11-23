@@ -107,6 +107,28 @@ func FormatOTPEmail(to, fullName, otp, expiresAt string) Message {
 	}
 }
 
+// FormatPasswordResetEmail formats a Vietnamese password reset email containing resetLink without leaking token in Subject.
+func FormatPasswordResetEmail(to, fullName, resetLink, expiresAt string) Message {
+	name := strings.TrimSpace(fullName)
+	if name == "" {
+		name = "Quý khách"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Xin chào %s,\n\n", name)
+	b.WriteString("Chúng tôi đã nhận được yêu cầu đặt lại mật khẩu cho tài khoản NexusMart của bạn.\n")
+	fmt.Fprintf(&b, "Vui lòng truy cập liên kết sau để đặt lại mật khẩu:\n%s\n", strings.TrimSpace(resetLink))
+	if exp := formatOTPExpiry(expiresAt); exp != "" {
+		fmt.Fprintf(&b, "\nLiên kết có hiệu lực đến: %s\n", exp)
+	}
+	b.WriteString("\nVui lòng không chia sẻ liên kết này cho bất kỳ ai. Nếu bạn không gửi yêu cầu này, hãy bỏ qua email và kiểm tra bảo mật tài khoản của bạn.\n")
+
+	return Message{
+		To:      to,
+		Subject: "Đặt lại mật khẩu tài khoản NexusMart",
+		Body:    b.String(),
+	}
+}
+
 func formatOTPExpiry(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {

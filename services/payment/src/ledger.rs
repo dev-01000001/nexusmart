@@ -312,11 +312,44 @@ pub fn build_late_payment_refund_tx(
     provider_tx_id: &str,
     amount_vnd: i64,
 ) -> LedgerTransactionDraft {
+    build_gateway_clearing_refund_tx(
+        format!("late-webhook-refund:{provider_tx_id}"),
+        "late_payment_refund",
+        provider_tx_id,
+        format!("Late/superseded webhook {provider_tx_id} booked to refund_payable"),
+        amount_vnd,
+    )
+}
+
+/// Reconciliation overpayment excess or manual mismatched-transfer refund (UC-A14 / PAY-B9):
+/// Debit gateway_clearing, Credit refund_payable (never touches escrow_liability).
+pub fn build_reconciliation_refund_tx(
+    idempotency_key: &str,
+    reference_id: &str,
+    amount_vnd: i64,
+    description: &str,
+) -> LedgerTransactionDraft {
+    build_gateway_clearing_refund_tx(
+        idempotency_key.to_string(),
+        "reconciliation_refund",
+        reference_id,
+        description.to_string(),
+        amount_vnd,
+    )
+}
+
+fn build_gateway_clearing_refund_tx(
+    idempotency_key: String,
+    reference_type: &str,
+    reference_id: &str,
+    description: String,
+    amount_vnd: i64,
+) -> LedgerTransactionDraft {
     LedgerTransactionDraft {
-        idempotency_key: format!("late-webhook-refund:{provider_tx_id}"),
-        reference_type: "late_payment_refund".to_string(),
-        reference_id: provider_tx_id.to_string(),
-        description: format!("Late/superseded webhook {provider_tx_id} booked to refund_payable"),
+        idempotency_key,
+        reference_type: reference_type.to_string(),
+        reference_id: reference_id.to_string(),
+        description,
         lines: vec![
             LedgerLine::debit(
                 ACCOUNT_GATEWAY_CLEARING,
@@ -705,37 +738,36 @@ pub async fn get_ledger_summary(pool: &PgPool) -> Result<LedgerSummary> {
     })
 }
 
-/// Computes ledger-backed pending, available, and total earned VND balances for a shop (UC-S17).
+/// Computes ledger-backed pending, available, and net total earned VND balances for a shop (UC-S17 / PAY-B12).
+/// `total_earned_vnd` equals total settled credits into `seller_pending:<shop>` minus any
+/// post-settlement refund clawbacks (`reference_type = 'refund'`) debited from seller accounts;
+/// releases to available and payouts do not reduce `total_earned_vnd`.
 pub async fn get_seller_balance(pool: &PgPool, shop_id: &str) -> Result<SellerBalance> {
     let pending_acct = account_seller_pending(shop_id);
     let available_acct = account_seller_available(shop_id);
 
-    let pending_row = sqlx::query(
+    let row = sqlx::query(
         r#"
         SELECT
-            COALESCE(SUM(credit_vnd) - SUM(debit_vnd), 0)::BIGINT AS pending_vnd,
-            COALESCE(SUM(credit_vnd), 0)::BIGINT AS total_earned_vnd
-        FROM ledger_entries
-        WHERE account_id = $1
+            COALESCE(SUM(CASE WHEN e.account_id = $1 THEN e.credit_vnd - e.debit_vnd ELSE 0 END), 0)::BIGINT AS pending_vnd,
+            COALESCE(SUM(CASE WHEN e.account_id = $2 THEN e.credit_vnd - e.debit_vnd ELSE 0 END), 0)::BIGINT AS available_vnd,
+            (
+                COALESCE(SUM(CASE WHEN e.account_id = $1 THEN e.credit_vnd ELSE 0 END), 0)
+                - COALESCE(SUM(CASE WHEN lt.reference_type = 'refund' THEN e.debit_vnd ELSE 0 END), 0)
+            )::BIGINT AS total_earned_vnd
+        FROM ledger_entries e
+        JOIN ledger_transactions lt ON lt.id = e.transaction_id
+        WHERE e.account_id IN ($1, $2)
         "#,
     )
     .bind(&pending_acct)
-    .fetch_one(pool)
-    .await?;
-
-    let pending_vnd: i64 = pending_row.try_get("pending_vnd")?;
-    let total_earned_vnd: i64 = pending_row.try_get("total_earned_vnd")?;
-
-    let available_vnd: i64 = sqlx::query_scalar(
-        r#"
-        SELECT COALESCE(SUM(credit_vnd) - SUM(debit_vnd), 0)::BIGINT
-        FROM ledger_entries
-        WHERE account_id = $1
-        "#,
-    )
     .bind(&available_acct)
     .fetch_one(pool)
     .await?;
+
+    let pending_vnd: i64 = row.try_get("pending_vnd")?;
+    let available_vnd: i64 = row.try_get("available_vnd")?;
+    let total_earned_vnd: i64 = row.try_get("total_earned_vnd")?;
 
     Ok(SellerBalance {
         shop_id: shop_id.to_string(),
@@ -855,6 +887,7 @@ pub async fn lock_and_get_seller_balances_tx(
 pub struct InMemoryLedger {
     seen_keys: HashSet<String>,
     accounts: HashMap<String, (AccountType, i64, i64)>,
+    refund_debits_by_account: HashMap<String, i64>,
     tx_count: i64,
 }
 
@@ -871,9 +904,43 @@ impl InMemoryLedger {
                     .or_insert((line.account_type, 0, 0));
             entry.1 += line.debit_vnd;
             entry.2 += line.credit_vnd;
+            if draft.reference_type == "refund" && line.debit_vnd > 0 {
+                *self
+                    .refund_debits_by_account
+                    .entry(line.account_id.clone())
+                    .or_insert(0) += line.debit_vnd;
+            }
         }
         self.tx_count += 1;
         Ok(true)
+    }
+
+    pub fn seller_balance(&self, shop_id: &str) -> SellerBalance {
+        let pending_acct = account_seller_pending(shop_id);
+        let available_acct = account_seller_available(shop_id);
+        let pending_vnd = self.balance_of(&pending_acct);
+        let available_vnd = self.balance_of(&available_acct);
+        let settled_credits = self
+            .accounts
+            .get(&pending_acct)
+            .map(|(_, _, c)| *c)
+            .unwrap_or(0);
+        let refund_clawbacks = self
+            .refund_debits_by_account
+            .get(&pending_acct)
+            .copied()
+            .unwrap_or(0)
+            + self
+                .refund_debits_by_account
+                .get(&available_acct)
+                .copied()
+                .unwrap_or(0);
+        SellerBalance {
+            shop_id: shop_id.to_string(),
+            pending_vnd,
+            available_vnd,
+            total_earned_vnd: settled_credits - refund_clawbacks,
+        }
     }
 
     pub fn balance_of(&self, account_id: &str) -> i64 {
@@ -1239,5 +1306,132 @@ mod tests {
             212_550
         );
         assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 15_000);
+    }
+
+    #[test]
+    fn test_w2_two_step_refund_settlement_and_reconciliation_ledger_balance() {
+        let mut ledger = InMemoryLedger::default();
+        let pay_id = Uuid::new_v4();
+
+        // 1. Confirm VietQR payment of 250,000 VND
+        assert!(ledger
+            .post(&build_vietqr_confirm_tx(pay_id, 250_000))
+            .unwrap());
+
+        // 2. Two-step refund: CreateRefund -> Credit refund_payable, SettleRefund (2x) -> only 1 posting, refund_payable returns to 0
+        let rf_id = Uuid::new_v4();
+        assert!(ledger
+            .post(&build_refund_tx(rf_id, pay_id, 100_000, "partial"))
+            .unwrap());
+        assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 100_000);
+        assert!(ledger
+            .post(&build_refund_settle_tx(rf_id, 100_000))
+            .unwrap());
+        assert!(!ledger
+            .post(&build_refund_settle_tx(rf_id, 100_000))
+            .unwrap());
+        assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 0);
+        assert_eq!(ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 150_000);
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 150_000);
+
+        // 3. Reconciliation ASSIGN overpay: expected 200k, actual 230k (excess 30k)
+        let pay_over = Uuid::new_v4();
+        assert!(ledger
+            .post(&build_vietqr_confirm_tx(pay_over, 200_000))
+            .unwrap());
+        assert!(ledger
+            .post(&build_reconciliation_refund_tx(
+                "recon-overpay:item-1",
+                "TX-OVER-1",
+                30_000,
+                "overpayment excess",
+            ))
+            .unwrap());
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 350_000);
+        assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 30_000);
+        assert_eq!(ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 380_000);
+
+        let overpay_rf_id = Uuid::new_v4();
+        assert!(ledger
+            .post(&build_refund_settle_tx(overpay_rf_id, 30_000))
+            .unwrap());
+        assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 0);
+        assert_eq!(ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 350_000);
+
+        // 4. Reconciliation REFUND (mismatched transfer 90k returned to buyer)
+        assert!(ledger
+            .post(&build_reconciliation_refund_tx(
+                "recon-refund:item-2",
+                "TX-MISMATCH-2",
+                90_000,
+                "mismatched refund",
+            ))
+            .unwrap());
+        assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 90_000);
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 350_000);
+
+        let mismatch_rf_id = Uuid::new_v4();
+        assert!(ledger
+            .post(&build_refund_settle_tx(mismatch_rf_id, 90_000))
+            .unwrap());
+        assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 0);
+        assert_eq!(ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 350_000);
+        assert!(ledger.summary().is_balanced);
+    }
+
+    #[test]
+    fn test_w2_seller_balance_total_earned_reflects_post_settlement_clawback() {
+        let mut ledger = InMemoryLedger::default();
+        let pay_id = Uuid::new_v4();
+        assert!(ledger
+            .post(&build_vietqr_confirm_tx(pay_id, 255_000))
+            .unwrap());
+        assert!(ledger
+            .post(
+                &build_escrow_settle_tx("ord-1", "shop-x", 255_000, 0, 217_550, 11_450, 26_000)
+                    .unwrap()
+            )
+            .unwrap());
+
+        let b1 = ledger.seller_balance("shop-x");
+        assert_eq!(b1.pending_vnd, 217_550);
+        assert_eq!(b1.available_vnd, 0);
+        assert_eq!(b1.total_earned_vnd, 217_550);
+
+        // Release to available does not change total_earned_vnd
+        assert!(ledger
+            .post(&build_escrow_release_tx("ord-1", "shop-x", 217_550).unwrap())
+            .unwrap());
+        let b2 = ledger.seller_balance("shop-x");
+        assert_eq!(b2.pending_vnd, 0);
+        assert_eq!(b2.available_vnd, 217_550);
+        assert_eq!(b2.total_earned_vnd, 217_550);
+
+        // Payout does not reduce total_earned_vnd
+        assert!(ledger
+            .post(&build_seller_payout_tx(Uuid::new_v4(), "shop-x", 100_000).unwrap())
+            .unwrap());
+        let b3 = ledger.seller_balance("shop-x");
+        assert_eq!(b3.available_vnd, 117_550);
+        assert_eq!(b3.total_earned_vnd, 217_550);
+
+        // Post-settlement refund clawback reduces both available_vnd and total_earned_vnd
+        assert!(ledger
+            .post(
+                &build_post_settlement_refund_tx(
+                    Uuid::new_v4(),
+                    pay_id,
+                    "shop-x",
+                    0,
+                    17_550,
+                    "post-settlement refund",
+                )
+                .unwrap()
+            )
+            .unwrap());
+        let b4 = ledger.seller_balance("shop-x");
+        assert_eq!(b4.available_vnd, 100_000);
+        assert_eq!(b4.total_earned_vnd, 200_000);
+        assert!(ledger.summary().is_balanced);
     }
 }

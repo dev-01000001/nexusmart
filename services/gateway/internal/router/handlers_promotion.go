@@ -307,7 +307,7 @@ func (h *handler) handleSaveVoucher(w http.ResponseWriter, r *http.Request) {
 		Code string `json:"code"`
 	}
 	if err := httpx.DecodeOptionalJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -354,7 +354,7 @@ func (h *handler) handleSellerListVouchers(w http.ResponseWriter, r *http.Reques
 func (h *handler) handleSellerCreateVoucher(w http.ResponseWriter, r *http.Request) {
 	var body createVoucherBody
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	startsAt, err := httpx.ParseTimestamp(body.StartsAt)
@@ -398,7 +398,7 @@ func (h *handler) handleSellerCreateVoucher(w http.ResponseWriter, r *http.Reque
 func (h *handler) handleAdminCreateVoucher(w http.ResponseWriter, r *http.Request) {
 	var body createVoucherBody
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	startsAt, err := httpx.ParseTimestamp(body.StartsAt)
@@ -469,7 +469,7 @@ func (h *handler) handleAdminCreateFlashSale(w http.ResponseWriter, r *http.Requ
 		EndsAt   string `json:"ends_at"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	startsAt, err := httpx.ParseTimestamp(body.StartsAt)
@@ -507,7 +507,7 @@ func (h *handler) handleSellerRegisterFlashSaleItem(w http.ResponseWriter, r *ht
 		PerUserLimit  int32  `json:"per_user_limit"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	skuID := strings.TrimSpace(body.SKUID)
@@ -568,7 +568,7 @@ func (h *handler) handleAdminApproveFlashSaleItem(w http.ResponseWriter, r *http
 		Reason  string `json:"reason"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -624,7 +624,7 @@ func (h *handler) handleAdminCreditCoins(w http.ResponseWriter, r *http.Request)
 		ReferenceID string `json:"reference_id"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -666,7 +666,7 @@ func (h *handler) handlePreviewDiscounts(w http.ResponseWriter, r *http.Request)
 		CoinsToUse        int64             `json:"coins_to_use"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 

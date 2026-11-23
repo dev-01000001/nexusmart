@@ -1,473 +1,605 @@
 "use client";
 
-import React, { Suspense, useMemo, useState } from "react";
-import type { AdminDispute, DisputeStatus, VulnerablePriorityGroup } from "@/data";
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import type {
+  GatewayReturnRequest,
+  PaginatedResponse,
+  ReturnAdminDecision,
+  ReturnFeeBearer,
+} from "@/lib/gateway-types";
+import { api, getErrorMessage } from "@/lib/api";
 import { useMockStore } from "@/mock/MockStoreContext";
-import { Button, IconSearch } from "@/components";
+import { Button, IconSearch, StateView } from "@/components";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import {
-  DISPUTE_STATUS_META,
-  DISPUTE_TIER_LABELS,
-  EMPTY_DASH,
-  formatShortTimeDateVi,
-  VULNERABLE_GROUP_LABELS,
-} from "@/features/admin/adminMeta";
-import {
-  confirmDisputeAckSla,
-  updateDisputePriorityGroup,
-  useAdminDisputeOverrides,
-} from "@/features/admin/auditStore";
+  buildShippingLabelHref,
+  getReturnFeeBearerLabel,
+  localizeTimelineNote,
+  normalizeEnumSuffix,
+  parseSafeEvidenceUrl,
+} from "@/features/account/orderMeta";
+import { getAdminReturnStatusMeta } from "@/features/admin/types";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { StatusPill } from "@/features/admin/StatusPill";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
 
-type DisputeTab = "all" | DisputeStatus;
-type DisputeSort = "priority_sla" | "amount" | "newest";
-type DisputeScopeFilter = "all" | "vulnerable" | "cap_2_tu_gian_hang" | "cap_2_san_thu_ly";
+type ReturnFilterTab =
+  | "all"
+  | "ESCALATED"
+  | "EVIDENCE_REQUESTED"
+  | "PENDING"
+  | "AWAITING_SHIPMENT"
+  | "RECEIVED"
+  | "REFUNDED"
+  | "CLOSED";
 
-function DisputesContent({
+const PAGE_SIZE = 20;
+
+const TABS: Array<{ id: ReturnFilterTab; label: string }> = [
+  { id: "all", label: "Tất cả" },
+  { id: "ESCALATED", label: "Cần phân xử" },
+  { id: "EVIDENCE_REQUESTED", label: "Chờ bằng chứng" },
+  { id: "PENDING", label: "Chờ gian hàng" },
+  { id: "AWAITING_SHIPMENT", label: "Chờ gửi trả" },
+  { id: "RECEIVED", label: "Shop đã nhận" },
+  { id: "REFUNDED", label: "Đã hoàn tiền" },
+  { id: "CLOSED", label: "Đã đóng" },
+];
+
+function normalizeReturnStatus(raw?: string): string {
+  return normalizeEnumSuffix(raw, "RETURN_STATUS_");
+}
+
+function AdminReturnsContent({
   initialQuery,
   initialSelected,
 }: {
   initialQuery: string;
   initialSelected: string | null;
 }) {
-  const { disputes, updateDisputeStatus, showToast } = useMockStore();
-  const overrides = useAdminDisputeOverrides();
+  const { showToast } = useMockStore();
 
-  const [activeTab, setActiveTab] = useState<DisputeTab>("all");
-  const [scopeFilter, setScopeFilter] = useState<DisputeScopeFilter>("all");
+  const [activeTab, setActiveTab] = useState<ReturnFilterTab>("all");
   const [query, setQuery] = useState(initialQuery);
-  const [sortBy, setSortBy] = useState<DisputeSort>("priority_sla");
-  const [selectedId, setSelectedId] = useState<string | null>(initialSelected ?? "dsp-1");
+  const [page, setPage] = useState(1);
+
+  const [items, setItems] = useState<GatewayReturnRequest[]>([]);
+  const [total, setTotal] = useState(0);
+  const [escalatedCount, setEscalatedCount] = useState(0);
+  const [evidenceCount, setEvidenceCount] = useState(0);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelected);
   const [mobileOpenId, setMobileOpenId] = useState<string | null>(initialSelected);
-  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
-  const [partialDrafts, setPartialDrafts] = useState<Record<string, number>>({});
-  const [errorByCase, setErrorByCase] = useState<Record<string, string>>({});
+  const [detail, setDetail] = useState<GatewayReturnRequest | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
-  const enrichedDisputes = useMemo(() => {
-    return disputes.map((d) => {
-      const ov = overrides[d.id];
-      const vulnerableGroup =
-        ov && ov.vulnerableGroup !== undefined
-          ? (ov.vulnerableGroup ?? undefined)
-          : d.vulnerableGroup;
-      const ackConfirmedAt = ov?.ackConfirmedAt ?? d.ackConfirmedAt;
-      const ackSlaHoursLeft =
-        ov?.ackSlaHoursLeft !== undefined ? ov.ackSlaHoursLeft : (d.ackSlaHoursLeft ?? 0);
-      return {
-        ...d,
-        tier: d.tier ?? ("cap_2_tu_gian_hang" as const),
-        vulnerableGroup,
-        ackConfirmedAt,
-        ackSlaHoursLeft,
-        resolveWorkingDaysLeft: d.resolveWorkingDaysLeft ?? (d.status === "da_xu_ly" ? 0 : 4),
-        resolveWorkingDaysTotal: d.resolveWorkingDaysTotal ?? 5,
-      };
-    });
-  }, [disputes, overrides]);
+  const [decision, setDecision] = useState<ReturnAdminDecision>("REFUND");
+  const [feeBearer, setFeeBearer] = useState<ReturnFeeBearer>("SELLER");
+  const [resolveNote, setResolveNote] = useState("");
+  const [resolving, setResolving] = useState(false);
+  const [resolveError, setResolveError] = useState<string | null>(null);
 
-  const counts = useMemo(() => {
-    const map: Record<DisputeTab, number> = {
-      all: enrichedDisputes.length,
-      moi_tiep_nhan: 0,
-      dang_xac_minh: 0,
-      cho_phan_hoi: 0,
-      da_xu_ly: 0,
-    };
-    for (const d of enrichedDisputes) {
-      map[d.status] += 1;
+  const loadList = useCallback(async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const qs = new URLSearchParams();
+      qs.set("page", String(page));
+      qs.set("page_size", String(PAGE_SIZE));
+      if (activeTab !== "all") {
+        qs.set("status", activeTab);
+      }
+
+      const [listRes, escRes, evRes, pendRes] = await Promise.all([
+        api<PaginatedResponse<GatewayReturnRequest>>(`admin/returns?${qs.toString()}`),
+        api<PaginatedResponse<GatewayReturnRequest>>(
+          "admin/returns?status=ESCALATED&page=1&page_size=1"
+        ).catch(() => null),
+        api<PaginatedResponse<GatewayReturnRequest>>(
+          "admin/returns?status=EVIDENCE_REQUESTED&page=1&page_size=1"
+        ).catch(() => null),
+        api<PaginatedResponse<GatewayReturnRequest>>(
+          "admin/returns?status=PENDING&page=1&page_size=1"
+        ).catch(() => null),
+      ]);
+
+      const fetched = listRes.items ?? [];
+      setItems(fetched);
+      setTotal(listRes.total ?? fetched.length);
+      if (escRes) setEscalatedCount(escRes.total ?? escRes.items.length);
+      if (evRes) setEvidenceCount(evRes.total ?? evRes.items.length);
+      if (pendRes) setPendingCount(pendRes.total ?? pendRes.items.length);
+
+      setSelectedId((prev) => {
+        if (prev && fetched.some((r) => r.id === prev)) return prev;
+        return fetched[0]?.id ?? null;
+      });
+    } catch (err) {
+      setErrorMsg(getErrorMessage(err, "Không thể tải danh sách khiếu nại trả hàng lúc này."));
+    } finally {
+      setLoading(false);
     }
-    return map;
-  }, [enrichedDisputes]);
+  }, [activeTab, page]);
 
-  const openStats = useMemo(() => {
-    const open = enrichedDisputes.filter((d) => d.status !== "da_xu_ly");
-    const vulnerableOpen = open.filter((d) => Boolean(d.vulnerableGroup)).length;
-    const escalatedFromShopOpen = open.filter((d) => d.tier === "cap_2_tu_gian_hang").length;
-    const ackPendingOpen = open.filter((d) => !d.ackConfirmedAt && d.ackSlaHoursLeft > 0).length;
-    return {
-      count: open.length,
-      heldVnd: open.reduce((s, d) => s + d.amount, 0),
-      vulnerableOpen,
-      escalatedFromShopOpen,
-      ackPendingOpen,
-    };
-  }, [enrichedDisputes]);
+  useEffect(() => {
+    void loadList();
+  }, [loadList]);
+
+  const loadDetail = useCallback(async (id: string) => {
+    setDetailLoading(true);
+    setResolveError(null);
+    try {
+      const res = await api<{ return_request: GatewayReturnRequest }>(
+        `admin/returns/${encodeURIComponent(id)}`
+      );
+      if (res?.return_request) {
+        setDetail(res.return_request);
+        const bearer = (res.return_request.return_fee_bearer || "").toUpperCase();
+        if (bearer === "SELLER" || bearer === "BUYER" || bearer === "PLATFORM") {
+          setFeeBearer(bearer);
+        } else {
+          setFeeBearer("SELLER");
+        }
+        setDecision((prev) =>
+          res.return_request.goods_received && prev === "RETURN_AND_REFUND" ? "REFUND" : prev
+        );
+      }
+    } catch {
+      // Keep list summary fallback if detail fetch fails
+    } finally {
+      setDetailLoading(false);
+    }
+  }, []);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = enrichedDisputes.filter((d) => {
-      if (activeTab !== "all" && d.status !== activeTab) return false;
-      if (scopeFilter === "vulnerable" && !d.vulnerableGroup) return false;
-      if (
-        (scopeFilter === "cap_2_tu_gian_hang" || scopeFilter === "cap_2_san_thu_ly") &&
-        d.tier !== scopeFilter
-      ) {
-        return false;
-      }
-      if (!q) return true;
-      return (
-        d.caseCode.toLowerCase().includes(q) ||
-        d.orderCode.toLowerCase().includes(q) ||
-        d.buyerName.toLowerCase().includes(q) ||
-        d.shopName.toLowerCase().includes(q) ||
-        d.reason.toLowerCase().includes(q)
-      );
-    });
+    if (!q) return items;
+    return items.filter(
+      (item) =>
+        item.id.toLowerCase().includes(q) ||
+        item.order_code.toLowerCase().includes(q) ||
+        item.order_id.toLowerCase().includes(q) ||
+        item.reason.toLowerCase().includes(q) ||
+        (item.return_tracking_code ?? "").toLowerCase().includes(q)
+    );
+  }, [items, query]);
 
-    return [...list].sort((a, b) => {
-      if (sortBy === "amount") return b.amount - a.amount;
-      if (sortBy === "newest") return b.openedAt.localeCompare(a.openedAt);
-      const aDone = a.status === "da_xu_ly" ? 1 : 0;
-      const bDone = b.status === "da_xu_ly" ? 1 : 0;
-      if (aDone !== bDone) return aDone - bDone;
-      const aVul = a.vulnerableGroup ? 0 : 1;
-      const bVul = b.vulnerableGroup ? 0 : 1;
-      if (aVul !== bVul) return aVul - bVul;
-      return a.slaDeadline.localeCompare(b.slaDeadline);
-    });
-  }, [enrichedDisputes, activeTab, scopeFilter, query, sortBy]);
-
-  const activeDesktopDispute = useMemo(() => {
+  const activeDesktopItem = useMemo(() => {
     if (filtered.length === 0) return null;
     if (selectedId) {
-      const exact = filtered.find((d) => d.id === selectedId);
-      if (exact) return exact;
+      const found = filtered.find((r) => r.id === selectedId);
+      if (found) return found;
     }
     return filtered[0];
   }, [filtered, selectedId]);
 
-  const ensurePartialDraft = (dispute: AdminDispute) => {
-    setPartialDrafts((prev) => {
-      if (prev[dispute.id] != null) return prev;
-      const half = Math.max(1000, Math.round(dispute.amount / 2000) * 1000);
-      return { ...prev, [dispute.id]: half };
+  const activeInspectId = activeDesktopItem?.id ?? mobileOpenId;
+
+  useEffect(() => {
+    if (!activeInspectId) {
+      setDetail(null);
+      return;
+    }
+    void loadDetail(activeInspectId);
+  }, [activeInspectId, loadDetail]);
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  const handleSelectDesktop = (item: GatewayReturnRequest) => {
+    setSelectedId(item.id);
+    setResolveError(null);
+    setResolveNote("");
+  };
+
+  const handleToggleMobile = (item: GatewayReturnRequest) => {
+    setMobileOpenId((prev) => {
+      const next = prev === item.id ? null : item.id;
+      if (next) {
+        setSelectedId(next);
+        setResolveError(null);
+        setResolveNote("");
+      }
+      return next;
     });
   };
 
-  const handleSelectDesktop = (dispute: AdminDispute) => {
-    setSelectedId(dispute.id);
-    ensurePartialDraft(dispute);
-  };
-
-  const handleToggleMobile = (dispute: AdminDispute) => {
-    setMobileOpenId((prev) => (prev === dispute.id ? null : dispute.id));
-    ensurePartialDraft(dispute);
-  };
-
-  const handleConfirmAck24h = (dispute: AdminDispute) => {
-    confirmDisputeAckSla(dispute.id);
-    showToast(`Đã xác nhận tiếp nhận hồ sơ ${dispute.caseCode} trong hạn SLA 24h.`);
-  };
-
-  const handlePriorityChange = (dispute: AdminDispute, rawValue: string) => {
-    const nextGroup = rawValue ? (rawValue as VulnerablePriorityGroup) : null;
-    updateDisputePriorityGroup(dispute.id, nextGroup);
-    const label = nextGroup ? VULNERABLE_GROUP_LABELS[nextGroup] : "Bỏ nhãn ưu tiên";
-    showToast(`Cập nhật nhãn ưu tiên nhóm yếu thế cho ${dispute.caseCode}: ${label}.`);
-  };
-
-  const handleResolve = (
-    dispute: AdminDispute,
-    mode: "refund_buyer" | "release_seller" | "partial_refund" | "verify"
-  ) => {
-    const customNote = (noteDrafts[dispute.id] ?? "").trim();
-
-    if (mode === "verify") {
-      const nextNote =
-        customNote ||
-        `${dispute.evidenceNote} Đã xác nhận tiếp nhận và chuyển bước đối chiếu chứng từ vận đơn.`;
-      confirmDisputeAckSla(dispute.id);
-      updateDisputeStatus(dispute.id, "dang_xac_minh", nextNote);
+  const handleResolveSubmit = async (e: React.FormEvent, target: GatewayReturnRequest) => {
+    e.preventDefault();
+    if (resolving) return;
+    const cleanNote = resolveNote.trim();
+    if ((decision === "REJECT" || decision === "REQUEST_EVIDENCE") && cleanNote.length < 4) {
+      setResolveError("Vui lòng nhập ghi chú phân xử tối thiểu 4 ký tự cho quyết định này.");
+      return;
+    }
+    if (decision === "RETURN_AND_REFUND" && target.goods_received) {
+      setResolveError(
+        "Gian hàng đã nhận hàng hoàn về nên không thể chọn yêu cầu gửi trả hàng mới."
+      );
       return;
     }
 
-    if (mode === "partial_refund") {
-      const partialAmount = Math.trunc(partialDrafts[dispute.id] ?? 0);
-      if (partialAmount <= 0 || partialAmount >= dispute.amount) {
-        setErrorByCase((prev) => ({
-          ...prev,
-          [dispute.id]: `Số tiền hoàn một phần phải lớn hơn 0₫ và nhỏ hơn ${formatVnd(dispute.amount)}.`,
-        }));
-        return;
+    setResolveError(null);
+    setResolving(true);
+    try {
+      const res = await api<{ return_request: GatewayReturnRequest }>(
+        `admin/returns/${encodeURIComponent(target.id)}/resolve`,
+        {
+          method: "POST",
+          json: {
+            decision,
+            note: cleanNote,
+            return_fee_bearer: feeBearer,
+          },
+        }
+      );
+      if (res?.return_request) {
+        setDetail(res.return_request);
+        setItems((prev) =>
+          prev.map((row) => (row.id === res.return_request.id ? res.return_request : row))
+        );
       }
-      setErrorByCase((prev) => ({ ...prev, [dispute.id]: "" }));
-      const sellerShare = dispute.amount - partialAmount;
-      const summary =
-        customNote ||
-        `Hoàn ${formatVnd(partialAmount)} về Ví NexusPay người mua ${dispute.buyerName} và giải ngân ${formatVnd(sellerShare)} cho ${dispute.shopName}.`;
-      confirmDisputeAckSla(dispute.id);
-      updateDisputeStatus(dispute.id, "da_xu_ly", summary);
-      return;
+      setResolveNote("");
+      showToast(`Đã lưu quyết định phân xử cho đơn ${target.order_code}.`);
+      await loadList();
+    } catch (err) {
+      setResolveError(getErrorMessage(err, "Chưa thể gửi quyết định phân xử lúc này."));
+    } finally {
+      setResolving(false);
     }
-
-    setErrorByCase((prev) => ({ ...prev, [dispute.id]: "" }));
-    confirmDisputeAckSla(dispute.id);
-
-    if (mode === "refund_buyer") {
-      const summary =
-        customNote ||
-        `Đã hoàn toàn bộ ${formatVnd(dispute.amount)} về Ví NexusPay người mua ${dispute.buyerName} và ghi nợ gian hàng ${dispute.shopName}.`;
-      updateDisputeStatus(dispute.id, "da_xu_ly", summary);
-      return;
-    }
-
-    const summary =
-      customNote ||
-      `Đã giải ngân toàn bộ ${formatVnd(dispute.amount)} cho gian hàng ${dispute.shopName} sau khi xác minh chứng từ đóng gói.`;
-    updateDisputeStatus(dispute.id, "da_xu_ly", summary);
   };
 
-  const renderDetailPanel = (dispute: (typeof enrichedDisputes)[number], showHeading = false) => {
-    const isResolved = dispute.status === "da_xu_ly";
-    const partialVal =
-      partialDrafts[dispute.id] ?? Math.max(1000, Math.round(dispute.amount / 2000) * 1000);
-    const errorMsg = errorByCase[dispute.id];
-    const meta = DISPUTE_STATUS_META[dispute.status];
-    const ackPending = !isResolved && !dispute.ackConfirmedAt && dispute.ackSlaHoursLeft > 0;
+  const renderDetailPanel = (summaryItem: GatewayReturnRequest, showHeading = false) => {
+    const record = detail && detail.id === summaryItem.id ? detail : summaryItem;
+    const statusKey = normalizeReturnStatus(record.status);
+    const meta = getAdminReturnStatusMeta(statusKey);
+    const canResolve = statusKey === "ESCALATED";
+    const buyerUrls = (record.evidence_urls ?? [])
+      .map((u) => parseSafeEvidenceUrl(u))
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+    const sellerUrls = (record.seller_evidence_urls ?? [])
+      .map((u) => parseSafeEvidenceUrl(u))
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+    const returnLabelHref = buildShippingLabelHref(record.return_tracking_code);
+    const sortedEvents = [...(record.events ?? [])].sort((a, b) => {
+      const ta = a.created_at ? Date.parse(a.created_at) : 0;
+      const tb = b.created_at ? Date.parse(b.created_at) : 0;
+      return tb - ta;
+    });
 
     return (
       <div className={shared.detailWell}>
         {showHeading && (
           <div className={shared.detailHeader}>
             <h2 className={shared.detailHeading}>
-              Hồ sơ phân xử: {dispute.caseCode} · {dispute.orderCode}
+              Hồ sơ trả hàng / khiếu nại: Đơn {record.order_code}
             </h2>
             <div className={shared.detailHeaderMeta}>
               <StatusPill label={meta.label} tone={meta.tone} />
             </div>
           </div>
         )}
+
+        {detailLoading && (!detail || detail.id !== summaryItem.id) && (
+          <p className={styles.loadingNote}>Đang tải chi tiết bằng chứng và lịch sử hồ sơ...</p>
+        )}
+
         <div className={shared.detailGrid}>
           <div className={shared.detailField}>
-            <span className={shared.detailKey}>Cấp thụ lý & nguồn chuyển</span>
-            <span className={shared.detailVal}>{DISPUTE_TIER_LABELS[dispute.tier]}</span>
+            <span className={shared.detailKey}>Mã hồ sơ / Mã đơn</span>
+            <span className={`${shared.detailVal} num`}>
+              {record.order_code} · {record.id.slice(0, 8)}
+            </span>
           </div>
           <div className={shared.detailField}>
-            <span className={shared.detailKey}>Người mua / Gian hàng</span>
+            <span className={shared.detailKey}>Số tiền dự kiến hoàn</span>
+            <span className={`${shared.detailVal} num`}>{formatVnd(record.refund_amount_vnd)}</span>
+          </div>
+          <div className={shared.detailField}>
+            <span className={shared.detailKey}>Trạng thái hàng hoàn</span>
             <span className={shared.detailVal}>
-              {dispute.buyerName} / {dispute.shopName}
+              {record.goods_received ? "Gian hàng đã nhận hàng trả" : "Chưa nhận hàng hoàn về"}
             </span>
           </div>
           <div className={shared.detailField}>
-            <span className={shared.detailKey}>Giá trị tranh chấp</span>
-            <span className={`${shared.detailVal} num`}>{formatVnd(dispute.amount)}</span>
-          </div>
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>SLA xác nhận tiếp nhận (24h)</span>
-            <span className={ackPending ? styles.slaAckUrgent : styles.slaAckDone}>
-              {ackPending
-                ? `Chưa xác nhận · Còn ${dispute.ackSlaHoursLeft}h / 24h`
-                : dispute.ackConfirmedAt
-                  ? `Đã xác nhận lúc ${formatShortTimeDateVi(dispute.ackConfirmedAt)}`
-                  : "Đã xác nhận trong hạn 24h"}
-            </span>
-          </div>
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>SLA xử lý (5–7 ngày làm việc)</span>
+            <span className={shared.detailKey}>Vận đơn chiều trả hàng</span>
             <span className={`${shared.detailValPlain} num`}>
-              {isResolved
-                ? "Đã đóng đúng hạn"
-                : `Còn ${dispute.resolveWorkingDaysLeft}/${dispute.resolveWorkingDaysTotal} ngày LV · Hạn ${formatDateTimeVi(dispute.slaDeadline)}`}
+              {record.return_tracking_code ? (
+                returnLabelHref ? (
+                  <>
+                    <a
+                      href={returnLabelHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={styles.evidenceLink}
+                      title="Mở nhãn gửi trả ở tab mới — nhấn Ctrl+P để in"
+                    >
+                      {record.return_tracking_code} (In nhãn gửi trả)
+                    </a>{" "}
+                    <span className={styles.mutedLine}>(Ctrl+P để in)</span>
+                  </>
+                ) : (
+                  record.return_tracking_code
+                )
+              ) : (
+                "Chưa tạo vận đơn chiều trả"
+              )}
             </span>
           </div>
           <div className={shared.detailField}>
-            <span className={shared.detailKey}>Ưu tiên nhóm yếu thế</span>
-            <div className={styles.prioritySelectRow}>
-              <select
-                className={shared.toolbarSelect}
-                value={dispute.vulnerableGroup ?? ""}
-                onChange={(e) => handlePriorityChange(dispute, e.target.value)}
-                aria-label="Chọn nhãn ưu tiên nhóm yếu thế"
-              >
-                <option value="">Tiêu chuẩn</option>
-                <option value="nguoi_cao_tuoi">Ưu tiên · Người cao tuổi</option>
-                <option value="phu_nu_mang_thai">Ưu tiên · Phụ nữ mang thai</option>
-                <option value="nguoi_khuyet_tat">Ưu tiên · Người khuyết tật</option>
-              </select>
-            </div>
+            <span className={shared.detailKey}>Phí trả hàng & bên chịu phí</span>
+            <span className={`${shared.detailValPlain} num`}>
+              {record.return_fee_vnd > 0 ? formatVnd(record.return_fee_vnd) : "0₫"} ·{" "}
+              {record.return_fee_bearer
+                ? getReturnFeeBearerLabel(record.return_fee_bearer)
+                : "Chưa ấn định"}
+            </span>
           </div>
-          {dispute.escalatedReason && (
-            <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-              <span className={shared.detailKey}>Lý do chuyển tranh chấp cấp 2</span>
-              <span className={shared.detailValPlain}>{dispute.escalatedReason}</span>
-            </div>
-          )}
-          <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-            <span className={shared.detailKey}>Yêu cầu từ người mua</span>
-            <span className={shared.detailValPlain}>{dispute.reason}</span>
-          </div>
-          <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-            <span className={shared.detailKey}>Phản hồi gian hàng & tóm tắt bằng chứng</span>
-            <span className={shared.detailValPlain}>{dispute.evidenceNote}</span>
+          <div className={shared.detailField}>
+            <span className={shared.detailKey}>Hạn xử lý bước hiện tại</span>
+            <span className={`${shared.detailValPlain} num`}>
+              {record.deadline_at
+                ? formatDateTimeVi(record.deadline_at)
+                : "Không giới hạn hạn chót"}
+            </span>
           </div>
         </div>
 
-        {isResolved ? (
-          <div className={shared.detailActionBar}>
-            <span className={styles.resolvedNote}>
-              Hồ sơ đã hoàn tất phân xử và đồng bộ bút toán trên sổ cái thanh toán.
-            </span>
+        {/* Two-sided evidence presentation */}
+        <div className={styles.sidesGrid}>
+          <div className={styles.sideBox}>
+            <h3 className={styles.sideHeading}>Phía người mua</h3>
+            <p className={styles.sideText}>{record.reason || "Chưa có mô tả lý do."}</p>
+            {buyerUrls.length > 0 ? (
+              <ul className={styles.evidenceList}>
+                {buyerUrls.map((ev, idx) => (
+                  <li key={`${ev.href}-${idx}`}>
+                    <a
+                      href={ev.href}
+                      target="_blank"
+                      rel="noopener noreferrer nofollow"
+                      className={styles.evidenceLink}
+                    >
+                      Bằng chứng người mua #{idx + 1} ({ev.hostname}) — trang ngoài
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className={styles.mutedLine}>Không đính kèm liên kết bằng chứng.</p>
+            )}
           </div>
+
+          <div className={styles.sideBox}>
+            <h3 className={styles.sideHeading}>Phía gian hàng</h3>
+            <p className={styles.sideText}>
+              {record.seller_response || "Gian hàng chưa gửi phản hồi chi tiết."}
+            </p>
+            {record.dispute_reason && (
+              <p className={styles.disputeCallout}>
+                <strong>Nội dung khiếu nại / báo sai hàng:</strong> {record.dispute_reason}
+              </p>
+            )}
+            {sellerUrls.length > 0 ? (
+              <ul className={styles.evidenceList}>
+                {sellerUrls.map((ev, idx) => (
+                  <li key={`${ev.href}-${idx}`}>
+                    <a
+                      href={ev.href}
+                      target="_blank"
+                      rel="noopener noreferrer nofollow"
+                      className={styles.evidenceLink}
+                    >
+                      Chứng từ gian hàng #{idx + 1} ({ev.hostname}) — trang ngoài
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className={styles.mutedLine}>Gian hàng chưa đính kèm chứng từ.</p>
+            )}
+          </div>
+        </div>
+
+        {record.admin_note && (
+          <div className={styles.adminNoteBox}>
+            <span className={shared.detailKey}>Ghi chú phân xử gần nhất của quản trị viên</span>
+            <p className={shared.detailValPlain}>{record.admin_note}</p>
+          </div>
+        )}
+
+        {/* Resolution form for ESCALATED returns */}
+        {canResolve ? (
+          <form
+            className={styles.resolveForm}
+            onSubmit={(e) => void handleResolveSubmit(e, record)}
+          >
+            <div className={styles.resolveGrid}>
+              <div className={shared.detailField}>
+                <label htmlFor={`ret-decision-${record.id}`} className={shared.fieldLabel}>
+                  Quyết định phân xử
+                </label>
+                <select
+                  id={`ret-decision-${record.id}`}
+                  className={styles.fullSelect}
+                  value={decision}
+                  onChange={(e) => setDecision(e.target.value as ReturnAdminDecision)}
+                  disabled={resolving}
+                >
+                  <option value="REFUND">Hoàn tiền người mua (không yêu cầu gửi thêm hàng)</option>
+                  <option value="RETURN_AND_REFUND" disabled={record.goods_received}>
+                    Yêu cầu trả hàng rồi hoàn tiền
+                    {record.goods_received ? " (không áp dụng vì shop đã nhận hàng)" : ""}
+                  </option>
+                  <option value="REQUEST_EVIDENCE">
+                    Yêu cầu người mua bổ sung bằng chứng (hạn 3 ngày)
+                  </option>
+                  <option value="REJECT">Từ chối khiếu nại & đóng hồ sơ</option>
+                </select>
+              </div>
+
+              <div className={shared.detailField}>
+                <label htmlFor={`ret-bearer-${record.id}`} className={shared.fieldLabel}>
+                  Bên chịu phí vận chuyển trả hàng
+                </label>
+                <select
+                  id={`ret-bearer-${record.id}`}
+                  className={styles.fullSelect}
+                  value={feeBearer}
+                  onChange={(e) => setFeeBearer(e.target.value as ReturnFeeBearer)}
+                  disabled={resolving}
+                >
+                  <option value="SELLER">Gian hàng chịu phí</option>
+                  <option value="BUYER">Người mua chịu phí</option>
+                  <option value="PLATFORM">Sàn NexusMart chịu phí</option>
+                </select>
+              </div>
+
+              <div className={`${shared.detailField} ${styles.resolveWide}`}>
+                <label htmlFor={`ret-note-${record.id}`} className={shared.fieldLabel}>
+                  Kết luận & căn cứ phân xử
+                  {decision === "REJECT" || decision === "REQUEST_EVIDENCE"
+                    ? " (bắt buộc)"
+                    : " (khuyến nghị)"}
+                </label>
+                <textarea
+                  id={`ret-note-${record.id}`}
+                  className={shared.textareaInput}
+                  value={resolveNote}
+                  onChange={(e) => setResolveNote(e.target.value)}
+                  placeholder="Ghi rõ căn cứ kiểm tra bằng chứng hai bên, lý do phân bổ phí trả hàng hoặc nội dung cần bổ sung..."
+                  disabled={resolving}
+                />
+              </div>
+            </div>
+
+            {resolveError && (
+              <p className={styles.validationError} role="alert">
+                {resolveError}
+              </p>
+            )}
+
+            <div className={shared.detailActionBar}>
+              <span className={shared.savedStamp}>
+                Quyết định sẽ cập nhật ngay trạng thái đơn hàng, kích hoạt hoàn tiền hoặc tạo vận
+                đơn chiều trả tương ứng.
+              </span>
+              <div className={shared.detailButtons}>
+                <Button type="submit" variant="primary" size="sm" shape="app" disabled={resolving}>
+                  {resolving ? "Đang lưu quyết định..." : "Xác nhận quyết định phân xử"}
+                </Button>
+              </div>
+            </div>
+          </form>
         ) : (
           <div className={shared.detailActionBar}>
-            <div className={shared.detailNoteGroup}>
-              <label htmlFor={`dsp-note-${dispute.id}`} className={shared.fieldLabel}>
-                Kết luận phân xử (tùy chọn)
-              </label>
-              <input
-                id={`dsp-note-${dispute.id}`}
-                type="text"
-                className={shared.textInput}
-                value={noteDrafts[dispute.id] ?? ""}
-                onChange={(e) =>
-                  setNoteDrafts((prev) => ({ ...prev, [dispute.id]: e.target.value }))
-                }
-                placeholder="Ghi chú căn cứ đối chiếu ảnh, cân nặng vận đơn hoặc thỏa thuận..."
-              />
-              {errorMsg && <span className={styles.validationError}>{errorMsg}</span>}
-            </div>
+            <span className={statusKey === "REFUNDED" ? styles.resolvedNote : shared.savedStamp}>
+              {statusKey === "EVIDENCE_REQUESTED"
+                ? "Đang chờ người mua gửi bổ sung bằng chứng trước hạn chót; khi nhận đủ, hồ sơ sẽ quay lại trạng thái Cần phân xử."
+                : statusKey === "REFUNDED" || statusKey === "REFUNDING"
+                  ? "Hồ sơ đã chuyển sang bước hoàn tiền cho người mua."
+                  : statusKey === "CLOSED"
+                    ? "Hồ sơ đã đóng và hoàn tất quyết toán đơn hàng."
+                    : "Hồ sơ hiện đang ở bước xử lý giữa người mua và gian hàng, chưa cần quản trị viên can thiệp."}
+            </span>
+          </div>
+        )}
 
-            <div className={styles.partialField}>
-              <label htmlFor={`dsp-partial-${dispute.id}`} className={shared.fieldLabel}>
-                Mức hoàn một phần (VND)
-              </label>
-              <input
-                id={`dsp-partial-${dispute.id}`}
-                type="number"
-                min={1000}
-                max={Math.max(1000, dispute.amount - 1000)}
-                step={1000}
-                className={`${shared.textInput} num`}
-                value={partialVal}
-                onChange={(e) => {
-                  setPartialDrafts((prev) => ({
-                    ...prev,
-                    [dispute.id]: Number(e.target.value) || 0,
-                  }));
-                  if (errorMsg) {
-                    setErrorByCase((prev) => ({ ...prev, [dispute.id]: "" }));
-                  }
-                }}
-              />
-            </div>
-
-            <div className={shared.detailButtons}>
-              {ackPending && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  shape="app"
-                  onClick={() => handleConfirmAck24h(dispute)}
-                >
-                  Xác nhận SLA 24h
-                </Button>
-              )}
-              {dispute.status === "moi_tiep_nhan" && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  shape="app"
-                  onClick={() => handleResolve(dispute, "verify")}
-                >
-                  Đang xác minh
-                </Button>
-              )}
-              <Button
-                variant="primary"
-                size="sm"
-                shape="app"
-                onClick={() => handleResolve(dispute, "refund_buyer")}
-              >
-                Hoàn tiền người mua
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                shape="app"
-                onClick={() => handleResolve(dispute, "release_seller")}
-              >
-                Giải ngân người bán
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                shape="app"
-                onClick={() => handleResolve(dispute, "partial_refund")}
-              >
-                Hoàn tiền một phần
-              </Button>
-            </div>
+        {/* Timeline */}
+        {sortedEvents.length > 0 && (
+          <div className={styles.timelineBlock}>
+            <h3 className={styles.sideHeading}>Lịch sử chuyển trạng thái hồ sơ</h3>
+            <ol className={styles.timelineList}>
+              {sortedEvents.map((ev, idx) => {
+                const evMeta = getAdminReturnStatusMeta(ev.to_status);
+                return (
+                  <li
+                    key={ev.id || `${ev.created_at ?? idx}-${idx}`}
+                    className={styles.timelineItem}
+                  >
+                    <span className={`${styles.timelineTime} num`}>
+                      {ev.created_at ? formatDateTimeVi(ev.created_at) : "—"}
+                    </span>
+                    <div className={styles.timelineBody}>
+                      <span className={styles.timelineTitle}>{evMeta.label}</span>
+                      {ev.note && (
+                        <span className={styles.timelineNote}>{localizeTimelineNote(ev.note)}</span>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
           </div>
         )}
       </div>
     );
   };
 
-  const tabs: Array<{ id: DisputeTab; label: string }> = [
-    { id: "all", label: "Tất cả" },
-    { id: "moi_tiep_nhan", label: "Chờ phân xử" },
-    { id: "dang_xac_minh", label: "Đang xác minh" },
-    { id: "cho_phan_hoi", label: "Chờ phản hồi" },
-    { id: "da_xu_ly", label: "Đã giải quyết" },
-  ];
-
-  const subtitle =
-    openStats.count > 0
-      ? `${openStats.count} khiếu nại mở (tạm giữ ${formatVnd(openStats.heldVnd)}), gồm ${openStats.vulnerableOpen} hồ sơ ưu tiên nhóm yếu thế và ${openStats.escalatedFromShopOpen} vụ cấp 2 từ gian hàng chuyển lên.`
-      : `Tất cả ${enrichedDisputes.length} hồ sơ khiếu nại đã được giải quyết xong, không còn tiền tạm giữ.`;
-
   return (
     <div className={shared.page}>
       <header className={shared.titleRow}>
         <div className={shared.titleBlock}>
-          <h1 className={shared.pageTitle}>Khiếu nại & tranh chấp cấp 2</h1>
-          <p className={shared.pageSubtitle}>{subtitle}</p>
+          <h1 className={shared.pageTitle}>Khiếu nại & Yêu cầu trả hàng</h1>
+          <p className={shared.pageSubtitle}>
+            Theo dõi toàn bộ hồ sơ trả hàng trên sàn và phân xử các vụ khiếu nại hai bên trực tiếp
+            từ dịch vụ đơn hàng.
+          </p>
+        </div>
+        <div className={shared.titleActions}>
+          <Button variant="outline" size="sm" shape="app" onClick={() => void loadList()}>
+            Làm mới
+          </Button>
         </div>
       </header>
 
       <section
         className={`${shared.kpiStrip} ${styles.kpiSpacer}`}
-        aria-label="Tổng hợp SLA và phân loại tranh chấp"
+        aria-label="Tổng hợp hồ sơ trả hàng và khiếu nại"
       >
         <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Khiếu nại đang mở</span>
-          <span className={shared.kpiValue}>{formatInt(openStats.count)}</span>
-          <span className={shared.kpiCaption}>Tạm giữ {formatVnd(openStats.heldVnd)}</span>
-        </div>
-        <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Ưu tiên nhóm yếu thế</span>
+          <span className={shared.kpiLabel}>Cần quản trị phân xử</span>
           <span
-            className={`${shared.kpiValue} ${openStats.vulnerableOpen > 0 ? shared.kpiValueNegative : ""}`}
+            className={`${shared.kpiValue} ${escalatedCount > 0 ? shared.kpiValueNegative : ""}`}
           >
-            {formatInt(openStats.vulnerableOpen)}
+            {formatInt(escalatedCount)}
           </span>
-          <span className={shared.kpiCaption}>Xếp đầu hàng đợi phân xử</span>
+          <span className={shared.kpiCaption}>Hồ sơ khiếu nại đang mở</span>
         </div>
         <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Cấp 2 từ gian hàng</span>
-          <span className={shared.kpiValue}>{formatInt(openStats.escalatedFromShopOpen)}</span>
+          <span className={shared.kpiLabel}>Chờ bổ sung bằng chứng</span>
+          <span className={shared.kpiValue}>{formatInt(evidenceCount)}</span>
+          <span className={shared.kpiCaption}>Đang chờ người mua phản hồi trong 3 ngày</span>
+        </div>
+        <div className={shared.kpiCell}>
+          <span className={shared.kpiLabel}>Chờ gian hàng phản hồi</span>
+          <span className={shared.kpiValue}>{formatInt(pendingCount)}</span>
+          <span className={shared.kpiCaption}>Hạn 3 ngày trước khi tự động đồng ý trả hàng</span>
+        </div>
+        <div className={shared.kpiCell}>
+          <span className={shared.kpiLabel}>Kết quả theo bộ lọc</span>
+          <span className={shared.kpiValue}>{formatInt(total)}</span>
           <span className={shared.kpiCaption}>
-            {formatInt(openStats.count - openStats.escalatedFromShopOpen)} vụ sàn thụ lý trực tiếp
+            Trang {formatInt(page)} / {formatInt(totalPages)}
           </span>
-        </div>
-        <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Chờ xác nhận SLA 24h</span>
-          <span
-            className={`${shared.kpiValue} ${openStats.ackPendingOpen > 0 ? shared.kpiValueNegative : ""}`}
-          >
-            {formatInt(openStats.ackPendingOpen)}
-          </span>
-          <span className={shared.kpiCaption}>Hạn xử lý tổng 5–7 ngày làm việc</span>
         </div>
       </section>
 
       <div className={shared.tabsBar}>
-        <div className={shared.tabList} role="tablist" aria-label="Lọc trạng thái khiếu nại">
-          {tabs.map((tab) => {
+        <div className={shared.tabList} role="tablist" aria-label="Lọc trạng thái hồ sơ trả hàng">
+          {TABS.map((tab) => {
             const active = activeTab === tab.id;
+            const badge =
+              tab.id === "ESCALATED"
+                ? escalatedCount
+                : tab.id === "EVIDENCE_REQUESTED"
+                  ? evidenceCount
+                  : tab.id === "PENDING"
+                    ? pendingCount
+                    : null;
             return (
               <button
                 key={tab.id}
@@ -475,10 +607,13 @@ function DisputesContent({
                 role="tab"
                 aria-selected={active}
                 className={`${shared.tabBtn} ${active ? shared.tabBtnActive : ""}`}
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => {
+                  setActiveTab(tab.id);
+                  setPage(1);
+                }}
               >
                 <span>{tab.label}</span>
-                <span className={shared.tabCount}>{counts[tab.id]}</span>
+                {badge != null && badge > 0 && <span className={shared.tabCount}>{badge}</span>}
               </button>
             );
           })}
@@ -496,113 +631,84 @@ function DisputesContent({
               className={shared.toolbarSearch}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Tìm mã KN-, mã đơn NM-, người mua, shop..."
-              aria-label="Tìm kiếm hồ sơ khiếu nại"
+              placeholder="Tìm mã đơn NM-, mã vận đơn trả, lý do..."
+              aria-label="Tìm kiếm hồ sơ trả hàng và khiếu nại"
             />
           </div>
-
-          <select
-            className={shared.toolbarSelect}
-            value={scopeFilter}
-            onChange={(e) => setScopeFilter(e.target.value as DisputeScopeFilter)}
-            aria-label="Lọc cấp xử lý và nhóm ưu tiên"
-          >
-            <option value="all">Tất cả cấp xử lý</option>
-            <option value="vulnerable">Chỉ ưu tiên nhóm yếu thế</option>
-            <option value="cap_2_tu_gian_hang">Cấp 2 · Từ gian hàng chuyển lên</option>
-            <option value="cap_2_san_thu_ly">Cấp 2 · Sàn thụ lý trực tiếp</option>
-          </select>
         </div>
-
         <div className={shared.toolbarRight}>
-          <span className={shared.resultCount}>{formatInt(filtered.length)} khiếu nại</span>
-          <select
-            className={shared.toolbarSelect}
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as DisputeSort)}
-            aria-label="Sắp xếp danh sách khiếu nại"
-          >
-            <option value="priority_sla">Ưu tiên yếu thế & SLA gần nhất</option>
-            <option value="amount">Giá trị cao nhất</option>
-            <option value="newest">Mới mở gần nhất</option>
-          </select>
+          <span className={shared.resultCount}>
+            {formatInt(filtered.length)} / {formatInt(total)} hồ sơ
+          </span>
         </div>
       </div>
 
-      {filtered.length === 0 ? (
-        <p className={shared.emptyRow}>Không có hồ sơ khiếu nại nào khớp với bộ lọc hiện tại.</p>
+      {loading ? (
+        <div className={shared.stateWrap}>
+          <StateView
+            kind="loading"
+            surface="app"
+            title="Đang tải danh sách khiếu nại trả hàng..."
+            rows={5}
+          />
+        </div>
+      ) : errorMsg ? (
+        <div className={shared.stateWrap}>
+          <StateView
+            kind="error"
+            surface="app"
+            title="Không thể tải danh sách khiếu nại"
+            message={errorMsg}
+            actionLabel="Thử lại"
+            onAction={() => void loadList()}
+          />
+        </div>
+      ) : filtered.length === 0 ? (
+        <p className={shared.emptyRow}>Không có hồ sơ trả hàng hoặc khiếu nại nào khớp bộ lọc.</p>
       ) : (
         <>
           <div className={shared.tableWrap}>
             <table className={shared.dataTable}>
               <thead>
                 <tr>
-                  <th>Hồ sơ, cấp tranh chấp & nội dung</th>
-                  <th>Người mua & gian hàng</th>
-                  <th className={shared.colNum}>Giá trị</th>
-                  <th className={`${shared.colNum} ${styles.tabletHideCol}`}>
-                    SLA 24h / 5–7 ngày LV
-                  </th>
+                  <th>Đơn hàng & lý do yêu cầu</th>
+                  <th className={shared.colNum}>Tiền hoàn dự kiến</th>
+                  <th className={styles.tabletHideCol}>Hạn xử lý / Vận đơn trả</th>
                   <th>Trạng thái</th>
                   <th className={shared.colAction}>Thao tác</th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((d) => {
-                  const meta = DISPUTE_STATUS_META[d.status];
-                  const isSelected = activeDesktopDispute?.id === d.id;
-                  const ackPending =
-                    d.status !== "da_xu_ly" && !d.ackConfirmedAt && d.ackSlaHoursLeft > 0;
+                {filtered.map((item) => {
+                  const statusKey = normalizeReturnStatus(item.status);
+                  const meta = getAdminReturnStatusMeta(statusKey);
+                  const isSelected = activeDesktopItem?.id === item.id;
                   return (
                     <tr
-                      key={d.id}
+                      key={item.id}
                       className={`${shared.rowInteractive} ${isSelected ? shared.rowSelected : ""}`}
-                      onClick={() => handleSelectDesktop(d)}
+                      onClick={() => handleSelectDesktop(item)}
                     >
                       <td>
                         <div className={shared.cellPrimary}>
-                          {d.caseCode} · {d.orderCode}
+                          {item.order_code} · #{item.id.slice(0, 8)}
                         </div>
-                        <div className={`${shared.cellSub} ${styles.reasonCell}`}>{d.reason}</div>
-                        <div className={styles.metaTagLine}>
-                          <span className={shared.tierText}>{DISPUTE_TIER_LABELS[d.tier]}</span>
-                          {d.vulnerableGroup && (
-                            <span className={shared.priorityText}>
-                              · Ưu tiên: {VULNERABLE_GROUP_LABELS[d.vulnerableGroup]}
-                            </span>
-                          )}
+                        <div className={`${shared.cellSub} ${styles.reasonCell}`}>
+                          {item.dispute_reason || item.reason}
                         </div>
                       </td>
-                      <td>
-                        <div>{d.buyerName}</div>
-                        <div className={shared.cellSub}>{d.shopName}</div>
-                      </td>
-                      <td className={shared.colNum}>
-                        <div>{formatVnd(d.amount)}</div>
-                        <div className={styles.tabletSubSla}>
-                          {d.status === "da_xu_ly"
-                            ? EMPTY_DASH
-                            : ackPending
-                              ? `XN còn ${d.ackSlaHoursLeft}h`
-                              : `Còn ${d.resolveWorkingDaysLeft}/${d.resolveWorkingDaysTotal} ngày LV`}
+                      <td className={shared.colNum}>{formatVnd(item.refund_amount_vnd)}</td>
+                      <td className={styles.tabletHideCol}>
+                        <div className="num">
+                          {item.deadline_at ? formatDateTimeVi(item.deadline_at) : "—"}
                         </div>
-                      </td>
-                      <td className={`${shared.colNum} ${styles.tabletHideCol}`}>
-                        {d.status === "da_xu_ly" ? (
-                          <span className={shared.numMuted}>{EMPTY_DASH}</span>
-                        ) : (
-                          <div className={styles.slaStack}>
-                            <span className={ackPending ? styles.slaAckUrgent : styles.slaAckDone}>
-                              {ackPending
-                                ? `Xác nhận: còn ${d.ackSlaHoursLeft}h/24h`
-                                : "Đã xác nhận 24h"}
-                            </span>
-                            <span className={styles.slaWorkDays}>
-                              Xử lý: còn {d.resolveWorkingDaysLeft}/{d.resolveWorkingDaysTotal} ngày
-                              LV
-                            </span>
-                          </div>
-                        )}
+                        <div className={shared.cellSub}>
+                          {item.return_tracking_code
+                            ? `Vận đơn trả: ${item.return_tracking_code}`
+                            : item.goods_received
+                              ? "Shop đã nhận hàng"
+                              : "Chưa tạo vận đơn trả"}
+                        </div>
                       </td>
                       <td>
                         <StatusPill label={meta.label} tone={meta.tone} />
@@ -613,10 +719,14 @@ function DisputesContent({
                           className={shared.rowActionBtn}
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleSelectDesktop(d);
+                            handleSelectDesktop(item);
                           }}
                         >
-                          {isSelected ? "Đang xem" : d.status === "da_xu_ly" ? "Xem" : "Phân xử"}
+                          {isSelected
+                            ? "Đang xem"
+                            : statusKey === "ESCALATED"
+                              ? "Phân xử"
+                              : "Chi tiết"}
                         </button>
                       </td>
                     </tr>
@@ -626,70 +736,93 @@ function DisputesContent({
             </table>
           </div>
 
-          {activeDesktopDispute && (
+          {activeDesktopItem && (
             <section
               className={shared.desktopDetailSection}
-              aria-label="Bảng chi tiết và phân xử khiếu nại"
+              aria-label="Bảng chi tiết và phân xử khiếu nại trả hàng"
             >
-              {renderDetailPanel(activeDesktopDispute, true)}
+              {renderDetailPanel(activeDesktopItem, true)}
             </section>
           )}
 
           <div className={shared.mobileList}>
-            {filtered.map((d) => {
-              const meta = DISPUTE_STATUS_META[d.status];
-              const isSelected = mobileOpenId === d.id;
+            {filtered.map((item) => {
+              const statusKey = normalizeReturnStatus(item.status);
+              const meta = getAdminReturnStatusMeta(statusKey);
+              const isOpen = mobileOpenId === item.id;
               return (
-                <div key={d.id} className={shared.mobileItem}>
+                <div key={item.id} className={shared.mobileItem}>
                   <button
                     type="button"
                     className={shared.mobileItemBtn}
-                    onClick={() => handleToggleMobile(d)}
-                    aria-expanded={isSelected}
+                    onClick={() => handleToggleMobile(item)}
+                    aria-expanded={isOpen}
                   >
                     <div className={shared.mobileLine1}>
-                      <span className={shared.mobileIdentity}>
-                        {d.caseCode} · {d.buyerName}
+                      <span className={shared.mobileIdentity}>{item.order_code}</span>
+                      <span className={shared.mobileMetric}>
+                        {formatVnd(item.refund_amount_vnd)}
                       </span>
-                      <span className={shared.mobileMetric}>{formatVnd(d.amount)}</span>
                     </div>
                     <div className={shared.mobileLine2}>
                       <span className={shared.mobileMetaText}>
-                        {d.vulnerableGroup ? "Ưu tiên yếu thế · " : ""}
-                        {d.tier === "cap_2_tu_gian_hang" ? "Cấp 2 shop" : "Sàn thụ lý"} ·{" "}
-                        {d.status === "da_xu_ly"
-                          ? "Đã đóng"
-                          : `Còn ${d.resolveWorkingDaysLeft}/${d.resolveWorkingDaysTotal} ngày LV`}
+                        {item.dispute_reason || item.reason}
                       </span>
                       <StatusPill label={meta.label} tone={meta.tone} />
                     </div>
                   </button>
-                  {isSelected && (
-                    <div className={shared.mobileDetailWrap}>{renderDetailPanel(d)}</div>
+                  {isOpen && (
+                    <div className={shared.mobileDetailWrap}>{renderDetailPanel(item)}</div>
                   )}
                 </div>
               );
             })}
           </div>
+
+          {totalPages > 1 && (
+            <div className={styles.paginationRow}>
+              <Button
+                variant="outline"
+                size="sm"
+                shape="app"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                Trang trước
+              </Button>
+              <span className={shared.resultCount}>
+                Trang {formatInt(page)} / {formatInt(totalPages)}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                shape="app"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                Trang sau
+              </Button>
+            </div>
+          )}
         </>
       )}
     </div>
   );
 }
 
-function DisputesRoute() {
+function AdminReturnsRoute() {
   return (
     <AdminStateGate
-      title="Khiếu nại & tranh chấp cấp 2"
-      subtitle="Phân tách tranh chấp cấp 2 từ gian hàng chuyển lên, ưu tiên nhóm yếu thế và theo dõi đồng hồ SLA 24h / 5–7 ngày làm việc."
-      emptyTitle="Không có khiếu nại nào cần xử lý"
-      emptyMessage="Tất cả tranh chấp đơn hàng đã được xử lý và đóng hồ sơ."
+      title="Khiếu nại & Yêu cầu trả hàng"
+      subtitle="Phân xử tranh chấp trả hàng giữa người mua và gian hàng dựa trên bằng chứng hai bên."
+      emptyTitle="Chưa có hồ sơ khiếu nại nào"
+      emptyMessage="Tất cả yêu cầu trả hàng đã được xử lý hoặc chưa có khiếu nại mới phát sinh."
       errorTitle="Không thể tải danh sách khiếu nại"
-      errorMessage="Hệ thống quản lý tranh chấp tạm gián đoạn. Vui lòng thử tải lại."
+      errorMessage="Dịch vụ đơn hàng tạm gián đoạn. Vui lòng thử tải lại."
       loadingRows={5}
     >
       {({ initialQuery, initialSelected }) => (
-        <DisputesContent initialQuery={initialQuery} initialSelected={initialSelected} />
+        <AdminReturnsContent initialQuery={initialQuery} initialSelected={initialSelected} />
       )}
     </AdminStateGate>
   );
@@ -697,8 +830,8 @@ function DisputesRoute() {
 
 export default function AdminDisputesPage() {
   return (
-    <Suspense fallback={<AdminSuspenseFallback title="Khiếu nại & tranh chấp cấp 2" />}>
-      <DisputesRoute />
+    <Suspense fallback={<AdminSuspenseFallback title="Khiếu nại & Yêu cầu trả hàng" />}>
+      <AdminReturnsRoute />
     </Suspense>
   );
 }

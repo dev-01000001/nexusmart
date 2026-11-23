@@ -77,7 +77,11 @@ export function resolvePostLoginRedirect(
     explicitNext === "/dang-nhap" ||
     explicitNext.startsWith("/dang-nhap?") ||
     explicitNext === "/dang-ky" ||
-    explicitNext.startsWith("/dang-ky?")
+    explicitNext.startsWith("/dang-ky?") ||
+    explicitNext === "/quen-mat-khau" ||
+    explicitNext.startsWith("/quen-mat-khau?") ||
+    explicitNext === "/dat-lai-mat-khau" ||
+    explicitNext.startsWith("/dat-lai-mat-khau?")
   ) {
     return roleHome;
   }

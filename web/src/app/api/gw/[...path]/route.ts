@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyCsrfOrigin } from "@/lib/server/csrf";
 import { sanitizeGatewayError } from "@/lib/server/gateway";
 import {
+  MAX_BFF_BODY_BYTES,
+  PAYLOAD_TOO_LARGE_BODY,
+  applyProxySecurityHeaders,
+  readBoundedBody,
+} from "@/lib/server/proxy-security";
+import {
   ACCESS_COOKIE,
   applyClientIpHeader,
   extractClientIp,
@@ -31,11 +37,25 @@ function isSseRequest(req: NextRequest, segments: string[]): boolean {
   return segments.length === 3 && segments[0] === "payments" && segments[2] === "events";
 }
 
+function jsonWithSecurity(
+  body: unknown,
+  status: number,
+  extraHeaders?: HeadersInit,
+  upstreamHeaders?: Headers | null
+): NextResponse {
+  const headers = new Headers(extraHeaders);
+  if (!headers.has("Cache-Control")) {
+    headers.set("Cache-Control", "no-store");
+  }
+  applyProxySecurityHeaders(headers, upstreamHeaders, "application/json");
+  return NextResponse.json(body, { status, headers });
+}
+
 function validatePathSegments(segments: string[]): NextResponse | null {
   if (!Array.isArray(segments) || segments.length === 0) {
-    return NextResponse.json(
+    return jsonWithSecurity(
       { error: { code: "INVALID_PATH", message: "Đường dẫn không hợp lệ." } },
-      { status: 400 }
+      400
     );
   }
 
@@ -48,18 +68,18 @@ function validatePathSegments(segments: string[]): NextResponse | null {
       seg.includes("\\") ||
       /[\u0000-\u001f\u007f]/.test(seg)
     ) {
-      return NextResponse.json(
+      return jsonWithSecurity(
         { error: { code: "INVALID_PATH", message: "Đường dẫn không hợp lệ." } },
-        { status: 400 }
+        400
       );
     }
   }
 
   const root = segments[0].toLowerCase();
   if (BLOCKED_ROOT_SEGMENTS.has(root)) {
-    return NextResponse.json(
+    return jsonWithSecurity(
       { error: { code: "FORBIDDEN_PATH", message: "Đường dẫn này không được hỗ trợ trực tiếp." } },
-      { status: 403 }
+      403
     );
   }
 
@@ -76,7 +96,10 @@ async function handleProxy(
   if (pathErr) return pathErr;
 
   const csrfErr = verifyCsrfOrigin(req);
-  if (csrfErr) return csrfErr;
+  if (csrfErr) {
+    applyProxySecurityHeaders(csrfErr.headers, null, "application/json");
+    return csrfErr;
+  }
 
   const encodedPath = segments.map((s) => encodeURIComponent(s)).join("/");
   const upstreamUrl = `${getGatewayUrl()}/api/v1/${encodedPath}${req.nextUrl.search}`;
@@ -104,9 +127,15 @@ async function handleProxy(
   const sse = isSseRequest(req, segments);
   let body: ArrayBuffer | undefined;
   if (req.method !== "GET" && req.method !== "HEAD") {
-    const buf = await req.arrayBuffer();
-    if (buf.byteLength > 0) {
-      body = buf;
+    const bounded = await readBoundedBody(req, MAX_BFF_BODY_BYTES);
+    if (!bounded.ok) {
+      return jsonWithSecurity(PAYLOAD_TOO_LARGE_BODY, 413);
+    }
+    if (bounded.body.byteLength > 0) {
+      body = bounded.body.buffer.slice(
+        bounded.body.byteOffset,
+        bounded.body.byteOffset + bounded.body.byteLength
+      ) as ArrayBuffer;
     }
   }
 
@@ -125,19 +154,21 @@ async function handleProxy(
       signal,
     });
   } catch {
-    return NextResponse.json(UNAVAILABLE_BODY, { status: 503 });
+    return jsonWithSecurity(UNAVAILABLE_BODY, 503);
   }
 
   const upstreamContentType = upstream.headers.get("content-type") ?? "";
   if (upstream.ok && (sse || upstreamContentType.toLowerCase().includes("text/event-stream"))) {
+    const streamContentType = upstreamContentType || "text/event-stream; charset=utf-8";
     const streamHeaders = new Headers({
-      "Content-Type": upstreamContentType || "text/event-stream; charset=utf-8",
+      "Content-Type": streamContentType,
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     });
     const traceId = upstream.headers.get("x-trace-id");
     if (traceId) streamHeaders.set("X-Trace-Id", traceId);
+    applyProxySecurityHeaders(streamHeaders, upstream.headers, streamContentType);
 
     return new Response(upstream.body, {
       status: upstream.status,
@@ -146,7 +177,7 @@ async function handleProxy(
   }
 
   if (upstream.status >= 500) {
-    return NextResponse.json(UNAVAILABLE_BODY, { status: 503 });
+    return jsonWithSecurity(UNAVAILABLE_BODY, 503, undefined, upstream.headers);
   }
 
   if (!upstream.ok) {
@@ -165,9 +196,11 @@ async function handleProxy(
       const val = upstream.headers.get(h);
       if (val) errHeaders.set(h, val);
     }
-    return NextResponse.json(
+    return jsonWithSecurity(
       { error: { code: sanitized.code, message: sanitized.message } },
-      { status: sanitized.status, headers: errHeaders }
+      sanitized.status,
+      errHeaders,
+      upstream.headers
     );
   }
 
@@ -179,6 +212,7 @@ async function handleProxy(
     const val = upstream.headers.get(h);
     if (val) resHeaders.set(h, val);
   }
+  applyProxySecurityHeaders(resHeaders, upstream.headers, upstreamContentType);
 
   if (upstream.status === 204) {
     return new Response(null, { status: 204, headers: resHeaders });

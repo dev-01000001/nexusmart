@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/shipping/internal/address"
 	"github.com/nexusmart/core/services/shipping/internal/carrier"
 	"github.com/nexusmart/core/services/shipping/internal/service"
@@ -53,15 +54,32 @@ func (s *stubRepo) GetWard(_ context.Context, _ string) (*address.Ward, error) {
 func (s *stubRepo) MapLegacyAddress(_ context.Context, _, _, _ string) (*address.LegacyMatch, error) {
 	return &address.LegacyMatch{}, nil
 }
-func (s *stubRepo) GetShipmentByOrderID(_ context.Context, orderID string) (*store.Shipment, error) {
+func (s *stubRepo) GetShipmentByOrderID(_ context.Context, orderID, direction string) (*store.Shipment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sh, ok := s.shipments[orderID]
+	dir := store.NormalizeDirection(direction)
+	sh, ok := s.shipments[orderID+":"+dir]
 	if !ok {
 		return nil, store.ErrNotFound
 	}
 	cp := *sh
 	return &cp, nil
+}
+func (s *stubRepo) GetActiveShipmentByOrderID(ctx context.Context, orderID, direction string) (*store.Shipment, error) {
+	sh, err := s.GetShipmentByOrderID(ctx, orderID, direction)
+	if err != nil {
+		return nil, err
+	}
+	if store.IsInactiveShipment(direction, sh.Status) {
+		return nil, store.ErrNotFound
+	}
+	return sh, nil
+}
+func (s *stubRepo) CountInactiveShipmentsByOrder(_ context.Context, _ string, _ string) (int, error) {
+	return 0, nil
+}
+func (s *stubRepo) AcquireOrderDirectionLock(_ context.Context, _, _ string) (func(), error) {
+	return func() {}, nil
 }
 func (s *stubRepo) GetShipmentByTrackingCode(_ context.Context, trackingCode string) (*store.Shipment, error) {
 	s.mu.Lock()
@@ -80,24 +98,30 @@ func (s *stubRepo) CreateShipment(_ context.Context, sh *store.Shipment, _ *stor
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := *sh
-	s.shipments[sh.OrderID] = &cp
-	s.byTracking[sh.TrackingCode] = &cp
+	cp.Direction = store.NormalizeDirection(cp.Direction)
+	s.shipments[cp.OrderID+":"+cp.Direction] = &cp
+	s.byTracking[cp.TrackingCode] = &cp
 	ret := cp
 	return &ret, false, nil
 }
-func (s *stubRepo) CancelShipment(_ context.Context, _ string, _ string) (*store.Shipment, error) {
+func (s *stubRepo) CancelShipmentByID(_ context.Context, _ string, _ string) (*store.Shipment, error) {
 	return nil, nil
 }
 func (s *stubRepo) CancelShipmentWithEvent(_ context.Context, _, _, _, _ string) (*store.Shipment, bool, error) {
 	return nil, false, nil
 }
+func (s *stubRepo) RecordRedelivery(_ context.Context, _, _ string, _ int32, _, _ string) (*store.Shipment, error) {
+	return nil, nil
+}
 func (s *stubRepo) ApplyWebhookEvent(_ context.Context, params store.WebhookUpdateParams) (*store.Shipment, store.WebhookUpdateOutcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	sh := s.byTracking[params.TrackingCode]
-	if sh == nil {
-		sh = s.shipments[params.OrderID]
+	var sh *store.Shipment
+	if params.TrackingCode != "" {
+		sh = s.byTracking[params.TrackingCode]
+	} else if params.OrderID != "" {
+		sh = s.shipments[params.OrderID+":"+store.DirectionForward]
 	}
 	if sh == nil {
 		return nil, "", store.ErrNotFound
@@ -109,7 +133,7 @@ func (s *stubRepo) ApplyWebhookEvent(_ context.Context, params store.WebhookUpda
 		return nil, store.WebhookOutcomeDuplicate, nil
 	}
 	s.webhookSeen[params.EventID] = true
-	if sh.LastEventAt != nil && params.OccurredAt.Before(*sh.LastEventAt) {
+	if !store.CanTransitionStatus(sh.Status, params.InternalStatus) || (sh.LastEventAt != nil && params.OccurredAt.Before(*sh.LastEventAt)) {
 		cp := *sh
 		return &cp, store.WebhookOutcomeStale, nil
 	}
@@ -120,7 +144,26 @@ func (s *stubRepo) ApplyWebhookEvent(_ context.Context, params store.WebhookUpda
 	cp := *sh
 	return &cp, store.WebhookOutcomeApplied, nil
 }
-func (s *stubRepo) ListActiveShipments(_ context.Context, _ int) ([]store.Shipment, error) {
+func (s *stubRepo) ListActiveShipments(_ context.Context, _ int, _ *time.Time, _ string) ([]store.Shipment, error) {
+	return nil, nil
+}
+func (s *stubRepo) GetShopShippingSettings(_ context.Context, _ string) (*store.ShopShippingSettings, error) {
+	return nil, store.ErrNotFound
+}
+func (s *stubRepo) UpsertShopShippingSettings(_ context.Context, st *store.ShopShippingSettings) (*store.ShopShippingSettings, error) {
+	return st, nil
+}
+func (s *stubRepo) ListCarrierConfigs(_ context.Context) ([]store.CarrierConfig, error) {
+	return nil, nil
+}
+func (s *stubRepo) GetCarrierConfig(_ context.Context, _ string) (*store.CarrierConfig, error) {
+	return nil, store.ErrNotFound
+}
+func (s *stubRepo) UpdateCarrierConfig(_ context.Context, cfg *store.CarrierConfig, _ []store.FallbackRate) (*store.CarrierConfig, error) {
+	return cfg, nil
+}
+func (s *stubRepo) SeedCarrierTokenIfEmpty(_ context.Context, _ string, _ []byte) error { return nil }
+func (s *stubRepo) ListFallbackRates(_ context.Context, _ string) ([]store.FallbackRate, error) {
 	return nil, nil
 }
 func (s *stubRepo) FetchPendingOutbox(_ context.Context, _ int) ([]store.OutboxEvent, error) {
@@ -249,7 +292,7 @@ func TestWebhookHandlerHMACIdempotencyAndOutOfOrder(t *testing.T) {
 	if rec.Code != http.StatusOK || repo.outboxCount != 1 {
 		t.Fatalf("expected 200 stale ignored, code=%d outbox=%d", rec.Code, repo.outboxCount)
 	}
-	sh, _ := repo.GetShipmentByOrderID(context.Background(), "ord-1")
+	sh, _ := repo.GetShipmentByOrderID(context.Background(), "ord-1", store.DirectionForward)
 	if sh.Status != carrier.StatusDelivering {
 		t.Fatalf("expected status to remain delivering, got %s", sh.Status)
 	}
@@ -370,7 +413,7 @@ func TestWebhookHandlerRejectsCarrierMismatch(t *testing.T) {
 		}
 	}
 
-	sh, _ := repo.GetShipmentByOrderID(context.Background(), "ord-mismatch-http")
+	sh, _ := repo.GetShipmentByOrderID(context.Background(), "ord-mismatch-http", store.DirectionForward)
 	if sh.Status != carrier.StatusCreated {
 		t.Fatalf("shipment status must remain created after mismatched carrier webhooks, got %s", sh.Status)
 	}
@@ -388,8 +431,186 @@ func TestWebhookHandlerRejectsCarrierMismatch(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 on matching carrier after rejected mismatch, got HTTP %d body=%s", rec.Code, rec.Body.String())
 	}
-	sh, _ = repo.GetShipmentByOrderID(context.Background(), "ord-mismatch-http")
+	sh, _ = repo.GetShipmentByOrderID(context.Background(), "ord-mismatch-http", store.DirectionForward)
 	if sh.Status != carrier.StatusDelivering {
 		t.Fatalf("expected status delivering after matching carrier webhook, got %s", sh.Status)
+	}
+}
+
+func TestLabelHandlerAuthAndPrintableHTML(t *testing.T) {
+	repo := newStubRepo()
+	_, _, _ = repo.CreateShipment(context.Background(), &store.Shipment{
+		ID:               uuid.NewString(),
+		OrderID:          "ord-label-1",
+		ShopID:           "shop-1",
+		BuyerID:          "buyer-1",
+		Direction:        store.DirectionForward,
+		CarrierCode:      "ghn",
+		ServiceCode:      "STANDARD",
+		TrackingCode:     "GHN-LBL-001",
+		Status:           carrier.StatusCreated,
+		FeeVND:           24000,
+		CODAmountVND:     200000,
+		WeightGrams:      500,
+		FromProvinceCode: "79",
+		FromWardCode:     "79001",
+		ToProvinceCode:   "01",
+		ToWardCode:       "01001",
+		CreatedAt:        time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC),
+	}, nil)
+
+	jwtMgr, err := auth.NewManager("test-label-jwt-secret", auth.DefaultAccessTTL)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	buyerTok, _, _, _ := jwtMgr.SignAccessToken("buyer-1", "buyer", "")
+	otherBuyerTok, _, _, _ := jwtMgr.SignAccessToken("buyer-2", "buyer", "")
+	sellerTok, _, _, _ := jwtMgr.SignAccessToken("seller-1", "seller", "shop-1")
+	otherSellerTok, _, _, _ := jwtMgr.SignAccessToken("seller-2", "seller", "shop-2")
+	adminTok, _, _, _ := jwtMgr.SignAccessToken("admin-1", "admin", "")
+
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc := service.NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	lh := NewLabelHandler(svc)
+
+	r := chi.NewRouter()
+	r.Group(func(authed chi.Router) {
+		authed.Use(auth.HTTPMiddleware(jwtMgr, true))
+		authed.Get("/labels/{tracking_code}", lh.ServeHTTP)
+	})
+
+	get := func(path, tok string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := get("/labels/GHN-LBL-001", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without token, got %d", rec.Code)
+	}
+	if rec := get("/labels/GHN-LBL-001", otherBuyerTok); rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for other buyer, got %d", rec.Code)
+	}
+	if rec := get("/labels/GHN-LBL-001", otherSellerTok); rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for other seller, got %d", rec.Code)
+	}
+	if rec := get("/labels/GHN-MISSING", adminTok); rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown tracking code, got %d", rec.Code)
+	}
+
+	for _, tc := range []struct {
+		name string
+		tok  string
+	}{
+		{"owner buyer", buyerTok},
+		{"owner seller", sellerTok},
+		{"admin", adminTok},
+	} {
+		rec := get("/labels/GHN-LBL-001", tc.tok)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d body=%s", tc.name, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Header().Get("Content-Type"), "text/html") {
+			t.Fatalf("%s: expected text/html, got %q", tc.name, rec.Header().Get("Content-Type"))
+		}
+		if !strings.Contains(rec.Body.String(), "GHN-LBL-001") || !strings.Contains(rec.Body.String(), "Phiếu vận đơn") {
+			t.Fatalf("%s: unexpected label body: %s", tc.name, rec.Body.String())
+		}
+	}
+}
+
+func TestReview_LabelHandlerSecurityCSPXSSJSONErrorsAndSellerAsBuyer(t *testing.T) {
+	repo := newStubRepo()
+	xssPayload := `<script>alert("xss")</script><img src=x onerror=alert(1)>`
+	_, _, _ = repo.CreateShipment(context.Background(), &store.Shipment{
+		ID:               uuid.NewString(),
+		OrderID:          "ord-" + xssPayload,
+		ShopID:           "shop-2",
+		BuyerID:          "user-seller-1",
+		Direction:        store.DirectionForward,
+		CarrierCode:      "ghn",
+		ServiceCode:      "STD-" + xssPayload,
+		TrackingCode:     "GHN-SEC-001",
+		Status:           carrier.StatusCreated,
+		FromProvinceCode: "79" + xssPayload,
+		ToWardCode:       "01001" + xssPayload,
+		CreatedAt:        time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC),
+	}, nil)
+
+	jwtMgr, _ := auth.NewManager("test-label-sec-secret", auth.DefaultAccessTTL)
+	// Seller of shop-1 is the buyer of this shop-2 shipment.
+	sellerAsBuyerTok, _, _, _ := jwtMgr.SignAccessToken("user-seller-1", "seller", "shop-1")
+	otherSellerTok, _, _, _ := jwtMgr.SignAccessToken("user-seller-3", "seller", "shop-3")
+	// Mục 1: Demoted buyer whose stale JWT still carries shop_id="shop-2" must be denied.
+	demotedBuyerStaleShopTok, _, _, _ := jwtMgr.SignAccessToken("user-demoted", "buyer", "shop-2")
+
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc := service.NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	lh := NewLabelHandler(svc)
+
+	r := chi.NewRouter()
+	r.Group(func(authed chi.Router) {
+		authed.Use(auth.HTTPMiddleware(jwtMgr, true))
+		authed.Get("/labels/{tracking_code}", lh.ServeHTTP)
+	})
+
+	get := func(path, tok string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 1. Seller who is buyer_id must get 200 OK.
+	rec := get("/labels/GHN-SEC-001", sellerAsBuyerTok)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("seller-as-buyer expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// 2. Security headers: exact CSP sandbox + X-Content-Type-Options: nosniff.
+	wantCSP := "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'"
+	if got := rec.Header().Get("Content-Security-Policy"); got != wantCSP {
+		t.Fatalf("Content-Security-Policy = %q, want %q", got, wantCSP)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+
+	// 3. No inline JS / event handlers and all injected <script>/<img> tags must be HTML-escaped.
+	body := rec.Body.String()
+	for _, forbidden := range []string{"onclick", "window.print", "<script>", "<img "} {
+		if strings.Contains(strings.ToLower(body), forbidden) {
+			t.Fatalf("label HTML must not contain %q; body=%s", forbidden, body)
+		}
+	}
+	if !strings.Contains(body, "&lt;script&gt;") {
+		t.Fatalf("expected HTML-escaped &lt;script&gt; in body, got: %s", body)
+	}
+
+	// 4. Error responses (403, 404) must have Content-Type application/json, NOT text/plain.
+	for _, tc := range []struct {
+		name     string
+		path     string
+		tok      string
+		wantCode int
+	}{
+		{"forbidden other seller", "/labels/GHN-SEC-001", otherSellerTok, http.StatusForbidden},
+		{"forbidden demoted buyer with stale shop_id", "/labels/GHN-SEC-001", demotedBuyerStaleShopTok, http.StatusForbidden},
+		{"not found", "/labels/GHN-NOPE", sellerAsBuyerTok, http.StatusNotFound},
+	} {
+		errRec := get(tc.path, tc.tok)
+		if errRec.Code != tc.wantCode {
+			t.Fatalf("%s: expected HTTP %d, got %d", tc.name, tc.wantCode, errRec.Code)
+		}
+		if !strings.HasPrefix(errRec.Header().Get("Content-Type"), "application/json") {
+			t.Fatalf("%s: expected Content-Type application/json, got %q", tc.name, errRec.Header().Get("Content-Type"))
+		}
 	}
 }

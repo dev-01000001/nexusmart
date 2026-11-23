@@ -37,6 +37,7 @@ export interface GatewayUser {
   phone_verified: boolean;
   cod_rejected_count: number;
   avatar_url: string;
+  lock_reason?: string;
   created_at?: string;
   updated_at?: string;
 }
@@ -113,6 +114,23 @@ export interface ResendOTPRequestBody {
 
 export interface ResendOTPResponse {
   sent: boolean;
+}
+
+export interface ForgotPasswordRequestBody {
+  email: string;
+}
+
+export interface ForgotPasswordResponse {
+  sent: boolean;
+}
+
+export interface ResetPasswordRequestBody {
+  token: string;
+  new_password: string;
+}
+
+export interface ResetPasswordResponse {
+  ok: boolean;
 }
 
 export interface LoginRequestBody {
@@ -290,6 +308,57 @@ export interface GatewayOrderAddressSnapshot {
   street_address: string;
 }
 
+export type GatewayReturnStatus =
+  | "PENDING"
+  | "AWAITING_SHIPMENT"
+  | "IN_TRANSIT"
+  | "RECEIVED"
+  | "REFUNDING"
+  | "REFUNDED"
+  | "REJECTED"
+  | "ESCALATED"
+  | "EVIDENCE_REQUESTED"
+  | "CLOSED";
+
+export type ReturnSellerDecision = "ACCEPT_REFUND" | "ACCEPT_RETURN" | "REJECT";
+export type ReturnAdminDecision = "REFUND" | "RETURN_AND_REFUND" | "REJECT" | "REQUEST_EVIDENCE";
+export type ReturnFeeBearer = "SELLER" | "BUYER" | "PLATFORM";
+
+export interface GatewayReturnEvent {
+  id: string;
+  from_status: GatewayReturnStatus | string;
+  to_status: GatewayReturnStatus | string;
+  actor_id: string;
+  actor_role: string;
+  note: string;
+  created_at?: string;
+}
+
+export interface GatewayReturnRequest {
+  id: string;
+  order_id: string;
+  order_code: string;
+  buyer_id: string;
+  shop_id: string;
+  status: GatewayReturnStatus | string;
+  reason: string;
+  evidence_urls: string[];
+  seller_response: string;
+  seller_evidence_urls: string[];
+  dispute_reason: string;
+  admin_note: string;
+  refund_amount_vnd: number;
+  return_tracking_code: string;
+  return_label_url: string;
+  return_fee_vnd: number;
+  return_fee_bearer: ReturnFeeBearer | string;
+  goods_received: boolean;
+  deadline_at?: string;
+  created_at?: string;
+  updated_at?: string;
+  events: GatewayReturnEvent[];
+}
+
 export interface GatewayOrder {
   id: string;
   order_code: string;
@@ -318,6 +387,9 @@ export interface GatewayOrder {
   items: GatewayOrderItem[];
   timeline: GatewayOrderTimelineEvent[];
   payment_expires_at?: string;
+  delivered_at?: string;
+  return_request_id?: string;
+  return_status?: GatewayReturnStatus | string;
   created_at?: string;
   updated_at?: string;
 }
@@ -513,6 +585,7 @@ export interface GatewayShopAllocation {
   subtotal_vnd: number;
   commission_vnd: number;
   shipping_fee_vnd: number;
+  platform_discount_vnd?: number;
 }
 
 export interface GatewayPayment {
@@ -586,11 +659,48 @@ export interface GatewayRefund {
   reason: string;
   idempotency_key: string;
   created_at?: string;
+  bank_code?: string;
+  bank_account_masked?: string;
+  bank_account_name?: string;
+  bank_account_number?: string;
+  provider_refund_id?: string;
+  is_late_payment?: boolean;
+  settled_at?: string;
+  settlement_note?: string;
 }
 
 export interface GatewayRefundResponse {
   refund: GatewayRefund;
   already_existed: boolean;
+}
+
+export interface GatewaySettleRefundResponse {
+  refund: GatewayRefund;
+  already_settled: boolean;
+}
+
+export type GatewayReconciliationAction = "ASSIGN" | "REFUND" | "SUSPEND";
+
+export interface GatewayReconciliationQueueItem {
+  id: string;
+  webhook_event_id: string;
+  provider: string;
+  provider_tx_id: string;
+  expected_payment_id: string;
+  order_ref: string;
+  expected_amount_vnd: number;
+  actual_amount_vnd: number;
+  reason: string;
+  resolution_status: string;
+  notes: string;
+  created_at?: string;
+  resolved_at?: string;
+}
+
+export interface GatewayResolveReconciliationResponse {
+  item: GatewayReconciliationQueueItem;
+  refund?: GatewayRefund | null;
+  already_resolved: boolean;
 }
 
 // --- Section 4.7: Shipping (Locations, Fee Quotes & Shipments) ---
@@ -631,6 +741,9 @@ export interface GatewayShipment {
   status: string;
   fee_vnd: number;
   cod_amount_vnd: number;
+  direction?: "FORWARD" | "RETURN" | string;
+  return_request_id?: string;
+  redelivery_count?: number;
   created_at?: string;
   updated_at?: string;
 }
@@ -647,6 +760,39 @@ export interface GatewayShipmentEvent {
 export interface GatewayShipmentResponse {
   shipment: GatewayShipment | null;
   events: GatewayShipmentEvent[];
+}
+
+export type GatewayShippingRegion = "SAME_PROVINCE" | "SAME_REGION" | "CROSS_REGION";
+
+export interface GatewayFallbackRate {
+  region: GatewayShippingRegion | string;
+  base_fee_vnd: number;
+  base_weight_grams: number;
+  extra_fee_vnd_per_500g: number;
+}
+
+export interface GatewayCarrierConfig {
+  carrier_code: string;
+  name: string;
+  enabled: boolean;
+  token_configured: boolean;
+  fallback_rates: GatewayFallbackRate[];
+  updated_at?: string;
+}
+
+export interface GatewayShopShippingSettings {
+  shop_id: string;
+  enabled_carrier_codes: string[];
+  default_weight_grams: number;
+  default_length_cm: number;
+  default_width_cm: number;
+  default_height_cm: number;
+  updated_at?: string;
+}
+
+export interface GatewayAdminTestCarrierResponse {
+  ok: boolean;
+  message: string;
 }
 
 // --- Section 4.8: Notifications & Admin Audit Logs ---

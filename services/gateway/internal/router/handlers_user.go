@@ -21,6 +21,7 @@ type userDTO struct {
 	PhoneVerified    bool   `json:"phone_verified"`
 	CODRejectedCount int32  `json:"cod_rejected_count"`
 	AvatarURL        string `json:"avatar_url"`
+	LockReason       string `json:"lock_reason"`
 	CreatedAt        string `json:"created_at,omitempty"`
 	UpdatedAt        string `json:"updated_at,omitempty"`
 }
@@ -98,6 +99,7 @@ func mapUser(u *userv1.User) *userDTO {
 		PhoneVerified:    u.GetPhoneVerified(),
 		CODRejectedCount: u.GetCodRejectedCount(),
 		AvatarURL:        u.GetAvatarUrl(),
+		LockReason:       u.GetLockReason(),
 		CreatedAt:        httpx.FormatTimestamp(u.GetCreatedAt()),
 		UpdatedAt:        httpx.FormatTimestamp(u.GetUpdatedAt()),
 	}
@@ -287,7 +289,7 @@ func (h *handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -316,7 +318,7 @@ func (h *handler) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		OTP   string `json:"otp"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -341,7 +343,7 @@ func (h *handler) handleResendOTP(w http.ResponseWriter, r *http.Request) {
 		Email string `json:"email"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -359,13 +361,61 @@ func (h *handler) handleResendOTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *handler) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Email string `json:"email"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.ForgotPassword(ctx, &userv1.ForgotPasswordRequest{
+		Email: body.Email,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"sent": resp.GetSent(),
+	})
+}
+
+func (h *handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Token       string `json:"token"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.ResetPassword(ctx, &userv1.ResetPasswordRequest{
+		Token:       body.Token,
+		NewPassword: body.NewPassword,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok": resp.GetOk(),
+	})
+}
+
 func (h *handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -392,7 +442,7 @@ func (h *handler) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
 		RefreshToken string `json:"refresh_token"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -417,7 +467,7 @@ func (h *handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 		RefreshToken string `json:"refresh_token"`
 	}
 	if err := httpx.DecodeOptionalJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -455,7 +505,7 @@ func (h *handler) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		AvatarURL string `json:"avatar_url"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -510,7 +560,7 @@ func (h *handler) handleCreateAddress(w http.ResponseWriter, r *http.Request) {
 		LegacyWardCode     string `json:"legacy_ward_code"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	if body.LegacyProvince == "" {
@@ -559,7 +609,7 @@ func (h *handler) handleUpdateAddress(w http.ResponseWriter, r *http.Request) {
 		IsDefault      bool   `json:"is_default"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -609,7 +659,7 @@ func (h *handler) handleRegisterShop(w http.ResponseWriter, r *http.Request) {
 		BusinessLicenseDoc string `json:"business_license_doc"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -760,7 +810,7 @@ func (h *handler) handleAdminUpdateUserStatus(w http.ResponseWriter, r *http.Req
 		Reason string `json:"reason"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -785,7 +835,7 @@ func (h *handler) handleAdminUpdateUserRole(w http.ResponseWriter, r *http.Reque
 		Reason string `json:"reason"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -836,7 +886,7 @@ func (h *handler) handleAdminReviewShop(w http.ResponseWriter, r *http.Request) 
 		Reason   string `json:"reason"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())

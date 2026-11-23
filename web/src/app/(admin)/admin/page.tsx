@@ -21,7 +21,11 @@ import {
   formatVnDayKey,
   formatVnd,
 } from "@/lib/format";
-import { getAdminProductStatusMeta, getAdminShopStatusMeta } from "@/features/admin/types";
+import {
+  getAdminAuditTargetTypeLabel,
+  getAdminProductStatusMeta,
+  getAdminShopStatusMeta,
+} from "@/features/admin/types";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { StatusPill } from "@/features/admin/StatusPill";
 import shared from "@/features/admin/adminShared.module.css";
@@ -472,7 +476,8 @@ function AdminOverviewContent() {
                           </span>
                         </div>
                         <span className={styles.railSub}>
-                          {log.actor_role} · {log.target_type} · {log.reason || log.target_id}
+                          {log.actor_role} · {getAdminAuditTargetTypeLabel(log.target_type)} ·{" "}
+                          {log.reason || log.target_id}
                         </span>
                       </div>
                     </li>

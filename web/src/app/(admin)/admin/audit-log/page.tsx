@@ -7,25 +7,41 @@ import { Button, IconSearch, StateView } from "@/components";
 import { formatDateTimeVi, formatInt } from "@/lib/format";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { StatusPill } from "@/features/admin/StatusPill";
+import {
+  ADMIN_AUDIT_TARGET_TYPE_LABELS,
+  getAdminAuditTargetTypeLabel,
+} from "@/features/admin/types";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
 
-type TargetTypeTab = "all" | "shop" | "user";
+const QUICK_TARGET_TABS: Array<{ id: string; label: string }> = [
+  { id: "all", label: "Tất cả đối tượng" },
+  { id: "shop", label: ADMIN_AUDIT_TARGET_TYPE_LABELS.shop },
+  { id: "user", label: ADMIN_AUDIT_TARGET_TYPE_LABELS.user },
+  { id: "return_request", label: ADMIN_AUDIT_TARGET_TYPE_LABELS.return_request },
+  { id: "refund", label: ADMIN_AUDIT_TARGET_TYPE_LABELS.refund },
+  { id: "reconciliation_item", label: ADMIN_AUDIT_TARGET_TYPE_LABELS.reconciliation_item },
+  { id: "product", label: ADMIN_AUDIT_TARGET_TYPE_LABELS.product },
+  { id: "carrier", label: ADMIN_AUDIT_TARGET_TYPE_LABELS.carrier },
+];
 
-const TARGET_TYPE_LABELS: Record<string, string> = {
-  shop: "Gian hàng",
-  user: "Người dùng",
-};
+const ALL_TARGET_FILTER_OPTIONS = Object.entries(ADMIN_AUDIT_TARGET_TYPE_LABELS).filter(
+  ([key]) => key !== "admin"
+);
 
 const PAGE_SIZE = 20;
 
 function AuditLogContent({ initialQuery }: { initialQuery: string }) {
-  const [targetType, setTargetType] = useState<TargetTypeTab>("all");
+  const [targetType, setTargetType] = useState<string>("all");
   const [actorIdInput, setActorIdInput] = useState("");
   const [targetIdInput, setTargetIdInput] = useState(initialQuery);
+  const [fromDateInput, setFromDateInput] = useState("");
+  const [toDateInput, setToDateInput] = useState("");
   const [appliedFilters, setAppliedFilters] = useState({
     actorId: "",
     targetId: initialQuery,
+    fromDate: "",
+    toDate: "",
   });
   const [page, setPage] = useState(1);
 
@@ -45,6 +61,12 @@ function AuditLogContent({ initialQuery }: { initialQuery: string }) {
       if (targetType !== "all") qs.set("target_type", targetType);
       if (appliedFilters.actorId.trim()) qs.set("actor_id", appliedFilters.actorId.trim());
       if (appliedFilters.targetId.trim()) qs.set("target_id", appliedFilters.targetId.trim());
+      if (appliedFilters.fromDate) {
+        qs.set("from_time", `${appliedFilters.fromDate}T00:00:00+07:00`);
+      }
+      if (appliedFilters.toDate) {
+        qs.set("to_time", `${appliedFilters.toDate}T23:59:59+07:00`);
+      }
 
       const res = await api<PaginatedResponse<GatewayAuditLog>>(
         `admin/audit-logs?${qs.toString()}`
@@ -70,6 +92,8 @@ function AuditLogContent({ initialQuery }: { initialQuery: string }) {
     setAppliedFilters({
       actorId: actorIdInput.trim(),
       targetId: targetIdInput.trim(),
+      fromDate: fromDateInput,
+      toDate: toDateInput,
     });
   };
 
@@ -77,15 +101,11 @@ function AuditLogContent({ initialQuery }: { initialQuery: string }) {
     setTargetType("all");
     setActorIdInput("");
     setTargetIdInput("");
+    setFromDateInput("");
+    setToDateInput("");
     setPage(1);
-    setAppliedFilters({ actorId: "", targetId: "" });
+    setAppliedFilters({ actorId: "", targetId: "", fromDate: "", toDate: "" });
   };
-
-  const tabs: Array<{ id: TargetTypeTab; label: string }> = [
-    { id: "all", label: "Tất cả đối tượng" },
-    { id: "shop", label: "Gian hàng" },
-    { id: "user", label: "Người dùng" },
-  ];
 
   return (
     <div className={shared.page}>
@@ -93,8 +113,8 @@ function AuditLogContent({ initialQuery }: { initialQuery: string }) {
         <div className={shared.titleBlock}>
           <h1 className={shared.pageTitle}>Nhật ký kiểm toán</h1>
           <p className={shared.pageSubtitle}>
-            Ghi nhận {formatInt(total)} bản ghi thao tác quản trị (duyệt gian hàng, khóa/mở tài
-            khoản, thay đổi vai trò) trực tiếp từ hệ thống.
+            Ghi nhận {formatInt(total)} bản ghi thao tác quản trị (gian hàng, tài khoản, sản phẩm,
+            trả hàng, hoàn tiền, đối soát và vận chuyển) trực tiếp từ hệ thống.
           </p>
         </div>
         <div className={shared.titleActions}>
@@ -106,7 +126,7 @@ function AuditLogContent({ initialQuery }: { initialQuery: string }) {
 
       <div className={shared.tabsBar}>
         <div className={shared.tabList} role="tablist" aria-label="Lọc nhật ký theo loại đối tượng">
-          {tabs.map((tab) => {
+          {QUICK_TARGET_TABS.map((tab) => {
             const active = targetType === tab.id;
             return (
               <button
@@ -129,6 +149,22 @@ function AuditLogContent({ initialQuery }: { initialQuery: string }) {
 
       <form className={shared.toolbar} onSubmit={handleApplyFilters}>
         <div className={shared.toolbarLeft}>
+          <select
+            className={shared.toolbarSelect}
+            value={targetType}
+            onChange={(e) => {
+              setTargetType(e.target.value);
+              setPage(1);
+            }}
+            aria-label="Chọn loại đối tượng kiểm toán"
+          >
+            <option value="all">Tất cả loại đối tượng</option>
+            {ALL_TARGET_FILTER_OPTIONS.map(([key, label]) => (
+              <option key={key} value={key}>
+                {label}
+              </option>
+            ))}
+          </select>
           <div className={shared.searchWrap}>
             <span className={shared.searchIcon}>
               <IconSearch size={14} />
@@ -155,10 +191,34 @@ function AuditLogContent({ initialQuery }: { initialQuery: string }) {
               aria-label="Lọc theo mã người thực hiện"
             />
           </div>
+          <label className={styles.dateFilterField}>
+            <span className={styles.dateFilterLabel}>Từ ngày</span>
+            <input
+              type="date"
+              className={styles.dateFilterInput}
+              value={fromDateInput}
+              onChange={(e) => setFromDateInput(e.target.value)}
+              aria-label="Lọc từ ngày"
+            />
+          </label>
+          <label className={styles.dateFilterField}>
+            <span className={styles.dateFilterLabel}>Đến ngày</span>
+            <input
+              type="date"
+              className={styles.dateFilterInput}
+              value={toDateInput}
+              onChange={(e) => setToDateInput(e.target.value)}
+              aria-label="Lọc đến ngày"
+            />
+          </label>
           <Button type="submit" variant="primary" size="sm" shape="app">
             Lọc
           </Button>
-          {(appliedFilters.actorId || appliedFilters.targetId || targetType !== "all") && (
+          {(appliedFilters.actorId ||
+            appliedFilters.targetId ||
+            appliedFilters.fromDate ||
+            appliedFilters.toDate ||
+            targetType !== "all") && (
             <Button variant="outline" size="sm" shape="app" onClick={handleResetFilters}>
               Đặt lại
             </Button>
@@ -226,7 +286,7 @@ function AuditLogContent({ initialQuery }: { initialQuery: string }) {
                         </td>
                         <td>
                           <StatusPill
-                            label={TARGET_TYPE_LABELS[log.target_type] ?? log.target_type}
+                            label={getAdminAuditTargetTypeLabel(log.target_type)}
                             tone="neutral"
                           />
                         </td>
@@ -288,7 +348,7 @@ function AuditLogContent({ initialQuery }: { initialQuery: string }) {
                     {log.actor_role} · {log.target_id}
                   </span>
                   <StatusPill
-                    label={TARGET_TYPE_LABELS[log.target_type] ?? log.target_type}
+                    label={getAdminAuditTargetTypeLabel(log.target_type)}
                     tone="neutral"
                   />
                 </div>

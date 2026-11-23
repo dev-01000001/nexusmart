@@ -124,7 +124,7 @@ func (h *handler) handleMarkNotificationsRead(w http.ResponseWriter, r *http.Req
 		MarkAll         bool     `json:"mark_all"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -174,7 +174,7 @@ func (h *handler) handleUpdateNotificationPreferences(w http.ResponseWriter, r *
 		SystemPush     bool `json:"system_push"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		httpx.WriteDecodeError(w, r, err)
 		return
 	}
 	uid := auth.UserIDFromContext(r.Context())

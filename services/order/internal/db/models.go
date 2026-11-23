@@ -26,6 +26,7 @@ type CheckoutGroup struct {
 	RequestHash          string     `json:"request_hash"`
 	RetryIdempotencyKey  string     `json:"retry_idempotency_key"`
 	RetryFromPaymentID   string     `json:"retry_from_payment_id"`
+	PendingStockConfirm  bool       `json:"pending_stock_confirm"`
 }
 
 type DeadLetterEvent struct {
@@ -39,36 +40,43 @@ type DeadLetterEvent struct {
 }
 
 type Order struct {
-	ID                         string     `json:"id"`
-	OrderCode                  string     `json:"order_code"`
-	CheckoutGroupID            string     `json:"checkout_group_id"`
-	BuyerID                    string     `json:"buyer_id"`
-	ShopID                     string     `json:"shop_id"`
-	Status                     string     `json:"status"`
-	PaymentMethod              string     `json:"payment_method"`
-	PaymentID                  string     `json:"payment_id"`
-	PaymentStatus              string     `json:"payment_status"`
-	SubtotalVND                int64      `json:"subtotal_vnd"`
-	FlashSaleDiscountVND       int64      `json:"flash_sale_discount_vnd"`
-	ShopVoucherDiscountVND     int64      `json:"shop_voucher_discount_vnd"`
-	PlatformVoucherDiscountVND int64      `json:"platform_voucher_discount_vnd"`
-	FreeshipDiscountVND        int64      `json:"freeship_discount_vnd"`
-	CoinsDiscountVND           int64      `json:"coins_discount_vnd"`
-	ShippingFeeVND             int64      `json:"shipping_fee_vnd"`
-	CommissionVND              int64      `json:"commission_vnd"`
-	TotalPayableVND            int64      `json:"total_payable_vnd"`
-	CarrierCode                string     `json:"carrier_code"`
-	ServiceCode                string     `json:"service_code"`
-	TrackingCode               string     `json:"tracking_code"`
-	LabelURL                   string     `json:"label_url"`
-	CancelReason               string     `json:"cancel_reason"`
-	ShippingAddressJSON        []byte     `json:"shipping_address_json"`
-	PaymentExpiresAt           *time.Time `json:"payment_expires_at"`
-	DeliveredAt                *time.Time `json:"delivered_at"`
-	CompletedAt                *time.Time `json:"completed_at"`
-	CreatedAt                  time.Time  `json:"created_at"`
-	UpdatedAt                  time.Time  `json:"updated_at"`
-	RefundedVND                int64      `json:"refunded_vnd"`
+	ID                              string     `json:"id"`
+	OrderCode                       string     `json:"order_code"`
+	CheckoutGroupID                 string     `json:"checkout_group_id"`
+	BuyerID                         string     `json:"buyer_id"`
+	ShopID                          string     `json:"shop_id"`
+	Status                          string     `json:"status"`
+	PaymentMethod                   string     `json:"payment_method"`
+	PaymentID                       string     `json:"payment_id"`
+	PaymentStatus                   string     `json:"payment_status"`
+	SubtotalVND                     int64      `json:"subtotal_vnd"`
+	FlashSaleDiscountVND            int64      `json:"flash_sale_discount_vnd"`
+	ShopVoucherDiscountVND          int64      `json:"shop_voucher_discount_vnd"`
+	PlatformVoucherDiscountVND      int64      `json:"platform_voucher_discount_vnd"`
+	FreeshipDiscountVND             int64      `json:"freeship_discount_vnd"`
+	CoinsDiscountVND                int64      `json:"coins_discount_vnd"`
+	ShippingFeeVND                  int64      `json:"shipping_fee_vnd"`
+	CommissionVND                   int64      `json:"commission_vnd"`
+	TotalPayableVND                 int64      `json:"total_payable_vnd"`
+	CarrierCode                     string     `json:"carrier_code"`
+	ServiceCode                     string     `json:"service_code"`
+	TrackingCode                    string     `json:"tracking_code"`
+	LabelURL                        string     `json:"label_url"`
+	CancelReason                    string     `json:"cancel_reason"`
+	ShippingAddressJSON             []byte     `json:"shipping_address_json"`
+	PaymentExpiresAt                *time.Time `json:"payment_expires_at"`
+	DeliveredAt                     *time.Time `json:"delivered_at"`
+	CompletedAt                     *time.Time `json:"completed_at"`
+	CreatedAt                       time.Time  `json:"created_at"`
+	UpdatedAt                       time.Time  `json:"updated_at"`
+	RefundedVND                     int64      `json:"refunded_vnd"`
+	ConfirmedAt                     *time.Time `json:"confirmed_at"`
+	PendingShipmentCancel           bool       `json:"pending_shipment_cancel"`
+	PendingCancelCompensation       bool       `json:"pending_cancel_compensation"`
+	OrphanShipmentNeedsManualReview bool       `json:"orphan_shipment_needs_manual_review"`
+	PendingReturnCompensation       bool       `json:"pending_return_compensation"`
+	PendingShipmentCancelAt         *time.Time `json:"pending_shipment_cancel_at"`
+	PendingShipmentCancelToken      string     `json:"pending_shipment_cancel_token"`
 }
 
 type OrderItem struct {
@@ -116,13 +124,46 @@ type ProcessedEvent struct {
 	ProcessedAt time.Time `json:"processed_at"`
 }
 
+type ReturnEvent struct {
+	ID              string    `json:"id"`
+	ReturnRequestID string    `json:"return_request_id"`
+	FromStatus      string    `json:"from_status"`
+	ToStatus        string    `json:"to_status"`
+	ActorID         string    `json:"actor_id"`
+	ActorRole       string    `json:"actor_role"`
+	Note            string    `json:"note"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
 type ReturnRequest struct {
-	ID               string    `json:"id"`
-	OrderID          string    `json:"order_id"`
-	BuyerID          string    `json:"buyer_id"`
-	Reason           string    `json:"reason"`
-	EvidenceURLsJSON []byte    `json:"evidence_urls_json"`
-	Status           string    `json:"status"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID                          string     `json:"id"`
+	OrderID                     string     `json:"order_id"`
+	BuyerID                     string     `json:"buyer_id"`
+	Reason                      string     `json:"reason"`
+	EvidenceURLsJSON            []byte     `json:"evidence_urls_json"`
+	Status                      string     `json:"status"`
+	CreatedAt                   time.Time  `json:"created_at"`
+	UpdatedAt                   time.Time  `json:"updated_at"`
+	OrderCode                   string     `json:"order_code"`
+	ShopID                      string     `json:"shop_id"`
+	SellerResponse              string     `json:"seller_response"`
+	SellerEvidenceURLsJSON      []byte     `json:"seller_evidence_urls_json"`
+	DisputeReason               string     `json:"dispute_reason"`
+	AdminNote                   string     `json:"admin_note"`
+	RefundAmountVND             int64      `json:"refund_amount_vnd"`
+	ReturnTrackingCode          string     `json:"return_tracking_code"`
+	ReturnLabelURL              string     `json:"return_label_url"`
+	ReturnFeeVND                int64      `json:"return_fee_vnd"`
+	ReturnFeeBearer             string     `json:"return_fee_bearer"`
+	GoodsReceived               bool       `json:"goods_received"`
+	ShouldRestock               bool       `json:"should_restock"`
+	RefundDone                  bool       `json:"refund_done"`
+	PromoReleased               bool       `json:"promo_released"`
+	RestockDone                 bool       `json:"restock_done"`
+	DeadlineAt                  *time.Time `json:"deadline_at"`
+	ReturnShipmentTerminal      bool       `json:"return_shipment_terminal"`
+	PreviousReturnTrackingsJSON []byte     `json:"previous_return_trackings_json"`
+	DeadlineExtensionCount      int32      `json:"deadline_extension_count"`
+	EscalatedFromTransitTimeout bool       `json:"escalated_from_transit_timeout"`
+	EscalatedFromCancelFailure  bool       `json:"escalated_from_cancel_failure"`
 }

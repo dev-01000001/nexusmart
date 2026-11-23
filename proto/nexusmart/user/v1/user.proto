@@ -49,6 +49,7 @@ message User {
   string avatar_url = 10;
   google.protobuf.Timestamp created_at = 11;
   google.protobuf.Timestamp updated_at = 12;
+  string lock_reason = 13;
 }
 
 message Shop {
@@ -388,6 +389,23 @@ message RecordCODRejectionResponse {
   bool already_recorded = 2;
 }
 
+message ForgotPasswordRequest {
+  string email = 1;
+}
+
+message ForgotPasswordResponse {
+  bool sent = 1;
+}
+
+message ResetPasswordRequest {
+  string token = 1;
+  string new_password = 2;
+}
+
+message ResetPasswordResponse {
+  bool ok = 1;
+}
+
 service UserService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   rpc VerifyOTP(VerifyOTPRequest) returns (VerifyOTPResponse);
@@ -414,4 +432,6 @@ service UserService {
   rpc WriteAuditLog(WriteAuditLogRequest) returns (WriteAuditLogResponse);
   rpc ListAuditLogs(ListAuditLogsRequest) returns (ListAuditLogsResponse);
   rpc RecordCODRejection(RecordCODRejectionRequest) returns (RecordCODRejectionResponse);
+  rpc ForgotPassword(ForgotPasswordRequest) returns (ForgotPasswordResponse);
+  rpc ResetPassword(ResetPasswordRequest) returns (ResetPasswordResponse);
 }

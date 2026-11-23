@@ -98,6 +98,7 @@ func run() error {
 	pgStore := store.NewPGStore(pool)
 	smtpMailer := mailer.NewSMTPMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPFrom)
 	svc := service.NewNotificationService(pgStore, smtpMailer, userResolver, log)
+	svc.SetWebBaseURL(cfg.WebBaseURL)
 
 	natsConsumer := consumer.NewConsumer(js, svc, pgStore, cfg.NATSStream, cfg.ConsumerMaxTries, log)
 	if err := natsConsumer.Start(ctx); err != nil {

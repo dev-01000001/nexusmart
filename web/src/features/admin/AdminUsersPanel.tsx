@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import type { GatewayUser, PaginatedResponse } from "@/lib/gateway-types";
+import type { GatewayUser, PaginatedResponse, UserRole } from "@/lib/gateway-types";
 import { api, getErrorMessage } from "@/lib/api";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconSearch, StateView } from "@/components";
@@ -27,7 +27,7 @@ export function AdminUsersPanel() {
 
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [reasonDraft, setReasonDraft] = useState("");
-  const [targetRoleDraft, setTargetRoleDraft] = useState<"buyer" | "seller" | "admin">("buyer");
+  const [targetRoleDraft, setTargetRoleDraft] = useState<UserRole>("buyer");
   const [actionBusy, setActionBusy] = useState(false);
 
   const loadUsers = useCallback(async () => {
@@ -65,7 +65,9 @@ export function AdminUsersPanel() {
     setSelectedUserId(u.id);
     setReasonDraft("");
     setTargetRoleDraft(
-      u.role === "admin" || u.role === "seller" || u.role === "buyer" ? u.role : "buyer"
+      u.role === "super_admin" || u.role === "admin" || u.role === "seller" || u.role === "buyer"
+        ? u.role
+        : "buyer"
     );
   };
 
@@ -175,6 +177,7 @@ export function AdminUsersPanel() {
               <option value="buyer">Người mua</option>
               <option value="seller">Người bán</option>
               <option value="admin">Quản trị viên</option>
+              <option value="super_admin">Quản trị cấp cao</option>
             </select>
             <select
               className={shared.toolbarSelect}
@@ -283,6 +286,12 @@ export function AdminUsersPanel() {
                   />
                 </div>
 
+                {selectedUser.status === "LOCKED" && selectedUser.lock_reason && (
+                  <p className={shared.validationError}>
+                    Lý do đang khóa tài khoản: {selectedUser.lock_reason}
+                  </p>
+                )}
+
                 <div className={shared.detailGrid}>
                   <div className={shared.detailField}>
                     <label htmlFor="usr-role-sel" className={shared.fieldLabel}>
@@ -293,13 +302,12 @@ export function AdminUsersPanel() {
                       className={shared.toolbarSelect}
                       style={{ height: 38 }}
                       value={targetRoleDraft}
-                      onChange={(e) =>
-                        setTargetRoleDraft(e.target.value as "buyer" | "seller" | "admin")
-                      }
+                      onChange={(e) => setTargetRoleDraft(e.target.value as UserRole)}
                     >
                       <option value="buyer">Người mua (buyer)</option>
                       <option value="seller">Người bán (seller)</option>
                       <option value="admin">Quản trị viên (admin)</option>
+                      <option value="super_admin">Quản trị cấp cao (super_admin)</option>
                     </select>
                   </div>
                   <div className={`${shared.detailField} ${shared.detailFieldWide}`}>

@@ -149,6 +149,9 @@ func TestE2E_MultiShopCheckout_VietQRMock(t *testing.T) {
 	if ref1.AlreadyExisted {
 		t.Fatalf("expected already_existed=false on first refund call")
 	}
+	if !StatusEquals(ref1.Refund.Status, "PENDING") {
+		t.Fatalf("expected newly created refund status PENDING (two-step refund), got %q", ref1.Refund.Status)
+	}
 
 	ref2Resp := env.mustDoJSON(t, http.MethodPost, refundPath, adminTok, map[string]string{
 		"Idempotency-Key": refundKey,

@@ -56,6 +56,10 @@ async fn main() -> anyhow::Result<()> {
         service.clone(),
         shutdown_rx.clone(),
     ));
+    let hold_handle = tokio::spawn(workers::run_escrow_hold_releaser(
+        service.clone(),
+        shutdown_rx.clone(),
+    ));
 
     // Spawn shutdown signal listener
     let signal_tx = shutdown_tx.clone();
@@ -101,7 +105,13 @@ async fn main() -> anyhow::Result<()> {
     let (http_res, grpc_res) = tokio::join!(http_future, grpc_future);
     let _ = shutdown_tx.send(true);
 
-    let _ = tokio::join!(exp_handle, outbox_handle, recon_handle, consumer_handle);
+    let _ = tokio::join!(
+        exp_handle,
+        outbox_handle,
+        recon_handle,
+        consumer_handle,
+        hold_handle
+    );
 
     if let Some(tp) = _tracer_provider {
         if let Err(e) = tp.shutdown() {

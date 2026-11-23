@@ -115,6 +115,11 @@ func (r *ResilientCarrier) IsMock() bool { return r.inner.IsMock() }
 // State returns the current circuit breaker state (for diagnostics/tests).
 func (r *ResilientCarrier) State() gobreaker.State { return r.cb.State() }
 
+// IsCircuitBreakerOpen reports whether err was rejected locally by a circuit breaker before contacting the carrier.
+func IsCircuitBreakerOpen(err error) bool {
+	return errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests)
+}
+
 // CalculateFee invokes CalculateFee with timeout, retry/backoff, and circuit breaker protection.
 func (r *ResilientCarrier) CalculateFee(ctx context.Context, req FeeRequest) ([]Quote, error) {
 	val, err := r.execute(ctx, "CalculateFee", func(attemptCtx context.Context) (any, error) {
@@ -157,6 +162,27 @@ func (r *ResilientCarrier) GetStatus(ctx context.Context, trackingCode string) (
 	}
 	st, _ := val.(*TrackingStatus)
 	return st, nil
+}
+
+// RequestRedelivery invokes RequestRedelivery with timeout, retry/backoff, and circuit breaker protection.
+func (r *ResilientCarrier) RequestRedelivery(ctx context.Context, trackingCode, preferredDate, note string) error {
+	_, err := r.execute(ctx, "RequestRedelivery", func(attemptCtx context.Context) (any, error) {
+		return nil, r.inner.RequestRedelivery(attemptCtx, trackingCode, preferredDate, note)
+	})
+	return err
+}
+
+// TestConnection tests carrier connectivity/credentials with a single attempt timeout
+// so invalid tokens fail fast without tripping the production circuit breaker.
+func (r *ResilientCarrier) TestConnection(ctx context.Context, token string) error {
+	attemptCtx, cancel := context.WithTimeout(ctx, r.cfg.AttemptTimeout)
+	defer cancel()
+	return r.inner.TestConnection(attemptCtx, token)
+}
+
+// SetToken updates the wrapped carrier's runtime API token.
+func (r *ResilientCarrier) SetToken(token string) {
+	r.inner.SetToken(token)
 }
 
 func (r *ResilientCarrier) execute(ctx context.Context, op string, fn func(context.Context) (any, error)) (any, error) {

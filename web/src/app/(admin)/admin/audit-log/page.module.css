@@ -23,3 +23,26 @@
   line-height: 18px;
   color: var(--ink);
 }
+
+.dateFilterField {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dateFilterLabel {
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.dateFilterInput {
+  height: 36px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid #d4dde1;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}

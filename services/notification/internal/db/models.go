@@ -30,6 +30,12 @@ type Notification struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type NotificationEmailDedup struct {
+	DedupKey  string
+	EventID   string
+	CreatedAt pgtype.Timestamptz
+}
+
 type NotificationPreference struct {
 	UserID         string
 	OrderInApp     bool
@@ -57,6 +63,13 @@ type ProcessedEvent struct {
 	EventID     string
 	Subject     string
 	ProcessedAt pgtype.Timestamptz
+}
+
+type ShopOwner struct {
+	ShopID      string
+	OwnerUserID string
+	ShopName    string
+	UpdatedAt   pgtype.Timestamptz
 }
 
 type UserContact struct {

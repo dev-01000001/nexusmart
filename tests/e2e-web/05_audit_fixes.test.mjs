@@ -11,6 +11,7 @@ import {
   WebClient,
   config,
   createBuyerAddress,
+  ensureRateBudget,
   pickSingleShopSku,
   pickTwoShopSkus,
   registerAndLoginBuyer,
@@ -357,6 +358,7 @@ class HeadlessBrowser {
 }
 
 async function submitLoginFormInBrowser(browser, { email, password, query = "" }) {
+  await ensureRateBudget(15, { label: "5c-login" });
   await browser.clearCookies();
   await browser.goto(`/dang-nhap${query}`);
   await browser.waitFor(`Boolean(document.querySelector('#login-email'))`);
@@ -465,6 +467,7 @@ describe("05. Wave 1 business audit fixes (WEB-B1..B9, CAT-B5, PAY-B10, SHP-B2)"
   });
 
   test("5c. [WEB-B4] Login redirects by backend role: seller -> /seller, admin -> /admin, buyer -> / or ?next=", async () => {
+    await ensureRateBudget(35, { label: "5c" });
     const buyerClient = new WebClient();
     const buyer = await registerAndLoginBuyer(buyerClient, "login-role");
 
@@ -504,6 +507,7 @@ describe("05. Wave 1 business audit fixes (WEB-B1..B9, CAT-B5, PAY-B10, SHP-B2)"
   });
 
   test("5d. [WEB-B9] Flash sale Buy Now displays live flash price matching backend and ignores upcoming flash IDs", async () => {
+    await ensureRateBudget(20, { label: "5d" });
     const client = new WebClient();
     await registerAndLoginBuyer(client, "flash-buynow");
 
@@ -556,6 +560,7 @@ describe("05. Wave 1 business audit fixes (WEB-B1..B9, CAT-B5, PAY-B10, SHP-B2)"
   });
 
   test("5e. [R7 / WEB-B1] /gio-hang and /thanh-toan omit from_province_code/from_ward_code in calculate-fee requests", async () => {
+    await ensureRateBudget(30, { label: "5e" });
     const client = new WebClient();
     const buyer = await registerAndLoginBuyer(client, "ship-payload");
     await createBuyerAddress(client, buyer);
@@ -633,6 +638,7 @@ describe("05. Wave 1 business audit fixes (WEB-B1..B9, CAT-B5, PAY-B10, SHP-B2)"
   });
 
   test("5f. [CAT-B5 / WEB-B6] Seller edit form for PENDING product does not allow selecting HIDDEN", async () => {
+    await ensureRateBudget(25, { label: "5f" });
     const sellerClient = new WebClient();
     const loginRes = await sellerClient.json("POST", "/api/auth/login", {
       body: { email: SELLER_EMAIL, password: SELLER_PASSWORD },
@@ -694,6 +700,7 @@ describe("05. Wave 1 business audit fixes (WEB-B1..B9, CAT-B5, PAY-B10, SHP-B2)"
   });
 
   test("5g. [SHP-B2] Seller ship form defaults to the order's chosen carrier_code/service_code (mock_express/STANDARD)", async () => {
+    await ensureRateBudget(35, { label: "5g" });
     const buyerClient = new WebClient();
     const buyer = await registerAndLoginBuyer(buyerClient, "shp-b2-ui");
     const { address } = await createBuyerAddress(buyerClient, buyer);
@@ -787,7 +794,7 @@ describe("05. Wave 1 business audit fixes (WEB-B1..B9, CAT-B5, PAY-B10, SHP-B2)"
         const rows = Array.from(document.querySelectorAll('tbody tr'));
         const row = rows.find(r => r.textContent && r.textContent.includes(${JSON.stringify(order.order_code)}));
         if (!row) return false;
-        const btn = Array.from(row.querySelectorAll('button')).find(b => b.textContent.trim() === 'Giao hàng');
+        const btn = Array.from(row.querySelectorAll('button')).find(b => b.textContent.trim() === 'Tạo vận đơn');
         if (!btn) return false;
         btn.click();
         return true;
@@ -821,6 +828,7 @@ describe("05. Wave 1 business audit fixes (WEB-B1..B9, CAT-B5, PAY-B10, SHP-B2)"
   });
 
   test("5h. [PAY-B10 / ORD-B11] Payment waiting page copy does not instruct retrying expired VietQR", async () => {
+    await ensureRateBudget(20, { label: "5h" });
     const client = new WebClient();
     const buyer = await registerAndLoginBuyer(client, "pay-b10");
     const { address } = await createBuyerAddress(client, buyer);
@@ -865,6 +873,7 @@ describe("05. Wave 1 business audit fixes (WEB-B1..B9, CAT-B5, PAY-B10, SHP-B2)"
   });
 
   test("5i. [review-C P1-2] Shop registration enforces required fields & VN phone and supports REQUEST_INFO resubmission", async () => {
+    await ensureRateBudget(45, { label: "5i" });
     const buyerClient = new WebClient();
     const buyer = await registerAndLoginBuyer(buyerClient, "shop-reg");
     const adminClient = new WebClient();
@@ -1028,6 +1037,7 @@ describe("05. Wave 1 business audit fixes (WEB-B1..B9, CAT-B5, PAY-B10, SHP-B2)"
   });
 
   test("5j. [Round 3] Cancelling unpaid multi-shop VietQR order confirms full-group cancel and reloads all cancelled sub-orders; COD cancels singly", async () => {
+    await ensureRateBudget(50, { label: "5j" });
     const buyerClient = new WebClient();
     const buyer = await registerAndLoginBuyer(buyerClient, "grp-cancel");
     const { address } = await createBuyerAddress(buyerClient, buyer);

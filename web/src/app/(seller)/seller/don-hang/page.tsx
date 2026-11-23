@@ -8,6 +8,7 @@ import { api, getErrorMessage } from "@/lib/api";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconCheck, IconSearch, StateView } from "@/components";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
+import { buildShippingLabelHref } from "@/features/account/orderMeta";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
 import {
@@ -17,7 +18,7 @@ import {
   canSellerConfirmOrder,
   canSellerShipOrder,
   computeOrderNetVnd,
-  getOrderStatusMeta,
+  getSellerOrderDisplayMeta,
   resolveOrderShippingDefaults,
 } from "@/features/seller/types";
 import { parseUiState } from "@/features/seller/sellerStore";
@@ -202,7 +203,7 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
   };
 
   const handleShipOrder = async (order: GatewayOrder) => {
-    if (!canSellerShipOrder(order.status) || busyOrderId) return;
+    if (!canSellerShipOrder(order.status, order.tracking_code) || busyOrderId) return;
     setBusyOrderId(order.id);
     try {
       const res = await api<{
@@ -225,8 +226,8 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
       await refreshPendingOrders();
       showToast(
         res.tracking_code
-          ? `Đã bàn giao đơn ${order.order_code} · Mã vận đơn ${res.tracking_code}.`
-          : `Đã chuyển đơn ${order.order_code} sang trạng thái Đang giao.`
+          ? `Đã tạo vận đơn ${res.tracking_code} cho đơn ${order.order_code}. Trạng thái: Chờ hãng lấy hàng.`
+          : `Đã tạo vận đơn cho đơn ${order.order_code}. Trạng thái: Chờ hãng lấy hàng.`
       );
     } catch (err) {
       showToast(getErrorMessage(err, "Không thể tạo vận đơn giao hàng lúc này."));
@@ -438,12 +439,12 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
                     </thead>
                     <tbody>
                       {filteredOrders.map((o) => {
-                        const meta = getOrderStatusMeta(o.status);
+                        const meta = getSellerOrderDisplayMeta(o);
                         const summary = summarizeItems(o);
                         const netVnd = computeOrderNetVnd(o);
                         const isBusy = busyOrderId === o.id;
                         const canConfirm = canSellerConfirmOrder(o.status);
-                        const canShip = canSellerShipOrder(o.status);
+                        const canShip = canSellerShipOrder(o.status, o.tracking_code);
                         const showShipDrawer = shippingOrderId === o.id;
 
                         return (
@@ -503,9 +504,24 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
                                       disabled={isBusy}
                                       onClick={() => handleToggleShipDrawer(o)}
                                     >
-                                      {showShipDrawer ? "Đóng" : "Giao hàng"}
+                                      {showShipDrawer ? "Đóng" : "Tạo vận đơn"}
                                     </button>
                                   )}
+                                  {(() => {
+                                    const labelHref = buildShippingLabelHref(o.tracking_code);
+                                    if (!labelHref) return null;
+                                    return (
+                                      <a
+                                        href={labelHref}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className={styles.rowDetailLink}
+                                        title="Mở nhãn vận đơn ở tab mới — nhấn Ctrl+P để in"
+                                      >
+                                        In nhãn
+                                      </a>
+                                    );
+                                  })()}
                                   <Link
                                     href={`/seller/don-hang/${o.id}`}
                                     className={styles.rowDetailLink}
@@ -520,7 +536,8 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
                                 <td colSpan={8} className={styles.shipDrawer}>
                                   <div className={styles.shipFormRow}>
                                     <span className={styles.queueMeta}>
-                                      Tạo vận đơn & bàn giao cho đơn <strong>{o.order_code}</strong>
+                                      Tạo vận đơn (Chờ hãng lấy hàng) cho đơn{" "}
+                                      <strong>{o.order_code}</strong>
                                     </span>
                                     <div className={styles.shipFormControls}>
                                       <select
@@ -554,7 +571,7 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
                                         disabled={isBusy}
                                         onClick={() => void handleShipOrder(o)}
                                       >
-                                        {isBusy ? "Đang tạo vận đơn..." : "Xác nhận giao hàng"}
+                                        {isBusy ? "Đang tạo vận đơn..." : "Xác nhận tạo vận đơn"}
                                       </Button>
                                     </div>
                                   </div>
@@ -570,11 +587,11 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
 
                 <div className={common.mobileList}>
                   {filteredOrders.map((o) => {
-                    const meta = getOrderStatusMeta(o.status);
+                    const meta = getSellerOrderDisplayMeta(o);
                     const summary = summarizeItems(o);
                     const isBusy = busyOrderId === o.id;
                     const canConfirm = canSellerConfirmOrder(o.status);
-                    const canShip = canSellerShipOrder(o.status);
+                    const canShip = canSellerShipOrder(o.status, o.tracking_code);
                     const showShipDrawer = shippingOrderId === o.id;
                     return (
                       <div key={o.id} className={common.mobileRow}>
@@ -616,9 +633,24 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
                                 disabled={isBusy}
                                 onClick={() => handleToggleShipDrawer(o)}
                               >
-                                Giao hàng
+                                Tạo vận đơn
                               </button>
                             )}
+                            {(() => {
+                              const labelHref = buildShippingLabelHref(o.tracking_code);
+                              if (!labelHref) return null;
+                              return (
+                                <a
+                                  href={labelHref}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className={styles.rowDetailLink}
+                                  title="Mở nhãn vận đơn ở tab mới — nhấn Ctrl+P để in"
+                                >
+                                  In nhãn
+                                </a>
+                              );
+                            })()}
                             <Link
                               href={`/seller/don-hang/${o.id}`}
                               className={styles.rowDetailLink}
@@ -658,7 +690,7 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
                               disabled={isBusy}
                               onClick={() => void handleShipOrder(o)}
                             >
-                              {isBusy ? "Đang tạo vận đơn..." : "Xác nhận giao hàng"}
+                              {isBusy ? "Đang tạo vận đơn..." : "Xác nhận tạo vận đơn"}
                             </Button>
                           </div>
                         )}

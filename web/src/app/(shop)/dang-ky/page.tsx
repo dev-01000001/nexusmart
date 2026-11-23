@@ -245,7 +245,7 @@ function RegisterPageContent() {
           <StateView
             kind="empty"
             title="Sẵn sàng tạo tài khoản thành viên mới"
-            message="Mở biểu mẫu đăng ký để nhận ngay 15.000 Xu và lưu địa chỉ nhận hàng."
+            message="Mở biểu mẫu đăng ký để lưu địa chỉ nhận hàng, theo dõi đơn và tích Xu khi mua sắm."
             actionLabel="Mở biểu mẫu đăng ký"
             actionHref="/dang-ky"
           />
@@ -275,7 +275,7 @@ function RegisterPageContent() {
               >
                 {step === "otp"
                   ? "Nhập mã xác thực gồm 6 chữ số được gửi tới email của bạn để kích hoạt tài khoản NexusMart."
-                  : "Đăng ký một lần để mua đồ cơ bản từ 4 xưởng dệt Việt Nam, nhận ngay 15.000 Xu và đổi trả miễn phí 45 ngày."}
+                  : "Đăng ký một lần để mua đồ cơ bản từ các xưởng dệt Việt Nam, tích Xu sau mỗi đơn hoàn tất và trả hàng minh bạch trong 7 ngày."}
               </p>
             </div>
 
@@ -394,9 +394,8 @@ function RegisterPageContent() {
                   style={{ "--i": 6 } as React.CSSProperties}
                 >
                   <p className={styles.bonusText}>
-                    Thành viên mới nhận ngay <strong className="num">15.000 Xu</strong> (tương đương{" "}
-                    <strong className="num">15.000₫</strong>), hoàn Xu 1–6% nhân đôi Thứ Sáu và
-                    không cần liên kết thẻ ngân hàng.
+                    Hoàn Xu tự động cho mỗi đơn hàng hoàn tất, lưu sẵn địa chỉ nhận hàng toàn quốc
+                    và không cần liên kết thẻ ngân hàng.
                   </p>
                 </div>
 

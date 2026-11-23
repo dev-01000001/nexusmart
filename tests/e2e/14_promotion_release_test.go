@@ -300,7 +300,9 @@ func TestE2E_PromotionService_DirectGRPC_PartialRelease_Auth_And_ListFilter(t *t
 		}
 
 		// Release shop2 (last shop) -> platform voucher released too
-		rel2, err := promoClient.ReleasePromotionShop(aCtx, &promotionv1.ReleasePromotionShopRequest{
+		aCtx2, aCancel2 := prmFixBearerCtx(context.Background(), adminTok)
+		defer aCancel2()
+		rel2, err := promoClient.ReleasePromotionShop(aCtx2, &promotionv1.ReleasePromotionShopRequest{
 			OrderId: groupID, ShopId: seller2.ShopID, Reason: "e2e_partial_last",
 		})
 		if err != nil {

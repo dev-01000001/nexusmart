@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/nexusmart/core/services/shipping/internal/address"
 )
 
@@ -22,20 +23,23 @@ const (
 
 // GHNConfig configures the GHN carrier adapter.
 type GHNConfig struct {
-	Mode       string // "mock" or "sandbox"
-	BaseURL    string
-	Token      string
-	ShopID     int
-	HTTPClient *http.Client
+	Mode         string // "mock" or "sandbox"
+	BaseURL      string
+	Token        string
+	ShopID       int
+	LabelBaseURL string
+	HTTPClient   *http.Client
 }
 
 // GHNAdapter implements Carrier for Giao Hang Nhanh (sandbox HTTP + deterministic mock mode).
 type GHNAdapter struct {
-	mode    string
-	baseURL string
-	token   string
-	shopID  int
-	client  *http.Client
+	mu           sync.RWMutex
+	mode         string
+	baseURL      string
+	token        string
+	shopID       int
+	labelBaseURL string
+	client       *http.Client
 }
 
 // NewGHNAdapter creates a GHN adapter in mock or sandbox mode.
@@ -48,18 +52,85 @@ func NewGHNAdapter(cfg GHNConfig) *GHNAdapter {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 5 * time.Second}
 	}
+	labelBase := strings.TrimRight(strings.TrimSpace(cfg.LabelBaseURL), "/")
+	if labelBase == "" {
+		labelBase = DefaultLabelBaseURL
+	}
 	return &GHNAdapter{
-		mode:    mode,
-		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
-		token:   cfg.Token,
-		shopID:  cfg.ShopID,
-		client:  httpClient,
+		mode:         mode,
+		baseURL:      strings.TrimRight(cfg.BaseURL, "/"),
+		token:        cfg.Token,
+		shopID:       cfg.ShopID,
+		labelBaseURL: labelBase,
+		client:       httpClient,
 	}
 }
 
 func (g *GHNAdapter) Code() string { return CodeGHN }
 func (g *GHNAdapter) Name() string { return NameGHN }
 func (g *GHNAdapter) IsMock() bool { return g.mode != "sandbox" }
+
+func (g *GHNAdapter) SetToken(token string) {
+	g.mu.Lock()
+	g.token = strings.TrimSpace(token)
+	g.mu.Unlock()
+}
+
+func (g *GHNAdapter) getToken() string {
+	g.mu.RLock()
+	tok := g.token
+	g.mu.RUnlock()
+	return tok
+}
+
+func (g *GHNAdapter) RequestRedelivery(ctx context.Context, trackingCode, _, _ string) error {
+	if g.mode != "sandbox" {
+		return nil
+	}
+	var resp ghnBasicResponse
+	if err := g.doJSON(ctx, http.MethodPost, "/v2/switch-status/storing", ghnCancelPayload{
+		OrderCodes: []string{trackingCode},
+	}, &resp); err != nil {
+		return err
+	}
+	if resp.Code != 200 {
+		return classifyGHNAPIError("redelivery", resp.Code, resp.Message)
+	}
+	return nil
+}
+
+func (g *GHNAdapter) TestConnection(ctx context.Context, token string) error {
+	tok := strings.TrimSpace(token)
+	if tok == "" {
+		tok = g.getToken()
+	}
+	if g.mode != "sandbox" {
+		if IsMockTokenRejected(tok, true) {
+			return &NonRetryableError{Err: fmt.Errorf("%w: ghn rejected API token", ErrInvalidCarrierToken)}
+		}
+		return nil
+	}
+	if tok == "" {
+		return &NonRetryableError{Err: fmt.Errorf("%w: ghn API token is required", ErrInvalidCarrierToken)}
+	}
+	var resp ghnBasicResponse
+	if err := g.doJSONWithToken(ctx, http.MethodGet, "/master-data/province", nil, &resp, tok); err != nil {
+		if errors.Is(err, ErrInvalidCarrierToken) {
+			return err
+		}
+		if IsNonRetryable(err) {
+			return &NonRetryableError{Err: fmt.Errorf("%w: ghn authentication failed", ErrInvalidCarrierToken)}
+		}
+		return err
+	}
+	if resp.Code != 200 {
+		if resp.Code == http.StatusRequestTimeout || resp.Code == http.StatusTooManyRequests || resp.Code >= 500 {
+			return fmt.Errorf("ghn test connection transient error code=%d", resp.Code)
+		}
+		return &NonRetryableError{Err: fmt.Errorf("%w: ghn test connection returned code=%d", ErrInvalidCarrierToken, resp.Code)}
+	}
+	return nil
+}
 
 func (g *GHNAdapter) CalculateFee(ctx context.Context, req FeeRequest) ([]Quote, error) {
 	if g.mode != "sandbox" {
@@ -145,13 +216,12 @@ func (g *GHNAdapter) mockCreateShipment(req ShipmentRequest) *ShipmentResult {
 			break
 		}
 	}
-	shortID := strings.ToUpper(strings.ReplaceAll(uuid.NewString(), "-", "")[:10])
-	tracking := "GHN-" + shortID
+	tracking := mockTrackingCode("GHN", req.ClientOrderCode)
 	return &ShipmentResult{
 		CarrierCode:  CodeGHN,
 		ServiceCode:  svc,
 		TrackingCode: tracking,
-		LabelURL:     fmt.Sprintf("https://sandbox.ghn.local/labels/%s.pdf", tracking),
+		LabelURL:     fmt.Sprintf("%s/%s", g.labelBaseURL, tracking),
 		FeeVND:       fee,
 		Status:       StatusCreated,
 	}
@@ -192,8 +262,11 @@ func (g *GHNAdapter) sandboxCalculateFee(ctx context.Context, req FeeRequest) ([
 	if err := g.doJSON(ctx, http.MethodPost, "/v2/shipping-order/fee", payload, &resp); err != nil {
 		return nil, err
 	}
-	if resp.Code != 200 || resp.Data.Total <= 0 {
-		return nil, fmt.Errorf("ghn fee api error code=%d message=%s", resp.Code, resp.Message)
+	if resp.Code != 200 {
+		return nil, classifyGHNAPIError("fee", resp.Code, resp.Message)
+	}
+	if resp.Data.Total <= 0 {
+		return nil, fmt.Errorf("ghn fee api returned non-positive total=%d", resp.Data.Total)
 	}
 
 	_, days := routeZoneFee(req.FromProvinceCode, req.ToProvinceCode, 0, 0, 0)
@@ -226,9 +299,10 @@ type ghnCreatePayload struct {
 }
 
 type ghnCreateResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-	Data    struct {
+	Code        int    `json:"code"`
+	CodeMessage string `json:"code_message"`
+	Message     string `json:"message"`
+	Data        struct {
 		OrderCode string `json:"order_code"`
 		TotalFee  int64  `json:"total_fee"`
 	} `json:"data"`
@@ -239,8 +313,12 @@ func (g *GHNAdapter) sandboxCreateShipment(ctx context.Context, req ShipmentRequ
 	if weight <= 0 {
 		weight = 500
 	}
+	clientOrderCode := strings.TrimSpace(req.ClientOrderCode)
+	if clientOrderCode == "" {
+		clientOrderCode = req.OrderID
+	}
 	payload := ghnCreatePayload{
-		ClientOrderCode: req.OrderID,
+		ClientOrderCode: clientOrderCode,
 		ToName:          req.ToAddress.Name,
 		ToPhone:         req.ToAddress.Phone,
 		ToAddress:       req.ToAddress.StreetAddress,
@@ -256,10 +334,19 @@ func (g *GHNAdapter) sandboxCreateShipment(ctx context.Context, req ShipmentRequ
 
 	var resp ghnCreateResponse
 	if err := g.doJSON(ctx, http.MethodPost, "/v2/shipping-order/create", payload, &resp); err != nil {
+		if IsDuplicateClientOrderCodeMessage(err.Error()) {
+			return g.sandboxGetByClientOrderCode(ctx, clientOrderCode, req.ServiceCode)
+		}
 		return nil, err
 	}
-	if resp.Code != 200 || resp.Data.OrderCode == "" {
-		return nil, fmt.Errorf("ghn create api error code=%d message=%s", resp.Code, resp.Message)
+	if resp.Code != 200 {
+		if IsDuplicateClientOrderCodeMessage(resp.Message) || IsDuplicateClientOrderCodeMessage(resp.CodeMessage) {
+			return g.sandboxGetByClientOrderCode(ctx, clientOrderCode, req.ServiceCode)
+		}
+		return nil, classifyGHNAPIError("create", resp.Code, resp.Message)
+	}
+	if resp.Data.OrderCode == "" {
+		return nil, fmt.Errorf("ghn create api returned empty order_code message=%s", resp.Message)
 	}
 	svc := req.ServiceCode
 	if svc == "" {
@@ -269,9 +356,71 @@ func (g *GHNAdapter) sandboxCreateShipment(ctx context.Context, req ShipmentRequ
 		CarrierCode:  CodeGHN,
 		ServiceCode:  svc,
 		TrackingCode: resp.Data.OrderCode,
-		LabelURL:     fmt.Sprintf("%s/v2/a5/gen-token?order_code=%s", g.baseURL, resp.Data.OrderCode),
+		LabelURL:     fmt.Sprintf("%s/%s", g.labelBaseURL, resp.Data.OrderCode),
 		FeeVND:       resp.Data.TotalFee,
 		Status:       StatusCreated,
+	}, nil
+}
+
+type ghnDetailByClientCodePayload struct {
+	ClientOrderCode string `json:"client_order_code"`
+}
+
+type ghnDetailByClientCodeResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		OrderCode string `json:"order_code"`
+		Status    string `json:"status"`
+		TotalFee  int64  `json:"total_fee"`
+		Fee       struct {
+			MainService int64 `json:"main_service"`
+		} `json:"fee"`
+	} `json:"data"`
+}
+
+// sandboxGetByClientOrderCode recovers an existing GHN order after a duplicate client_order_code 400.
+// Lookup errors are intentionally returned as retryable (never NonRetryable, except auth errors) so callers
+// retry or return Unavailable instead of falling back to another carrier and creating a duplicate shipment.
+func (g *GHNAdapter) sandboxGetByClientOrderCode(ctx context.Context, clientOrderCode, serviceCode string) (*ShipmentResult, error) {
+	var resp ghnDetailByClientCodeResponse
+	if err := g.doJSON(ctx, http.MethodPost, "/v2/shipping-order/detail-by-client-code", ghnDetailByClientCodePayload{
+		ClientOrderCode: clientOrderCode,
+	}, &resp); err != nil {
+		if errors.Is(err, ErrInvalidCarrierToken) {
+			return nil, err
+		}
+		var nr *NonRetryableError
+		if errors.As(err, &nr) {
+			return nil, fmt.Errorf("ghn lookup duplicate client_order_code %s failed: %w", clientOrderCode, nr.Err)
+		}
+		return nil, fmt.Errorf("ghn lookup duplicate client_order_code %s failed: %w", clientOrderCode, err)
+	}
+	if resp.Code != 200 || resp.Data.OrderCode == "" {
+		if resp.Code == http.StatusUnauthorized || resp.Code == http.StatusForbidden {
+			return nil, classifyGHNAPIError("detail-by-client-code", resp.Code, resp.Message)
+		}
+		return nil, fmt.Errorf("ghn lookup duplicate client_order_code %s error code=%d message=%s", clientOrderCode, resp.Code, resp.Message)
+	}
+	svc := serviceCode
+	if svc == "" {
+		svc = "STANDARD"
+	}
+	fee := resp.Data.TotalFee
+	if fee <= 0 {
+		fee = resp.Data.Fee.MainService
+	}
+	st := StatusCreated
+	if mapped, ok := MapCarrierStatus(resp.Data.Status); ok && mapped != "" {
+		st = mapped
+	}
+	return &ShipmentResult{
+		CarrierCode:  CodeGHN,
+		ServiceCode:  svc,
+		TrackingCode: resp.Data.OrderCode,
+		LabelURL:     fmt.Sprintf("%s/%s", g.labelBaseURL, resp.Data.OrderCode),
+		FeeVND:       fee,
+		Status:       st,
 	}, nil
 }
 
@@ -280,8 +429,9 @@ type ghnCancelPayload struct {
 }
 
 type ghnBasicResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code        int    `json:"code"`
+	CodeMessage string `json:"code_message"`
+	Message     string `json:"message"`
 }
 
 func (g *GHNAdapter) sandboxCancelShipment(ctx context.Context, trackingCode string) error {
@@ -289,10 +439,16 @@ func (g *GHNAdapter) sandboxCancelShipment(ctx context.Context, trackingCode str
 	if err := g.doJSON(ctx, http.MethodPost, "/v2/switch-status/cancel", ghnCancelPayload{
 		OrderCodes: []string{trackingCode},
 	}, &resp); err != nil {
+		if IsAlreadyCancelledMessage(err.Error()) {
+			return nil
+		}
 		return err
 	}
 	if resp.Code != 200 {
-		return fmt.Errorf("ghn cancel api error code=%d message=%s", resp.Code, resp.Message)
+		if IsAlreadyCancelledMessage(resp.Message) || IsAlreadyCancelledMessage(resp.CodeMessage) {
+			return nil
+		}
+		return classifyGHNAPIError("cancel", resp.Code, resp.Message)
 	}
 	return nil
 }
@@ -319,7 +475,7 @@ func (g *GHNAdapter) sandboxGetStatus(ctx context.Context, trackingCode string) 
 		return nil, err
 	}
 	if resp.Code != 200 {
-		return nil, fmt.Errorf("ghn detail api error code=%d message=%s", resp.Code, resp.Message)
+		return nil, classifyGHNAPIError("detail", resp.Code, resp.Message)
 	}
 	mapped, ok := MapCarrierStatus(resp.Data.Status)
 	if !ok {
@@ -333,23 +489,31 @@ func (g *GHNAdapter) sandboxGetStatus(ctx context.Context, trackingCode string) 
 		TrackingCode: trackingCode,
 		Status:       mapped,
 		RawStatus:    resp.Data.Status,
-		Description:  "Synced from GHN status polling",
+		Description:  StatusDescriptionVI(mapped),
 		OccurredAt:   ts,
 		Changed:      true,
 	}, nil
 }
 
 func (g *GHNAdapter) doJSON(ctx context.Context, method, path string, body any, dst any) error {
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return &NonRetryableError{Err: fmt.Errorf("marshal ghn request: %w", err)}
+	return g.doJSONWithToken(ctx, method, path, body, dst, g.getToken())
+}
+
+func (g *GHNAdapter) doJSONWithToken(ctx context.Context, method, path string, body any, dst any, token string) error {
+	var bodyReader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return &NonRetryableError{Err: fmt.Errorf("marshal ghn request: %w", err)}
+		}
+		bodyReader = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, g.baseURL+path, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, method, g.baseURL+path, bodyReader)
 	if err != nil {
 		return &NonRetryableError{Err: fmt.Errorf("build ghn http request: %w", err)}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Token", g.token)
+	req.Header.Set("Token", token)
 	if g.shopID > 0 {
 		req.Header.Set("ShopId", strconv.Itoa(g.shopID))
 	}
@@ -364,16 +528,32 @@ func (g *GHNAdapter) doJSON(ctx context.Context, method, path string, body any, 
 	if err != nil {
 		return fmt.Errorf("read ghn response: %w", err)
 	}
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
-		return &NonRetryableError{Err: fmt.Errorf("ghn rejected request status=%d body=%s", resp.StatusCode, string(respBody))}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return &NonRetryableError{Err: fmt.Errorf("%w: ghn auth/config rejected status=%d", ErrInvalidCarrierToken, resp.StatusCode)}
 	}
-	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
+	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusRequestTimeout {
 		return fmt.Errorf("ghn transient error status=%d", resp.StatusCode)
+	}
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		return &NonRetryableError{Err: fmt.Errorf("ghn rejected request status=%d body=%s", resp.StatusCode, string(respBody))}
 	}
 	if err := json.Unmarshal(respBody, dst); err != nil {
 		return fmt.Errorf("decode ghn response: %w", err)
 	}
 	return nil
+}
+
+func classifyGHNAPIError(op string, code int, message string) error {
+	switch {
+	case code == http.StatusUnauthorized || code == http.StatusForbidden:
+		return &NonRetryableError{Err: fmt.Errorf("%w: ghn %s auth/config error code=%d", ErrInvalidCarrierToken, op, code)}
+	case code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= 500:
+		return fmt.Errorf("ghn %s transient error code=%d message=%s", op, code, message)
+	case code >= 400 && code < 500:
+		return &NonRetryableError{Err: fmt.Errorf("ghn %s api rejected code=%d message=%s", op, code, message)}
+	default:
+		return fmt.Errorf("ghn %s api error code=%d message=%s", op, code, message)
+	}
 }
 
 func routeZoneFee(fromProv, toProv string, intraProv, intraRegion, interRegion int64) (int64, int32) {

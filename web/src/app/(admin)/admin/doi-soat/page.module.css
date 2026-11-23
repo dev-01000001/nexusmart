@@ -1,7 +1,59 @@
-/* Đối soát thanh toán (/admin/doi-soat) — Summary strip + borderless ledger list */
+/* Đối soát thanh toán (/admin/doi-soat) — Summary strip + borderless ledger & queues */
 
 .kpiSpacer {
   margin-top: 20px;
+}
+
+.inlineFormRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dateField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 200px;
+}
+
+.filterGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.alertError {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.resolveStack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.fullSelect {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: var(--radius-control);
+  border: 1px solid #d4dde1;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.spanTwo {
+  grid-column: span 2;
 }
 
 .ledgerBreakdown {
@@ -48,5 +100,14 @@
 @media (max-width: 720px) {
   .ledgerBreakdown {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .spanTwo {
+    grid-column: auto;
+  }
+
+  .dateField {
+    width: 100%;
+    min-width: 0;
   }
 }

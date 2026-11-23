@@ -26,16 +26,21 @@ type Config struct {
 	PaymentGRPCAddr   string
 	ShippingGRPCAddr  string
 
-	CODMaxVND             int64
-	CODMaxRejectedCount   int32
-	PaymentExpiryMinutes  int
-	DefaultCommissionBPS  int32
-	RewardCoinsBPS        int32
-	GRPCCallTimeout       time.Duration
-	OutboxPollInterval    time.Duration
-	ExpiryWatchdogTimeout time.Duration
-	ExpiryWatchdogPeriod  time.Duration
-	StaleCheckoutAfter    time.Duration
+	CODMaxVND                int64
+	CODMaxRejectedCount      int32
+	PaymentExpiryMinutes     int
+	DefaultCommissionBPS     int32
+	RewardCoinsBPS           int32
+	AutoCompleteDays         int
+	SellerConfirmHours       int
+	ReturnSellerResponseDays int
+	ReturnShipDays           int
+	ReturnInspectDays        int
+	GRPCCallTimeout          time.Duration
+	OutboxPollInterval       time.Duration
+	ExpiryWatchdogTimeout    time.Duration
+	ExpiryWatchdogPeriod     time.Duration
+	StaleCheckoutAfter       time.Duration
 
 	JWTSecret    string
 	OTLPEndpoint string
@@ -60,16 +65,21 @@ func Load() Config {
 		PaymentGRPCAddr:   env.EnvString("PAYMENT_GRPC_ADDR", "localhost:50056"),
 		ShippingGRPCAddr:  env.EnvString("SHIPPING_GRPC_ADDR", "localhost:50057"),
 
-		CODMaxVND:             envInt64("ORDER_COD_MAX_VND", 5000000),
-		CODMaxRejectedCount:   int32(env.EnvInt("ORDER_COD_MAX_REJECTED_COUNT", 3)),
-		PaymentExpiryMinutes:  env.EnvInt("ORDER_PAYMENT_EXPIRY_MINUTES", 15),
-		DefaultCommissionBPS:  int32(env.EnvInt("ORDER_DEFAULT_COMMISSION_BPS", 500)),
-		RewardCoinsBPS:        int32(env.EnvInt("ORDER_REWARD_COINS_BPS", 100)),
-		GRPCCallTimeout:       env.EnvDuration("ORDER_GRPC_TIMEOUT", 10*time.Second),
-		OutboxPollInterval:    env.EnvDuration("ORDER_OUTBOX_POLL_INTERVAL", 250*time.Millisecond),
-		ExpiryWatchdogPeriod:  env.EnvDuration("ORDER_EXPIRY_WATCHDOG_INTERVAL", 10*time.Second),
-		ExpiryWatchdogTimeout: env.EnvDuration("ORDER_EXPIRY_WATCHDOG_TIMEOUT", 15*time.Second),
-		StaleCheckoutAfter:    env.EnvDuration("ORDER_STALE_CHECKOUT_AFTER", 5*time.Minute),
+		CODMaxVND:                envInt64("ORDER_COD_MAX_VND", 5000000),
+		CODMaxRejectedCount:      int32(env.EnvInt("ORDER_COD_MAX_REJECTED_COUNT", 3)),
+		PaymentExpiryMinutes:     env.EnvInt("ORDER_PAYMENT_EXPIRY_MINUTES", 15),
+		DefaultCommissionBPS:     int32(env.EnvInt("ORDER_DEFAULT_COMMISSION_BPS", 500)),
+		RewardCoinsBPS:           int32(env.EnvInt("ORDER_REWARD_COINS_BPS", 100)),
+		AutoCompleteDays:         env.EnvInt("ORDER_AUTO_COMPLETE_DAYS", 7),
+		SellerConfirmHours:       env.EnvInt("ORDER_SELLER_CONFIRM_HOURS", 48),
+		ReturnSellerResponseDays: env.EnvInt("ORDER_RETURN_SELLER_RESPONSE_DAYS", 3),
+		ReturnShipDays:           env.EnvInt("ORDER_RETURN_SHIP_DAYS", 5),
+		ReturnInspectDays:        env.EnvInt("ORDER_RETURN_INSPECT_DAYS", 3),
+		GRPCCallTimeout:          env.EnvDuration("ORDER_GRPC_TIMEOUT", 10*time.Second),
+		OutboxPollInterval:       env.EnvDuration("ORDER_OUTBOX_POLL_INTERVAL", 250*time.Millisecond),
+		ExpiryWatchdogPeriod:     env.EnvDuration("ORDER_EXPIRY_WATCHDOG_INTERVAL", 10*time.Second),
+		ExpiryWatchdogTimeout:    env.EnvDuration("ORDER_EXPIRY_WATCHDOG_TIMEOUT", 15*time.Second),
+		StaleCheckoutAfter:       env.EnvDuration("ORDER_STALE_CHECKOUT_AFTER", 5*time.Minute),
 
 		JWTSecret:    env.EnvString("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me"),
 		OTLPEndpoint: env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),

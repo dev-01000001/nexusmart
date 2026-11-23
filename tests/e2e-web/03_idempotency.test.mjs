@@ -5,11 +5,13 @@ import {
   WebClient,
   calculateShippingQuote,
   createBuyerAddress,
+  ensureRateBudget,
   pickSingleShopSku,
   registerAndLoginBuyer,
 } from "./helpers.mjs";
 
 test("03. Checkout idempotency via BFF: replaying Idempotency-Key returns idempotent_replay:true without duplicating orders", async () => {
+  await ensureRateBudget(20, { label: "03-idempotency" });
   const client = new WebClient();
   const buyer = await registerAndLoginBuyer(client, "idem");
   const { address, province, ward } = await createBuyerAddress(client, buyer);

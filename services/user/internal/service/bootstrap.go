@@ -30,8 +30,9 @@ func BootstrapAdmin(ctx context.Context, store db.Store, hasher *password.Hasher
 		}
 		if existing.Status != StatusActive {
 			if _, err := store.UpdateUserStatus(ctx, db.UpdateUserStatusParams{
-				ID:     existing.ID,
-				Status: StatusActive,
+				ID:         existing.ID,
+				Status:     StatusActive,
+				LockReason: "",
 			}); err != nil {
 				return fmt.Errorf("activate bootstrap admin: %w", err)
 			}

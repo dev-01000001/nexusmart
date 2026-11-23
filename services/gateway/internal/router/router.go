@@ -16,21 +16,24 @@ import (
 
 // Dependencies wires all handlers, middlewares, and reverse proxies into the gateway router.
 type Dependencies struct {
-	ServiceName          string
-	Clients              *clients.Clients
-	AuthManager          *auth.Manager
-	RevocationChecker    middleware.JTIRevocationChecker
-	RateLimiter          middleware.RateLimiter
-	RateLimitIPPerMin    int
-	RateLimitUserPerMin  int
-	RateLimitFlashPerMin int
-	TrustedProxies       *middleware.TrustedProxies
-	RED                  *metrics.RED
-	OpsHandler           http.Handler
-	PaymentWebhookProxy  http.Handler
-	ShippingWebhookProxy http.Handler
-	PaymentSSEProxy      http.Handler
-	Logger               *slog.Logger
+	ServiceName            string
+	Clients                *clients.Clients
+	AuthManager            *auth.Manager
+	RevocationChecker      middleware.TokenRevocationChecker
+	RateLimiter            middleware.RateLimiter
+	RateLimitIPPerMin      int
+	RateLimitUserPerMin    int
+	RateLimitFlashPerMin   int
+	RateLimitAuthPerMin    int
+	RateLimitWebhookPerMin int
+	TrustedProxies         *middleware.TrustedProxies
+	RED                    *metrics.RED
+	OpsHandler             http.Handler
+	PaymentWebhookProxy    http.Handler
+	ShippingWebhookProxy   http.Handler
+	ShippingLabelProxy     http.Handler
+	PaymentSSEProxy        http.Handler
+	Logger                 *slog.Logger
 }
 
 type handler struct {
@@ -51,6 +54,7 @@ func New(deps Dependencies) http.Handler {
 	}
 
 	r := chi.NewRouter()
+	r.Use(middleware.SecurityHeaders())
 	r.Use(middleware.Recoverer(deps.Logger))
 
 	// Standard ops endpoints (/healthz, /readyz, /metrics) bypass rate limits & auth.
@@ -106,15 +110,19 @@ func New(deps Dependencies) http.Handler {
 			main.Use(deps.RED.HTTPMiddleware())
 		}
 		main.Use(middleware.RequestLogger(deps.Logger, deps.TrustedProxies))
+		main.Use(middleware.MaxBodyBytes(httpx.MaxBodyBytes))
 
 		// Section 4.9 Webhooks (no JWT; HMAC verified by upstream; exact raw body & headers preserved).
-		if deps.PaymentWebhookProxy != nil {
-			main.Post("/webhooks/payment", deps.PaymentWebhookProxy.ServeHTTP)
-			main.Post("/webhooks/vietqr", deps.PaymentWebhookProxy.ServeHTTP)
-		}
-		if deps.ShippingWebhookProxy != nil {
-			main.Post("/webhooks/shipping/{carrier}", deps.ShippingWebhookProxy.ServeHTTP)
-		}
+		main.Group(func(wh chi.Router) {
+			wh.Use(middleware.RateLimitWebhook(deps.RateLimiter, deps.RateLimitWebhookPerMin, deps.Logger, deps.TrustedProxies))
+			if deps.PaymentWebhookProxy != nil {
+				wh.Post("/webhooks/payment", deps.PaymentWebhookProxy.ServeHTTP)
+				wh.Post("/webhooks/vietqr", deps.PaymentWebhookProxy.ServeHTTP)
+			}
+			if deps.ShippingWebhookProxy != nil {
+				wh.Post("/webhooks/shipping/{carrier}", deps.ShippingWebhookProxy.ServeHTTP)
+			}
+		})
 
 		// Public & authenticated REST API v1 routes with per-IP rate limiting.
 		main.Route("/api/v1", func(api chi.Router) {
@@ -126,6 +134,12 @@ func New(deps Dependencies) http.Handler {
 			api.Post("/auth/resend-otp", h.handleResendOTP)
 			api.Post("/auth/login", h.handleLogin)
 			api.Post("/auth/refresh", h.handleRefreshToken)
+
+			api.Group(func(authTight chi.Router) {
+				authTight.Use(middleware.RateLimitAuth(deps.RateLimiter, deps.RateLimitAuthPerMin, deps.Logger, deps.TrustedProxies))
+				authTight.Post("/auth/forgot-password", h.handleForgotPassword)
+				authTight.Post("/auth/reset-password", h.handleResetPassword)
+			})
 
 			api.Get("/shops", h.handleListPublicShops)
 			api.Get("/shops/slug/{slug}", h.handleGetShopBySlug)
@@ -185,7 +199,7 @@ func New(deps Dependencies) http.Handler {
 				authed.Get("/coins/balance", h.handleGetCoinBalance)
 				authed.Post("/promotions/preview", h.handlePreviewDiscounts)
 
-				// Section 4.5 Checkout & Buyer Orders
+				// Section 4.5 Checkout & Buyer Orders / Returns
 				authed.Post("/checkout", h.handleCheckout)
 				authed.Get("/orders", h.handleListBuyerOrders)
 				authed.Get("/orders/{id}", h.handleGetOrder)
@@ -193,14 +207,29 @@ func New(deps Dependencies) http.Handler {
 				authed.Post("/orders/{id}/cancel", h.handleCancelOrder)
 				authed.Post("/orders/{id}/confirm-received", h.handleConfirmReceived)
 				authed.Post("/orders/{id}/return", h.handleRequestReturn)
+				authed.Get("/orders/{id}/return", h.handleGetOrderReturn)
+				authed.Get("/returns", h.handleListBuyerReturns)
+				authed.Get("/returns/{id}", h.handleGetReturn)
+				authed.Post("/returns/{id}/escalate", h.handleEscalateReturn)
+				authed.Post("/returns/{id}/evidence", h.handleAddReturnEvidence)
 
-				// Section 4.6 Payments (Buyer / Admin)
+				// Section 4.6 Payments & Refunds (Buyer / Admin)
 				authed.Get("/payments/{id}", h.handleGetPayment)
 				authed.Post("/payments/{id}/retry", h.handleRetryPayment)
+				authed.Get("/orders/{id}/refunds", h.handleListOrderRefunds)
+				authed.Post("/refunds/{id}/bank-account", h.handleSubmitRefundBankAccount)
 
 				// Section 4.7 Shipping (Authenticated)
 				authed.Post("/shipping/calculate-fee", h.handleCalculateShippingFee)
 				authed.Get("/shipping/shipments/{order_id}", h.handleGetShipment)
+				authed.Get("/shipping/labels/{tracking_code}", func(w http.ResponseWriter, req *http.Request) {
+					if deps.ShippingLabelProxy == nil {
+						httpx.WriteError(w, req, http.StatusServiceUnavailable, "UNAVAILABLE", "shipping label proxy not configured")
+						return
+					}
+					deps.ShippingLabelProxy.ServeHTTP(w, req)
+				})
+				authed.Post("/orders/{id}/redelivery", h.handleRequestRedelivery)
 
 				// Section 4.8 Notifications
 				authed.Get("/notifications", h.handleListNotifications)
@@ -230,14 +259,23 @@ func New(deps Dependencies) http.Handler {
 					seller.With(middleware.RateLimitFlashSale(deps.RateLimiter, deps.RateLimitFlashPerMin, deps.Logger, deps.TrustedProxies)).
 						Post("/flash-sales/{id}/items", h.handleSellerRegisterFlashSaleItem)
 
-					// Section 4.5 Seller Orders
+					// Section 4.5 Seller Orders & Returns
 					seller.Get("/orders", h.handleSellerListOrders)
 					seller.Get("/orders/{id}", h.handleSellerGetOrder)
 					seller.Post("/orders/{id}/confirm", h.handleSellerConfirmOrder)
 					seller.Post("/orders/{id}/ship", h.handleSellerShipOrder)
+					seller.Get("/returns", h.handleSellerListReturns)
+					seller.Get("/returns/{id}", h.handleSellerGetReturn)
+					seller.Post("/returns/{id}/respond", h.handleSellerRespondReturn)
+					seller.Post("/returns/{id}/confirm-received", h.handleSellerConfirmReturnReceived)
+					seller.Post("/returns/{id}/dispute", h.handleSellerDisputeReturnGoods)
 
 					// Section 4.6 Seller Balance
 					seller.Get("/balance", h.handleSellerBalance)
+
+					// Section 4.7 Seller Shipping Settings
+					seller.Get("/shipping-settings", h.handleSellerGetShippingSettings)
+					seller.Put("/shipping-settings", h.handleSellerUpdateShippingSettings)
 				})
 
 				// --- Admin routes (`admin`, `super_admin`) ---
@@ -273,13 +311,25 @@ func New(deps Dependencies) http.Handler {
 					admin.Post("/flash-sale-items/{item_id}/approve", h.handleAdminApproveFlashSaleItem)
 					admin.Post("/coins/credit", h.handleAdminCreditCoins)
 
-					// Section 4.5 Admin Orders
+					// Section 4.5 Admin Orders & Returns
 					admin.Get("/orders", h.handleAdminListOrders)
+					admin.Get("/returns", h.handleAdminListReturns)
+					admin.Get("/returns/{id}", h.handleAdminGetReturn)
+					admin.Post("/returns/{id}/resolve", h.handleAdminResolveReturn)
 
-					// Section 4.6 Admin Ledger, Refund & Reconcile
+					// Section 4.6 Admin Ledger, Refunds & Reconciliation
 					admin.Get("/ledger/summary", h.handleAdminLedgerSummary)
 					admin.Post("/payments/{id}/refund", h.handleAdminRefundPayment)
+					admin.Get("/refunds", h.handleAdminListRefunds)
+					admin.Post("/refunds/{id}/settle", h.handleAdminSettleRefund)
 					admin.Post("/payments/reconcile", h.handleAdminReconcilePayments)
+					admin.Get("/reconciliation/queue", h.handleAdminListReconciliationQueue)
+					admin.Post("/reconciliation/queue/{id}/resolve", h.handleAdminResolveReconciliationItem)
+
+					// Section 4.7 Admin Carriers
+					admin.Get("/carriers", h.handleAdminListCarriers)
+					admin.Put("/carriers/{code}", h.handleAdminUpdateCarrier)
+					admin.Post("/carriers/{code}/test", h.handleAdminTestCarrier)
 				})
 			})
 		})

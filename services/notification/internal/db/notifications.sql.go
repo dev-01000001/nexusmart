@@ -54,6 +54,19 @@ func (q *Queries) DeleteProcessedEvent(ctx context.Context, eventID string) erro
 	return err
 }
 
+const getEmailDedupEventID = `-- name: GetEmailDedupEventID :one
+SELECT event_id
+FROM notification_email_dedups
+WHERE dedup_key = $1
+`
+
+func (q *Queries) GetEmailDedupEventID(ctx context.Context, dedupKey string) (string, error) {
+	row := q.db.QueryRow(ctx, getEmailDedupEventID, dedupKey)
+	var event_id string
+	err := row.Scan(&event_id)
+	return event_id, err
+}
+
 const getOrderParticipant = `-- name: GetOrderParticipant :one
 SELECT order_id, buyer_id, shop_id, order_code, checkout_group_id, updated_at
 FROM order_participants
@@ -105,6 +118,24 @@ func (q *Queries) GetPreferences(ctx context.Context, userID string) (Notificati
 		&i.SystemInApp,
 		&i.SystemEmail,
 		&i.SystemPush,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getShopOwner = `-- name: GetShopOwner :one
+SELECT shop_id, owner_user_id, shop_name, updated_at
+FROM shop_owners
+WHERE shop_id = $1
+`
+
+func (q *Queries) GetShopOwner(ctx context.Context, shopID string) (ShopOwner, error) {
+	row := q.db.QueryRow(ctx, getShopOwner, shopID)
+	var i ShopOwner
+	err := row.Scan(
+		&i.ShopID,
+		&i.OwnerUserID,
+		&i.ShopName,
 		&i.UpdatedAt,
 	)
 	return i, err
@@ -168,6 +199,25 @@ func (q *Queries) InsertDeadLetterEvent(ctx context.Context, arg InsertDeadLette
 		arg.Attempts,
 	)
 	return err
+}
+
+const insertEmailDedup = `-- name: InsertEmailDedup :execrows
+INSERT INTO notification_email_dedups (dedup_key, event_id)
+VALUES ($1, $2)
+ON CONFLICT (dedup_key) DO NOTHING
+`
+
+type InsertEmailDedupParams struct {
+	DedupKey string
+	EventID  string
+}
+
+func (q *Queries) InsertEmailDedup(ctx context.Context, arg InsertEmailDedupParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertEmailDedup, arg.DedupKey, arg.EventID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const insertNotification = `-- name: InsertNotification :one
@@ -470,6 +520,26 @@ func (q *Queries) UpsertPreferences(ctx context.Context, arg UpsertPreferencesPa
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const upsertShopOwner = `-- name: UpsertShopOwner :exec
+INSERT INTO shop_owners (shop_id, owner_user_id, shop_name, updated_at)
+VALUES ($1, $2, $3, NOW())
+ON CONFLICT (shop_id) DO UPDATE SET
+    owner_user_id = CASE WHEN EXCLUDED.owner_user_id <> '' THEN EXCLUDED.owner_user_id ELSE shop_owners.owner_user_id END,
+    shop_name = CASE WHEN EXCLUDED.shop_name <> '' THEN EXCLUDED.shop_name ELSE shop_owners.shop_name END,
+    updated_at = NOW()
+`
+
+type UpsertShopOwnerParams struct {
+	ShopID      string
+	OwnerUserID string
+	ShopName    string
+}
+
+func (q *Queries) UpsertShopOwner(ctx context.Context, arg UpsertShopOwnerParams) error {
+	_, err := q.db.Exec(ctx, upsertShopOwner, arg.ShopID, arg.OwnerUserID, arg.ShopName)
+	return err
 }
 
 const upsertUserContact = `-- name: UpsertUserContact :exec

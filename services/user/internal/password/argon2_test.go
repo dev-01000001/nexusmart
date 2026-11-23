@@ -46,3 +46,8 @@ func TestValidateStrength(t *testing.T) {
 		t.Fatalf("expected valid password, got %v", err)
 	}
 }
+
+func TestVerifyDummyRunsArgon2id(t *testing.T) {
+	h := NewDefaultHasher()
+	h.VerifyDummy("WrongPassword123!")
+}

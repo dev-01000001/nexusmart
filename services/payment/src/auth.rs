@@ -17,12 +17,7 @@ use crate::domain::PaymentWithAllocations;
 use crate::error::PaymentError;
 
 /// RPCs on which an internal service token (order saga / expiry watchdog) is accepted.
-const SERVICE_METHODS: &[&str] = &[
-    "GetPayment",
-    "CancelPayment",
-    "CreateRefund",
-    "ReleaseEscrow",
-];
+const SERVICE_METHODS: &[&str] = &["GetPayment", "CancelPayment", "CreateRefund"];
 
 /// Authenticated caller as seen by handlers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -260,15 +255,27 @@ mod tests {
             )
         };
         let a = auth();
-        let ok = a
-            .authenticate(&md(&[bearer(svc(SVC_KEY, exp_in(60)))]), "ReleaseEscrow")
-            .unwrap();
-        assert_eq!(ok.role, "admin");
+        for method in ["GetPayment", "CancelPayment", "CreateRefund"] {
+            let ok = a
+                .authenticate(&md(&[bearer(svc(SVC_KEY, exp_in(60)))]), method)
+                .unwrap();
+            assert_eq!(ok.role, "admin", "{method}");
+        }
 
-        let denied = a
-            .authenticate(&md(&[bearer(svc(SVC_KEY, exp_in(60)))]), "GetLedgerSummary")
-            .unwrap_err();
-        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        for method in [
+            "GetLedgerSummary",
+            "ReleaseEscrow",
+            "ListRefunds",
+            "SubmitRefundBankAccount",
+            "SettleRefund",
+            "ListReconciliationQueue",
+            "ResolveReconciliationItem",
+        ] {
+            let denied = a
+                .authenticate(&md(&[bearer(svc(SVC_KEY, exp_in(60)))]), method)
+                .unwrap_err();
+            assert_eq!(denied.code(), tonic::Code::PermissionDenied, "{method}");
+        }
 
         for (name, tok) in [
             ("wrong key", svc("guessed-key", exp_in(60))),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"sort"
 	"strings"
 	"sync"
@@ -31,6 +32,7 @@ type MemoryStore struct {
 	items           map[string][]db.OrderItem
 	timelines       map[string][]db.OrderTimelineEvent
 	returnRequests  map[string]db.ReturnRequest
+	returnEvents    map[string][]db.ReturnEvent
 	outbox          []db.OutboxEvent
 	processedEvents map[string]db.ProcessedEvent
 	deadLetters     []db.DeadLetterEvent
@@ -45,6 +47,7 @@ func NewMemoryStore() *MemoryStore {
 		items:           make(map[string][]db.OrderItem),
 		timelines:       make(map[string][]db.OrderTimelineEvent),
 		returnRequests:  make(map[string]db.ReturnRequest),
+		returnEvents:    make(map[string][]db.ReturnEvent),
 		processedEvents: make(map[string]db.ProcessedEvent),
 	}
 }
@@ -172,7 +175,10 @@ func (m *MemoryStore) PersistCheckoutBatch(_ context.Context, batch CheckoutBatc
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	now := time.Now().UTC()
+	now := batch.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	out := make([]OrderAggregate, 0, len(batch.Orders))
 
 	for _, rec := range batch.Orders {
@@ -202,6 +208,7 @@ func (m *MemoryStore) PersistCheckoutBatch(_ context.Context, batch CheckoutBatc
 			CancelReason:               rec.Order.CancelReason,
 			ShippingAddressJSON:        rec.Order.ShippingAddressJSON,
 			PaymentExpiresAt:           rec.Order.PaymentExpiresAt,
+			ConfirmedAt:                rec.Order.ConfirmedAt,
 			CreatedAt:                  now,
 			UpdatedAt:                  now,
 		}
@@ -240,6 +247,13 @@ func (m *MemoryStore) PersistCheckoutBatch(_ context.Context, batch CheckoutBatc
 		}
 
 		out = append(out, OrderAggregate{Order: ord, Items: items, Timeline: tl})
+	}
+	if batch.PendingStockConfirm {
+		if g, ok := m.groups[batch.CheckoutGroupID]; ok {
+			g.PendingStockConfirm = true
+			g.UpdatedAt = now
+			m.groups[batch.CheckoutGroupID] = g
+		}
 	}
 	return out, nil
 }
@@ -401,6 +415,7 @@ func (m *MemoryStore) CancelCheckoutGroupOrders(_ context.Context, params Cancel
 		if params.PaymentStatus != "" {
 			ord.PaymentStatus = params.PaymentStatus
 		}
+		ord.PendingCancelCompensation = true
 		ord.UpdatedAt = now
 		m.orders[id] = ord
 
@@ -434,9 +449,12 @@ func (m *MemoryStore) CancelCheckoutGroupOrders(_ context.Context, params Cancel
 		cancelled = append(cancelled, ord)
 	}
 
-	if g, ok := m.groups[params.CheckoutGroupID]; ok && g.Status == "IN_PROGRESS" {
-		g.Status = "FAILED"
-		g.PaymentStatus = params.PaymentStatus
+	if g, ok := m.groups[params.CheckoutGroupID]; ok {
+		if g.Status == "IN_PROGRESS" {
+			g.Status = "FAILED"
+			g.PaymentStatus = params.PaymentStatus
+		}
+		g.PendingStockConfirm = false
 		g.UpdatedAt = now
 		m.groups[params.CheckoutGroupID] = g
 	}
@@ -456,7 +474,15 @@ func (m *MemoryStore) getOrderLocked(orderID string) (*OrderAggregate, error) {
 	}
 	items := append([]db.OrderItem(nil), m.items[orderID]...)
 	tl := append([]db.OrderTimelineEvent(nil), m.timelines[orderID]...)
-	return &OrderAggregate{Order: ord, Items: items, Timeline: tl}, nil
+	agg := &OrderAggregate{Order: ord, Items: items, Timeline: tl}
+	for _, rr := range m.returnRequests {
+		if rr.OrderID == orderID {
+			agg.ReturnRequestID = rr.ID
+			agg.ReturnStatus = rr.Status
+			break
+		}
+	}
+	return agg, nil
 }
 
 func (m *MemoryStore) ListOrdersByCheckoutGroup(_ context.Context, checkoutGroupID string) ([]OrderAggregate, error) {
@@ -519,7 +545,10 @@ func (m *MemoryStore) GetOrderTimeline(_ context.Context, orderID string) ([]db.
 func (m *MemoryStore) TransitionOrdersPaymentResult(_ context.Context, params PaymentResultTransitionParams) (*PaymentResultTransitionOutcome, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := time.Now().UTC()
+	now := params.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 
 	if params.EventID != "" {
 		if _, exists := m.processedEvents[params.EventID]; exists {
@@ -646,6 +675,10 @@ func (m *MemoryStore) TransitionOrdersPaymentResult(_ context.Context, params Pa
 		if targetStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
 			ord.CancelReason = note
 		}
+		if targetStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED && ord.ConfirmedAt == nil {
+			ts := now
+			ord.ConfirmedAt = &ts
+		}
 		ord.UpdatedAt = now
 		m.orders[id] = ord
 
@@ -720,20 +753,57 @@ func (m *MemoryStore) TransitionOrdersPaymentResult(_ context.Context, params Pa
 			m.groups[groupID] = g
 		}
 	}
+	if len(outcome.Transitioned) > 0 {
+		if targetStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
+			if g, ok := m.groups[groupID]; ok {
+				g.PendingStockConfirm = true
+				g.UpdatedAt = now
+				m.groups[groupID] = g
+			}
+		} else if targetStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+			for _, tr := range outcome.Transitioned {
+				if curOrd, ok := m.orders[tr.ID]; ok {
+					curOrd.PendingCancelCompensation = true
+					m.orders[tr.ID] = curOrd
+				}
+			}
+		}
+	}
 	return outcome, nil
 }
 
 func (m *MemoryStore) TransitionOrderStatus(_ context.Context, params SingleOrderTransitionParams) (*OrderTransitionResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := time.Now().UTC()
+	now := params.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 
 	ord, ok := m.orders[params.OrderID]
 	if !ok {
 		return nil, ErrNotFound
 	}
 	cur := statemachine.StringToStatus(ord.Status)
+	if params.ExpectedStatus != orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED && cur != params.ExpectedStatus {
+		return nil, fmt.Errorf("%w: expected order status %s, got %s",
+			statemachine.ErrInvalidTransition,
+			statemachine.StatusToString(params.ExpectedStatus),
+			statemachine.StatusToString(cur))
+	}
+	if params.RequireConfirmedBefore != nil {
+		confirmTS := ord.UpdatedAt
+		if ord.ConfirmedAt != nil {
+			confirmTS = *ord.ConfirmedAt
+		}
+		if confirmTS.After(*params.RequireConfirmedBefore) {
+			return nil, fmt.Errorf("%w: order confirmation timestamp has not exceeded timeout", statemachine.ErrInvalidTransition)
+		}
+	}
 	if err := statemachine.ValidateTransition(cur, params.TargetStatus); err != nil {
+		return nil, err
+	}
+	if err := checkCancelShipmentGuard(ord, params, now); err != nil {
 		return nil, err
 	}
 
@@ -789,6 +859,14 @@ func (m *MemoryStore) TransitionOrderStatus(_ context.Context, params SingleOrde
 		if payStatus != "" {
 			target.PaymentStatus = payStatus
 		}
+		if shouldClearPendingShipmentCancelOnCancel(target, params, now) {
+			target.PendingShipmentCancel = false
+			target.PendingShipmentCancelAt = nil
+			target.PendingShipmentCancelToken = ""
+		}
+		if params.TargetStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+			target.PendingCancelCompensation = true
+		}
 		target.UpdatedAt = now
 		m.orders[target.ID] = target
 		if target.ID == ord.ID {
@@ -821,28 +899,18 @@ func (m *MemoryStore) TransitionOrderStatus(_ context.Context, params SingleOrde
 	}
 
 	if params.CancelGroupPend && params.TargetStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
-		if shouldMarkGroupRefunded(siblings, ord.ID, statemachine.StatusToString(params.TargetStatus), ord.PaymentStatus) {
+		mergedSiblings := mergeUpdatedOrders(siblings, transitioned)
+		if shouldMarkGroupRefunded(mergedSiblings, "", "", "") {
 			if g, ok := m.groups[ord.CheckoutGroupID]; ok {
 				g.PaymentStatus = "REFUNDED"
 				g.UpdatedAt = now
 				m.groups[ord.CheckoutGroupID] = g
 			}
-		} else if !hasActiveSibling {
-			anyPaidSibling := false
-			for _, sib := range siblings {
-				if statemachine.StringToPaymentMethod(sib.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
-					(strings.EqualFold(sib.PaymentStatus, "SUCCEEDED") || strings.EqualFold(sib.PaymentStatus, "REFUNDED")) &&
-					sib.TotalPayableVND > 0 {
-					anyPaidSibling = true
-					break
-				}
-			}
-			if !anyPaidSibling {
-				if g, ok := m.groups[ord.CheckoutGroupID]; ok {
-					g.PaymentStatus = "CANCELLED"
-					g.UpdatedAt = now
-					m.groups[ord.CheckoutGroupID] = g
-				}
+		} else if shouldMarkGroupCancelled(mergedSiblings, "", "", "") {
+			if g, ok := m.groups[ord.CheckoutGroupID]; ok {
+				g.PaymentStatus = "CANCELLED"
+				g.UpdatedAt = now
+				m.groups[ord.CheckoutGroupID] = g
 			}
 		}
 	}
@@ -867,25 +935,303 @@ func (m *MemoryStore) TransitionOrderStatus(_ context.Context, params SingleOrde
 	}, nil
 }
 
-func (m *MemoryStore) TransitionOrderShipped(_ context.Context, params ShipOrderParams) (*OrderAggregate, error) {
+func (m *MemoryStore) MarkOrderShipmentCreating(_ context.Context, orderID string, now time.Time) (string, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ord, ok := m.orders[orderID]
+	if !ok {
+		return "", ErrNotFound
+	}
+	cur := statemachine.StringToStatus(ord.Status)
+	if cur != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED && cur != orderv1.OrderStatus_ORDER_STATUS_PREPARING {
+		return "", fmt.Errorf("%w: cannot create shipment from status %s", statemachine.ErrInvalidTransition, statemachine.StatusToString(cur))
+	}
+	token := uuid.NewString()
+	markedAt := now
+	ord.PendingShipmentCancel = true
+	ord.PendingShipmentCancelAt = &markedAt
+	ord.PendingShipmentCancelToken = token
+	ord.UpdatedAt = now
+	m.orders[orderID] = ord
+	return token, nil
+}
+
+func (m *MemoryStore) ClearOrderPendingShipmentCancel(_ context.Context, orderID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ord, ok := m.orders[orderID]; ok {
+		ord.PendingShipmentCancel = false
+		ord.PendingShipmentCancelAt = nil
+		ord.PendingShipmentCancelToken = ""
+		m.orders[orderID] = ord
+	}
+	return nil
+}
+
+func (m *MemoryStore) ClearOrderPendingShipmentCancelByToken(_ context.Context, orderID, token string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ord, ok := m.orders[orderID]; ok && ord.PendingShipmentCancel && ord.PendingShipmentCancelToken == token {
+		ord.PendingShipmentCancel = false
+		ord.PendingShipmentCancelAt = nil
+		ord.PendingShipmentCancelToken = ""
+		m.orders[orderID] = ord
+	}
+	return nil
+}
+
+func (m *MemoryStore) ClearStaleOrderPendingShipmentCancel(_ context.Context, orderID, expectedToken string, cutoff time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ord, ok := m.orders[orderID]
+	if !ok || !ord.PendingShipmentCancel || ord.PendingShipmentCancelToken != expectedToken {
+		return false, nil
+	}
+	if ord.Status != "CONFIRMED" && ord.Status != "PREPARING" {
+		return false, nil
+	}
+	markedAt := ord.UpdatedAt
+	if ord.PendingShipmentCancelAt != nil {
+		markedAt = *ord.PendingShipmentCancelAt
+	}
+	if !markedAt.Before(cutoff) {
+		return false, nil
+	}
+	ord.PendingShipmentCancel = false
+	ord.PendingShipmentCancelAt = nil
+	ord.PendingShipmentCancelToken = ""
+	ord.UpdatedAt = time.Now().UTC()
+	m.orders[orderID] = ord
+	return true, nil
+}
+
+func (m *MemoryStore) MarkOrderOrphanShipmentManualReview(_ context.Context, orderID, note string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ord, ok := m.orders[orderID]
+	if !ok {
+		return ErrNotFound
+	}
 	now := time.Now().UTC()
+	ord.PendingShipmentCancel = false
+	ord.PendingShipmentCancelAt = nil
+	ord.PendingShipmentCancelToken = ""
+	ord.OrphanShipmentNeedsManualReview = true
+	ord.UpdatedAt = now
+	m.orders[orderID] = ord
+	m.timelines[orderID] = append(m.timelines[orderID], db.OrderTimelineEvent{
+		ID:         uuid.NewString(),
+		OrderID:    orderID,
+		FromStatus: ord.Status,
+		ToStatus:   ord.Status,
+		ActorID:    "order-service",
+		ActorRole:  "system",
+		Note:       note,
+		CreatedAt:  now,
+	})
+	return nil
+}
+
+func (m *MemoryStore) ClearCheckoutGroupPendingStockConfirm(_ context.Context, checkoutGroupID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if g, ok := m.groups[checkoutGroupID]; ok {
+		g.PendingStockConfirm = false
+		g.UpdatedAt = time.Now().UTC()
+		m.groups[checkoutGroupID] = g
+	}
+	return nil
+}
+
+func (m *MemoryStore) ClearOrderPendingCancelCompensation(_ context.Context, orderID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ord, ok := m.orders[orderID]; ok {
+		ord.PendingCancelCompensation = false
+		ord.UpdatedAt = time.Now().UTC()
+		m.orders[orderID] = ord
+	}
+	return nil
+}
+
+func (m *MemoryStore) FindCancelledOrdersPendingShipmentCancel(_ context.Context, limit int32) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var matched []string
+	for _, ord := range m.orders {
+		if ord.Status == "CANCELLED" && ord.PendingShipmentCancel {
+			matched = append(matched, ord.ID)
+		}
+	}
+	// ponytail: random order mirrors SQL ORDER BY random() to prevent starvation behind permanently failing rows.
+	rand.Shuffle(len(matched), func(i, j int) { matched[i], matched[j] = matched[j], matched[i] })
+	if limit > 0 && int32(len(matched)) > limit {
+		matched = matched[:limit]
+	}
+	return matched, nil
+}
+
+func (m *MemoryStore) FindActiveOrdersWithStalePendingShipmentCancel(_ context.Context, cutoff time.Time, limit int32) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var matched []string
+	for _, ord := range m.orders {
+		if (ord.Status != "CONFIRMED" && ord.Status != "PREPARING") || !ord.PendingShipmentCancel {
+			continue
+		}
+		markedAt := ord.UpdatedAt
+		if ord.PendingShipmentCancelAt != nil {
+			markedAt = *ord.PendingShipmentCancelAt
+		}
+		if markedAt.Before(cutoff) {
+			matched = append(matched, ord.ID)
+		}
+	}
+	// ponytail: random order mirrors SQL ORDER BY random().
+	rand.Shuffle(len(matched), func(i, j int) { matched[i], matched[j] = matched[j], matched[i] })
+	if limit > 0 && int32(len(matched)) > limit {
+		matched = matched[:limit]
+	}
+	return matched, nil
+}
+
+func (m *MemoryStore) FindCheckoutGroupsPendingStockConfirm(_ context.Context, limit int32) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var matched []string
+	for _, g := range m.groups {
+		if g.PendingStockConfirm {
+			matched = append(matched, g.ID)
+		}
+	}
+	// ponytail: random order mirrors SQL ORDER BY random().
+	rand.Shuffle(len(matched), func(i, j int) { matched[i], matched[j] = matched[j], matched[i] })
+	if limit > 0 && int32(len(matched)) > limit {
+		matched = matched[:limit]
+	}
+	return matched, nil
+}
+
+func (m *MemoryStore) ClearOrderPendingReturnCompensation(_ context.Context, orderID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ord, ok := m.orders[orderID]; ok {
+		ord.PendingReturnCompensation = false
+		ord.UpdatedAt = time.Now().UTC()
+		m.orders[orderID] = ord
+	}
+	return nil
+}
+
+func (m *MemoryStore) FindCancelledOrdersPendingCompensation(_ context.Context, limit int32) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var matched []string
+	for _, ord := range m.orders {
+		if ord.Status == "CANCELLED" && ord.PendingCancelCompensation {
+			matched = append(matched, ord.ID)
+		}
+	}
+	// ponytail: random order mirrors SQL ORDER BY random().
+	rand.Shuffle(len(matched), func(i, j int) { matched[i], matched[j] = matched[j], matched[i] })
+	if limit > 0 && int32(len(matched)) > limit {
+		matched = matched[:limit]
+	}
+	return matched, nil
+}
+
+func (m *MemoryStore) FindReturnedOrdersPendingCompensation(_ context.Context, limit int32) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var matched []string
+	for _, ord := range m.orders {
+		if ord.Status == "RETURNED" && ord.PendingReturnCompensation {
+			matched = append(matched, ord.ID)
+		}
+	}
+	// ponytail: random order mirrors SQL ORDER BY random().
+	rand.Shuffle(len(matched), func(i, j int) { matched[i], matched[j] = matched[j], matched[i] })
+	if limit > 0 && int32(len(matched)) > limit {
+		matched = matched[:limit]
+	}
+	return matched, nil
+}
+
+func (m *MemoryStore) TransitionOrderPreparedForShipment(_ context.Context, params ShipOrderParams) (*OrderAggregate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := params.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 
 	ord, ok := m.orders[params.OrderID]
 	if !ok {
 		return nil, ErrNotFound
 	}
 	cur := statemachine.StringToStatus(ord.Status)
-	if err := statemachine.ValidateTransition(cur, orderv1.OrderStatus_ORDER_STATUS_SHIPPING); err != nil {
-		return nil, err
+	if cur == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+		markedAt := now
+		ord.PendingShipmentCancel = true
+		ord.PendingShipmentCancelAt = &markedAt
+		ord.PendingShipmentCancelToken = ""
+		ord.UpdatedAt = now
+		m.orders[ord.ID] = ord
+		return nil, ErrOrphanShipmentNeedsCancel
+	}
+	if cur == orderv1.OrderStatus_ORDER_STATUS_SHIPPING &&
+		strings.TrimSpace(params.TrackingCode) != "" &&
+		strings.EqualFold(strings.TrimSpace(ord.TrackingCode), strings.TrimSpace(params.TrackingCode)) {
+		wasFallback := strings.EqualFold(strings.TrimSpace(ord.CarrierCode), "fallback")
+		if ord.CarrierCode == "" || wasFallback {
+			ord.CarrierCode = params.CarrierCode
+		}
+		if ord.ServiceCode == "" || wasFallback {
+			ord.ServiceCode = params.ServiceCode
+		}
+		if params.LabelURL != "" {
+			ord.LabelURL = params.LabelURL
+		}
+		ord.PendingShipmentCancel = false
+		ord.PendingShipmentCancelAt = nil
+		ord.PendingShipmentCancelToken = ""
+		ord.UpdatedAt = now
+		m.orders[ord.ID] = ord
+		return m.getOrderLocked(ord.ID)
+	}
+	if cur != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED && cur != orderv1.OrderStatus_ORDER_STATUS_PREPARING {
+		return nil, fmt.Errorf("%w: cannot create shipment from status %s", statemachine.ErrInvalidTransition, statemachine.StatusToString(cur))
+	}
+	if cur == orderv1.OrderStatus_ORDER_STATUS_PREPARING &&
+		strings.TrimSpace(ord.TrackingCode) != "" &&
+		ord.TrackingCode == params.TrackingCode &&
+		ord.LabelURL == params.LabelURL &&
+		ord.CarrierCode == params.CarrierCode &&
+		ord.ServiceCode == params.ServiceCode {
+		if ord.PendingShipmentCancel &&
+			(params.ExpectedCreatingToken == "" || ord.PendingShipmentCancelToken == params.ExpectedCreatingToken) {
+			ord.PendingShipmentCancel = false
+			ord.PendingShipmentCancelAt = nil
+			ord.PendingShipmentCancelToken = ""
+			m.orders[ord.ID] = ord
+		}
+		return m.getOrderLocked(ord.ID)
+	}
+	if params.ExpectedCreatingToken != "" && ord.PendingShipmentCancelToken != params.ExpectedCreatingToken {
+		return nil, ErrStaleShipmentAttempt
 	}
 	prev := ord.Status
-	ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_SHIPPING)
+	ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_PREPARING)
 	ord.CarrierCode = params.CarrierCode
 	ord.ServiceCode = params.ServiceCode
 	ord.TrackingCode = params.TrackingCode
 	ord.LabelURL = params.LabelURL
+	ord.PendingShipmentCancel = false
+	ord.PendingShipmentCancelAt = nil
+	ord.PendingShipmentCancelToken = ""
 	ord.UpdatedAt = now
 	m.orders[ord.ID] = ord
 
@@ -899,23 +1245,47 @@ func (m *MemoryStore) TransitionOrderShipped(_ context.Context, params ShipOrder
 		Note:       params.Note,
 		CreatedAt:  now,
 	})
-	if params.OutboxEvent.ID != "" {
+	return m.getOrderLocked(ord.ID)
+}
+
+func (m *MemoryStore) completeOrderLocked(ord db.Order, actorID, actorRole, note string, outboxEvent db.InsertOutboxEventParams, now time.Time) db.Order {
+	prev := ord.Status
+	ts := now
+	ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_COMPLETED)
+	ord.CompletedAt = &ts
+	ord.UpdatedAt = now
+	m.orders[ord.ID] = ord
+
+	m.timelines[ord.ID] = append(m.timelines[ord.ID], db.OrderTimelineEvent{
+		ID:         uuid.NewString(),
+		OrderID:    ord.ID,
+		FromStatus: prev,
+		ToStatus:   ord.Status,
+		ActorID:    actorID,
+		ActorRole:  actorRole,
+		Note:       note,
+		CreatedAt:  now,
+	})
+	if outboxEvent.ID != "" {
 		m.outbox = append(m.outbox, db.OutboxEvent{
-			ID:          params.OutboxEvent.ID,
-			EventType:   params.OutboxEvent.EventType,
-			TraceID:     params.OutboxEvent.TraceID,
-			Traceparent: params.OutboxEvent.Traceparent,
-			PayloadJSON: params.OutboxEvent.PayloadJSON,
+			ID:          outboxEvent.ID,
+			EventType:   outboxEvent.EventType,
+			TraceID:     outboxEvent.TraceID,
+			Traceparent: outboxEvent.Traceparent,
+			PayloadJSON: outboxEvent.PayloadJSON,
 			CreatedAt:   now,
 		})
 	}
-	return m.getOrderLocked(ord.ID)
+	return ord
 }
 
 func (m *MemoryStore) TransitionOrderCompleted(_ context.Context, params CompleteOrderParams) (*OrderAggregate, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := time.Now().UTC()
+	now := params.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 
 	ord, ok := m.orders[params.OrderID]
 	if !ok {
@@ -923,41 +1293,26 @@ func (m *MemoryStore) TransitionOrderCompleted(_ context.Context, params Complet
 	}
 	cur := statemachine.StringToStatus(ord.Status)
 	if cur != orderv1.OrderStatus_ORDER_STATUS_DELIVERED {
-		return nil, fmt.Errorf("%w: buyer confirm received requires DELIVERED, got %s", statemachine.ErrInvalidTransition, statemachine.StatusToString(cur))
+		return nil, fmt.Errorf("%w: completing delivered order requires DELIVERED, got %s", statemachine.ErrInvalidTransition, statemachine.StatusToString(cur))
 	}
-	prev := ord.Status
-	ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_COMPLETED)
-	ord.CompletedAt = &now
-	ord.UpdatedAt = now
-	m.orders[ord.ID] = ord
-
-	m.timelines[ord.ID] = append(m.timelines[ord.ID], db.OrderTimelineEvent{
-		ID:         uuid.NewString(),
-		OrderID:    ord.ID,
-		FromStatus: prev,
-		ToStatus:   ord.Status,
-		ActorID:    params.ActorID,
-		ActorRole:  params.ActorRole,
-		Note:       params.Note,
-		CreatedAt:  now,
-	})
-	if params.OutboxEvent.ID != "" {
-		m.outbox = append(m.outbox, db.OutboxEvent{
-			ID:          params.OutboxEvent.ID,
-			EventType:   params.OutboxEvent.EventType,
-			TraceID:     params.OutboxEvent.TraceID,
-			Traceparent: params.OutboxEvent.Traceparent,
-			PayloadJSON: params.OutboxEvent.PayloadJSON,
-			CreatedAt:   now,
-		})
+	if params.RequireNoReturnRequest {
+		for _, rr := range m.returnRequests {
+			if rr.OrderID == ord.ID && rr.Status != "CLOSED" {
+				return nil, fmt.Errorf("%w: order %s has an active return request", statemachine.ErrInvalidTransition, ord.ID)
+			}
+		}
 	}
+	m.completeOrderLocked(ord, params.ActorID, params.ActorRole, params.Note, params.OutboxEvent, now)
 	return m.getOrderLocked(ord.ID)
 }
 
-func (m *MemoryStore) TransitionOrderReturnRequested(_ context.Context, params ReturnRequestParams) (*OrderAggregate, *db.ReturnRequest, error) {
+func (m *MemoryStore) TransitionOrderReturnRequested(_ context.Context, params ReturnRequestParams) (*OrderAggregate, *ReturnAggregate, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := time.Now().UTC()
+	now := params.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 
 	ord, ok := m.orders[params.OrderID]
 	if !ok {
@@ -967,22 +1322,56 @@ func (m *MemoryStore) TransitionOrderReturnRequested(_ context.Context, params R
 	if err := statemachine.ValidateTransition(cur, orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED); err != nil {
 		return nil, nil, err
 	}
+	for _, existing := range m.returnRequests {
+		if existing.OrderID == ord.ID {
+			return nil, nil, ErrDuplicateReturnRequest
+		}
+	}
 	prev := ord.Status
 	ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED)
 	ord.UpdatedAt = now
 	m.orders[ord.ID] = ord
 
+	orderCode := params.OrderCode
+	if orderCode == "" {
+		orderCode = ord.OrderCode
+	}
+	shopID := params.ShopID
+	if shopID == "" {
+		shopID = ord.ShopID
+	}
+	refundAmt := params.RefundAmountVND
+	if refundAmt < 0 {
+		refundAmt = 0
+	}
 	rr := db.ReturnRequest{
-		ID:               params.ReturnRequestID,
-		OrderID:          params.OrderID,
-		BuyerID:          params.BuyerID,
-		Reason:           params.Reason,
-		EvidenceURLsJSON: params.EvidenceURLsJSON,
-		Status:           "PENDING",
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                     params.ReturnRequestID,
+		OrderID:                params.OrderID,
+		OrderCode:              orderCode,
+		BuyerID:                params.BuyerID,
+		ShopID:                 shopID,
+		Reason:                 params.Reason,
+		EvidenceURLsJSON:       params.EvidenceURLsJSON,
+		SellerEvidenceURLsJSON: []byte("[]"),
+		Status:                 statemachine.ReturnStatusToString(orderv1.ReturnStatus_RETURN_STATUS_PENDING),
+		RefundAmountVND:        refundAmt,
+		DeadlineAt:             params.DeadlineAt,
+		CreatedAt:              now,
+		UpdatedAt:              now,
 	}
 	m.returnRequests[rr.ID] = rr
+
+	retEv := db.ReturnEvent{
+		ID:              uuid.NewString(),
+		ReturnRequestID: rr.ID,
+		FromStatus:      "UNSPECIFIED",
+		ToStatus:        rr.Status,
+		ActorID:         params.ActorID,
+		ActorRole:       params.ActorRole,
+		Note:            params.Reason,
+		CreatedAt:       now,
+	}
+	m.returnEvents[rr.ID] = []db.ReturnEvent{retEv}
 
 	m.timelines[ord.ID] = append(m.timelines[ord.ID], db.OrderTimelineEvent{
 		ID:         uuid.NewString(),
@@ -994,15 +1383,65 @@ func (m *MemoryStore) TransitionOrderReturnRequested(_ context.Context, params R
 		Note:       params.Note,
 		CreatedAt:  now,
 	})
+	if params.OutboxEvent.ID != "" {
+		m.outbox = append(m.outbox, db.OutboxEvent{
+			ID:          params.OutboxEvent.ID,
+			EventType:   params.OutboxEvent.EventType,
+			TraceID:     params.OutboxEvent.TraceID,
+			Traceparent: params.OutboxEvent.Traceparent,
+			PayloadJSON: params.OutboxEvent.PayloadJSON,
+			CreatedAt:   now,
+		})
+	}
 
 	agg, _ := m.getOrderLocked(ord.ID)
-	return agg, &rr, nil
+	return agg, &ReturnAggregate{Request: rr, Events: []db.ReturnEvent{retEv}}, nil
+}
+
+func (m *MemoryStore) transitionOrderToShippingLocked(ord db.Order, trackingCode, note, traceID, traceparent string, now time.Time) db.Order {
+	prev := ord.Status
+	ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_SHIPPING)
+	if trackingCode != "" {
+		ord.TrackingCode = trackingCode
+	}
+	ord.UpdatedAt = now
+	m.orders[ord.ID] = ord
+	m.timelines[ord.ID] = append(m.timelines[ord.ID], db.OrderTimelineEvent{
+		ID:         uuid.NewString(),
+		OrderID:    ord.ID,
+		FromStatus: prev,
+		ToStatus:   ord.Status,
+		ActorID:    "shipping-service",
+		ActorRole:  "system",
+		Note:       note,
+		CreatedAt:  now,
+	})
+	payloadBytes, _ := json.Marshal(events.OrderShippedPayload{
+		OrderID:      ord.ID,
+		OrderCode:    ord.OrderCode,
+		BuyerID:      ord.BuyerID,
+		ShopID:       ord.ShopID,
+		CarrierCode:  ord.CarrierCode,
+		TrackingCode: ord.TrackingCode,
+	})
+	m.outbox = append(m.outbox, db.OutboxEvent{
+		ID:          uuid.NewString(),
+		EventType:   events.SubjectOrderShipped,
+		TraceID:     traceID,
+		Traceparent: traceparent,
+		PayloadJSON: payloadBytes,
+		CreatedAt:   now,
+	})
+	return ord
 }
 
 func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpdateParams) (*ShipmentUpdateOutcome, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := time.Now().UTC()
+	now := params.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 
 	if params.EventID != "" {
 		if _, exists := m.processedEvents[params.EventID]; exists {
@@ -1030,15 +1469,79 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 	}
 	outcome := &ShipmentUpdateOutcome{}
 
+	curTracking := strings.TrimSpace(ord.TrackingCode)
+	evTracking := strings.TrimSpace(params.TrackingCode)
+	if curTracking != "" && (evTracking == "" || !strings.EqualFold(evTracking, curTracking)) {
+		return outcome, nil
+	}
+	switch cur {
+	case orderv1.OrderStatus_ORDER_STATUS_PENDING,
+		orderv1.OrderStatus_ORDER_STATUS_CANCELLED,
+		orderv1.OrderStatus_ORDER_STATUS_COMPLETED,
+		orderv1.OrderStatus_ORDER_STATUS_DELIVERED,
+		orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED:
+		return outcome, nil
+	case orderv1.OrderStatus_ORDER_STATUS_RETURNED:
+		if !(shipStatus == "returned" && params.SkipMarkProcessed) {
+			return outcome, nil
+		}
+	}
+
 	switch shipStatus {
+	case "delivering", "failed", "returning":
+		if cur == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED || cur == orderv1.OrderStatus_ORDER_STATUS_PREPARING {
+			shipNote := note
+			if shipStatus != "delivering" {
+				shipNote = "Shipment in transit (" + shipStatus + ")"
+			}
+			ord = m.transitionOrderToShippingLocked(ord, params.TrackingCode, shipNote, params.TraceID, params.Traceparent, now)
+			outcome.TransitionedFrom = cur
+			outcome.TransitionedTo = orderv1.OrderStatus_ORDER_STATUS_SHIPPING
+			outcome.EmittedOutbox = true
+			if shipStatus != "delivering" {
+				m.timelines[ord.ID] = append(m.timelines[ord.ID], db.OrderTimelineEvent{
+					ID:         uuid.NewString(),
+					OrderID:    ord.ID,
+					FromStatus: ord.Status,
+					ToStatus:   ord.Status,
+					ActorID:    "shipping-service",
+					ActorRole:  "system",
+					Note:       fmt.Sprintf("[%s] %s", shipStatus, note),
+					CreatedAt:  now,
+				})
+			}
+		} else {
+			if params.TrackingCode != "" {
+				ord.TrackingCode = params.TrackingCode
+				ord.UpdatedAt = now
+				m.orders[ord.ID] = ord
+			}
+			m.timelines[ord.ID] = append(m.timelines[ord.ID], db.OrderTimelineEvent{
+				ID:         uuid.NewString(),
+				OrderID:    ord.ID,
+				FromStatus: ord.Status,
+				ToStatus:   ord.Status,
+				ActorID:    "shipping-service",
+				ActorRole:  "system",
+				Note:       fmt.Sprintf("[%s] %s", shipStatus, note),
+				CreatedAt:  now,
+			})
+		}
+
 	case "delivered":
+		if cur == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED || cur == orderv1.OrderStatus_ORDER_STATUS_PREPARING {
+			ord = m.transitionOrderToShippingLocked(ord, params.TrackingCode, "Shipment picked up and in transit", params.TraceID, params.Traceparent, now)
+			cur = orderv1.OrderStatus_ORDER_STATUS_SHIPPING
+			outcome.EmittedOutbox = true
+		}
 		if cur == orderv1.OrderStatus_ORDER_STATUS_SHIPPING {
 			prev := ord.Status
 			ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_DELIVERED)
 			if params.TrackingCode != "" {
 				ord.TrackingCode = params.TrackingCode
 			}
-			ord.DeliveredAt = &now
+			ts := now
+			ord.DeliveredAt = &ts
 			ord.UpdatedAt = now
 			m.orders[ord.ID] = ord
 			m.timelines[ord.ID] = append(m.timelines[ord.ID], db.OrderTimelineEvent{
@@ -1067,20 +1570,48 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 				CreatedAt:   now,
 			})
 			outcome.TransitionedTo = orderv1.OrderStatus_ORDER_STATUS_DELIVERED
+			outcome.EmittedOutbox = true
 		}
+
 	case "returned":
-		if cur == orderv1.OrderStatus_ORDER_STATUS_SHIPPING || cur == orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED {
+		if cur == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED || cur == orderv1.OrderStatus_ORDER_STATUS_PREPARING {
+			ord = m.transitionOrderToShippingLocked(ord, params.TrackingCode, "Shipment picked up and in transit", params.TraceID, params.Traceparent, now)
+			cur = orderv1.OrderStatus_ORDER_STATUS_SHIPPING
+			outcome.EmittedOutbox = true
+		}
+		if cur == orderv1.OrderStatus_ORDER_STATUS_SHIPPING {
 			prev := ord.Status
 			wasPaid := strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") && ord.TotalPayableVND > 0
 			ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURNED)
-			if cur == orderv1.OrderStatus_ORDER_STATUS_SHIPPING &&
-				(ord.TotalPayableVND == 0 ||
-					(statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD &&
-						isUnpaidPendingStatus(ord.PaymentStatus))) {
-				ord.PaymentStatus = "CANCELLED"
+			ord.PendingReturnCompensation = true
+			nextPayStatus := ""
+			if ord.TotalPayableVND == 0 ||
+				(statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD &&
+					isUnpaidPendingStatus(ord.PaymentStatus)) {
+				nextPayStatus = "CANCELLED"
+				ord.PaymentStatus = nextPayStatus
 			}
 			ord.UpdatedAt = now
 			m.orders[ord.ID] = ord
+			if nextPayStatus != "" {
+				var siblings []db.Order
+				for _, sib := range m.orders {
+					if sib.CheckoutGroupID == ord.CheckoutGroupID {
+						siblings = append(siblings, sib)
+					}
+				}
+				if g, ok := m.groups[ord.CheckoutGroupID]; ok {
+					if shouldMarkGroupRefunded(siblings, ord.ID, ord.Status, ord.PaymentStatus) {
+						g.PaymentStatus = "REFUNDED"
+						g.UpdatedAt = now
+						m.groups[ord.CheckoutGroupID] = g
+					} else if shouldMarkGroupCancelled(siblings, ord.ID, ord.Status, ord.PaymentStatus) {
+						g.PaymentStatus = "CANCELLED"
+						g.UpdatedAt = now
+						m.groups[ord.CheckoutGroupID] = g
+					}
+				}
+			}
 			m.timelines[ord.ID] = append(m.timelines[ord.ID], db.OrderTimelineEvent{
 				ID:         uuid.NewString(),
 				OrderID:    ord.ID,
@@ -1113,6 +1644,7 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 			})
 			outcome.TransitionedFrom = cur
 			outcome.TransitionedTo = orderv1.OrderStatus_ORDER_STATUS_RETURNED
+			outcome.EmittedOutbox = true
 		} else if cur == orderv1.OrderStatus_ORDER_STATUS_RETURNED && params.SkipMarkProcessed {
 			outcome.AlreadyReturned = true
 			tls := m.timelines[ord.ID]
@@ -1123,6 +1655,7 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 				}
 			}
 		}
+
 	default:
 		if params.TrackingCode != "" {
 			ord.TrackingCode = params.TrackingCode
@@ -1343,10 +1876,12 @@ func (m *MemoryStore) FindExpiredPendingGroups(_ context.Context, limit int32) (
 				CheckoutGroupID: ord.CheckoutGroupID,
 				PaymentID:       ord.PaymentID,
 			})
-			if int32(len(out)) >= limit {
-				break
-			}
 		}
+	}
+	// ponytail: random order mirrors SQL ORDER BY random() to prevent starvation behind failing rows.
+	rand.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
+	if limit > 0 && int32(len(out)) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }
@@ -1375,13 +1910,8 @@ func (m *MemoryStore) FindStaleInProgressCheckoutGroups(_ context.Context, older
 		matched = append(matched, g)
 	}
 
-	sort.Slice(matched, func(i, j int) bool {
-		if !matched[i].UpdatedAt.Equal(matched[j].UpdatedAt) {
-			return matched[i].UpdatedAt.Before(matched[j].UpdatedAt)
-		}
-		return matched[i].ID < matched[j].ID
-	})
-
+	// ponytail: random order mirrors SQL ORDER BY random() to prevent starvation behind failing rows.
+	rand.Shuffle(len(matched), func(i, j int) { matched[i], matched[j] = matched[j], matched[i] })
 	if limit > 0 && int32(len(matched)) > limit {
 		matched = matched[:limit]
 	}

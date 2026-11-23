@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -11,6 +12,17 @@ import (
 	"github.com/nexusmart/core/services/order/internal/db"
 	"github.com/nexusmart/core/services/order/internal/statemachine"
 )
+
+// IsTerminalReturnFailureRawStatus reports whether a carrier raw_status on a "failed"
+// RETURN shipment represents a terminal loss/damage event requiring admin arbitration,
+// rather than a retryable delivery attempt failure.
+func IsTerminalReturnFailureRawStatus(raw string) bool {
+	n := strings.ToLower(strings.TrimSpace(raw))
+	if n == "" {
+		return false
+	}
+	return strings.Contains(n, "lost") || strings.Contains(n, "damage") || strings.Contains(n, "destroy")
+}
 
 func isUnpaidPendingStatus(paymentStatus string) bool {
 	return strings.EqualFold(paymentStatus, "PENDING") || strings.EqualFold(paymentStatus, "COD_PENDING")
@@ -59,18 +71,200 @@ func shouldMarkGroupRefunded(groupOrders []db.Order, overrideID, overrideStatus,
 	return hasRefundedPayable
 }
 
+// shouldMarkGroupCancelled reports whether every sub-order in the checkout group is terminal
+// (CANCELLED or RETURNED) and no paid online (VIETQR) payable sub-order exists.
+func shouldMarkGroupCancelled(groupOrders []db.Order, overrideID, overrideStatus, overridePayStatus string) bool {
+	if len(groupOrders) == 0 {
+		return false
+	}
+	for _, sib := range groupOrders {
+		stStr := sib.Status
+		paySt := sib.PaymentStatus
+		if sib.ID == overrideID {
+			if overrideStatus != "" {
+				stStr = overrideStatus
+			}
+			if overridePayStatus != "" {
+				paySt = overridePayStatus
+			}
+		}
+		st := statemachine.StringToStatus(stStr)
+		if st != orderv1.OrderStatus_ORDER_STATUS_CANCELLED && st != orderv1.OrderStatus_ORDER_STATUS_RETURNED {
+			return false
+		}
+		if statemachine.StringToPaymentMethod(sib.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+			(strings.EqualFold(paySt, "SUCCEEDED") || strings.EqualFold(paySt, "REFUNDED")) &&
+			sib.TotalPayableVND > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// PendingShipmentCancelTTL is the maximum age an active pending_shipment_cancel flag
+// (with no tracking_code yet) blocks cancellation when Shipping.CancelShipment returns NotFound.
+// Derivation: ORDER_GRPC_TIMEOUT (10s) + shipping CARRIER_TIMEOUT (3s; GHN fallback 5s) +
+// retries/backoff (~15s) + gateway/proxy margin (~30s) < 1m; 5m provides >10x safety margin
+// over any live in-flight CreateShipment while preventing crashed/Unavailable attempts from
+// blocking cancellations permanently.
+const PendingShipmentCancelTTL = 5 * time.Minute
+
+func isPendingShipmentCancelFresh(ord db.Order, now time.Time) bool {
+	if !ord.PendingShipmentCancel {
+		return false
+	}
+	markedAt := ord.UpdatedAt
+	if ord.PendingShipmentCancelAt != nil {
+		markedAt = *ord.PendingShipmentCancelAt
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return now.Sub(markedAt) <= PendingShipmentCancelTTL
+}
+
+// checkCancelShipmentGuard enforces P0-1 under FOR UPDATE when transitioning an order to CANCELLED:
+// any non-empty tracking_code must match the tracking code cancelled by Shipping.CancelShipment
+// (or match KnownTrackingBeforeCancel when CancelShipment returned NotFound and no fresh creation is in flight),
+// and a fresh in-flight shipment creation (pending_shipment_cancel=true with age <= PendingShipmentCancelTTL)
+// cannot be bypassed after a NotFound cancel. Once age > PendingShipmentCancelTTL and CancelShipment confirms
+// NotFound, cancellation is allowed so crashed/Unavailable attempts cannot trap an order permanently.
+func checkCancelShipmentGuard(ord db.Order, params SingleOrderTransitionParams, now time.Time) error {
+	if params.TargetStatus != orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+		return nil
+	}
+	if !params.VerifyShipmentCancel && !params.RequireNoTracking {
+		return nil
+	}
+	ordTrk := strings.TrimSpace(ord.TrackingCode)
+	canTrk := strings.TrimSpace(params.CancelledTrackingCode)
+	knownTrk := strings.TrimSpace(params.KnownTrackingBeforeCancel)
+	if ordTrk != "" {
+		if canTrk != "" && strings.EqualFold(ordTrk, canTrk) {
+			return nil
+		}
+		// Pre-existing tracking where shipping confirmed NotFound and no fresh shipment creation is in flight.
+		if params.LastCancelNotFound && !isPendingShipmentCancelFresh(ord, now) && knownTrk != "" && strings.EqualFold(ordTrk, knownTrk) {
+			return nil
+		}
+		return ErrOrderHasTracking
+	}
+	if ord.PendingShipmentCancel {
+		// Always require at least one CancelShipment probe when RequireNoTracking=true (even past TTL)
+		// so a real shipment created before a crash is cancelled or blocked if already picked up.
+		if params.RequireNoTracking {
+			return ErrOrderHasTracking
+		}
+		if params.LastCancelNotFound && isPendingShipmentCancelFresh(ord, now) {
+			return ErrOrderHasTracking
+		}
+	}
+	return nil
+}
+
+func shouldClearPendingShipmentCancelOnCancel(ord db.Order, params SingleOrderTransitionParams, now time.Time) bool {
+	if !ord.PendingShipmentCancel {
+		return false
+	}
+	if params.ClearPendingShipmentCancel && strings.TrimSpace(ord.TrackingCode) != "" {
+		return true
+	}
+	if params.LastCancelNotFound && !isPendingShipmentCancelFresh(ord, now) {
+		return true
+	}
+	if !params.LastCancelNotFound && strings.TrimSpace(params.CancelledTrackingCode) != "" {
+		return true
+	}
+	return false
+}
+
+// mergeUpdatedOrders returns a copy of siblings with each transitioned order's updated fields applied.
+func mergeUpdatedOrders(siblings, transitioned []db.Order) []db.Order {
+	if len(transitioned) == 0 {
+		return siblings
+	}
+	byID := make(map[string]db.Order, len(transitioned))
+	for _, tr := range transitioned {
+		byID[tr.ID] = tr
+	}
+	out := make([]db.Order, len(siblings))
+	for i, sib := range siblings {
+		if upd, ok := byID[sib.ID]; ok {
+			out[i] = upd
+		} else {
+			out[i] = sib
+		}
+	}
+	return out
+}
+
+func appendPreviousReturnTracking(rawJSON []byte, tracking string) ([]byte, error) {
+	trk := strings.TrimSpace(tracking)
+	var list []string
+	if len(rawJSON) > 0 {
+		_ = json.Unmarshal(rawJSON, &list)
+	}
+	if trk != "" {
+		exists := false
+		for _, existing := range list {
+			if strings.EqualFold(strings.TrimSpace(existing), trk) {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			list = append(list, trk)
+		}
+	}
+	if list == nil {
+		list = []string{}
+	}
+	return json.Marshal(list)
+}
+
+func isPreviousReturnTracking(rawJSON []byte, tracking string) bool {
+	trk := strings.TrimSpace(tracking)
+	if trk == "" || len(rawJSON) == 0 {
+		return false
+	}
+	var list []string
+	if err := json.Unmarshal(rawJSON, &list); err != nil {
+		return false
+	}
+	for _, existing := range list {
+		if strings.EqualFold(strings.TrimSpace(existing), trk) {
+			return true
+		}
+	}
+	return false
+}
+
 var (
-	ErrNotFound                = errors.New("record not found")
-	ErrDuplicateIdempotencyKey = errors.New("duplicate active idempotency key")
-	ErrAlreadyProcessed        = errors.New("event already processed")
-	ErrRetryPrecondition       = errors.New("order group is not eligible for payment retry")
+	ErrNotFound                  = errors.New("record not found")
+	ErrDuplicateIdempotencyKey   = errors.New("duplicate active idempotency key")
+	ErrDuplicateReturnRequest    = errors.New("return request already exists for order")
+	ErrAlreadyProcessed          = errors.New("event already processed")
+	ErrRetryPrecondition         = errors.New("order group is not eligible for payment retry")
+	ErrReturnDeadlineNotReached  = errors.New("return deadline has not expired")
+	ErrOrderHasTracking          = errors.New("order already has tracking code")
+	ErrOrphanShipmentNeedsCancel = fmt.Errorf("%w: order was cancelled while creating shipment", statemachine.ErrInvalidTransition)
+	ErrStaleShipmentAttempt      = fmt.Errorf("%w: shipment creation attempt expired or superseded", statemachine.ErrInvalidTransition)
+	ErrReturnTrackingPending     = errors.New("return shipment tracking code not yet persisted; retry event")
 )
 
-// OrderAggregate groups a persisted order with its line items and timeline history.
+// OrderAggregate groups a persisted order with its line items, timeline history, and return summary.
 type OrderAggregate struct {
-	Order    db.Order
-	Items    []db.OrderItem
-	Timeline []db.OrderTimelineEvent
+	Order           db.Order
+	Items           []db.OrderItem
+	Timeline        []db.OrderTimelineEvent
+	ReturnRequestID string
+	ReturnStatus    string
+}
+
+// ReturnAggregate groups a persisted return_requests row with its append-only return_events timeline.
+type ReturnAggregate struct {
+	Request db.ReturnRequest
+	Events  []db.ReturnEvent
 }
 
 // NewOrderRecord bundles everything inserted atomically for a single sub-order.
@@ -83,8 +277,10 @@ type NewOrderRecord struct {
 
 // CheckoutBatch holds all sub-orders created in one checkout transaction.
 type CheckoutBatch struct {
-	CheckoutGroupID string
-	Orders          []NewOrderRecord
+	CheckoutGroupID     string
+	Orders              []NewOrderRecord
+	PendingStockConfirm bool // Set true atomically for COD / 0-VND checkouts starting CONFIRMED.
+	Now                 time.Time
 }
 
 // UpdateCheckoutPaymentParams updates payment details on a checkout group and all its sub-orders.
@@ -147,6 +343,7 @@ type PaymentResultTransitionParams struct {
 	ActorRole             string
 	TraceID               string
 	Traceparent           string
+	Now                   time.Time
 }
 
 // PaymentResultTransitionOutcome reports what changed in TransitionOrdersPaymentResult.
@@ -168,50 +365,143 @@ type OrderTransitionResult struct {
 
 // SingleOrderTransitionParams drives a generic single-order transition (e.g. Cancel, SellerConfirm).
 type SingleOrderTransitionParams struct {
-	OrderID         string
-	TargetStatus    orderv1.OrderStatus
-	CancelReason    string
-	PaymentStatus   string
-	ActorID         string
-	ActorRole       string
-	Note            string
-	CancelGroupPend bool // When cancelling PENDING order, cancel sibling PENDING orders in group too.
-	OutboxEvents    []db.InsertOutboxEventParams
-	BuildOutboxFn   func(order db.Order) []db.InsertOutboxEventParams
+	OrderID                    string
+	ExpectedStatus             orderv1.OrderStatus // Optional: locked order must match this status before transitioning.
+	RequireConfirmedBefore     *time.Time          // Optional: COALESCE(confirmed_at, updated_at) must be <= cutoff.
+	TargetStatus               orderv1.OrderStatus
+	CancelReason               string
+	PaymentStatus              string
+	ActorID                    string
+	ActorRole                  string
+	Note                       string
+	CancelGroupPend            bool   // When cancelling PENDING order, cancel sibling PENDING orders in group too.
+	RequireNoTracking          bool   // If true and locked order already has tracking_code or pending_shipment_cancel, return ErrOrderHasTracking.
+	VerifyShipmentCancel       bool   // P0-1: When cancelling, always verify tracking_code matches CancelledTrackingCode and in-flight pending_shipment_cancel was not NotFound.
+	CancelledTrackingCode      string // Tracking code actually cancelled by Shipping.CancelShipment (empty if NotFound or not called).
+	KnownTrackingBeforeCancel  string // Tracking code observed on the order before calling Shipping.CancelShipment.
+	LastCancelNotFound         bool   // True when Shipping.CancelShipment returned NotFound (shipment may still be in flight).
+	ClearPendingShipmentCancel bool   // If true, clear pending_shipment_cancel flag in the same transaction.
+	OutboxEvents               []db.InsertOutboxEventParams
+	BuildOutboxFn              func(order db.Order) []db.InsertOutboxEventParams
+	Now                        time.Time
 }
 
-// ShipOrderParams drives SellerShipOrder transition -> SHIPPING.
+// ShipOrderParams drives SellerShipOrder transition CONFIRMED|PREPARING -> PREPARING with tracking.
 type ShipOrderParams struct {
-	OrderID      string
-	CarrierCode  string
-	ServiceCode  string
-	TrackingCode string
-	LabelURL     string
-	ActorID      string
-	ActorRole    string
-	Note         string
-	OutboxEvent  db.InsertOutboxEventParams
+	OrderID               string
+	CarrierCode           string
+	ServiceCode           string
+	TrackingCode          string
+	LabelURL              string
+	ExpectedCreatingToken string // Token returned by MarkOrderShipmentCreating; prevents stale/expired attempts from overwriting.
+	ActorID               string
+	ActorRole             string
+	Note                  string
+	Now                   time.Time
 }
 
-// CompleteOrderParams drives BuyerConfirmReceived transition DELIVERED -> COMPLETED.
+// CompleteOrderParams drives DELIVERED -> COMPLETED (BuyerConfirmReceived or 7d auto-complete job).
 type CompleteOrderParams struct {
-	OrderID     string
-	ActorID     string
-	ActorRole   string
-	Note        string
-	OutboxEvent db.InsertOutboxEventParams
+	OrderID                string
+	ActorID                string
+	ActorRole              string
+	Note                   string
+	RequireNoReturnRequest bool // When true (7d auto-complete), reject if a return request exists.
+	OutboxEvent            db.InsertOutboxEventParams
+	Now                    time.Time
 }
 
 // ReturnRequestParams drives RequestReturn transition DELIVERED -> RETURN_REQUESTED.
 type ReturnRequestParams struct {
 	OrderID          string
+	OrderCode        string
 	BuyerID          string
+	ShopID           string
 	ReturnRequestID  string
 	Reason           string
 	EvidenceURLsJSON []byte
+	RefundAmountVND  int64
+	DeadlineAt       *time.Time
 	ActorID          string
 	ActorRole        string
 	Note             string
+	OutboxEvent      db.InsertOutboxEventParams
+	Now              time.Time
+}
+
+// ReturnTransitionParams drives an atomic return_requests transition under FOR UPDATE.
+type ReturnTransitionParams struct {
+	ReturnRequestID             string
+	ExpectedStatus              orderv1.ReturnStatus
+	TargetStatus                orderv1.ReturnStatus
+	RequireDeadlineExpired      bool
+	RequireNotGoodsRecv         bool
+	RequireNoTracking           bool
+	RequireHasTracking          bool
+	ActorID                     string
+	ActorRole                   string
+	Note                        string
+	EvidenceURLsJSON            []byte
+	SellerResponse              *string
+	SellerEvidenceURLsJSON      []byte
+	DisputeReason               *string
+	AdminNote                   *string
+	ReturnFeeBearer             *string
+	GoodsReceived               *bool
+	ShouldRestock               *bool
+	ReturnShipmentTerminal      *bool
+	EscalatedFromTransitTimeout *bool
+	EscalatedFromCancelFailure  *bool
+	UpdateDeadline              bool
+	DeadlineAt                  *time.Time
+	BuildCompletedOutboxFn      func(order db.Order) (db.InsertOutboxEventParams, error)
+	TraceID                     string
+	Traceparent                 string
+	Now                         time.Time
+}
+
+// ReturnTransitionResult reports the committed return aggregate and associated order aggregate.
+type ReturnTransitionResult struct {
+	Return     *ReturnAggregate
+	Order      *OrderAggregate
+	PrevStatus orderv1.ReturnStatus
+}
+
+// SaveReturnShipmentParams attaches tracking/label/fee and 5d deadline to an AWAITING_SHIPMENT return.
+type SaveReturnShipmentParams struct {
+	ReturnRequestID string
+	TrackingCode    string
+	LabelURL        string
+	FeeVND          int64
+	DeadlineAt      *time.Time
+	TraceID         string
+	Traceparent     string
+	Now             time.Time
+}
+
+// ReturnShipmentUpdateParams drives idempotent shipment.updated (direction=RETURN) consumption.
+type ReturnShipmentUpdateParams struct {
+	EventID         string
+	EventType       string
+	OrderID         string
+	ReturnRequestID string
+	ShipmentStatus  string
+	RawStatus       string
+	TrackingCode    string
+	Description     string
+	InspectDuration time.Duration
+	TransitDuration time.Duration
+	TraceID         string
+	Traceparent     string
+	Now             time.Time
+}
+
+// ReturnShipmentUpdateOutcome reports the effect of a RETURN shipment.updated event.
+type ReturnShipmentUpdateOutcome struct {
+	AlreadyProcessed bool
+	NotFound         bool
+	Transitioned     bool
+	Return           *ReturnAggregate
 }
 
 // ShipmentUpdateParams drives idempotent shipment.updated event consumption.
@@ -225,6 +515,7 @@ type ShipmentUpdateParams struct {
 	Description       string
 	TraceID           string
 	Traceparent       string
+	Now               time.Time
 }
 
 // ShipmentUpdateOutcome reports the effect of applying a shipment.updated event.
@@ -232,6 +523,7 @@ type ShipmentUpdateOutcome struct {
 	AlreadyProcessed bool
 	AlreadyReturned  bool // Redelivery where order was already RETURNED before event was marked processed.
 	NotFound         bool
+	EmittedOutbox    bool
 	TransitionedFrom orderv1.OrderStatus
 	TransitionedTo   orderv1.OrderStatus
 	Order            *OrderAggregate
@@ -275,11 +567,27 @@ type Store interface {
 
 	TransitionOrdersPaymentResult(ctx context.Context, params PaymentResultTransitionParams) (*PaymentResultTransitionOutcome, error)
 	TransitionOrderStatus(ctx context.Context, params SingleOrderTransitionParams) (*OrderTransitionResult, error)
-	TransitionOrderShipped(ctx context.Context, params ShipOrderParams) (*OrderAggregate, error)
+	MarkOrderShipmentCreating(ctx context.Context, orderID string, now time.Time) (string, error)
+	ClearOrderPendingShipmentCancel(ctx context.Context, orderID string) error
+	ClearOrderPendingShipmentCancelByToken(ctx context.Context, orderID, token string) error
+	ClearStaleOrderPendingShipmentCancel(ctx context.Context, orderID, expectedToken string, cutoff time.Time) (bool, error)
+	MarkOrderOrphanShipmentManualReview(ctx context.Context, orderID, note string) error
+	ClearCheckoutGroupPendingStockConfirm(ctx context.Context, checkoutGroupID string) error
+	ClearOrderPendingCancelCompensation(ctx context.Context, orderID string) error
+	ClearOrderPendingReturnCompensation(ctx context.Context, orderID string) error
+	TransitionOrderPreparedForShipment(ctx context.Context, params ShipOrderParams) (*OrderAggregate, error)
 	TransitionOrderCompleted(ctx context.Context, params CompleteOrderParams) (*OrderAggregate, error)
-	TransitionOrderReturnRequested(ctx context.Context, params ReturnRequestParams) (*OrderAggregate, *db.ReturnRequest, error)
+	TransitionOrderReturnRequested(ctx context.Context, params ReturnRequestParams) (*OrderAggregate, *ReturnAggregate, error)
 	ApplyShipmentUpdate(ctx context.Context, params ShipmentUpdateParams) (*ShipmentUpdateOutcome, error)
+	ApplyReturnShipmentUpdate(ctx context.Context, params ReturnShipmentUpdateParams) (*ReturnShipmentUpdateOutcome, error)
 	RecordPaymentRefunded(ctx context.Context, params PaymentRefundedParams) (bool, error)
+
+	GetReturnRequest(ctx context.Context, returnRequestID, orderID string) (*ReturnAggregate, error)
+	ListReturnRequestsFiltered(ctx context.Context, buyerID, shopID, status string, limit, offset int32) ([]ReturnAggregate, int64, error)
+	TransitionReturnRequest(ctx context.Context, params ReturnTransitionParams) (*ReturnTransitionResult, error)
+	ExtendReturnDeadline(ctx context.Context, returnRequestID string, expectedStatus orderv1.ReturnStatus, newDeadline, now time.Time, maxExtensions int32) (bool, error)
+	SaveReturnShipmentInfo(ctx context.Context, params SaveReturnShipmentParams) (*ReturnAggregate, bool, error)
+	UpdateReturnSideEffectProgress(ctx context.Context, returnRequestID string, refundDone, promoReleased, restockDone bool, refundAmountVND *int64) (*db.ReturnRequest, error)
 
 	IsEventProcessed(ctx context.Context, eventID string) (bool, error)
 	MarkEventProcessed(ctx context.Context, eventID, eventType string) error
@@ -287,6 +595,16 @@ type Store interface {
 	ProcessPendingOutbox(ctx context.Context, limit int32, publishFn func(ctx context.Context, ev db.OutboxEvent) error) (int, error)
 	FindExpiredPendingGroups(ctx context.Context, limit int32) ([]ExpiredGroupCandidate, error)
 	FindStaleInProgressCheckoutGroups(ctx context.Context, olderThan time.Duration, limit int32) ([]string, error)
+	FindConfirmedOrdersForAutoCancel(ctx context.Context, cutoff time.Time, limit int32) ([]string, error)
+	FindDeliveredOrdersForAutoComplete(ctx context.Context, cutoff time.Time, limit int32) ([]string, error)
+	FindExpiredReturnRequests(ctx context.Context, now time.Time, limit int32) ([]string, error)
+	FindAwaitingShipmentReturnsWithoutTracking(ctx context.Context, limit int32) ([]string, error)
+	FindRefundingReturnRequests(ctx context.Context, limit int32) ([]string, error)
+	FindCancelledOrdersPendingShipmentCancel(ctx context.Context, limit int32) ([]string, error)
+	FindActiveOrdersWithStalePendingShipmentCancel(ctx context.Context, cutoff time.Time, limit int32) ([]string, error)
+	FindCheckoutGroupsPendingStockConfirm(ctx context.Context, limit int32) ([]string, error)
+	FindCancelledOrdersPendingCompensation(ctx context.Context, limit int32) ([]string, error)
+	FindReturnedOrdersPendingCompensation(ctx context.Context, limit int32) ([]string, error)
 
 	Ping(ctx context.Context) error
 }

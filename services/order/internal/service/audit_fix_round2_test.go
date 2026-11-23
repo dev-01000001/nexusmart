@@ -125,11 +125,12 @@ func TestReviewA_P0_1_PartialRefundThenReturnOrCancel_RefundsOnlyRemaining(t *te
 		}); err != nil {
 			t.Fatalf("HandlePaymentRefunded: %v", err)
 		}
-		if _, err := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ord.Id, ShopId: "shop-1"}); err != nil {
+		shipResp, err := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ord.Id, ShopId: "shop-1"})
+		if err != nil {
 			t.Fatalf("SellerShipOrder: %v", err)
 		}
 		if err := h.svc.HandleShipmentUpdated(context.Background(), "evt-p01-ret", events.ShipmentUpdatedPayload{
-			OrderID: ord.Id, Status: "returned", Description: "returned to seller",
+			OrderID: ord.Id, TrackingCode: shipResp.TrackingCode, Status: "returned", Description: "returned to seller",
 		}); err != nil {
 			t.Fatalf("HandleShipmentUpdated(returned): %v", err)
 		}
@@ -582,14 +583,15 @@ func TestReviewA_P1_7_HandleShipmentReturned_DownstreamErrorTriggersRedelivery(t
 		t.Fatalf("CreateCheckout: %v", err)
 	}
 	ordID := resp.Orders[0].Id
-	_, _ = h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ordID, ShopId: "shop-1"})
+	shipResp, _ := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{OrderId: ordID, ShopId: "shop-1"})
 
 	// Inject transient failure in User.RecordCODRejection.
 	h.user.codRejectionErr = status.Error(codes.Unavailable, "user service unavailable")
 	payload := events.ShipmentUpdatedPayload{
-		OrderID:     ordID,
-		Status:      "returned",
-		Description: "Buyer refused COD",
+		OrderID:      ordID,
+		TrackingCode: shipResp.TrackingCode,
+		Status:       "returned",
+		Description:  "Buyer refused COD",
 	}
 
 	if err := h.svc.HandleShipmentUpdated(context.Background(), "evt-p17-ret-1", payload); err == nil {
@@ -815,13 +817,14 @@ func TestReviewA_P2_10_LegacyCODPending_CancelledOnCancelAndShippingReturned(t *
 		if err != nil {
 			t.Fatalf("PersistCheckoutBatch: %v", err)
 		}
-		if _, err := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{
+		shipResp, err := h.svc.SellerShipOrder(sellerCtx, &orderv1.SellerShipOrderRequest{
 			OrderId: "ord-legacy-cod-2", ShopId: "shop-1",
-		}); err != nil {
+		})
+		if err != nil {
 			t.Fatalf("SellerShipOrder: %v", err)
 		}
 		if err := h.svc.HandleShipmentUpdated(context.Background(), "evt-leg-ret", events.ShipmentUpdatedPayload{
-			OrderID: "ord-legacy-cod-2", Status: "returned", Description: "refused",
+			OrderID: "ord-legacy-cod-2", TrackingCode: shipResp.TrackingCode, Status: "returned", Description: "refused",
 		}); err != nil {
 			t.Fatalf("HandleShipmentUpdated(returned): %v", err)
 		}
@@ -874,7 +877,7 @@ func TestReviewA_P3_12_CancelZeroPayableOrder_SetsPaymentStatusCancelled(t *test
 	if len(h.payment.refundCalls) != 0 {
 		t.Fatalf("0 VND order cancel must not call CreateRefund, got %+v", h.payment.refundCalls)
 	}
-	if len(h.payment.cancelCalls) != 1 {
-		t.Fatalf("expected CancelPayment called for 0 VND single-shop cancel, got %d", len(h.payment.cancelCalls))
+	if len(h.payment.cancelCalls) != 0 {
+		t.Fatalf("0 VND order cancel must not call CancelPayment (payment is already SUCCEEDED; handled via order.cancelled), got %d", len(h.payment.cancelCalls))
 	}
 }
