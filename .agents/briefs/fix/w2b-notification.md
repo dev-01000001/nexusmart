@@ -1,0 +1,2 @@
+# Đợt 2b – agent `notification` (sở hữu `services/notification/**`, `tests/e2e/33_*.go`)
+Theo contracts 2b, §8. Migration `000004_` idempotent. Consumer `product.reviewed` (seller: duyệt/từ chối + lý do, link sản phẩm), `promotion.voucher_expiring` (nhóm PROMOTION, tôn trọng cài đặt, không trùng), `user.shop_bank_account_otp` (email OTP, không OTP trong subject/log/DLQ/in-app). Số chưa đọc cho header. Test unit + e2e 33.
