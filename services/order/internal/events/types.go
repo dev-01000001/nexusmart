@@ -12,6 +12,7 @@ const (
 	SubjectOrderCancelled = "order.cancelled"
 	SubjectOrderShipped   = "order.shipped"
 	SubjectOrderDelivered = "order.delivered"
+	SubjectOrderReturned  = "order.returned"
 	SubjectOrderCompleted = "order.completed"
 
 	SubjectPaymentSucceeded = "payment.succeeded"
@@ -81,6 +82,20 @@ type OrderDeliveredPayload struct {
 	BuyerID      string `json:"buyer_id"`
 	ShopID       string `json:"shop_id"`
 	TrackingCode string `json:"tracking_code"`
+}
+
+// OrderReturnedPayload is emitted via outbox when an order transitions to RETURNED.
+type OrderReturnedPayload struct {
+	OrderID         string `json:"order_id"`
+	OrderCode       string `json:"order_code"`
+	CheckoutGroupID string `json:"checkout_group_id"`
+	BuyerID         string `json:"buyer_id"`
+	ShopID          string `json:"shop_id"`
+	PaymentMethod   string `json:"payment_method"`
+	FromStatus      string `json:"from_status"`
+	TotalPayableVND int64  `json:"total_payable_vnd"`
+	Reason          string `json:"reason"`
+	WasPaid         bool   `json:"was_paid"`
 }
 
 // OrderCompletedPayload matches docs/contracts.md Section 5.

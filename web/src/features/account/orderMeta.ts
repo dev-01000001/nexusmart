@@ -3,6 +3,7 @@ import type {
   GatewayOrderStatus,
   GatewayOrderTimelineEvent,
   GatewayPaymentMethod,
+  GatewayShop,
 } from "@/lib/gateway-types";
 import {
   GATEWAY_ORDER_STATUS_LABELS,
@@ -10,6 +11,7 @@ import {
   GATEWAY_SHIPMENT_STATUS_LABELS,
   formatVoucherBenefit,
 } from "@/lib/format";
+import { isPaymentDeadlinePassed } from "@/features/checkout/helpers";
 
 export { formatVoucherBenefit };
 
@@ -173,12 +175,97 @@ export function canRequestReturn(status: string): boolean {
   return status === "DELIVERED";
 }
 
-export function needsVietQrPayment(order: GatewayOrder): boolean {
+/**
+ * An unpaid VietQR order is still PENDING and has not succeeded in payment.
+ * Cancelling one unpaid VietQR sub-order cancels all remaining PENDING sub-orders in the same group.
+ */
+export function isUnpaidVietQrOrder(
+  order: Pick<GatewayOrder, "status" | "payment_method" | "payment_status"> | null | undefined
+): boolean {
+  if (!order) return false;
+  return (
+    order.status.toUpperCase() === "PENDING" &&
+    order.payment_method.toUpperCase() === "VIETQR" &&
+    order.payment_status.toUpperCase() !== "SUCCEEDED"
+  );
+}
+
+/**
+ * Resolves all unpaid VietQR PENDING sub-orders sharing the same `checkout_group_id` as `target`.
+ * Returns `isMultiShopGroup: true` only when cancelling `target` cancels multiple shops together.
+ * Paid VietQR and COD orders always return `isMultiShopGroup: false`.
+ */
+export function resolveUnpaidVietQrCancelGroup<
+  T extends Pick<
+    GatewayOrder,
+    | "id"
+    | "order_code"
+    | "checkout_group_id"
+    | "shop_id"
+    | "status"
+    | "payment_method"
+    | "payment_status"
+  >,
+>(
+  target: T | null | undefined,
+  candidateOrders: readonly T[]
+): {
+  isMultiShopGroup: boolean;
+  shopCount: number;
+  groupOrders: T[];
+} {
+  if (!target || !target.checkout_group_id || !isUnpaidVietQrOrder(target)) {
+    return {
+      isMultiShopGroup: false,
+      shopCount: target ? 1 : 0,
+      groupOrders: target ? [target] : [],
+    };
+  }
+
+  const byId = new Map<string, T>();
+  byId.set(target.id, target);
+  for (const cand of candidateOrders) {
+    if (cand.checkout_group_id === target.checkout_group_id && isUnpaidVietQrOrder(cand)) {
+      byId.set(cand.id, cand);
+    }
+  }
+
+  const groupOrders = Array.from(byId.values());
+  const distinctShops = new Set(groupOrders.map((o) => o.shop_id).filter(Boolean)).size;
+  const shopCount = distinctShops > 0 ? distinctShops : groupOrders.length;
+
+  return {
+    isMultiShopGroup: groupOrders.length > 1 && shopCount > 1,
+    shopCount,
+    groupOrders,
+  };
+}
+
+/**
+ * Natural Vietnamese confirmation copy when cancelling an unpaid multi-shop VietQR order.
+ */
+export function formatUnpaidGroupCancelWarning(shopCount: number): string {
+  return `Hủy đơn chưa thanh toán sẽ hủy toàn bộ lần đặt hàng gồm ${shopCount} gian hàng`;
+}
+
+export function needsVietQrPayment(
+  order: Pick<
+    GatewayOrder,
+    "status" | "payment_method" | "payment_id" | "payment_status" | "payment_expires_at"
+  >,
+  nowMs = Date.now()
+): boolean {
+  const payStatus = order.payment_status.toUpperCase();
+  if (isPaymentDeadlinePassed(order.payment_expires_at, nowMs)) {
+    return false;
+  }
   return (
     order.status === "PENDING" &&
     order.payment_method.toUpperCase() === "VIETQR" &&
     Boolean(order.payment_id) &&
-    order.payment_status.toUpperCase() !== "SUCCEEDED"
+    payStatus !== "SUCCEEDED" &&
+    payStatus !== "EXPIRED" &&
+    payStatus !== "CANCELLED"
   );
 }
 
@@ -277,9 +364,56 @@ export function getTimelineEventTitle(ev: GatewayOrderTimelineEvent): string {
   }
 }
 
-export function getShopStatusInfo(status: string): StatusMeta {
+const VN_PHONE_REGEX = /^(?:0|\+?84)(?:[35789]\d{8}|2\d{9})$/;
+
+/**
+ * Strips spaces, hyphens, and dots to match services/user `normalizeVNPhone`.
+ */
+export function normalizeVietnamesePhone(raw: string): string {
+  return raw.trim().replace(/[\s.-]+/g, "");
+}
+
+/**
+ * Validates Vietnamese mobile/landline phone numbers matching services/user `isValidVNPhone`.
+ */
+export function isValidVietnamesePhone(raw: string): boolean {
+  return VN_PHONE_REGEX.test(normalizeVietnamesePhone(raw));
+}
+
+/**
+ * Admin `REQUEST_INFO` keeps shop status `PENDING` while setting `rejection_reason`.
+ */
+export function isShopInfoRequested(
+  shop: Pick<GatewayShop, "status" | "rejection_reason"> | null | undefined
+): boolean {
+  if (!shop) return false;
+  return shop.status.toUpperCase() === "PENDING" && Boolean((shop.rejection_reason ?? "").trim());
+}
+
+/**
+ * Matches services/user `RegisterShop`: allowed when buyer has no shop yet,
+ * when shop was `REJECTED`, or when admin sent `REQUEST_INFO` (`PENDING` + reason).
+ */
+export function canSubmitShopApplication(
+  shop: Pick<GatewayShop, "status" | "rejection_reason"> | null | undefined
+): boolean {
+  if (!shop) return true;
+  const status = shop.status.toUpperCase();
+  if (status === "REJECTED") return true;
+  return status === "PENDING" && Boolean((shop.rejection_reason ?? "").trim());
+}
+
+export function getShopStatusInfo(status: string, rejectionReason?: string): StatusMeta {
   switch (status.toUpperCase()) {
     case "PENDING":
+      if (rejectionReason && rejectionReason.trim()) {
+        return {
+          label: "Yêu cầu bổ sung",
+          tone: "warn",
+          description:
+            "Quản trị viên yêu cầu bạn bổ sung hoặc chỉnh sửa hồ sơ gian hàng trước khi xét duyệt lại.",
+        };
+      }
       return {
         label: "Đang chờ duyệt",
         tone: "warn",

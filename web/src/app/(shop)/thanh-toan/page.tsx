@@ -7,6 +7,7 @@ import type {
   GatewayFlashSalesResponse,
   GatewayProduct,
   GatewayPublicShop,
+  GatewayUser,
   GatewayVoucher,
   GatewayVouchersResponse,
   PaginatedResponse,
@@ -16,6 +17,7 @@ import { GatewayError, gatewayFetch } from "@/lib/server/gateway";
 import { StateView } from "@/components";
 import shared from "@/features/commerce/commerce.module.css";
 import type { BuyNowResolvedItem } from "@/features/checkout/types";
+import { resolveLiveFlashSaleItem } from "@/features/checkout/helpers";
 import { CheckoutClient } from "./CheckoutClient";
 
 export const dynamic = "force-dynamic";
@@ -30,6 +32,17 @@ interface CheckoutSearchParams {
 function firstParam(val: string | string[] | undefined): string {
   if (Array.isArray(val)) return val[0]?.trim() ?? "";
   return val?.trim() ?? "";
+}
+
+function findSkuInProducts(
+  list: GatewayProduct[],
+  skuId: string
+): { product: GatewayProduct; sku: GatewayProduct["skus"][number] } | null {
+  for (const product of list) {
+    const sku = (product.skus ?? []).find((s) => s.id === skuId);
+    if (sku) return { product, sku };
+  }
+  return null;
 }
 
 export default async function CheckoutPage({
@@ -48,7 +61,36 @@ export default async function CheckoutPage({
   if (flashParam) qs.set("flash", flashParam);
   const currentPath = qs.toString() ? `/thanh-toan?${qs.toString()}` : "/thanh-toan";
 
-  const user = await requireUser(currentPath);
+  let user: GatewayUser;
+  try {
+    user = await requireUser(currentPath);
+  } catch (err) {
+    if (err instanceof GatewayError) {
+      return (
+        <div className={shared.page}>
+          <section className={shared.pageHeader}>
+            <div className={shared.headerLeadGroup}>
+              <h1 className={shared.pageTitle}>Thanh toán đơn hàng</h1>
+              <p className={shared.pageLead}>
+                Không thể đồng bộ thông tin tài khoản lúc này. Vui lòng thử lại sau ít phút.
+              </p>
+            </div>
+          </section>
+          <section className={shared.section}>
+            <h2 className={shared.sectionTitle}>Trạng thái kết nối</h2>
+            <StateView
+              kind="error"
+              title="Chưa thể tải trang thanh toán"
+              message={err.message}
+              actionLabel="Tải lại"
+              actionHref={currentPath}
+            />
+          </section>
+        </div>
+      );
+    }
+    throw err;
+  }
 
   // Server-generated Idempotency-Key per checkout render; reused across retries on network errors.
   const idempotencyKey = `nm-checkout-${randomUUID()}`;
@@ -75,7 +117,10 @@ export default async function CheckoutPage({
   let initialAddresses: GatewayAddress[] = [];
   if (addrRes.status === "fulfilled") {
     initialAddresses = addrRes.value?.addresses ?? [];
-  } else if (addrRes.reason instanceof GatewayError && addrRes.reason.status >= 500) {
+  } else if (
+    addrRes.reason instanceof GatewayError &&
+    (addrRes.reason.status === 429 || addrRes.reason.status >= 500)
+  ) {
     initialError = addrRes.reason.message;
   }
 
@@ -86,7 +131,7 @@ export default async function CheckoutPage({
     !skuParam &&
     cartRes.status === "rejected" &&
     cartRes.reason instanceof GatewayError &&
-    cartRes.reason.status >= 500
+    (cartRes.reason.status === 429 || cartRes.reason.status >= 500)
   ) {
     initialError = initialError ?? cartRes.reason.message;
   }
@@ -129,19 +174,36 @@ export default async function CheckoutPage({
         productsRes.reason instanceof GatewayError
           ? productsRes.reason.message
           : "Chưa thể tải thông tin sản phẩm mua ngay lúc này.";
+    } else if (
+      flashParam &&
+      flashRes.status === "rejected" &&
+      flashRes.reason instanceof GatewayError &&
+      (flashRes.reason.status === 429 || flashRes.reason.status >= 500)
+    ) {
+      buyNowError = flashRes.reason.message;
     } else {
-      const products = allProducts;
-      let foundProduct: GatewayProduct | null = null;
-      let foundSku: GatewayProduct["skus"][number] | null = null;
-
-      for (const prod of products) {
-        const match = (prod.skus ?? []).find((s) => s.id === skuParam);
-        if (match) {
-          foundProduct = prod;
-          foundSku = match;
-          break;
+      let matched = findSkuInProducts(allProducts, skuParam);
+      if (!matched) {
+        const total = productsRes.value?.total ?? allProducts.length;
+        const pageSize = 100;
+        const maxPages = Math.min(Math.ceil(total / pageSize), 10);
+        for (let page = 2; page <= maxPages; page += 1) {
+          try {
+            const nextPage = await gatewayFetch<PaginatedResponse<GatewayProduct>>(
+              `/products?page=${page}&page_size=${pageSize}`,
+              { cache: "no-store" }
+            );
+            const items = nextPage?.items ?? [];
+            if (items.length === 0) break;
+            matched = findSkuInProducts(items, skuParam);
+            if (matched) break;
+          } catch {
+            break;
+          }
         }
       }
+      const foundProduct = matched?.product ?? null;
+      const foundSku = matched?.sku ?? null;
 
       if (!foundProduct || !foundSku) {
         buyNowError = "Sản phẩm mua ngay không còn tồn tại hoặc đã ngừng kinh doanh.";
@@ -151,20 +213,27 @@ export default async function CheckoutPage({
         let flashPriceVnd: number | undefined;
         let flashRemainingSlots: number | undefined;
         let validFlashId: string | undefined;
+        let maxBuyNowQty = foundSku.available_stock;
 
         if (flashParam && flashRes.status === "fulfilled" && flashRes.value?.flash_sales) {
-          for (const fs of flashRes.value.flash_sales) {
-            const fi = (fs.items ?? []).find((it) => it.id === flashParam);
-            if (fi) {
-              validFlashId = fi.id;
-              flashPriceVnd = fi.flash_price_vnd;
-              flashRemainingSlots = fi.remaining_slots;
-              break;
+          const resolvedFlash = resolveLiveFlashSaleItem(
+            flashRes.value.flash_sales,
+            flashParam,
+            foundSku.id,
+            foundSku.price_vnd
+          );
+          if (resolvedFlash) {
+            validFlashId = resolvedFlash.flashSaleItemId;
+            flashPriceVnd = resolvedFlash.flashPriceVnd;
+            flashRemainingSlots = resolvedFlash.remainingSlots;
+            maxBuyNowQty = Math.min(maxBuyNowQty, resolvedFlash.remainingSlots);
+            if (resolvedFlash.perUserLimit > 0) {
+              maxBuyNowQty = Math.min(maxBuyNowQty, resolvedFlash.perUserLimit);
             }
           }
         }
 
-        const clampedQty = Math.min(parsedQty, foundSku.available_stock);
+        const clampedQty = Math.max(1, Math.min(parsedQty, Math.max(1, maxBuyNowQty)));
         buyNowItem = {
           skuId: foundSku.id,
           productId: foundProduct.id,
@@ -177,7 +246,7 @@ export default async function CheckoutPage({
           imageUrl:
             foundSku.image_url || foundProduct.images?.[0] || "/products/ao-thun-cotton-trang.png",
           unitPriceVnd: foundSku.price_vnd,
-          flashSaleItemId: validFlashId || flashParam || undefined,
+          flashSaleItemId: validFlashId,
           flashPriceVnd,
           flashRemainingSlots,
           quantity: clampedQty,

@@ -212,7 +212,7 @@ replace (
 | Method & Path | Auth / RBAC | Request JSON | Response JSON |
 | --- | --- | --- | --- |
 | `GET /api/v1/payments/{id}` | Buyer owner / Admin | — | `200` `{"payment":{...}}` |
-| `POST /api/v1/payments/{id}/retry` | Buyer owner | `{"method":"COD"\|"VIETQR"}` | `200` `{"payment":{...}}` (cancels superseded pending intent, UC-B25) |
+| `POST /api/v1/payments/{id}/retry` | Buyer owner (optional `Idempotency-Key`) | `{"method":"VIETQR"}` | `200` `{"payment":{...}}` (gateway orchestrates via `OrderService.RetryPayment`, which verifies the order group is still awaiting payment and unexpired, creates a superseding payment, and syncs `orders.payment_id` + `payment_expires_at` across all sub-orders; UC-B25) |
 | `GET /api/v1/payments/{id}/events` | Buyer owner / Admin — gateway checks payment owner before proxying; `payment:8086/payments/{id}/events` verifies end-user JWT and read access directly (`401`/`403`/`404`; service tokens rejected with `403`; direct calls also allow sellers with a shop allocation) | — | `text/event-stream` (`payment.pending` / `payment.succeeded` / `payment.expired` / `payment.failed` / `payment.refunded`) |
 | `GET /api/v1/seller/balance` | `seller` | — | `200` `{"shop_id","pending_vnd","available_vnd","total_earned_vnd"}` |
 | `GET /api/v1/admin/ledger/summary` | `admin`, `super_admin` | — | `200` `{"total_debits_vnd","total_credits_vnd","is_balanced":true,"accounts":[...]}` |
@@ -220,6 +220,14 @@ replace (
 | `POST /api/v1/admin/payments/reconcile` | `admin`, `super_admin` | `{"date":"2026-11-20"}` | `200` `{"run_id","matched_count","missing_local_count","missing_provider_count","amount_mismatch_count","items":[...]}` |
 
 - Direct HTTP routes on `payment:8086` under `/internal/*` (`GET /internal/ledger/summary`, `GET /internal/reconciliation/queue`, `POST /internal/reconciliation/run`) are not proxied by the gateway and require an end-user `admin`/`super_admin` JWT (`401`/`403`; service tokens rejected with `403`).
+- **Allocation, Ledger & COD Semantics**:
+  - For each sub-order (shop) in a checkout group, let `G = subtotal_vnd`, seller-borne discounts `F = flash_sale_discount_vnd` and `V_shop = shop_voucher_discount_vnd`, platform-borne discounts `V_plat = platform_voucher_discount_vnd`, `S_free = freeship_discount_vnd`, `X = coins_discount_vnd`, and full pre-freeship shipping `Ship = shipping_fee_vnd`.
+  - Seller merchandise revenue `R = G - F - V_shop`; platform subsidy `D = V_plat + S_free + X`; buyer payable `P = R + Ship - D >= 0` (`P + D = R + Ship`); commission `C` is capped at `R`.
+  - `ShopAllocation` carries `subtotal_vnd = R`, `commission_vnd = C`, `shipping_fee_vnd = Ship`, `platform_discount_vnd = D`; `Payment.amount_vnd = sum(R + Ship - D) = sum(P)`.
+  - Zero-payable orders (`P = 0`) still create a payment (`amount_vnd = 0`, immediately `status = succeeded`, `escrow_status = held`, no QR, no `gateway_clearing` posting) with full `(R, C, Ship, D)` allocations so seller settlement credits `R - C`.
+  - On `order.completed`, escrow settlement writes balanced double-entry postings: Debit `escrow_liability` (`P` collected minus refunded), Debit `platform_promo_expense` (`D`, `EXPENSE` account), Credit `seller_pending:<shop>` (`R - C` minus refunded merchandise portion), Credit `platform_fee_revenue` (`C`), Credit `shipping_fee_payable` (`Ship`).
+  - **COD**: created in `status = pending` with sub-order allocations in `escrow_status = awaiting_collection` (zero ledger postings, no `payment.succeeded` emitted at checkout). On `order.delivered`, `payment` posts Debit `cod_receivable` / Credit `escrow_liability` for that sub-order's `P`, transitions its allocation `awaiting_collection -> held`, emits `payment.succeeded` for that sub-order, and transitions the parent COD payment to `succeeded` once no `awaiting_collection` allocations remain. Cancel before delivery (`order.cancelled`) or failed delivery (`order.returned` with `from_status = SHIPPING`) marks the uncollected allocation `cancelled` with zero ledger postings and transitions the parent COD payment to `cancelled` (or `succeeded` if sibling allocations were already delivered and none remain awaiting collection). Refunds are only permitted for collected payments (VIETQR `succeeded` or delivered COD).
+  - **Refunds & Late Webhooks**: total refunds per sub-order cannot exceed buyer-paid `P` for that sub-order; post-settlement refunds debit `seller_pending` then `seller_available` (`409` if insufficient) without overdrawing `escrow_liability`. A late `SUCCEEDED` webhook for a `superseded` payment or cancelled order group auto-creates a `pending` `late_payment` refund without emitting `payment.succeeded`/`payment.refunded`, never mutating order state or overwriting `orders.payment_status`.
 
 ### 4.7 Shipping & Administrative Addresses (`shipping` service)
 | Method & Path | Auth / RBAC | Request JSON | Response JSON |
@@ -269,6 +277,22 @@ No JWT required; authenticated via HMAC-SHA256 signature.
   ```
   - Returns `200 OK` immediately after signature verification & idempotent persistence.
 
+### 4.10 Internal & Cross-Service gRPC Contracts (`internalRPCs`)
+RPCs listed in `internalRPCs` (`pkg/common/auth/auth.go`) never run anonymously (missing token → `Unauthenticated`). `service_token = true` accepts short-lived `SERVICE_JWT_SECRET` service tokens in addition to end-user JWTs (handlers enforce RBAC/ownership); `service_token = false` requires a forwarded end-user JWT and rejects service tokens (`PermissionDenied`).
+
+| Service / RPC | `service_token` | Request Fields | Response Fields | Purpose |
+| --- | --- | --- | --- | --- |
+| `OrderService.RetryPayment` | `false` (buyer JWT via gateway) | `payment_id`, `payment_method` (`OrderPaymentMethod`), `idempotency_key` | `checkout_group_id`, `payment_id`, `payment_expires_at` | Validates order group is pending & unexpired, creates superseding payment, updates `orders.payment_id` and `payment_expires_at` |
+| `PromotionService.ReleasePromotionShop` | `true` (service token / admin JWT) | `order_id` (checkout group ID), `shop_id`, `reason` | `released`, `already_released`, `coins_returned`, `shop_voucher_released`, `flash_sale_quantity_released`, `platform_voucher_released` | Idempotent per `(order_id, shop_id)` partial promotion release on single sub-order cancel or `RETURNED` (uses `FlashSaleReservationItem.shop_id` captured during `ReservePromotion`); platform voucher is released only when all sub-orders in the group are cancelled |
+| `UserService.RecordCODRejection` | `true` (service token only; handler rejects end-user JWTs) | `user_id`, `order_id`, `reason` | `cod_rejected_count`, `already_recorded` | Idempotent per `order_id` increment of buyer `cod_rejected_count` on COD delivery rejection/return |
+| `UserService.WriteAuditLog` | `true` (admin JWT / service token) | `actor_id`, `actor_role`, `action`, `target_type`, `target_id`, `before_json`, `after_json`, `reason`, `ip_address` | `audit_log` | Centralized admin audit trail written by gateway or services (no anonymous access) |
+| `UserService.ValidateUser` | `false` (forwarded buyer JWT) | `user_id` | `valid`, `role`, `status`, `shop_id`, `phone_verified`, `cod_rejected_count` | Buyer validation and COD risk check during `OrderService.CreateCheckout` (no anonymous access) |
+| `PromotionService.CreditCoins` | `true` (admin JWT / service token) | `user_id`, `amount`, `reason`, `reference_id` | `user_id`, `balance`, `already_credited` | Idempotent coin credit by `reference_id` (admin or service token only; no anonymous access) |
+
+- New protobuf fields supporting these contracts:
+  - `nexusmart.payment.v1.ShopAllocation.platform_discount_vnd` (`int64`, field 6): platform-borne discount `D` for the sub-order (`amount_vnd = sum(subtotal_vnd + shipping_fee_vnd - platform_discount_vnd)`).
+  - `nexusmart.promotion.v1.FlashSaleReservationItem.shop_id` (`string`, field 4): shop owning the reserved flash sale SKU so `ReleasePromotionShop` can release slots per shop.
+
 ---
 
 ## 5. NATS JetStream Event Contracts
@@ -302,15 +326,20 @@ Every message published to `NEXUSMART` MUST use this exact JSON envelope:
 | `user.shop_reviewed` | `user` | `notification` | `{"shop_id","owner_user_id","shop_name","decision":"APPROVE"\|"REJECT"\|"REQUEST_INFO","reason"}` |
 | `order.created` | `order` | `notification` | `{"checkout_group_id","order_id","order_code","buyer_id","shop_id","payment_method","total_payable_vnd"}` |
 | `order.confirmed` | `order` | `notification` | `{"order_id","order_code","buyer_id","shop_id","payment_method","total_payable_vnd"}` |
-| `order.cancelled` | `order` | `notification`, `shipping` | `{"order_id","order_code","buyer_id","shop_id","reason","was_paid":true\|false}` |
+| `order.cancelled` | `order` | `notification`, `shipping`, `payment` | `{"order_id","order_code","buyer_id","shop_id","reason","was_paid":true\|false}` |
 | `order.shipped` | `order` | `notification` | `{"order_id","order_code","buyer_id","shop_id","carrier_code","tracking_code"}` |
-| `order.delivered` | `order` | `notification` | `{"order_id","order_code","buyer_id","shop_id","tracking_code"}` |
+| `order.delivered` | `order` | `notification`, `payment` | `{"order_id","order_code","buyer_id","shop_id","tracking_code"}` |
+| `order.returned` | `order` | `payment`, `notification` | `{"order_id","order_code","checkout_group_id","buyer_id","shop_id","payment_method","from_status":"SHIPPING"\|"RETURN_REQUESTED","total_payable_vnd","reason","was_paid"}` |
 | `order.completed` | `order` | `notification`, `promotion`, `payment` | `{"order_id","order_code","buyer_id","shop_id","subtotal_vnd","commission_vnd","total_payable_vnd","coins_reward"}` |
 | `payment.succeeded` | `payment` | `order`, `notification` | `{"payment_id","order_group_id","order_id","user_id","amount_vnd","method","provider_tx_id"}` |
 | `payment.failed` | `payment` | `order`, `notification` | `{"payment_id","order_group_id","order_id","user_id","reason"}` |
 | `payment.expired` | `payment` | `order`, `notification` | `{"payment_id","order_group_id","order_id","user_id","reason"}` |
 | `payment.refunded` | `payment` | `order`, `notification` | `{"refund_id","payment_id","order_id","user_id","amount_vnd","reason"}` |
 | `shipment.updated` | `shipping` | `order`, `notification` | `{"shipment_id","order_id","shop_id","carrier_code","tracking_code","status":"picking"\|"delivering"\|"delivered"\|"failed"\|"returning"\|"returned","raw_status","description","occurred_at"}` |
+
+### Event Consumer Rules
+- `payment` consumes `order.delivered` (per-sub-order COD collection: posts Debit `cod_receivable` / Credit `escrow_liability`, transitions allocation `awaiting_collection -> held`, emits sub-order `payment.succeeded`, and marks parent COD payment `succeeded` once no allocations remain awaiting collection) and `order.returned` (cancels uncollected COD allocation with zero ledger postings when `from_status = SHIPPING` and `escrow_status = awaiting_collection`; post-delivery return reversal for `from_status = RETURN_REQUESTED` is deferred to Wave 2), in addition to `order.completed` and `order.cancelled`.
+- `order` consumes `payment.*` (`payment.succeeded`, `payment.failed`, `payment.expired`, `payment.refunded`) and ignores events whose `payment_id` does not match the checkout group's (or sub-order's) current active `payment_id` (events from superseded payments never change order status or overwrite `orders.payment_status`). On `payment.refunded`, `order` accumulates `refunded_vnd` and sets `orders.payment_status = "REFUNDED"` only once `refunded_vnd >= total_payable_vnd`.
 
 ---
 
@@ -322,26 +351,29 @@ Every message published to `NEXUSMART` MUST use this exact JSON envelope:
 - `PREPARING` → `SHIPPING` (seller ships / shipment picked up), `CANCELLED` (before carrier pickup)
 - `SHIPPING` → `DELIVERED` (`shipment.updated=delivered`), `RETURNED` (`shipment.updated=returned` after failed delivery)
 - `DELIVERED` → `COMPLETED` (buyer confirms received; **7d auto-complete job is NOT YET IMPLEMENTED**), `RETURN_REQUESTED` (buyer requests return within 7d)
-- `RETURN_REQUESTED` → `RETURNED` (`shipment.updated=returned`), `COMPLETED` (allowed in state machine; **return rejection/close RPC is NOT YET IMPLEMENTED**)
+- `RETURN_REQUESTED` → `RETURNED` (`shipment.updated=returned`), `COMPLETED` (allowed in state machine, though `BuyerConfirmReceived` strictly requires `DELIVERED`; **return rejection/close RPC is NOT YET IMPLEMENTED**)
 
 ### Multi-Shop Checkout Saga (`OrderService.CreateCheckout`)
-1. **Idempotency check**: Look up `(buyer_id, idempotency_key)` in `checkout_groups`. If found, immediately return the saved response (`idempotent_replay=true`).
+1. **Idempotency check**: Look up `(buyer_id, idempotency_key)` in `checkout_groups` along with a deterministic SHA-256 `request_hash` of the canonicalized checkout payload. If found with a matching hash, return the saved response (`idempotent_replay=true`); if reused with a different payload, reject with `FailedPrecondition` / `409 Conflict` (`IDEMPOTENCY_KEY_CONFLICT`).
 2. **Validate & Resolve**: Validate buyer (`UserService.ValidateUser`), fetch address (`UserService.GetAddress`), load items from `CartService.GetCart` (when `from_cart=true`) or `items[]`, fetch SKU details & prices (`ProductService.GetSKUsBatch`), group items by `shop_id`, calculate shipping per shop (`ShippingService.CalculateFee`).
 3. **COD Risk Check**: If `payment_method == COD`, enforce `total_payable_vnd <= ORDER_COD_MAX_VND` and `cod_rejected_count < ORDER_COD_MAX_REJECTED_COUNT`.
 4. **Reserve Stock**: Call `ProductService.ReserveStock(order_id=checkout_group_id, all_items)` (atomic optimistic locking, idempotent).
-5. **Reserve Promotions**: Call `PromotionService.ReservePromotion(order_id=checkout_group_id, ...)` (atomic Redis Lua for flash sale slots, voucher quotas, and coins; order of discount application: `shop voucher -> platform voucher -> freeship -> coins`).
+5. **Reserve Promotions**: Call `PromotionService.ReservePromotion(order_id=checkout_group_id, ...)` (atomic Redis Lua for flash sale slots with `FlashSaleReservationItem.shop_id`, voucher quotas, and coins; order of discount application: `shop voucher -> platform voucher -> freeship -> coins`).
    - *On failure*: compensate step 4 via `ProductService.ReleaseStock(checkout_group_id)` and return error.
 6. **Persist Checkout Group + Sub-Orders + Outbox** in one PostgreSQL transaction:
    - One sub-order per `shop_id` sharing `checkout_group_id`.
-   - Status is `CONFIRMED` for COD, `PENDING` for VietQR (`payment_expires_at = now + 15m`).
-7. **Create Payment**: Call `PaymentService.CreatePayment(...)` with `shop_allocations` (per-sub-order `order_id`, `shop_id`, `subtotal_vnd`, `commission_vnd`, `shipping_fee_vnd`).
+   - VietQR (`P > 0`): `status = PENDING`, `payment_status = PENDING`, `payment_expires_at = now + 15m`; COD (`P > 0`): `status = CONFIRMED`, `payment_status = PENDING` (awaiting collection until `order.delivered`); zero-payable (`P = 0`): `status = CONFIRMED`, `payment_status = SUCCEEDED`.
+7. **Create Payment**: Call `PaymentService.CreatePayment(...)` (including 0 VND orders where `amount_vnd = 0`) with `shop_allocations` (per-sub-order `order_id`, `shop_id`, `subtotal_vnd = R`, `commission_vnd = C`, `shipping_fee_vnd = Ship`, `platform_discount_vnd = D`; `amount_vnd = sum(R + Ship - D)`).
    - *On failure*: mark sub-orders `CANCELLED`, compensate via `PromotionService.ReleasePromotion` and `ProductService.ReleaseStock`.
 8. **Clear Cart**: Best-effort `CartService.ClearItems(buyer_id, ordered_sku_ids)`.
-9. **Async Payment Failure / Expiry Compensation, Restock & Watchdogs**:
-   - On `payment.failed` or `payment.expired`: transition sub-orders `PENDING -> CANCELLED`, call `ProductService.ReleaseStock(checkout_group_id)` and `PromotionService.ReleasePromotion(checkout_group_id)`, write `order.cancelled` outbox event.
-   - On `payment.succeeded`: transition sub-orders `PENDING -> CONFIRMED`, call `ProductService.ConfirmStock(checkout_group_id)`, write `order.confirmed` outbox event.
-   - On cancellation of a `CONFIRMED`/`PREPARING` sub-order (after stock confirmation or when active sibling sub-orders remain) or `shipment.updated=returned`: call internal gRPC `ProductService.RestockOrderItems(order_id=sub_order_id, items)` (service-token or admin only, not exposed over REST; atomic stock increment, idempotent per `(order_id, sku_id)` via `stock_history`).
-   - On `BuyerConfirmReceived` (`DELIVERED -> COMPLETED`): write `order.completed` (carrying `coins_reward`) to the transactional outbox and call best-effort `PaymentService.ReleaseEscrow(order_id)`; `promotion` credits reward coins idempotently when consuming `order.completed` (rather than a synchronous `PromotionService.CreditCoins` RPC).
+9. **Async Payment Failure / Expiry Compensation, Restock, Partial Release, COD Rejection & Watchdogs**:
+   - On `payment.failed` or `payment.expired` (matching the checkout group's current `payment_id`): transition sub-orders `PENDING -> CANCELLED`, call `ProductService.ReleaseStock(checkout_group_id)` and `PromotionService.ReleasePromotion(checkout_group_id)`, write `order.cancelled` outbox event. Events for non-current/superseded `payment_id`s are ignored.
+   - On `payment.succeeded` (matching the checkout group's current `payment_id`): transition sub-orders `PENDING -> CONFIRMED`, call `ProductService.ConfirmStock(checkout_group_id)`, write `order.confirmed` outbox event.
+   - On `payment.refunded` (matching the sub-order's current `payment_id`): accumulate `refunded_vnd` and set `orders.payment_status = REFUNDED` only once `refunded_vnd >= total_payable_vnd`.
+   - On `OrderService.RetryPayment`: rejects COD / non-VIETQR, verifies `payment_id` matches the group's current active payment and every sub-order is `PENDING` and unexpired, creates a superseding payment, and updates `orders.payment_id` and `orders.payment_expires_at` across all sub-orders in the group.
+   - On cancellation of a single sub-order (while active siblings remain): call `ProductService.RestockOrderItems(order_id=sub_order_id, items)` (service-token or admin only, not exposed over REST; atomic stock increment, idempotent per `(order_id, sku_id)` via `stock_history`) and `PromotionService.ReleasePromotionShop(order_id=checkout_group_id, shop_id, reason)` (returns sub-order coins, shop voucher quota, flash sale slots; platform/freeship vouchers are released once all sub-orders in the group are released). When no active sibling remains, full group promotion release (`ReleasePromotion`) and stock release/restock run.
+   - On `shipment.updated=returned`: transition `SHIPPING|RETURN_REQUESTED -> RETURNED`, emit `order.returned` via transactional outbox, call `ProductService.RestockOrderItems(sub_order_id, items)` and `PromotionService.ReleasePromotionShop(checkout_group_id, shop_id, "order_returned")`; if COD delivery failed (`from_status == SHIPPING`), call `UserService.RecordCODRejection(user_id, order_id, reason)`; if paid online (`VIETQR`, `SUCCEEDED`, `total_payable_vnd > 0`), call idempotent `PaymentService.CreateRefund`.
+   - On `BuyerConfirmReceived` (`DELIVERED -> COMPLETED`): write `order.completed` (carrying `coins_reward` computed on buyer actual merchandise payment `max(0, R - V_plat - X)`, excluding shipping; 0 VND order earns 0 coins) to the transactional outbox and call best-effort `PaymentService.ReleaseEscrow(order_id)`; `promotion` credits reward coins idempotently when consuming `order.completed` (rather than a synchronous `PromotionService.CreditCoins` RPC).
    - **Stale `IN_PROGRESS` Checkout Group Sweep**: runs on the same `RunExpiryWatchdog` ticker as expired VietQR `PENDING` order checks (`ORDER_STALE_CHECKOUT_AFTER`, default `5m`). Sweeps `IN_PROGRESS` `checkout_groups` older than the threshold that have no persisted sub-orders, calls idempotent `PromotionService.ReleasePromotion(checkout_group_id)` then `ProductService.ReleaseStock(checkout_group_id)` under a service token (`NotFound` treated as already released), and transitions the group to `FAILED` only after both succeed (groups that already have persisted sub-orders are left untouched).
 
 ---

@@ -41,6 +41,9 @@ func newStubRepo() *stubRepo {
 func (s *stubRepo) ListProvinces(_ context.Context, _ string) ([]address.Province, error) {
 	return nil, nil
 }
+func (s *stubRepo) GetProvince(_ context.Context, _ string) (*address.Province, error) {
+	return nil, store.ErrNotFound
+}
 func (s *stubRepo) ListWards(_ context.Context, _, _ string) ([]address.Ward, error) {
 	return nil, nil
 }
@@ -91,10 +94,6 @@ func (s *stubRepo) CancelShipmentWithEvent(_ context.Context, _, _, _, _ string)
 func (s *stubRepo) ApplyWebhookEvent(_ context.Context, params store.WebhookUpdateParams) (*store.Shipment, store.WebhookUpdateOutcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.webhookSeen[params.EventID] {
-		return nil, store.WebhookOutcomeDuplicate, nil
-	}
-	s.webhookSeen[params.EventID] = true
 
 	sh := s.byTracking[params.TrackingCode]
 	if sh == nil {
@@ -103,6 +102,13 @@ func (s *stubRepo) ApplyWebhookEvent(_ context.Context, params store.WebhookUpda
 	if sh == nil {
 		return nil, "", store.ErrNotFound
 	}
+	if strings.TrimSpace(params.CarrierCode) == "" || !strings.EqualFold(strings.TrimSpace(params.CarrierCode), sh.CarrierCode) {
+		return nil, "", store.ErrCarrierMismatch
+	}
+	if s.webhookSeen[params.EventID] {
+		return nil, store.WebhookOutcomeDuplicate, nil
+	}
+	s.webhookSeen[params.EventID] = true
 	if sh.LastEventAt != nil && params.OccurredAt.Before(*sh.LastEventAt) {
 		cp := *sh
 		return &cp, store.WebhookOutcomeStale, nil
@@ -317,5 +323,73 @@ func TestWebhookHandlerInvalidSignatureDoesNotLogSignature(t *testing.T) {
 	}
 	if present, ok := entry["signature_present"].(bool); !ok || present {
 		t.Fatalf("expected signature_present=false, got %v (raw=%s)", entry["signature_present"], logBuf.String())
+	}
+}
+
+func TestWebhookHandlerRejectsCarrierMismatch(t *testing.T) {
+	const secret = "test-shipping-webhook-secret"
+	repo := newStubRepo()
+	_, _, _ = repo.CreateShipment(context.Background(), &store.Shipment{
+		ID:           uuid.NewString(),
+		OrderID:      "ord-mismatch-http",
+		ShopID:       "shop-1",
+		CarrierCode:  "ghn",
+		TrackingCode: "GHN-MISMATCH-001",
+		Status:       carrier.StatusCreated,
+	}, nil)
+
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc := service.NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h := NewHandler(secret, svc, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	h.nowFn = func() time.Time { return now }
+
+	r := chi.NewRouter()
+	r.Post("/webhooks/shipping/{carrier}", h.ServeHTTP)
+
+	postTo := func(carrierPath string, body map[string]any) *httptest.ResponseRecorder {
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/shipping/"+carrierPath, bytes.NewReader(raw))
+		req.Header.Set("X-Signature", Sign(secret, raw))
+		req.Header.Set("X-Timestamp", strconv.FormatInt(now.Unix(), 10))
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Wrong carrier path with valid HMAC signature must be rejected with 4xx and not change state.
+	for _, wrongCarrier := range []string{"fake_carrier", "mock_express"} {
+		rec := postTo(wrongCarrier, map[string]any{
+			"event_id":      "evt-wrong-" + wrongCarrier,
+			"tracking_code": "GHN-MISMATCH-001",
+			"raw_status":    "delivering",
+			"occurred_at":   now.Format(time.RFC3339),
+		})
+		if rec.Code < 400 || rec.Code >= 500 {
+			t.Fatalf("expected 4xx for wrong carrier %q, got HTTP %d body=%s", wrongCarrier, rec.Code, rec.Body.String())
+		}
+	}
+
+	sh, _ := repo.GetShipmentByOrderID(context.Background(), "ord-mismatch-http")
+	if sh.Status != carrier.StatusCreated {
+		t.Fatalf("shipment status must remain created after mismatched carrier webhooks, got %s", sh.Status)
+	}
+	if repo.outboxCount != 0 {
+		t.Fatalf("expected 0 outbox events after mismatched carrier webhooks, got %d", repo.outboxCount)
+	}
+
+	// Matching carrier with the same event_id must still be accepted cleanly (not poisoned by rejected call).
+	rec := postTo("ghn", map[string]any{
+		"event_id":      "evt-wrong-fake_carrier",
+		"tracking_code": "GHN-MISMATCH-001",
+		"raw_status":    "delivering",
+		"occurred_at":   now.Format(time.RFC3339),
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on matching carrier after rejected mismatch, got HTTP %d body=%s", rec.Code, rec.Body.String())
+	}
+	sh, _ = repo.GetShipmentByOrderID(context.Background(), "ord-mismatch-http")
+	if sh.Status != carrier.StatusDelivering {
+		t.Fatalf("expected status delivering after matching carrier webhook, got %s", sh.Status)
 	}
 }

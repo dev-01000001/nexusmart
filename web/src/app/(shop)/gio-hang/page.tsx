@@ -32,6 +32,7 @@ import {
 } from "@/components";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import { formatVoucherCondition, translateVoucherReason } from "@/features/checkout/messages";
+import { buildCalculateFeePayload } from "@/features/checkout/helpers";
 import { CheckoutSuggestionStrip } from "@/features/checkout/CheckoutSuggestionStrip";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./page.module.css";
@@ -182,15 +183,13 @@ function CartPageContent() {
         selectedShopGroups.map(async (g) => {
           const res = await api<GatewayCalculateFeeResponse>("shipping/calculate-fee", {
             method: "POST",
-            json: {
-              shop_id: g.shopId,
-              from_province_code: "",
-              from_ward_code: "",
-              to_province_code: defaultAddress.province_code,
-              to_ward_code: defaultAddress.ward_code,
-              weight_grams: Math.max(100, g.selectedWeightGrams),
-              cod_amount_vnd: 0,
-            },
+            json: buildCalculateFeePayload({
+              shopId: g.shopId,
+              toProvinceCode: defaultAddress.province_code,
+              toWardCode: defaultAddress.ward_code,
+              weightGrams: Math.max(100, g.selectedWeightGrams),
+              codAmountVnd: 0,
+            }),
           });
           const quotes = res?.quotes ?? [];
           if (quotes.length === 0) return { shopId: g.shopId, feeVnd: 0 };

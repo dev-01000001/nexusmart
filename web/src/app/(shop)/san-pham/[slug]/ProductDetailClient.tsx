@@ -21,10 +21,8 @@ import {
   FABRIC_FEATURE_LABELS,
   FIT_LABELS,
   GENDER_LABELS,
-  GIFT_ORDER_THRESHOLD,
   MATERIAL_LABELS,
   OCCASION_LABELS,
-  PLATFORM_FREESHIP_THRESHOLD,
   SPORT_LABELS,
 } from "@/mock/productEditorial";
 import {
@@ -32,7 +30,6 @@ import {
   IconAlert,
   IconChat,
   IconChevronDown,
-  IconGift,
   IconHeart,
   IconMinus,
   IconPlay,
@@ -42,13 +39,12 @@ import {
   IconTruck,
   Price,
 } from "@/components";
-import { formatInt, formatVnd } from "@/lib/format";
+import { formatVnd } from "@/lib/format";
 import { PROVINCES } from "@/lib/provinces";
 import { estimateDelivery, recommendSize } from "@/lib/sizing";
 import { useRevealObserver } from "@/features/catalog/useRevealObserver";
 import {
   PdpBackInStock,
-  PdpBundleSection,
   PdpGallery,
   PdpQuestions,
   PdpRecommendationsSection,
@@ -64,7 +60,6 @@ export interface ProductDetailClientProps {
   platformVouchers: CatalogVoucher[];
   sameShopProducts: CatalogProduct[];
   similarProducts: CatalogProduct[];
-  bundleProducts: CatalogProduct[];
   allProducts: CatalogProduct[];
   liveFlashBySkuId: Record<string, CatalogFlashSaleItem>;
   provinces: GatewayProvince[];
@@ -116,7 +111,6 @@ export function ProductDetailClient({
   platformVouchers,
   sameShopProducts,
   similarProducts,
-  bundleProducts,
   allProducts,
   liveFlashBySkuId,
   provinces,
@@ -131,15 +125,8 @@ export function ProductDetailClient({
 
   const { isAuthenticated } = useSession();
   const { addToCart } = useCart();
-  const {
-    openChat,
-    showToast,
-    toggleWishlist,
-    isWishlisted,
-    recordProductView,
-    bodyProfile,
-    membershipTier,
-  } = useMockStore();
+  const { openChat, showToast, toggleWishlist, isWishlisted, recordProductView, bodyProfile } =
+    useMockStore();
 
   const initialColor =
     initialColorQuery && product.colors.some((c) => c.code === initialColorQuery)
@@ -169,13 +156,6 @@ export function ProductDetailClient({
   const [bisDrawerOpen, setBisDrawerOpen] = useState<boolean>(false);
   const [deliveryProvince, setDeliveryProvince] = useState<string>("HCM");
   const [fabricVideoPlaying, setFabricVideoPlaying] = useState<boolean>(true);
-  const [comboSizes, setComboSizes] = useState<Record<string, SizeCode>>(() => {
-    const map: Record<string, SizeCode> = {};
-    for (const slot of product.comboSlots ?? []) {
-      map[slot.slotId] = slot.defaultSize;
-    }
-    return map;
-  });
 
   useEffect(() => {
     recordProductView(product.id);
@@ -243,28 +223,12 @@ export function ProductDetailClient({
     ? Math.max(regularPrice, product.originalPrice ?? 0)
     : product.originalPrice;
 
-  const activeTierDiscount = useMemo(() => {
-    const tiers = product.tierDiscounts ?? [];
-    let bestPct = 0;
-    for (const t of tiers) {
-      if (clampedQty >= t.minQty && t.discountPercent > bestPct) {
-        bestPct = t.discountPercent;
-      }
-    }
-    return bestPct;
-  }, [product.tierDiscounts, clampedQty]);
-
-  const rawLineSubtotal = unitPrice * Math.max(1, clampedQty);
-  const tierDiscountVnd = Math.floor((rawLineSubtotal * activeTierDiscount) / 100);
-  const effectiveSubtotal = Math.max(0, rawLineSubtotal - tierDiscountVnd);
+  const effectiveSubtotal = unitPrice * Math.max(1, clampedQty);
 
   const wishlisted = isWishlisted(product.id);
 
   const isOutlet = Boolean(product.badges?.includes("outlet"));
   const hasOutOfStockVariant = product.skus.some((s) => s.stock <= 0);
-  const isComboProduct = Boolean(
-    product.isCombo && product.comboSlots && product.comboSlots.length > 0
-  );
 
   const deliveryEstimate = useMemo(
     () =>
@@ -304,14 +268,6 @@ export function ProductDetailClient({
     [bodyProfile, garmentGroup, shop.editorialShopId, product.sizes]
   );
 
-  const estimatedXu = Math.max(
-    100,
-    Math.floor((effectiveSubtotal * membershipTier.cashbackRate) / 100) * 100
-  );
-
-  const giftThresholdAmount = product.giftThreshold?.minAmount ?? GIFT_ORDER_THRESHOLD;
-  const giftRemaining = Math.max(0, giftThresholdAmount - effectiveSubtotal);
-
   const syncColorUrl = (colorCode: string) => {
     const nextParams = new URLSearchParams(searchParams.toString());
     nextParams.set("color", colorCode);
@@ -347,15 +303,6 @@ export function ProductDetailClient({
       const cap = Math.min(nextSku.stock, product.maxPerOrder ?? nextSku.stock);
       setQuantity((q) => Math.max(1, Math.min(q, cap)));
     }
-  };
-
-  const handleApplyAllComboSize = (sz: SizeCode) => {
-    if (!product.comboSlots) return;
-    const next: Record<string, SizeCode> = {};
-    for (const slot of product.comboSlots) {
-      next[slot.slotId] = slot.availableSizes.includes(sz) ? sz : slot.defaultSize;
-    }
-    setComboSizes(next);
   };
 
   const handleAddToCart = async () => {
@@ -656,52 +603,6 @@ export function ProductDetailClient({
             </div>
           )}
 
-          {isComboProduct && product.comboSlots && (
-            <div className={styles.comboBlock} aria-label="Chọn cỡ riêng từng món trong combo">
-              <div className={styles.comboHead}>
-                <span className={styles.comboTitle}>
-                  Chọn cỡ từng món trong combo ({product.comboSlots.length} món)
-                </span>
-                <button
-                  type="button"
-                  className={styles.sizeLinkBtn}
-                  onClick={() => handleApplyAllComboSize(effectiveSize)}
-                >
-                  Áp cỡ {effectiveSize} cho cả bộ
-                </button>
-              </div>
-              <div className={styles.comboList}>
-                {product.comboSlots.map((slot) => {
-                  const chosen = comboSizes[slot.slotId] ?? slot.defaultSize;
-                  return (
-                    <div key={slot.slotId} className={styles.comboSlotRow}>
-                      <span className={styles.comboSlotLabel}>{slot.label}</span>
-                      <div
-                        className={styles.comboSlotBtns}
-                        role="group"
-                        aria-label={`Chọn size cho ${slot.label}`}
-                      >
-                        {slot.availableSizes.map((sz) => (
-                          <button
-                            key={sz}
-                            type="button"
-                            className={`${styles.comboSizeBtn} ${chosen === sz ? styles.comboSizeBtnActive : ""}`}
-                            onClick={() =>
-                              setComboSizes((prev) => ({ ...prev, [slot.slotId]: sz }))
-                            }
-                            aria-pressed={chosen === sz}
-                          >
-                            {sz}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
           <div className={styles.skuPanel} aria-live="polite">
             <div className={styles.skuLeft}>
               <span className={styles.skuCode}>
@@ -815,90 +716,26 @@ export function ProductDetailClient({
             onClose={() => setBisDrawerOpen(false)}
           />
 
-          {product.tierDiscounts && product.tierDiscounts.length > 0 && (
+          {shopVouchers.length + platformVouchers.length > 0 && (
             <div
-              className={styles.tierBlock}
+              className={styles.voucherBlock}
               data-cat-reveal=""
-              style={{ "--stagger": 1 } as React.CSSProperties}
+              style={{ "--stagger": 2 } as React.CSSProperties}
             >
-              <div className={styles.tierHead}>
-                <span className={styles.subBlockTitle}>Mua nhiều giảm thêm</span>
-                {activeTierDiscount > 0 && (
-                  <span className={styles.tierSaved}>
-                    Đang áp giảm {activeTierDiscount}% (-{formatVnd(tierDiscountVnd)})
+              <div className={styles.voucherHeadRow}>
+                <p className={styles.subBlockTitle}>Mã ưu đãi áp dụng</p>
+              </div>
+
+              {isOutlet && (
+                <p className={styles.outletExclusionNote}>
+                  <IconAlert size={15} />
+                  <span>
+                    Sản phẩm Outlet: không áp dụng voucher giảm phần trăm toàn sàn hoặc ưu đãi
+                    chồng.
                   </span>
-                )}
-              </div>
-              <div className={styles.tierRow}>
-                {product.tierDiscounts.map((tier) => {
-                  const discountedUnit = Math.floor(
-                    (unitPrice * (100 - tier.discountPercent)) / 100
-                  );
-                  const active =
-                    clampedQty >= tier.minQty && activeTierDiscount === tier.discountPercent;
-                  const canPick = skuStock > 0 && maxQty >= tier.minQty;
-                  return (
-                    <div
-                      key={tier.minQty}
-                      className={`${styles.tierItem} ${active ? styles.tierItemActive : ""}`}
-                    >
-                      <div className={styles.tierItemText}>
-                        <span className={styles.tierLabel}>{tier.label}</span>
-                        <span className={styles.tierUnit}>Còn {formatVnd(discountedUnit)}/sp</span>
-                      </div>
-                      <button
-                        type="button"
-                        className={styles.tierPickBtn}
-                        disabled={!canPick}
-                        onClick={() => setQuantity(Math.min(maxQty, tier.minQty))}
-                      >
-                        {active ? `Đang chọn ${clampedQty}` : `Chọn ${tier.minQty}`}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+                </p>
+              )}
 
-          <div
-            className={styles.voucherBlock}
-            data-cat-reveal=""
-            style={{ "--stagger": 2 } as React.CSSProperties}
-          >
-            <div className={styles.voucherHeadRow}>
-              <p className={styles.subBlockTitle}>Voucher, quà tặng và hoàn Xu</p>
-              <Link href="/hoi-vien" className={styles.inlineLink}>
-                Hạng {membershipTier.name} ({membershipTier.cashbackPercentLabel} Xu)
-              </Link>
-            </div>
-
-            {isOutlet && (
-              <p className={styles.outletExclusionNote}>
-                <IconAlert size={15} />
-                <span>
-                  Sản phẩm Outlet: không áp dụng voucher giảm phần trăm toàn sàn hoặc ưu đãi chồng.
-                </span>
-              </p>
-            )}
-
-            <div className={styles.perkList}>
-              <p className={styles.perkText}>
-                <IconGift size={15} className={styles.perkIcon} />
-                <strong>Quà tặng ngưỡng đơn:</strong> Từ {formatVnd(giftThresholdAmount)} tặng{" "}
-                {product.giftThreshold?.giftName ?? "1 đôi Tất Cotton gân cổ trung"} (trị giá{" "}
-                {formatVnd(product.giftThreshold?.giftValue ?? 39000)}).{" "}
-                {giftRemaining === 0
-                  ? "Số lượng hiện tại đã đủ điều kiện."
-                  : `Cần thêm ${formatVnd(giftRemaining)}.`}
-              </p>
-              <p className={styles.xuLine}>
-                Hoàn dự kiến <strong>+{formatInt(estimatedXu)} Xu</strong> cho hạng{" "}
-                <strong>{membershipTier.name}</strong> (1 Xu = 1₫, nhân đôi vào Thứ Sáu).
-              </p>
-            </div>
-
-            {shopVouchers.length + platformVouchers.length > 0 && (
               <ul className={styles.voucherList} aria-label="Danh sách mã giảm giá">
                 {shopVouchers.map((v) => {
                   const isSaved = Boolean(savedVoucherIds[v.id]);
@@ -1027,8 +864,8 @@ export function ProductDetailClient({
                   );
                 })}
               </ul>
-            )}
-          </div>
+            </div>
+          )}
 
           <div
             className={styles.logisticsBlock}
@@ -1059,24 +896,16 @@ export function ProductDetailClient({
             <div className={styles.deliveryDetails}>
               <p className={styles.deliveryLine}>
                 Từ kho <strong>{shop.city}</strong> đến{" "}
-                <strong>{deliveryEstimate.destinationProvinceName}</strong> (
-                {deliveryEstimate.carrier}) · Dự kiến <strong>{deliveryEstimate.etaLabel}</strong>.
+                <strong>{deliveryEstimate.destinationProvinceName}</strong> · Dự kiến{" "}
+                <strong>{deliveryEstimate.etaLabel}</strong>.
               </p>
               <p className={styles.deliveryLine}>
-                Cước tiêu chuẩn <strong>{formatVnd(deliveryEstimate.standardFeeVnd)}</strong> ·
-                Freeship xưởng từ{" "}
-                <strong>{formatVnd(deliveryEstimate.shopFreeShipThreshold)}</strong> · Freeship sàn
-                từ <strong>{formatVnd(PLATFORM_FREESHIP_THRESHOLD)}</strong>.
+                Phí vận chuyển chính xác được tính theo kho gian hàng và địa chỉ nhận tại bước thanh
+                toán; áp dụng mã miễn phí vận chuyển nếu có.
               </p>
               {product.slaText && (
                 <p className={styles.deliverySub}>
                   Hạn chuẩn bị hàng: {product.slaText}. {deliveryEstimate.coInspectionNote}
-                </p>
-              )}
-              {deliveryEstimate.fastAvailable && (
-                <p className={styles.deliveryFast}>
-                  Có giao nhanh nội thành: {deliveryEstimate.fastEtaLabel} (
-                  {formatVnd(deliveryEstimate.fastFeeVnd)}).
                 </p>
               )}
             </div>
@@ -1402,14 +1231,6 @@ export function ProductDetailClient({
           </div>
         </div>
       </section>
-
-      <PdpBundleSection
-        product={product}
-        shop={shop}
-        bundleProducts={bundleProducts}
-        selectedColorCode={effectiveColor}
-        selectedSize={effectiveSize}
-      />
 
       <PdpReviews
         product={product}

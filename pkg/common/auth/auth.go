@@ -34,14 +34,20 @@ const (
 // true = also accepts a service token (saga/job/consumer calls with no end user);
 // false = needs the forwarded end-user JWT. Every other RPC rejects service tokens.
 var internalRPCs = map[string]bool{
-	"/nexusmart.user.v1.UserService/GetAddress":                 true,
-	"/nexusmart.user.v1.UserService/GetProfile":                 true,
-	"/nexusmart.product.v1.ProductService/ReleaseStock":         true,
-	"/nexusmart.product.v1.ProductService/ConfirmStock":         true,
-	"/nexusmart.product.v1.ProductService/RestockOrderItems":    true,
-	"/nexusmart.product.v1.ProductService/ReserveStock":         false,
-	"/nexusmart.promotion.v1.PromotionService/ReleasePromotion": true,
-	"/nexusmart.promotion.v1.PromotionService/ReservePromotion": false,
+	"/nexusmart.user.v1.UserService/GetAddress":                     true,
+	"/nexusmart.user.v1.UserService/GetProfile":                     true,
+	"/nexusmart.user.v1.UserService/RecordCODRejection":             true,
+	"/nexusmart.user.v1.UserService/WriteAuditLog":                  true,
+	"/nexusmart.user.v1.UserService/ValidateUser":                   false,
+	"/nexusmart.product.v1.ProductService/ReleaseStock":             true,
+	"/nexusmart.product.v1.ProductService/ConfirmStock":             true,
+	"/nexusmart.product.v1.ProductService/RestockOrderItems":        true,
+	"/nexusmart.product.v1.ProductService/ReserveStock":             false,
+	"/nexusmart.promotion.v1.PromotionService/ReleasePromotion":     true,
+	"/nexusmart.promotion.v1.PromotionService/ReleasePromotionShop": true,
+	"/nexusmart.promotion.v1.PromotionService/CreditCoins":          true,
+	"/nexusmart.promotion.v1.PromotionService/ReservePromotion":     false,
+	"/nexusmart.order.v1.OrderService/RetryPayment":                 false,
 }
 
 var (

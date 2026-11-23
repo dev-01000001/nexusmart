@@ -1,8 +1,8 @@
 -- name: CreateCheckoutGroup :one
 INSERT INTO checkout_groups (
-    id, buyer_id, idempotency_key, status, payment_method, total_payable_vnd
+    id, buyer_id, idempotency_key, request_hash, status, payment_method, total_payable_vnd
 ) VALUES (
-    $1, $2, $3, $4, $5, $6
+    $1, $2, $3, $4, $5, $6, $7
 )
 RETURNING *;
 
@@ -18,6 +18,14 @@ LIMIT 1;
 SELECT *
 FROM checkout_groups
 WHERE id = $1;
+
+-- name: GetCheckoutGroupByPaymentID :one
+SELECT *
+FROM checkout_groups
+WHERE payment_id = $1
+  AND status <> 'FAILED'
+ORDER BY created_at DESC
+LIMIT 1;
 
 -- name: CompleteCheckoutGroup :exec
 UPDATE checkout_groups
@@ -44,6 +52,19 @@ WHERE id = $1
 UPDATE checkout_groups
 SET payment_status = $2,
     payment_id = CASE WHEN sqlc.arg(payment_id)::text <> '' THEN sqlc.arg(payment_id)::text ELSE payment_id END,
+    updated_at = NOW()
+WHERE id = $1;
+
+-- name: UpdateCheckoutGroupPaymentOnRetry :exec
+UPDATE checkout_groups
+SET payment_id = $2,
+    payment_status = $3,
+    qr_url = $4,
+    qr_code = $5,
+    payment_expires_at = $6,
+    response_snapshot_json = NULL,
+    retry_idempotency_key = $7,
+    retry_from_payment_id = $8,
     updated_at = NOW()
 WHERE id = $1;
 
@@ -194,6 +215,13 @@ WHERE id = $1;
 -- name: UpdateOrderPaymentStatus :exec
 UPDATE orders
 SET payment_status = $2,
+    updated_at = NOW()
+WHERE id = $1;
+
+-- name: UpdateOrderRefunded :exec
+UPDATE orders
+SET refunded_vnd = $2,
+    payment_status = CASE WHEN sqlc.arg(payment_status)::text <> '' THEN sqlc.arg(payment_status)::text ELSE payment_status END,
     updated_at = NOW()
 WHERE id = $1;
 

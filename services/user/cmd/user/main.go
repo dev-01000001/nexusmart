@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
+	shippingv1 "github.com/nexusmart/core/gen/go/nexusmart/shipping/v1"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/logger"
@@ -29,6 +30,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection"
 )
 
@@ -111,6 +113,20 @@ func run() error {
 		return fmt.Errorf("bootstrap admin: %w", err)
 	}
 
+	var addrCatalog service.AddressCatalog
+	if addr := strings.TrimSpace(cfg.ShippingGRPCAddr); addr != "" {
+		shippingConn, err := grpc.NewClient(
+			addr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithUnaryInterceptor(telemetry.GRPCUnaryClientInterceptor(cfg.ServiceName)),
+		)
+		if err != nil {
+			return fmt.Errorf("init shipping grpc client (%s): %w", addr, err)
+		}
+		defer func() { _ = shippingConn.Close() }()
+		addrCatalog = shippingv1.NewShippingServiceClient(shippingConn)
+	}
+
 	reg := prometheus.NewRegistry()
 	red := metrics.NewRED(cfg.ServiceName, reg)
 
@@ -128,6 +144,7 @@ func run() error {
 		OTPMaxResends:          cfg.OTPMaxResends,
 		LoginMaxFailedAttempts: cfg.LoginMaxFailedAttempts,
 		LoginLockoutDuration:   cfg.LoginLockoutDuration,
+		AddressCatalog:         addrCatalog,
 	})
 	userv1.RegisterUserServiceServer(grpcSrv, userSrv)
 	reflection.Register(grpcSrv)

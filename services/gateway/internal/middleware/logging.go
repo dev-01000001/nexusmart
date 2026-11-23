@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/telemetry"
+	"github.com/nexusmart/core/services/gateway/internal/clients"
 	"github.com/nexusmart/core/services/gateway/internal/httpx"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -54,35 +56,61 @@ func (w *flushingStatusWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
-// RequestLogger emits structured JSON request logs with trace_id and redacted sensitive values.
-func RequestLogger(log *slog.Logger) func(http.Handler) http.Handler {
+type requestLogMetaKey struct{}
+
+type requestLogMeta struct {
+	userID string
+}
+
+func setRequestLogUserID(ctx context.Context, userID string) {
+	if userID == "" || ctx == nil {
+		return
+	}
+	if meta, ok := ctx.Value(requestLogMetaKey{}).(*requestLogMeta); ok && meta != nil {
+		meta.userID = userID
+	}
+}
+
+// RequestLogger emits structured JSON request logs with trace_id, client_ip, user_id, and redacted sensitive values.
+// It also attaches the resolved client IP to the request context so outgoing gRPC calls carry x-client-ip.
+func RequestLogger(log *slog.Logger, tp *TrustedProxies) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			sw := &flushingStatusWriter{ResponseWriter: w, status: http.StatusOK}
+			clientIP := tp.ClientIP(r)
+			meta := &requestLogMeta{}
+			ctx := context.WithValue(r.Context(), requestLogMetaKey{}, meta)
+			ctx = httpx.WithLogger(ctx, log)
+			ctx = clients.WithClientIP(ctx, clientIP)
+			req := r.WithContext(ctx)
 
-			next.ServeHTTP(sw, r)
+			next.ServeHTTP(sw, req)
 
 			if log == nil {
 				return
 			}
-			route := r.URL.Path
-			if rctx := chi.RouteContext(r.Context()); rctx != nil {
+			route := req.URL.Path
+			if rctx := chi.RouteContext(req.Context()); rctx != nil {
 				if pat := rctx.RoutePattern(); pat != "" {
 					route = pat
 				}
 			}
 
 			attrs := []slog.Attr{
-				slog.String("method", r.Method),
-				slog.String("path", r.URL.Path),
+				slog.String("method", req.Method),
+				slog.String("path", req.URL.Path),
 				slog.String("route", route),
 				slog.Int("status", sw.status),
 				slog.Int("bytes", sw.bytes),
 				slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000.0),
-				slog.String("client_ip", ClientIP(r)),
+				slog.String("client_ip", clientIP),
 			}
-			if uid := auth.UserIDFromContext(r.Context()); uid != "" {
+			uid := meta.userID
+			if uid == "" {
+				uid = auth.UserIDFromContext(req.Context())
+			}
+			if uid != "" {
 				attrs = append(attrs, slog.String("user_id", uid))
 			}
 
@@ -92,7 +120,7 @@ func RequestLogger(log *slog.Logger) func(http.Handler) http.Handler {
 			} else if sw.status >= http.StatusBadRequest {
 				level = slog.LevelWarn
 			}
-			log.LogAttrs(r.Context(), level, "http request", attrs...)
+			log.LogAttrs(req.Context(), level, "http request", attrs...)
 		})
 	}
 }

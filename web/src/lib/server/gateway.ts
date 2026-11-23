@@ -15,12 +15,14 @@ const CODE_PATTERN = /^[A-Z0-9_]{2,64}$/;
 export class GatewayError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly retryAfter?: string;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, retryAfter?: string) {
     super(message);
     this.name = "GatewayError";
     this.status = status;
     this.code = code;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -165,9 +167,13 @@ export function sanitizeGatewayError(
 
 export function gatewayErrorResponse(err: unknown): NextResponse {
   if (err instanceof GatewayError) {
+    const headers: Record<string, string> = {};
+    if (err.status === 429 && err.retryAfter) {
+      headers["Retry-After"] = err.retryAfter;
+    }
     return NextResponse.json(
       { error: { code: err.code, message: err.message } },
-      { status: err.status }
+      { status: err.status, headers }
     );
   }
   return NextResponse.json(
@@ -271,7 +277,8 @@ export async function gatewayFetch<T>(path: string, options: GatewayFetchOptions
 
   if (!res.ok) {
     const sanitized = sanitizeGatewayError(res.status, parsed);
-    throw new GatewayError(sanitized.status, sanitized.code, sanitized.message);
+    const retryAfter = res.headers.get("retry-after") ?? undefined;
+    throw new GatewayError(sanitized.status, sanitized.code, sanitized.message, retryAfter);
   }
 
   return parsed as T;

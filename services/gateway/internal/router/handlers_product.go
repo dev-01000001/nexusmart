@@ -322,10 +322,22 @@ func writeEmptyProductPage(w http.ResponseWriter, page, pageSize int32) {
 	})
 }
 
+func isPublicProductStatus(st productv1.ProductStatus) bool {
+	return st == productv1.ProductStatus_PRODUCT_STATUS_APPROVED ||
+		st == productv1.ProductStatus_PRODUCT_STATUS_OUT_OF_STOCK
+}
+
 func (h *handler) handleListProducts(w http.ResponseWriter, r *http.Request) {
 	page, pageSize := httpx.ParsePagination(r)
 	q := r.URL.Query()
-	ctx, cancel := h.clients.OutgoingContext(r.Context())
+
+	requestedStatus := parseProductStatus(q.Get("status"))
+	if requestedStatus != productv1.ProductStatus_PRODUCT_STATUS_UNSPECIFIED && !isPublicProductStatus(requestedStatus) {
+		writeEmptyProductPage(w, page, pageSize)
+		return
+	}
+
+	ctx, cancel := h.clients.PublicOutgoingContext(r.Context())
 	defer cancel()
 
 	categoryID := strings.TrimSpace(q.Get("category_id"))
@@ -378,7 +390,7 @@ func (h *handler) handleListProducts(w http.ResponseWriter, r *http.Request) {
 		CategoryId:  categoryID,
 		Keyword:     q.Get("keyword"),
 		ShopId:      shopID,
-		Status:      parseProductStatus(q.Get("status")),
+		Status:      requestedStatus,
 		MinPriceVnd: httpx.ParseInt64Query(r, "min_price_vnd", 0),
 		MaxPriceVnd: httpx.ParseInt64Query(r, "max_price_vnd", 0),
 		SortBy:      normalizeProductSortQuery(q.Get("sort_by")),
@@ -390,19 +402,31 @@ func (h *handler) handleListProducts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := make([]*productDTO, 0, len(resp.GetProducts()))
+	var filteredOut int64
 	for _, p := range resp.GetProducts() {
+		if !isPublicProductStatus(p.GetStatus()) {
+			filteredOut++
+			continue
+		}
 		items = append(items, mapProduct(p))
+	}
+	total := resp.GetTotal()
+	if filteredOut > 0 {
+		total -= filteredOut
+		if total < int64(len(items)) {
+			total = int64(len(items))
+		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"items":     items,
 		"page":      page,
 		"page_size": pageSize,
-		"total":     resp.GetTotal(),
+		"total":     total,
 	})
 }
 
 func (h *handler) handleGetProduct(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	ctx, cancel := h.clients.PublicOutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Product.GetProduct(ctx, &productv1.GetProductRequest{
@@ -412,11 +436,16 @@ func (h *handler) handleGetProduct(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"product": mapProduct(resp.GetProduct())})
+	prod := resp.GetProduct()
+	if prod == nil || !isPublicProductStatus(prod.GetStatus()) {
+		httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "product not found")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"product": mapProduct(prod)})
 }
 
 func (h *handler) handleGetProductBySlug(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	ctx, cancel := h.clients.PublicOutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Product.GetProduct(ctx, &productv1.GetProductRequest{
@@ -426,7 +455,12 @@ func (h *handler) handleGetProductBySlug(w http.ResponseWriter, r *http.Request)
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"product": mapProduct(resp.GetProduct())})
+	prod := resp.GetProduct()
+	if prod == nil || !isPublicProductStatus(prod.GetStatus()) {
+		httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "product not found")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"product": mapProduct(prod)})
 }
 
 func (h *handler) handleSellerListProducts(w http.ResponseWriter, r *http.Request) {

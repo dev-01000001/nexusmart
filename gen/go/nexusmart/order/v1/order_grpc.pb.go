@@ -29,6 +29,7 @@ const (
 	OrderService_RequestReturn_FullMethodName        = "/nexusmart.order.v1.OrderService/RequestReturn"
 	OrderService_GetOrderTimeline_FullMethodName     = "/nexusmart.order.v1.OrderService/GetOrderTimeline"
 	OrderService_MarkPaymentResult_FullMethodName    = "/nexusmart.order.v1.OrderService/MarkPaymentResult"
+	OrderService_RetryPayment_FullMethodName         = "/nexusmart.order.v1.OrderService/RetryPayment"
 )
 
 // OrderServiceClient is the client API for OrderService service.
@@ -45,6 +46,7 @@ type OrderServiceClient interface {
 	RequestReturn(ctx context.Context, in *RequestReturnRequest, opts ...grpc.CallOption) (*RequestReturnResponse, error)
 	GetOrderTimeline(ctx context.Context, in *GetOrderTimelineRequest, opts ...grpc.CallOption) (*GetOrderTimelineResponse, error)
 	MarkPaymentResult(ctx context.Context, in *MarkPaymentResultRequest, opts ...grpc.CallOption) (*MarkPaymentResultResponse, error)
+	RetryPayment(ctx context.Context, in *RetryPaymentRequest, opts ...grpc.CallOption) (*RetryPaymentResponse, error)
 }
 
 type orderServiceClient struct {
@@ -155,6 +157,16 @@ func (c *orderServiceClient) MarkPaymentResult(ctx context.Context, in *MarkPaym
 	return out, nil
 }
 
+func (c *orderServiceClient) RetryPayment(ctx context.Context, in *RetryPaymentRequest, opts ...grpc.CallOption) (*RetryPaymentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RetryPaymentResponse)
+	err := c.cc.Invoke(ctx, OrderService_RetryPayment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OrderServiceServer is the server API for OrderService service.
 // All implementations must embed UnimplementedOrderServiceServer
 // for forward compatibility.
@@ -169,6 +181,7 @@ type OrderServiceServer interface {
 	RequestReturn(context.Context, *RequestReturnRequest) (*RequestReturnResponse, error)
 	GetOrderTimeline(context.Context, *GetOrderTimelineRequest) (*GetOrderTimelineResponse, error)
 	MarkPaymentResult(context.Context, *MarkPaymentResultRequest) (*MarkPaymentResultResponse, error)
+	RetryPayment(context.Context, *RetryPaymentRequest) (*RetryPaymentResponse, error)
 	mustEmbedUnimplementedOrderServiceServer()
 }
 
@@ -208,6 +221,9 @@ func (UnimplementedOrderServiceServer) GetOrderTimeline(context.Context, *GetOrd
 }
 func (UnimplementedOrderServiceServer) MarkPaymentResult(context.Context, *MarkPaymentResultRequest) (*MarkPaymentResultResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method MarkPaymentResult not implemented")
+}
+func (UnimplementedOrderServiceServer) RetryPayment(context.Context, *RetryPaymentRequest) (*RetryPaymentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RetryPayment not implemented")
 }
 func (UnimplementedOrderServiceServer) mustEmbedUnimplementedOrderServiceServer() {}
 func (UnimplementedOrderServiceServer) testEmbeddedByValue()                      {}
@@ -410,6 +426,24 @@ func _OrderService_MarkPaymentResult_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OrderService_RetryPayment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RetryPaymentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).RetryPayment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_RetryPayment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).RetryPayment(ctx, req.(*RetryPaymentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OrderService_ServiceDesc is the grpc.ServiceDesc for OrderService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -456,6 +490,10 @@ var OrderService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MarkPaymentResult",
 			Handler:    _OrderService_MarkPaymentResult_Handler,
+		},
+		{
+			MethodName: "RetryPayment",
+			Handler:    _OrderService_RetryPayment_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

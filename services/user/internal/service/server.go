@@ -8,19 +8,27 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	shippingv1 "github.com/nexusmart/core/gen/go/nexusmart/shipping/v1"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/user/internal/db"
 	"github.com/nexusmart/core/services/user/internal/events"
 	"github.com/nexusmart/core/services/user/internal/password"
 	"github.com/nexusmart/core/services/user/internal/security"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 var errRefreshTokenConcurrentReplay = errors.New("refresh token concurrent replay")
 
-// Options configures auth/security timings for Server.
+// AddressCatalog validates Vietnamese 2-level province/ward codes (backed by ShippingService).
+type AddressCatalog interface {
+	ListProvinces(ctx context.Context, in *shippingv1.ListProvincesRequest, opts ...grpc.CallOption) (*shippingv1.ListProvincesResponse, error)
+	ListWards(ctx context.Context, in *shippingv1.ListWardsRequest, opts ...grpc.CallOption) (*shippingv1.ListWardsResponse, error)
+}
+
+// Options configures auth/security timings and optional collaborators for Server.
 type Options struct {
 	AccessTTL              time.Duration
 	RefreshTTL             time.Duration
@@ -28,6 +36,7 @@ type Options struct {
 	OTPMaxResends          int
 	LoginMaxFailedAttempts int
 	LoginLockoutDuration   time.Duration
+	AddressCatalog         AddressCatalog
 }
 
 func (o Options) withDefaults() Options {
@@ -56,13 +65,14 @@ func (o Options) withDefaults() Options {
 type Server struct {
 	userv1.UnimplementedUserServiceServer
 
-	store   db.Store
-	sec     security.Store
-	hasher  *password.Hasher
-	authMgr *auth.Manager
-	pub     events.Publisher
-	log     *slog.Logger
-	opts    Options
+	store    db.Store
+	sec      security.Store
+	hasher   *password.Hasher
+	authMgr  *auth.Manager
+	pub      events.Publisher
+	shipping AddressCatalog
+	log      *slog.Logger
+	opts     Options
 }
 
 // NewServer constructs a UserService gRPC server.
@@ -76,13 +86,14 @@ func NewServer(
 	opts Options,
 ) *Server {
 	return &Server{
-		store:   store,
-		sec:     sec,
-		hasher:  hasher,
-		authMgr: authMgr,
-		pub:     pub,
-		log:     log,
-		opts:    opts.withDefaults(),
+		store:    store,
+		sec:      sec,
+		hasher:   hasher,
+		authMgr:  authMgr,
+		pub:      pub,
+		shipping: opts.AddressCatalog,
+		log:      log,
+		opts:     opts.withDefaults(),
 	}
 }
 
@@ -91,7 +102,7 @@ func (s *Server) requireAuthClaims(ctx context.Context) (*auth.Claims, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.sec != nil && claims.JTI() != "" {
+	if s.sec != nil && claims.Service == "" && claims.JTI() != "" {
 		revoked, rErr := s.sec.IsJTIRevoked(ctx, claims.JTI())
 		if rErr != nil {
 			s.log.WarnContext(ctx, "failed to check revoked jti", slog.String("error", rErr.Error()))
@@ -242,7 +253,7 @@ func (s *Server) VerifyOTP(ctx context.Context, req *userv1.VerifyOTPRequest) (*
 
 	updated, err := s.store.ActivateUser(ctx, db.ActivateUserParams{
 		ID:            user.ID,
-		PhoneVerified: true,
+		PhoneVerified: user.PhoneVerified,
 	})
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to activate user")
@@ -567,6 +578,7 @@ func (s *Server) UpdateProfile(ctx context.Context, req *userv1.UpdateProfileReq
 		fullName = v
 	}
 	phone := existing.Phone
+	phoneVerified := existing.PhoneVerified
 	if v := strings.TrimSpace(req.GetPhone()); v != "" && v != existing.Phone {
 		if other, pErr := s.store.GetUserByPhone(ctx, v); pErr == nil && other.ID != existing.ID {
 			return nil, status.Error(codes.AlreadyExists, "phone is already in use")
@@ -574,6 +586,7 @@ func (s *Server) UpdateProfile(ctx context.Context, req *userv1.UpdateProfileReq
 			return nil, status.Error(codes.Internal, "failed to check phone uniqueness")
 		}
 		phone = v
+		phoneVerified = false
 	}
 	avatarURL := existing.AvatarURL
 	if v := strings.TrimSpace(req.GetAvatarUrl()); v != "" {
@@ -581,10 +594,11 @@ func (s *Server) UpdateProfile(ctx context.Context, req *userv1.UpdateProfileReq
 	}
 
 	updated, err := s.store.UpdateUserProfile(ctx, db.UpdateUserProfileParams{
-		ID:        existing.ID,
-		FullName:  fullName,
-		Phone:     phone,
-		AvatarURL: avatarURL,
+		ID:            existing.ID,
+		FullName:      fullName,
+		Phone:         phone,
+		AvatarURL:     avatarURL,
+		PhoneVerified: phoneVerified,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -597,14 +611,20 @@ func (s *Server) UpdateProfile(ctx context.Context, req *userv1.UpdateProfileReq
 }
 
 func (s *Server) ValidateUser(ctx context.Context, req *userv1.ValidateUserRequest) (*userv1.ValidateUserResponse, error) {
+	claims, err := s.requireAuthClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if claims.Service != "" {
+		return nil, status.Error(codes.PermissionDenied, "service identity not allowed for ValidateUser")
+	}
+
 	targetID := strings.TrimSpace(req.GetUserId())
 	if targetID == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id is required")
 	}
-	if claims, ok := auth.ClaimsFromContext(ctx); ok && claims.UserID() != "" {
-		if targetID != claims.UserID() && !isAdminRole(claims.Role) {
-			return nil, status.Error(codes.PermissionDenied, "cannot validate another user")
-		}
+	if targetID != claims.UserID() && !isAdminRole(claims.Role) {
+		return nil, status.Error(codes.PermissionDenied, "cannot validate another user")
 	}
 	if !isValidUUID(targetID) {
 		return &userv1.ValidateUserResponse{Valid: false}, nil
@@ -737,7 +757,7 @@ func (s *Server) AdminUpdateUserStatus(ctx context.Context, req *userv1.AdminUpd
 			BeforeJSON: marshalAuditJSON(auditUserSnapshot(target)),
 			AfterJSON:  marshalAuditJSON(auditUserSnapshot(updated)),
 			Reason:     strings.TrimSpace(req.GetReason()),
-			IPAddress:  peerIPFromContext(ctx),
+			IPAddress:  auditIPFromContext(ctx, claims, ""),
 		})
 		return txErr
 	})
@@ -816,7 +836,7 @@ func (s *Server) AdminUpdateUserRole(ctx context.Context, req *userv1.AdminUpdat
 			BeforeJSON: marshalAuditJSON(auditUserSnapshot(target)),
 			AfterJSON:  marshalAuditJSON(auditUserSnapshot(updated)),
 			Reason:     strings.TrimSpace(req.GetReason()),
-			IPAddress:  peerIPFromContext(ctx),
+			IPAddress:  auditIPFromContext(ctx, claims, ""),
 		})
 		return txErr
 	})
@@ -844,38 +864,62 @@ func (s *Server) RegisterShop(ctx context.Context, req *userv1.RegisterShopReque
 		return nil, status.Error(codes.InvalidArgument, "shop name is required")
 	}
 
-	if _, err := s.store.GetShopByName(ctx, shopName); err == nil {
-		return nil, status.Error(codes.AlreadyExists, "shop name is already taken")
-	} else if !isNotFoundErr(err) {
-		return nil, status.Error(codes.Internal, "failed to check shop name uniqueness")
+	pickupAddressID := strings.TrimSpace(req.GetPickupAddressId())
+	if pickupAddressID == "" {
+		return nil, status.Error(codes.InvalidArgument, "pickup_address_id is required")
+	}
+	if !isValidUUID(pickupAddressID) {
+		return nil, status.Error(codes.InvalidArgument, "invalid pickup_address_id")
+	}
+	addr, err := s.store.GetAddressByID(ctx, pickupAddressID)
+	if err != nil {
+		if isNotFoundErr(err) {
+			return nil, status.Error(codes.InvalidArgument, "pickup address not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to validate pickup address")
+	}
+	if addr.UserID != ownerID {
+		return nil, status.Error(codes.PermissionDenied, "pickup address does not belong to user")
 	}
 
+	contactPhone := normalizeVNPhone(req.GetContactPhone())
+	if !isValidVNPhone(contactPhone) {
+		return nil, status.Error(codes.InvalidArgument, "valid Vietnamese contact_phone is required")
+	}
+
+	businessLicenseDoc := strings.TrimSpace(req.GetBusinessLicenseDoc())
+	if businessLicenseDoc == "" {
+		return nil, status.Error(codes.InvalidArgument, "business_license_doc is required")
+	}
+
+	var existingShop *db.Shop
 	if existing, err := s.store.GetShopByOwnerID(ctx, ownerID); err == nil {
-		if existing.Status == ShopStatusPending || existing.Status == ShopStatusActive {
+		isResubmittable := existing.Status == ShopStatusRejected ||
+			(existing.Status == ShopStatusPending && strings.TrimSpace(existing.RejectionReason) != "")
+		if !isResubmittable {
+			if existing.Status == ShopStatusSuspended {
+				return nil, status.Error(codes.FailedPrecondition, "shop is suspended")
+			}
 			return nil, status.Error(codes.AlreadyExists, "user already has a pending or active shop")
 		}
+		existingCopy := existing
+		existingShop = &existingCopy
 	} else if !isNotFoundErr(err) {
 		return nil, status.Error(codes.Internal, "failed to check existing shop")
 	}
 
-	pickupAddressID := strings.TrimSpace(req.GetPickupAddressId())
-	if pickupAddressID != "" {
-		if !isValidUUID(pickupAddressID) {
-			return nil, status.Error(codes.InvalidArgument, "invalid pickup_address_id")
+	if other, err := s.store.GetShopByName(ctx, shopName); err == nil {
+		if existingShop == nil || other.ID != existingShop.ID {
+			return nil, status.Error(codes.AlreadyExists, "shop name is already taken")
 		}
-		addr, err := s.store.GetAddressByID(ctx, pickupAddressID)
-		if err != nil {
-			if isNotFoundErr(err) {
-				return nil, status.Error(codes.InvalidArgument, "pickup address not found")
-			}
-			return nil, status.Error(codes.Internal, "failed to validate pickup address")
-		}
-		if addr.UserID != ownerID {
-			return nil, status.Error(codes.PermissionDenied, "pickup address does not belong to user")
-		}
+	} else if !isNotFoundErr(err) {
+		return nil, status.Error(codes.Internal, "failed to check shop name uniqueness")
 	}
 
 	shopID := uuid.NewString()
+	if existingShop != nil {
+		shopID = existingShop.ID
+	}
 	rawSlug := strings.TrimSpace(req.GetSlug())
 	var shopSlug string
 	if rawSlug != "" {
@@ -883,32 +927,52 @@ func (s *Server) RegisterShop(ctx context.Context, req *userv1.RegisterShopReque
 		if shopSlug == "" {
 			return nil, status.Error(codes.InvalidArgument, "shop slug must contain letters or digits")
 		}
-		if _, err := s.store.GetShopBySlug(ctx, shopSlug); err == nil {
-			return nil, status.Error(codes.AlreadyExists, "shop slug is already taken")
+		if other, err := s.store.GetShopBySlug(ctx, shopSlug); err == nil {
+			if existingShop == nil || other.ID != existingShop.ID {
+				return nil, status.Error(codes.AlreadyExists, "shop slug is already taken")
+			}
 		} else if !isNotFoundErr(err) {
 			return nil, status.Error(codes.Internal, "failed to check shop slug uniqueness")
 		}
 	} else {
 		base := slugifyShop(shopName, "shop-"+shopID[:8])
 		shopSlug = base
-		if _, err := s.store.GetShopBySlug(ctx, shopSlug); err == nil {
-			shopSlug = base + "-" + shopID[:8]
+		if other, err := s.store.GetShopBySlug(ctx, shopSlug); err == nil {
+			if existingShop == nil || other.ID != existingShop.ID {
+				shopSlug = base + "-" + shopID[:8]
+			}
 		} else if !isNotFoundErr(err) {
 			return nil, status.Error(codes.Internal, "failed to check shop slug uniqueness")
 		}
 	}
 
-	created, err := s.store.CreateShop(ctx, db.CreateShopParams{
-		ID:                 shopID,
-		OwnerUserID:        ownerID,
-		Name:               shopName,
-		Slug:               shopSlug,
-		Description:        strings.TrimSpace(req.GetDescription()),
-		PickupAddressID:    pickupAddressID,
-		ContactPhone:       strings.TrimSpace(req.GetContactPhone()),
-		BusinessLicenseDoc: strings.TrimSpace(req.GetBusinessLicenseDoc()),
-		Status:             ShopStatusPending,
-	})
+	var saved db.Shop
+	if existingShop != nil {
+		saved, err = s.store.ResubmitShop(ctx, db.ResubmitShopParams{
+			ID:                 existingShop.ID,
+			Name:               shopName,
+			Slug:               shopSlug,
+			Description:        strings.TrimSpace(req.GetDescription()),
+			PickupAddressID:    pickupAddressID,
+			ContactPhone:       contactPhone,
+			BusinessLicenseDoc: businessLicenseDoc,
+		})
+		if isNotFoundErr(err) {
+			return nil, status.Error(codes.FailedPrecondition, "shop is no longer eligible for resubmission")
+		}
+	} else {
+		saved, err = s.store.CreateShop(ctx, db.CreateShopParams{
+			ID:                 shopID,
+			OwnerUserID:        ownerID,
+			Name:               shopName,
+			Slug:               shopSlug,
+			Description:        strings.TrimSpace(req.GetDescription()),
+			PickupAddressID:    pickupAddressID,
+			ContactPhone:       contactPhone,
+			BusinessLicenseDoc: businessLicenseDoc,
+			Status:             ShopStatusPending,
+		})
+	}
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, status.Error(codes.AlreadyExists, "shop name or slug is already taken")
@@ -916,7 +980,7 @@ func (s *Server) RegisterShop(ctx context.Context, req *userv1.RegisterShopReque
 		return nil, status.Error(codes.Internal, "failed to register shop")
 	}
 
-	return &userv1.RegisterShopResponse{Shop: toProtoShop(created)}, nil
+	return &userv1.RegisterShopResponse{Shop: toProtoShop(saved)}, nil
 }
 
 func (s *Server) GetShop(ctx context.Context, req *userv1.GetShopRequest) (*userv1.GetShopResponse, error) {
@@ -1037,9 +1101,15 @@ func (s *Server) AdminReviewShop(ctx context.Context, req *userv1.AdminReviewSho
 		decisionName = "APPROVE"
 		reason = ""
 	case userv1.ReviewDecision_REVIEW_DECISION_REJECT:
+		if reason == "" {
+			return nil, status.Error(codes.InvalidArgument, "reason is required when rejecting a shop")
+		}
 		newStatus = ShopStatusRejected
 		decisionName = "REJECT"
 	case userv1.ReviewDecision_REVIEW_DECISION_REQUEST_INFO:
+		if reason == "" {
+			return nil, status.Error(codes.InvalidArgument, "reason is required when requesting additional info")
+		}
 		newStatus = ShopStatusPending
 		decisionName = "REQUEST_INFO"
 	default:
@@ -1053,6 +1123,9 @@ func (s *Server) AdminReviewShop(ctx context.Context, req *userv1.AdminReviewSho
 		}
 		return nil, status.Error(codes.Internal, "failed to load shop")
 	}
+	if existing.Status != ShopStatusPending {
+		return nil, status.Error(codes.FailedPrecondition, "only PENDING shops can be reviewed")
+	}
 
 	var updated db.Shop
 	err = s.store.WithTx(ctx, func(q db.Querier) error {
@@ -1063,6 +1136,9 @@ func (s *Server) AdminReviewShop(ctx context.Context, req *userv1.AdminReviewSho
 			RejectionReason: reason,
 		})
 		if txErr != nil {
+			if isNotFoundErr(txErr) {
+				return status.Error(codes.FailedPrecondition, "only PENDING shops can be reviewed")
+			}
 			return txErr
 		}
 		if req.GetDecision() == userv1.ReviewDecision_REVIEW_DECISION_APPROVE {
@@ -1084,11 +1160,14 @@ func (s *Server) AdminReviewShop(ctx context.Context, req *userv1.AdminReviewSho
 			BeforeJSON: marshalAuditJSON(auditShopSnapshot(existing)),
 			AfterJSON:  marshalAuditJSON(auditShopSnapshot(updated)),
 			Reason:     strings.TrimSpace(req.GetReason()),
-			IPAddress:  peerIPFromContext(ctx),
+			IPAddress:  auditIPFromContext(ctx, claims, ""),
 		})
 		return txErr
 	})
 	if err != nil {
+		if _, ok := status.FromError(err); ok {
+			return nil, err
+		}
 		return nil, status.Error(codes.Internal, "failed to review shop")
 	}
 
@@ -1107,6 +1186,107 @@ func (s *Server) AdminReviewShop(ctx context.Context, req *userv1.AdminReviewSho
 	return &userv1.AdminReviewShopResponse{Shop: toProtoShop(updated)}, nil
 }
 
+func (s *Server) validateProvinceWard(ctx context.Context, provinceCode, wardCode, provinceName, wardName string) (string, string, error) {
+	if s.shipping == nil {
+		return provinceName, wardName, nil
+	}
+
+	callListProvinces := func() (*shippingv1.ListProvincesResponse, error) {
+		var lastErr error
+		backoff := 50 * time.Millisecond
+		for attempt := 0; attempt < 2; attempt++ {
+			callCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			resp, err := s.shipping.ListProvinces(callCtx, &shippingv1.ListProvincesRequest{Query: provinceCode})
+			cancel()
+			if err == nil {
+				return resp, nil
+			}
+			lastErr = err
+			code := status.Code(err)
+			if code != codes.Unavailable && code != codes.DeadlineExceeded {
+				return nil, err
+			}
+			if attempt == 0 {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(backoff):
+				}
+			}
+		}
+		return nil, lastErr
+	}
+
+	provResp, err := callListProvinces()
+	if err != nil {
+		s.log.WarnContext(ctx, "shipping ListProvinces failed", slog.String("error", err.Error()))
+		return "", "", status.Error(codes.Unavailable, "failed to validate province_code with shipping service")
+	}
+	var matchedProv *shippingv1.Province
+	for _, p := range provResp.GetProvinces() {
+		if p.GetCode() == provinceCode {
+			matchedProv = p
+			break
+		}
+	}
+	if matchedProv == nil {
+		return "", "", status.Error(codes.InvalidArgument, "invalid province_code")
+	}
+
+	callListWards := func() (*shippingv1.ListWardsResponse, error) {
+		var lastErr error
+		backoff := 50 * time.Millisecond
+		for attempt := 0; attempt < 2; attempt++ {
+			callCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			resp, err := s.shipping.ListWards(callCtx, &shippingv1.ListWardsRequest{
+				ProvinceCode: provinceCode,
+				Query:        wardCode,
+			})
+			cancel()
+			if err == nil {
+				return resp, nil
+			}
+			lastErr = err
+			code := status.Code(err)
+			if code != codes.Unavailable && code != codes.DeadlineExceeded {
+				return nil, err
+			}
+			if attempt == 0 {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(backoff):
+				}
+			}
+		}
+		return nil, lastErr
+	}
+
+	wardResp, err := callListWards()
+	if err != nil {
+		s.log.WarnContext(ctx, "shipping ListWards failed", slog.String("error", err.Error()))
+		return "", "", status.Error(codes.Unavailable, "failed to validate ward_code with shipping service")
+	}
+	var matchedWard *shippingv1.Ward
+	for _, w := range wardResp.GetWards() {
+		if w.GetCode() == wardCode && w.GetProvinceCode() == provinceCode {
+			matchedWard = w
+			break
+		}
+	}
+	if matchedWard == nil {
+		return "", "", status.Error(codes.InvalidArgument, "invalid ward_code for province")
+	}
+
+	if provinceName == "" {
+		provinceName = matchedProv.GetName()
+	}
+	if wardName == "" {
+		wardName = matchedWard.GetName()
+	}
+	return provinceName, wardName, nil
+}
+
 func (s *Server) CreateAddress(ctx context.Context, req *userv1.CreateAddressRequest) (*userv1.CreateAddressResponse, error) {
 	ownerID, err := s.resolveOwnerUserID(ctx, req.GetUserId())
 	if err != nil {
@@ -1117,13 +1297,27 @@ func (s *Server) CreateAddress(ctx context.Context, req *userv1.CreateAddressReq
 	}
 
 	recipientName := strings.TrimSpace(req.GetRecipientName())
-	recipientPhone := strings.TrimSpace(req.GetRecipientPhone())
+	recipientPhone := normalizeVNPhone(req.GetRecipientPhone())
 	provinceCode := strings.TrimSpace(req.GetProvinceCode())
 	wardCode := strings.TrimSpace(req.GetWardCode())
 	streetAddress := strings.TrimSpace(req.GetStreetAddress())
 
 	if recipientName == "" || recipientPhone == "" || provinceCode == "" || wardCode == "" || streetAddress == "" {
 		return nil, status.Error(codes.InvalidArgument, "recipient_name, recipient_phone, province_code, ward_code, and street_address are required")
+	}
+	if !isValidVNPhone(recipientPhone) {
+		return nil, status.Error(codes.InvalidArgument, "valid Vietnamese recipient_phone is required")
+	}
+
+	provinceName, wardName, err := s.validateProvinceWard(
+		ctx,
+		provinceCode,
+		wardCode,
+		strings.TrimSpace(req.GetProvinceName()),
+		strings.TrimSpace(req.GetWardName()),
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	var created db.Address
@@ -1140,9 +1334,9 @@ func (s *Server) CreateAddress(ctx context.Context, req *userv1.CreateAddressReq
 			RecipientName:      recipientName,
 			RecipientPhone:     recipientPhone,
 			ProvinceCode:       provinceCode,
-			ProvinceName:       strings.TrimSpace(req.GetProvinceName()),
+			ProvinceName:       provinceName,
 			WardCode:           wardCode,
-			WardName:           strings.TrimSpace(req.GetWardName()),
+			WardName:           wardName,
 			StreetAddress:      streetAddress,
 			LegacyProvinceCode: strings.TrimSpace(req.GetLegacyProvince()),
 			LegacyDistrictCode: strings.TrimSpace(req.GetLegacyDistrict()),
@@ -1239,27 +1433,50 @@ func (s *Server) UpdateAddress(ctx context.Context, req *userv1.UpdateAddressReq
 	}
 	recipientPhone := existing.RecipientPhone
 	if v := strings.TrimSpace(req.GetRecipientPhone()); v != "" {
-		recipientPhone = v
+		norm := normalizeVNPhone(v)
+		if !isValidVNPhone(norm) {
+			return nil, status.Error(codes.InvalidArgument, "valid Vietnamese recipient_phone is required")
+		}
+		recipientPhone = norm
 	}
 	provinceCode := existing.ProvinceCode
-	if v := strings.TrimSpace(req.GetProvinceCode()); v != "" {
-		provinceCode = v
+	reqProvinceCode := strings.TrimSpace(req.GetProvinceCode())
+	if reqProvinceCode != "" {
+		provinceCode = reqProvinceCode
 	}
 	provinceName := existing.ProvinceName
 	if v := strings.TrimSpace(req.GetProvinceName()); v != "" {
 		provinceName = v
+	} else if reqProvinceCode != "" && reqProvinceCode != existing.ProvinceCode {
+		provinceName = ""
 	}
 	wardCode := existing.WardCode
-	if v := strings.TrimSpace(req.GetWardCode()); v != "" {
-		wardCode = v
+	reqWardCode := strings.TrimSpace(req.GetWardCode())
+	if reqWardCode != "" {
+		wardCode = reqWardCode
 	}
 	wardName := existing.WardName
 	if v := strings.TrimSpace(req.GetWardName()); v != "" {
 		wardName = v
+	} else if reqWardCode != "" && reqWardCode != existing.WardCode {
+		wardName = ""
+	}
+	if reqProvinceCode != "" || reqWardCode != "" {
+		provinceName, wardName, err = s.validateProvinceWard(ctx, provinceCode, wardCode, provinceName, wardName)
+		if err != nil {
+			return nil, err
+		}
 	}
 	streetAddress := existing.StreetAddress
 	if v := strings.TrimSpace(req.GetStreetAddress()); v != "" {
 		streetAddress = v
+	}
+
+	// ponytail: UpdateAddressRequest.is_default is a non-optional proto3 bool, so omitted vs explicit false
+	// cannot be distinguished. Keep existing.IsDefault when false; promote when true (upgrade path: optional bool in proto).
+	isDefault := existing.IsDefault
+	if req.GetIsDefault() {
+		isDefault = true
 	}
 
 	var updated db.Address
@@ -1279,7 +1496,7 @@ func (s *Server) UpdateAddress(ctx context.Context, req *userv1.UpdateAddressReq
 			WardCode:       wardCode,
 			WardName:       wardName,
 			StreetAddress:  streetAddress,
-			IsDefault:      req.GetIsDefault(),
+			IsDefault:      isDefault,
 		})
 		return txErr
 	})
@@ -1317,25 +1534,39 @@ func (s *Server) DeleteAddress(ctx context.Context, req *userv1.DeleteAddressReq
 		return nil, status.Error(codes.PermissionDenied, "cannot delete another user's address")
 	}
 
-	if err := s.store.DeleteAddress(ctx, existing.ID); err != nil {
+	err = s.store.WithTx(ctx, func(q db.Querier) error {
+		inUse, txErr := q.ExistsActiveShopByPickupAddressID(ctx, existing.ID)
+		if txErr != nil {
+			return txErr
+		}
+		if inUse {
+			return status.Error(codes.FailedPrecondition, "cannot delete pickup address of an active shop")
+		}
+		return q.DeleteAddress(ctx, existing.ID)
+	})
+	if err != nil {
+		if _, ok := status.FromError(err); ok {
+			return nil, err
+		}
 		return nil, status.Error(codes.Internal, "failed to delete address")
 	}
 	return &userv1.DeleteAddressResponse{Ok: true}, nil
 }
 
 func (s *Server) WriteAuditLog(ctx context.Context, req *userv1.WriteAuditLogRequest) (*userv1.WriteAuditLogResponse, error) {
-	actorID := strings.TrimSpace(req.GetActorId())
-	actorRole := strings.TrimSpace(req.GetActorRole())
-	if _, ok := auth.ClaimsFromContext(ctx); ok {
-		claims, err := s.requireAdminClaims(ctx)
-		if err != nil {
-			return nil, err
+	claims, err := s.requireAdminClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	actorID := claims.UserID()
+	actorRole := claims.Role
+	if claims.Service != "" {
+		if v := strings.TrimSpace(req.GetActorId()); v != "" {
+			actorID = v
 		}
-		if actorID == "" {
-			actorID = claims.UserID()
-		}
-		if actorRole == "" {
-			actorRole = claims.Role
+		if v := strings.TrimSpace(req.GetActorRole()); v != "" {
+			actorRole = v
 		}
 	}
 
@@ -1354,10 +1585,7 @@ func (s *Server) WriteAuditLog(ctx context.Context, req *userv1.WriteAuditLogReq
 	if afterJSON == "" {
 		afterJSON = "{}"
 	}
-	ipAddr := strings.TrimSpace(req.GetIpAddress())
-	if ipAddr == "" {
-		ipAddr = peerIPFromContext(ctx)
-	}
+	ipAddr := auditIPFromContext(ctx, claims, req.GetIpAddress())
 
 	created, err := s.store.InsertAuditLog(ctx, db.InsertAuditLogParams{
 		ID:         uuid.NewString(),
@@ -1376,6 +1604,80 @@ func (s *Server) WriteAuditLog(ctx context.Context, req *userv1.WriteAuditLogReq
 	}
 
 	return &userv1.WriteAuditLogResponse{AuditLog: toProtoAuditLog(created)}, nil
+}
+
+func (s *Server) RecordCODRejection(ctx context.Context, req *userv1.RecordCODRejectionRequest) (*userv1.RecordCODRejectionResponse, error) {
+	claims, err := requireAuthClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if claims.Service == "" {
+		return nil, status.Error(codes.PermissionDenied, "service token required")
+	}
+
+	userID := strings.TrimSpace(req.GetUserId())
+	orderID := strings.TrimSpace(req.GetOrderId())
+	reason := strings.TrimSpace(req.GetReason())
+	if userID == "" || orderID == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id and order_id are required")
+	}
+	if !isValidUUID(userID) {
+		return nil, status.Error(codes.NotFound, "user not found")
+	}
+
+	var (
+		rejectedCount   int32
+		alreadyRecorded bool
+	)
+	err = s.store.WithTx(ctx, func(q db.Querier) error {
+		user, txErr := q.GetUserByID(ctx, userID)
+		if txErr != nil {
+			if isNotFoundErr(txErr) {
+				return status.Error(codes.NotFound, "user not found")
+			}
+			return txErr
+		}
+		rows, txErr := q.InsertCODRejection(ctx, db.InsertCODRejectionParams{
+			OrderID: orderID,
+			UserID:  user.ID,
+			Reason:  reason,
+		})
+		if txErr != nil {
+			return txErr
+		}
+		if rows == 0 {
+			alreadyRecorded = true
+			fresh, fErr := q.GetUserByID(ctx, user.ID)
+			if fErr != nil {
+				return fErr
+			}
+			rejectedCount = fresh.CODRejectedCount
+			return nil
+		}
+		updated, txErr := q.IncrementUserCODRejectedCount(ctx, user.ID)
+		if txErr != nil {
+			return txErr
+		}
+		rejectedCount = updated.CODRejectedCount
+		return nil
+	})
+	if err != nil {
+		if _, ok := status.FromError(err); ok {
+			return nil, err
+		}
+		return nil, status.Error(codes.Internal, "failed to record COD rejection")
+	}
+
+	s.log.InfoContext(ctx, "cod rejection processed",
+		slog.String("user_id", userID),
+		slog.String("order_id", orderID),
+		slog.Bool("already_recorded", alreadyRecorded),
+		slog.Int("cod_rejected_count", int(rejectedCount)),
+	)
+	return &userv1.RecordCODRejectionResponse{
+		CodRejectedCount: rejectedCount,
+		AlreadyRecorded:  alreadyRecorded,
+	}, nil
 }
 
 func (s *Server) ListAuditLogs(ctx context.Context, req *userv1.ListAuditLogsRequest) (*userv1.ListAuditLogsResponse, error) {

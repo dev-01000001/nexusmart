@@ -376,6 +376,18 @@ message ListAuditLogsResponse {
   int64 total = 2;
 }
 
+// Records a buyer's COD delivery rejection; idempotent per order_id.
+message RecordCODRejectionRequest {
+  string user_id = 1;
+  string order_id = 2;
+  string reason = 3;
+}
+
+message RecordCODRejectionResponse {
+  int32 cod_rejected_count = 1;
+  bool already_recorded = 2;
+}
+
 service UserService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   rpc VerifyOTP(VerifyOTPRequest) returns (VerifyOTPResponse);
@@ -401,4 +413,5 @@ service UserService {
   rpc DeleteAddress(DeleteAddressRequest) returns (DeleteAddressResponse);
   rpc WriteAuditLog(WriteAuditLogRequest) returns (WriteAuditLogResponse);
   rpc ListAuditLogs(ListAuditLogsRequest) returns (ListAuditLogsResponse);
+  rpc RecordCODRejection(RecordCODRejectionRequest) returns (RecordCODRejectionResponse);
 }

@@ -3,7 +3,7 @@ import type { GatewayOrder, GatewayOrderStatus, PaginatedResponse } from "@/lib/
 import { requireUser } from "@/lib/server/auth";
 import { GatewayError, gatewayFetch } from "@/lib/server/gateway";
 import { OrdersListClient } from "@/features/account/OrdersListClient";
-import { isValidOrderStatus } from "@/features/account/orderMeta";
+import { isUnpaidVietQrOrder, isValidOrderStatus } from "@/features/account/orderMeta";
 import {
   fetchOrderVisualLookup,
   fetchPublicShopsMap,
@@ -118,9 +118,22 @@ export default async function OrdersPage({
       : total;
   }
 
+  let pendingOrders: GatewayOrder[] = orders.filter(isUnpaidVietQrOrder);
+  if (pendingOrders.length > 0 && total > orders.length) {
+    const pendingRes = await settleGateway(
+      gatewayFetch<PaginatedResponse<GatewayOrder>>("/orders?status=PENDING&page=1&page_size=50", {
+        cache: "no-store",
+      })
+    );
+    if (pendingRes.ok && Array.isArray(pendingRes.data?.items)) {
+      pendingOrders = pendingRes.data.items;
+    }
+  }
+
   return (
     <OrdersListClient
       orders={orders}
+      pendingOrders={pendingOrders}
       total={total}
       allOrdersTotal={allOrdersTotal}
       page={page}

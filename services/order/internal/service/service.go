@@ -134,7 +134,7 @@ func mapStoreError(err error) error {
 	if errors.Is(err, store.ErrNotFound) {
 		return status.Error(codes.NotFound, "order not found")
 	}
-	if errors.Is(err, statemachine.ErrInvalidTransition) {
+	if errors.Is(err, statemachine.ErrInvalidTransition) || errors.Is(err, store.ErrRetryPrecondition) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	if _, ok := status.FromError(err); ok {
@@ -201,16 +201,19 @@ func AllocateProportionalVND(total int64, weights []int64) []int64 {
 	return shares
 }
 
-// ComputeRewardCoins calculates integer reward coins for a completed order.
-func ComputeRewardCoins(subtotalVND int64, rewardBPS int32) int64 {
-	if subtotalVND <= 0 || rewardBPS <= 0 {
+// ComputeOrderRewardCoins calculates reward coins for a completed sub-order based on
+// buyer's actual merchandise payment (R - V_plat - X, clamped >= 0, excluding shipping).
+// Zero-payable orders always earn 0 coins.
+func ComputeOrderRewardCoins(ord db.Order, rewardBPS int32) int64 {
+	if ord.TotalPayableVND <= 0 || rewardBPS <= 0 {
 		return 0
 	}
-	reward := (subtotalVND * int64(rewardBPS)) / 10000
-	if reward == 0 {
-		return 1
+	sellerRevenue := maxInt64(0, ord.SubtotalVND-ord.FlashSaleDiscountVND-ord.ShopVoucherDiscountVND)
+	actualMerchPaid := sellerRevenue - maxInt64(0, ord.PlatformVoucherDiscountVND) - maxInt64(0, ord.CoinsDiscountVND)
+	if actualMerchPaid <= 0 {
+		return 0
 	}
-	return reward
+	return (actualMerchPaid * int64(rewardBPS)) / 10000
 }
 
 func aggregateToProto(agg store.OrderAggregate) *orderv1.Order {

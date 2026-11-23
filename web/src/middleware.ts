@@ -108,13 +108,23 @@ export async function middleware(req: NextRequest) {
   }
 
   if (needsAuth) {
-    return new NextResponse("Hệ thống đang tạm bận, vui lòng thử lại sau ít phút.", {
-      status: 503,
-      headers: {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-store",
-      },
-    });
+    const isRateLimited = refreshed.status === 429;
+    const headers: Record<string, string> = {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+    };
+    if (isRateLimited && refreshed.retryAfter) {
+      headers["Retry-After"] = refreshed.retryAfter;
+    }
+    return new NextResponse(
+      isRateLimited
+        ? "Bạn thao tác quá nhanh, vui lòng thử lại sau ít phút."
+        : "Hệ thống đang tạm bận, vui lòng thử lại sau ít phút.",
+      {
+        status: isRateLimited ? 429 : 503,
+        headers,
+      }
+    );
   }
 
   return NextResponse.next();

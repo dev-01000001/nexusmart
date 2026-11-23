@@ -28,6 +28,7 @@ import (
 	"github.com/nexusmart/core/services/shipping/internal/poller"
 	"github.com/nexusmart/core/services/shipping/internal/service"
 	"github.com/nexusmart/core/services/shipping/internal/store"
+	"github.com/nexusmart/core/services/shipping/internal/userclient"
 	"github.com/nexusmart/core/services/shipping/internal/webhook"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
@@ -117,24 +118,6 @@ func run() error {
 		mockExp := carrier.NewMockExpressAdapter()
 		enabledCarriers = append(enabledCarriers, carrier.NewResilientCarrier(mockExp, resCfg))
 	}
-	agg := carrier.NewAggregator(log, enabledCarriers...)
-	quoteCache := cache.NewRedisQuoteCache(rdb, cfg.QuoteCacheTTL, log)
-	outboxRelay := events.NewOutboxRelay(pgStore, js, cfg.OutboxInterval, log)
-	svc := service.NewShippingService(pgStore, agg, quoteCache, outboxRelay, log)
-
-	// Start background workers: outbox relay, order.cancelled consumer, fallback status poller.
-	go outboxRelay.Run(ctx)
-
-	consumer := events.NewConsumer(js, pgStore, svc, cfg.NATSStream, cfg.ConsumerMaxTries, log)
-	if err := consumer.Start(ctx); err != nil {
-		log.Error("failed to start NATS consumer", slog.String("error", err.Error()))
-		return err
-	}
-	defer func() { _ = consumer.Close() }()
-
-	statusPoller := poller.New(svc, cfg.PollInterval, log)
-	go statusPoller.Run(ctx)
-
 	// Metrics & Auth.
 	red := metrics.NewRED(cfg.ServiceName, prometheus.DefaultRegisterer)
 	jwtMgr, err := auth.NewManager(cfg.JWTSecret, auth.DefaultAccessTTL)
@@ -148,6 +131,31 @@ func run() error {
 		log.Error("failed to init service token manager (SERVICE_JWT_SECRET)", slog.String("error", err.Error()))
 		return err
 	}
+
+	agg := carrier.NewAggregator(log, enabledCarriers...)
+	quoteCache := cache.NewRedisQuoteCache(rdb, cfg.QuoteCacheTTL, log)
+	outboxRelay := events.NewOutboxRelay(pgStore, js, cfg.OutboxInterval, log)
+	svc := service.NewShippingService(pgStore, agg, quoteCache, outboxRelay, log)
+
+	if uc, ucErr := userclient.New(cfg.UserGRPCAddr, cfg.ServiceName, svcMgr); ucErr == nil {
+		defer func() { _ = uc.Close() }()
+		svc.SetShopPickupResolver(uc)
+	} else {
+		log.Warn("user service client unavailable; shop pickup lookup disabled", slog.String("error", ucErr.Error()))
+	}
+
+	// Start background workers: outbox relay, order.cancelled consumer, fallback status poller.
+	go outboxRelay.Run(ctx)
+
+	consumer := events.NewConsumer(js, pgStore, svc, cfg.NATSStream, cfg.ConsumerMaxTries, log)
+	if err := consumer.Start(ctx); err != nil {
+		log.Error("failed to start NATS consumer", slog.String("error", err.Error()))
+		return err
+	}
+	defer func() { _ = consumer.Close() }()
+
+	statusPoller := poller.New(svc, cfg.PollInterval, log)
+	go statusPoller.Run(ctx)
 
 	// Start gRPC server on :50057.
 	grpcSrv := grpc.NewServer(

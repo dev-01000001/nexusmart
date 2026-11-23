@@ -16,6 +16,7 @@ type Config struct {
 	RateLimitIPPerMin    int
 	RateLimitUserPerMin  int
 	RateLimitFlashPerMin int
+	TrustedProxies       string
 	UserGRPCAddr         string
 	ProductGRPCAddr      string
 	CartGRPCAddr         string
@@ -43,6 +44,7 @@ func Load() Config {
 		RateLimitIPPerMin:    env.EnvInt("RATE_LIMIT_IP_PER_MIN", 300),
 		RateLimitUserPerMin:  env.EnvInt("RATE_LIMIT_USER_PER_MIN", 180),
 		RateLimitFlashPerMin: env.EnvInt("RATE_LIMIT_FLASH_SALE_PER_MIN", 60),
+		TrustedProxies:       env.EnvString("TRUSTED_PROXIES", ""),
 		UserGRPCAddr:         env.EnvString("USER_GRPC_ADDR", "localhost:50051"),
 		ProductGRPCAddr:      env.EnvString("PRODUCT_GRPC_ADDR", "localhost:50052"),
 		CartGRPCAddr:         env.EnvString("CART_GRPC_ADDR", "localhost:50053"),

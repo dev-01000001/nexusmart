@@ -29,12 +29,27 @@ func newStubRepo() *stubRepo {
 }
 
 func (r *stubRepo) ListProvinces(_ context.Context, _ string) ([]address.Province, error) {
-	return nil, nil
+	return address.Provinces(), nil
+}
+func (r *stubRepo) GetProvince(_ context.Context, provinceCode string) (*address.Province, error) {
+	for _, p := range address.Provinces() {
+		if p.Code == provinceCode {
+			cp := p
+			return &cp, nil
+		}
+	}
+	return nil, store.ErrNotFound
 }
 func (r *stubRepo) ListWards(_ context.Context, _, _ string) ([]address.Ward, error) {
 	return nil, nil
 }
-func (r *stubRepo) GetWard(_ context.Context, _ string) (*address.Ward, error) {
+func (r *stubRepo) GetWard(_ context.Context, wardCode string) (*address.Ward, error) {
+	for _, w := range address.Wards() {
+		if w.Code == wardCode {
+			cp := w
+			return &cp, nil
+		}
+	}
 	return nil, store.ErrNotFound
 }
 func (r *stubRepo) MapLegacyAddress(_ context.Context, _, _, _ string) (*address.LegacyMatch, error) {
@@ -193,5 +208,25 @@ func TestShippingGRPCRBACAndShopOwnership(t *testing.T) {
 	// Owner seller succeeds.
 	if resp, err := srv.CancelShipment(sellerOwnerCtx, cancelReq); err != nil || resp.GetShipment().GetStatus() != shippingv1.ShipmentStatus_SHIPMENT_STATUS_CANCELLED {
 		t.Fatalf("expected owner seller CancelShipment to succeed, got resp=%+v err=%v", resp, err)
+	}
+}
+
+func TestShippingGRPC_CalculateFeeValidationErrorCodes(t *testing.T) {
+	repo := newStubRepo()
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)), carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock"}))
+	svc := service.NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := New(svc)
+	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
+
+	badReqs := []*shippingv1.CalculateFeeRequest{
+		{ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 250},
+		{FromProvinceCode: "79", FromWardCode: "79001", ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 0},
+		{FromProvinceCode: "79", FromWardCode: "79001", ToProvinceCode: "99999", ToWardCode: "99999", WeightGrams: 250},
+		{FromProvinceCode: "79", FromWardCode: "79001", ToProvinceCode: "79", ToWardCode: "01001", WeightGrams: 250},
+	}
+	for i, req := range badReqs {
+		if _, err := srv.CalculateFee(buyerCtx, req); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("case %d: expected InvalidArgument, got %v", i, err)
+		}
 	}
 }

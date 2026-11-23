@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,8 +90,14 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		return nil, status.Error(codes.InvalidArgument, "coins_to_use cannot be negative")
 	}
 
+	reqHash := computeCheckoutRequestHash(buyerID, req)
+
 	// Fast path: check for already completed idempotent checkout without blocking.
-	if replay, err := s.tryLoadIdempotentReplay(ctx, buyerID, idemKey); err == nil && replay != nil {
+	if replay, err := s.tryLoadIdempotentReplay(ctx, buyerID, idemKey, reqHash); err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			return nil, err
+		}
+	} else if replay != nil {
 		return replay, nil
 	}
 
@@ -97,7 +105,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	unlock := s.idemLocks.Lock(buyerID + ":" + idemKey)
 	defer unlock()
 
-	checkoutGroupID, replay, err := s.acquireCheckoutGroup(ctx, buyerID, idemKey, req.GetPaymentMethod())
+	checkoutGroupID, replay, err := s.acquireCheckoutGroup(ctx, buyerID, idemKey, reqHash, req.GetPaymentMethod())
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +290,6 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	initialPaymentStatus := "PENDING"
 	if req.GetPaymentMethod() == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD || grandTotalPayableVND == 0 {
 		initialStatus = orderv1.OrderStatus_ORDER_STATUS_CONFIRMED
-		initialPaymentStatus = "COD_PENDING"
 		if grandTotalPayableVND == 0 {
 			initialPaymentStatus = "SUCCEEDED"
 		}
@@ -335,52 +342,50 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	}
 	ordersPersisted = true
 
-	// Saga Step 4: Create Payment via PaymentService.
+	// Saga Step 4: Create Payment via PaymentService (always called, including 0 VND orders per PRM-B1).
 	var paymentID, paymentStatus, qrURL, qrCode string
 	paymentStatus = initialPaymentStatus
-	if grandTotalPayableVND > 0 {
-		payReq := buildCreatePaymentRequest(
-			checkoutGroupID,
-			buyerID,
-			grandTotalPayableVND,
-			req.GetPaymentMethod(),
-			paymentExpiresAt,
-			persistedAggs,
-		)
-		payResp, payErr := s.clients.Payment.CreatePayment(ctx, payReq)
-		if payErr != nil {
-			// Full Saga compensation: cancel persisted orders, release promotions, release stock.
-			compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
-			defer cancel()
-			_, cancelErr := s.store.CancelCheckoutGroupOrders(compCtx, store.CancelGroupOrdersParams{
-				CheckoutGroupID: checkoutGroupID,
-				Reason:          "Payment initialization failed",
-				ActorID:         "order-service",
-				ActorRole:       "system",
-				PaymentStatus:   "FAILED",
-				TraceID:         traceID,
-				Traceparent:     traceparent,
-			})
-			if cancelErr != nil {
-				s.logger.ErrorContext(ctx, "failed to cancel sub-orders during payment failure compensation",
-					"checkout_group_id", checkoutGroupID, "error", cancelErr)
-			}
-			if promoReserved {
-				s.compensateReleasePromotion(ctx, checkoutGroupID)
-			}
-			s.compensateReleaseStock(ctx, checkoutGroupID)
-			s.notifyOutbox()
-			return nil, payErr
+	payReq := buildCreatePaymentRequest(
+		checkoutGroupID,
+		buyerID,
+		grandTotalPayableVND,
+		req.GetPaymentMethod(),
+		paymentExpiresAt,
+		persistedAggs,
+	)
+	payResp, payErr := s.clients.Payment.CreatePayment(ctx, payReq)
+	if payErr != nil {
+		// Full Saga compensation: cancel persisted orders, release promotions, release stock.
+		compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+		defer cancel()
+		_, cancelErr := s.store.CancelCheckoutGroupOrders(compCtx, store.CancelGroupOrdersParams{
+			CheckoutGroupID: checkoutGroupID,
+			Reason:          "Payment initialization failed",
+			ActorID:         "order-service",
+			ActorRole:       "system",
+			PaymentStatus:   "FAILED",
+			TraceID:         traceID,
+			Traceparent:     traceparent,
+		})
+		if cancelErr != nil {
+			s.logger.ErrorContext(ctx, "failed to cancel sub-orders during payment failure compensation",
+				"checkout_group_id", checkoutGroupID, "error", cancelErr)
 		}
-		if pay := payResp.GetPayment(); pay != nil {
-			paymentID = pay.GetPaymentId()
-			paymentStatus = paymentStatusToString(pay.GetStatus(), initialPaymentStatus)
-			qrURL = pay.GetQrUrl()
-			qrCode = pay.GetQrCode()
-			if pay.GetExpiresAt() != nil {
-				exp := pay.GetExpiresAt().AsTime().UTC()
-				paymentExpiresAt = &exp
-			}
+		if promoReserved {
+			s.compensateReleasePromotion(ctx, checkoutGroupID)
+		}
+		s.compensateReleaseStock(ctx, checkoutGroupID)
+		s.notifyOutbox()
+		return nil, payErr
+	}
+	if pay := payResp.GetPayment(); pay != nil {
+		paymentID = pay.GetPaymentId()
+		paymentStatus = paymentStatusToString(pay.GetStatus(), initialPaymentStatus)
+		qrURL = pay.GetQrUrl()
+		qrCode = pay.GetQrCode()
+		if pay.GetExpiresAt() != nil {
+			exp := pay.GetExpiresAt().AsTime().UTC()
+			paymentExpiresAt = &exp
 		}
 	}
 
@@ -448,10 +453,108 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	return resp, nil
 }
 
-func (s *OrderService) tryLoadIdempotentReplay(ctx context.Context, buyerID, idemKey string) (*orderv1.CreateCheckoutResponse, error) {
+const idempotencyConflictMsg = "IDEMPOTENCY_KEY_CONFLICT: idempotency_key was already used with a different checkout payload"
+
+// computeCheckoutRequestHash produces a deterministic SHA-256 hex digest of the canonicalized checkout payload.
+func computeCheckoutRequestHash(buyerID string, req *orderv1.CreateCheckoutRequest) string {
+	type canonicalItem struct {
+		SKUID           string `json:"sku_id"`
+		Quantity        int32  `json:"quantity"`
+		FlashSaleItemID string `json:"flash_sale_item_id"`
+	}
+	type canonicalShippingChoice struct {
+		ShopID      string `json:"shop_id"`
+		CarrierCode string `json:"carrier_code"`
+		ServiceCode string `json:"service_code"`
+	}
+	type canonicalPayload struct {
+		BuyerID           string                    `json:"buyer_id"`
+		AddressID         string                    `json:"address_id"`
+		FromCart          bool                      `json:"from_cart"`
+		Items             []canonicalItem           `json:"items"`
+		ShopVouchers      map[string]string         `json:"shop_vouchers"`
+		PlatformVoucherID string                    `json:"platform_voucher_id"`
+		FreeshipVoucherID string                    `json:"freeship_voucher_id"`
+		CoinsToUse        int64                     `json:"coins_to_use"`
+		PaymentMethod     string                    `json:"payment_method"`
+		ShippingChoices   []canonicalShippingChoice `json:"shipping_choices"`
+	}
+
+	items := make([]canonicalItem, 0, len(req.GetItems()))
+	for _, it := range req.GetItems() {
+		if it == nil {
+			continue
+		}
+		items = append(items, canonicalItem{
+			SKUID:           strings.TrimSpace(it.GetSkuId()),
+			Quantity:        it.GetQuantity(),
+			FlashSaleItemID: strings.TrimSpace(it.GetFlashSaleItemId()),
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].SKUID != items[j].SKUID {
+			return items[i].SKUID < items[j].SKUID
+		}
+		if items[i].FlashSaleItemID != items[j].FlashSaleItemID {
+			return items[i].FlashSaleItemID < items[j].FlashSaleItemID
+		}
+		return items[i].Quantity < items[j].Quantity
+	})
+
+	shopVouchers := make(map[string]string, len(req.GetShopVoucherIds()))
+	for k, v := range req.GetShopVoucherIds() {
+		shopID := strings.TrimSpace(k)
+		voucherID := strings.TrimSpace(v)
+		if shopID == "" && voucherID == "" {
+			continue
+		}
+		shopVouchers[shopID] = voucherID
+	}
+
+	shippingChoices := make([]canonicalShippingChoice, 0, len(req.GetShippingChoices()))
+	for _, sc := range req.GetShippingChoices() {
+		if sc == nil {
+			continue
+		}
+		shippingChoices = append(shippingChoices, canonicalShippingChoice{
+			ShopID:      strings.TrimSpace(sc.GetShopId()),
+			CarrierCode: strings.ToLower(strings.TrimSpace(sc.GetCarrierCode())),
+			ServiceCode: strings.ToLower(strings.TrimSpace(sc.GetServiceCode())),
+		})
+	}
+	sort.Slice(shippingChoices, func(i, j int) bool {
+		if shippingChoices[i].ShopID != shippingChoices[j].ShopID {
+			return shippingChoices[i].ShopID < shippingChoices[j].ShopID
+		}
+		if shippingChoices[i].CarrierCode != shippingChoices[j].CarrierCode {
+			return shippingChoices[i].CarrierCode < shippingChoices[j].CarrierCode
+		}
+		return shippingChoices[i].ServiceCode < shippingChoices[j].ServiceCode
+	})
+
+	raw, _ := json.Marshal(canonicalPayload{
+		BuyerID:           strings.TrimSpace(buyerID),
+		AddressID:         strings.TrimSpace(req.GetAddressId()),
+		FromCart:          req.GetFromCart(),
+		Items:             items,
+		ShopVouchers:      shopVouchers,
+		PlatformVoucherID: strings.TrimSpace(req.GetPlatformVoucherId()),
+		FreeshipVoucherID: strings.TrimSpace(req.GetFreeshipVoucherId()),
+		CoinsToUse:        req.GetCoinsToUse(),
+		PaymentMethod:     statemachine.PaymentMethodToString(req.GetPaymentMethod()),
+		ShippingChoices:   shippingChoices,
+	})
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *OrderService) tryLoadIdempotentReplay(ctx context.Context, buyerID, idemKey, reqHash string) (*orderv1.CreateCheckoutResponse, error) {
 	group, err := s.store.GetActiveCheckoutGroup(ctx, buyerID, idemKey)
 	if err != nil {
 		return nil, err
+	}
+	if group.RequestHash != "" && group.RequestHash != reqHash {
+		return nil, status.Error(codes.FailedPrecondition, idempotencyConflictMsg)
 	}
 	if group.Status != "COMPLETED" {
 		return nil, nil
@@ -459,13 +562,16 @@ func (s *OrderService) tryLoadIdempotentReplay(ctx context.Context, buyerID, ide
 	return s.buildReplayResponse(ctx, group)
 }
 
-func (s *OrderService) acquireCheckoutGroup(ctx context.Context, buyerID, idemKey string, method orderv1.OrderPaymentMethod) (string, *orderv1.CreateCheckoutResponse, error) {
+func (s *OrderService) acquireCheckoutGroup(ctx context.Context, buyerID, idemKey, reqHash string, method orderv1.OrderPaymentMethod) (string, *orderv1.CreateCheckoutResponse, error) {
 	const maxWait = 15 * time.Second
 	deadline := time.Now().Add(maxWait)
 
 	for {
 		existing, err := s.store.GetActiveCheckoutGroup(ctx, buyerID, idemKey)
 		if err == nil && existing != nil {
+			if existing.RequestHash != "" && existing.RequestHash != reqHash {
+				return "", nil, status.Error(codes.FailedPrecondition, idempotencyConflictMsg)
+			}
 			if existing.Status == "COMPLETED" {
 				replay, rErr := s.buildReplayResponse(ctx, existing)
 				return "", replay, rErr
@@ -489,6 +595,7 @@ func (s *OrderService) acquireCheckoutGroup(ctx context.Context, buyerID, idemKe
 			ID:              groupID,
 			BuyerID:         buyerID,
 			IdempotencyKey:  idemKey,
+			RequestHash:     reqHash,
 			Status:          "IN_PROGRESS",
 			PaymentMethod:   statemachine.PaymentMethodToString(method),
 			TotalPayableVND: 0,
@@ -694,6 +801,7 @@ func buildShopPlans(
 				FlashSaleItemId: reqItem.GetFlashSaleItemId(),
 				SkuId:           sku.GetId(),
 				Quantity:        reqItem.GetQuantity(),
+				ShopId:          sku.GetShopId(),
 			})
 		}
 	}
@@ -947,14 +1055,10 @@ func applyDiscountsAndTotals(
 			p.freeshipDiscountShare = p.shippingFeeVND
 		}
 
-		// Compute total payable VND cleanly in integer arithmetic.
-		payable := p.subtotalVND -
-			p.flashSaleDiscountVND -
-			p.shopVoucherDiscount -
-			p.platformVoucherShare +
-			p.shippingFeeVND -
-			p.freeshipDiscountShare -
-			p.coinsDiscountShare
+		// Compute seller merchandise revenue R = max(0, G - F - V_shop) and buyer payable P = max(0, R + Ship - D).
+		sellerRevenue := maxInt64(0, p.subtotalVND-p.flashSaleDiscountVND-p.shopVoucherDiscount)
+		platformDiscount := p.platformVoucherShare + p.freeshipDiscountShare + p.coinsDiscountShare
+		payable := sellerRevenue + p.shippingFeeVND - platformDiscount
 		if payable < 0 {
 			payable = 0
 		}
@@ -971,12 +1075,9 @@ func applyDiscountsAndTotals(
 			rawCommission += (lineVal * int64(bps)) / 10000
 		}
 
-		// Cap commission to net merchandise allocation so payment escrow split stays strictly valid.
-		finalShipping := p.shippingFeeVND - p.freeshipDiscountShare
-		allocShipping := minInt64(finalShipping, p.totalPayableVND)
-		allocSubtotal := p.totalPayableVND - allocShipping
-		if rawCommission > allocSubtotal {
-			rawCommission = allocSubtotal
+		// Cap commission to seller merchandise revenue R (plan.md R1).
+		if rawCommission > sellerRevenue {
+			rawCommission = sellerRevenue
 		}
 		if rawCommission < 0 {
 			rawCommission = 0
@@ -1126,6 +1227,21 @@ func buildCheckoutBatch(
 	return batch, nil
 }
 
+func buildShopAllocation(ord db.Order) *paymentv1.ShopAllocation {
+	sellerRevenue := maxInt64(0, ord.SubtotalVND-ord.FlashSaleDiscountVND-ord.ShopVoucherDiscountVND)
+	ship := maxInt64(0, ord.ShippingFeeVND)
+	platformDiscount := maxInt64(0, sellerRevenue+ship-ord.TotalPayableVND)
+	comm := minInt64(maxInt64(0, ord.CommissionVND), sellerRevenue)
+	return &paymentv1.ShopAllocation{
+		OrderId:             ord.ID,
+		ShopId:              ord.ShopID,
+		SubtotalVnd:         sellerRevenue,
+		CommissionVnd:       comm,
+		ShippingFeeVnd:      ship,
+		PlatformDiscountVnd: platformDiscount,
+	}
+}
+
 func buildCreatePaymentRequest(
 	checkoutGroupID, buyerID string,
 	totalPayableVND int64,
@@ -1140,18 +1256,7 @@ func buildCreatePaymentRequest(
 
 	allocs := make([]*paymentv1.ShopAllocation, 0, len(aggs))
 	for _, agg := range aggs {
-		ord := agg.Order
-		finalShip := maxInt64(0, ord.ShippingFeeVND-ord.FreeshipDiscountVND)
-		allocShip := minInt64(finalShip, ord.TotalPayableVND)
-		allocSub := ord.TotalPayableVND - allocShip
-		allocComm := minInt64(ord.CommissionVND, allocSub)
-		allocs = append(allocs, &paymentv1.ShopAllocation{
-			OrderId:        ord.ID,
-			ShopId:         ord.ShopID,
-			SubtotalVnd:    allocSub,
-			CommissionVnd:  allocComm,
-			ShippingFeeVnd: allocShip,
-		})
+		allocs = append(allocs, buildShopAllocation(agg.Order))
 	}
 
 	req := &paymentv1.CreatePaymentRequest{
@@ -1211,10 +1316,42 @@ func (s *OrderService) compensateReleasePromotion(ctx context.Context, checkoutG
 	defer cancel()
 	err := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
 		_, err := s.clients.Promotion.ReleasePromotion(c, &promotionv1.ReleasePromotionRequest{OrderId: checkoutGroupID})
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
 		return err
 	})
 	if err != nil {
 		s.logger.ErrorContext(ctx, "saga compensation ReleasePromotion failed", "checkout_group_id", checkoutGroupID, "error", err)
+	}
+}
+
+func (s *OrderService) releasePromotionShopErr(ctx context.Context, checkoutGroupID, shopID, reason string) error {
+	if s.clients.Promotion == nil || strings.TrimSpace(checkoutGroupID) == "" || strings.TrimSpace(shopID) == "" {
+		return nil
+	}
+	return clients.RetryIdempotent(ctx, 3, func(c context.Context) error {
+		_, err := s.clients.Promotion.ReleasePromotionShop(c, &promotionv1.ReleasePromotionShopRequest{
+			OrderId: checkoutGroupID,
+			ShopId:  shopID,
+			Reason:  reason,
+		})
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		return err
+	})
+}
+
+func (s *OrderService) compensateReleasePromotionShop(ctx context.Context, checkoutGroupID, shopID, reason string) {
+	if s.clients.Promotion == nil || strings.TrimSpace(checkoutGroupID) == "" || strings.TrimSpace(shopID) == "" {
+		return
+	}
+	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+	defer cancel()
+	if err := s.releasePromotionShopErr(compCtx, checkoutGroupID, shopID, reason); err != nil {
+		s.logger.ErrorContext(ctx, "saga compensation ReleasePromotionShop failed",
+			"checkout_group_id", checkoutGroupID, "shop_id", shopID, "error", err)
 	}
 }
 

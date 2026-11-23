@@ -24,6 +24,7 @@ type Dependencies struct {
 	RateLimitIPPerMin    int
 	RateLimitUserPerMin  int
 	RateLimitFlashPerMin int
+	TrustedProxies       *middleware.TrustedProxies
 	RED                  *metrics.RED
 	OpsHandler           http.Handler
 	PaymentWebhookProxy  http.Handler
@@ -66,8 +67,8 @@ func New(deps Dependencies) http.Handler {
 		if deps.RED != nil {
 			sse.Use(deps.RED.HTTPMiddleware())
 		}
-		sse.Use(middleware.RequestLogger(deps.Logger))
-		sse.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger))
+		sse.Use(middleware.RequestLogger(deps.Logger, deps.TrustedProxies))
+		sse.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies))
 		sse.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, true))
 		sse.Use(middleware.RateLimitByUser(deps.RateLimiter, deps.RateLimitUserPerMin, deps.Logger))
 
@@ -104,7 +105,7 @@ func New(deps Dependencies) http.Handler {
 		if deps.RED != nil {
 			main.Use(deps.RED.HTTPMiddleware())
 		}
-		main.Use(middleware.RequestLogger(deps.Logger))
+		main.Use(middleware.RequestLogger(deps.Logger, deps.TrustedProxies))
 
 		// Section 4.9 Webhooks (no JWT; HMAC verified by upstream; exact raw body & headers preserved).
 		if deps.PaymentWebhookProxy != nil {
@@ -117,7 +118,7 @@ func New(deps Dependencies) http.Handler {
 
 		// Public & authenticated REST API v1 routes with per-IP rate limiting.
 		main.Route("/api/v1", func(api chi.Router) {
-			api.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger))
+			api.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies))
 
 			// --- Public routes ---
 			api.Post("/auth/register", h.handleRegister)
@@ -130,24 +131,24 @@ func New(deps Dependencies) http.Handler {
 			api.Get("/shops/slug/{slug}", h.handleGetShopBySlug)
 			api.Get("/shops/{id}", h.handleGetShop)
 			api.Get("/categories", h.handleListCategories)
+			api.Get("/products", h.handleListProducts)
+			api.Get("/products/slug/{slug}", h.handleGetProductBySlug)
+			api.Get("/products/{id}", h.handleGetProduct)
 
 			api.Get("/shipping/provinces", h.handleListProvinces)
 			api.Get("/shipping/provinces/{code}/wards", h.handleListWards)
 			api.Post("/shipping/addresses/map-legacy", h.handleMapLegacyAddress)
 
-			// Optional-auth public catalog & vouchers endpoints (forward JWT claims when present).
+			// Optional-auth vouchers endpoint (forwards JWT claims when present for saved/eligible status).
 			api.Group(func(opt chi.Router) {
 				opt.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, false))
-				opt.Get("/products", h.handleListProducts)
-				opt.Get("/products/slug/{slug}", h.handleGetProductBySlug)
-				opt.Get("/products/{id}", h.handleGetProduct)
 				opt.Get("/vouchers", h.handleListVouchers)
 			})
 
 			// Public flash-sales list with flash-sale rate limit if configured.
 			api.Group(func(fl chi.Router) {
 				fl.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, false))
-				fl.Use(middleware.RateLimitFlashSale(deps.RateLimiter, deps.RateLimitFlashPerMin, deps.Logger))
+				fl.Use(middleware.RateLimitFlashSale(deps.RateLimiter, deps.RateLimitFlashPerMin, deps.Logger, deps.TrustedProxies))
 				fl.Get("/flash-sales", h.handleListFlashSales)
 			})
 
@@ -226,7 +227,7 @@ func New(deps Dependencies) http.Handler {
 					// Section 4.4 Seller Vouchers & Flash Sales
 					seller.Get("/vouchers", h.handleSellerListVouchers)
 					seller.Post("/vouchers", h.handleSellerCreateVoucher)
-					seller.With(middleware.RateLimitFlashSale(deps.RateLimiter, deps.RateLimitFlashPerMin, deps.Logger)).
+					seller.With(middleware.RateLimitFlashSale(deps.RateLimiter, deps.RateLimitFlashPerMin, deps.Logger, deps.TrustedProxies)).
 						Post("/flash-sales/{id}/items", h.handleSellerRegisterFlashSaleItem)
 
 					// Section 4.5 Seller Orders
@@ -242,6 +243,13 @@ func New(deps Dependencies) http.Handler {
 				// --- Admin routes (`admin`, `super_admin`) ---
 				authed.Route("/admin", func(admin chi.Router) {
 					admin.Use(middleware.RequireRoles("admin", "super_admin"))
+					if deps.Clients != nil && deps.Clients.User != nil {
+						admin.Use(middleware.AdminAudit(middleware.AdminAuditConfig{
+							UserClient:     deps.Clients.User,
+							TrustedProxies: deps.TrustedProxies,
+							Logger:         deps.Logger,
+						}))
+					}
 
 					// Section 4.1 Admin Users, Shops & Audit Logs
 					admin.Get("/users", h.handleAdminListUsers)

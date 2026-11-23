@@ -172,6 +172,61 @@ func TestOutboxRelay_PublishesCanonicalEnvelopeWithHeaders(t *testing.T) {
 	}
 }
 
+func TestOutboxRelay_PublishesOrderReturnedEvent(t *testing.T) {
+	payload, err := json.Marshal(OrderReturnedPayload{
+		OrderID:         "ord-ret-1",
+		OrderCode:       "NM-20261123-RET00001",
+		CheckoutGroupID: "grp-ret-1",
+		BuyerID:         "buyer-1",
+		ShopID:          "shop-1",
+		PaymentMethod:   "COD",
+		FromStatus:      "SHIPPING",
+		TotalPayableVND: 250000,
+		Reason:          "Buyer refused COD delivery",
+		WasPaid:         false,
+	})
+	if err != nil {
+		t.Fatalf("marshal OrderReturnedPayload: %v", err)
+	}
+	st := &fakeOutboxStore{
+		events: []db.OutboxEvent{
+			{
+				ID:          "evt-ret-001",
+				EventType:   SubjectOrderReturned,
+				TraceID:     "4bf92f3577b34da6a3ce929d0e0e4736",
+				Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+				PayloadJSON: payload,
+				CreatedAt:   time.Now().UTC(),
+			},
+		},
+	}
+	pub := &recordingPublisher{}
+	log := logger.New("order-test", logger.WithWriter(io.Discard))
+
+	relay := NewOutboxRelay(st, pub, log, 100*time.Millisecond, nil)
+	if n := relay.FlushOnce(context.Background()); n != 1 {
+		t.Fatalf("expected 1 published order.returned event, got %d", n)
+	}
+	msg := pub.msgs[0]
+	if msg.Subject != SubjectOrderReturned {
+		t.Fatalf("subject = %q, want %q", msg.Subject, SubjectOrderReturned)
+	}
+	if msg.Header.Get(nats.MsgIdHdr) != "evt-ret-001" {
+		t.Fatalf("Nats-Msg-Id = %q, want evt-ret-001", msg.Header.Get(nats.MsgIdHdr))
+	}
+	var env Envelope
+	if err := json.Unmarshal(msg.Data, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	var got OrderReturnedPayload
+	if err := json.Unmarshal(env.Payload, &got); err != nil {
+		t.Fatalf("unmarshal order.returned payload: %v", err)
+	}
+	if got.OrderID != "ord-ret-1" || got.FromStatus != "SHIPPING" || got.TotalPayableVND != 250000 || got.CheckoutGroupID != "grp-ret-1" {
+		t.Fatalf("unexpected order.returned payload: %+v", got)
+	}
+}
+
 func TestConsumer_DispatchAndDLQRouting(t *testing.T) {
 	pub := &recordingPublisher{}
 	dlqStore := &fakeDLQStore{}

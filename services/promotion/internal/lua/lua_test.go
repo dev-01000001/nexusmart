@@ -266,3 +266,86 @@ func TestReserveAtomic_IdempotentAndVoucherLimits(t *testing.T) {
 		t.Fatalf("expected user-1 fresh order to succeed after release, got out=%+v err=%v", resFresh, err)
 	}
 }
+
+func TestReleasePartial_IdempotentAndLeavesRemainderForFullRelease(t *testing.T) {
+	ctx := context.Background()
+	_, engine := newTestEngine(t)
+
+	if err := engine.InitFlashItemSlots(ctx, "fi-1", 10, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.InitFlashItemSlots(ctx, "fi-2", 10, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.InitVoucherKeys(ctx, "v-s1", 5, 50000); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.InitVoucherKeys(ctx, "v-s2", 5, 50000); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.InitVoucherKeys(ctx, "v-plat", 5, 100000); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := engine.Reserve(ctx, lua.ReserveInput{
+		OrderID: "grp-1",
+		UserID:  "u-1",
+		FlashItems: []lua.FlashReserveSpec{
+			{ItemID: "fi-1", Quantity: 2, PerUserLimit: 5},
+			{ItemID: "fi-2", Quantity: 3, PerUserLimit: 5},
+		},
+		Vouchers: []lua.VoucherReserveSpec{
+			{VoucherID: "v-s1", PerUserLimit: 2, DiscountVND: 15000, HasBudget: true},
+			{VoucherID: "v-s2", PerUserLimit: 2, DiscountVND: 10000, HasBudget: true},
+			{VoucherID: "v-plat", PerUserLimit: 2, DiscountVND: 20000, HasBudget: true},
+		},
+	}); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+
+	// Partial release shop-1 keys (fi-1, v-s1)
+	targets := []string{lua.FlashRemainingKey("fi-1"), lua.VoucherRemainingKey("v-s1")}
+	p1, err := engine.ReleasePartial(ctx, "grp-1", targets)
+	if err != nil || !p1.Released || p1.AlreadyReleased {
+		t.Fatalf("1st ReleasePartial unexpected: %+v err=%v", p1, err)
+	}
+
+	// Duplicate partial release for same keys -> idempotent no-op
+	p2, err := engine.ReleasePartial(ctx, "grp-1", targets)
+	if err != nil || !p2.Released || !p2.AlreadyReleased {
+		t.Fatalf("2nd ReleasePartial should be already_released: %+v err=%v", p2, err)
+	}
+
+	// Verify ONLY shop-1 restored; shop-2 + platform still reserved
+	fi1, _, _ := engine.GetInt64(ctx, lua.FlashRemainingKey("fi-1"))
+	fi2, _, _ := engine.GetInt64(ctx, lua.FlashRemainingKey("fi-2"))
+	vs1, _, _ := engine.GetInt64(ctx, lua.VoucherRemainingKey("v-s1"))
+	vs1Bud, _, _ := engine.GetInt64(ctx, lua.VoucherBudgetRemainingKey("v-s1"))
+	vs2, _, _ := engine.GetInt64(ctx, lua.VoucherRemainingKey("v-s2"))
+	vplat, _, _ := engine.GetInt64(ctx, lua.VoucherRemainingKey("v-plat"))
+	if fi1 != 10 || fi2 != 7 || vs1 != 5 || vs1Bud != 50000 || vs2 != 4 || vplat != 4 {
+		t.Fatalf("unexpected state after partial release: fi1=%d fi2=%d vs1=%d vs1Bud=%d vs2=%d vplat=%d",
+			fi1, fi2, vs1, vs1Bud, vs2, vplat)
+	}
+
+	// Full Release releases ONLY remaining entries (fi-2, v-s2, v-plat) and never double-restores fi-1 or v-s1
+	full, err := engine.Release(ctx, "grp-1")
+	if err != nil || !full.Released || full.AlreadyReleased {
+		t.Fatalf("full Release after partial unexpected: %+v err=%v", full, err)
+	}
+	fi1, _, _ = engine.GetInt64(ctx, lua.FlashRemainingKey("fi-1"))
+	fi2, _, _ = engine.GetInt64(ctx, lua.FlashRemainingKey("fi-2"))
+	vs1, _, _ = engine.GetInt64(ctx, lua.VoucherRemainingKey("v-s1"))
+	vs2, _, _ = engine.GetInt64(ctx, lua.VoucherRemainingKey("v-s2"))
+	vplat, _, _ = engine.GetInt64(ctx, lua.VoucherRemainingKey("v-plat"))
+	if fi1 != 10 || fi2 != 10 || vs1 != 5 || vs2 != 5 || vplat != 5 {
+		t.Fatalf("double release detected after full Release: fi1=%d fi2=%d vs1=%d vs2=%d vplat=%d",
+			fi1, fi2, vs1, vs2, vplat)
+	}
+
+	// Partial release after full release -> ALREADY_RELEASED
+	pAfter, err := engine.ReleasePartial(ctx, "grp-1", []string{lua.FlashRemainingKey("fi-2")})
+	if err != nil || !pAfter.Released || !pAfter.AlreadyReleased {
+		t.Fatalf("ReleasePartial after full Release should be already_released: %+v err=%v", pAfter, err)
+	}
+}

@@ -5,11 +5,13 @@ import type {
   GatewayOrderTimelineEvent,
   GatewayPublicShop,
   GatewayShipmentResponse,
+  PaginatedResponse,
 } from "@/lib/gateway-types";
 import { requireUser } from "@/lib/server/auth";
 import { GatewayError, gatewayFetch } from "@/lib/server/gateway";
 import { OrderDetailClient } from "@/features/account/OrderDetailClient";
-import { fetchOrderVisualLookup } from "@/features/account/serverData";
+import { isUnpaidVietQrOrder } from "@/features/account/orderMeta";
+import { fetchOrderVisualLookup, fetchPublicShopsMap } from "@/features/account/serverData";
 
 export const dynamic = "force-dynamic";
 
@@ -96,17 +98,30 @@ export default async function OrderDetailPage({
   }
 
   const encodedId = encodeURIComponent(order.id);
-  const [timelineRes, shipmentRes, shopRes, visuals] = await Promise.all([
-    gatewayFetch<{ events: GatewayOrderTimelineEvent[] }>(`/orders/${encodedId}/timeline`).catch(
-      () => null
-    ),
-    gatewayFetch<GatewayShipmentResponse>(`/shipping/shipments/${encodedId}`).catch(() => null),
-    gatewayFetch<{ shop: GatewayPublicShop }>(`/shops/${encodeURIComponent(order.shop_id)}`, {
-      token: false,
-      cache: "no-store",
-    }).catch(() => null),
-    fetchOrderVisualLookup(order.shop_id),
-  ]);
+  const shouldFetchGroupSiblings = Boolean(order.checkout_group_id) && isUnpaidVietQrOrder(order);
+  const [timelineRes, shipmentRes, shopRes, visuals, pendingOrdersRes, groupShopsMap] =
+    await Promise.all([
+      gatewayFetch<{ events: GatewayOrderTimelineEvent[] }>(`/orders/${encodedId}/timeline`).catch(
+        () => null
+      ),
+      gatewayFetch<GatewayShipmentResponse>(`/shipping/shipments/${encodedId}`).catch(() => null),
+      gatewayFetch<{ shop: GatewayPublicShop }>(`/shops/${encodeURIComponent(order.shop_id)}`, {
+        token: false,
+        cache: "no-store",
+      }).catch(() => null),
+      fetchOrderVisualLookup(order.shop_id),
+      shouldFetchGroupSiblings
+        ? gatewayFetch<PaginatedResponse<GatewayOrder>>(
+            "/orders?status=PENDING&page=1&page_size=50",
+            { cache: "no-store" }
+          ).catch(() => null)
+        : Promise.resolve(null),
+      shouldFetchGroupSiblings ? fetchPublicShopsMap() : Promise.resolve({}),
+    ]);
+
+  const initialGroupOrders = shouldFetchGroupSiblings
+    ? (pendingOrdersRes?.items ?? []).filter((o) => o.checkout_group_id === order.checkout_group_id)
+    : [];
 
   const timeline =
     timelineRes && Array.isArray(timelineRes.events) && timelineRes.events.length > 0
@@ -123,6 +138,8 @@ export default async function OrderDetailPage({
       shop={shopRes?.shop ?? null}
       visuals={visuals}
       orderId={order.id}
+      initialGroupOrders={initialGroupOrders}
+      groupShopsMap={groupShopsMap}
     />
   );
 }

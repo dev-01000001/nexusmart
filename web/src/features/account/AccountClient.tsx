@@ -41,11 +41,15 @@ import {
 } from "./AccountMockTabs";
 import {
   type BadgeTone,
+  canSubmitShopApplication,
   getNotificationCategoryLabel,
   getOrderStatusInfo,
   getShopStatusInfo,
   getVoucherScopeLabel,
+  isShopInfoRequested,
+  isValidVietnamesePhone,
   normalizeNotificationHref,
+  normalizeVietnamesePhone,
 } from "./orderMeta";
 import type { OrderVisualLookup } from "./types";
 
@@ -187,16 +191,28 @@ export function AccountClient({
   const [savingVoucherId, setSavingVoucherId] = useState<string | null>(null);
   const [voucherActionError, setVoucherActionError] = useState<string | null>(null);
 
-  // Real shop state
+  // Real shop state (pre-fill when resubmitting after REJECTED or REQUEST_INFO)
+  const resubmittableInitialShop =
+    initialGatewayShop && canSubmitShopApplication(initialGatewayShop) ? initialGatewayShop : null;
+  const defaultPickupAddrId =
+    initialAddresses.find((a) => a.is_default)?.id ?? initialAddresses[0]?.id ?? "";
+  const initialShopPickupAddrId =
+    resubmittableInitialShop?.pickup_address_id &&
+    initialAddresses.some((a) => a.id === resubmittableInitialShop.pickup_address_id)
+      ? resubmittableInitialShop.pickup_address_id
+      : defaultPickupAddrId;
+
   const [myShop, setGatewayShop] = useState<GatewayShop | null>(initialGatewayShop);
-  const [shopName, setShopName] = useState("");
-  const [shopSlug, setShopSlug] = useState("");
-  const [shopDesc, setShopDesc] = useState("");
-  const [shopPhone, setShopPhone] = useState(initialUser.phone || "");
-  const [shopPickupAddrId, setShopPickupAddrId] = useState(
-    initialAddresses.find((a) => a.is_default)?.id ?? initialAddresses[0]?.id ?? ""
+  const [shopName, setShopName] = useState(resubmittableInitialShop?.name ?? "");
+  const [shopSlug, setShopSlug] = useState(resubmittableInitialShop?.slug ?? "");
+  const [shopDesc, setShopDesc] = useState(resubmittableInitialShop?.description ?? "");
+  const [shopPhone, setShopPhone] = useState(
+    resubmittableInitialShop?.contact_phone || initialUser.phone || ""
   );
-  const [shopLicenseDoc, setShopLicenseDoc] = useState("");
+  const [shopPickupAddrId, setShopPickupAddrId] = useState(initialShopPickupAddrId);
+  const [shopLicenseDoc, setShopLicenseDoc] = useState(
+    resubmittableInitialShop?.business_license_doc ?? ""
+  );
   const [submittingShop, setSubmittingShop] = useState(false);
   const [shopFormError, setShopFormError] = useState<string | null>(null);
 
@@ -246,7 +262,9 @@ export function AccountClient({
       const list = Array.isArray(res?.addresses) ? res.addresses : [];
       setAddresses(list);
       setAddrFetchError(null);
-      if (!shopPickupAddrId && list.length > 0) {
+      if (list.length === 0) {
+        setShopPickupAddrId("");
+      } else if (!list.some((a) => a.id === shopPickupAddrId)) {
         setShopPickupAddrId(list.find((a) => a.is_default)?.id ?? list[0].id);
       }
     } catch (err) {
@@ -353,16 +371,27 @@ export function AccountClient({
     if (submittingShop) return;
 
     const cleanName = shopName.trim();
-    const cleanPhone = shopPhone.replace(/\s+/g, "").trim();
+    const cleanPhone = normalizeVietnamesePhone(shopPhone);
+    const cleanLicense = shopLicenseDoc.trim();
+    const cleanPickupAddrId = shopPickupAddrId.trim();
+    const wasInfoRequested = isShopInfoRequested(myShop);
 
     if (cleanName.length < 3) {
       setShopFormError("Vui lòng nhập tên gian hàng tối thiểu 3 ký tự.");
       return;
     }
-    if (!/^0\d{9,10}$/.test(cleanPhone)) {
+    if (!isValidVietnamesePhone(cleanPhone)) {
       setShopFormError(
-        "Số điện thoại liên hệ gian hàng cần gồm 10 hoặc 11 chữ số, bắt đầu bằng 0."
+        "Số điện thoại liên hệ không hợp lệ. Vui lòng nhập số điện thoại Việt Nam (ví dụ: 0912345678 hoặc +84912345678)."
       );
+      return;
+    }
+    if (!cleanLicense) {
+      setShopFormError("Vui lòng nhập mã giấy phép kinh doanh hoặc giấy phép hộ kinh doanh.");
+      return;
+    }
+    if (!cleanPickupAddrId) {
+      setShopFormError("Vui lòng thêm và chọn địa chỉ lấy hàng từ sổ địa chỉ trước khi gửi hồ sơ.");
       return;
     }
 
@@ -375,9 +404,9 @@ export function AccountClient({
           name: cleanName,
           slug: shopSlug.trim(),
           description: shopDesc.trim(),
-          pickup_address_id: shopPickupAddrId,
+          pickup_address_id: cleanPickupAddrId,
           contact_phone: cleanPhone,
-          business_license_doc: shopLicenseDoc.trim(),
+          business_license_doc: cleanLicense,
         },
       });
       if (res?.shop) {
@@ -387,7 +416,11 @@ export function AccountClient({
       setShopSlug("");
       setShopDesc("");
       setShopLicenseDoc("");
-      showToast("Đã gửi hồ sơ đăng ký gian hàng. Hồ sơ đang chờ xét duyệt.");
+      showToast(
+        wasInfoRequested
+          ? "Đã gửi lại hồ sơ bổ sung. Hồ sơ đang chờ quản trị viên xét duyệt."
+          : "Đã gửi hồ sơ đăng ký gian hàng. Hồ sơ đang chờ xét duyệt."
+      );
     } catch (err) {
       if (err instanceof ApiError && err.code === "ALREADY_EXISTS") {
         setShopFormError(
@@ -623,7 +656,9 @@ export function AccountClient({
 
   const realCoins = coinBalance?.balance ?? 0;
   const coinTxs = coinBalance?.recent_transactions ?? [];
-  const shopStatusMeta = myShop ? getShopStatusInfo(myShop.status) : null;
+  const shopInfoRequested = isShopInfoRequested(myShop);
+  const showShopForm = canSubmitShopApplication(myShop);
+  const shopStatusMeta = myShop ? getShopStatusInfo(myShop.status, myShop.rejection_reason) : null;
   const canAccessSeller = myShop?.status === "ACTIVE" || profileUser.role === "seller";
 
   return (
@@ -1287,8 +1322,13 @@ export function AccountClient({
                   )}
 
                   {myShop.rejection_reason && (
-                    <div className={`${shared.feedbackBox} ${shared.feedbackError}`}>
-                      Lý do từ chối: {myShop.rejection_reason}
+                    <div
+                      className={`${shared.feedbackBox} ${
+                        shopInfoRequested ? shared.feedbackInfo : shared.feedbackError
+                      }`}
+                    >
+                      {shopInfoRequested ? "Yêu cầu bổ sung:" : "Lý do từ chối:"}{" "}
+                      {myShop.rejection_reason}
                     </div>
                   )}
 
@@ -1307,18 +1347,25 @@ export function AccountClient({
                 </div>
               )}
 
-              {(!myShop || myShop.status === "REJECTED") && (
+              {showShopForm && (
                 <form
                   className={styles.yirPanel}
                   onSubmit={(e) => void handleRegisterShop(e)}
                   noValidate
                 >
                   <div className={shared.sectionHead} style={{ marginBottom: 0 }}>
-                    <h2 className={shared.sectionTitle}>Đăng ký mở gian hàng trên NexusMart</h2>
+                    <h2 className={shared.sectionTitle}>
+                      {shopInfoRequested
+                        ? "Bổ sung hồ sơ đăng ký gian hàng"
+                        : myShop?.status === "REJECTED"
+                          ? "Gửi lại hồ sơ mở gian hàng"
+                          : "Đăng ký mở gian hàng trên NexusMart"}
+                    </h2>
                   </div>
                   <p className={styles.bodyCopy}>
-                    Điền thông tin xưởng may hoặc thương hiệu của bạn. Sau khi quản trị viên duyệt,
-                    tài khoản sẽ mở quyền truy cập Kênh Người Bán.
+                    {shopInfoRequested
+                      ? "Cập nhật thông tin theo yêu cầu của quản trị viên rồi gửi lại để tiếp tục xét duyệt."
+                      : "Điền thông tin xưởng may hoặc thương hiệu của bạn. Sau khi quản trị viên duyệt, tài khoản sẽ mở quyền truy cập Kênh Người Bán."}
                   </p>
 
                   <div className={shared.formGrid}>
@@ -1368,7 +1415,7 @@ export function AccountClient({
                     </div>
                     <div className={shared.field}>
                       <label htmlFor="shop-license" className={shared.fieldLabel}>
-                        Mã giấy phép kinh doanh (không bắt buộc)
+                        Mã giấy phép kinh doanh
                       </label>
                       <input
                         id="shop-license"
@@ -1378,6 +1425,7 @@ export function AccountClient({
                         onChange={(e) => setShopLicenseDoc(e.target.value)}
                         placeholder="Số GPKD hoặc hộ kinh doanh"
                         disabled={submittingShop}
+                        required
                       />
                     </div>
                     <div className={`${shared.field} ${shared.formFull}`}>
@@ -1391,8 +1439,8 @@ export function AccountClient({
                           value={shopPickupAddrId}
                           onChange={(e) => setShopPickupAddrId(e.target.value)}
                           disabled={submittingShop}
+                          required
                         >
-                          <option value="">Chọn sau</option>
                           {addresses.map((a) => (
                             <option key={a.id} value={a.id}>
                               {a.recipient_name}: {a.street_address}, {a.ward_name},{" "}
@@ -1403,8 +1451,8 @@ export function AccountClient({
                       ) : (
                         <div className={styles.formHintRow}>
                           <span className={styles.metaNote}>
-                            Bạn chưa có địa chỉ lưu sẵn. Bạn vẫn có thể gửi hồ sơ hoặc thêm địa chỉ
-                            trước.
+                            Bạn cần thêm ít nhất một địa chỉ lấy hàng trong sổ địa chỉ trước khi gửi
+                            hồ sơ mở gian hàng.
                           </span>
                           <Button variant="ghost" size="sm" onClick={() => setActiveTab("dia-chi")}>
                             Thêm địa chỉ
@@ -1435,7 +1483,13 @@ export function AccountClient({
 
                   <div className={shared.formActions}>
                     <Button type="submit" variant="primary" size="md" disabled={submittingShop}>
-                      {submittingShop ? "Đang gửi hồ sơ..." : "Gửi hồ sơ mở gian hàng"}
+                      {submittingShop
+                        ? "Đang gửi hồ sơ..."
+                        : shopInfoRequested
+                          ? "Gửi lại hồ sơ bổ sung"
+                          : myShop?.status === "REJECTED"
+                            ? "Gửi lại hồ sơ mở gian hàng"
+                            : "Gửi hồ sơ mở gian hàng"}
                     </Button>
                   </div>
                 </form>
@@ -1446,8 +1500,8 @@ export function AccountClient({
               <div className={styles.birthdayBand}>
                 <h2 className={shared.sectionTitle}>Quy trình xét duyệt gian hàng</h2>
                 <p className={styles.bodyCopy}>
-                  1. Gửi tên gian hàng, số điện thoại liên hệ và địa chỉ lấy hàng từ sổ địa chỉ của
-                  bạn.
+                  1. Gửi tên gian hàng, số điện thoại liên hệ, mã giấy phép kinh doanh và địa chỉ
+                  lấy hàng từ sổ địa chỉ của bạn.
                 </p>
                 <p className={styles.bodyCopy}>
                   2. Hồ sơ ở trạng thái <strong>Đang chờ duyệt</strong> trong lúc quản trị viên xác

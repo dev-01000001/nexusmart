@@ -69,12 +69,13 @@ type UserContact struct {
 	FullName string
 }
 
-// OrderParticipant holds cached buyer/shop/order_code mapping for an order_id.
+// OrderParticipant holds cached buyer/shop/order_code/checkout_group mapping for an order_id.
 type OrderParticipant struct {
-	OrderID   string
-	BuyerID   string
-	ShopID    string
-	OrderCode string
+	OrderID         string
+	BuyerID         string
+	ShopID          string
+	OrderCode       string
+	CheckoutGroupID string
 }
 
 // TxStore exposes DB-only operations executed atomically inside an idempotent event transaction.
@@ -86,6 +87,7 @@ type TxStore interface {
 	GetUserContact(ctx context.Context, userID string) (UserContact, bool, error)
 	UpsertOrderParticipant(ctx context.Context, p OrderParticipant) error
 	GetOrderParticipant(ctx context.Context, orderID string) (OrderParticipant, bool, error)
+	ListOrderParticipantsByGroup(ctx context.Context, checkoutGroupID string) ([]OrderParticipant, error)
 }
 
 // Repository defines all persistence operations for the notification service.
@@ -98,6 +100,7 @@ type Repository interface {
 	DeleteProcessedEvent(ctx context.Context, eventID string) error
 	GetUserContact(ctx context.Context, userID string) (UserContact, bool, error)
 	GetOrderParticipant(ctx context.Context, orderID string) (OrderParticipant, bool, error)
+	ListOrderParticipantsByGroup(ctx context.Context, checkoutGroupID string) ([]OrderParticipant, error)
 	ProcessEventTx(ctx context.Context, eventID, subject string, fn func(tx TxStore) error) (duplicate bool, err error)
 	InsertDeadLetter(ctx context.Context, eventID, subject string, payload []byte, errMsg string, attempts int) error
 }
@@ -263,6 +266,10 @@ func (s *PGStore) GetOrderParticipant(ctx context.Context, orderID string) (Orde
 	return (&pgTxStore{q: s.q}).GetOrderParticipant(ctx, orderID)
 }
 
+func (s *PGStore) ListOrderParticipantsByGroup(ctx context.Context, checkoutGroupID string) ([]OrderParticipant, error) {
+	return (&pgTxStore{q: s.q}).ListOrderParticipantsByGroup(ctx, checkoutGroupID)
+}
+
 type pgTxStore struct {
 	q *db.Queries
 }
@@ -336,10 +343,11 @@ func (t *pgTxStore) UpsertOrderParticipant(ctx context.Context, p OrderParticipa
 		return nil
 	}
 	return t.q.UpsertOrderParticipant(ctx, db.UpsertOrderParticipantParams{
-		OrderID:   p.OrderID,
-		BuyerID:   p.BuyerID,
-		ShopID:    p.ShopID,
-		OrderCode: p.OrderCode,
+		OrderID:         p.OrderID,
+		BuyerID:         p.BuyerID,
+		ShopID:          p.ShopID,
+		OrderCode:       p.OrderCode,
+		CheckoutGroupID: p.CheckoutGroupID,
 	})
 }
 
@@ -352,11 +360,33 @@ func (t *pgTxStore) GetOrderParticipant(ctx context.Context, orderID string) (Or
 		return OrderParticipant{}, false, err
 	}
 	return OrderParticipant{
-		OrderID:   row.OrderID,
-		BuyerID:   row.BuyerID,
-		ShopID:    row.ShopID,
-		OrderCode: row.OrderCode,
+		OrderID:         row.OrderID,
+		BuyerID:         row.BuyerID,
+		ShopID:          row.ShopID,
+		OrderCode:       row.OrderCode,
+		CheckoutGroupID: row.CheckoutGroupID,
 	}, true, nil
+}
+
+func (t *pgTxStore) ListOrderParticipantsByGroup(ctx context.Context, checkoutGroupID string) ([]OrderParticipant, error) {
+	if checkoutGroupID == "" {
+		return nil, nil
+	}
+	rows, err := t.q.ListOrderParticipantsByCheckoutGroup(ctx, checkoutGroupID)
+	if err != nil {
+		return nil, fmt.Errorf("list order participants by checkout group: %w", err)
+	}
+	out := make([]OrderParticipant, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, OrderParticipant{
+			OrderID:         row.OrderID,
+			BuyerID:         row.BuyerID,
+			ShopID:          row.ShopID,
+			OrderCode:       row.OrderCode,
+			CheckoutGroupID: row.CheckoutGroupID,
+		})
+	}
+	return out, nil
 }
 
 func getPreferencesFromQueries(ctx context.Context, q *db.Queries, userID string) (Preferences, error) {

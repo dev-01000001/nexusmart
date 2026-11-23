@@ -147,6 +147,7 @@ export interface RefreshGatewayResult {
   status: number;
   tokens?: GatewayRefreshResponse;
   code?: string;
+  retryAfter?: string;
 }
 
 export interface RefreshGatewayOptions {
@@ -326,13 +327,16 @@ export function refreshTokensWithGateway(
         const errCode =
           body && "error" in body && typeof body.error?.code === "string"
             ? body.error.code
-            : res.status >= 500
-              ? "UNAVAILABLE"
-              : "UNAUTHENTICATED";
+            : res.status === 429
+              ? "RESOURCE_EXHAUSTED"
+              : res.status >= 500
+                ? "UNAVAILABLE"
+                : "UNAUTHENTICATED";
         return {
           ok: false,
           status: res.status >= 500 ? 503 : res.status,
           code: errCode,
+          retryAfter: res.headers.get("retry-after") ?? undefined,
         };
       }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { PRODUCTS } from "@/data";
@@ -9,6 +9,7 @@ import type {
   GatewayOrderTimelineEvent,
   GatewayPublicShop,
   GatewayShipmentResponse,
+  PaginatedResponse,
 } from "@/lib/gateway-types";
 import { api, getErrorMessage } from "@/lib/api";
 import { formatDateTimeVi, formatSignedVnd, formatVnd } from "@/lib/format";
@@ -26,6 +27,7 @@ import {
   canCancelOrder,
   canConfirmReceived,
   canRequestReturn,
+  formatUnpaidGroupCancelWarning,
   getCarrierLabel,
   getOrderStatusInfo,
   getPaymentMethodLabel,
@@ -34,6 +36,7 @@ import {
   getTimelineEventTitle,
   localizeTimelineNote,
   needsVietQrPayment,
+  resolveUnpaidVietQrCancelGroup,
 } from "./orderMeta";
 
 export interface OrderDetailClientProps {
@@ -43,6 +46,8 @@ export interface OrderDetailClientProps {
   shop: GatewayPublicShop | null;
   visuals: OrderVisualLookup;
   orderId: string;
+  initialGroupOrders?: GatewayOrder[];
+  groupShopsMap?: Record<string, GatewayPublicShop>;
   initialError?: string | null;
   forcedState?: "loading" | "empty" | "error" | null;
 }
@@ -97,6 +102,8 @@ export function OrderDetailClient({
   shop,
   visuals,
   orderId,
+  initialGroupOrders = [],
+  groupShopsMap = {},
   initialError,
   forcedState,
 }: OrderDetailClientProps) {
@@ -107,11 +114,13 @@ export function OrderDetailClient({
   const [order, setOrder] = useState<GatewayOrder | null>(initialOrder);
   const [timeline, setTimeline] = useState<GatewayOrderTimelineEvent[]>(initialTimeline);
   const [shipmentData, setShipmentData] = useState<GatewayShipmentResponse | null>(initialShipment);
+  const [groupOrders, setGroupOrders] = useState<GatewayOrder[]>(initialGroupOrders);
 
   const [cancelReason, setCancelReason] = useState(CANCEL_REASONS[0]);
   const [cancelNote, setCancelNote] = useState("");
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  const [confirmGroupCancelOpen, setConfirmGroupCancelOpen] = useState(false);
 
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
@@ -122,6 +131,22 @@ export function OrderDetailClient({
   const [returnError, setReturnError] = useState<string | null>(null);
 
   const [reordering, setReordering] = useState(false);
+
+  const cancelGroupInfo = useMemo(
+    () => resolveUnpaidVietQrCancelGroup(order, groupOrders),
+    [order, groupOrders]
+  );
+
+  useEffect(() => {
+    if (!confirmGroupCancelOpen) return;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape" && !cancelling) {
+        setConfirmGroupCancelOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [confirmGroupCancelOpen, cancelling]);
 
   useRevealOnScroll(
     `${forcedState ?? "live"}-${order?.id ?? "none"}-${order?.status ?? ""}-${order?.payment_status ?? ""}`
@@ -187,9 +212,12 @@ export function OrderDetailClient({
     }
   };
 
-  const handleCancelSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const executeCancelOrder = async () => {
     if (!order || cancelling) return;
+    const wasMultiShopGroup = cancelGroupInfo.isMultiShopGroup;
+    const groupShopCount = cancelGroupInfo.shopCount;
+    const targetGroupId = order.checkout_group_id;
+
     setCancelError(null);
     setCancelling(true);
     const fullReason = cancelNote.trim() ? `${cancelReason}: ${cancelNote.trim()}` : cancelReason;
@@ -207,14 +235,48 @@ export function OrderDetailClient({
           setTimeline(res.order.timeline);
         }
       }
+      setConfirmGroupCancelOpen(false);
       setCancelNote("");
-      showToast("Đã hủy đơn hàng thành công.");
+      showToast(
+        wasMultiShopGroup
+          ? `Đã hủy toàn bộ lần đặt hàng gồm ${groupShopCount} gian hàng.`
+          : "Đã hủy đơn hàng thành công."
+      );
       await refreshOrder();
+      if (wasMultiShopGroup && targetGroupId) {
+        try {
+          const refreshedList = await api<PaginatedResponse<GatewayOrder>>(
+            "/orders?page=1&page_size=50"
+          );
+          if (refreshedList && Array.isArray(refreshedList.items)) {
+            const refreshedSiblings = refreshedList.items.filter(
+              (item) => item.checkout_group_id === targetGroupId
+            );
+            if (refreshedSiblings.length > 0) {
+              setGroupOrders(refreshedSiblings);
+            }
+          }
+        } catch {
+          // Ignore secondary list reload errors; router.refresh refreshes server cache below.
+        }
+        router.refresh();
+      }
     } catch (err) {
       setCancelError(getErrorMessage(err, "Chưa thể hủy đơn hàng lúc này. Vui lòng thử lại."));
     } finally {
       setCancelling(false);
     }
+  };
+
+  const handleCancelSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!order || cancelling) return;
+    setCancelError(null);
+    if (cancelGroupInfo.isMultiShopGroup) {
+      setConfirmGroupCancelOpen(true);
+      return;
+    }
+    void executeCancelOrder();
   };
 
   const handleConfirmReceived = async () => {
@@ -760,17 +822,25 @@ export function OrderDetailClient({
             {allowCancel && (
               <form
                 className={styles.unboxedSection}
-                onSubmit={(e) => void handleCancelSubmit(e)}
+                onSubmit={handleCancelSubmit}
                 noValidate
                 data-reveal=""
               >
                 <h2 className={shared.sectionTitle}>Hủy đơn hàng</h2>
-                <p className={styles.actionPanelDesc}>
-                  Bạn có thể hủy đơn trước khi bàn giao cho đơn vị vận chuyển. Nếu đơn đã thanh toán
-                  trước, số tiền{" "}
-                  <strong className="num">{formatVnd(order.total_payable_vnd)}</strong> sẽ được xử
-                  lý hoàn lại theo quy định.
-                </p>
+                {cancelGroupInfo.isMultiShopGroup ? (
+                  <div className={`${shared.feedbackBox} ${shared.feedbackError}`}>
+                    <strong>{formatUnpaidGroupCancelWarning(cancelGroupInfo.shopCount)}.</strong>{" "}
+                    Các gian hàng trong lần đặt này dùng chung một mã chuyển khoản VietQR nên khi
+                    hủy sẽ áp dụng cho toàn bộ đơn đang chờ thanh toán trong nhóm.
+                  </div>
+                ) : (
+                  <p className={styles.actionPanelDesc}>
+                    Bạn có thể hủy đơn trước khi bàn giao cho đơn vị vận chuyển. Nếu đơn đã thanh
+                    toán trước, số tiền{" "}
+                    <strong className="num">{formatVnd(order.total_payable_vnd)}</strong> sẽ được xử
+                    lý hoàn lại theo quy định.
+                  </p>
+                )}
 
                 <div className={shared.formGrid}>
                   <div className={`${shared.field} ${shared.formFull}`}>
@@ -819,6 +889,40 @@ export function OrderDetailClient({
                   </Button>
                 </div>
               </form>
+            )}
+
+            {groupOrders.length > 1 && (
+              <div className={styles.unboxedSection}>
+                <div className={shared.sectionHead}>
+                  <h2 className={shared.sectionTitle}>
+                    Các đơn trong cùng lần đặt hàng ({groupOrders.length} gian hàng)
+                  </h2>
+                  <Link href="/don-hang" className={shared.breadcrumbLink}>
+                    Xem danh sách đơn hàng
+                  </Link>
+                </div>
+                <ul className={shared.confirmList}>
+                  {groupOrders.map((sib) => {
+                    const sibMeta = getOrderStatusInfo(sib.status);
+                    const sibShopName =
+                      groupShopsMap[sib.shop_id]?.name ??
+                      (sib.shop_id === order.shop_id ? shopName : "Gian hàng NexusMart");
+                    return (
+                      <li key={sib.id} className={shared.confirmListItem}>
+                        <span>
+                          <Link href={`/don-hang/${sib.id}`} className={shared.breadcrumbLink}>
+                            <strong className="num">{sib.order_code}</strong>
+                          </Link>{" "}
+                          · {sibShopName}
+                        </span>
+                        <span className={`${shared.statusTag} ${toneClass(sibMeta.tone)}`}>
+                          {sibMeta.label}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
             )}
 
             {/* Request return — ONLY allowed in DELIVERED per docs/contracts.md §6 */}
@@ -1001,6 +1105,71 @@ export function OrderDetailClient({
         subtitle="Đồ cơ bản từ các xưởng dệt Việt Nam, tiện mua thêm cho đơn kế tiếp"
         products={suggestedProducts}
       />
+
+      {confirmGroupCancelOpen && cancelGroupInfo.isMultiShopGroup && (
+        <div
+          className={shared.confirmBackdrop}
+          onClick={(ev) => {
+            if (ev.target === ev.currentTarget && !cancelling) {
+              setConfirmGroupCancelOpen(false);
+            }
+          }}
+        >
+          <div
+            className={shared.confirmDialog}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="detail-cancel-dialog-title"
+          >
+            <h2 id="detail-cancel-dialog-title" className={shared.confirmTitle}>
+              Xác nhận hủy lần đặt hàng
+            </h2>
+            <p className={shared.confirmBody}>
+              <strong>{formatUnpaidGroupCancelWarning(cancelGroupInfo.shopCount)}.</strong>
+            </p>
+            <p className={shared.confirmBody}>
+              Các đơn hàng đang chờ thanh toán chung mã VietQR bên dưới sẽ được hủy cùng lúc:
+            </p>
+            <ul className={shared.confirmList}>
+              {cancelGroupInfo.groupOrders.map((sib) => (
+                <li key={sib.id} className={shared.confirmListItem}>
+                  <span>
+                    <strong className="num">{sib.order_code}</strong> ·{" "}
+                    {groupShopsMap[sib.shop_id]?.name ??
+                      (sib.shop_id === order.shop_id ? shopName : "Gian hàng NexusMart")}
+                  </span>
+                  <span className="num">{formatVnd(sib.total_payable_vnd)}</span>
+                </li>
+              ))}
+            </ul>
+            {cancelError && (
+              <p className={shared.fieldError} role="alert">
+                {cancelError}
+              </p>
+            )}
+            <div className={shared.formActions}>
+              <Button
+                type="button"
+                variant="secondary"
+                size="md"
+                disabled={cancelling}
+                onClick={() => setConfirmGroupCancelOpen(false)}
+              >
+                Quay lại
+              </Button>
+              <Button
+                type="button"
+                variant="danger"
+                size="md"
+                disabled={cancelling}
+                onClick={() => void executeCancelOrder()}
+              >
+                {cancelling ? "Đang hủy..." : `Đồng ý hủy cả ${cancelGroupInfo.shopCount} đơn`}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

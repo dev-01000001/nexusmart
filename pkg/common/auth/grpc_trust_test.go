@@ -98,3 +98,64 @@ func TestGRPCInterceptorServiceTokens(t *testing.T) {
 		t.Fatalf("service token must not verify as a user token")
 	}
 }
+
+func TestGRPCInterceptorContractAllowlist(t *testing.T) {
+	users, _ := NewManager("user-key", 15*time.Minute)
+	svc, _ := NewManager("service-key", ServiceTokenTTL)
+
+	svcTok, _ := svc.SignServiceToken("order-service")
+	adminTok, _, _, _ := users.SignAccessToken("admin-1", "admin", "")
+	buyerTok, _, _, _ := users.SignAccessToken("buyer-1", "buyer", "")
+	spoof := []string{"x-user-id", "attacker", "x-user-role", "admin", "x-shop-id", "shop-b"}
+
+	serviceAllowedRPCs := []string{
+		"/nexusmart.promotion.v1.PromotionService/ReleasePromotionShop",
+		"/nexusmart.user.v1.UserService/RecordCODRejection",
+		"/nexusmart.user.v1.UserService/WriteAuditLog",
+		"/nexusmart.promotion.v1.PromotionService/CreditCoins",
+	}
+	userOnlyInternalRPCs := []string{
+		"/nexusmart.order.v1.OrderService/RetryPayment",
+		"/nexusmart.user.v1.UserService/ValidateUser",
+	}
+
+	// None of these RPCs may run anonymously (even with spoofed headers).
+	for _, m := range append(append([]string{}, serviceAllowedRPCs...), userOnlyInternalRPCs...) {
+		if _, err := callInterceptor(t, users, svc, m); status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("anonymous %s: want Unauthenticated, got %v", m, err)
+		}
+		if _, err := callInterceptor(t, users, svc, m, spoof...); status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("spoofed anonymous %s: want Unauthenticated, got %v", m, err)
+		}
+	}
+
+	// Service tokens are accepted on service-allowed RPCs and refused on user-only RPCs.
+	for _, m := range serviceAllowedRPCs {
+		claims, err := callInterceptor(t, users, svc, m, MDAuthorization, "Bearer "+svcTok)
+		if err != nil || claims == nil || claims.Service != "order-service" || claims.Role != ServiceRole {
+			t.Fatalf("service token on %s: claims=%+v err=%v", m, claims, err)
+		}
+	}
+	for _, m := range userOnlyInternalRPCs {
+		if _, err := callInterceptor(t, users, svc, m, MDAuthorization, "Bearer "+svcTok); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("service token on %s: want PermissionDenied, got %v", m, err)
+		}
+	}
+
+	// Valid end-user JWTs pass through with verified claims (handlers enforce RBAC/ownership).
+	for _, tc := range []struct {
+		method string
+		tok    string
+		wantID string
+	}{
+		{"/nexusmart.order.v1.OrderService/RetryPayment", buyerTok, "buyer-1"},
+		{"/nexusmart.user.v1.UserService/ValidateUser", buyerTok, "buyer-1"},
+		{"/nexusmart.user.v1.UserService/WriteAuditLog", adminTok, "admin-1"},
+		{"/nexusmart.promotion.v1.PromotionService/CreditCoins", adminTok, "admin-1"},
+	} {
+		claims, err := callInterceptor(t, users, svc, tc.method, MDAuthorization, "Bearer "+tc.tok)
+		if err != nil || claims == nil || claims.UserID() != tc.wantID {
+			t.Fatalf("user JWT on %s: want sub=%s, got claims=%+v err=%v", tc.method, tc.wantID, claims, err)
+		}
+	}
+}

@@ -3,22 +3,22 @@ package router
 import (
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
 	paymentv1 "github.com/nexusmart/core/gen/go/nexusmart/payment/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/gateway/internal/httpx"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type shopAllocationDTO struct {
-	OrderID        string `json:"order_id"`
-	ShopID         string `json:"shop_id"`
-	SubtotalVND    int64  `json:"subtotal_vnd"`
-	CommissionVND  int64  `json:"commission_vnd"`
-	ShippingFeeVND int64  `json:"shipping_fee_vnd"`
+	OrderID             string `json:"order_id"`
+	ShopID              string `json:"shop_id"`
+	SubtotalVND         int64  `json:"subtotal_vnd"`
+	CommissionVND       int64  `json:"commission_vnd"`
+	ShippingFeeVND      int64  `json:"shipping_fee_vnd"`
+	PlatformDiscountVND int64  `json:"platform_discount_vnd"`
 }
 
 type paymentDTO struct {
@@ -74,11 +74,12 @@ func mapPayment(p *paymentv1.Payment) *paymentDTO {
 	allocs := make([]*shopAllocationDTO, 0, len(p.GetShopAllocations()))
 	for _, a := range p.GetShopAllocations() {
 		allocs = append(allocs, &shopAllocationDTO{
-			OrderID:        a.GetOrderId(),
-			ShopID:         a.GetShopId(),
-			SubtotalVND:    a.GetSubtotalVnd(),
-			CommissionVND:  a.GetCommissionVnd(),
-			ShippingFeeVND: a.GetShippingFeeVnd(),
+			OrderID:             a.GetOrderId(),
+			ShopID:              a.GetShopId(),
+			SubtotalVND:         a.GetSubtotalVnd(),
+			CommissionVND:       a.GetCommissionVnd(),
+			ShippingFeeVND:      a.GetShippingFeeVnd(),
+			PlatformDiscountVND: a.GetPlatformDiscountVnd(),
 		})
 	}
 	return &paymentDTO{
@@ -124,17 +125,6 @@ func paymentMethodString(m paymentv1.PaymentMethod) string {
 		return "VIETQR"
 	default:
 		return ""
-	}
-}
-
-func parsePaymentMethod(s string) paymentv1.PaymentMethod {
-	switch strings.ToUpper(strings.TrimSpace(s)) {
-	case "COD", "PAYMENT_METHOD_COD":
-		return paymentv1.PaymentMethod_PAYMENT_METHOD_COD
-	case "VIETQR", "PAYMENT_METHOD_VIETQR":
-		return paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR
-	default:
-		return paymentv1.PaymentMethod_PAYMENT_METHOD_UNSPECIFIED
 	}
 }
 
@@ -217,76 +207,50 @@ func (h *handler) handleRetryPayment(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 		return
 	}
-	method := parsePaymentMethod(body.Method)
-	if method == paymentv1.PaymentMethod_PAYMENT_METHOD_UNSPECIFIED {
+	orderMethod := parseOrderPaymentMethod(body.Method)
+	if orderMethod == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED {
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "valid payment method (COD or VIETQR) is required")
 		return
 	}
-
-	ctx, cancel := h.clients.OutgoingContext(r.Context())
-	defer cancel()
-
-	paymentID := chi.URLParam(r, "id")
-	getResp, err := h.clients.Payment.GetPayment(ctx, &paymentv1.GetPaymentRequest{
-		PaymentId: paymentID,
-	})
-	if err != nil {
-		httpx.WriteGRPCError(w, r, err)
-		return
-	}
-
-	existing := getResp.GetPayment()
-	if existing == nil {
-		httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "payment not found")
-		return
-	}
-	claims, _ := auth.ClaimsFromContext(r.Context())
-	if existing.GetUserId() != "" &&
-		!auth.HasRole(claims, "admin", "super_admin") &&
-		existing.GetUserId() != claims.UserID() {
-		httpx.WriteError(w, r, http.StatusForbidden, "PERMISSION_DENIED", "cannot retry another user's payment")
-		return
-	}
-
-	// Only PENDING or FAILED payments can be retried; terminal states (SUCCEEDED, REFUNDED, CANCELLED, EXPIRED) are rejected.
-	if existing.GetStatus() != paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING &&
-		existing.GetStatus() != paymentv1.PaymentStatus_PAYMENT_STATUS_FAILED {
-		httpx.WriteError(w, r, http.StatusConflict, "FAILED_PRECONDITION", "payment cannot be retried in its current status")
-		return
-	}
-
-	// Disallow switching to COD or changing payment method on retry (bypasses OrderService COD risk checks and desyncs order_db).
-	if method == paymentv1.PaymentMethod_PAYMENT_METHOD_COD {
+	if orderMethod == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
 		httpx.WriteError(w, r, http.StatusConflict, "FAILED_PRECONDITION", "cannot retry or switch to COD via payment retry; create a new checkout instead")
 		return
 	}
-	if existing.GetMethod() != paymentv1.PaymentMethod_PAYMENT_METHOD_UNSPECIFIED && existing.GetMethod() != method {
-		httpx.WriteError(w, r, http.StatusConflict, "FAILED_PRECONDITION", "cannot change payment method on retry")
-		return
-	}
 
+	paymentID := chi.URLParam(r, "id")
 	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if idemKey == "" {
 		idemKey = "retry-" + paymentID + "-" + uuid.NewString()
 	}
 
-	createResp, err := h.clients.Payment.CreatePayment(ctx, &paymentv1.CreatePaymentRequest{
-		OrderGroupId:      existing.GetOrderGroupId(),
-		OrderId:           existing.GetOrderId(),
-		UserId:            existing.GetUserId(),
-		AmountVnd:         existing.GetAmountVnd(),
-		Method:            method,
-		ShopAllocations:   existing.GetShopAllocations(),
-		ExpiresAt:         timestamppb.New(time.Now().UTC().Add(15 * time.Minute)),
-		IdempotencyKey:    idemKey,
-		SupersedePrevious: true,
+	ctx, cancel := h.clients.OutgoingContext(r.Context(), "idempotency-key", idemKey)
+	defer cancel()
+
+	retryResp, err := h.clients.Order.RetryPayment(ctx, &orderv1.RetryPaymentRequest{
+		PaymentId:      paymentID,
+		PaymentMethod:  orderMethod,
+		IdempotencyKey: idemKey,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"payment": mapPayment(createResp.GetPayment())})
+	newPaymentID := strings.TrimSpace(retryResp.GetPaymentId())
+	if newPaymentID == "" {
+		httpx.WriteError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "internal server error")
+		return
+	}
+
+	getResp, err := h.clients.Payment.GetPayment(ctx, &paymentv1.GetPaymentRequest{
+		PaymentId: newPaymentID,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"payment": mapPayment(getResp.GetPayment())})
 }
 
 func (h *handler) handleSellerBalance(w http.ResponseWriter, r *http.Request) {

@@ -350,6 +350,21 @@ func (q *Queries) DeleteAddress(ctx context.Context, id string) error {
 	return err
 }
 
+const existsActiveShopByPickupAddressID = `-- name: ExistsActiveShopByPickupAddressID :one
+SELECT EXISTS (
+    SELECT 1 FROM shops
+    WHERE pickup_address_id = $1
+      AND status = 'ACTIVE'
+)::boolean AS used
+`
+
+func (q *Queries) ExistsActiveShopByPickupAddressID(ctx context.Context, pickupAddressID string) (bool, error) {
+	row := q.db.QueryRow(ctx, existsActiveShopByPickupAddressID, pickupAddressID)
+	var used bool
+	err := row.Scan(&used)
+	return used, err
+}
+
 const getAddressByID = `-- name: GetAddressByID :one
 SELECT id, user_id, recipient_name, recipient_phone, province_code, province_name, ward_code, ward_name, street_address, legacy_province_code, legacy_district_code, legacy_ward_code, is_default, created_at, updated_at FROM addresses
 WHERE id = $1
@@ -622,6 +637,35 @@ func (q *Queries) GrantUserSellerShop(ctx context.Context, arg GrantUserSellerSh
 	return i, err
 }
 
+const incrementUserCODRejectedCount = `-- name: IncrementUserCODRejectedCount :one
+UPDATE users
+SET cod_rejected_count = cod_rejected_count + 1,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at
+`
+
+func (q *Queries) IncrementUserCODRejectedCount(ctx context.Context, id string) (User, error) {
+	row := q.db.QueryRow(ctx, incrementUserCODRejectedCount, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.FullName,
+		&i.Email,
+		&i.Phone,
+		&i.PasswordHash,
+		&i.Role,
+		&i.Status,
+		&i.ShopID,
+		&i.PhoneVerified,
+		&i.CODRejectedCount,
+		&i.AvatarURL,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertAuditLog = `-- name: InsertAuditLog :one
 INSERT INTO audit_logs (
     id, actor_id, actor_role, action, target_type, target_id,
@@ -674,6 +718,26 @@ func (q *Queries) InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) 
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const insertCODRejection = `-- name: InsertCODRejection :execrows
+INSERT INTO cod_rejections (order_id, user_id, reason)
+VALUES ($1, $2, $3)
+ON CONFLICT (order_id) DO NOTHING
+`
+
+type InsertCODRejectionParams struct {
+	OrderID string `json:"order_id"`
+	UserID  string `json:"user_id"`
+	Reason  string `json:"reason"`
+}
+
+func (q *Queries) InsertCODRejection(ctx context.Context, arg InsertCODRejectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertCODRejection, arg.OrderID, arg.UserID, arg.Reason)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const listAddressesByUserID = `-- name: ListAddressesByUserID :many
@@ -882,6 +946,60 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 	return items, nil
 }
 
+const resubmitShop = `-- name: ResubmitShop :one
+UPDATE shops
+SET name = $2,
+    slug = $3,
+    description = $4,
+    pickup_address_id = $5,
+    contact_phone = $6,
+    business_license_doc = $7,
+    status = 'PENDING',
+    rejection_reason = '',
+    updated_at = NOW()
+WHERE id = $1
+  AND (status = 'REJECTED' OR (status = 'PENDING' AND btrim(rejection_reason) <> ''))
+RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug
+`
+
+type ResubmitShopParams struct {
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Slug               string `json:"slug"`
+	Description        string `json:"description"`
+	PickupAddressID    string `json:"pickup_address_id"`
+	ContactPhone       string `json:"contact_phone"`
+	BusinessLicenseDoc string `json:"business_license_doc"`
+}
+
+func (q *Queries) ResubmitShop(ctx context.Context, arg ResubmitShopParams) (Shop, error) {
+	row := q.db.QueryRow(ctx, resubmitShop,
+		arg.ID,
+		arg.Name,
+		arg.Slug,
+		arg.Description,
+		arg.PickupAddressID,
+		arg.ContactPhone,
+		arg.BusinessLicenseDoc,
+	)
+	var i Shop
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerUserID,
+		&i.Name,
+		&i.Description,
+		&i.PickupAddressID,
+		&i.ContactPhone,
+		&i.BusinessLicenseDoc,
+		&i.Status,
+		&i.RejectionReason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Slug,
+	)
+	return i, err
+}
+
 const revokeAllUserRefreshTokens = `-- name: RevokeAllUserRefreshTokens :exec
 UPDATE refresh_tokens
 SET revoked_at = NOW()
@@ -1005,6 +1123,7 @@ SET status = $2,
     rejection_reason = $3,
     updated_at = NOW()
 WHERE id = $1
+  AND status = 'PENDING'
 RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug
 `
 
@@ -1039,16 +1158,18 @@ UPDATE users
 SET full_name = $2,
     phone = $3,
     avatar_url = $4,
+    phone_verified = $5,
     updated_at = NOW()
 WHERE id = $1
 RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at
 `
 
 type UpdateUserProfileParams struct {
-	ID        string `json:"id"`
-	FullName  string `json:"full_name"`
-	Phone     string `json:"phone"`
-	AvatarURL string `json:"avatar_url"`
+	ID            string `json:"id"`
+	FullName      string `json:"full_name"`
+	Phone         string `json:"phone"`
+	AvatarURL     string `json:"avatar_url"`
+	PhoneVerified bool   `json:"phone_verified"`
 }
 
 func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (User, error) {
@@ -1057,6 +1178,7 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 		arg.FullName,
 		arg.Phone,
 		arg.AvatarURL,
+		arg.PhoneVerified,
 	)
 	var i User
 	err := row.Scan(

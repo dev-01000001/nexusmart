@@ -59,7 +59,7 @@ func BootstrapAdmin(ctx context.Context, store db.Store, hasher *password.Hasher
 		PasswordHash:  hash,
 		Role:          RoleSuperAdmin,
 		Status:        StatusActive,
-		PhoneVerified: true,
+		PhoneVerified: false,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {

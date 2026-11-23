@@ -11,6 +11,7 @@ pub const ACCOUNT_GATEWAY_CLEARING: &str = "gateway_clearing";
 pub const ACCOUNT_COD_RECEIVABLE: &str = "cod_receivable";
 pub const ACCOUNT_ESCROW_LIABILITY: &str = "escrow_liability";
 pub const ACCOUNT_PLATFORM_FEE_REVENUE: &str = "platform_fee_revenue";
+pub const ACCOUNT_PLATFORM_PROMO_EXPENSE: &str = "platform_promo_expense";
 pub const ACCOUNT_SHIPPING_FEE_PAYABLE: &str = "shipping_fee_payable";
 pub const ACCOUNT_REFUND_PAYABLE: &str = "refund_payable";
 
@@ -198,13 +199,27 @@ pub fn build_vietqr_confirm_tx(payment_id: Uuid, amount_vnd: i64) -> LedgerTrans
     }
 }
 
-/// COD confirmed: Debit cod_receivable, Credit escrow_liability
-pub fn build_cod_confirm_tx(payment_id: Uuid, amount_vnd: i64) -> LedgerTransactionDraft {
+/// COD collected upon sub-order delivery (`order.delivered`) or completion:
+/// Debit cod_receivable, Credit escrow_liability.
+/// Scoped per `(payment_id, order_id, shop_id)` when `shop_id` is present so multi-shop
+/// COD allocations sharing a single `order_id` never collide on `idempotency_key` (review2-P P2-7).
+pub fn build_cod_collect_tx(
+    payment_id: Uuid,
+    order_id: &str,
+    shop_id: Option<&str>,
+    amount_vnd: i64,
+) -> LedgerTransactionDraft {
+    let idempotency_key = match shop_id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(shop) => format!("cod-collect:{payment_id}:{order_id}:{shop}"),
+        None => format!("cod-collect:{payment_id}:{order_id}"),
+    };
     LedgerTransactionDraft {
-        idempotency_key: format!("cod-confirm:{payment_id}"),
+        idempotency_key,
         reference_type: "payment_cod".to_string(),
         reference_id: payment_id.to_string(),
-        description: format!("COD receivable recorded for payment {payment_id}"),
+        description: format!(
+            "COD collected on delivery for order {order_id} (payment {payment_id})"
+        ),
         lines: vec![
             LedgerLine::debit(ACCOUNT_COD_RECEIVABLE, AccountType::Asset, None, amount_vnd),
             LedgerLine::credit(
@@ -319,26 +334,104 @@ pub fn build_late_payment_refund_tx(
     }
 }
 
-/// Order completed -> credit seller_pending:<shop_id>, platform_fee_revenue, shipping_fee_payable
-/// while debiting escrow_liability for the exact sum.
+/// Post-settlement refund (R4 / PAY-B2):
+/// Claws back `seller_pending:<shop_id>` first, then `seller_available:<shop_id>`, crediting `refund_payable`.
+/// Never touches `escrow_liability`.
+pub fn build_post_settlement_refund_tx(
+    refund_id: Uuid,
+    payment_id: Uuid,
+    shop_id: &str,
+    from_pending_vnd: i64,
+    from_available_vnd: i64,
+    reason: &str,
+) -> Result<LedgerTransactionDraft> {
+    if from_pending_vnd < 0 || from_available_vnd < 0 {
+        return Err(PaymentError::LedgerInvariant(
+            "post-settlement refund clawback amounts must be non-negative".to_string(),
+        ));
+    }
+    let total = from_pending_vnd
+        .checked_add(from_available_vnd)
+        .ok_or_else(|| {
+            PaymentError::LedgerInvariant("post-settlement refund overflow".to_string())
+        })?;
+
+    let mut lines = Vec::with_capacity(3);
+    if from_pending_vnd > 0 {
+        lines.push(LedgerLine::debit(
+            account_seller_pending(shop_id),
+            AccountType::Liability,
+            Some(shop_id.to_string()),
+            from_pending_vnd,
+        ));
+    }
+    if from_available_vnd > 0 {
+        lines.push(LedgerLine::debit(
+            account_seller_available(shop_id),
+            AccountType::Liability,
+            Some(shop_id.to_string()),
+            from_available_vnd,
+        ));
+    }
+    lines.push(LedgerLine::credit(
+        ACCOUNT_REFUND_PAYABLE,
+        AccountType::Liability,
+        None,
+        total,
+    ));
+
+    let draft = LedgerTransactionDraft {
+        idempotency_key: format!("refund-accrual:{refund_id}"),
+        reference_type: "refund".to_string(),
+        reference_id: refund_id.to_string(),
+        description: format!(
+            "Post-settlement refund {refund_id} for payment {payment_id} shop {shop_id}: {reason}"
+        ),
+        lines,
+    };
+    draft.validate()?;
+    Ok(draft)
+}
+
+/// Order completed -> Debit escrow_liability (P - refunded) + Debit platform_promo_expense (D),
+/// Credit seller_pending:<shop_id>, platform_fee_revenue, shipping_fee_payable.
 pub fn build_escrow_settle_tx(
     order_id: &str,
     shop_id: &str,
+    escrow_debit_vnd: i64,
+    platform_promo_debit_vnd: i64,
     seller_net_vnd: i64,
     commission_vnd: i64,
     shipping_fee_vnd: i64,
 ) -> Result<LedgerTransactionDraft> {
-    let total_debit = seller_net_vnd
-        .checked_add(commission_vnd)
-        .and_then(|v| v.checked_add(shipping_fee_vnd))
-        .ok_or_else(|| PaymentError::LedgerInvariant("escrow settle sum overflow".to_string()))?;
+    if escrow_debit_vnd < 0
+        || platform_promo_debit_vnd < 0
+        || seller_net_vnd < 0
+        || commission_vnd < 0
+        || shipping_fee_vnd < 0
+    {
+        return Err(PaymentError::LedgerInvariant(
+            "escrow settle amounts must be non-negative".to_string(),
+        ));
+    }
 
-    let mut lines = vec![LedgerLine::debit(
-        ACCOUNT_ESCROW_LIABILITY,
-        AccountType::Liability,
-        None,
-        total_debit,
-    )];
+    let mut lines = Vec::with_capacity(5);
+    if escrow_debit_vnd > 0 {
+        lines.push(LedgerLine::debit(
+            ACCOUNT_ESCROW_LIABILITY,
+            AccountType::Liability,
+            None,
+            escrow_debit_vnd,
+        ));
+    }
+    if platform_promo_debit_vnd > 0 {
+        lines.push(LedgerLine::debit(
+            ACCOUNT_PLATFORM_PROMO_EXPENSE,
+            AccountType::Expense,
+            None,
+            platform_promo_debit_vnd,
+        ));
+    }
 
     if seller_net_vnd > 0 {
         lines.push(LedgerLine::credit(
@@ -692,6 +785,68 @@ pub async fn get_seller_available_balance_tx(
     Ok(available_vnd)
 }
 
+/// Locks both `seller_available:<shop_id>` and `seller_pending:<shop_id>` in deterministic
+/// alphabetical order inside an active DB transaction and returns `(pending_vnd, available_vnd)`.
+pub async fn lock_and_get_seller_balances_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    shop_id: &str,
+) -> Result<(i64, i64)> {
+    let available_acct = account_seller_available(shop_id);
+    let pending_acct = account_seller_pending(shop_id);
+
+    // Ensure both accounts exist before locking in alphabetical order (available < pending).
+    for acct in [&available_acct, &pending_acct] {
+        sqlx::query(
+            r#"
+            INSERT INTO ledger_accounts (id, account_type, shop_id)
+            VALUES ($1, 'LIABILITY', $2)
+            ON CONFLICT (id) DO NOTHING
+            "#,
+        )
+        .bind(acct)
+        .bind(shop_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    sqlx::query(
+        r#"
+        SELECT id FROM ledger_accounts
+        WHERE id IN ($1, $2)
+        ORDER BY id ASC
+        FOR UPDATE
+        "#,
+    )
+    .bind(&available_acct)
+    .bind(&pending_acct)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let pending_vnd: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(credit_vnd) - SUM(debit_vnd), 0)::BIGINT
+        FROM ledger_entries
+        WHERE account_id = $1
+        "#,
+    )
+    .bind(&pending_acct)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    let available_vnd: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(credit_vnd) - SUM(debit_vnd), 0)::BIGINT
+        FROM ledger_entries
+        WHERE account_id = $1
+        "#,
+    )
+    .bind(&available_acct)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    Ok((pending_vnd, available_vnd))
+}
+
 // =============================================================================
 // In-Memory Reference Ledger (for exhaustive unit testing of all accounting flows)
 // =============================================================================
@@ -849,10 +1004,15 @@ mod tests {
         assert_eq!(ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 330_000);
         assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 330_000);
 
-        // 2. COD payment confirmed: 200,000 VND
+        // 2. COD payment collected on delivery: 200,000 VND
         let pay_cod = Uuid::new_v4();
         assert!(ledger
-            .post(&build_cod_confirm_tx(pay_cod, 200_000))
+            .post(&build_cod_collect_tx(
+                pay_cod,
+                "ord-cod-life",
+                Some("shop-B"),
+                200_000
+            ))
             .unwrap());
         assert!(ledger.summary().is_balanced);
         assert_eq!(ledger.balance_of(ACCOUNT_COD_RECEIVABLE), 200_000);
@@ -868,7 +1028,8 @@ mod tests {
 
         // 4. Order completes -> escrow settled to seller_pending + platform_fee_revenue + shipping_fee_payable
         let settle_tx =
-            build_escrow_settle_tx("ord-qr-1", "shop-A", 285_000, 15_000, 30_000).unwrap();
+            build_escrow_settle_tx("ord-qr-1", "shop-A", 330_000, 0, 285_000, 15_000, 30_000)
+                .unwrap();
         assert!(ledger.post(&settle_tx).unwrap());
         assert!(ledger.summary().is_balanced);
         assert_eq!(
@@ -926,5 +1087,157 @@ mod tests {
         assert!(summary.is_balanced);
         assert_eq!(summary.total_debits_vnd, summary.total_credits_vnd);
         assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 120_000);
+    }
+
+    #[test]
+    fn test_r1_settlement_with_platform_promo_expense_exact_example() {
+        // Brief example: G=229,000, voucher san=30,000, commission=11,450, Ship=26,000 => P=225,000
+        // Seller MUST receive 217,550 and platform_promo_expense = 30,000.
+        let mut ledger = InMemoryLedger::default();
+        let pay_id = Uuid::new_v4();
+
+        assert!(ledger
+            .post(&build_vietqr_confirm_tx(pay_id, 225_000))
+            .unwrap());
+        let settle =
+            build_escrow_settle_tx("ord-r1", "shop-1", 225_000, 30_000, 217_550, 11_450, 26_000)
+                .unwrap();
+        assert!(ledger.post(&settle).unwrap());
+
+        let summary = ledger.summary();
+        assert!(summary.is_balanced);
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 0);
+        assert_eq!(ledger.balance_of(ACCOUNT_PLATFORM_PROMO_EXPENSE), 30_000);
+        assert_eq!(
+            ledger.balance_of(&account_seller_pending("shop-1")),
+            217_550
+        );
+        assert_eq!(ledger.balance_of(ACCOUNT_PLATFORM_FEE_REVENUE), 11_450);
+        assert_eq!(ledger.balance_of(ACCOUNT_SHIPPING_FEE_PAYABLE), 26_000);
+    }
+
+    #[test]
+    fn test_r1_zero_payable_order_settles_without_gateway_clearing() {
+        // 0 VND order: R=200,000, C=10,000, Ship=20,000, D=220,000, P=0.
+        // No gateway_clearing entry; settlement debits platform_promo_expense 220,000 and pays seller 190,000.
+        let mut ledger = InMemoryLedger::default();
+        let settle =
+            build_escrow_settle_tx("ord-zero", "shop-z", 0, 220_000, 190_000, 10_000, 20_000)
+                .unwrap();
+        assert!(ledger.post(&settle).unwrap());
+        let release = build_escrow_release_tx("ord-zero", "shop-z", 190_000).unwrap();
+        assert!(ledger.post(&release).unwrap());
+
+        assert!(ledger.summary().is_balanced);
+        assert_eq!(ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 0);
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 0);
+        assert_eq!(ledger.balance_of(ACCOUNT_PLATFORM_PROMO_EXPENSE), 220_000);
+        assert_eq!(
+            ledger.balance_of(&account_seller_available("shop-z")),
+            190_000
+        );
+    }
+
+    #[test]
+    fn test_r2_cod_awaiting_to_delivered_and_cancel_leaves_zero_entries() {
+        // Cancelled COD before delivery -> 0 transactions posted, cod_receivable = 0, escrow = 0.
+        let cancelled_ledger = InMemoryLedger::default();
+        assert_eq!(cancelled_ledger.balance_of(ACCOUNT_COD_RECEIVABLE), 0);
+        assert_eq!(cancelled_ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 0);
+        assert_eq!(cancelled_ledger.summary().transaction_count, 0);
+
+        // Multi-shop COD: sub-order 1 delivers -> posts cod_receivable -> escrow_liability for P1 only.
+        let mut ledger = InMemoryLedger::default();
+        let pay_id = Uuid::new_v4();
+        let collect1 = build_cod_collect_tx(pay_id, "ord-cod-1", Some("shop-1"), 256_500);
+        assert!(ledger.post(&collect1).unwrap());
+        // Idempotent replay of order.delivered for ord-cod-1 is a no-op
+        assert!(!ledger.post(&collect1).unwrap());
+        assert_eq!(ledger.balance_of(ACCOUNT_COD_RECEIVABLE), 256_500);
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 256_500);
+        assert!(ledger.summary().is_balanced);
+
+        // review2-P P2-7: Two COD allocations sharing the same `order_id` with distinct `shop_id`
+        // must both post to cod_receivable + escrow_liability without colliding on idempotency_key.
+        let shared_pay = Uuid::new_v4();
+        assert!(ledger
+            .post(&build_cod_collect_tx(
+                shared_pay,
+                "grp-shared",
+                Some("shop-A"),
+                100_000
+            ))
+            .unwrap());
+        assert!(ledger
+            .post(&build_cod_collect_tx(
+                shared_pay,
+                "grp-shared",
+                Some("shop-B"),
+                200_000
+            ))
+            .unwrap());
+        assert_eq!(ledger.balance_of(ACCOUNT_COD_RECEIVABLE), 556_500);
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 556_500);
+        assert!(ledger.summary().is_balanced);
+    }
+
+    #[test]
+    fn test_r4_partial_refund_before_and_after_settlement_never_overdraws_escrow() {
+        let mut ledger = InMemoryLedger::default();
+        let pay_id = Uuid::new_v4();
+
+        // 2-shop VietQR payment: Shop1 P1=255,000 (R=229k, C=11.45k, Ship=26k), Shop2 P2=463,000 (R=429k, C=21.45k, Ship=34k)
+        assert!(ledger
+            .post(&build_vietqr_confirm_tx(pay_id, 718_000))
+            .unwrap());
+
+        // Case A: Partial refund 10,000 on Shop 2 BEFORE settlement
+        let rf_before = Uuid::new_v4();
+        assert!(ledger
+            .post(&build_refund_tx(rf_before, pay_id, 10_000, "partial"))
+            .unwrap());
+        // Settle Shop 2 with escrow_debit = 463,000 - 10,000 = 453,000; seller_net = 407,550 - 10,000 = 397,550
+        let settle2 =
+            build_escrow_settle_tx("ord-2", "shop-2", 453_000, 0, 397_550, 21_450, 34_000).unwrap();
+        assert!(ledger.post(&settle2).unwrap());
+        assert!(ledger
+            .post(&build_escrow_release_tx("ord-2", "shop-2", 397_550).unwrap())
+            .unwrap());
+        // Escrow remaining MUST equal exactly Shop 1's P1 = 255,000 (not 245,000!)
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 255_000);
+        assert_eq!(
+            ledger.balance_of(&account_seller_available("shop-2")),
+            397_550
+        );
+
+        // Case B: Settle + release Shop 1 (217,550 -> available), then post-settlement refund 5,000
+        let settle1 =
+            build_escrow_settle_tx("ord-1", "shop-1", 255_000, 0, 217_550, 11_450, 26_000).unwrap();
+        assert!(ledger.post(&settle1).unwrap());
+        assert!(ledger
+            .post(&build_escrow_release_tx("ord-1", "shop-1", 217_550).unwrap())
+            .unwrap());
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 0);
+
+        let rf_after = Uuid::new_v4();
+        let clawback = build_post_settlement_refund_tx(
+            rf_after,
+            pay_id,
+            "shop-1",
+            0,
+            5_000,
+            "post-settle refund",
+        )
+        .unwrap();
+        assert!(ledger.post(&clawback).unwrap());
+
+        assert!(ledger.summary().is_balanced);
+        // Escrow stays at 0 (NEVER negative!) and shop-1 available dropped by 5,000
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 0);
+        assert_eq!(
+            ledger.balance_of(&account_seller_available("shop-1")),
+            212_550
+        );
+        assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 15_000);
     }
 }

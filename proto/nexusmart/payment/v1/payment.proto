@@ -37,12 +37,17 @@ enum ReconciliationStatus {
   RECONCILIATION_STATUS_AMOUNT_MISMATCH = 4;
 }
 
+// Per-sub-order financial allocation.
+// subtotal_vnd is seller merchandise revenue after seller-borne discounts (flash sale + shop voucher; R in plan.md).
+// platform_discount_vnd is platform-borne discount for this sub-order (platform voucher + freeship + coins; D in plan.md).
+// Payment.amount_vnd equals sum(subtotal_vnd + shipping_fee_vnd - platform_discount_vnd).
 message ShopAllocation {
   string order_id = 1;
   string shop_id = 2;
   int64 subtotal_vnd = 3;
   int64 commission_vnd = 4;
   int64 shipping_fee_vnd = 5;
+  int64 platform_discount_vnd = 6;
 }
 
 message Payment {

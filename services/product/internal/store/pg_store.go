@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -152,6 +153,7 @@ func (p *pgQueries) CreateProduct(ctx context.Context, prod Product) (Product, e
 		MinPriceVnd:     prod.MinPriceVND,
 		MaxPriceVnd:     prod.MaxPriceVND,
 		Slug:            prod.Slug,
+		SearchText:      BuildProductSearchText(prod.Name, prod.Description),
 	})
 	if err != nil {
 		return Product{}, mapPgError(err)
@@ -191,6 +193,7 @@ func (p *pgQueries) UpdateProduct(ctx context.Context, prod Product) (Product, e
 		MinPriceVnd:     prod.MinPriceVND,
 		MaxPriceVnd:     prod.MaxPriceVND,
 		Slug:            prod.Slug,
+		SearchText:      BuildProductSearchText(prod.Name, prod.Description),
 	})
 	if err != nil {
 		return Product{}, mapPgError(err)
@@ -226,9 +229,18 @@ func (p *pgQueries) SoftDeleteProduct(ctx context.Context, id string) (bool, err
 }
 
 func (p *pgQueries) ListProducts(ctx context.Context, filter ListProductsFilter) ([]Product, int64, error) {
+	sqlKeyword := ""
+	if strings.TrimSpace(filter.Keyword) != "" {
+		norm := NormalizeSearchText(filter.Keyword)
+		if norm == "" {
+			return []Product{}, 0, nil
+		}
+		sqlKeyword = EscapeLikePattern(norm)
+	}
+
 	total, err := p.q.CountProductsFiltered(ctx, db.CountProductsFilteredParams{
 		CategoryID:   filter.CategoryID,
-		Keyword:      filter.Keyword,
+		Keyword:      sqlKeyword,
 		ShopID:       filter.ShopID,
 		StatusFilter: filter.Status,
 		PublicOnly:   filter.PublicOnly,
@@ -244,7 +256,7 @@ func (p *pgQueries) ListProducts(ctx context.Context, filter ListProductsFilter)
 
 	rows, err := p.q.ListProductsFiltered(ctx, db.ListProductsFilteredParams{
 		CategoryID:   filter.CategoryID,
-		Keyword:      filter.Keyword,
+		Keyword:      sqlKeyword,
 		ShopID:       filter.ShopID,
 		StatusFilter: filter.Status,
 		PublicOnly:   filter.PublicOnly,
@@ -287,12 +299,32 @@ func (p *pgQueries) CreateSKU(ctx context.Context, s SKU) (SKU, error) {
 	return mergeDBSKU(row, s), nil
 }
 
-func (p *pgQueries) UpdateSKUDetails(ctx context.Context, s SKU) (SKU, error) {
+func (p *pgQueries) UpdateSKUMetadata(ctx context.Context, s SKU) (SKU, error) {
 	attrBytes, err := marshalStringMap(s.Attributes)
 	if err != nil {
 		return SKU{}, err
 	}
-	row, err := p.q.UpdateSKUDetails(ctx, db.UpdateSKUDetailsParams{
+	row, err := p.q.UpdateSKUMetadata(ctx, db.UpdateSKUMetadataParams{
+		ID:          s.ID,
+		SkuCode:     s.SKUCode,
+		Name:        s.Name,
+		Attributes:  attrBytes,
+		PriceVnd:    s.PriceVND,
+		WeightGrams: s.WeightGrams,
+		ImageURL:    s.ImageURL,
+	})
+	if err != nil {
+		return SKU{}, mapPgError(err)
+	}
+	return mergeDBSKU(row, s), nil
+}
+
+func (p *pgQueries) ReactivateSKUOptimistic(ctx context.Context, s SKU, expectedVersion int64) (SKU, error) {
+	attrBytes, err := marshalStringMap(s.Attributes)
+	if err != nil {
+		return SKU{}, err
+	}
+	row, err := p.q.ReactivateSKUOptimistic(ctx, db.ReactivateSKUOptimisticParams{
 		ID:          s.ID,
 		SkuCode:     s.SKUCode,
 		Name:        s.Name,
@@ -301,9 +333,22 @@ func (p *pgQueries) UpdateSKUDetails(ctx context.Context, s SKU) (SKU, error) {
 		Stock:       s.Stock,
 		WeightGrams: s.WeightGrams,
 		ImageURL:    s.ImageURL,
-		Status:      s.Status,
+		Version:     expectedVersion,
 	})
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			current, getErr := p.GetSKUWithContext(ctx, s.ID)
+			if getErr != nil {
+				return SKU{}, getErr
+			}
+			if current.Version != expectedVersion {
+				return SKU{}, ErrVersionConflict
+			}
+			if s.Stock < current.ReservedStock {
+				return SKU{}, ErrInvalidStock
+			}
+			return SKU{}, ErrVersionConflict
+		}
 		return SKU{}, mapPgError(err)
 	}
 	return mergeDBSKU(row, s), nil
@@ -322,6 +367,23 @@ func (p *pgQueries) ListSKUsByProductIDs(ctx context.Context, productIDs []strin
 		return []SKU{}, nil
 	}
 	rows, err := p.q.ListSKUsByProductIDs(ctx, productIDs)
+	if err != nil {
+		return nil, mapPgError(err)
+	}
+	out := make([]SKU, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fromSKUContextFields(
+			r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
+			r.Attributes, r.PriceVnd, r.Stock, r.ReservedStock, r.Version,
+			r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
+			r.SkuStatus, r.ProductStatus, r.ProductDeletedAt,
+		))
+	}
+	return out, nil
+}
+
+func (p *pgQueries) ListAllSKUsByProductID(ctx context.Context, productID string) ([]SKU, error) {
+	rows, err := p.q.ListAllSKUsByProductID(ctx, productID)
 	if err != nil {
 		return nil, mapPgError(err)
 	}
@@ -398,6 +460,9 @@ func (p *pgQueries) UpdateSKUStockOptimistic(ctx context.Context, skuID string, 
 			current, getErr := p.GetSKUWithContext(ctx, skuID)
 			if getErr != nil {
 				return SKU{}, getErr
+			}
+			if current.Status == SKUStatusInactive {
+				return SKU{}, ErrSKUInactive
 			}
 			if current.Version != expectedVersion {
 				return SKU{}, ErrVersionConflict
@@ -623,6 +688,7 @@ func fromDBProduct(p db.Product) Product {
 		CategoryID:      p.CategoryID,
 		Name:            p.Name,
 		Slug:            p.Slug,
+		SearchText:      p.SearchText,
 		Description:     p.Description,
 		Images:          unmarshalStringSlice(p.Images),
 		Status:          p.Status,

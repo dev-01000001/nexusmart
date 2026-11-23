@@ -21,6 +21,9 @@ type MemoryStore struct {
 	// BeforeReserveWrite is an optional test hook invoked right before an optimistic
 	// reserve check inside a transaction to deterministically simulate concurrent updates.
 	BeforeReserveWrite func(skuID string)
+	// BeforeUpdateStockWrite is an optional test hook invoked right before an optimistic
+	// stock update check inside a transaction to deterministically simulate concurrent updates.
+	BeforeUpdateStockWrite func(skuID string)
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -53,6 +56,7 @@ const (
 	skuOpRelease
 	skuOpConfirm
 	skuOpRestock
+	skuOpReactivate
 )
 
 type stagedSKUOp struct {
@@ -71,12 +75,14 @@ type stagedResTransition struct {
 // WithTx executes fn with optimistic snapshot reads and atomic validation+commit on exit.
 func (m *MemoryStore) WithTx(ctx context.Context, fn func(q Queries) error) error {
 	tx := &memTx{
-		store:       m,
-		stagedCats:  make(map[string]Category),
-		deletedCats: make(map[string]bool),
-		stagedProds: make(map[string]Product),
-		stagedSKUs:  make(map[string]SKU),
-		stagedRes:   make(map[string]StockReservation),
+		store:           m,
+		stagedCats:      make(map[string]Category),
+		deletedCats:     make(map[string]bool),
+		stagedProds:     make(map[string]Product),
+		stagedSKUs:      make(map[string]SKU),
+		updatedSKUMeta:  make(map[string]bool),
+		deactivatedSKUs: make(map[string]bool),
+		stagedRes:       make(map[string]StockReservation),
 	}
 	if err := fn(tx); err != nil {
 		return err
@@ -263,7 +269,13 @@ func (m *MemoryStore) filterProductsLocked(filter ListProductsFilter) []Product 
 			}
 		}
 	}
-	kw := strings.ToLower(filter.Keyword)
+	kw := ""
+	if strings.TrimSpace(filter.Keyword) != "" {
+		kw = NormalizeSearchText(filter.Keyword)
+		if kw == "" {
+			return []Product{}
+		}
+	}
 	matched := make([]Product, 0)
 	for _, p := range m.products {
 		if p.DeletedAt != nil {
@@ -272,8 +284,14 @@ func (m *MemoryStore) filterProductsLocked(filter ListProductsFilter) []Product 
 		if filter.CategoryID != "" && !childCats[p.CategoryID] {
 			continue
 		}
-		if kw != "" && !strings.Contains(strings.ToLower(p.Name), kw) && !strings.Contains(strings.ToLower(p.Description), kw) {
-			continue
+		if kw != "" {
+			st := p.SearchText
+			if st == "" {
+				st = BuildProductSearchText(p.Name, p.Description)
+			}
+			if !strings.Contains(st, kw) {
+				continue
+			}
 		}
 		if filter.ShopID != "" && p.ShopID != filter.ShopID {
 			continue
@@ -356,11 +374,21 @@ func (m *MemoryStore) CreateSKU(ctx context.Context, s SKU) (SKU, error) {
 	return out, err
 }
 
-func (m *MemoryStore) UpdateSKUDetails(ctx context.Context, s SKU) (SKU, error) {
+func (m *MemoryStore) UpdateSKUMetadata(ctx context.Context, s SKU) (SKU, error) {
 	var out SKU
 	err := m.WithTx(ctx, func(q Queries) error {
 		var e error
-		out, e = q.UpdateSKUDetails(ctx, s)
+		out, e = q.UpdateSKUMetadata(ctx, s)
+		return e
+	})
+	return out, err
+}
+
+func (m *MemoryStore) ReactivateSKUOptimistic(ctx context.Context, s SKU, expectedVersion int64) (SKU, error) {
+	var out SKU
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		out, e = q.ReactivateSKUOptimistic(ctx, s, expectedVersion)
 		return e
 	})
 	return out, err
@@ -388,6 +416,24 @@ func (m *MemoryStore) ListSKUsByProductIDs(_ context.Context, productIDs []strin
 	out := make([]SKU, 0)
 	for _, s := range m.skus {
 		if want[s.ProductID] && s.Status != SKUStatusInactive {
+			out = append(out, m.enrichSKULocked(s))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (m *MemoryStore) ListAllSKUsByProductID(_ context.Context, productID string) ([]SKU, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]SKU, 0)
+	for _, s := range m.skus {
+		if s.ProductID == productID {
 			out = append(out, m.enrichSKULocked(s))
 		}
 	}
@@ -559,16 +605,18 @@ func (m *MemoryStore) enrichSKULocked(s SKU) SKU {
 
 // memTx buffers writes and validates optimistic locks atomically on commit.
 type memTx struct {
-	store          *MemoryStore
-	stagedCats     map[string]Category
-	deletedCats    map[string]bool
-	stagedProds    map[string]Product
-	stagedSKUs     map[string]SKU
-	stagedRes      map[string]StockReservation
-	skuOps         []stagedSKUOp
-	resTransitions []stagedResTransition
-	newRes         []StockReservation
-	stagedHistory  []StockHistoryEntry
+	store           *MemoryStore
+	stagedCats      map[string]Category
+	deletedCats     map[string]bool
+	stagedProds     map[string]Product
+	stagedSKUs      map[string]SKU
+	updatedSKUMeta  map[string]bool
+	deactivatedSKUs map[string]bool
+	stagedRes       map[string]StockReservation
+	skuOps          []stagedSKUOp
+	resTransitions  []stagedResTransition
+	newRes          []StockReservation
+	stagedHistory   []StockHistoryEntry
 }
 
 func (t *memTx) commit() error {
@@ -596,6 +644,27 @@ func (t *memTx) commit() error {
 				if staged, hasStaged := t.stagedProds[existingID]; hasStaged && (staged.DeletedAt != nil || staged.Slug != prod.Slug) {
 					continue
 				}
+				return ErrAlreadyExists
+			}
+		}
+	}
+
+	// 1c. Validate SKU (product_id, sku_code) uniqueness across all rows including INACTIVE.
+	for id, sku := range t.stagedSKUs {
+		for existingID, existing := range t.store.skus {
+			if existingID == id {
+				continue
+			}
+			eff := existing
+			if staged, hasStaged := t.stagedSKUs[existingID]; hasStaged {
+				eff = staged
+			}
+			if eff.ProductID == sku.ProductID && eff.SKUCode == sku.SKUCode {
+				return ErrAlreadyExists
+			}
+		}
+		for otherID, other := range t.stagedSKUs {
+			if otherID != id && other.ProductID == sku.ProductID && other.SKUCode == sku.SKUCode {
 				return ErrAlreadyExists
 			}
 		}
@@ -653,6 +722,9 @@ func (t *memTx) commit() error {
 		}
 		switch op.kind {
 		case skuOpUpdateStock:
+			if cur.Status == SKUStatusInactive || t.deactivatedSKUs[op.skuID] {
+				return ErrSKUInactive
+			}
 			if cur.Version != op.expectedVersion {
 				return ErrVersionConflict
 			}
@@ -660,12 +732,28 @@ func (t *memTx) commit() error {
 				return ErrInvalidStock
 			}
 			cur.Stock = op.amount
-			if cur.Status != SKUStatusInactive {
-				if cur.Stock == 0 {
-					cur.Status = SKUStatusOutOfStock
-				} else {
-					cur.Status = SKUStatusActive
-				}
+			if cur.Stock == 0 {
+				cur.Status = SKUStatusOutOfStock
+			} else {
+				cur.Status = SKUStatusActive
+			}
+			cur.Version++
+			cur.UpdatedAt = now
+		case skuOpReactivate:
+			if cur.Status != SKUStatusInactive && !t.deactivatedSKUs[op.skuID] {
+				return ErrVersionConflict
+			}
+			if cur.Version != op.expectedVersion {
+				return ErrVersionConflict
+			}
+			if op.amount < cur.ReservedStock {
+				return ErrInvalidStock
+			}
+			cur.Stock = op.amount
+			if cur.Stock == 0 {
+				cur.Status = SKUStatusOutOfStock
+			} else {
+				cur.Status = SKUStatusActive
 			}
 			cur.Version++
 			cur.UpdatedAt = now
@@ -729,10 +817,33 @@ func (t *memTx) commit() error {
 	}
 	for id, s := range t.stagedSKUs {
 		if _, hasOp := computedSKUs[id]; !hasOp && !duplicateRestockSKUs[id] {
+			if t.updatedSKUMeta[id] && !t.deactivatedSKUs[id] {
+				if existing, exists := t.store.skus[id]; exists {
+					existing.SKUCode = s.SKUCode
+					existing.Name = s.Name
+					existing.Attributes = cloneMap(s.Attributes)
+					existing.PriceVND = s.PriceVND
+					existing.WeightGrams = s.WeightGrams
+					existing.ImageURL = s.ImageURL
+					existing.UpdatedAt = now
+					t.store.skus[id] = cloneSKU(existing)
+					continue
+				}
+			}
 			t.store.skus[id] = cloneSKU(s)
 		}
 	}
 	for id, s := range computedSKUs {
+		if t.updatedSKUMeta[id] {
+			if staged, ok := t.stagedSKUs[id]; ok {
+				s.SKUCode = staged.SKUCode
+				s.Name = staged.Name
+				s.Attributes = cloneMap(staged.Attributes)
+				s.PriceVND = staged.PriceVND
+				s.WeightGrams = staged.WeightGrams
+				s.ImageURL = staged.ImageURL
+			}
+		}
 		t.store.skus[id] = cloneSKU(s)
 	}
 	for _, r := range t.newRes {
@@ -814,6 +925,7 @@ func (t *memTx) ListCategories(ctx context.Context, parentID string) ([]Category
 
 func (t *memTx) CreateProduct(_ context.Context, p Product) (Product, error) {
 	now := time.Now().UTC()
+	p.SearchText = BuildProductSearchText(p.Name, p.Description)
 	p.CreatedAt = now
 	p.UpdatedAt = now
 	t.stagedProds[p.ID] = cloneProduct(p)
@@ -864,6 +976,7 @@ func (t *memTx) UpdateProduct(ctx context.Context, p Product) (Product, error) {
 		return Product{}, err
 	}
 	p.ShopID = cur.ShopID
+	p.SearchText = BuildProductSearchText(p.Name, p.Description)
 	p.CreatedAt = cur.CreatedAt
 	p.UpdatedAt = time.Now().UTC()
 	t.stagedProds[p.ID] = cloneProduct(p)
@@ -920,7 +1033,7 @@ func (t *memTx) CreateSKU(_ context.Context, s SKU) (SKU, error) {
 	return cloneSKU(s), nil
 }
 
-func (t *memTx) UpdateSKUDetails(ctx context.Context, s SKU) (SKU, error) {
+func (t *memTx) UpdateSKUMetadata(ctx context.Context, s SKU) (SKU, error) {
 	cur, err := t.GetSKUWithContext(ctx, s.ID)
 	if err != nil {
 		return SKU{}, err
@@ -929,13 +1042,53 @@ func (t *memTx) UpdateSKUDetails(ctx context.Context, s SKU) (SKU, error) {
 	cur.Name = s.Name
 	cur.Attributes = cloneMap(s.Attributes)
 	cur.PriceVND = s.PriceVND
+	cur.WeightGrams = s.WeightGrams
+	cur.ImageURL = s.ImageURL
+	cur.UpdatedAt = time.Now().UTC()
+	t.stagedSKUs[cur.ID] = cloneSKU(cur)
+	t.updatedSKUMeta[cur.ID] = true
+	return cloneSKU(cur), nil
+}
+
+func (t *memTx) ReactivateSKUOptimistic(ctx context.Context, s SKU, expectedVersion int64) (SKU, error) {
+	if hook := t.store.BeforeUpdateStockWrite; hook != nil {
+		hook(s.ID)
+	}
+	cur, err := t.GetSKUWithContext(ctx, s.ID)
+	if err != nil {
+		return SKU{}, err
+	}
+	if cur.Status != SKUStatusInactive {
+		return SKU{}, ErrVersionConflict
+	}
+	if cur.Version != expectedVersion {
+		return SKU{}, ErrVersionConflict
+	}
+	if s.Stock < cur.ReservedStock {
+		return SKU{}, ErrInvalidStock
+	}
+	t.skuOps = append(t.skuOps, stagedSKUOp{
+		kind:            skuOpReactivate,
+		skuID:           s.ID,
+		amount:          s.Stock,
+		expectedVersion: expectedVersion,
+	})
+	cur.SKUCode = s.SKUCode
+	cur.Name = s.Name
+	cur.Attributes = cloneMap(s.Attributes)
+	cur.PriceVND = s.PriceVND
 	cur.Stock = s.Stock
 	cur.WeightGrams = s.WeightGrams
 	cur.ImageURL = s.ImageURL
-	cur.Status = s.Status
+	if cur.Stock == 0 {
+		cur.Status = SKUStatusOutOfStock
+	} else {
+		cur.Status = SKUStatusActive
+	}
 	cur.Version++
 	cur.UpdatedAt = time.Now().UTC()
 	t.stagedSKUs[cur.ID] = cloneSKU(cur)
+	t.updatedSKUMeta[cur.ID] = true
 	return cloneSKU(cur), nil
 }
 
@@ -946,6 +1099,7 @@ func (t *memTx) DeactivateSKUsByProduct(_ context.Context, productID string) err
 			cp := cloneSKU(s)
 			cp.Status = SKUStatusInactive
 			t.stagedSKUs[id] = cp
+			t.deactivatedSKUs[id] = true
 		}
 	}
 	t.store.mu.Unlock()
@@ -953,6 +1107,7 @@ func (t *memTx) DeactivateSKUsByProduct(_ context.Context, productID string) err
 		if s.ProductID == productID {
 			s.Status = SKUStatusInactive
 			t.stagedSKUs[id] = s
+			t.deactivatedSKUs[id] = true
 		}
 	}
 	return nil
@@ -965,6 +1120,7 @@ func (t *memTx) DeactivateSKU(ctx context.Context, skuID string) error {
 	}
 	cur.Status = SKUStatusInactive
 	t.stagedSKUs[skuID] = cloneSKU(cur)
+	t.deactivatedSKUs[skuID] = true
 	return nil
 }
 
@@ -991,6 +1147,33 @@ func (t *memTx) ListSKUsByProductIDs(_ context.Context, productIDs []string) ([]
 		if s.Status != SKUStatusInactive {
 			out = append(out, s)
 		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (t *memTx) ListAllSKUsByProductID(_ context.Context, productID string) ([]SKU, error) {
+	merged := make(map[string]SKU)
+	t.store.mu.Lock()
+	for id, s := range t.store.skus {
+		if s.ProductID == productID {
+			merged[id] = t.store.enrichSKULocked(s)
+		}
+	}
+	t.store.mu.Unlock()
+	for id, s := range t.stagedSKUs {
+		if s.ProductID == productID {
+			merged[id] = t.enrichWithStaged(s)
+		}
+	}
+	out := make([]SKU, 0, len(merged))
+	for _, s := range merged {
+		out = append(out, s)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
@@ -1077,9 +1260,15 @@ func (t *memTx) CountActiveInStockSKUsByProduct(_ context.Context, productID str
 }
 
 func (t *memTx) UpdateSKUStockOptimistic(ctx context.Context, skuID string, newStock int32, expectedVersion int64) (SKU, error) {
+	if hook := t.store.BeforeUpdateStockWrite; hook != nil {
+		hook(skuID)
+	}
 	cur, err := t.GetSKUWithContext(ctx, skuID)
 	if err != nil {
 		return SKU{}, err
+	}
+	if cur.Status == SKUStatusInactive {
+		return SKU{}, ErrSKUInactive
 	}
 	if cur.Version != expectedVersion {
 		return SKU{}, ErrVersionConflict
@@ -1094,12 +1283,10 @@ func (t *memTx) UpdateSKUStockOptimistic(ctx context.Context, skuID string, newS
 		expectedVersion: expectedVersion,
 	})
 	cur.Stock = newStock
-	if cur.Status != SKUStatusInactive {
-		if cur.Stock == 0 {
-			cur.Status = SKUStatusOutOfStock
-		} else {
-			cur.Status = SKUStatusActive
-		}
+	if cur.Stock == 0 {
+		cur.Status = SKUStatusOutOfStock
+	} else {
+		cur.Status = SKUStatusActive
 	}
 	cur.Version++
 	t.stagedSKUs[skuID] = cloneSKU(cur)

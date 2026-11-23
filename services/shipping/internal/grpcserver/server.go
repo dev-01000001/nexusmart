@@ -257,7 +257,10 @@ func toProtoStatus(s string) shippingv1.ShipmentStatus {
 
 func mapError(err error) error {
 	switch {
-	case errors.Is(err, service.ErrInvalidArgument), errors.Is(err, service.ErrUnknownCarrier), errors.Is(err, service.ErrUnknownStatus):
+	case errors.Is(err, service.ErrInvalidArgument),
+		errors.Is(err, service.ErrOutOfServiceArea),
+		errors.Is(err, service.ErrUnknownCarrier),
+		errors.Is(err, service.ErrUnknownStatus):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, store.ErrNotFound):
 		return status.Error(codes.NotFound, err.Error())

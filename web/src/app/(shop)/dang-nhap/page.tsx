@@ -8,7 +8,13 @@ import { PRODUCTS } from "@/data";
 import { MODEL_SHOTS } from "@/data/media";
 import { useSession } from "@/context/SessionContext";
 import { useMockStore } from "@/mock/MockStoreContext";
-import { ApiError, getErrorMessage, sanitizeNextPath } from "@/lib/api";
+import {
+  ApiError,
+  getDefaultPathForRole,
+  getErrorMessage,
+  resolvePostLoginRedirect,
+  sanitizeNextPath,
+} from "@/lib/api";
 import { Button, StateView } from "@/components";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import shared from "@/features/commerce/commerce.module.css";
@@ -81,11 +87,12 @@ function LoginPageContent() {
     setSubmitting(true);
 
     try {
-      await login(cleanEmail, password);
+      const loggedInUser = await login(cleanEmail, password);
       showToast("Đăng nhập tài khoản NexusMart thành công.");
+      const destination = resolvePostLoginRedirect(loggedInUser.role, rawNext);
       // Full-document navigation flushes stale App Router cache across route groups
       // ((shop) -> (seller)/(admin)) and guarantees middleware + server layouts see new cookies.
-      window.location.assign(safeNext);
+      window.location.assign(destination);
     } catch (err) {
       if (err instanceof ApiError && err.code === "FAILED_PRECONDITION") {
         setNeedsVerifyEmail(cleanEmail);
@@ -209,8 +216,22 @@ function LoginPageContent() {
                   Đang đăng nhập: <strong>{user.full_name}</strong> ({user.email}).
                 </p>
                 <div className={shared.formActions}>
-                  <Button variant="ink" size="sm" href="/tai-khoan">
-                    Vào trang Tài khoản
+                  <Button
+                    variant="ink"
+                    size="sm"
+                    href={
+                      user.role === "admin" || user.role === "super_admin"
+                        ? getDefaultPathForRole(user.role)
+                        : user.role === "seller"
+                          ? getDefaultPathForRole(user.role)
+                          : "/tai-khoan"
+                    }
+                  >
+                    {user.role === "admin" || user.role === "super_admin"
+                      ? "Vào Cổng Quản Trị"
+                      : user.role === "seller"
+                        ? "Vào Kênh Người Bán"
+                        : "Vào trang Tài khoản"}
                   </Button>
                   <Button type="button" variant="secondary" size="sm" onClick={handleLogout}>
                     Đăng xuất

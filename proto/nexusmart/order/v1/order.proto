@@ -244,6 +244,18 @@ message MarkPaymentResultResponse {
   bool ok = 1;
 }
 
+message RetryPaymentRequest {
+  string payment_id = 1;
+  OrderPaymentMethod payment_method = 2;
+  string idempotency_key = 3;
+}
+
+message RetryPaymentResponse {
+  string checkout_group_id = 1;
+  string payment_id = 2;
+  google.protobuf.Timestamp payment_expires_at = 3;
+}
+
 service OrderService {
   rpc CreateCheckout(CreateCheckoutRequest) returns (CreateCheckoutResponse);
   rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
@@ -255,4 +267,5 @@ service OrderService {
   rpc RequestReturn(RequestReturnRequest) returns (RequestReturnResponse);
   rpc GetOrderTimeline(GetOrderTimelineRequest) returns (GetOrderTimelineResponse);
   rpc MarkPaymentResult(MarkPaymentResultRequest) returns (MarkPaymentResultResponse);
+  rpc RetryPayment(RetryPaymentRequest) returns (RetryPaymentResponse);
 }

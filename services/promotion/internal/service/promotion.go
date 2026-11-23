@@ -221,12 +221,42 @@ func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promo
 		}
 	}
 
-	userID := strings.TrimSpace(req.GetUserId())
-	if userID == "" {
-		userID = auth.UserIDFromContext(ctx)
+	shopFilter := strings.TrimSpace(req.GetShopId())
+	reqUserID := strings.TrimSpace(req.GetUserId())
+	claims, hasClaims := auth.ClaimsFromContext(ctx)
+
+	// review-A P1-5: Seller managing their own shop's vouchers (GET /api/v1/seller/vouchers)
+	// sees all of their shop's vouchers without buyer availability filtering.
+	sellerManageView := hasClaims &&
+		isSeller(claims) &&
+		claims.ShopID != "" &&
+		shopFilter == claims.ShopID &&
+		(scopeFilter == "" || scopeFilter == domain.VoucherScopeShop) &&
+		reqUserID == "" &&
+		req.GetOrderAmountVnd() == 0
+
+	// review-A P1-6: Never trust req.UserId different from verified claims unless caller is admin/service.
+	var userID string
+	switch {
+	case !hasClaims:
+		if reqUserID != "" {
+			return nil, status.Error(codes.Unauthenticated, "authentication required to query user-specific vouchers")
+		}
+	case isAdmin(claims) || claims.Service != "":
+		userID = reqUserID
+		if userID == "" && claims.Service == "" {
+			userID = claims.UserID()
+		}
+	case sellerManageView:
+		userID = ""
+	default:
+		if reqUserID != "" && reqUserID != claims.UserID() {
+			return nil, status.Error(codes.PermissionDenied, "cannot access another user's vouchers")
+		}
+		userID = claims.UserID()
 	}
 
-	vouchers, err := s.store.ListVouchers(ctx, strings.TrimSpace(req.GetShopId()), scopeFilter)
+	vouchers, err := s.store.ListVouchers(ctx, shopFilter, scopeFilter)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list vouchers: %v", err)
 	}
@@ -285,6 +315,19 @@ func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promo
 			}
 		}
 
+		// PRM-B8: Exclude unavailable vouchers for buyer/public views using the same eligibility criteria
+		// as PreviewDiscounts/ReservePromotion (seller managing own shop sees all shop vouchers).
+		if !sellerManageView {
+			if !v.IsActive ||
+				now.Before(v.StartsAt) ||
+				now.After(v.EndsAt) ||
+				remQuota <= 0 ||
+				isVoucherBudgetExhausted(v, remBudget, req.GetOrderAmountVnd()) ||
+				(userID != "" && v.PerUserLimit > 0 && userUsed >= v.PerUserLimit) {
+				continue
+			}
+		}
+
 		resp.Vouchers = append(resp.Vouchers, voucherToProto(v, remQuota, remBudget, userUsed, savedMap[v.ID], req.GetOrderAmountVnd(), now))
 	}
 	return resp, nil
@@ -331,7 +374,7 @@ func (s *PromotionService) SaveVoucher(ctx context.Context, req *promotionv1.Sav
 	if remQuota <= 0 {
 		return nil, status.Error(codes.ResourceExhausted, "voucher is out of quota")
 	}
-	if v.BudgetVND > 0 && remBudget <= 0 {
+	if isVoucherBudgetExhausted(v, remBudget, 0) {
 		return nil, status.Error(codes.ResourceExhausted, "voucher budget exhausted")
 	}
 	if v.PerUserLimit > 0 && userUsed >= v.PerUserLimit {
@@ -553,10 +596,8 @@ func (s *PromotionService) GetCoinBalance(ctx context.Context, req *promotionv1.
 
 // CreditCoins atomically and idempotently (by reference_id) credits coins to a user's ledger.
 func (s *PromotionService) CreditCoins(ctx context.Context, req *promotionv1.CreditCoinsRequest) (*promotionv1.CreditCoinsResponse, error) {
-	if claims, ok := auth.ClaimsFromContext(ctx); ok {
-		if !isAdmin(claims) {
-			return nil, status.Error(codes.PermissionDenied, "only admins can credit coins")
-		}
+	if _, err := requireAdminOrService(ctx, "only admins or internal services can credit coins"); err != nil {
+		return nil, err
 	}
 
 	userID := strings.TrimSpace(req.GetUserId())
@@ -793,9 +834,14 @@ func (s *PromotionService) ReservePromotion(ctx context.Context, req *promotionv
 	}, nil
 }
 
-// ReleasePromotion idempotently compensates Redis flash-sale slots, voucher quotas/budgets,
-// per-user usage counters, and Postgres coin deductions for an order.
+// ReleasePromotion idempotently compensates remaining Redis flash-sale slots, voucher quotas/budgets,
+// per-user usage counters, and Postgres coin deductions for an order without double-releasing
+// shops already released by ReleasePromotionShop.
 func (s *PromotionService) ReleasePromotion(ctx context.Context, req *promotionv1.ReleasePromotionRequest) (*promotionv1.ReleasePromotionResponse, error) {
+	if _, err := requireAdminOrService(ctx, "only admins or internal services can release promotions"); err != nil {
+		return nil, err
+	}
+
 	orderID := strings.TrimSpace(req.GetOrderId())
 	if orderID == "" {
 		return nil, status.Error(codes.InvalidArgument, "order_id is required")
@@ -807,21 +853,7 @@ func (s *PromotionService) ReleasePromotion(ctx context.Context, req *promotionv
 	// Collect known touched keys from Postgres (optional hint for Redis Cluster semantics)
 	var extraKeys []string
 	if saved, err := s.store.GetReservation(ctx, orderID); err == nil {
-		for _, f := range saved.FlashSaleItems {
-			extraKeys = append(extraKeys, lua.FlashRemainingKey(f.FlashSaleItemID), lua.FlashUserKey(f.FlashSaleItemID, saved.UserID))
-		}
-		for _, v := range saved.Vouchers {
-			extraKeys = append(extraKeys,
-				lua.VoucherRemainingKey(v.VoucherID),
-				lua.VoucherUserKey(v.VoucherID, saved.UserID),
-				lua.VoucherBudgetRemainingKey(v.VoucherID),
-			)
-		}
-	}
-
-	redisOutcome, err := s.engine.Release(ctx, orderID, extraKeys...)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "release redis promotion reservation: %v", err)
+		extraKeys = collectReservationRedisKeys(saved.UserID, saved.FlashSaleItems, saved.Vouchers)
 	}
 
 	pgAlreadyReleased, err := s.store.ReleaseReservation(ctx, orderID)
@@ -829,10 +861,88 @@ func (s *PromotionService) ReleasePromotion(ctx context.Context, req *promotionv
 		return nil, status.Errorf(codes.Internal, "release postgres promotion reservation: %v", err)
 	}
 
+	redisOutcome, err := s.engine.Release(ctx, orderID, extraKeys...)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "release redis promotion reservation: %v", err)
+	}
+
 	return &promotionv1.ReleasePromotionResponse{
 		Released:        true,
 		AlreadyReleased: redisOutcome.AlreadyReleased && pgAlreadyReleased,
 	}, nil
+}
+
+// ReleasePromotionShop idempotently releases one shop sub-order's share (coins, shop voucher,
+// flash sale slots) from a checkout group's reservation. When every shop in the reservation has
+// been released, platform/freeship vouchers are also released and the reservation becomes RELEASED.
+func (s *PromotionService) ReleasePromotionShop(ctx context.Context, req *promotionv1.ReleasePromotionShopRequest) (*promotionv1.ReleasePromotionShopResponse, error) {
+	if _, err := requireAdminOrService(ctx, "only admins or internal services can release shop promotions"); err != nil {
+		return nil, err
+	}
+
+	orderID := strings.TrimSpace(req.GetOrderId())
+	if orderID == "" {
+		return nil, status.Error(codes.InvalidArgument, "order_id is required")
+	}
+	if err := validateKeySegment("order_id", orderID); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	shopID := strings.TrimSpace(req.GetShopId())
+	if shopID == "" {
+		return nil, status.Error(codes.InvalidArgument, "shop_id is required")
+	}
+	if err := validateKeySegment("shop_id", shopID); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	res, err := s.store.ReleaseReservationShop(ctx, orderID, shopID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "release shop promotion reservation: %v", err)
+	}
+
+	if res.AllReleased {
+		extraKeys := collectReservationRedisKeys(res.UserID, res.AllFlash, res.AllVouchers)
+		if _, err := s.engine.Release(ctx, orderID, extraKeys...); err != nil {
+			return nil, status.Errorf(codes.Internal, "release final redis promotion reservation: %v", err)
+		}
+	} else if len(res.TargetFlash) > 0 || len(res.TargetVouchers) > 0 {
+		targetRemKeys := make([]string, 0, len(res.TargetFlash)+len(res.TargetVouchers))
+		for _, f := range res.TargetFlash {
+			targetRemKeys = append(targetRemKeys, lua.FlashRemainingKey(f.FlashSaleItemID))
+		}
+		for _, v := range res.TargetVouchers {
+			targetRemKeys = append(targetRemKeys, lua.VoucherRemainingKey(v.VoucherID))
+		}
+		extraKeys := collectReservationRedisKeys(res.UserID, res.TargetFlash, res.TargetVouchers)
+		if _, err := s.engine.ReleasePartial(ctx, orderID, targetRemKeys, extraKeys...); err != nil {
+			return nil, status.Errorf(codes.Internal, "release partial redis promotion reservation: %v", err)
+		}
+	}
+
+	return &promotionv1.ReleasePromotionShopResponse{
+		Released:                  true,
+		AlreadyReleased:           res.AlreadyReleased,
+		CoinsReturned:             res.CoinsReturned,
+		ShopVoucherReleased:       res.ShopVoucherReleased,
+		FlashSaleQuantityReleased: res.FlashQuantityReleased,
+		PlatformVoucherReleased:   res.PlatformVoucherReleased,
+	}, nil
+}
+
+func collectReservationRedisKeys(userID string, flashItems []domain.ReservedFlashItem, vouchers []domain.ReservedVoucher) []string {
+	keys := make([]string, 0, len(flashItems)*2+len(vouchers)*3)
+	for _, f := range flashItems {
+		keys = append(keys, lua.FlashRemainingKey(f.FlashSaleItemID), lua.FlashUserKey(f.FlashSaleItemID, userID))
+	}
+	for _, v := range vouchers {
+		keys = append(keys,
+			lua.VoucherRemainingKey(v.VoucherID),
+			lua.VoucherUserKey(v.VoucherID, userID),
+			lua.VoucherBudgetRemainingKey(v.VoucherID),
+		)
+	}
+	return keys
 }
 
 func (s *PromotionService) compensateRedisRelease(orderID string) {
@@ -872,12 +982,13 @@ func (s *PromotionService) resolveFlashReservations(
 	type mergedFlash struct {
 		itemID string
 		skuID  string
+		shopID string
 		qty    int32
 	}
 	merged := make(map[string]*mergedFlash)
 	order := make([]string, 0)
 
-	addItem := func(itemID, skuID string, qty int32) error {
+	addItem := func(itemID, skuID, shopID string, qty int32) error {
 		itemID = strings.TrimSpace(itemID)
 		if itemID == "" {
 			return nil
@@ -888,14 +999,19 @@ func (s *PromotionService) resolveFlashReservations(
 		if qty <= 0 {
 			return status.Errorf(codes.InvalidArgument, "flash sale item %s quantity must be > 0", itemID)
 		}
+		skuID = strings.TrimSpace(skuID)
+		shopID = strings.TrimSpace(shopID)
 		if cur, ok := merged[itemID]; ok {
 			cur.qty += qty
 			if cur.skuID == "" {
 				cur.skuID = skuID
 			}
+			if cur.shopID == "" {
+				cur.shopID = shopID
+			}
 			return nil
 		}
-		merged[itemID] = &mergedFlash{itemID: itemID, skuID: strings.TrimSpace(skuID), qty: qty}
+		merged[itemID] = &mergedFlash{itemID: itemID, skuID: skuID, shopID: shopID, qty: qty}
 		order = append(order, itemID)
 		return nil
 	}
@@ -907,19 +1023,26 @@ func (s *PromotionService) resolveFlashReservations(
 			return nil, nil, status.Error(codes.InvalidArgument, "flash_sale_item_id is required")
 		}
 		explicitSet[id] = true
-		if err := addItem(id, f.GetSkuId(), f.GetQuantity()); err != nil {
+		if err := addItem(id, f.GetSkuId(), f.GetShopId(), f.GetQuantity()); err != nil {
 			return nil, nil, err
 		}
 	}
 
 	// Include flash items referenced only inside shop_items without double-counting explicit entries.
 	for _, shop := range shopItems {
+		shopID := strings.TrimSpace(shop.GetShopId())
 		for _, line := range shop.GetItems() {
 			id := strings.TrimSpace(line.GetFlashSaleItemId())
-			if id == "" || explicitSet[id] {
+			if id == "" {
 				continue
 			}
-			if err := addItem(id, line.GetSkuId(), line.GetQuantity()); err != nil {
+			if explicitSet[id] {
+				if cur := merged[id]; cur != nil && cur.shopID == "" && shopID != "" {
+					cur.shopID = shopID
+				}
+				continue
+			}
+			if err := addItem(id, line.GetSkuId(), shopID, line.GetQuantity()); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -947,6 +1070,14 @@ func (s *PromotionService) resolveFlashReservations(
 		if mf.skuID != "" && fi.SKUID != "" && mf.skuID != fi.SKUID {
 			return nil, nil, status.Errorf(codes.InvalidArgument, "flash sale item %s does not match SKU %s", id, mf.skuID)
 		}
+		if mf.shopID != "" && fi.ShopID != "" && mf.shopID != fi.ShopID {
+			return nil, nil, status.Errorf(codes.InvalidArgument, "flash sale item %s does not belong to shop %s", id, mf.shopID)
+		}
+
+		shopID := fi.ShopID
+		if shopID == "" {
+			shopID = mf.shopID
+		}
 
 		specs = append(specs, lua.FlashReserveSpec{
 			ItemID:       fi.ID,
@@ -957,6 +1088,7 @@ func (s *PromotionService) resolveFlashReservations(
 			FlashSaleItemID: fi.ID,
 			SKUID:           fi.SKUID,
 			Quantity:        mf.qty,
+			ShopID:          shopID,
 		})
 	}
 	return specs, reserved, nil
@@ -1247,7 +1379,7 @@ func voucherToProto(
 	case remQuota <= 0:
 		eligible = false
 		ineligibleReason = "voucher is out of quota"
-	case v.BudgetVND > 0 && remBudget <= 0:
+	case isVoucherBudgetExhausted(v, remBudget, orderAmountVND):
 		eligible = false
 		ineligibleReason = "voucher budget exhausted"
 	case userUsed > 0 && v.PerUserLimit > 0 && userUsed >= v.PerUserLimit:
@@ -1384,11 +1516,38 @@ func domainFlashStatusToProto(st string) promotionv1.FlashSaleItemStatus {
 	}
 }
 
+func isVoucherBudgetExhausted(v *domain.Voucher, remBudget, orderAmountVND int64) bool {
+	if v == nil || v.BudgetVND <= 0 {
+		return false
+	}
+	if remBudget <= 0 {
+		return true
+	}
+	// review-A P2-11: Freeship discount is capped by shipping fee (unavailable here), not orderAmountVND.
+	if v.Scope == domain.VoucherScopeFreeship {
+		return false
+	}
+	base := orderAmountVND
+	if v.MinOrderVND > base {
+		base = v.MinOrderVND
+	}
+	if base > 0 {
+		return remBudget < calculator.ComputeVoucherDiscount(v, base)
+	}
+	if v.DiscountType == domain.DiscountTypeFixed {
+		return remBudget < v.ValueVND
+	}
+	return false
+}
+
 func resolveUserID(ctx context.Context, reqUserID string) (string, error) {
 	reqUserID = strings.TrimSpace(reqUserID)
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
-		return reqUserID, nil
+		return "", status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if claims.Service != "" {
+		return "", status.Error(codes.PermissionDenied, "service identity not allowed for this RPC")
 	}
 	if reqUserID == "" {
 		return claims.UserID(), nil
@@ -1397,6 +1556,17 @@ func resolveUserID(ctx context.Context, reqUserID string) (string, error) {
 		return "", status.Error(codes.PermissionDenied, "cannot access another user's resources")
 	}
 	return reqUserID, nil
+}
+
+func requireAdminOrService(ctx context.Context, msg string) (*auth.Claims, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if claims.Service == "" && !isAdmin(claims) {
+		return nil, status.Error(codes.PermissionDenied, msg)
+	}
+	return claims, nil
 }
 
 func isAdmin(claims *auth.Claims) bool {

@@ -2,6 +2,7 @@ package carrier
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sort"
 	"sync"
@@ -11,6 +12,9 @@ const (
 	CodeFallback = "fallback"
 	NameFallback = "NexusMart Standard Fallback"
 )
+
+// ErrRouteOutOfServiceArea is returned when every enabled carrier explicitly rejects a route as unserviceable.
+var ErrRouteOutOfServiceArea = errors.New("route outside carrier service area")
 
 // Aggregator queries enabled carriers in parallel and falls back to the static fee table
 // when all enabled carriers fail or have tripped circuit breakers (UC-SHIP02).
@@ -57,16 +61,18 @@ func (a *Aggregator) DefaultCarrier() (Carrier, bool) {
 }
 
 // CalculateFeeAll fans out CalculateFee to all enabled carriers concurrently via goroutines.
-// Partial carrier failures are omitted; if all carriers fail, FallbackQuotes is returned.
-func (a *Aggregator) CalculateFeeAll(ctx context.Context, req FeeRequest) ([]Quote, bool) {
+// Partial carrier failures are omitted; if all carriers fail transiently, FallbackQuotes is returned.
+// If every enabled carrier explicitly rejects the route with a NonRetryableError, ErrRouteOutOfServiceArea is returned.
+func (a *Aggregator) CalculateFeeAll(ctx context.Context, req FeeRequest) ([]Quote, bool, error) {
 	if len(a.order) == 0 {
-		return FallbackQuotes(req), true
+		return FallbackQuotes(req), true, nil
 	}
 
 	var (
-		wg     sync.WaitGroup
-		mu     sync.Mutex
-		quotes []Quote
+		wg                   sync.WaitGroup
+		mu                   sync.Mutex
+		quotes               []Quote
+		nonRetryableFailures int
 	)
 
 	for _, code := range a.order {
@@ -80,6 +86,11 @@ func (a *Aggregator) CalculateFeeAll(ctx context.Context, req FeeRequest) ([]Quo
 					slog.String("carrier", provider.Code()),
 					slog.String("error", err.Error()),
 				)
+				if IsNonRetryable(err) {
+					mu.Lock()
+					nonRetryableFailures++
+					mu.Unlock()
+				}
 				return
 			}
 			if len(res) == 0 {
@@ -93,8 +104,11 @@ func (a *Aggregator) CalculateFeeAll(ctx context.Context, req FeeRequest) ([]Quo
 	wg.Wait()
 
 	if len(quotes) == 0 {
+		if nonRetryableFailures == len(a.order) {
+			return nil, false, ErrRouteOutOfServiceArea
+		}
 		a.logger.WarnContext(ctx, "all shipping carriers failed; serving fallback fee table")
-		return FallbackQuotes(req), true
+		return FallbackQuotes(req), true, nil
 	}
 
 	sort.Slice(quotes, func(i, j int) bool {
@@ -106,7 +120,7 @@ func (a *Aggregator) CalculateFeeAll(ctx context.Context, req FeeRequest) ([]Quo
 		}
 		return quotes[i].ServiceCode < quotes[j].ServiceCode
 	})
-	return quotes, false
+	return quotes, false, nil
 }
 
 // FallbackQuotes returns deterministic integer-VND quotes from the platform fallback fee table (UC-SHIP02).

@@ -60,6 +60,7 @@ type Store interface {
 	GetReservation(ctx context.Context, orderID string) (*domain.PromotionReservation, error)
 	CommitReservation(ctx context.Context, res domain.PromotionReservation) (existing *domain.PromotionReservation, alreadyReserved bool, err error)
 	ReleaseReservation(ctx context.Context, orderID string) (alreadyReleased bool, err error)
+	ReleaseReservationShop(ctx context.Context, orderID, shopID string) (*ShopReleaseResult, error)
 }
 
 // PostgresStore implements Store backed by PostgreSQL via pgxpool.
@@ -697,7 +698,7 @@ func creditCoinsInTx(ctx context.Context, tx pgx.Tx, userID string, amount int64
 func (s *PostgresStore) GetReservation(ctx context.Context, orderID string) (*domain.PromotionReservation, error) {
 	const q = `
 		SELECT order_id, user_id, status, coins_used, vouchers_json, flash_sale_items_json,
-			breakdown_json, created_at, released_at, updated_at
+			breakdown_json, released_shops_json, created_at, released_at, updated_at
 		FROM promotion_reservations
 		WHERE order_id = $1
 	`
@@ -721,7 +722,7 @@ func (s *PostgresStore) CommitReservation(ctx context.Context, res domain.Promot
 	// Lock existing reservation row if present
 	existing, err := scanReservation(tx.QueryRow(ctx, `
 		SELECT order_id, user_id, status, coins_used, vouchers_json, flash_sale_items_json,
-			breakdown_json, created_at, released_at, updated_at
+			breakdown_json, released_shops_json, created_at, released_at, updated_at
 		FROM promotion_reservations
 		WHERE order_id = $1
 		FOR UPDATE
@@ -849,7 +850,7 @@ func (s *PostgresStore) ReleaseReservation(ctx context.Context, orderID string) 
 
 	existing, err := scanReservation(tx.QueryRow(ctx, `
 		SELECT order_id, user_id, status, coins_used, vouchers_json, flash_sale_items_json,
-			breakdown_json, created_at, released_at, updated_at
+			breakdown_json, released_shops_json, created_at, released_at, updated_at
 		FROM promotion_reservations
 		WHERE order_id = $1
 		FOR UPDATE
@@ -860,18 +861,151 @@ func (s *PostgresStore) ReleaseReservation(ctx context.Context, orderID string) 
 	if err != nil {
 		return false, fmt.Errorf("lock reservation for release: %w", err)
 	}
-	if existing.Status == domain.ReservationStatusReleased {
+
+	plan, err := planRemainingRelease(existing, lookupFlashShopInTx(ctx, tx))
+	if err != nil {
+		return false, fmt.Errorf("plan remaining release: %w", err)
+	}
+	if plan.alreadyReleased {
 		return true, nil
 	}
 
-	if existing.CoinsUsed > 0 {
+	if plan.coinsToReturn > 0 {
 		releaseRef := "release:" + orderID
-		if _, _, err := creditCoinsInTx(ctx, tx, existing.UserID, existing.CoinsUsed, "order_release", releaseRef); err != nil {
+		if _, _, err := creditCoinsInTx(ctx, tx, existing.UserID, plan.coinsToReturn, "order_release", releaseRef); err != nil {
 			return false, fmt.Errorf("restore reserved coins: %w", err)
 		}
 	}
 
-	sortedVouchers := append([]domain.ReservedVoucher(nil), existing.Vouchers...)
+	if err := restoreVouchersAndFlashInTx(ctx, tx, plan.vouchersToRelease, plan.flashToRelease); err != nil {
+		return false, err
+	}
+
+	releasedShopsJSON, err := json.Marshal(plan.newReleasedShops)
+	if err != nil {
+		return false, fmt.Errorf("marshal released shops: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE promotion_reservations
+		SET status = 'RELEASED',
+			released_shops_json = $2::jsonb,
+			released_at = NOW(),
+			updated_at = NOW()
+		WHERE order_id = $1
+	`, orderID, string(releasedShopsJSON)); err != nil {
+		return false, fmt.Errorf("mark reservation released: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit release reservation tx: %w", err)
+	}
+	return false, nil
+}
+
+func (s *PostgresStore) ReleaseReservationShop(ctx context.Context, orderID, shopID string) (*ShopReleaseResult, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("begin release shop reservation tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	existing, err := scanReservation(tx.QueryRow(ctx, `
+		SELECT order_id, user_id, status, coins_used, vouchers_json, flash_sale_items_json,
+			breakdown_json, released_shops_json, created_at, released_at, updated_at
+		FROM promotion_reservations
+		WHERE order_id = $1
+		FOR UPDATE
+	`, orderID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &ShopReleaseResult{AlreadyReleased: true}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lock reservation for shop release: %w", err)
+	}
+
+	plan, err := planShopRelease(existing, shopID, lookupFlashShopInTx(ctx, tx))
+	if err != nil {
+		return nil, fmt.Errorf("plan shop release: %w", err)
+	}
+
+	result := &ShopReleaseResult{
+		AlreadyReleased:         plan.alreadyReleased,
+		AllReleased:             plan.allReleased,
+		UserID:                  existing.UserID,
+		CoinsReturned:           plan.coinsToReturn,
+		ShopVoucherReleased:     plan.shopVoucherReleased,
+		FlashQuantityReleased:   plan.flashQuantityReleased,
+		PlatformVoucherReleased: plan.platformVoucherReleased,
+		TargetVouchers:          plan.targetVouchersForRedis,
+		TargetFlash:             plan.targetFlashForRedis,
+		AllVouchers:             existing.Vouchers,
+		AllFlash:                existing.FlashSaleItems,
+	}
+	if plan.alreadyReleased {
+		return result, nil
+	}
+
+	if plan.coinsToReturn > 0 {
+		releaseRef := "release:" + orderID + ":shop:" + shopID
+		if _, _, err := creditCoinsInTx(ctx, tx, existing.UserID, plan.coinsToReturn, "order_release", releaseRef); err != nil {
+			return nil, fmt.Errorf("restore shop reserved coins: %w", err)
+		}
+	}
+
+	if err := restoreVouchersAndFlashInTx(ctx, tx, plan.vouchersToRelease, plan.flashToRelease); err != nil {
+		return nil, err
+	}
+
+	releasedShopsJSON, err := json.Marshal(plan.newReleasedShops)
+	if err != nil {
+		return nil, fmt.Errorf("marshal released shops: %w", err)
+	}
+
+	if plan.allReleased {
+		if _, err := tx.Exec(ctx, `
+			UPDATE promotion_reservations
+			SET status = 'RELEASED',
+				released_shops_json = $2::jsonb,
+				released_at = NOW(),
+				updated_at = NOW()
+			WHERE order_id = $1
+		`, orderID, string(releasedShopsJSON)); err != nil {
+			return nil, fmt.Errorf("mark reservation released after last shop: %w", err)
+		}
+	} else {
+		if _, err := tx.Exec(ctx, `
+			UPDATE promotion_reservations
+			SET released_shops_json = $2::jsonb,
+				updated_at = NOW()
+			WHERE order_id = $1
+		`, orderID, string(releasedShopsJSON)); err != nil {
+			return nil, fmt.Errorf("record released shop on reservation: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit release shop reservation tx: %w", err)
+	}
+	return result, nil
+}
+
+func lookupFlashShopInTx(ctx context.Context, tx pgx.Tx) func(itemID string) (string, error) {
+	return func(itemID string) (string, error) {
+		var shopID string
+		err := tx.QueryRow(ctx, `SELECT shop_id FROM flash_sale_items WHERE id = $1`, itemID).Scan(&shopID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("lookup flash item %s shop_id: %w", itemID, err)
+		}
+		return shopID, nil
+	}
+}
+
+func restoreVouchersAndFlashInTx(ctx context.Context, tx pgx.Tx, vouchers []domain.ReservedVoucher, flashItems []domain.ReservedFlashItem) error {
+	sortedVouchers := append([]domain.ReservedVoucher(nil), vouchers...)
 	sort.Slice(sortedVouchers, func(i, j int) bool { return sortedVouchers[i].VoucherID < sortedVouchers[j].VoucherID })
 	for _, v := range sortedVouchers {
 		if _, err := tx.Exec(ctx, `
@@ -881,11 +1015,11 @@ func (s *PostgresStore) ReleaseReservation(ctx context.Context, orderID string) 
 				updated_at = NOW()
 			WHERE id = $1
 		`, v.VoucherID, v.DiscountVND); err != nil {
-			return false, fmt.Errorf("restore voucher usage: %w", err)
+			return fmt.Errorf("restore voucher usage: %w", err)
 		}
 	}
 
-	sortedFlash := append([]domain.ReservedFlashItem(nil), existing.FlashSaleItems...)
+	sortedFlash := append([]domain.ReservedFlashItem(nil), flashItems...)
 	sort.Slice(sortedFlash, func(i, j int) bool { return sortedFlash[i].FlashSaleItemID < sortedFlash[j].FlashSaleItemID })
 	for _, f := range sortedFlash {
 		if _, err := tx.Exec(ctx, `
@@ -894,22 +1028,10 @@ func (s *PostgresStore) ReleaseReservation(ctx context.Context, orderID string) 
 				updated_at = NOW()
 			WHERE id = $1
 		`, f.FlashSaleItemID, f.Quantity); err != nil {
-			return false, fmt.Errorf("restore flash remaining slots: %w", err)
+			return fmt.Errorf("restore flash remaining slots: %w", err)
 		}
 	}
-
-	if _, err := tx.Exec(ctx, `
-		UPDATE promotion_reservations
-		SET status = 'RELEASED', released_at = NOW(), updated_at = NOW()
-		WHERE order_id = $1
-	`, orderID); err != nil {
-		return false, fmt.Errorf("mark reservation released: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit release reservation tx: %w", err)
-	}
-	return false, nil
+	return nil
 }
 
 type rowScanner interface {
@@ -932,10 +1054,10 @@ func scanVoucher(row rowScanner) (*domain.Voucher, error) {
 
 func scanReservation(row rowScanner) (*domain.PromotionReservation, error) {
 	var res domain.PromotionReservation
-	var vouchersRaw, flashRaw, breakdownRaw []byte
+	var vouchersRaw, flashRaw, breakdownRaw, releasedShopsRaw []byte
 	err := row.Scan(
 		&res.OrderID, &res.UserID, &res.Status, &res.CoinsUsed,
-		&vouchersRaw, &flashRaw, &breakdownRaw,
+		&vouchersRaw, &flashRaw, &breakdownRaw, &releasedShopsRaw,
 		&res.CreatedAt, &res.ReleasedAt, &res.UpdatedAt,
 	)
 	if err != nil {
@@ -946,6 +1068,9 @@ func scanReservation(row rowScanner) (*domain.PromotionReservation, error) {
 	}
 	if len(flashRaw) > 0 {
 		_ = json.Unmarshal(flashRaw, &res.FlashSaleItems)
+	}
+	if len(releasedShopsRaw) > 0 {
+		_ = json.Unmarshal(releasedShopsRaw, &res.ReleasedShops)
 	}
 	res.BreakdownJSON = breakdownRaw
 	return &res, nil

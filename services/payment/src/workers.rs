@@ -16,6 +16,15 @@ use crate::telemetry::format_traceparent;
 const MAX_OUTBOX_RETRIES: i32 = 10;
 const MAX_NATS_DELIVERIES: i64 = 5;
 const DLQ_STREAM_NAME: &str = "NEXUSMART_DLQ";
+const ORDER_CONSUMER_NAME: &str = "payment-order-events";
+
+/// Order lifecycle subjects consumed by the payment service.
+pub const ORDER_EVENT_SUBJECTS: &[&str] = &[
+    "order.completed",
+    "order.cancelled",
+    "order.delivered",
+    "order.returned",
+];
 
 #[derive(sqlx::FromRow)]
 struct OutboxRow {
@@ -303,24 +312,27 @@ pub async fn run_nats_order_consumer(service: PaymentService, mut shutdown: watc
             }
         };
 
-        let consumer: PullConsumer = match stream
-            .get_or_create_consumer(
-                "payment-order-events",
-                jetstream::consumer::pull::Config {
-                    durable_name: Some("payment-order-events".to_string()),
-                    filter_subjects: vec![
-                        "order.completed".to_string(),
-                        "order.cancelled".to_string(),
-                    ],
-                    max_deliver: MAX_NATS_DELIVERIES,
-                    ..Default::default()
-                },
-            )
-            .await
+        let desired_subjects: Vec<String> = ORDER_EVENT_SUBJECTS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let desired_cfg = jetstream::consumer::pull::Config {
+            durable_name: Some(ORDER_CONSUMER_NAME.to_string()),
+            filter_subjects: desired_subjects.clone(),
+            max_deliver: MAX_NATS_DELIVERIES,
+            ..Default::default()
+        };
+
+        let consumer: PullConsumer = match ensure_order_consumer(
+            &stream,
+            desired_cfg,
+            &desired_subjects,
+        )
+        .await
         {
             Ok(c) => c,
             Err(e) => {
-                warn!(error = %e, "failed to create payment JetStream consumer; retrying");
+                warn!(error = %e, "failed to create/update payment JetStream consumer; retrying");
                 tokio::select! {
                     _ = shutdown.changed() => break,
                     _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
@@ -347,6 +359,44 @@ pub async fn run_nats_order_consumer(service: PaymentService, mut shutdown: watc
                 }
             }
         }
+    }
+}
+
+async fn ensure_order_consumer(
+    stream: &jetstream::stream::Stream,
+    cfg: jetstream::consumer::pull::Config,
+    desired_subjects: &[String],
+) -> anyhow::Result<PullConsumer> {
+    match stream.consumer_info(ORDER_CONSUMER_NAME).await {
+        Ok(info) => {
+            let has_all = desired_subjects
+                .iter()
+                .all(|s| info.config.filter_subjects.contains(s));
+            if has_all {
+                return Ok(stream
+                    .get_or_create_consumer(ORDER_CONSUMER_NAME, cfg)
+                    .await?);
+            }
+            info!(
+                consumer = ORDER_CONSUMER_NAME,
+                existing_subjects = ?info.config.filter_subjects,
+                desired_subjects = ?desired_subjects,
+                "updating JetStream consumer filter_subjects"
+            );
+            match stream.update_consumer(cfg.clone()).await {
+                Ok(c) => Ok(c),
+                Err(e) => {
+                    warn!(
+                        consumer = ORDER_CONSUMER_NAME,
+                        error = %e,
+                        "update_consumer failed; recreating consumer with updated filter_subjects"
+                    );
+                    let _ = stream.delete_consumer(ORDER_CONSUMER_NAME).await;
+                    Ok(stream.create_consumer(cfg).await?)
+                }
+            }
+        }
+        Err(_) => Ok(stream.create_consumer(cfg).await?),
     }
 }
 
@@ -385,13 +435,29 @@ async fn handle_order_event(
     // Both `processed_nats_events` claim AND business state mutation execute in ONE DB transaction.
     let res = match envelope.event_type.as_str() {
         "order.completed" => service
-            .process_order_completed_event(&envelope.event_id, &order_id)
+            .process_order_completed_event(&envelope.event_id, &order_id, &envelope.trace_id)
             .await
             .map(|_| ()),
         "order.cancelled" => service
             .process_order_cancelled_event(&envelope.event_id, &order_id, &envelope.trace_id)
             .await
             .map(|_| ()),
+        "order.delivered" => service
+            .process_order_delivered_event(&envelope.event_id, &order_id, &envelope.trace_id)
+            .await
+            .map(|_| ()),
+        "order.returned" => {
+            let from_status = envelope.payload.get("from_status").and_then(|v| v.as_str());
+            service
+                .process_order_returned_event(
+                    &envelope.event_id,
+                    &order_id,
+                    from_status,
+                    &envelope.trace_id,
+                )
+                .await
+                .map(|_| ())
+        }
         _ => Ok(()),
     };
 
@@ -440,5 +506,13 @@ mod tests {
         assert!(!should_route_to_dlq(4, MAX_NATS_DELIVERIES));
         assert!(should_route_to_dlq(5, MAX_NATS_DELIVERIES));
         assert!(should_route_to_dlq(6, MAX_NATS_DELIVERIES));
+    }
+
+    #[test]
+    fn test_order_consumer_subscribes_delivered_and_returned() {
+        assert!(ORDER_EVENT_SUBJECTS.contains(&"order.completed"));
+        assert!(ORDER_EVENT_SUBJECTS.contains(&"order.cancelled"));
+        assert!(ORDER_EVENT_SUBJECTS.contains(&"order.delivered"));
+        assert!(ORDER_EVENT_SUBJECTS.contains(&"order.returned"));
     }
 }

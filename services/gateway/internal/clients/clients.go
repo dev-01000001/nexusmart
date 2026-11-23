@@ -3,6 +3,7 @@ package clients
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	cartv1 "github.com/nexusmart/core/gen/go/nexusmart/cart/v1"
@@ -119,8 +120,32 @@ func (c *Clients) Close() {
 	}
 }
 
+// MDClientIP is the gRPC metadata key carrying the gateway-resolved client IP.
+const MDClientIP = "x-client-ip"
+
+type clientIPContextKey struct{}
+
+// WithClientIP stores the resolved client IP on ctx so outgoing gRPC calls forward it via x-client-ip.
+func WithClientIP(ctx context.Context, ip string) context.Context {
+	ip = strings.TrimSpace(ip)
+	if ip == "" || ip == "unknown" {
+		return ctx
+	}
+	return context.WithValue(ctx, clientIPContextKey{}, ip)
+}
+
+// ClientIPFromContext retrieves the resolved client IP stored on ctx.
+func ClientIPFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	v, _ := ctx.Value(clientIPContextKey{}).(string)
+	return v
+}
+
 // OutgoingContext creates a timed context forwarding the user's Authorization Bearer token
-// (services trust identity only from the verified JWT) and optional extra key/value metadata pairs.
+// (services trust identity only from the verified JWT), the resolved x-client-ip metadata,
+// and optional extra key/value metadata pairs.
 func (c *Clients) OutgoingContext(ctx context.Context, extraPairs ...string) (context.Context, context.CancelFunc) {
 	timeout := c.Timeout
 	if timeout <= 0 {
@@ -129,6 +154,29 @@ func (c *Clients) OutgoingContext(ctx context.Context, extraPairs ...string) (co
 	outCtx, cancel := context.WithTimeout(ctx, timeout)
 
 	outCtx = auth.InjectOutgoingGRPC(outCtx, auth.RawTokenFromContext(ctx))
+	if clientIP := ClientIPFromContext(ctx); clientIP != "" {
+		outCtx = metadata.AppendToOutgoingContext(outCtx, MDClientIP, clientIP)
+	}
+
+	if len(extraPairs) >= 2 {
+		outCtx = metadata.AppendToOutgoingContext(outCtx, extraPairs...)
+	}
+	return outCtx, cancel
+}
+
+// PublicOutgoingContext creates a timed context without forwarding any Authorization Bearer token.
+// Use on strictly public storefront endpoints so upstream services enforce public-only visibility
+// regardless of any caller token.
+func (c *Clients) PublicOutgoingContext(ctx context.Context, extraPairs ...string) (context.Context, context.CancelFunc) {
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	outCtx, cancel := context.WithTimeout(ctx, timeout)
+
+	if clientIP := ClientIPFromContext(ctx); clientIP != "" {
+		outCtx = metadata.AppendToOutgoingContext(outCtx, MDClientIP, clientIP)
+	}
 
 	if len(extraPairs) >= 2 {
 		outCtx = metadata.AppendToOutgoingContext(outCtx, extraPairs...)

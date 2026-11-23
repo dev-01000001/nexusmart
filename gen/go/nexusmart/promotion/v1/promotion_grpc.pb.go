@@ -31,6 +31,7 @@ const (
 	PromotionService_PreviewDiscounts_FullMethodName      = "/nexusmart.promotion.v1.PromotionService/PreviewDiscounts"
 	PromotionService_ReservePromotion_FullMethodName      = "/nexusmart.promotion.v1.PromotionService/ReservePromotion"
 	PromotionService_ReleasePromotion_FullMethodName      = "/nexusmart.promotion.v1.PromotionService/ReleasePromotion"
+	PromotionService_ReleasePromotionShop_FullMethodName  = "/nexusmart.promotion.v1.PromotionService/ReleasePromotionShop"
 )
 
 // PromotionServiceClient is the client API for PromotionService service.
@@ -49,6 +50,7 @@ type PromotionServiceClient interface {
 	PreviewDiscounts(ctx context.Context, in *PreviewDiscountsRequest, opts ...grpc.CallOption) (*PreviewDiscountsResponse, error)
 	ReservePromotion(ctx context.Context, in *ReservePromotionRequest, opts ...grpc.CallOption) (*ReservePromotionResponse, error)
 	ReleasePromotion(ctx context.Context, in *ReleasePromotionRequest, opts ...grpc.CallOption) (*ReleasePromotionResponse, error)
+	ReleasePromotionShop(ctx context.Context, in *ReleasePromotionShopRequest, opts ...grpc.CallOption) (*ReleasePromotionShopResponse, error)
 }
 
 type promotionServiceClient struct {
@@ -179,6 +181,16 @@ func (c *promotionServiceClient) ReleasePromotion(ctx context.Context, in *Relea
 	return out, nil
 }
 
+func (c *promotionServiceClient) ReleasePromotionShop(ctx context.Context, in *ReleasePromotionShopRequest, opts ...grpc.CallOption) (*ReleasePromotionShopResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReleasePromotionShopResponse)
+	err := c.cc.Invoke(ctx, PromotionService_ReleasePromotionShop_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PromotionServiceServer is the server API for PromotionService service.
 // All implementations must embed UnimplementedPromotionServiceServer
 // for forward compatibility.
@@ -195,6 +207,7 @@ type PromotionServiceServer interface {
 	PreviewDiscounts(context.Context, *PreviewDiscountsRequest) (*PreviewDiscountsResponse, error)
 	ReservePromotion(context.Context, *ReservePromotionRequest) (*ReservePromotionResponse, error)
 	ReleasePromotion(context.Context, *ReleasePromotionRequest) (*ReleasePromotionResponse, error)
+	ReleasePromotionShop(context.Context, *ReleasePromotionShopRequest) (*ReleasePromotionShopResponse, error)
 	mustEmbedUnimplementedPromotionServiceServer()
 }
 
@@ -240,6 +253,9 @@ func (UnimplementedPromotionServiceServer) ReservePromotion(context.Context, *Re
 }
 func (UnimplementedPromotionServiceServer) ReleasePromotion(context.Context, *ReleasePromotionRequest) (*ReleasePromotionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ReleasePromotion not implemented")
+}
+func (UnimplementedPromotionServiceServer) ReleasePromotionShop(context.Context, *ReleasePromotionShopRequest) (*ReleasePromotionShopResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReleasePromotionShop not implemented")
 }
 func (UnimplementedPromotionServiceServer) mustEmbedUnimplementedPromotionServiceServer() {}
 func (UnimplementedPromotionServiceServer) testEmbeddedByValue()                          {}
@@ -478,6 +494,24 @@ func _PromotionService_ReleasePromotion_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PromotionService_ReleasePromotionShop_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleasePromotionShopRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromotionServiceServer).ReleasePromotionShop(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromotionService_ReleasePromotionShop_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromotionServiceServer).ReleasePromotionShop(ctx, req.(*ReleasePromotionShopRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PromotionService_ServiceDesc is the grpc.ServiceDesc for PromotionService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -532,6 +566,10 @@ var PromotionService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReleasePromotion",
 			Handler:    _PromotionService_ReleasePromotion_Handler,
+		},
+		{
+			MethodName: "ReleasePromotionShop",
+			Handler:    _PromotionService_ReleasePromotionShop_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

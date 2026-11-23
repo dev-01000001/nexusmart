@@ -31,7 +31,21 @@ type fakeOrderClient struct {
 	orderv1.OrderServiceClient
 	lastMD           metadata.MD
 	lastCheckoutReq  *orderv1.CreateCheckoutRequest
+	lastRetryReq     *orderv1.RetryPaymentRequest
 	idempotentReplay bool
+}
+
+func (f *fakeOrderClient) RetryPayment(ctx context.Context, in *orderv1.RetryPaymentRequest, _ ...grpc.CallOption) (*orderv1.RetryPaymentResponse, error) {
+	f.lastMD, _ = metadata.FromOutgoingContext(ctx)
+	f.lastRetryReq = in
+	switch in.GetPaymentId() {
+	case "pay-cancelled", "pay-expired", "pay-succeeded":
+		return nil, status.Error(codes.FailedPrecondition, "order group cannot be retried")
+	}
+	return &orderv1.RetryPaymentResponse{
+		CheckoutGroupId: "grp-1",
+		PaymentId:       "pay-retried",
+	}, nil
 }
 
 func (f *fakeOrderClient) CreateCheckout(ctx context.Context, in *orderv1.CreateCheckoutRequest, _ ...grpc.CallOption) (*orderv1.CreateCheckoutResponse, error) {
@@ -163,6 +177,14 @@ func TestGatewayRouterCheckoutRBACOwnershipAndProxies(t *testing.T) {
 				AmountVnd: 250000,
 				Method:    paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR,
 				Status:    paymentv1.PaymentStatus_PAYMENT_STATUS_SUCCEEDED,
+			},
+			"pay-retried": {
+				PaymentId:    "pay-retried",
+				OrderGroupId: "grp-1",
+				UserId:       "buyer-1",
+				AmountVnd:    250000,
+				Method:       paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR,
+				Status:       paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING,
 			},
 		},
 	}
@@ -353,13 +375,16 @@ func TestGatewayRouterCheckoutRBACOwnershipAndProxies(t *testing.T) {
 		t.Fatalf("expected 409 switching VIETQR -> COD on retry, got %d (%s)", rec.Code, rec.Body.String())
 	}
 
-	// Valid PENDING VIETQR -> VIETQR retry succeeds with SupersedePrevious=true.
+	// Valid PENDING VIETQR -> VIETQR retry delegates to OrderService.RetryPayment and never calls Payment.CreatePayment.
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/payments/pay-1/retry", strings.NewReader(`{"method":"VIETQR"}`))
 	req.Header.Set("Authorization", "Bearer "+buyerTok)
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || paymentMock.lastCreateReq == nil || !paymentMock.lastCreateReq.GetSupersedePrevious() {
-		t.Fatalf("expected 200 and SupersedePrevious=true on valid VIETQR retry, got code=%d req=%+v", rec.Code, paymentMock.lastCreateReq)
+	if rec.Code != http.StatusOK || orderMock.lastRetryReq == nil || orderMock.lastRetryReq.GetPaymentId() != "pay-1" || paymentMock.lastCreateReq != nil {
+		t.Fatalf("expected 200 via OrderService.RetryPayment without CreatePayment, got code=%d retryReq=%+v createReq=%+v", rec.Code, orderMock.lastRetryReq, paymentMock.lastCreateReq)
+	}
+	if !strings.Contains(rec.Body.String(), `"payment_id":"pay-retried"`) {
+		t.Fatalf("expected new payment payload in retry response, got %s", rec.Body.String())
 	}
 }
 

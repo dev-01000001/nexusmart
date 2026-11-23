@@ -28,7 +28,30 @@ export default async function PaymentWaitingPage({ params }: PageProps) {
   }
 
   const currentPath = `/thanh-toan/cho-thanh-toan/${encodeURIComponent(cleanId)}`;
-  await requireUser(currentPath);
+  try {
+    await requireUser(currentPath);
+  } catch (err) {
+    if (err instanceof GatewayError) {
+      return (
+        <Suspense
+          fallback={
+            <div className={shared.page}>
+              <StateView kind="loading" title="Đang tải thông tin thanh toán VietQR..." rows={4} />
+            </div>
+          }
+        >
+          <PaymentWaitingClient
+            initialPayment={null}
+            initialOrders={[]}
+            initialError={err.message}
+            suggestedProducts={[]}
+            shopNameById={{}}
+          />
+        </Suspense>
+      );
+    }
+    throw err;
+  }
 
   let payment: GatewayPayment | null = null;
   let loadError: string | null = null;

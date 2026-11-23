@@ -3735,6 +3735,125 @@ func (x *ListAuditLogsResponse) GetTotal() int64 {
 	return 0
 }
 
+// Records a buyer's COD delivery rejection; idempotent per order_id.
+type RecordCODRejectionRequest struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	UserId  string `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	OrderId string `protobuf:"bytes,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	Reason  string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+}
+
+func (x *RecordCODRejectionRequest) Reset() {
+	*x = RecordCODRejectionRequest{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_nexusmart_user_v1_user_proto_msgTypes[52]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *RecordCODRejectionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecordCODRejectionRequest) ProtoMessage() {}
+
+func (x *RecordCODRejectionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_nexusmart_user_v1_user_proto_msgTypes[52]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecordCODRejectionRequest.ProtoReflect.Descriptor instead.
+func (*RecordCODRejectionRequest) Descriptor() ([]byte, []int) {
+	return file_nexusmart_user_v1_user_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *RecordCODRejectionRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *RecordCODRejectionRequest) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+func (x *RecordCODRejectionRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type RecordCODRejectionResponse struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	CodRejectedCount int32 `protobuf:"varint,1,opt,name=cod_rejected_count,json=codRejectedCount,proto3" json:"cod_rejected_count,omitempty"`
+	AlreadyRecorded  bool  `protobuf:"varint,2,opt,name=already_recorded,json=alreadyRecorded,proto3" json:"already_recorded,omitempty"`
+}
+
+func (x *RecordCODRejectionResponse) Reset() {
+	*x = RecordCODRejectionResponse{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_nexusmart_user_v1_user_proto_msgTypes[53]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *RecordCODRejectionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecordCODRejectionResponse) ProtoMessage() {}
+
+func (x *RecordCODRejectionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_nexusmart_user_v1_user_proto_msgTypes[53]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecordCODRejectionResponse.ProtoReflect.Descriptor instead.
+func (*RecordCODRejectionResponse) Descriptor() ([]byte, []int) {
+	return file_nexusmart_user_v1_user_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *RecordCODRejectionResponse) GetCodRejectedCount() int32 {
+	if x != nil {
+		return x.CodRejectedCount
+	}
+	return 0
+}
+
+func (x *RecordCODRejectionResponse) GetAlreadyRecorded() bool {
+	if x != nil {
+		return x.AlreadyRecorded
+	}
+	return false
+}
+
 var File_nexusmart_user_v1_user_proto protoreflect.FileDescriptor
 
 var file_nexusmart_user_v1_user_proto_rawDesc = []byte{
@@ -4215,7 +4334,21 @@ var file_nexusmart_user_v1_user_proto_rawDesc = []byte{
 	0x75, 0x73, 0x6d, 0x61, 0x72, 0x74, 0x2e, 0x75, 0x73, 0x65, 0x72, 0x2e, 0x76, 0x31, 0x2e, 0x41,
 	0x75, 0x64, 0x69, 0x74, 0x4c, 0x6f, 0x67, 0x52, 0x04, 0x6c, 0x6f, 0x67, 0x73, 0x12, 0x14, 0x0a,
 	0x05, 0x74, 0x6f, 0x74, 0x61, 0x6c, 0x18, 0x02, 0x20, 0x01, 0x28, 0x03, 0x52, 0x05, 0x74, 0x6f,
-	0x74, 0x61, 0x6c, 0x2a, 0x80, 0x01, 0x0a, 0x08, 0x55, 0x73, 0x65, 0x72, 0x52, 0x6f, 0x6c, 0x65,
+	0x74, 0x61, 0x6c, 0x22, 0x67, 0x0a, 0x19, 0x52, 0x65, 0x63, 0x6f, 0x72, 0x64, 0x43, 0x4f, 0x44,
+	0x52, 0x65, 0x6a, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74,
+	0x12, 0x17, 0x0a, 0x07, 0x75, 0x73, 0x65, 0x72, 0x5f, 0x69, 0x64, 0x18, 0x01, 0x20, 0x01, 0x28,
+	0x09, 0x52, 0x06, 0x75, 0x73, 0x65, 0x72, 0x49, 0x64, 0x12, 0x19, 0x0a, 0x08, 0x6f, 0x72, 0x64,
+	0x65, 0x72, 0x5f, 0x69, 0x64, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x07, 0x6f, 0x72, 0x64,
+	0x65, 0x72, 0x49, 0x64, 0x12, 0x16, 0x0a, 0x06, 0x72, 0x65, 0x61, 0x73, 0x6f, 0x6e, 0x18, 0x03,
+	0x20, 0x01, 0x28, 0x09, 0x52, 0x06, 0x72, 0x65, 0x61, 0x73, 0x6f, 0x6e, 0x22, 0x75, 0x0a, 0x1a,
+	0x52, 0x65, 0x63, 0x6f, 0x72, 0x64, 0x43, 0x4f, 0x44, 0x52, 0x65, 0x6a, 0x65, 0x63, 0x74, 0x69,
+	0x6f, 0x6e, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x2c, 0x0a, 0x12, 0x63, 0x6f,
+	0x64, 0x5f, 0x72, 0x65, 0x6a, 0x65, 0x63, 0x74, 0x65, 0x64, 0x5f, 0x63, 0x6f, 0x75, 0x6e, 0x74,
+	0x18, 0x01, 0x20, 0x01, 0x28, 0x05, 0x52, 0x10, 0x63, 0x6f, 0x64, 0x52, 0x65, 0x6a, 0x65, 0x63,
+	0x74, 0x65, 0x64, 0x43, 0x6f, 0x75, 0x6e, 0x74, 0x12, 0x29, 0x0a, 0x10, 0x61, 0x6c, 0x72, 0x65,
+	0x61, 0x64, 0x79, 0x5f, 0x72, 0x65, 0x63, 0x6f, 0x72, 0x64, 0x65, 0x64, 0x18, 0x02, 0x20, 0x01,
+	0x28, 0x08, 0x52, 0x0f, 0x61, 0x6c, 0x72, 0x65, 0x61, 0x64, 0x79, 0x52, 0x65, 0x63, 0x6f, 0x72,
+	0x64, 0x65, 0x64, 0x2a, 0x80, 0x01, 0x0a, 0x08, 0x55, 0x73, 0x65, 0x72, 0x52, 0x6f, 0x6c, 0x65,
 	0x12, 0x19, 0x0a, 0x15, 0x55, 0x53, 0x45, 0x52, 0x5f, 0x52, 0x4f, 0x4c, 0x45, 0x5f, 0x55, 0x4e,
 	0x53, 0x50, 0x45, 0x43, 0x49, 0x46, 0x49, 0x45, 0x44, 0x10, 0x00, 0x12, 0x13, 0x0a, 0x0f, 0x55,
 	0x53, 0x45, 0x52, 0x5f, 0x52, 0x4f, 0x4c, 0x45, 0x5f, 0x42, 0x55, 0x59, 0x45, 0x52, 0x10, 0x01,
@@ -4249,7 +4382,7 @@ var file_nexusmart_user_v1_user_proto_rawDesc = []byte{
 	0x56, 0x49, 0x45, 0x57, 0x5f, 0x44, 0x45, 0x43, 0x49, 0x53, 0x49, 0x4f, 0x4e, 0x5f, 0x52, 0x45,
 	0x4a, 0x45, 0x43, 0x54, 0x10, 0x02, 0x12, 0x20, 0x0a, 0x1c, 0x52, 0x45, 0x56, 0x49, 0x45, 0x57,
 	0x5f, 0x44, 0x45, 0x43, 0x49, 0x53, 0x49, 0x4f, 0x4e, 0x5f, 0x52, 0x45, 0x51, 0x55, 0x45, 0x53,
-	0x54, 0x5f, 0x49, 0x4e, 0x46, 0x4f, 0x10, 0x03, 0x32, 0xa8, 0x12, 0x0a, 0x0b, 0x55, 0x73, 0x65,
+	0x54, 0x5f, 0x49, 0x4e, 0x46, 0x4f, 0x10, 0x03, 0x32, 0x9b, 0x13, 0x0a, 0x0b, 0x55, 0x73, 0x65,
 	0x72, 0x53, 0x65, 0x72, 0x76, 0x69, 0x63, 0x65, 0x12, 0x53, 0x0a, 0x08, 0x52, 0x65, 0x67, 0x69,
 	0x73, 0x74, 0x65, 0x72, 0x12, 0x22, 0x2e, 0x6e, 0x65, 0x78, 0x75, 0x73, 0x6d, 0x61, 0x72, 0x74,
 	0x2e, 0x75, 0x73, 0x65, 0x72, 0x2e, 0x76, 0x31, 0x2e, 0x52, 0x65, 0x67, 0x69, 0x73, 0x74, 0x65,
@@ -4396,11 +4529,18 @@ var file_nexusmart_user_v1_user_proto_rawDesc = []byte{
 	0x67, 0x73, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x28, 0x2e, 0x6e, 0x65, 0x78, 0x75,
 	0x73, 0x6d, 0x61, 0x72, 0x74, 0x2e, 0x75, 0x73, 0x65, 0x72, 0x2e, 0x76, 0x31, 0x2e, 0x4c, 0x69,
 	0x73, 0x74, 0x41, 0x75, 0x64, 0x69, 0x74, 0x4c, 0x6f, 0x67, 0x73, 0x52, 0x65, 0x73, 0x70, 0x6f,
-	0x6e, 0x73, 0x65, 0x42, 0x3b, 0x5a, 0x39, 0x67, 0x69, 0x74, 0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f,
-	0x6d, 0x2f, 0x6e, 0x65, 0x78, 0x75, 0x73, 0x6d, 0x61, 0x72, 0x74, 0x2f, 0x63, 0x6f, 0x72, 0x65,
-	0x2f, 0x67, 0x65, 0x6e, 0x2f, 0x67, 0x6f, 0x2f, 0x6e, 0x65, 0x78, 0x75, 0x73, 0x6d, 0x61, 0x72,
-	0x74, 0x2f, 0x75, 0x73, 0x65, 0x72, 0x2f, 0x76, 0x31, 0x3b, 0x75, 0x73, 0x65, 0x72, 0x76, 0x31,
-	0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
+	0x6e, 0x73, 0x65, 0x12, 0x71, 0x0a, 0x12, 0x52, 0x65, 0x63, 0x6f, 0x72, 0x64, 0x43, 0x4f, 0x44,
+	0x52, 0x65, 0x6a, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x12, 0x2c, 0x2e, 0x6e, 0x65, 0x78, 0x75,
+	0x73, 0x6d, 0x61, 0x72, 0x74, 0x2e, 0x75, 0x73, 0x65, 0x72, 0x2e, 0x76, 0x31, 0x2e, 0x52, 0x65,
+	0x63, 0x6f, 0x72, 0x64, 0x43, 0x4f, 0x44, 0x52, 0x65, 0x6a, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e,
+	0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x2d, 0x2e, 0x6e, 0x65, 0x78, 0x75, 0x73, 0x6d,
+	0x61, 0x72, 0x74, 0x2e, 0x75, 0x73, 0x65, 0x72, 0x2e, 0x76, 0x31, 0x2e, 0x52, 0x65, 0x63, 0x6f,
+	0x72, 0x64, 0x43, 0x4f, 0x44, 0x52, 0x65, 0x6a, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x52, 0x65,
+	0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x42, 0x3b, 0x5a, 0x39, 0x67, 0x69, 0x74, 0x68, 0x75, 0x62,
+	0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x6e, 0x65, 0x78, 0x75, 0x73, 0x6d, 0x61, 0x72, 0x74, 0x2f, 0x63,
+	0x6f, 0x72, 0x65, 0x2f, 0x67, 0x65, 0x6e, 0x2f, 0x67, 0x6f, 0x2f, 0x6e, 0x65, 0x78, 0x75, 0x73,
+	0x6d, 0x61, 0x72, 0x74, 0x2f, 0x75, 0x73, 0x65, 0x72, 0x2f, 0x76, 0x31, 0x3b, 0x75, 0x73, 0x65,
+	0x72, 0x76, 0x31, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
 }
 
 var (
@@ -4416,7 +4556,7 @@ func file_nexusmart_user_v1_user_proto_rawDescGZIP() []byte {
 }
 
 var file_nexusmart_user_v1_user_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_nexusmart_user_v1_user_proto_msgTypes = make([]protoimpl.MessageInfo, 52)
+var file_nexusmart_user_v1_user_proto_msgTypes = make([]protoimpl.MessageInfo, 54)
 var file_nexusmart_user_v1_user_proto_goTypes = []any{
 	(UserRole)(0),                         // 0: nexusmart.user.v1.UserRole
 	(UserStatus)(0),                       // 1: nexusmart.user.v1.UserStatus
@@ -4474,19 +4614,21 @@ var file_nexusmart_user_v1_user_proto_goTypes = []any{
 	(*WriteAuditLogResponse)(nil),         // 53: nexusmart.user.v1.WriteAuditLogResponse
 	(*ListAuditLogsRequest)(nil),          // 54: nexusmart.user.v1.ListAuditLogsRequest
 	(*ListAuditLogsResponse)(nil),         // 55: nexusmart.user.v1.ListAuditLogsResponse
-	(*timestamppb.Timestamp)(nil),         // 56: google.protobuf.Timestamp
+	(*RecordCODRejectionRequest)(nil),     // 56: nexusmart.user.v1.RecordCODRejectionRequest
+	(*RecordCODRejectionResponse)(nil),    // 57: nexusmart.user.v1.RecordCODRejectionResponse
+	(*timestamppb.Timestamp)(nil),         // 58: google.protobuf.Timestamp
 }
 var file_nexusmart_user_v1_user_proto_depIdxs = []int32{
 	0,  // 0: nexusmart.user.v1.User.role:type_name -> nexusmart.user.v1.UserRole
 	1,  // 1: nexusmart.user.v1.User.status:type_name -> nexusmart.user.v1.UserStatus
-	56, // 2: nexusmart.user.v1.User.created_at:type_name -> google.protobuf.Timestamp
-	56, // 3: nexusmart.user.v1.User.updated_at:type_name -> google.protobuf.Timestamp
+	58, // 2: nexusmart.user.v1.User.created_at:type_name -> google.protobuf.Timestamp
+	58, // 3: nexusmart.user.v1.User.updated_at:type_name -> google.protobuf.Timestamp
 	2,  // 4: nexusmart.user.v1.Shop.status:type_name -> nexusmart.user.v1.ShopStatus
-	56, // 5: nexusmart.user.v1.Shop.created_at:type_name -> google.protobuf.Timestamp
-	56, // 6: nexusmart.user.v1.Shop.updated_at:type_name -> google.protobuf.Timestamp
-	56, // 7: nexusmart.user.v1.Address.created_at:type_name -> google.protobuf.Timestamp
-	56, // 8: nexusmart.user.v1.Address.updated_at:type_name -> google.protobuf.Timestamp
-	56, // 9: nexusmart.user.v1.AuditLog.created_at:type_name -> google.protobuf.Timestamp
+	58, // 5: nexusmart.user.v1.Shop.created_at:type_name -> google.protobuf.Timestamp
+	58, // 6: nexusmart.user.v1.Shop.updated_at:type_name -> google.protobuf.Timestamp
+	58, // 7: nexusmart.user.v1.Address.created_at:type_name -> google.protobuf.Timestamp
+	58, // 8: nexusmart.user.v1.Address.updated_at:type_name -> google.protobuf.Timestamp
+	58, // 9: nexusmart.user.v1.AuditLog.created_at:type_name -> google.protobuf.Timestamp
 	4,  // 10: nexusmart.user.v1.VerifyOTPResponse.user:type_name -> nexusmart.user.v1.User
 	4,  // 11: nexusmart.user.v1.LoginResponse.user:type_name -> nexusmart.user.v1.User
 	4,  // 12: nexusmart.user.v1.GetProfileResponse.user:type_name -> nexusmart.user.v1.User
@@ -4512,8 +4654,8 @@ var file_nexusmart_user_v1_user_proto_depIdxs = []int32{
 	6,  // 32: nexusmart.user.v1.GetAddressResponse.address:type_name -> nexusmart.user.v1.Address
 	6,  // 33: nexusmart.user.v1.UpdateAddressResponse.address:type_name -> nexusmart.user.v1.Address
 	7,  // 34: nexusmart.user.v1.WriteAuditLogResponse.audit_log:type_name -> nexusmart.user.v1.AuditLog
-	56, // 35: nexusmart.user.v1.ListAuditLogsRequest.from_time:type_name -> google.protobuf.Timestamp
-	56, // 36: nexusmart.user.v1.ListAuditLogsRequest.to_time:type_name -> google.protobuf.Timestamp
+	58, // 35: nexusmart.user.v1.ListAuditLogsRequest.from_time:type_name -> google.protobuf.Timestamp
+	58, // 36: nexusmart.user.v1.ListAuditLogsRequest.to_time:type_name -> google.protobuf.Timestamp
 	7,  // 37: nexusmart.user.v1.ListAuditLogsResponse.logs:type_name -> nexusmart.user.v1.AuditLog
 	8,  // 38: nexusmart.user.v1.UserService.Register:input_type -> nexusmart.user.v1.RegisterRequest
 	10, // 39: nexusmart.user.v1.UserService.VerifyOTP:input_type -> nexusmart.user.v1.VerifyOTPRequest
@@ -4539,32 +4681,34 @@ var file_nexusmart_user_v1_user_proto_depIdxs = []int32{
 	50, // 59: nexusmart.user.v1.UserService.DeleteAddress:input_type -> nexusmart.user.v1.DeleteAddressRequest
 	52, // 60: nexusmart.user.v1.UserService.WriteAuditLog:input_type -> nexusmart.user.v1.WriteAuditLogRequest
 	54, // 61: nexusmart.user.v1.UserService.ListAuditLogs:input_type -> nexusmart.user.v1.ListAuditLogsRequest
-	9,  // 62: nexusmart.user.v1.UserService.Register:output_type -> nexusmart.user.v1.RegisterResponse
-	11, // 63: nexusmart.user.v1.UserService.VerifyOTP:output_type -> nexusmart.user.v1.VerifyOTPResponse
-	13, // 64: nexusmart.user.v1.UserService.ResendOTP:output_type -> nexusmart.user.v1.ResendOTPResponse
-	15, // 65: nexusmart.user.v1.UserService.Login:output_type -> nexusmart.user.v1.LoginResponse
-	17, // 66: nexusmart.user.v1.UserService.RefreshToken:output_type -> nexusmart.user.v1.RefreshTokenResponse
-	19, // 67: nexusmart.user.v1.UserService.Logout:output_type -> nexusmart.user.v1.LogoutResponse
-	21, // 68: nexusmart.user.v1.UserService.GetProfile:output_type -> nexusmart.user.v1.GetProfileResponse
-	23, // 69: nexusmart.user.v1.UserService.UpdateProfile:output_type -> nexusmart.user.v1.UpdateProfileResponse
-	25, // 70: nexusmart.user.v1.UserService.ValidateUser:output_type -> nexusmart.user.v1.ValidateUserResponse
-	27, // 71: nexusmart.user.v1.UserService.AdminListUsers:output_type -> nexusmart.user.v1.AdminListUsersResponse
-	29, // 72: nexusmart.user.v1.UserService.AdminUpdateUserStatus:output_type -> nexusmart.user.v1.AdminUpdateUserStatusResponse
-	31, // 73: nexusmart.user.v1.UserService.AdminUpdateUserRole:output_type -> nexusmart.user.v1.AdminUpdateUserRoleResponse
-	33, // 74: nexusmart.user.v1.UserService.RegisterShop:output_type -> nexusmart.user.v1.RegisterShopResponse
-	35, // 75: nexusmart.user.v1.UserService.GetShop:output_type -> nexusmart.user.v1.GetShopResponse
-	37, // 76: nexusmart.user.v1.UserService.ListPublicShops:output_type -> nexusmart.user.v1.ListPublicShopsResponse
-	39, // 77: nexusmart.user.v1.UserService.AdminListShops:output_type -> nexusmart.user.v1.AdminListShopsResponse
-	41, // 78: nexusmart.user.v1.UserService.AdminReviewShop:output_type -> nexusmart.user.v1.AdminReviewShopResponse
-	43, // 79: nexusmart.user.v1.UserService.CreateAddress:output_type -> nexusmart.user.v1.CreateAddressResponse
-	45, // 80: nexusmart.user.v1.UserService.ListAddresses:output_type -> nexusmart.user.v1.ListAddressesResponse
-	47, // 81: nexusmart.user.v1.UserService.GetAddress:output_type -> nexusmart.user.v1.GetAddressResponse
-	49, // 82: nexusmart.user.v1.UserService.UpdateAddress:output_type -> nexusmart.user.v1.UpdateAddressResponse
-	51, // 83: nexusmart.user.v1.UserService.DeleteAddress:output_type -> nexusmart.user.v1.DeleteAddressResponse
-	53, // 84: nexusmart.user.v1.UserService.WriteAuditLog:output_type -> nexusmart.user.v1.WriteAuditLogResponse
-	55, // 85: nexusmart.user.v1.UserService.ListAuditLogs:output_type -> nexusmart.user.v1.ListAuditLogsResponse
-	62, // [62:86] is the sub-list for method output_type
-	38, // [38:62] is the sub-list for method input_type
+	56, // 62: nexusmart.user.v1.UserService.RecordCODRejection:input_type -> nexusmart.user.v1.RecordCODRejectionRequest
+	9,  // 63: nexusmart.user.v1.UserService.Register:output_type -> nexusmart.user.v1.RegisterResponse
+	11, // 64: nexusmart.user.v1.UserService.VerifyOTP:output_type -> nexusmart.user.v1.VerifyOTPResponse
+	13, // 65: nexusmart.user.v1.UserService.ResendOTP:output_type -> nexusmart.user.v1.ResendOTPResponse
+	15, // 66: nexusmart.user.v1.UserService.Login:output_type -> nexusmart.user.v1.LoginResponse
+	17, // 67: nexusmart.user.v1.UserService.RefreshToken:output_type -> nexusmart.user.v1.RefreshTokenResponse
+	19, // 68: nexusmart.user.v1.UserService.Logout:output_type -> nexusmart.user.v1.LogoutResponse
+	21, // 69: nexusmart.user.v1.UserService.GetProfile:output_type -> nexusmart.user.v1.GetProfileResponse
+	23, // 70: nexusmart.user.v1.UserService.UpdateProfile:output_type -> nexusmart.user.v1.UpdateProfileResponse
+	25, // 71: nexusmart.user.v1.UserService.ValidateUser:output_type -> nexusmart.user.v1.ValidateUserResponse
+	27, // 72: nexusmart.user.v1.UserService.AdminListUsers:output_type -> nexusmart.user.v1.AdminListUsersResponse
+	29, // 73: nexusmart.user.v1.UserService.AdminUpdateUserStatus:output_type -> nexusmart.user.v1.AdminUpdateUserStatusResponse
+	31, // 74: nexusmart.user.v1.UserService.AdminUpdateUserRole:output_type -> nexusmart.user.v1.AdminUpdateUserRoleResponse
+	33, // 75: nexusmart.user.v1.UserService.RegisterShop:output_type -> nexusmart.user.v1.RegisterShopResponse
+	35, // 76: nexusmart.user.v1.UserService.GetShop:output_type -> nexusmart.user.v1.GetShopResponse
+	37, // 77: nexusmart.user.v1.UserService.ListPublicShops:output_type -> nexusmart.user.v1.ListPublicShopsResponse
+	39, // 78: nexusmart.user.v1.UserService.AdminListShops:output_type -> nexusmart.user.v1.AdminListShopsResponse
+	41, // 79: nexusmart.user.v1.UserService.AdminReviewShop:output_type -> nexusmart.user.v1.AdminReviewShopResponse
+	43, // 80: nexusmart.user.v1.UserService.CreateAddress:output_type -> nexusmart.user.v1.CreateAddressResponse
+	45, // 81: nexusmart.user.v1.UserService.ListAddresses:output_type -> nexusmart.user.v1.ListAddressesResponse
+	47, // 82: nexusmart.user.v1.UserService.GetAddress:output_type -> nexusmart.user.v1.GetAddressResponse
+	49, // 83: nexusmart.user.v1.UserService.UpdateAddress:output_type -> nexusmart.user.v1.UpdateAddressResponse
+	51, // 84: nexusmart.user.v1.UserService.DeleteAddress:output_type -> nexusmart.user.v1.DeleteAddressResponse
+	53, // 85: nexusmart.user.v1.UserService.WriteAuditLog:output_type -> nexusmart.user.v1.WriteAuditLogResponse
+	55, // 86: nexusmart.user.v1.UserService.ListAuditLogs:output_type -> nexusmart.user.v1.ListAuditLogsResponse
+	57, // 87: nexusmart.user.v1.UserService.RecordCODRejection:output_type -> nexusmart.user.v1.RecordCODRejectionResponse
+	63, // [63:88] is the sub-list for method output_type
+	38, // [38:63] is the sub-list for method input_type
 	38, // [38:38] is the sub-list for extension type_name
 	38, // [38:38] is the sub-list for extension extendee
 	0,  // [0:38] is the sub-list for field type_name
@@ -5200,6 +5344,30 @@ func file_nexusmart_user_v1_user_proto_init() {
 				return nil
 			}
 		}
+		file_nexusmart_user_v1_user_proto_msgTypes[52].Exporter = func(v any, i int) any {
+			switch v := v.(*RecordCODRejectionRequest); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_nexusmart_user_v1_user_proto_msgTypes[53].Exporter = func(v any, i int) any {
+			switch v := v.(*RecordCODRejectionResponse); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -5207,7 +5375,7 @@ func file_nexusmart_user_v1_user_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_nexusmart_user_v1_user_proto_rawDesc,
 			NumEnums:      4,
-			NumMessages:   52,
+			NumMessages:   54,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

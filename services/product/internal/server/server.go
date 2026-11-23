@@ -339,7 +339,7 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 }
 
 func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProductRequest) (*productv1.UpdateProductResponse, error) {
-	shopID, _, isAdmin, err := resolveSellerOrAdminShop(ctx, req.GetShopId())
+	shopID, claims, isAdmin, err := resolveSellerOrAdminShop(ctx, req.GetShopId())
 	if err != nil {
 		return nil, err
 	}
@@ -418,32 +418,83 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
 		if len(skuInputs) > 0 {
-			existingSKUs, listErr := q.ListSKUsByProductIDs(ctx, []string{id})
+			allSKUs, listErr := q.ListAllSKUsByProductID(ctx, id)
 			if listErr != nil {
 				return listErr
 			}
-			byID := make(map[string]store.SKU, len(existingSKUs))
-			for _, sk := range existingSKUs {
-				byID[sk.ID] = sk
+			activeByID := make(map[string]store.SKU, len(allSKUs))
+			inactiveByCode := make(map[string]store.SKU)
+			for _, sk := range allSKUs {
+				if sk.Status == store.SKUStatusInactive {
+					inactiveByCode[sk.SKUCode] = sk
+				} else {
+					activeByID[sk.ID] = sk
+				}
 			}
 
 			keptIDs := make(map[string]bool, len(skuInputs))
+			for _, in := range skuInputs {
+				if in.ID != "" {
+					if _, ok := activeByID[in.ID]; !ok {
+						return status.Errorf(codes.NotFound, "sku %s does not belong to product %s", in.ID, id)
+					}
+					keptIDs[in.ID] = true
+				}
+			}
+
+			toDeactivate := make([]string, 0)
+			for oldID := range activeByID {
+				if !keptIDs[oldID] {
+					toDeactivate = append(toDeactivate, oldID)
+				}
+			}
+			sort.Strings(toDeactivate)
+			for _, oldID := range toDeactivate {
+				if deactErr := q.DeactivateSKU(ctx, oldID); deactErr != nil {
+					return deactErr
+				}
+				oldSKU := activeByID[oldID]
+				oldSKU.Status = store.SKUStatusInactive
+				inactiveByCode[oldSKU.SKUCode] = oldSKU
+			}
+
+			actorID := claims.UserID()
 			for _, in := range skuInputs {
 				skuStatus := store.SKUStatusActive
 				if in.Stock == 0 {
 					skuStatus = store.SKUStatusOutOfStock
 				}
 				if in.ID != "" {
-					cur, ok := byID[in.ID]
-					if !ok {
-						return status.Errorf(codes.NotFound, "sku %s does not belong to product %s", in.ID, id)
+					cur := activeByID[in.ID]
+					if in.Stock != cur.Stock {
+						if _, stockErr := applySKUStockChange(ctx, q, cur, in.Stock, in.ExpectedVersion, actorID, "seller product update"); stockErr != nil {
+							return stockErr
+						}
+					} else if in.ExpectedVersion > 0 && in.ExpectedVersion != cur.Version {
+						return store.ErrVersionConflict
 					}
-					if in.Stock < cur.ReservedStock {
-						return status.Errorf(codes.FailedPrecondition, "sku %s stock (%d) cannot be less than reserved stock (%d)", cur.ID, in.Stock, cur.ReservedStock)
-					}
-					keptIDs[cur.ID] = true
-					_, updErr := q.UpdateSKUDetails(ctx, store.SKU{
+					if _, updErr := q.UpdateSKUMetadata(ctx, store.SKU{
 						ID:          cur.ID,
+						ProductID:   id,
+						SKUCode:     in.SKUCode,
+						Name:        in.Name,
+						Attributes:  in.Attributes,
+						PriceVND:    in.PriceVND,
+						WeightGrams: in.WeightGrams,
+						ImageURL:    in.ImageURL,
+					}); updErr != nil {
+						return updErr
+					}
+				} else if old, ok := inactiveByCode[in.SKUCode]; ok {
+					if in.Stock < old.ReservedStock {
+						return store.ErrInvalidStock
+					}
+					ver := in.ExpectedVersion
+					if ver <= 0 {
+						ver = old.Version
+					}
+					upd, reactErr := q.ReactivateSKUOptimistic(ctx, store.SKU{
+						ID:          old.ID,
 						ProductID:   id,
 						SKUCode:     in.SKUCode,
 						Name:        in.Name,
@@ -452,16 +503,30 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 						Stock:       in.Stock,
 						WeightGrams: in.WeightGrams,
 						ImageURL:    in.ImageURL,
-						Status:      skuStatus,
-					})
-					if updErr != nil {
-						return updErr
+					}, ver)
+					if reactErr != nil {
+						return reactErr
 					}
+					if in.Stock != old.Stock {
+						if histErr := q.InsertStockHistory(ctx, store.StockHistoryEntry{
+							ID:             uuid.NewString(),
+							SKUID:          old.ID,
+							ChangeType:     "MANUAL_UPDATE",
+							Delta:          in.Stock - old.Stock,
+							StockBefore:    old.Stock,
+							StockAfter:     upd.Stock,
+							ReservedBefore: old.ReservedStock,
+							ReservedAfter:  upd.ReservedStock,
+							ActorID:        actorID,
+							Reason:         "seller product update",
+						}); histErr != nil {
+							return histErr
+						}
+					}
+					delete(inactiveByCode, in.SKUCode)
 				} else {
-					newID := uuid.NewString()
-					keptIDs[newID] = true
 					_, createErr := q.CreateSKU(ctx, store.SKU{
-						ID:                newID,
+						ID:                uuid.NewString(),
 						ProductID:         id,
 						ShopID:            existing.ShopID,
 						ProductName:       name,
@@ -482,13 +547,20 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 					}
 				}
 			}
+		}
 
-			for oldID := range byID {
-				if !keptIDs[oldID] {
-					if deactErr := q.DeactivateSKU(ctx, oldID); deactErr != nil {
-						return deactErr
-					}
+		if nextStatus == store.ProductStatusApproved || nextStatus == store.ProductStatusOutOfStock {
+			inStockCount, cntErr := q.CountActiveInStockSKUsByProduct(ctx, id)
+			if cntErr != nil {
+				return cntErr
+			}
+			if nextStatus == store.ProductStatusApproved && inStockCount == 0 {
+				if existing.Status == store.ProductStatusOutOfStock && req.GetStatus() == productv1.ProductStatus_PRODUCT_STATUS_APPROVED && !isAdmin {
+					return status.Error(codes.FailedPrecondition, "cannot set product status to APPROVED when all SKUs have zero stock")
 				}
+				nextStatus = store.ProductStatusOutOfStock
+			} else if nextStatus == store.ProductStatusOutOfStock && inStockCount > 0 {
+				nextStatus = store.ProductStatusApproved
 			}
 		}
 
@@ -534,10 +606,20 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 		if _, ok := status.FromError(err); ok {
 			return nil, err
 		}
-		if errors.Is(err, store.ErrAlreadyExists) {
+		switch {
+		case errors.Is(err, store.ErrAlreadyExists):
 			return nil, status.Error(codes.AlreadyExists, "duplicate sku_code within product")
+		case errors.Is(err, store.ErrVersionConflict):
+			return nil, status.Error(codes.Aborted, "STOCK_VERSION_CONFLICT: sku was concurrently modified; please reload and retry")
+		case errors.Is(err, store.ErrInvalidStock):
+			return nil, status.Error(codes.FailedPrecondition, "new_stock cannot be less than reserved_stock")
+		case errors.Is(err, store.ErrSKUInactive):
+			return nil, status.Error(codes.FailedPrecondition, "cannot update stock of inactive SKU")
+		case errors.Is(err, store.ErrNotFound):
+			return nil, status.Error(codes.NotFound, "sku not found")
+		default:
+			return nil, status.Errorf(codes.Internal, "update product: %v", err)
 		}
-		return nil, status.Errorf(codes.Internal, "update product: %v", err)
 	}
 
 	return &productv1.UpdateProductResponse{
@@ -602,6 +684,9 @@ func (s *Server) AdminReviewProduct(ctx context.Context, req *productv1.AdminRev
 	case productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_REJECT:
 		targetStatus = store.ProductStatusRejected
 		reason = strings.TrimSpace(req.GetReason())
+		if reason == "" {
+			return nil, status.Error(codes.InvalidArgument, "rejection reason is required")
+		}
 	default:
 		return nil, status.Error(codes.InvalidArgument, "review decision must be APPROVE or REJECT")
 	}
@@ -795,28 +880,10 @@ func (s *Server) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequ
 		if !isAdmin && cur.ShopID != shopID {
 			return status.Error(codes.PermissionDenied, "cannot update stock of another shop's SKU")
 		}
-		if req.GetNewStock() < cur.ReservedStock {
-			return store.ErrInvalidStock
-		}
 
-		upd, optErr := q.UpdateSKUStockOptimistic(ctx, skuID, req.GetNewStock(), req.GetExpectedVersion())
-		if optErr != nil {
-			return optErr
-		}
-
-		if histErr := q.InsertStockHistory(ctx, store.StockHistoryEntry{
-			ID:             uuid.NewString(),
-			SKUID:          skuID,
-			ChangeType:     "MANUAL_UPDATE",
-			Delta:          req.GetNewStock() - cur.Stock,
-			StockBefore:    cur.Stock,
-			StockAfter:     upd.Stock,
-			ReservedBefore: cur.ReservedStock,
-			ReservedAfter:  upd.ReservedStock,
-			ActorID:        claims.UserID(),
-			Reason:         "seller manual stock update",
-		}); histErr != nil {
-			return histErr
+		upd, stockErr := applySKUStockChange(ctx, q, cur, req.GetNewStock(), req.GetExpectedVersion(), claims.UserID(), "seller manual stock update")
+		if stockErr != nil {
+			return stockErr
 		}
 
 		if syncErr := syncProductStockStatus(ctx, q, cur.ProductID, cur.ProductStatus, upd.Stock); syncErr != nil {
@@ -842,6 +909,8 @@ func (s *Server) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequ
 			return nil, status.Error(codes.Aborted, "STOCK_VERSION_CONFLICT: sku was concurrently modified; please reload and retry")
 		case errors.Is(err, store.ErrInvalidStock):
 			return nil, status.Error(codes.FailedPrecondition, "new_stock cannot be less than reserved_stock")
+		case errors.Is(err, store.ErrSKUInactive):
+			return nil, status.Error(codes.FailedPrecondition, "cannot update stock of inactive SKU")
 		default:
 			return nil, status.Errorf(codes.Internal, "update stock: %v", err)
 		}
@@ -1356,14 +1425,15 @@ func resolveSellerOrAdminShop(ctx context.Context, reqShopID string) (string, *a
 }
 
 type normalizedSKUInput struct {
-	ID          string
-	SKUCode     string
-	Name        string
-	Attributes  map[string]string
-	PriceVND    int64
-	Stock       int32
-	WeightGrams int32
-	ImageURL    string
+	ID              string
+	SKUCode         string
+	Name            string
+	Attributes      map[string]string
+	PriceVND        int64
+	Stock           int32
+	ExpectedVersion int64
+	WeightGrams     int32
+	ImageURL        string
 }
 
 func validateSKUInputs(in []*productv1.SKUInput) ([]normalizedSKUInput, int64, int64, error) {
@@ -1484,6 +1554,48 @@ func normalizeAndSortReservationItems(raw []*productv1.StockReservationItem) ([]
 	return out, nil
 }
 
+// applySKUStockChange routes SKU stock changes through optimistic locking and stock_history.
+// If expectedVersion <= 0, it falls back to cur.Version read inside the same transaction.
+func applySKUStockChange(
+	ctx context.Context,
+	q store.Queries,
+	cur store.SKU,
+	newStock int32,
+	expectedVersion int64,
+	actorID string,
+	reason string,
+) (store.SKU, error) {
+	if cur.Status == store.SKUStatusInactive {
+		return store.SKU{}, store.ErrSKUInactive
+	}
+	if newStock < cur.ReservedStock {
+		return store.SKU{}, store.ErrInvalidStock
+	}
+	ver := expectedVersion
+	if ver <= 0 {
+		ver = cur.Version
+	}
+	upd, err := q.UpdateSKUStockOptimistic(ctx, cur.ID, newStock, ver)
+	if err != nil {
+		return store.SKU{}, err
+	}
+	if histErr := q.InsertStockHistory(ctx, store.StockHistoryEntry{
+		ID:             uuid.NewString(),
+		SKUID:          cur.ID,
+		ChangeType:     "MANUAL_UPDATE",
+		Delta:          newStock - cur.Stock,
+		StockBefore:    cur.Stock,
+		StockAfter:     upd.Stock,
+		ReservedBefore: cur.ReservedStock,
+		ReservedAfter:  upd.ReservedStock,
+		ActorID:        actorID,
+		Reason:         reason,
+	}); histErr != nil {
+		return store.SKU{}, histErr
+	}
+	return upd, nil
+}
+
 func syncProductStockStatus(ctx context.Context, q store.Queries, productID, currentProdStatus string, latestSKUStock int32) error {
 	if currentProdStatus == store.ProductStatusApproved {
 		inStockCount, err := q.CountActiveInStockSKUsByProduct(ctx, productID)
@@ -1540,7 +1652,7 @@ func normalizeSlug(input string) string {
 	var b strings.Builder
 	prevDash := false
 	for _, r := range strings.ToLower(strings.TrimSpace(input)) {
-		r = foldVietnameseRune(r)
+		r = store.FoldVietnameseRune(r)
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
 			b.WriteRune(r)
 			prevDash = false
@@ -1552,27 +1664,6 @@ func normalizeSlug(input string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
-}
-
-func foldVietnameseRune(r rune) rune {
-	switch r {
-	case 'á', 'à', 'ả', 'ã', 'ạ', 'ă', 'ắ', 'ằ', 'ẳ', 'ẵ', 'ặ', 'â', 'ấ', 'ầ', 'ẩ', 'ẫ', 'ậ':
-		return 'a'
-	case 'đ':
-		return 'd'
-	case 'é', 'è', 'ẻ', 'ẽ', 'ẹ', 'ê', 'ế', 'ề', 'ể', 'ễ', 'ệ':
-		return 'e'
-	case 'í', 'ì', 'ỉ', 'ĩ', 'ị':
-		return 'i'
-	case 'ó', 'ò', 'ỏ', 'õ', 'ọ', 'ô', 'ố', 'ồ', 'ổ', 'ỗ', 'ộ', 'ơ', 'ớ', 'ờ', 'ở', 'ỡ', 'ợ':
-		return 'o'
-	case 'ú', 'ù', 'ủ', 'ũ', 'ụ', 'ư', 'ứ', 'ừ', 'ử', 'ữ', 'ự':
-		return 'u'
-	case 'ý', 'ỳ', 'ỷ', 'ỹ', 'ỵ':
-		return 'y'
-	default:
-		return r
-	}
 }
 
 func toProtoCategory(c store.Category) *productv1.Category {

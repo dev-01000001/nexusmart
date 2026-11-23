@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/nexusmart/core/services/shipping/internal/carrier"
@@ -41,21 +42,22 @@ func NewRedisQuoteCache(client *redis.Client, ttl time.Duration, logger *slog.Lo
 }
 
 func quoteCacheKey(req carrier.FeeRequest) string {
-	// Bucket weight in 100g increments to maximize cache hit ratio for identical routes.
-	weight := req.WeightGrams
-	if weight <= 0 {
-		weight = 500
+	fromProv := strings.TrimSpace(req.FromProvinceCode)
+	toProv := strings.TrimSpace(req.ToProvinceCode)
+	if fromProv == "" || toProv == "" || req.WeightGrams <= 0 {
+		return ""
 	}
-	weightBucket := ((weight + 99) / 100) * 100
+	// Bucket weight in 100g increments to maximize cache hit ratio for identical routes.
+	weightBucket := ((req.WeightGrams + 99) / 100) * 100
 	codFlag := 0
 	if req.CODAmountVND > 0 {
 		codFlag = 1
 	}
 	return fmt.Sprintf("shipping:quotes:v1:%s:%s:%s:%s:%d:%d",
-		req.FromProvinceCode,
-		req.FromWardCode,
-		req.ToProvinceCode,
-		req.ToWardCode,
+		fromProv,
+		strings.TrimSpace(req.FromWardCode),
+		toProv,
+		strings.TrimSpace(req.ToWardCode),
 		weightBucket,
 		codFlag,
 	)
@@ -66,7 +68,11 @@ func (c *RedisQuoteCache) Get(ctx context.Context, req carrier.FeeRequest) ([]ca
 	if c == nil || c.client == nil {
 		return nil, false
 	}
-	raw, err := c.client.Get(ctx, quoteCacheKey(req)).Bytes()
+	key := quoteCacheKey(req)
+	if key == "" {
+		return nil, false
+	}
+	raw, err := c.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if !errors.Is(err, redis.Nil) {
 			c.logger.WarnContext(ctx, "redis quote cache get failed", slog.String("error", err.Error()))
@@ -89,11 +95,15 @@ func (c *RedisQuoteCache) Set(ctx context.Context, req carrier.FeeRequest, quote
 	if c == nil || c.client == nil || len(quotes) == 0 {
 		return
 	}
+	key := quoteCacheKey(req)
+	if key == "" {
+		return
+	}
 	raw, err := json.Marshal(quotes)
 	if err != nil {
 		return
 	}
-	if err := c.client.Set(ctx, quoteCacheKey(req), raw, c.ttl).Err(); err != nil {
+	if err := c.client.Set(ctx, key, raw, c.ttl).Err(); err != nil {
 		c.logger.WarnContext(ctx, "redis quote cache set failed", slog.String("error", err.Error()))
 	}
 }

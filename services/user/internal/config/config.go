@@ -25,6 +25,7 @@ type Config struct {
 	LoginLockoutDuration   time.Duration
 	AdminBootstrapEmail    string
 	AdminBootstrapPassword string
+	ShippingGRPCAddr       string
 	OTLPEndpoint           string
 	OTLPInsecure           bool
 	LogLevel               string
@@ -50,6 +51,7 @@ func Load() Config {
 		LoginLockoutDuration:   env.EnvDuration("LOGIN_LOCKOUT_DURATION", 15*time.Minute),
 		AdminBootstrapEmail:    env.EnvString("ADMIN_BOOTSTRAP_EMAIL", "admin@nexusmart.local"),
 		AdminBootstrapPassword: env.EnvString("ADMIN_BOOTSTRAP_PASSWORD", "AdminDevPassword123!"),
+		ShippingGRPCAddr:       env.EnvString("SHIPPING_GRPC_ADDR", "localhost:50057"),
 		OTLPEndpoint:           env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		OTLPInsecure:           env.EnvBool("OTEL_EXPORTER_OTLP_INSECURE", true),
 		LogLevel:               env.EnvString("LOG_LEVEL", "info"),

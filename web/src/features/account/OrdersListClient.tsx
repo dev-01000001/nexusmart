@@ -1,10 +1,16 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { PRODUCTS } from "@/data";
-import type { GatewayOrder, GatewayOrderStatus, GatewayPublicShop } from "@/lib/gateway-types";
+import type {
+  GatewayOrder,
+  GatewayOrderStatus,
+  GatewayPublicShop,
+  PaginatedResponse,
+} from "@/lib/gateway-types";
+import { api, getErrorMessage } from "@/lib/api";
 import { formatDateTimeVi, formatVnd } from "@/lib/format";
 import { useCart } from "@/context/CartContext";
 import { useMockStore } from "@/mock/MockStoreContext";
@@ -18,15 +24,19 @@ import type { OrderVisualLookup } from "./types";
 import {
   ORDER_FILTER_TABS,
   type BadgeTone,
+  canCancelOrder,
+  formatUnpaidGroupCancelWarning,
   getCarrierLabel,
   getOrderStatusInfo,
   getPaymentMethodLabel,
   getPaymentStatusInfo,
   needsVietQrPayment,
+  resolveUnpaidVietQrCancelGroup,
 } from "./orderMeta";
 
 export interface OrdersListClientProps {
   orders: GatewayOrder[];
+  pendingOrders?: GatewayOrder[];
   total: number;
   allOrdersTotal: number;
   page: number;
@@ -55,6 +65,7 @@ function buildOrdersHref(status: string, page: number): string {
 
 export function OrdersListClient({
   orders,
+  pendingOrders = [],
   total,
   allOrdersTotal,
   page,
@@ -68,27 +79,114 @@ export function OrdersListClient({
   const router = useRouter();
   const { addToCart } = useCart();
   const { showToast } = useMockStore();
+  const [orderList, setOrderList] = useState<GatewayOrder[]>(orders);
+  const [listTotal, setListTotal] = useState<number>(total);
+  const [pendingPool, setPendingPool] = useState<GatewayOrder[]>(
+    pendingOrders.length > 0 ? pendingOrders : orders
+  );
   const [retryingOrderId, setRetryingOrderId] = useState<string | null>(null);
   const [reorderingId, setReorderingId] = useState<string | null>(null);
+  const [confirmCancelTarget, setConfirmCancelTarget] = useState<GatewayOrder | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
-  useRevealOnScroll(`${forcedState ?? "live"}-${activeStatus}-${page}-${orders.length}`);
+  useEffect(() => {
+    setOrderList(orders);
+    setListTotal(total);
+    setPendingPool(pendingOrders.length > 0 ? pendingOrders : orders);
+  }, [orders, total, pendingOrders]);
 
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  useEffect(() => {
+    if (!confirmCancelTarget) return;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape" && !cancellingId) {
+        setConfirmCancelTarget(null);
+        setCancelError(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [confirmCancelTarget, cancellingId]);
+
+  useRevealOnScroll(`${forcedState ?? "live"}-${activeStatus}-${page}-${orderList.length}`);
+
+  const totalPages = Math.max(1, Math.ceil(listTotal / pageSize));
   const suggestedProducts = useMemo(() => PRODUCTS.slice(0, 4), []);
 
   const inProgressCount = useMemo(
     () =>
-      orders.filter(
+      orderList.filter(
         (o) =>
           o.status === "PENDING" ||
           o.status === "CONFIRMED" ||
           o.status === "PREPARING" ||
           o.status === "SHIPPING"
       ).length,
-    [orders]
+    [orderList]
   );
 
-  const pendingPayCount = useMemo(() => orders.filter(needsVietQrPayment).length, [orders]);
+  const pendingPayCount = useMemo(
+    () => orderList.filter((order) => needsVietQrPayment(order)).length,
+    [orderList]
+  );
+
+  const cancelGroupInfo = useMemo(
+    () => resolveUnpaidVietQrCancelGroup(confirmCancelTarget, [...orderList, ...pendingPool]),
+    [confirmCancelTarget, orderList, pendingPool]
+  );
+
+  const reloadOrdersList = async () => {
+    const query = new URLSearchParams({
+      page: String(page),
+      page_size: String(pageSize),
+    });
+    if (activeStatus) {
+      query.set("status", activeStatus);
+    }
+    try {
+      const refreshed = await api<PaginatedResponse<GatewayOrder>>(`/orders?${query.toString()}`);
+      if (refreshed && Array.isArray(refreshed.items)) {
+        setOrderList(refreshed.items);
+        if (typeof refreshed.total === "number") {
+          setListTotal(refreshed.total);
+        }
+        setPendingPool(refreshed.items);
+      }
+    } catch {
+      // Fallback to router refresh below
+    }
+    router.refresh();
+  };
+
+  const handleConfirmCancel = async () => {
+    if (!confirmCancelTarget || cancellingId) return;
+    const target = confirmCancelTarget;
+    const wasMultiShopGroup = cancelGroupInfo.isMultiShopGroup;
+    const groupShopCount = cancelGroupInfo.shopCount;
+
+    setCancelError(null);
+    setCancellingId(target.id);
+    try {
+      await api<{ order: GatewayOrder }>(`/orders/${encodeURIComponent(target.id)}/cancel`, {
+        method: "POST",
+        json: { reason: "Người mua hủy đơn hàng" },
+      });
+      setConfirmCancelTarget(null);
+      if (retryingOrderId === target.id) {
+        setRetryingOrderId(null);
+      }
+      await reloadOrdersList();
+      showToast(
+        wasMultiShopGroup
+          ? `Đã hủy toàn bộ lần đặt hàng gồm ${groupShopCount} gian hàng.`
+          : `Đã hủy đơn hàng ${target.order_code}.`
+      );
+    } catch (err) {
+      setCancelError(getErrorMessage(err, "Chưa thể hủy đơn hàng lúc này. Vui lòng thử lại."));
+    } finally {
+      setCancellingId(null);
+    }
+  };
 
   const handleReorder = async (order: GatewayOrder) => {
     if (reorderingId || order.items.length === 0) return;
@@ -229,8 +327,8 @@ export function OrdersListClient({
         <div className={shared.sectionHead}>
           <h2 className={shared.sectionTitle}>Danh sách đơn hàng</h2>
           <p className={shared.sectionNote}>
-            Hiển thị <strong className="num">{orders.length}</strong> /{" "}
-            <span className="num">{total}</span> đơn
+            Hiển thị <strong className="num">{orderList.length}</strong> /{" "}
+            <span className="num">{listTotal}</span> đơn
             {totalPages > 1 && (
               <>
                 {" "}
@@ -264,7 +362,7 @@ export function OrdersListClient({
           </div>
         </div>
 
-        {orders.length === 0 ? (
+        {orderList.length === 0 ? (
           <StateView
             kind="empty"
             title="Không có đơn hàng khớp trạng thái đã chọn"
@@ -275,7 +373,7 @@ export function OrdersListClient({
         ) : (
           <>
             <div className={styles.orderList}>
-              {orders.map((order, idx) => {
+              {orderList.map((order, idx) => {
                 const statusMeta = getOrderStatusInfo(order.status);
                 const payMeta = getPaymentStatusInfo(
                   order.payment_status,
@@ -422,6 +520,19 @@ export function OrdersListClient({
                         <Button variant="ink" size="sm" href={`/don-hang/${order.id}`}>
                           Xem chi tiết
                         </Button>
+                        {canCancelOrder(order.status) && (
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            disabled={cancellingId !== null}
+                            onClick={() => {
+                              setCancelError(null);
+                              setConfirmCancelTarget(order);
+                            }}
+                          >
+                            Hủy đơn
+                          </Button>
+                        )}
                         {order.items.length > 0 && (
                           <Button
                             variant="secondary"
@@ -442,7 +553,7 @@ export function OrdersListClient({
             {totalPages > 1 && (
               <nav className={styles.paginationBar} aria-label="Phân trang danh sách đơn hàng">
                 <span className={`${styles.paginationInfo} num`}>
-                  Trang {page} / {totalPages} ({total} đơn hàng)
+                  Trang {page} / {totalPages} ({listTotal} đơn hàng)
                 </span>
                 <div className={styles.paginationControls}>
                   {page > 1 ? (
@@ -479,6 +590,97 @@ export function OrdersListClient({
         subtitle="Chuẩn chất liệu, giao nhanh toàn quốc và theo dõi trực tuyến"
         products={suggestedProducts}
       />
+
+      {confirmCancelTarget && (
+        <div
+          className={shared.confirmBackdrop}
+          onClick={(ev) => {
+            if (ev.target === ev.currentTarget && !cancellingId) {
+              setConfirmCancelTarget(null);
+              setCancelError(null);
+            }
+          }}
+        >
+          <div
+            className={shared.confirmDialog}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="list-cancel-dialog-title"
+          >
+            <h2 id="list-cancel-dialog-title" className={shared.confirmTitle}>
+              {cancelGroupInfo.isMultiShopGroup
+                ? "Xác nhận hủy lần đặt hàng"
+                : "Xác nhận hủy đơn hàng"}
+            </h2>
+
+            {cancelGroupInfo.isMultiShopGroup ? (
+              <>
+                <p className={shared.confirmBody}>
+                  <strong>{formatUnpaidGroupCancelWarning(cancelGroupInfo.shopCount)}.</strong>
+                </p>
+                <p className={shared.confirmBody}>
+                  Các gian hàng trong lần đặt này dùng chung một mã chuyển khoản VietQR nên toàn bộ
+                  đơn chờ thanh toán bên dưới sẽ được hủy cùng lúc:
+                </p>
+                <ul className={shared.confirmList}>
+                  {cancelGroupInfo.groupOrders.map((sib) => (
+                    <li key={sib.id} className={shared.confirmListItem}>
+                      <span>
+                        <strong className="num">{sib.order_code}</strong> ·{" "}
+                        {shopsMap[sib.shop_id]?.name ?? "Gian hàng NexusMart"}
+                      </span>
+                      <span className="num">{formatVnd(sib.total_payable_vnd)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <p className={shared.confirmBody}>
+                Bạn có chắc muốn hủy đơn hàng{" "}
+                <strong className="num">{confirmCancelTarget.order_code}</strong>?
+                {confirmCancelTarget.payment_method.toUpperCase() === "VIETQR" &&
+                confirmCancelTarget.payment_status.toUpperCase() === "SUCCEEDED"
+                  ? ` Số tiền ${formatVnd(confirmCancelTarget.total_payable_vnd)} đã thanh toán sẽ được xử lý hoàn lại theo quy định.`
+                  : " Thao tác này không thể hoàn tác."}
+              </p>
+            )}
+
+            {cancelError && (
+              <p className={shared.fieldError} role="alert">
+                {cancelError}
+              </p>
+            )}
+
+            <div className={shared.formActions}>
+              <Button
+                type="button"
+                variant="secondary"
+                size="md"
+                disabled={cancellingId !== null}
+                onClick={() => {
+                  setConfirmCancelTarget(null);
+                  setCancelError(null);
+                }}
+              >
+                Quay lại
+              </Button>
+              <Button
+                type="button"
+                variant="danger"
+                size="md"
+                disabled={cancellingId !== null}
+                onClick={() => void handleConfirmCancel()}
+              >
+                {cancellingId
+                  ? "Đang hủy..."
+                  : cancelGroupInfo.isMultiShopGroup
+                    ? `Xác nhận hủy cả ${cancelGroupInfo.shopCount} đơn`
+                    : "Xác nhận hủy đơn"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

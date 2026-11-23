@@ -135,6 +135,49 @@ export function parseSetCookie(raw) {
   return meta;
 }
 
+const RATE_LIMIT_DEFAULT_RETRY_AFTER_MS = 5_000;
+const RATE_LIMIT_MAX_WAIT_MS = 120_000;
+
+function parseRetryAfterMs(headerVal) {
+  const v = String(headerVal ?? "").trim();
+  if (!v) return RATE_LIMIT_DEFAULT_RETRY_AFTER_MS;
+  if (/^-?\d+$/.test(v)) {
+    const sec = Number.parseInt(v, 10);
+    return sec > 0 ? sec * 1000 : RATE_LIMIT_DEFAULT_RETRY_AFTER_MS;
+  }
+  const ts = Date.parse(v);
+  if (!Number.isNaN(ts)) {
+    const delta = ts - Date.now();
+    if (delta > 0) return delta;
+  }
+  return RATE_LIMIT_DEFAULT_RETRY_AFTER_MS;
+}
+
+async function fetchWith429Retry(url, initFactory) {
+  let totalWaitedMs = 0;
+  const logPath = new URL(url).pathname;
+
+  while (true) {
+    const init = initFactory();
+    const res = await fetch(url, init);
+    if (res.status !== 429) {
+      return res;
+    }
+
+    const waitMs = parseRetryAfterMs(res.headers.get("retry-after"));
+    if (totalWaitedMs + waitMs > RATE_LIMIT_MAX_WAIT_MS) {
+      return res;
+    }
+
+    await res.body?.cancel().catch(() => {});
+    totalWaitedMs += waitMs;
+    console.log(
+      `[429] ${init.method ?? "GET"} ${logPath} rate limited; waiting ${Math.ceil(waitMs / 1000)}s before retry (total ${Math.ceil(totalWaitedMs / 1000)}s/${RATE_LIMIT_MAX_WAIT_MS / 1000}s)`
+    );
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+}
+
 export class WebClient {
   constructor(baseUrl = config.webUrl, defaultOrigin = config.webOrigin) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
@@ -221,13 +264,13 @@ export class WebClient {
       }
     }
 
-    const res = await fetch(url, {
+    const res = await fetchWith429Retry(url, () => ({
       method: upper,
       headers,
       body,
       redirect: options.redirect ?? "manual",
       signal: AbortSignal.timeout(options.timeoutMs ?? config.requestTimeoutMs),
-    });
+    }));
 
     const rawSetCookies = typeof res.headers.getSetCookie === "function"
       ? res.headers.getSetCookie()
@@ -264,12 +307,41 @@ export class WebClient {
     });
   }
 
-  page(reqPath, options = {}) {
-    return this.request("GET", reqPath, {
-      accept: "text/html,application/xhtml+xml",
-      redirect: "manual",
-      ...options,
-    });
+  async page(reqPath, options = {}) {
+    const startMs = Date.now();
+    const maxTotalMs = 150_000;
+    const defaultWaitMs = 60_000;
+    const logPath = new URL(
+      reqPath.startsWith("http://") || reqPath.startsWith("https://")
+        ? reqPath
+        : `${this.baseUrl}${reqPath.startsWith("/") ? reqPath : `/${reqPath}`}`
+    ).pathname;
+
+    while (true) {
+      const res = await this.request("GET", reqPath, {
+        accept: "text/html,application/xhtml+xml",
+        redirect: "manual",
+        ...options,
+      });
+      if (
+        res.status !== 200 ||
+        options.cookieOverride !== undefined ||
+        res.setCookies.length > 0 ||
+        !res.text.includes("Bạn thao tác quá nhanh")
+      ) {
+        return res;
+      }
+      const rawRetry = res.headers.get("retry-after");
+      const waitMs = rawRetry ? parseRetryAfterMs(rawRetry) : defaultWaitMs;
+      const elapsedMs = Date.now() - startMs;
+      if (elapsedMs + waitMs > maxTotalMs) {
+        return res;
+      }
+      console.log(
+        `[429] page GET ${logPath} rendered SSR rate limit; waiting ${Math.ceil(waitMs / 1000)}s before retry (elapsed ${Math.ceil((elapsedMs + waitMs) / 1000)}s/${maxTotalMs / 1000}s)`
+      );
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
   }
 }
 
@@ -355,7 +427,7 @@ export async function postSignedPaymentWebhook(payload, options = {}) {
     crypto.createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
   const timestamp = String(options.timestampSec ?? Math.floor(Date.now() / 1000));
 
-  const res = await fetch(`${config.gatewayUrl}/webhooks/payment`, {
+  const res = await fetchWith429Retry(`${config.gatewayUrl}/webhooks/payment`, () => ({
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -364,7 +436,7 @@ export async function postSignedPaymentWebhook(payload, options = {}) {
     },
     body: rawBody,
     signal: AbortSignal.timeout(config.requestTimeoutMs),
-  });
+  }));
 
   const text = await res.text();
   let data = null;

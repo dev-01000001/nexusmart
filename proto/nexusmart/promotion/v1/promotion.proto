@@ -129,6 +129,7 @@ message FlashSaleReservationItem {
   string flash_sale_item_id = 1;
   string sku_id = 2;
   int32 quantity = 3;
+  string shop_id = 4;
 }
 
 message CreateVoucherRequest {
@@ -280,6 +281,23 @@ message ReleasePromotionResponse {
   bool already_released = 2;
 }
 
+// Releases reserved promotions for one shop sub-order within a checkout group.
+// order_id is the checkout group ID passed to ReservePromotion; idempotent per (order_id, shop_id).
+message ReleasePromotionShopRequest {
+  string order_id = 1;
+  string shop_id = 2;
+  string reason = 3;
+}
+
+message ReleasePromotionShopResponse {
+  bool released = 1;
+  bool already_released = 2;
+  int64 coins_returned = 3;
+  bool shop_voucher_released = 4;
+  int32 flash_sale_quantity_released = 5;
+  bool platform_voucher_released = 6;
+}
+
 service PromotionService {
   rpc CreateVoucher(CreateVoucherRequest) returns (CreateVoucherResponse);
   rpc ListAvailableVouchers(ListAvailableVouchersRequest) returns (ListAvailableVouchersResponse);
@@ -293,4 +311,5 @@ service PromotionService {
   rpc PreviewDiscounts(PreviewDiscountsRequest) returns (PreviewDiscountsResponse);
   rpc ReservePromotion(ReservePromotionRequest) returns (ReservePromotionResponse);
   rpc ReleasePromotion(ReleasePromotionRequest) returns (ReleasePromotionResponse);
+  rpc ReleasePromotionShop(ReleasePromotionShopRequest) returns (ReleasePromotionShopResponse);
 }

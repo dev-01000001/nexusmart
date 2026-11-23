@@ -159,6 +159,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, service.ErrInvalidArgument), errors.Is(err, service.ErrUnknownStatus):
 			h.writeError(w, r, http.StatusBadRequest, "INVALID_WEBHOOK", err.Error())
+		case errors.Is(err, store.ErrCarrierMismatch):
+			h.logger.WarnContext(ctx, "rejected shipping webhook with mismatched carrier",
+				slog.String("carrier", carrierCode),
+				slog.String("event_id", payload.EventID),
+			)
+			h.writeError(w, r, http.StatusBadRequest, "CARRIER_MISMATCH", "webhook carrier does not match shipment carrier")
 		case errors.Is(err, store.ErrNotFound):
 			h.writeError(w, r, http.StatusNotFound, "SHIPMENT_NOT_FOUND", "shipment not found")
 		default:

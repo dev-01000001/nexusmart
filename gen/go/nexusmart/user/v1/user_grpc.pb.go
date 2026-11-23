@@ -43,6 +43,7 @@ const (
 	UserService_DeleteAddress_FullMethodName         = "/nexusmart.user.v1.UserService/DeleteAddress"
 	UserService_WriteAuditLog_FullMethodName         = "/nexusmart.user.v1.UserService/WriteAuditLog"
 	UserService_ListAuditLogs_FullMethodName         = "/nexusmart.user.v1.UserService/ListAuditLogs"
+	UserService_RecordCODRejection_FullMethodName    = "/nexusmart.user.v1.UserService/RecordCODRejection"
 )
 
 // UserServiceClient is the client API for UserService service.
@@ -73,6 +74,7 @@ type UserServiceClient interface {
 	DeleteAddress(ctx context.Context, in *DeleteAddressRequest, opts ...grpc.CallOption) (*DeleteAddressResponse, error)
 	WriteAuditLog(ctx context.Context, in *WriteAuditLogRequest, opts ...grpc.CallOption) (*WriteAuditLogResponse, error)
 	ListAuditLogs(ctx context.Context, in *ListAuditLogsRequest, opts ...grpc.CallOption) (*ListAuditLogsResponse, error)
+	RecordCODRejection(ctx context.Context, in *RecordCODRejectionRequest, opts ...grpc.CallOption) (*RecordCODRejectionResponse, error)
 }
 
 type userServiceClient struct {
@@ -323,6 +325,16 @@ func (c *userServiceClient) ListAuditLogs(ctx context.Context, in *ListAuditLogs
 	return out, nil
 }
 
+func (c *userServiceClient) RecordCODRejection(ctx context.Context, in *RecordCODRejectionRequest, opts ...grpc.CallOption) (*RecordCODRejectionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RecordCODRejectionResponse)
+	err := c.cc.Invoke(ctx, UserService_RecordCODRejection_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UserServiceServer is the server API for UserService service.
 // All implementations must embed UnimplementedUserServiceServer
 // for forward compatibility.
@@ -351,6 +363,7 @@ type UserServiceServer interface {
 	DeleteAddress(context.Context, *DeleteAddressRequest) (*DeleteAddressResponse, error)
 	WriteAuditLog(context.Context, *WriteAuditLogRequest) (*WriteAuditLogResponse, error)
 	ListAuditLogs(context.Context, *ListAuditLogsRequest) (*ListAuditLogsResponse, error)
+	RecordCODRejection(context.Context, *RecordCODRejectionRequest) (*RecordCODRejectionResponse, error)
 	mustEmbedUnimplementedUserServiceServer()
 }
 
@@ -432,6 +445,9 @@ func (UnimplementedUserServiceServer) WriteAuditLog(context.Context, *WriteAudit
 }
 func (UnimplementedUserServiceServer) ListAuditLogs(context.Context, *ListAuditLogsRequest) (*ListAuditLogsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListAuditLogs not implemented")
+}
+func (UnimplementedUserServiceServer) RecordCODRejection(context.Context, *RecordCODRejectionRequest) (*RecordCODRejectionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RecordCODRejection not implemented")
 }
 func (UnimplementedUserServiceServer) mustEmbedUnimplementedUserServiceServer() {}
 func (UnimplementedUserServiceServer) testEmbeddedByValue()                     {}
@@ -886,6 +902,24 @@ func _UserService_ListAuditLogs_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserService_RecordCODRejection_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RecordCODRejectionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).RecordCODRejection(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_RecordCODRejection_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).RecordCODRejection(ctx, req.(*RecordCODRejectionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UserService_ServiceDesc is the grpc.ServiceDesc for UserService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -988,6 +1022,10 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListAuditLogs",
 			Handler:    _UserService_ListAuditLogs_Handler,
+		},
+		{
+			MethodName: "RecordCODRejection",
+			Handler:    _UserService_RecordCODRejection_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

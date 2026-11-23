@@ -8,6 +8,7 @@ import { Button } from "@/components/Button";
 import { StateView } from "@/components/StateView";
 import { VietQrPreview } from "./VietQrPreview";
 import { formatCountdown, getPaymentStatusView } from "@/features/checkout/messages";
+import { canRetryPayment, isPaymentDeadlinePassed } from "@/features/checkout/helpers";
 import styles from "./commerce.module.css";
 
 export interface RetryPaymentBoxProps {
@@ -115,16 +116,17 @@ export function RetryPaymentBox({
 
   const normalizedStatus = (payment?.status ?? "").toUpperCase();
   const isPending = normalizedStatus === "PENDING";
+  const tracksExpiry = isPending || normalizedStatus === "FAILED";
 
-  // Countdown tick while PENDING
+  // Countdown tick while PENDING or FAILED (so expired FAILED payments cannot be retried)
   useEffect(() => {
-    if (!isPending || !payment?.expires_at) return;
+    if (!tracksExpiry || !payment?.expires_at) return;
     setNowMs(Date.now());
     const timer = window.setInterval(() => {
       setNowMs(Date.now());
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [isPending, payment?.expires_at]);
+  }, [tracksExpiry, payment?.expires_at]);
 
   // Live SSE subscription + polling fallback while PENDING
   useEffect(() => {
@@ -209,10 +211,11 @@ export function RetryPaymentBox({
     if (!payment?.expires_at || nowMs === null) return null;
     const expiresMs = Date.parse(payment.expires_at);
     if (Number.isNaN(expiresMs)) return null;
-    return Math.max(0, Math.floor((expiresMs - nowMs) / 1000));
+    return Math.max(0, Math.ceil((expiresMs - nowMs) / 1000));
   }, [payment?.expires_at, nowMs]);
 
-  const countdownExpired = isPending && remainingSeconds !== null && remainingSeconds <= 0;
+  const countdownExpired =
+    tracksExpiry && nowMs !== null && isPaymentDeadlinePassed(payment?.expires_at, nowMs);
 
   // Trigger a status refresh right when countdown reaches zero
   useEffect(() => {
@@ -229,6 +232,10 @@ export function RetryPaymentBox({
 
   const handleRetryVietQr = async () => {
     if (retrying || !activePaymentId) return;
+    if (isPaymentDeadlinePassed(payment?.expires_at)) {
+      setNowMs(Date.now());
+      return;
+    }
     setRetrying(true);
     setRetryFeedback(null);
     try {
@@ -297,10 +304,8 @@ export function RetryPaymentBox({
     allocatedOrderIds.length > 0 ? allocatedOrderIds : payment.order_id ? [payment.order_id] : [];
   const primaryOrderHref =
     orderIds.length === 1 ? `/don-hang/${encodeURIComponent(orderIds[0])}` : "/don-hang";
-  const canRetry =
-    normalizedStatus === "PENDING" ||
-    normalizedStatus === "FAILED" ||
-    normalizedStatus === "EXPIRED";
+  const canRetry = canRetryPayment(normalizedStatus, countdownExpired);
+  const isExpiredState = normalizedStatus === "EXPIRED" || countdownExpired;
 
   return (
     <div
@@ -318,7 +323,7 @@ export function RetryPaymentBox({
           </span>
         </div>
 
-        {isPending && remainingSeconds !== null && (
+        {tracksExpiry && remainingSeconds !== null && (
           <span
             className={`${styles.countdownPill} ${
               countdownExpired ? styles.toneNeg : styles.toneNeutral
@@ -344,7 +349,7 @@ export function RetryPaymentBox({
           />
           <p className={styles.paymentLiveStatus} role="status" aria-live="polite">
             {countdownExpired
-              ? "Hạn giữ đơn đã qua. Bạn có thể kiểm tra lại trạng thái hoặc tạo lại mã VietQR."
+              ? "Hạn giữ đơn đã qua và đơn hàng sẽ tự động hủy. Vui lòng kiểm tra trạng thái đơn hoặc đặt lại đơn mới từ giỏ hàng."
               : "Đang tự động theo dõi trạng thái chuyển khoản từ ngân hàng..."}
           </p>
         </>
@@ -411,7 +416,12 @@ export function RetryPaymentBox({
                 Mở trang chờ thanh toán
               </Button>
             )}
-            {(normalizedStatus === "EXPIRED" || normalizedStatus === "CANCELLED") && (
+            {isExpiredState && (
+              <Button variant="primary" size="md" href="/gio-hang">
+                Đặt lại từ giỏ hàng
+              </Button>
+            )}
+            {(isExpiredState || normalizedStatus === "CANCELLED") && (
               <Button variant="secondary" size="md" href="/don-hang">
                 Xem danh sách đơn hàng
               </Button>
