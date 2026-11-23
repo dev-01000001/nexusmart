@@ -1,0 +1,13 @@
+# Đợt 2a – agent `payment`
+Luật: `w2-rules.md`, `services/payment/CLAUDE.md`. Thiết kế: `w2-plan.md` §2.
+## Sở hữu
+`services/payment/**` (trừ `SERVICE_METHODS` do contract chốt), `tests/e2e/20_*.go`.
+## Việc
+1. **Giữ tiền**: job 60s chuyển `pending_release → released` khi `settled_at + PAYMENT_SELLER_HOLD_HOURS` đã qua, dùng lại logic `release_escrow`; an toàn nhiều bản, thứ tự khoá giống chỗ khác (tránh deadlock đã sửa ở đợt 1). `ReleaseEscrow` chỉ admin/super_admin; service token bị từ chối. Đơn đã `released` cũ không đổi.
+2. **Hoàn tiền hai bước**: migration `0003_` (cột tài khoản nhận, `settled_at`, đưa refund `completed` chưa có bút toán tất toán về `pending`); `CreateRefund` trả `pending`; `ListRefunds`, `SubmitRefundBankAccount` (chỉ người mua chủ payment, chỉ khi `pending`, sửa được tới khi tất toán), `SettleRefund` (admin, idempotent, cần đã có tài khoản nhận hoặc ghi chú chuyển tay; bút toán `build_refund_settle_tx`; phát `payment.refund_settled` qua outbox). Số tài khoản: chữ số, 6–19 ký tự; che trong log và response của người mua. Trạng thái payment `refunded` không phụ thuộc việc tất toán (giữ như đợt 1).
+3. **Trả hàng sau khi giao**: `process_order_returned_event` với `from_status=RETURN_REQUESTED`: refund do `order` gọi `CreateRefund` (full phần còn lại) đặt allocation `refunded`; consumer chỉ xử lý phần còn lại cho đúng (0₫, COD chưa thu nếu có) và KHÔNG tạo bút toán đôi dù event đến trước hay sau `CreateRefund`. Sau đó `order.completed` không thể đến cho đơn đó; nếu đến muộn phải là no-op.
+4. **Hàng đợi không khớp**: `ListReconciliationQueue`, `ResolveReconciliationItem` theo §2; `ASSIGN` đi qua đúng đường xác nhận webhook (khoá nhóm, một payment `succeeded` mỗi nhóm, nhóm đã huỷ → 409); thừa → refund `pending` phần thừa có bút toán cân; idempotent theo `idempotency_key` và trạng thái mục.
+5. **Đối soát** (PAY-B8): theo §2. `date` không hợp lệ/tương lai → 400.
+6. PAY-B12 phía backend nếu `GetSellerBalance`/`total_earned` sai định nghĩa.
+## Test bắt buộc
+Unit cho phép chia thừa/thiếu, điều kiện đến hạn giữ tiền, kiểm tài khoản, chuyển ngày VN↔UTC (biên 00:00–07:00). E2E `20_payment_ops_test.go`: hoàn → người mua nhập tài khoản → admin tất toán (gọi 2 lần chỉ 1 bút toán) → `refund_payable` về 0 cho refund đó; người mua khác nhập tài khoản → 403/404; webhook lệch tiền → mục hàng đợi → ASSIGN thiếu 409, thừa xác nhận + refund phần thừa, REFUND; confirm-received → tiền ở `pending_vnd`, `available_vnd` không đổi; `ReleaseEscrow` admin chuyển sang available; sổ cái cân. Kiểm job giữ tiền thật: hạ `settled_at` bằng psql trên stack audit cho một allocation của test, đợi một nhịp job, thấy `released` (ghi vào báo cáo).
