@@ -1,0 +1,91 @@
+SHP-B1 (P1) – Phí vận chuyển Web báo ở giỏ hàng/checkout lệch +16.000₫ so với phí thu thật khi đặt đơn (UC-SHIP02)
+SHP-B2 (P1) – Seller đổi hãng/dịch vụ khi tạo vận đơn gây lệch phí giữa order_db và shipping_db (UC-SHIP03)
+SHP-B3 (P2) – Không thể huỷ vận đơn (UC-SHIP07) trong luồng thật do chuyển trạng thái SHIPPING quá sớm và thiếu REST route
+SHP-B4 (P2) – Đơn RETURN_REQUESTED sau DELIVERED bị kẹt vĩnh viễn phía vận chuyển vì thiếu vận đơn trả hàng (UC-SHIP08)
+SHP-B5 (P2) – Giao thất bại & hoàn hàng đơn COD (UC-SHIP05) không tăng cod_rejected_count, không báo seller và không đảo trạng thái COD
+SHP-B6 (P2) – Webhook vận chuyển không kiểm tra {carrier} trên URL khớp với shipment.carrier_code
+SHP-B7 (P2) – CalculateFee không từ chối địa chỉ ngoài vùng phục vụ và cân nặng <= 0 (UC-SHIP02)
+SHP-B8 (P3) – Tìm kiếm tỉnh/phường phân biệt dấu, nhãn in .local chết / không mở được ở Seller, thông báo vận chuyển tiếng Anh thô & bị trùng
+PLT-B1 (P1) — Vượt giới hạn tốc độ theo IP tại Gateway bằng header X-Forwarded-For giả mạo
+PLT-B2 (P1) — Gateway lộ nguyên thông điệp lỗi codes.Internal (nhúng raw lỗi DB/Redis) từ backend gRPC
+PLT-B3 (P1) — Cổng Prometheus của OpenTelemetry Collector (:48889/metrics) hoàn toàn rỗng (0 byte)
+PLT-B4 (P1) — 6/8 service domain không xuất log cho luồng nghiệp vụ bình thường và payment đứt chuỗi OTel span
+PLT-B5 (P2) — Gateway RequestLogger không bao giờ ghi user_id do thứ tự middleware
+PLT-B6 (P2) — Thiếu HTTP security headers trên Gateway/Web, giới hạn body trả 400 thay vì 413, /webhooks/ thiếu rate limit và BFF /api/gw không giới hạn kích thước body
+PLT-B7 (P2) — Service user không xuất HTTP RED metrics trên :48081/metrics
+PLT-B8 (P2) — Coverage unit test của order (51.3%) và promotion (51.9%) dưới mục tiêu 60%, thiếu đo coverage cho payment
+PLT-B9 (P2) — CI thiếu build Docker image cho web & thiếu quét lỗ hổng; otel-collector thiếu healthcheck; product khai báo phụ thuộc NATS thừa
+PLT-B10 (P2) — Báo cáo UC-S06 (/seller) và UC-A06 (/admin) tổng hợp client-side từ lát cắt 50–100 đơn mới nhất, thiếu lọc ngày và xuất báo cáo
+PLT-B11 (P2) — Nhật ký kiểm toán (Audit Log) chưa ghi cho thao tác quản trị ngoài user/shop
+ORD-B1 [P0] – Phân bổ tiền cho người bán trừ cả voucher sàn & xu vào doanh thu shop (và đơn 0₫ bỏ qua CreatePayment)
+ORD-B2 [P0] – Huỷ hoặc hoàn hàng đơn COD không hoàn bút toán sổ cái, treo vĩnh viễn cod_receivable và escrow_liability
+ORD-B3 [P0] – Huỷ 1 đơn con trong checkout đa gian hàng làm mất vĩnh viễn phần Xu của đơn con đó
+ORD-B4 [P1] – Idempotency-Key không kiểm tra payload khác, trả nhầm kết quả đơn cũ
+ORD-B5 [P1] – orders.payment_id và orders.payment_expires_at không cập nhật sau POST /api/v1/payments/{id}/retry, khiến watchdog UC-PAY06 huỷ oan đơn
+ORD-B6 [P1] – Rule chặn bom hàng COD (ORDER_COD_MAX_REJECTED_COUNT) vô hiệu hoàn toàn vì không có code nào tăng cod_rejected_count
+ORD-B7 [P1] – BuyerConfirmReceived cho phép hoàn tất đơn đang RETURN_REQUESTED bỏ mồ côi return_requests, và form trả hàng web không có tải ảnh bằng chứng
+ORD-B8 [P2] – orders.payment_status lệch thực tế trên đơn COD mới đặt và đơn VietQR bị buyer huỷ
+ORD-B9 [P2] – BuyerConfirmReceived giải ngân thẳng sang available_vnd (bỏ qua pending_vnd), thiếu job tự COMPLETED 7 ngày và tự huỷ 48h
+ORD-B10 [P2] – Link thông báo payment.succeeded trỏ tới checkout_group_id gây lỗi HTTP 404
+ORD-B11 [P2] – RetryPaymentBox hiện nút "Thanh toán lại" cho giao dịch EXPIRED nhưng Gateway luôn chặn 409 Conflict
+ORD-B12 [P3] – Lỗi hiển thị web đơn hàng: tiếng Anh thô trong timeline, thiếu tab RETURNED, ảnh bìa seller hardcode
+PAY-B1 [P0] — Retry payment FAILED tạo giao dịch thu tiền hợp lệ trên đơn hàng đã bị CANCELLED (mất tiền người mua)
+PAY-B2 [P0] — Hoàn tiền một phần hoặc sau khi hoàn tất đơn làm escrow_liability bị rút vượt và chi trả thừa cho người bán
+PAY-B3 [P0] — Voucher toàn sàn (PLATFORM) và Xu bị trừ thẳng vào doanh thu thực nhận của người bán
+PAY-B4 [P0] — Hủy đơn COD không đảo ngược sổ cái (cod_receivable/escrow_liability), payment vẫn SUCCEEDED, và Admin hoàn tiền được trên đơn COD chưa trả online
+PAY-B5 [P1] — POST /api/v1/payments/{id}/retry không đồng bộ orders.payment_id và payment_expires_at về order_db
+PAY-B6 [P1] — Webhook trễ của payment cũ (superseded) và hoàn tiền một phần ghi đè orders.payment_status = 'REFUNDED' lên đơn đang CONFIRMED/COMPLETED
+PAY-B7 [P1] — ReleaseEscrow bỏ qua thời gian giữ tiền chờ (seller_pending) và giải ngân ngay vào seller_available kể cả đơn COD chưa đối soát thu hộ
+PAY-B8 [P2] — Đối soát ngày (UC-PAY07) lệch múi giờ VN/UTC, PayOs luôn trả rỗng và Mock mất dữ liệu sau restart
+PAY-B9 [P2] — Hàng đợi giao dịch không khớp (UC-A14) không nối qua Gateway và không có thao tác xử lý / UI Admin
+PAY-B10 [P2] — UI RetryPaymentBox hiển thị nút "Thanh toán lại qua VietQR" cho trạng thái EXPIRED nhưng backend luôn từ chối 409
+PAY-B11 [P2] — Khoản refund_payable không có bước tất toán chi tiền và bản ghi hoàn tiền pending từ webhook trễ bị kẹt vĩnh viễn
+PAY-B12 [P3] — Bảng đối chiếu ở /seller/tai-chinh sai công thức dòng tổng cộng và mô tả sai ý nghĩa pending_vnd
+USR-B1 (P0) — Khoá tài khoản (LOCKED) và hạ quyền (admin -> buyer) không thu hồi access token đang hoạt động
+USR-B2 (P1) — Hồ sơ gian hàng bị kẹt vĩnh viễn sau REQUEST_INFO, không nộp lại được tên cũ sau REJECT, và thiếu ràng buộc trường bắt buộc
+USR-B3 (P1) — AdminReviewShop cho phép REJECT gian hàng đang ACTIVE mà không thu hồi quyền seller, và thiếu cơ chế SUSPENDED
+USR-B4 (P1) — Audit log thiếu gần toàn bộ thao tác quản trị ngoài user service, ghi sai IP nguồn, thiếu vai trò nội bộ và duyệt 2 người (UC-A11)
+USR-B5 (P1) — WriteAuditLog và ValidateUser không nằm trong internalRPCs, bỏ qua kiểm tra xác thực cho lời gọi gRPC nội bộ ẩn danh
+USR-B6 (P1) — Sổ địa chỉ không validate mã 34 tỉnh/phường và SĐT, PUT tự xoá cờ is_default, thiếu trường legacy_, cho xoá địa chỉ kho của shop ACTIVE
+USR-B7 (P1) — Xác thực OTP email tự động đánh dấu phone_verified = true kể cả khi SĐT rỗng, và đổi SĐT không cần OTP
+USR-B8 (P2) — Dò tài khoản qua verify-otp/resend-otp/register (SĐT) & timing side-channel trên login; thiếu lý do khoá khi tài khoản LOCKED đăng nhập
+USR-B9 (P2) — Link trong thông báo in-app user.registered (/verify-otp) và user.shop_reviewed (/seller/dashboard) bị 404 trên web
+USR-B10 (P2) — Lệch điều hướng theo role trên web, thiếu lọc thời gian audit log, thiếu super_admin trên UI, và sai lệch nhỏ trong docs/contracts.md
+PRM-B1 [P0] — Sai hạch toán bên chịu chi phí giảm giá sàn & đơn 0₫ (trả bằng xu/voucher) khiến người bán nhận 0₫
+PRM-B2 [P0] — Thưởng xu tính trên subtotal_vnd gốc trước giảm giá (kể cả đơn 0₫ trả bằng xu), cho phép cày xu
+PRM-B3 [P0] — Huỷ một phần đơn con trong checkout đa gian hàng (và đơn RETURNED) không hoàn voucher shop, suất flash sale và xu
+PRM-B4 [P1] — Thiếu kiểm tra phân quyền ở tầng gRPC PromotionService khi thiếu JWT claims
+PRM-B5 [P1] — Đơn COD phát email & thông báo in-app sai "Thanh toán ... qua COD thành công" ngay lúc vừa đặt đơn
+PRM-B6 [P2] — Link trong thông báo in-app trỏ tới trang 404 (/verify-otp, /seller/dashboard, /orders/<checkout_group_id>)
+PRM-B7 [P1] — Lộ mã bí mật OTP ngay trên tiêu đề email (Subject), email OTP 100% tiếng Anh, và toàn bộ tiêu đề email giao dịch bằng tiếng Anh + số tiền/enum thô
+PRM-B8 [P2] — Lệch kiểm tra budget_vnd & min_order_vnd giữa GET /vouchers với Preview/Reserve, và GET /vouchers công khai trả cả voucher hết hạn/chưa bắt đầu
+PRM-B9 [P2] — Thiếu API/UI bật-tắt, sửa, xoá voucher (UC-S05, UC-A07) và thiếu phạm vi danh mục category_id cho voucher (UC-A07)
+PRM-B10 [P2] — Đăng ký Flash Sale không kiểm giá (< giá gốc / 30 ngày), không kiểm tồn kho SKU, và không khoá tồn kho khi duyệt (UC-S08)
+PRM-B11 [P2] — Admin và Seller không có API liệt kê item Flash Sale PENDING/REJECTED; Admin phải nhập tay UUID item_id (UC-A07, UC-S08)
+PRM-B12 [P2] — Giỏ hàng không áp giá Flash Sale, trang /thanh-toan nhận cả suất sắp mở (upcoming), và không có hạn thanh toán ngắn riêng (UC-B16)
+PRM-B13 [P2] — Thiếu hoàn toàn nghiệp vụ UC-S18 (Tạo chương trình giảm giá trực tiếp của gian hàng)
+PRM-B14 [P2] — Thiếu thông báo đơn hàng cho người bán, thiếu email shipment.updated, thiếu kênh Push & nhóm PROMOTION, và nguy cơ nuốt sự kiện shipment.updated
+PRM-B15 [P3] — Thiếu biểu tượng thông báo trên Header, lệch UI cài đặt thông báo và mâu thuẫn chính sách Xu/Flash trên Web
+WEB-B1 [P1] Lệch phí vận chuyển & tổng tiền giữa /thanh-toan (/gio-hang) và đơn hàng tạo thật
+WEB-B2 [P1] /flash-sale trưng bày giá giảm giả ở mục "Deal sốc" & "Combo", nhưng thêm SKU thật nguyên giá vào giỏ
+WEB-B3 [P1] Trang sản phẩm /san-pham/[slug] hứa giảm giá theo bậc (Mua 2 giảm 10%, Mua 3 giảm 15%), quà 499k và chọn size combo nhưng checkout thu nguyên giá
+WEB-B4 [P2] /dang-nhap không chuyển hướng theo user.role (vi phạm UC-B02 bước 4)
+WEB-B5 [P2] Liên kết nội bộ trỏ tới ID mock gây 404 thật ở AiAssistantPanel, /seller/chat, /seller/tuong-tac
+WEB-B6 [P2] /seller/san-pham/[id] cho phép chọn chuyển PENDING → HIDDEN gây lỗi 403 từ backend
+WEB-B7 [P2] /hoi-vien và /the-qua-tang hiển thị số dư/hạng giả cạnh tên tài khoản thật & chuyển hướng vô hiệu về /gio-hang
+WEB-B8 [P2] Tìm kiếm tức thì trên ShopHeader và so khớp gian hàng trong search.ts dùng dữ liệu tĩnh @/data
+WEB-B9 [P2] Mua ngay Flash Sale (?sku=&qty=&flash=) tính subtotalVnd theo giá thường ở CheckoutClient
+WEB-B10 [P3] Soft-404 (HTTP 200) ở 3 route động tĩnh, lệch tiêu đề SSR /admin/kiem-duyet & form bản tin giả ở footer
+CAT-B1 (P1) — Tìm kiếm backend không hỗ trợ tiếng Việt không dấu, không thoát ký tự wildcard ILIKE, và thiếu Search service / trần 100 SP trên web
+CAT-B2 (P1) — Lộ sản phẩm PENDING/REJECTED/HIDDEN ra storefront công khai khi Admin hoặc Seller chủ shop đang đăng nhập
+CAT-B3 (P1) — Admin duyệt/từ chối sản phẩm không gửi thông báo cho người bán và không phát event product.
+CAT-B4 (P1) — PUT /api/v1/seller/products/{id} sửa tồn kho bỏ qua đồng bộ OUT_OF_STOCK, optimistic locking và stock_history
+CAT-B5 (P1) — Form sửa sản phẩm người bán cho chọn "Tạm ẩn" (HIDDEN) ở trạng thái PENDING nhưng backend trả 403
+CAT-B6 (P1) — Không thể thêm lại biến thể cùng sku_code sau khi đã gỡ khỏi sản phẩm
+CAT-B7 (P2) — Thao tác quản trị danh mục và duyệt sản phẩm không ghi audit_logs
+CAT-B8 (P2) — Xoá danh mục từng có sản phẩm đã xoá mềm (soft-delete) gây 500 INTERNAL_ERROR (lỗi FK 23503) và kẹt vĩnh viễn
+CAT-B9 (P2) — Các lỗi cây danh mục: cho tạo vòng lặp (cycle), lọc cha chỉ quét 1 cấp con, không chuẩn hoá slug, reset commission_rate_bps về 0 khi sửa
+CAT-B10 (P2) — AdminReviewProduct chấp nhận từ chối (REJECT) với reason rỗng ở backend
+CAT-B11 (P2) — PATCH /api/v1/seller/skus/{sku_id}/stock vẫn cho sửa tồn SKU đã vô hiệu hoá (INACTIVE)
+CAT-B12 (P2) — Tìm kiếm tức thời ở ShopHeader đọc dữ liệu mock tĩnh và searchProducts tra sai shopId thật
+CAT-B13 (P3) — Sai lệch hiển thị UI: trạng thái hết hàng ở trang seller không tự cập nhật và ProductCard chưa hiện khoảng giá min–max

@@ -1,0 +1,101 @@
+UC	Ưu tiên	Tên	Trạng thái theo worker nghiệp vụ	Trạng thái theo worker web
+UC-A01	Cao	Duyệt người bán	prm:MỘT PHẦN;usr:LỖI	ĐỦ
+UC-A02	Cao	Duyệt sản phẩm	cat:MỘT PHẦN	MỘT PHẦN
+UC-A03	Cao	Quản lý người dùng và phân quyền	usr:LỖI	ĐỦ
+UC-A04	Trung bình	Quản lý danh mục	cat:LỖI	ĐỦ
+UC-A05	Trung bình	Xử lý khiếu nại	ord:THIẾU	THIẾU
+UC-A06	Trung bình	Xem thống kê toàn sàn	plt:MỘT PHẦN	MỘT PHẦN
+UC-A07	Trung bình	Tạo flash sale và voucher toàn sàn	prm:MỘT PHẦN	MỘT PHẦN
+UC-A08	Thấp	Quản lý banner và trang chủ	cat:THIẾU	THIẾU
+UC-A09	Trung bình	Cấu hình phí sàn	pay:MỘT PHẦN	THIẾU
+UC-A10	Thấp	Kiểm duyệt đánh giá và phạt vi phạm	usr:THIẾU	THIẾU
+UC-A11	Cao	Quản lý vai trò nội bộ và audit log	usr:LỖI	MỘT PHẦN
+UC-A12	Trung bình	Cấu hình hãng vận chuyển	shp:THIẾU	THIẾU
+UC-A13	Trung bình	Cấu hình phương thức thanh toán	pay:THIẾU	THIẾU
+UC-A14	Trung bình	Xử lý giao dịch thanh toán không khớp	pay:MỘT PHẦN	MỘT PHẦN
+UC-A15	Trung bình	Quản lý từ khoá cấm và hàng cấm	cat:THIẾU	THIẾU
+UC-A16	Thấp	Phát hiện gian lận	ord:THIẾU	THIẾU
+UC-AI01	Cao	Tư vấn mua hàng bằng hội thoại	plt:THIẾU	THIẾU
+UC-AI02	Cao	Tìm kiếm ngữ nghĩa	plt:THIẾU	THIẾU
+UC-AI03	Trung bình	Tra cứu đơn hàng qua chat	plt:THIẾU	LỖI
+UC-AI04	Trung bình	Thêm vào giỏ qua chat	plt:THIẾU	THIẾU
+UC-AI05	Trung bình	Tóm tắt đánh giá sản phẩm	plt:THIẾU	THIẾU
+UC-AI06	Thấp	Sinh mô tả sản phẩm	plt:THIẾU	THIẾU
+UC-AI07	Thấp	Gợi ý sản phẩm cá nhân hoá	plt:THIẾU	THIẾU
+UC-AI08	Thấp	Tìm kiếm bằng hình ảnh	plt:THIẾU	THIẾU
+UC-AI09	Thấp	Hỏi đáp số liệu kinh doanh cho người bán	plt:THIẾU	THIẾU
+UC-AI10	Trung bình	Gợi ý câu trả lời chat cho người bán	plt:THIẾU	THIẾU
+UC-AI11	Trung bình	Trả lời câu hỏi chính sách và FAQ	plt:THIẾU	THIẾU
+UC-AI12	Trung bình	Chuyển tiếp sang nhân viên hỗ trợ	plt:THIẾU	THIẾU
+UC-AI13	Cao	Thu phản hồi và đánh giá chất lượng trợ lý	plt:THIẾU	-
+UC-AI14	Cao	Guardrail và kiểm soát chi phí LLM	plt:THIẾU	-
+UC-B01	Cao	Đăng ký tài khoản	prm:LỖI;usr:LỖI	ĐỦ
+UC-B02	Cao	Đăng nhập	plt:LỖI;usr:MỘT PHẦN	LỖI
+UC-B03	Cao	Tìm kiếm và lọc sản phẩm	cat:MỘT PHẦN	MỘT PHẦN
+UC-B04	Cao	Xem chi tiết sản phẩm	cat:MỘT PHẦN	LỖI
+UC-B05	Cao	Quản lý giỏ hàng	ord:ĐỦ	ĐỦ
+UC-B06	Cao	Đặt hàng (checkout)	ord:LỖI;prm:LỖI	LỖI
+UC-B07	Cao	Thanh toán online	pay:MỘT PHẦN;prm:LỖI	MỘT PHẦN
+UC-B08	Cao	Theo dõi đơn hàng	ord:MỘT PHẦN	ĐỦ
+UC-B09	Trung bình	Huỷ đơn và yêu cầu đổi trả	ord:LỖI	MỘT PHẦN
+UC-B10	Trung bình	Đánh giá sản phẩm	cat:THIẾU	THIẾU
+UC-B11	Trung bình	Đăng nhập bằng Google và đặt lại mật khẩu	usr:THIẾU	THIẾU
+UC-B12	Trung bình	Gợi ý từ khoá và lịch sử tìm kiếm	cat:THIẾU	LỖI
+UC-B13	Thấp	Yêu thích sản phẩm và theo dõi gian hàng	cat:THIẾU	THIẾU
+UC-B14	Trung bình	Chat với người bán	plt:THIẾU	THIẾU
+UC-B15	Cao	Áp voucher và xu khi checkout	prm:LỖI	ĐỦ
+UC-B16	Trung bình	Mua hàng flash sale	prm:MỘT PHẦN	LỖI
+UC-B17	Cao	Xác nhận đã nhận hàng	ord:LỖI	CHƯA KIỂM
+UC-B18	Thấp	Tích và dùng xu thưởng	prm:LỖI	LỖI
+UC-B19	Trung bình	Quản lý hồ sơ và bảo mật tài khoản	usr:MỘT PHẦN	MỘT PHẦN
+UC-B20	Cao	Duyệt trang chủ và danh mục	cat:MỘT PHẦN	ĐỦ
+UC-B21	Trung bình	Xem trang gian hàng	cat:MỘT PHẦN	MỘT PHẦN
+UC-B22	Trung bình	Lưu voucher vào ví voucher	prm:MỘT PHẦN	MỘT PHẦN
+UC-B23	Trung bình	Trung tâm thông báo và cài đặt thông báo	prm:LỖI	MỘT PHẦN
+UC-B24	Thấp	Báo cáo sản phẩm hoặc gian hàng vi phạm	usr:THIẾU	THIẾU
+UC-B25	Cao	Thanh toán lại đơn đang chờ thanh toán	pay:LỖI	MỘT PHẦN
+UC-B26	Trung bình	Sửa địa chỉ nhận hàng sau khi đặt	ord:THIẾU	THIẾU
+UC-B27	Thấp	Xoá tài khoản và yêu cầu dữ liệu cá nhân	usr:THIẾU	THIẾU
+UC-OPS01	Cao	Xem dashboard giám sát	plt:MỘT PHẦN	-
+UC-OPS02	Cao	Phát hiện bất thường và cảnh báo	plt:THIẾU	-
+UC-OPS03	Trung bình	Phân tích nguyên nhân gốc	plt:THIẾU	-
+UC-OPS04	Thấp	Tự khắc phục sự cố	plt:THIẾU	-
+UC-OPS05	Cao	Triển khai tự động qua CI/CD	plt:MỘT PHẦN	-
+UC-OPS06	Trung bình	Rollback bản phát hành lỗi	plt:THIẾU	-
+UC-OPS07	Trung bình	Định nghĩa SLO và ngưỡng cảnh báo	plt:THIẾU	-
+UC-OPS08	Cao	Tiêm lỗi có chủ đích để kiểm chứng AIOps	plt:THIẾU	-
+UC-OPS09	Trung bình	Sao lưu và khôi phục cơ sở dữ liệu	plt:THIẾU	-
+UC-PAY01	Cao	Thanh toán bằng QR chuyển khoản (VietQR)	pay:ĐỦ	ĐỦ
+UC-PAY02	Cao	Đặt hàng COD và kiểm soát rủi ro COD	ord:LỖI	ĐỦ
+UC-PAY03	Trung bình	Đối soát COD với hãng vận chuyển	pay:THIẾU	-
+UC-PAY04	Trung bình	Hoàn tiền (refund)	pay:LỖI;prm:MỘT PHẦN	CHƯA KIỂM
+UC-PAY05	Thấp	Chi trả cho người bán (payout)	pay:THIẾU	THIẾU
+UC-PAY06	Cao	Tự huỷ đơn quá hạn thanh toán	ord:LỖI	-
+UC-PAY07	Trung bình	Đối soát giao dịch online với cổng thanh toán	pay:MỘT PHẦN	-
+UC-PAY08	Thấp	Xuất biên nhận đơn hàng	ord:THIẾU	THIẾU
+UC-S01	Cao	Đăng ký gian hàng	usr:LỖI	MỘT PHẦN
+UC-S02	Cao	Quản lý sản phẩm	cat:MỘT PHẦN	LỖI
+UC-S03	Cao	Quản lý tồn kho	cat:MỘT PHẦN	MỘT PHẦN
+UC-S04	Cao	Xử lý đơn hàng	ord:MỘT PHẦN;prm:MỘT PHẦN	MỘT PHẦN
+UC-S05	Trung bình	Tạo voucher	prm:MỘT PHẦN	MỘT PHẦN
+UC-S06	Trung bình	Xem báo cáo doanh thu	plt:MỘT PHẦN	MỘT PHẦN
+UC-S07	Cao	Đăng sản phẩm có biến thể	cat:MỘT PHẦN	MỘT PHẦN
+UC-S08	Thấp	Đăng ký sản phẩm tham gia flash sale	prm:LỖI	MỘT PHẦN
+UC-S09	Trung bình	Chat với khách và trả lời tự động	plt:THIẾU	LỖI
+UC-S10	Trung bình	Xử lý yêu cầu trả hàng hoàn tiền	ord:THIẾU	MỘT PHẦN
+UC-S11	Thấp	Xem hiệu quả và điểm phạt gian hàng	usr:THIẾU	THIẾU
+UC-S12	Thấp	Trang trí gian hàng	cat:THIẾU	MỘT PHẦN
+UC-S13	Trung bình	Đăng sản phẩm hàng loạt bằng file	cat:THIẾU	THIẾU
+UC-S14	Thấp	Quản lý nhân viên gian hàng	usr:THIẾU	THIẾU
+UC-S15	Trung bình	Xử lý đơn và in nhãn hàng loạt	ord:THIẾU	THIẾU
+UC-S16	Thấp	Trả lời đánh giá của người mua	cat:THIẾU	LỖI
+UC-S17	Trung bình	Khai báo tài khoản ngân hàng và xem sổ số dư	pay:MỘT PHẦN	MỘT PHẦN
+UC-S18	Trung bình	Tạo chương trình giảm giá của gian hàng	prm:THIẾU	THIẾU
+UC-SHIP01	Cao	Quản lý sổ địa chỉ theo đơn vị hành chính mới	shp:MỘT PHẦN;usr:LỖI	ĐỦ
+UC-SHIP02	Cao	Tính phí vận chuyển khi checkout	shp:LỖI	LỖI
+UC-SHIP03	Cao	Tạo vận đơn và in nhãn	shp:LỖI	CHƯA KIỂM
+UC-SHIP04	Cao	Cập nhật trạng thái giao hàng qua webhook	shp:MỘT PHẦN	-
+UC-SHIP05	Trung bình	Xử lý giao thất bại và hoàn hàng	shp:MỘT PHẦN	-
+UC-SHIP06	Trung bình	Cấu hình vận chuyển của gian hàng	shp:THIẾU	THIẾU
+UC-SHIP07	Trung bình	Huỷ vận đơn	shp:LỖI	-
+UC-SHIP08	Trung bình	Tạo vận đơn trả hàng	shp:THIẾU	-
