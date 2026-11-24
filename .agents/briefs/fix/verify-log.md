@@ -464,3 +464,49 @@ So bộ lọc từ cấm r8 với r10: ba ca chặn nhầm ("hàng cam tươi", 
 | product r11, qa r4, web r10 | đạt: product 5 dòng, test đỏ rồi xanh trên cả memory store và Postgres; seed +32 dòng ròng (r3 +309 dòng bị trả lại); e2e-web gom ba bản chờ OTP thành một, −48 dòng; manager chạy lại eslint, prettier, tsc, check:data, 5 file test: xanh |
 | `make seed` ×2 (volume sạch, product r11) | exit 0, exit 0: 16 món flash sale và 6 đơn mẫu; lượt 2 toàn `existing` |
 | lượt 2 (product r11, web r10, seed r4, volume sạch) | `make lint`, `make test`, `make coverage` exit 0 (order 77,0 %, promotion 77,9 %, payment 84,7 %); **`make e2e-web` 48/48**, 297 s; e2e chọn lọc (W3B, FlashSale, Product, Checkout) 23 PASS, 0 FAIL, 134,5 s. Không chạy lại trọn bộ e2e vì từ lượt xanh 872,6 s tới đây phía Go chỉ đổi 5 dòng ở `product` |
+| `make e2e-web` lượt 2, bất biến cuối | 48/48, ĐẠT |
+| kiểm lại T0 bằng kết quả thật | `rst.mjs`: dừng 4 dịch vụ, xác nhận nhận hàng, bật lại; `promotion_db.coin_transactions` có đúng một dòng `order_completed_reward` 1.950 xu (1 % của 195.000), `processed_events` có `order.completed`; bất biến ĐẠT. Lượt trước gọi sai đường dẫn nên chưa chứng minh được phần xu |
+
+Push 3b-1 theo lời chủ dự án ("push đi, rồi continue 3b-2"): `6088145..7ef6ff3`. Không có CI chạy.
+
+## Đợt 3b-2: ZaloPay, cấu hình phương thức thanh toán, vai nội bộ và duyệt hai người (A6, A7), 2026-11-25
+
+Nền: `7ef6ff3`. Luật F1–F15 ở `w3b-plan.md` §4. Mọi dòng dưới do manager tự chạy, không lấy theo lời agent.
+
+| Bước | Kết quả |
+|---|---|
+| nâng cấp volume 3b-1 (không xoá) + bất biến | ĐẠT |
+| volume sạch, `up`, `make seed` ×2 | exit 0, exit 0 |
+| `make lint`, `make test` | exit 0, exit 0 |
+| `make coverage` | exit 0 (order 78,2 %, promotion 79,0 %, payment 85,87 %) |
+| `make e2e-web` ×2 | 56/56, 56/56 |
+| `make e2e` lượt 1 | **đỏ 2 bài, đều là lỗi test**: bài 28 ký token service `order` (allowlist đúng là `order-service`), bài 45 dùng token fixture quá 15 phút → qa r3 (làm mới token, chỉ thử lại 429 khi có `Retry-After`) |
+| `make e2e` lượt 2 | exit 0: 77 bài gốc, 225 bài con PASS, 0 FAIL, 0 SKIP, 770,1 s |
+| `invariants.sh` (3 lần: sau e2e-web, e2e, e2e lượt 2) | ĐẠT; DLQ chỉ có bản tin độc do test cố ý gửi |
+| `test-db.sh` đủ bộ | lượt 1 **đỏ**: 2 bài NATS của notification vướng stream chuẩn mà bài của product/user để lại trên NATS dùng chung → qa r4 (NATS mới cho từng service); manager chạy lại: exit 0, 0 skip, payment 163 |
+| web r4, r5 | eslint, prettier, tsc, check:data exit 0; 99/99 test; `next-env.d.ts`, `tsconfig.json` bằng HEAD |
+| `make e2e-web` lượt 3 (sau r5) + bất biến | 56/56, ĐẠT; mọi container khoẻ |
+| rà secret trên diff | không có secret thật, chỉ mật khẩu/token giả trong test |
+
+### Trình duyệt thật (Chrome, 390/768/1440, không tràn ngang)
+
+- Thanh toán ZaloPay: bấm đúp chỉ 1 đơn; trang chờ và F5; IPN sai số tiền không xác nhận; IPN đúng tự cập nhật; đổi sang VietQR; IPN muộn của giao dịch ZaloPay đã bỏ → hoàn ví hiện trên đơn; đổi sang COD khi chưa xác minh SĐT → 409; đơn 0 đồng xác nhận ngay.
+- Ma trận 6 vai: menu và trang từ chối đúng, 0 lời gọi 403. Khoá gian hai người: người tạo không tự duyệt được, người khác duyệt; PDP ngừng bán, gian 404, giỏ 409; mở khoá thì trở lại. Hoàn tiền lớn: người tạo bị chặn, kế toán khác duyệt, từ chối phải có lý do (đối chiếu DB).
+- Tạo nhân viên (trùng email, bấm đúp một tài khoản), lịch sử hoạt động, cấu hình phương thức (min/max, âm, xung đột phiên bản 409, tắt ZaloPay khi có đơn chờ vẫn trả được, không tắt được phương thức cuối).
+- Lỗi bắt được → web r4: (P1) người bán bị khoá không vào được đơn dở và lý do khoá đọc sai trường; cùng 9 lỗi chữ/nhãn. Web r5: ô ghi chú đổi cấu hình bị điền sẵn câu cũ, UUID ở `doi-soat`, và một `.catch` của r4 biến lỗi tải sản phẩm thành "0 sản phẩm" (manager bắt khi đọc diff).
+- Kiểm lại sau r5 (chỉ dựng lại `web`): gian bị khoá vào được tổng quan, đơn hàng, chi tiết đơn, trả hàng, tài chính với đúng lý do và thời điểm; bấm "Xác nhận đơn" trên giao diện khi đang bị khoá → đơn sang Đang chuẩn bị; sản phẩm, khuyến mãi, hồ sơ bị chặn đúng lý do; 390/768/1440 không tràn. Dòng thời gian và lý do hoàn tiền toàn tiếng Việt; nhãn hoạt động đúng; ô vai không còn `super_admin`; khoá lần hai báo đúng câu; trang chờ ZaloPay sạch chữ VietQR và đổi sang "Tổng đã thanh toán"; COD chưa xác minh SĐT có liên kết tới `/tai-khoan#xac-minh-sdt`; panel duyệt hiện tên, không lộ UUID; ô ghi chú trống.
+
+### Khởi động lại dịch vụ
+
+Duyệt khoá gian khi `product`, `promotion` đang tắt → ẩn sau 2,5 s từ lúc bật lại, mở khoá khôi phục. Huỷ đơn ZaloPay đã trả khi `payment` tắt → đúng 1 lệnh hoàn, DONE (lời gọi huỷ trả 503 dù đơn đã CANCELLED, hành vi cũ).
+
+### Thử pgvector trên bản sao volume (chuẩn bị 3b-3)
+
+`pgvector/pgvector:pg16` mở được, `vector` 0.8.7, số dòng khớp. Không `REINDEX` thì 18 chỉ mục B-tree ở 5 DB hỏng (musl → glibc); sau `REINDEX DATABASE` 278 chỉ mục qua `bt_index_check`. Vì vậy giữ image Postgres chung, `search` dùng container riêng (G13). Bản sao đã xoá.
+
+### Còn lại, biết và để
+
+- Chỉ kiểm được với ZaloPay sandbox thật: `-101` của `query_refund`, `amount` khi có `discount_amount`, thử lại khi HTTP 4xx. Kẹp hạn ZaloPay 300 s so với flash 5 phút.
+- `payment` không kiểm lại vai người duyệt trực tiếp; `NOT VALID`/`CONCURRENTLY` khi dữ liệu lớn; chạy lẫn pod 3b-1 và 3b-2; tự từ chối yêu cầu chờ duyệt khi huỷ đơn; watchdog cho `refund_rejected` thất lạc; khoá advisory so với `idemLocks`; `DeleteVoucher`/`EndShopDiscountProgram` vẫn cho gian bị khoá; mặc định `type`.
+- Panel duyệt: đổi bộ lọc khi tên đang tải thì tên rơi về mã 8 ký tự cho tới lúc tải lại trang (gộp vào lượt web của 3b-3).
+- Nhật ký hoạt động ghi IP container (B02, proxy rìa). Thẻ gợi ý hiện "Xưởng dệt/Gian hàng NexusMart" (B1).
