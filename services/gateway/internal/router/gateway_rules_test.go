@@ -508,6 +508,7 @@ func TestMapPaymentAndEndpointsIncludePlatformDiscountVND(t *testing.T) {
 
 	reqRetry := httptest.NewRequest(http.MethodPost, "/api/v1/payments/pay-alloc-1/retry", strings.NewReader(`{"method":"VIETQR"}`))
 	reqRetry.Header.Set("Authorization", "Bearer "+buyerTok)
+	reqRetry.Header.Set("Idempotency-Key", "idem-alloc-retry-1")
 	recRetry := httptest.NewRecorder()
 	h.ServeHTTP(recRetry, reqRetry)
 	if recRetry.Code != http.StatusOK {

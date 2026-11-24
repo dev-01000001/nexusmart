@@ -1,9 +1,19 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { GatewayPayment, GatewayPaymentResponse } from "@/lib/gateway-types";
+import { useRouter } from "next/navigation";
+import type {
+  GatewayOrder,
+  GatewayPayment,
+  GatewayPaymentMethod,
+  GatewayPaymentMethodConfig,
+  GatewayPaymentMethodsResponse,
+  GatewayPaymentResponse,
+  GatewayRetryPaymentResponse,
+} from "@/lib/gateway-types";
 import { ApiError, api, getErrorMessage, refreshSessionOnce } from "@/lib/api";
-import { formatVnd } from "@/lib/format";
+import { GATEWAY_PAYMENT_METHOD_LABELS, formatVnd } from "@/lib/format";
+import { validateSafePayUrl } from "@/lib/payment-url";
 import { Button } from "@/components/Button";
 import { StateView } from "@/components/StateView";
 import { VietQrPreview } from "./VietQrPreview";
@@ -26,12 +36,15 @@ export interface RetryPaymentBoxProps {
   initialPayment?: GatewayPayment;
   /** Optional callback invoked when retry generates a replacement payment ID. */
   onPaymentReplaced?: (nextPayment: GatewayPayment) => void;
+  /** Optional callback invoked when retry switches the order group to COD. */
+  onSwitchedToCod?: (orders: GatewayOrder[]) => void;
   /** Hide shortcut link to `/thanh-toan/cho-thanh-toan/[paymentId]` when already there. */
   hideWaitingPageLink?: boolean;
 }
 
 const POLL_INTERVAL_MS = 3500;
 const SSE_FALLBACK_POLL_MS = 2500;
+const METHOD_ORDER: readonly GatewayPaymentMethod[] = ["VIETQR", "ZALOPAY", "COD"];
 
 function statusToneClass(tone: "pos" | "warn" | "neg" | "neutral"): string {
   if (tone === "pos") return styles.tonePos;
@@ -40,30 +53,41 @@ function statusToneClass(tone: "pos" | "warn" | "neg" | "neutral"): string {
   return styles.toneNeutral;
 }
 
+function getMethodHeading(method: string): string {
+  const key = method.trim().toUpperCase() as GatewayPaymentMethod;
+  return GATEWAY_PAYMENT_METHOD_LABELS[key] ?? "Thanh toán trực tuyến";
+}
+
 export function RetryPaymentBox({
   paymentId,
   onPaid,
   initialPayment,
   onPaymentReplaced,
+  onSwitchedToCod,
   hideWaitingPageLink = false,
 }: RetryPaymentBoxProps) {
+  const router = useRouter();
   const [activePaymentId, setActivePaymentId] = useState<string>(
     initialPayment?.payment_id || paymentId
   );
   const [payment, setPayment] = useState<GatewayPayment | null>(initialPayment ?? null);
   const [loading, setLoading] = useState<boolean>(!initialPayment);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [retrying, setRetrying] = useState<boolean>(false);
+  const [retryingMethod, setRetryingMethod] = useState<GatewayPaymentMethod | null>(null);
+  const [codConfirmOpen, setCodConfirmOpen] = useState<boolean>(false);
   const [retryFeedback, setRetryFeedback] = useState<{
     tone: "error" | "info" | "success";
     message: string;
+    code?: string;
   } | null>(null);
   const [checkingStatus, setCheckingStatus] = useState<boolean>(false);
   const [sseDisconnected, setSseDisconnected] = useState<boolean>(false);
   const [nowMs, setNowMs] = useState<number | null>(null);
+  const [enabledMethods, setEnabledMethods] = useState<GatewayPaymentMethodConfig[]>([]);
 
   const activePaymentIdRef = useRef<string>(initialPayment?.payment_id || paymentId);
   const fetchSeqRef = useRef<number>(0);
+  const retryingRef = useRef<boolean>(false);
   const paidNotifiedRef = useRef<boolean>(
     (initialPayment?.status ?? "").toUpperCase() === "SUCCEEDED"
   );
@@ -83,6 +107,23 @@ export function RetryPaymentBox({
       paidNotifiedRef.current = initialPayment.status.toUpperCase() === "SUCCEEDED";
     }
   }, [paymentId, initialPayment]);
+
+  // Fetch active payment methods so buyer only sees enabled methods when switching/retrying
+  useEffect(() => {
+    let active = true;
+    api<GatewayPaymentMethodsResponse>("payment-methods", { retryOn401: false })
+      .then((res) => {
+        if (active && Array.isArray(res?.methods)) {
+          setEnabledMethods(res.methods.filter((m) => m.enabled));
+        }
+      })
+      .catch(() => {
+        // Non-blocking: retry still works with current method even if config fetch fails transiently
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const applyPaymentUpdate = useCallback((next: GatewayPayment) => {
     setPayment(next);
@@ -158,6 +199,8 @@ export function RetryPaymentBox({
   }, [activePaymentId, fetchPayment, initialPayment]);
 
   const normalizedStatus = (payment?.status ?? "").toUpperCase();
+  const normalizedMethod = (payment?.method ?? "VIETQR").toUpperCase();
+  const isZaloPay = normalizedMethod === "ZALOPAY";
   const isPending = normalizedStatus === "PENDING";
   const tracksExpiry = isPending || normalizedStatus === "FAILED";
 
@@ -171,9 +214,7 @@ export function RetryPaymentBox({
     return () => window.clearInterval(timer);
   }, [tracksExpiry, payment?.expires_at]);
 
-  // Live SSE subscription while PENDING (isolated from polling interval & sseDisconnected state).
-  // On terminal status: close EventSource synchronously before EOF triggers onerror.
-  // On error: close EventSource, refresh session at most once per disconnect streak, and reconnect with exponential backoff (5s..60s).
+  // Live SSE subscription while PENDING
   useEffect(() => {
     if (!isPending || !activePaymentId) return;
 
@@ -292,7 +333,7 @@ export function RetryPaymentBox({
     };
   }, [activePaymentId, fetchPayment, isPending]);
 
-  // Separate polling fallback effect while PENDING (speeds up automatically when SSE is disconnected)
+  // Separate polling fallback effect while PENDING
   useEffect(() => {
     if (!isPending || !activePaymentId) return;
     let closed = false;
@@ -326,6 +367,17 @@ export function RetryPaymentBox({
     void fetchPayment(activePaymentId, true);
   }, [countdownExpired, activePaymentId, fetchPayment]);
 
+  useEffect(() => {
+    if (!codConfirmOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !retryingRef.current) {
+        setCodConfirmOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [codConfirmOpen]);
+
   const handleManualCheck = async () => {
     setCheckingStatus(true);
     setRetryFeedback(null);
@@ -333,33 +385,55 @@ export function RetryPaymentBox({
     setCheckingStatus(false);
   };
 
-  const handleRetryVietQr = async () => {
-    if (retrying || !activePaymentId) return;
+  const handleRetryOrSwitch = async (targetMethod: GatewayPaymentMethod) => {
+    if (retryingRef.current || retryingMethod || !activePaymentId) return;
     if (isPaymentDeadlinePassed(payment?.expires_at)) {
+      setCodConfirmOpen(false);
       setNowMs(Date.now());
       return;
     }
-    setRetrying(true);
+    retryingRef.current = true;
+    setRetryingMethod(targetMethod);
     setRetryFeedback(null);
     try {
       const { key: idempotencyKey, cache } = resolveStableReferenceKey({
         prefix: "nm-pay-retry",
-        fingerprint: activePaymentId,
+        fingerprint: `${activePaymentId}:${targetMethod}`,
         cache: retryIdempotencyCacheRef.current,
       });
       retryIdempotencyCacheRef.current = cache;
-      const res = await api<GatewayPaymentResponse>(
+      const res = await api<GatewayRetryPaymentResponse>(
         `payments/${encodeURIComponent(activePaymentId)}/retry`,
         {
           method: "POST",
           headers: {
             "Idempotency-Key": idempotencyKey,
           },
-          json: { method: "VIETQR" },
+          json: { method: targetMethod },
         }
       );
+
+      retryIdempotencyCacheRef.current = null;
+      setCodConfirmOpen(false);
+
+      if (res?.switched_to_cod) {
+        const orders = Array.isArray(res.orders) ? res.orders : [];
+        setRetryFeedback({
+          tone: "success",
+          message:
+            "Đã chuyển sang thanh toán khi nhận hàng (COD) và xác nhận đơn hàng. Đang chuyển tới trang đơn hàng...",
+        });
+        if (onSwitchedToCod) {
+          onSwitchedToCod(orders);
+        } else {
+          const nextHref =
+            orders.length === 1 ? `/don-hang/${encodeURIComponent(orders[0].id)}` : "/don-hang";
+          router.replace(nextHref);
+        }
+        return;
+      }
+
       if (res?.payment) {
-        retryIdempotencyCacheRef.current = null;
         paidNotifiedRef.current = res.payment.status.toUpperCase() === "SUCCEEDED";
         activePaymentIdRef.current = res.payment.payment_id;
         fetchSeqRef.current += 1;
@@ -367,26 +441,54 @@ export function RetryPaymentBox({
         setPayment(res.payment);
         setRetryFeedback({
           tone: "success",
-          message: "Đã tạo mã VietQR mới. Vui lòng quét mã trong thời hạn đếm ngược trên màn hình.",
+          message:
+            targetMethod === "ZALOPAY"
+              ? "Đã tạo liên kết thanh toán ZaloPay mới. Nhấn Thanh toán qua ZaloPay trong thời hạn đếm ngược."
+              : "Đã tạo mã VietQR mới. Vui lòng quét mã trong thời hạn đếm ngược trên màn hình.",
         });
         onPaymentReplaced?.(res.payment);
       }
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 409 || err.code === "FAILED_PRECONDITION")) {
+      setCodConfirmOpen(false);
+      if (
+        err instanceof ApiError &&
+        (err.code === "COD_PHONE_NOT_VERIFIED" ||
+          err.code === "COD_AREA_NOT_SUPPORTED" ||
+          err.code === "COD_REJECTED_LIMIT_EXCEEDED" ||
+          err.code === "COD_LIMIT_EXCEEDED" ||
+          err.code === "FLASH_SALE_COD_NOT_ALLOWED" ||
+          err.code === "PAYMENT_METHOD_DISABLED" ||
+          err.code === "ORDER_AMOUNT_OUT_OF_RANGE" ||
+          err.code === "SHOP_SUSPENDED")
+      ) {
+        setRetryFeedback({
+          tone: "error",
+          message: err.message,
+          code: err.code,
+        });
+      } else if (
+        err instanceof ApiError &&
+        (err.status === 409 || err.code === "FAILED_PRECONDITION")
+      ) {
         setRetryFeedback({
           tone: "error",
           message:
-            "Giao dịch đã hết hạn hoặc đơn hàng đã được hủy tự động. Vui lòng kiểm tra đơn hàng hoặc đặt lại từ giỏ hàng.",
+            err.message ||
+            "Giao dịch đã hết hạn hoặc không thể đổi phương thức lúc này. Vui lòng kiểm tra đơn hàng.",
         });
         await fetchPayment(activePaymentId, true);
       } else {
         setRetryFeedback({
           tone: "error",
-          message: getErrorMessage(err, "Chưa thể tạo lại mã VietQR lúc này. Vui lòng thử lại."),
+          message: getErrorMessage(
+            err,
+            "Chưa thể xử lý yêu cầu thanh toán lúc này. Vui lòng thử lại."
+          ),
         });
       }
     } finally {
-      setRetrying(false);
+      retryingRef.current = false;
+      setRetryingMethod(null);
     }
   };
 
@@ -406,7 +508,7 @@ export function RetryPaymentBox({
     );
   }
 
-  const statusView = getPaymentStatusView(payment.status);
+  const statusView = getPaymentStatusView(payment.status, payment.method);
   const transferRef = payment.provider_ref || payment.order_group_id || payment.payment_id;
   const allocatedOrderIds = Array.from(
     new Set(
@@ -421,17 +523,35 @@ export function RetryPaymentBox({
     orderIds.length === 1 ? `/don-hang/${encodeURIComponent(orderIds[0])}` : "/don-hang";
   const canRetry = canRetryPayment(normalizedStatus, countdownExpired);
   const isExpiredState = normalizedStatus === "EXPIRED" || countdownExpired;
+  const currentOrigin = typeof window !== "undefined" ? window.location.origin : undefined;
+  const validatedPayUrl = isZaloPay ? validateSafePayUrl(payment.pay_url, currentOrigin) : null;
+
+  const availableMethodSet = new Set<GatewayPaymentMethod>(
+    enabledMethods.length > 0
+      ? enabledMethods
+          .map((m) => String(m.method).toUpperCase())
+          .filter(
+            (m): m is GatewayPaymentMethod => m === "COD" || m === "VIETQR" || m === "ZALOPAY"
+          )
+      : METHOD_ORDER
+  );
+  const currentRetryMethod: GatewayPaymentMethod = isZaloPay ? "ZALOPAY" : "VIETQR";
+  const switchableMethods = METHOD_ORDER.filter(
+    (m) => m !== currentRetryMethod && availableMethodSet.has(m)
+  );
+  const canRetryCurrentMethod = availableMethodSet.has(currentRetryMethod);
 
   return (
     <div
       className={styles.retryBox}
       role="region"
-      aria-label={`Thông tin thanh toán VietQR ${transferRef}`}
+      aria-label={`Thông tin thanh toán ${getMethodHeading(payment.method)} ${transferRef}`}
     >
       <div className={styles.retryHead}>
         <div className={styles.paymentTitleGroup}>
           <p className={styles.retryTitle}>
-            Chuyển khoản VietQR · <span className="num">{formatVnd(payment.amount_vnd)}</span>
+            {getMethodHeading(payment.method)} ·{" "}
+            <span className="num">{formatVnd(payment.amount_vnd)}</span>
           </p>
           <span className={`${styles.statusTag} ${statusToneClass(statusView.tone)}`}>
             {statusView.label}
@@ -453,7 +573,57 @@ export function RetryPaymentBox({
 
       <p className={styles.retryText}>{statusView.description}</p>
 
-      {isPending && (
+      {isPending && isZaloPay && (
+        <div className={styles.surfacePanel} style={{ marginTop: 12, marginBottom: 12 }}>
+          <p className={styles.fieldLabel}>Liên kết thanh toán Ví ZaloPay</p>
+          <p className={styles.fieldHint} style={{ marginTop: 6 }}>
+            Mã tham chiếu giao dịch: <strong className="num">{transferRef}</strong> · Số tiền:{" "}
+            <strong className="num">{formatVnd(payment.amount_vnd)}</strong>
+          </p>
+          {validatedPayUrl?.safe && validatedPayUrl.href ? (
+            <div className={styles.formActions} style={{ marginTop: 12 }}>
+              <a
+                href={validatedPayUrl.href}
+                target={validatedPayUrl.isExternal ? "_blank" : undefined}
+                rel={validatedPayUrl.isExternal ? "noopener noreferrer" : undefined}
+                className={`${styles.wrapBtn}`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "10px 18px",
+                  background: "var(--accent)",
+                  color: "var(--accent-fg)",
+                  fontWeight: 500,
+                }}
+              >
+                Thanh toán qua ZaloPay
+              </a>
+            </div>
+          ) : (
+            <p
+              className={`${styles.feedbackBox} ${styles.feedbackError}`}
+              role="alert"
+              style={{ marginTop: 10 }}
+            >
+              Liên kết thanh toán ZaloPay chưa sẵn sàng hoặc không hợp lệ. Vui lòng tạo lại liên kết
+              hoặc chọn phương thức thanh toán khác bên dưới.
+            </p>
+          )}
+          <p
+            className={styles.paymentLiveStatus}
+            role="status"
+            aria-live="polite"
+            style={{ marginTop: 12 }}
+          >
+            {countdownExpired
+              ? "Hạn giữ đơn đã qua và đơn hàng sẽ tự động hủy. Vui lòng kiểm tra trạng thái đơn hoặc đặt lại đơn mới từ giỏ hàng."
+              : "Đang tự động theo dõi trạng thái thanh toán từ Ví ZaloPay..."}
+          </p>
+        </div>
+      )}
+
+      {isPending && !isZaloPay && (
         <>
           <VietQrPreview
             amount={payment.amount_vnd}
@@ -471,7 +641,7 @@ export function RetryPaymentBox({
       )}
 
       {retryFeedback && (
-        <p
+        <div
           className={`${styles.feedbackBox} ${
             retryFeedback.tone === "error"
               ? styles.feedbackError
@@ -481,8 +651,15 @@ export function RetryPaymentBox({
           }`}
           role={retryFeedback.tone === "error" ? "alert" : "status"}
         >
-          {retryFeedback.message}
-        </p>
+          <p>{retryFeedback.message}</p>
+          {retryFeedback.code === "COD_PHONE_NOT_VERIFIED" && (
+            <div className={styles.formActions}>
+              <Button variant="secondary" size="sm" href="/tai-khoan#xac-minh-sdt">
+                Xác minh SĐT ngay
+              </Button>
+            </div>
+          )}
+        </div>
       )}
 
       <div className={styles.formActions}>
@@ -497,21 +674,54 @@ export function RetryPaymentBox({
           </>
         ) : (
           <>
-            {canRetry && (
+            {canRetry && canRetryCurrentMethod && (
               <Button
                 variant={isPending ? "secondary" : "primary"}
                 size="md"
                 className={styles.wrapBtn}
-                disabled={retrying}
-                onClick={() => void handleRetryVietQr()}
+                disabled={retryingMethod !== null}
+                onClick={() => void handleRetryOrSwitch(currentRetryMethod)}
               >
-                {retrying
-                  ? "Đang tạo mã VietQR mới..."
+                {retryingMethod === currentRetryMethod
+                  ? isZaloPay
+                    ? "Đang tạo liên kết ZaloPay..."
+                    : "Đang tạo mã VietQR mới..."
                   : isPending
-                    ? "Tạo mã VietQR mới"
-                    : "Thanh toán lại qua VietQR"}
+                    ? isZaloPay
+                      ? "Tạo liên kết ZaloPay mới"
+                      : "Tạo mã VietQR mới"
+                    : isZaloPay
+                      ? "Thanh toán lại qua ZaloPay"
+                      : "Thanh toán lại qua VietQR"}
               </Button>
             )}
+            {canRetry &&
+              switchableMethods.map((methodOption) => (
+                <Button
+                  key={methodOption}
+                  variant="secondary"
+                  size="md"
+                  className={styles.wrapBtn}
+                  disabled={retryingMethod !== null}
+                  onClick={() => {
+                    if (methodOption === "COD") {
+                      if (!retryingRef.current) {
+                        setCodConfirmOpen(true);
+                      }
+                      return;
+                    }
+                    void handleRetryOrSwitch(methodOption);
+                  }}
+                >
+                  {retryingMethod === methodOption
+                    ? "Đang chuyển phương thức..."
+                    : methodOption === "COD"
+                      ? "Đổi sang COD"
+                      : methodOption === "ZALOPAY"
+                        ? "Đổi sang Ví ZaloPay"
+                        : "Đổi sang VietQR"}
+                </Button>
+              ))}
             {isPending && (
               <Button
                 variant="secondary"
@@ -544,6 +754,59 @@ export function RetryPaymentBox({
           </>
         )}
       </div>
+
+      {codConfirmOpen && (
+        <div
+          className={styles.confirmBackdrop}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cod-switch-dialog-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !retryingRef.current) {
+              setCodConfirmOpen(false);
+            }
+          }}
+        >
+          <div className={styles.confirmDialog}>
+            <h3 id="cod-switch-dialog-title" className={styles.confirmTitle}>
+              Xác nhận đổi sang thanh toán khi nhận hàng (COD)
+            </h3>
+            <p className={styles.confirmBody}>
+              Sau khi xác nhận, đơn hàng sẽ được chuyển ngay sang trạng thái{" "}
+              <strong>Đã xác nhận</strong> với hình thức thanh toán khi nhận hàng và không thể quay
+              lại thanh toán trực tuyến.
+            </p>
+            <ul className={styles.confirmList}>
+              <li className={styles.confirmListItem}>
+                <span>Số tiền thanh toán khi nhận hàng</span>
+                <strong className="num">{formatVnd(payment.amount_vnd)}</strong>
+              </li>
+              <li className={styles.confirmListItem}>
+                <span>Hình thức mới</span>
+                <strong>Thanh toán khi nhận hàng (COD)</strong>
+              </li>
+            </ul>
+            <div className={styles.formActions}>
+              <Button
+                variant="secondary"
+                size="md"
+                disabled={retryingMethod !== null}
+                onClick={() => setCodConfirmOpen(false)}
+              >
+                Quay lại
+              </Button>
+              <Button
+                variant="primary"
+                size="md"
+                disabled={retryingMethod !== null}
+                onClick={() => void handleRetryOrSwitch("COD")}
+              >
+                {retryingMethod === "COD" ? "Đang xác nhận COD..." : "Xác nhận đổi sang COD"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

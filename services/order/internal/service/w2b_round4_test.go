@@ -1042,7 +1042,7 @@ func TestW2B_R4_FGH_WarningsBatchingInputsAndP3(t *testing.T) {
 				{ShopId: "shop-1", Items: []*cartv1.CartItem{{SkuId: "sku-1", ShopId: "shop-1", Quantity: 1, PriceVnd: 1000000}}},
 			},
 		}
-		resolved, err := h.svc.resolveCheckoutInputs(buyerCtx, "buyer-1", &orderv1.CreateCheckoutRequest{
+		resolved, _, err := h.svc.resolveCheckoutInputs(buyerCtx, "buyer-1", &orderv1.CreateCheckoutRequest{
 			FromCart: true,
 			Items:    []*orderv1.CheckoutItemInput{{SkuId: " sku-1 ", FlashSaleItemId: " fsi-trim "}},
 		})

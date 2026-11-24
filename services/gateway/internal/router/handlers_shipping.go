@@ -379,7 +379,7 @@ func (h *handler) handleCalculateShippingFee(w http.ResponseWriter, r *http.Requ
 		if rawPM := strings.TrimSpace(body.PaymentMethod); rawPM != "" {
 			pm := parseOrderPaymentMethod(rawPM)
 			if pm == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED {
-				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "payment_method must be COD or VIETQR")
+				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "payment_method must be COD, VIETQR, or ZALOPAY")
 				return
 			}
 			isCOD = pm == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD
@@ -552,7 +552,7 @@ func (h *handler) handleGetShipment(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	claims, _ := auth.ClaimsFromContext(r.Context())
-	if !auth.HasRole(claims, "admin", "super_admin") && h.clients.Order != nil {
+	if !auth.HasCapability(claims, auth.CapCarriersRead) && h.clients.Order != nil {
 		if _, err := h.clients.Order.GetOrder(ctx, &orderv1.GetOrderRequest{
 			OrderId:     orderID,
 			ActorId:     claims.UserID(),

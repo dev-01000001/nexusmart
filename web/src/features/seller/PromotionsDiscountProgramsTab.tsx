@@ -9,6 +9,7 @@ import type {
   PaginatedResponse,
 } from "@/lib/gateway-types";
 import { api, getErrorMessage } from "@/lib/api";
+import { formatPromotionErrorMessage } from "@/features/checkout/messages";
 import { Button, StateView } from "@/components";
 import { formatDateTimeVi, formatDiscountPercent, formatInt, formatVnd } from "@/lib/format";
 import {
@@ -297,7 +298,13 @@ export function PromotionsDiscountProgramsTab({
           : `Đã tạo chương trình giảm giá "${cleanName}" cho ${formatInt(payloadItems.length)} SKU.`
       );
     } catch (err) {
-      setFormError(getErrorMessage(err, "Không thể lưu chương trình giảm giá lúc này."));
+      setFormError(
+        formatPromotionErrorMessage(
+          err,
+          "seller_discount_program",
+          "Không thể lưu chương trình giảm giá lúc này."
+        )
+      );
     } finally {
       setSubmitting(false);
     }
@@ -314,7 +321,13 @@ export function PromotionsDiscountProgramsTab({
       await loadPrograms();
       onNotify(`Đã kết thúc chương trình "${program.name}".`);
     } catch (err) {
-      onNotify(getErrorMessage(err, "Không thể kết thúc chương trình giảm giá."));
+      onNotify(
+        formatPromotionErrorMessage(
+          err,
+          "seller_discount_program",
+          "Không thể kết thúc chương trình giảm giá."
+        )
+      );
     } finally {
       setEndingId(null);
     }

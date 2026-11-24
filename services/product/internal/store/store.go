@@ -155,9 +155,27 @@ type Product struct {
 	ReviewCount     int32
 	FlaggedKeywords []string
 	FirstApprovedAt *time.Time
+	ShopSuspended   bool
 	DeletedAt       *time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+}
+
+type ShopSuspensionState struct {
+	ShopID    string
+	Suspended bool
+	Version   int64
+	UpdatedAt time.Time
+}
+
+type DeadLetterEvent struct {
+	ID           string
+	Subject      string
+	EventID      string
+	Payload      []byte
+	ErrorMessage string
+	Attempts     int32
+	CreatedAt    time.Time
 }
 
 // ComputeRatingAvgX100 computes integer average rating scaled by 100 (0..500) using integer arithmetic only (E6/E14).
@@ -247,6 +265,7 @@ type SKU struct {
 	Status            string
 	ProductStatus     string
 	ProductDeleted    bool
+	ShopSuspended     bool
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -261,11 +280,17 @@ func (s SKU) AvailableStock() int32 {
 }
 
 // IsActive reports whether the SKU belongs to an approved (or out-of-stock) non-deleted product and is not deactivated.
+// Intentionally ignores ShopSuspended so in-flight order stock reservations (ReserveStock) are not blocked by shop suspension.
 func (s SKU) IsActive() bool {
 	if s.ProductDeleted || s.Status == SKUStatusInactive {
 		return false
 	}
 	return s.ProductStatus == ProductStatusApproved || s.ProductStatus == ProductStatusOutOfStock
+}
+
+// IsPubliclyActive reports whether the SKU is active and its owning shop is not suspended (F12).
+func (s SKU) IsPubliclyActive() bool {
+	return s.IsActive() && !s.ShopSuspended
 }
 
 type StockReservation struct {
@@ -383,6 +408,14 @@ type Queries interface {
 	TryInsertRestockHistory(ctx context.Context, h StockHistoryEntry) (bool, error)
 
 	InsertOutboxEvent(ctx context.Context, ev OutboxEvent) error
+
+	LockShopSuspension(ctx context.Context, shopID string) error
+	GetShopSuspensionState(ctx context.Context, shopID string) (ShopSuspensionState, error)
+	IsShopSuspended(ctx context.Context, shopID string) (bool, error)
+	UpsertShopSuspensionState(ctx context.Context, shopID string, suspended bool, version int64) (ShopSuspensionState, bool, error)
+	SetProductsShopSuspendedByShop(ctx context.Context, shopID string, suspended bool) error
+	TryInsertProcessedEvent(ctx context.Context, eventID, eventType string) (bool, error)
+	InsertDeadLetterEvent(ctx context.Context, ev DeadLetterEvent) error
 }
 
 // Store is the top-level persistence interface supporting transactions, outbox relay, and health pings.

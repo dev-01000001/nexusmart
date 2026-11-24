@@ -44,8 +44,12 @@ export const ADMIN_USER_STATUS_META: Record<
 export const ADMIN_USER_ROLE_LABELS: Record<UserRole | string, string> = {
   buyer: "Người mua",
   seller: "Người bán",
+  moderator: "Kiểm duyệt viên",
+  cskh: "Chăm sóc khách hàng",
+  accountant: "Kế toán",
+  ops: "Vận hành",
   admin: "Quản trị viên",
-  super_admin: "Quản trị cấp cao",
+  super_admin: "Siêu quản trị",
 };
 
 export const ADMIN_ORDER_STATUS_META: Record<string, { label: string; tone: PillTone }> = {
@@ -101,6 +105,9 @@ export const ADMIN_AUDIT_TARGET_TYPE_LABELS: Record<string, string> = {
   reconciliation_item: "Đối soát giao dịch",
   return_request: "Trả hàng / khiếu nại",
   carrier: "Hãng vận chuyển",
+  payment_method: "Phương thức thanh toán",
+  shop_approval: "Phê duyệt khoá gian hàng",
+  staff: "Nhân sự nội bộ",
   admin: "Hệ thống quản trị",
 };
 
@@ -141,18 +148,72 @@ export function getAdminReturnStatusMeta(status: string): { label: string; tone:
   }
 }
 
-export function getAdminRefundStatusMeta(status: string): { label: string; tone: PillTone } {
-  const key = (status ?? "")
+function normalizeAdminRefundStatus(status: string | null | undefined): string {
+  return (status ?? "")
     .trim()
     .toUpperCase()
     .replace(/^REFUND_STATUS_/, "");
+}
+
+export function isAdminWalletRefund(
+  refund?: { provider_m_refund_id?: string | null } | null
+): boolean {
+  return Boolean((refund?.provider_m_refund_id ?? "").trim());
+}
+
+export function isAdminWalletRefundAutoPending(
+  refund?: { status?: string | null; provider_m_refund_id?: string | null } | null
+): boolean {
+  return normalizeAdminRefundStatus(refund?.status) === "PENDING" && isAdminWalletRefund(refund);
+}
+
+/**
+ * Manual accountant settlement is allowed ONLY when:
+ * - status is MANUAL_REVIEW (any method, including failed wallet auto-refunds), OR
+ * - status is PENDING and NOT a ZaloPay wallet refund (provider_m_refund_id is empty).
+ */
+export function isAdminRefundManuallySettleable(
+  refund?: { status?: string | null; provider_m_refund_id?: string | null } | null
+): boolean {
+  const key = normalizeAdminRefundStatus(refund?.status);
+  if (key === "MANUAL_REVIEW") {
+    return true;
+  }
+  if (key === "PENDING") {
+    return !isAdminWalletRefund(refund);
+  }
+  return false;
+}
+
+export function getAdminRefundStatusMeta(
+  status: string,
+  refund?: { provider_m_refund_id?: string | null; bank_code?: string | null } | null
+): { label: string; tone: PillTone } {
+  const key = normalizeAdminRefundStatus(status);
+  const wallet = isAdminWalletRefund(refund);
+  const settledViaBank = Boolean((refund?.bank_code ?? "").trim());
   if (key === "DONE" || key === "COMPLETED") {
+    if (wallet && !settledViaBank) {
+      return { label: "Đã hoàn về ví ZaloPay", tone: "positive" };
+    }
     return { label: "Đã tất toán", tone: "positive" };
   }
   if (key === "FAILED") {
     return { label: "Thất bại", tone: "negative" };
   }
+  if (key === "PENDING_APPROVAL") {
+    return { label: "Chờ duyệt 2 người", tone: "warning" };
+  }
+  if (key === "REJECTED") {
+    return { label: "Từ chối duyệt", tone: "negative" };
+  }
+  if (key === "MANUAL_REVIEW") {
+    return { label: "Cần xử lý tay", tone: "warning" };
+  }
   if (key === "PENDING") {
+    if (wallet) {
+      return { label: "ZaloPay đang hoàn tự động", tone: "warning" };
+    }
     return { label: "Chờ chuyển khoản", tone: "warning" };
   }
   return { label: "Đang cập nhật", tone: "neutral" };
@@ -341,6 +402,72 @@ export function buildAdminBankReviewPayload(input: {
     reason:
       note || (input.decision === "APPROVE" ? "Đã đối chiếu giấy tờ chủ tài khoản ngân hàng." : ""),
   };
+}
+
+/**
+ * Real activity event codes emitted by services/user/internal/service/governance.go (F13),
+ * mapped to Vietnamese labels for AdminUsersPanel.
+ */
+export const USER_ACTIVITY_EVENT_LABELS: Record<string, string> = {
+  login_succeeded: "Đăng nhập thành công",
+  login_success: "Đăng nhập thành công",
+  login_failed: "Đăng nhập thất bại",
+  logout: "Đăng xuất",
+  password_changed: "Đổi mật khẩu",
+  password_reset_requested: "Yêu cầu đặt lại mật khẩu",
+  password_reset_sent: "Đã gửi thư đặt lại mật khẩu",
+  password_reset_failed: "Gửi thư đặt lại mật khẩu thất bại",
+  password_reset_completed: "Hoàn tất đặt lại mật khẩu",
+  profile_updated: "Cập nhật hồ sơ",
+  phone_otp_requested: "Yêu cầu mã OTP xác minh SĐT",
+  phone_otp_verified: "Xác minh OTP SĐT thành công",
+  phone_otp_failed: "Xác minh OTP SĐT thất bại",
+  phone_verified: "Xác minh số điện thoại",
+  status_changed: "Thay đổi trạng thái tài khoản",
+  role_changed: "Thay đổi vai trò",
+  staff_created: "Tạo tài khoản nhân viên",
+  shop_suspended: "Tạm ngưng gian hàng",
+  shop_unsuspended: "Mở khóa gian hàng",
+};
+
+export function formatUserActivityEventType(raw: string | null | undefined): string {
+  const key = (raw ?? "").trim().toLowerCase();
+  if (!key) return "Hoạt động tài khoản";
+  return USER_ACTIVITY_EVENT_LABELS[key] ?? (raw || "Hoạt động tài khoản");
+}
+
+export interface ApprovalActorLookupEntry {
+  full_name?: string | null;
+  email?: string | null;
+  role?: string | null;
+}
+
+/**
+ * Formats a two-person approval maker/checker actor for display.
+ * Uses resolved user full_name (or email) + Vietnamese role label when available,
+ * and falls back to an 8-character short ID + role label so raw 36-char UUIDs never leak to UI.
+ */
+export function formatApprovalActorDisplay(
+  userId: string | null | undefined,
+  roleHint?: string | null,
+  userById?: Record<string, ApprovalActorLookupEntry | null | undefined>
+): string {
+  const cleanId = (userId ?? "").trim();
+  if (!cleanId) return "—";
+
+  const resolved = userById?.[cleanId] ?? null;
+  const resolvedRole = (roleHint ?? resolved?.role ?? "").trim().toLowerCase();
+  const roleLabel = resolvedRole
+    ? (ADMIN_USER_ROLE_LABELS[resolvedRole] ?? roleHint ?? resolved?.role ?? "")
+    : "";
+
+  const displayName = (resolved?.full_name ?? "").trim() || (resolved?.email ?? "").trim();
+  if (displayName) {
+    return roleLabel ? `${displayName} (${roleLabel})` : displayName;
+  }
+
+  const shortCode = cleanId.length > 12 ? `#${cleanId.slice(0, 8)}` : cleanId;
+  return roleLabel ? `${shortCode} (${roleLabel})` : shortCode;
 }
 
 /**

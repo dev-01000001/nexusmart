@@ -58,6 +58,8 @@ export const config = {
     "dev-only-payment-webhook-hmac-secret"
   ),
   shippingWebhookSecret: SHIPPING_WEBHOOK_SECRET,
+  zaloPayAppId: Number.parseInt(envValue("ZALOPAY_APP_ID", "1"), 10) || 1,
+  zaloPayKey2: envValue("ZALOPAY_KEY2", "dev-only-zalopay-mock-key2"),
   requestTimeoutMs: 15_000,
   pollTimeoutMs: 25_000,
   pollIntervalMs: 300,

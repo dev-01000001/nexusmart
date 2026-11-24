@@ -46,7 +46,8 @@ var allowedReturnTransitions = map[orderv1.ReturnStatus]map[orderv1.ReturnStatus
 		orderv1.ReturnStatus_RETURN_STATUS_CLOSED:    {},
 	},
 	orderv1.ReturnStatus_RETURN_STATUS_REFUNDING: {
-		orderv1.ReturnStatus_RETURN_STATUS_REFUNDED: {},
+		orderv1.ReturnStatus_RETURN_STATUS_REFUNDED:  {},
+		orderv1.ReturnStatus_RETURN_STATUS_ESCALATED: {},
 	},
 }
 

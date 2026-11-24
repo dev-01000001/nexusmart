@@ -13,6 +13,8 @@ import type {
   GatewayDiscountBreakdown,
   GatewayFlashSale,
   GatewayPaymentMethod,
+  GatewayPaymentMethodConfig,
+  GatewayPaymentMethodsResponse,
   GatewayPreviewDiscountsResponse,
   GatewayProduct,
   GatewayPublicShop,
@@ -38,7 +40,6 @@ import type { BuyNowResolvedItem } from "@/features/checkout/types";
 import { CheckoutSuggestionStrip } from "@/features/checkout/CheckoutSuggestionStrip";
 import {
   DEFAULT_COD_MAX_REJECTED,
-  DEFAULT_COD_MAX_VND,
   SHOP_PICKUP_ADDRESS_REQUIRED_BUYER_MESSAGE,
   formatServiceDisplay,
   formatVoucherCondition,
@@ -58,6 +59,7 @@ import {
   clearPendingCheckoutKey,
   computeBuyNowSlicePricing,
   createManualVoucherPreviewFn,
+  evaluatePaymentMethodForCheckout,
   evaluateShopFlashLines,
   getCheckoutPreviewBlockReason,
   inspectFlashSaleStatusForSku,
@@ -65,6 +67,8 @@ import {
   isTerminalCancelledCheckoutResponse,
   readPendingCheckoutKey,
   reduceCheckoutSubmitState,
+  resolvePostCheckoutHref,
+  resolveDefaultCheckoutMethod,
   resolveDisplayedLinePricing,
   resolveLiveFlashSaleForSku,
   resolveManualVoucherCode,
@@ -87,6 +91,7 @@ export interface CheckoutClientProps {
   initialShops: GatewayPublicShop[];
   initialFlashSales?: GatewayFlashSale[];
   initialActiveShopDiscounts?: GatewayActiveShopDiscount[];
+  initialPaymentMethods?: GatewayPaymentMethodConfig[];
   initialError?: string | null;
   buyNowItem: BuyNowResolvedItem | null;
   buyNowError: string | null;
@@ -138,6 +143,7 @@ export function CheckoutClient({
   initialShops,
   initialFlashSales = [],
   initialActiveShopDiscounts = [],
+  initialPaymentMethods = [],
   initialError,
   buyNowItem,
   buyNowError,
@@ -194,7 +200,36 @@ export function CheckoutClient({
     initialAddresses.length === 0
   );
 
-  const [paymentMethod, setPaymentMethod] = useState<GatewayPaymentMethod>("VIETQR");
+  const [paymentMethods, setPaymentMethods] =
+    useState<GatewayPaymentMethodConfig[]>(initialPaymentMethods);
+  const [paymentMethod, setPaymentMethod] = useState<GatewayPaymentMethod>(() => {
+    if (initialPaymentMethods.length > 0) {
+      const picked = resolveDefaultCheckoutMethod(initialPaymentMethods, {
+        hasFlashSaleItem: Boolean(buyNowItem?.flashSaleItemId),
+        currentMethod: "VIETQR",
+      });
+      if (picked) return picked;
+    }
+    return "VIETQR";
+  });
+
+  // Fallback client fetch of /payment-methods only if SSR list came back empty
+  useEffect(() => {
+    if (initialPaymentMethods.length > 0) return;
+    let active = true;
+    api<GatewayPaymentMethodsResponse>("payment-methods", { retryOn401: false })
+      .then((res) => {
+        if (active && Array.isArray(res?.methods) && res.methods.length > 0) {
+          setPaymentMethods(res.methods);
+        }
+      })
+      .catch(() => {
+        // Keep current fallback if public endpoint temporarily unreachable
+      });
+    return () => {
+      active = false;
+    };
+  }, [initialPaymentMethods.length]);
 
   // Real shipping quotes from POST /shipping/calculate-fee
   const [quotesByShop, setQuotesByShop] = useState<Record<string, GatewayCarrierQuote[]>>({});
@@ -442,12 +477,50 @@ export function CheckoutClient({
     [activeSlices]
   );
 
-  // Force VietQR when any item in checkout uses Flash Sale (COD disallowed)
+  const paymentMethodByCode = useMemo(() => {
+    const map: Partial<Record<GatewayPaymentMethod, GatewayPaymentMethodConfig>> = {};
+    for (const cfg of paymentMethods) {
+      const key = String(cfg.method ?? "")
+        .trim()
+        .toUpperCase();
+      if (key === "COD" || key === "VIETQR" || key === "ZALOPAY") {
+        map[key] = cfg;
+      }
+    }
+    return map;
+  }, [paymentMethods]);
+
+  const hasLoadedMethodConfigs = paymentMethods.length > 0;
+  const vietqrConfig = paymentMethodByCode.VIETQR ?? null;
+  const zalopayConfig = paymentMethodByCode.ZALOPAY ?? null;
+  const codConfig = paymentMethodByCode.COD ?? null;
+  const vietqrEnabled = hasLoadedMethodConfigs ? Boolean(vietqrConfig?.enabled) : true;
+  const zalopayEnabled = hasLoadedMethodConfigs ? Boolean(zalopayConfig?.enabled) : true;
+  const codEnabled = hasLoadedMethodConfigs ? Boolean(codConfig?.enabled) : true;
+  const codMinVnd = Math.max(0, Math.trunc(codConfig?.min_order_vnd ?? 0));
+  const codMaxVnd = Math.max(0, Math.trunc(codConfig?.max_order_vnd ?? 0));
+  const firstOnlineMethod: GatewayPaymentMethod | null = vietqrEnabled
+    ? "VIETQR"
+    : zalopayEnabled
+      ? "ZALOPAY"
+      : null;
+
+  // Keep paymentMethod aligned with enabled methods & Flash Sale online-only rule (VietQR or ZaloPay)
   useEffect(() => {
-    if (hasFlashSaleItem && paymentMethod !== "VIETQR") {
+    if (paymentMethods.length > 0) {
+      const next = resolveDefaultCheckoutMethod(paymentMethods, {
+        hasFlashSaleItem,
+        currentMethod: paymentMethod,
+      });
+      if (next && next !== paymentMethod) {
+        setPaymentMethod(next);
+      }
+      return;
+    }
+    if (hasFlashSaleItem && paymentMethod === "COD") {
       setPaymentMethod("VIETQR");
     }
-  }, [hasFlashSaleItem, paymentMethod]);
+  }, [hasFlashSaleItem, paymentMethod, paymentMethods]);
 
   const flashFallbackNotices = useMemo(() => {
     const notices: string[] = [];
@@ -1049,11 +1122,22 @@ export function CheckoutClient({
       codRejectedCount: effectiveCodRejectedCount,
       phoneVerified: effectivePhoneVerified,
       codAreaSupported,
+      codMinVnd,
+      codMaxVnd,
     });
     if (paymentMethod === "COD" && hasFlashSaleItem) {
       setLastCodErrorCode("FLASH_SALE_COD_NOT_ALLOWED");
       setFormError(codCheck.reason);
-      setPaymentMethod("VIETQR");
+      if (firstOnlineMethod) {
+        setPaymentMethod(firstOnlineMethod);
+      }
+      return;
+    }
+    const activeMethodConfig = paymentMethodByCode[paymentMethod];
+    if (activeMethodConfig && !activeMethodConfig.enabled) {
+      setFormError(
+        "Phương thức thanh toán bạn chọn hiện đang tạm tắt. Vui lòng chọn phương thức khác."
+      );
       return;
     }
 
@@ -1123,17 +1207,7 @@ export function CheckoutClient({
         void Promise.resolve(clearCart(cartAction.skuIds)).catch(() => {});
       }
 
-      if (res.payment_method === "VIETQR" && res.payment_id && res.total_payable_vnd > 0) {
-        router.push(`/thanh-toan/cho-thanh-toan/${encodeURIComponent(res.payment_id)}`);
-        return;
-      }
-
-      if (Array.isArray(res.orders) && res.orders.length === 1) {
-        router.push(`/don-hang/${encodeURIComponent(res.orders[0].id)}`);
-        return;
-      }
-
-      router.push("/don-hang");
+      router.push(resolvePostCheckoutHref(res));
     } catch (err) {
       submittingRef.current = false;
       const errKind = classifyCheckoutSubmitError(err, {
@@ -1168,6 +1242,7 @@ export function CheckoutClient({
           paymentMethod,
           totalPayableVnd: grandTotalVnd,
           codRejectedCount: effectiveCodRejectedCount,
+          codMaxVnd,
           hasVouchers: hasActiveVouchers,
           isFlashSale: hasFlashSaleItem,
         })
@@ -1278,7 +1353,14 @@ export function CheckoutClient({
     );
   }
 
-  const methodShortLabel = paymentMethod === "COD" ? "COD" : "VietQR";
+  const isZeroPayableOrder = grandTotalVnd <= 0;
+  const methodShortLabel = isZeroPayableOrder
+    ? "Xác nhận ngay"
+    : paymentMethod === "COD"
+      ? "COD"
+      : paymentMethod === "ZALOPAY"
+        ? "ZaloPay"
+        : "VietQR";
   const ctaLabel = isSubmitting
     ? "Đang tạo đơn hàng..."
     : `Đặt hàng · ${formatVnd(grandTotalVnd)} (${methodShortLabel})`;
@@ -1289,9 +1371,26 @@ export function CheckoutClient({
     codRejectedCount: effectiveCodRejectedCount,
     phoneVerified: effectivePhoneVerified,
     codAreaSupported,
+    codMinVnd,
+    codMaxVnd,
   });
+  const vietqrEval = vietqrConfig
+    ? evaluatePaymentMethodForCheckout(vietqrConfig, {
+        totalPayableVnd: grandTotalVnd,
+        hasFlashSaleItem,
+        codRejectedCount: effectiveCodRejectedCount,
+      })
+    : { allowed: true, reason: "" };
+  const zalopayEval = zalopayConfig
+    ? evaluatePaymentMethodForCheckout(zalopayConfig, {
+        totalPayableVnd: grandTotalVnd,
+        hasFlashSaleItem,
+        codRejectedCount: effectiveCodRejectedCount,
+      })
+    : { allowed: true, reason: "" };
   const codPhoneMissing = effectivePhoneVerified === false;
-  const codExceedsLimit = grandTotalVnd > DEFAULT_COD_MAX_VND;
+  const codExceedsLimit = codMaxVnd > 0 && grandTotalVnd > codMaxVnd;
+  const codBelowMin = grandTotalVnd > 0 && codMinVnd > 0 && grandTotalVnd < codMinVnd;
   const codBlockedHistory = effectiveCodRejectedCount >= DEFAULT_COD_MAX_REJECTED;
   const activeCodBlockCode =
     lastCodErrorCode ??
@@ -1302,7 +1401,7 @@ export function CheckoutClient({
           ? "COD_AREA_NOT_SUPPORTED"
           : codPolicy.blockCode === "REJECTED_LIMIT"
             ? "COD_REJECTED_LIMIT_EXCEEDED"
-            : codPolicy.blockCode === "AMOUNT_LIMIT"
+            : codPolicy.blockCode === "AMOUNT_LIMIT" || codPolicy.blockCode === "AMOUNT_BELOW_MIN"
               ? "COD_LIMIT_EXCEEDED"
               : "FLASH_SALE_COD_NOT_ALLOWED"
       : null);
@@ -1521,7 +1620,7 @@ export function CheckoutClient({
               )}
             </div>
 
-            {/* Step 3: Real payment methods (COD & VietQR only) */}
+            {/* Step 3: Dynamic payment methods from GET /api/v1/payment-methods (VietQR / ZaloPay / COD) */}
             <div
               className={styles.stepBlock}
               data-rise=""
@@ -1529,105 +1628,194 @@ export function CheckoutClient({
             >
               <h2 className={styles.blockTitle}>Phương thức thanh toán</h2>
 
-              <div
-                className={styles.paymentList}
-                role="radiogroup"
-                aria-label="Chọn phương thức thanh toán"
-              >
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={paymentMethod === "VIETQR"}
-                  className={`${styles.paymentOption} ${
-                    paymentMethod === "VIETQR" ? styles.paymentOptionSelected : ""
-                  }`}
-                  onClick={() => {
-                    setPaymentMethod("VIETQR");
-                    setLastCodErrorCode(null);
-                  }}
+              {isZeroPayableOrder && (
+                <p
+                  className={`${shared.feedbackBox} ${shared.feedbackInfo} ${shared.noticeSpacer}`}
+                  role="status"
                 >
-                  <div className={styles.paymentHead}>
-                    <span className={styles.paymentTitle}>Chuyển khoản nhanh VietQR</span>
-                    {paymentMethod === "VIETQR" && (
-                      <span className={`${shared.statusTag} ${shared.tonePos}`}>Đang chọn</span>
-                    )}
-                  </div>
-                  <p className={styles.paymentDesc}>
-                    Sau khi bấm Đặt hàng, hệ thống sẽ tạo mã VietQR riêng cho đơn của bạn để quét
-                    bằng ứng dụng ngân hàng và xác nhận tự động, không cần nhập số thẻ.
-                    {hasFlashSaleItem
-                      ? " Đơn hàng có sản phẩm Flash sale cần thanh toán trong vòng 5 phút."
-                      : ""}
-                  </p>
-                </button>
+                  Tổng thanh toán là 0₫ (ưu đãi và Xu đã chi trả toàn bộ). Đơn hàng sẽ được xác nhận
+                  ngay sau khi bạn bấm Đặt hàng mà không cần chuyển sang cổng thanh toán.
+                </p>
+              )}
 
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={paymentMethod === "COD"}
-                  disabled={hasFlashSaleItem}
-                  className={`${styles.paymentOption} ${
-                    paymentMethod === "COD" ? styles.paymentOptionSelected : ""
-                  }`}
-                  onClick={() => {
-                    if (!hasFlashSaleItem) {
-                      setPaymentMethod("COD");
-                      setLastCodErrorCode(null);
-                    }
-                  }}
+              {!vietqrEnabled && !zalopayEnabled && !codEnabled ? (
+                <p className={`${shared.feedbackBox} ${shared.feedbackError}`} role="alert">
+                  Hiện chưa có phương thức thanh toán khả dụng. Vui lòng thử lại sau ít phút.
+                </p>
+              ) : (
+                <div
+                  className={styles.paymentList}
+                  role="radiogroup"
+                  aria-label="Chọn phương thức thanh toán"
                 >
-                  <div className={styles.paymentHead}>
-                    <span className={styles.paymentTitle}>Thanh toán khi nhận hàng (COD)</span>
-                    {hasFlashSaleItem ? (
-                      <span className={`${shared.statusTag} ${shared.toneWarn}`}>
-                        Không áp dụng cho Flash sale
-                      </span>
-                    ) : codPhoneMissing ? (
-                      <span className={`${shared.statusTag} ${shared.toneWarn}`}>
-                        Cần xác minh SĐT
-                      </span>
-                    ) : !codAreaSupported ? (
-                      <span className={`${shared.statusTag} ${shared.toneWarn}`}>
-                        Khu vực chưa hỗ trợ COD
-                      </span>
-                    ) : paymentMethod === "COD" ? (
-                      <span className={`${shared.statusTag} ${shared.tonePos}`}>Đang chọn</span>
-                    ) : null}
-                  </div>
-                  <p className={styles.paymentDesc}>
-                    {hasFlashSaleItem
-                      ? codPolicy.reason
-                      : `Thanh toán tiền mặt trực tiếp cho nhân viên giao hàng khi nhận kiện. Áp dụng cho đơn hàng tối đa ${formatVnd(DEFAULT_COD_MAX_VND)} sau khi xác minh số điện thoại.`}
-                  </p>
-                  {paymentMethod === "COD" && codPhoneMissing && (
-                    <p className={styles.codAdvisory}>
-                      Tài khoản chưa xác minh số điện thoại. Vui lòng xác minh SĐT trong mục Tài
-                      khoản để đặt COD hoặc chuyển sang VietQR.
-                    </p>
+                  {vietqrEnabled && (
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={paymentMethod === "VIETQR"}
+                      className={`${styles.paymentOption} ${
+                        paymentMethod === "VIETQR" ? styles.paymentOptionSelected : ""
+                      }`}
+                      onClick={() => {
+                        setPaymentMethod("VIETQR");
+                        setLastCodErrorCode(null);
+                      }}
+                    >
+                      <div className={styles.paymentHead}>
+                        <span className={styles.paymentTitle}>Chuyển khoản nhanh VietQR</span>
+                        {paymentMethod === "VIETQR" && (
+                          <span className={`${shared.statusTag} ${shared.tonePos}`}>Đang chọn</span>
+                        )}
+                      </div>
+                      <p className={styles.paymentDesc}>
+                        Sau khi bấm Đặt hàng, hệ thống tạo mã VietQR riêng cho đơn của bạn để quét
+                        bằng ứng dụng ngân hàng và xác nhận tự động.
+                        {vietqrConfig && vietqrConfig.expiry_minutes > 0 && !hasFlashSaleItem
+                          ? ` Hạn thanh toán ${vietqrConfig.expiry_minutes} phút.`
+                          : ""}
+                        {vietqrConfig && vietqrConfig.min_order_vnd > 0
+                          ? ` Đơn tối thiểu ${formatVnd(vietqrConfig.min_order_vnd)}.`
+                          : ""}
+                        {vietqrConfig && vietqrConfig.max_order_vnd > 0
+                          ? ` Tối đa ${formatVnd(vietqrConfig.max_order_vnd)}.`
+                          : ""}
+                        {hasFlashSaleItem
+                          ? " Đơn hàng có sản phẩm Flash sale cần thanh toán trong vòng 5 phút."
+                          : ""}
+                      </p>
+                      {paymentMethod === "VIETQR" && !vietqrEval.allowed && (
+                        <p className={styles.codAdvisory}>{vietqrEval.reason}</p>
+                      )}
+                    </button>
                   )}
-                  {paymentMethod === "COD" && !codAreaSupported && (
-                    <p className={styles.codAdvisory}>
-                      Khu vực giao hàng đã chọn hiện chưa hỗ trợ thu hộ COD. Bạn có thể đổi địa chỉ
-                      nhận hàng hoặc chọn Chuyển khoản nhanh VietQR.
-                    </p>
-                  )}
-                  {paymentMethod === "COD" && codExceedsLimit && (
-                    <p className={styles.codAdvisory}>
-                      Tổng thanh toán đang vượt mốc {formatVnd(DEFAULT_COD_MAX_VND)}. Bạn vui lòng
-                      chuyển sang Chuyển khoản nhanh VietQR.
-                    </p>
-                  )}
-                  {paymentMethod === "COD" && codBlockedHistory && (
-                    <p className={styles.codAdvisory}>
-                      Tài khoản có nhiều lần không nhận hàng COD trước đây nên tạm không hỗ trợ COD.
-                      Vui lòng chọn Chuyển khoản nhanh VietQR.
-                    </p>
-                  )}
-                </button>
-              </div>
 
-              {!hasFlashSaleItem &&
-                (codPhoneMissing || !codAreaSupported || codExceedsLimit || codBlockedHistory) && (
+                  {zalopayEnabled && (
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={paymentMethod === "ZALOPAY"}
+                      className={`${styles.paymentOption} ${
+                        paymentMethod === "ZALOPAY" ? styles.paymentOptionSelected : ""
+                      }`}
+                      onClick={() => {
+                        setPaymentMethod("ZALOPAY");
+                        setLastCodErrorCode(null);
+                      }}
+                    >
+                      <div className={styles.paymentHead}>
+                        <span className={styles.paymentTitle}>Ví điện tử ZaloPay</span>
+                        {paymentMethod === "ZALOPAY" && (
+                          <span className={`${shared.statusTag} ${shared.tonePos}`}>Đang chọn</span>
+                        )}
+                      </div>
+                      <p className={styles.paymentDesc}>
+                        Thanh toán nhanh qua ứng dụng hoặc cổng Ví điện tử ZaloPay và tự động xác
+                        nhận đơn hàng.
+                        {zalopayConfig && zalopayConfig.expiry_minutes > 0 && !hasFlashSaleItem
+                          ? ` Hạn thanh toán ${zalopayConfig.expiry_minutes} phút.`
+                          : ""}
+                        {zalopayConfig && zalopayConfig.min_order_vnd > 0
+                          ? ` Đơn tối thiểu ${formatVnd(zalopayConfig.min_order_vnd)}.`
+                          : ""}
+                        {zalopayConfig && zalopayConfig.max_order_vnd > 0
+                          ? ` Tối đa ${formatVnd(zalopayConfig.max_order_vnd)}.`
+                          : ""}
+                        {hasFlashSaleItem
+                          ? " Đơn hàng có sản phẩm Flash sale cần thanh toán trong vòng 5 phút."
+                          : ""}
+                      </p>
+                      {paymentMethod === "ZALOPAY" && !zalopayEval.allowed && (
+                        <p className={styles.codAdvisory}>{zalopayEval.reason}</p>
+                      )}
+                    </button>
+                  )}
+
+                  {codEnabled && (
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={paymentMethod === "COD"}
+                      disabled={hasFlashSaleItem}
+                      className={`${styles.paymentOption} ${
+                        paymentMethod === "COD" ? styles.paymentOptionSelected : ""
+                      }`}
+                      onClick={() => {
+                        if (!hasFlashSaleItem) {
+                          setPaymentMethod("COD");
+                          setLastCodErrorCode(null);
+                        }
+                      }}
+                    >
+                      <div className={styles.paymentHead}>
+                        <span className={styles.paymentTitle}>Thanh toán khi nhận hàng (COD)</span>
+                        {hasFlashSaleItem ? (
+                          <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+                            Không áp dụng cho Flash sale
+                          </span>
+                        ) : codPhoneMissing ? (
+                          <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+                            Cần xác minh SĐT
+                          </span>
+                        ) : !codAreaSupported ? (
+                          <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+                            Khu vực chưa hỗ trợ COD
+                          </span>
+                        ) : paymentMethod === "COD" ? (
+                          <span className={`${shared.statusTag} ${shared.tonePos}`}>Đang chọn</span>
+                        ) : null}
+                      </div>
+                      <p className={styles.paymentDesc}>
+                        {hasFlashSaleItem
+                          ? codPolicy.reason
+                          : `Thanh toán tiền mặt trực tiếp cho nhân viên giao hàng khi nhận kiện.${
+                              codMinVnd > 0 ? ` Đơn tối thiểu ${formatVnd(codMinVnd)}.` : ""
+                            }${
+                              codMaxVnd > 0
+                                ? ` Áp dụng cho đơn tối đa ${formatVnd(codMaxVnd)}.`
+                                : ""
+                            } Cần xác minh số điện thoại trước khi đặt COD.`}
+                      </p>
+                      {paymentMethod === "COD" && codPhoneMissing && (
+                        <p className={styles.codAdvisory}>
+                          Tài khoản chưa xác minh số điện thoại. Vui lòng xác minh SĐT trong mục Tài
+                          khoản để đặt COD hoặc chọn phương thức thanh toán trực tuyến.
+                        </p>
+                      )}
+                      {paymentMethod === "COD" && !codAreaSupported && (
+                        <p className={styles.codAdvisory}>
+                          Khu vực giao hàng đã chọn hiện chưa hỗ trợ thu hộ COD. Bạn có thể đổi địa
+                          chỉ nhận hàng hoặc chọn thanh toán trực tuyến.
+                        </p>
+                      )}
+                      {paymentMethod === "COD" && codExceedsLimit && (
+                        <p className={styles.codAdvisory}>
+                          Tổng thanh toán đang vượt hạn mức COD tối đa {formatVnd(codMaxVnd)}. Bạn
+                          vui lòng chọn thanh toán trực tuyến.
+                        </p>
+                      )}
+                      {paymentMethod === "COD" && codBelowMin && (
+                        <p className={styles.codAdvisory}>
+                          Đơn hàng chưa đạt mức tối thiểu {formatVnd(codMinVnd)} cho thanh toán COD.
+                        </p>
+                      )}
+                      {paymentMethod === "COD" && codBlockedHistory && (
+                        <p className={styles.codAdvisory}>
+                          Tài khoản có nhiều lần không nhận hàng COD trước đây nên tạm không hỗ trợ
+                          COD. Vui lòng chọn thanh toán trực tuyến.
+                        </p>
+                      )}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {codEnabled &&
+                !hasFlashSaleItem &&
+                (codPhoneMissing ||
+                  !codAreaSupported ||
+                  codExceedsLimit ||
+                  codBelowMin ||
+                  codBlockedHistory) && (
                   <div className={styles.codRecoveryBar} role="status">
                     <span className={styles.codRecoveryText}>{codPolicy.reason}</span>
                     <div className={shared.formActions}>
@@ -1646,18 +1834,20 @@ export function CheckoutClient({
                           Đổi địa chỉ nhận hàng
                         </Button>
                       )}
-                      {paymentMethod === "COD" && (
+                      {paymentMethod === "COD" && firstOnlineMethod && (
                         <Button
                           type="button"
                           variant="primary"
                           size="sm"
                           onClick={() => {
-                            setPaymentMethod("VIETQR");
+                            setPaymentMethod(firstOnlineMethod);
                             setFormError(null);
                             setLastCodErrorCode(null);
                           }}
                         >
-                          Chuyển sang VietQR
+                          {firstOnlineMethod === "ZALOPAY"
+                            ? "Chuyển sang Ví ZaloPay"
+                            : "Chuyển sang VietQR"}
                         </Button>
                       )}
                     </div>
@@ -2187,17 +2377,19 @@ export function CheckoutClient({
                           Đổi địa chỉ nhận hàng
                         </button>
                       )}
-                      {paymentMethod === "COD" && (
+                      {paymentMethod === "COD" && firstOnlineMethod && (
                         <button
                           type="button"
                           className={styles.regularPriceLightBtn}
                           onClick={() => {
-                            setPaymentMethod("VIETQR");
+                            setPaymentMethod(firstOnlineMethod);
                             setFormError(null);
                             setLastCodErrorCode(null);
                           }}
                         >
-                          Chuyển sang VietQR
+                          {firstOnlineMethod === "ZALOPAY"
+                            ? "Chuyển sang Ví ZaloPay"
+                            : "Chuyển sang VietQR"}
                         </button>
                       )}
                     </div>

@@ -389,7 +389,11 @@ func (h *handler) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleAdminListCategoryFeeSchedules(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
@@ -551,7 +555,11 @@ func parseSKUIDsQuery(q url.Values) ([]string, string) {
 }
 
 func (h *handler) handleListProducts(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	q := r.URL.Query()
 
 	skuIDs, skuErr := parseSKUIDsQuery(q)
@@ -706,7 +714,11 @@ func (h *handler) handleGetProductBySlug(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *handler) handleSellerListProducts(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	q := r.URL.Query()
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
@@ -882,7 +894,11 @@ func (h *handler) handleSellerUpdateStock(w http.ResponseWriter, r *http.Request
 }
 
 func (h *handler) handleAdminListProducts(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	q := r.URL.Query()
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()

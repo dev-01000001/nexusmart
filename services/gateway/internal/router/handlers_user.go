@@ -1,10 +1,13 @@
 package router
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
+	paymentv1 "github.com/nexusmart/core/gen/go/nexusmart/payment/v1"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/gateway/internal/httpx"
@@ -39,8 +42,34 @@ type shopDTO struct {
 	BusinessLicenseDoc string `json:"business_license_doc"`
 	Status             string `json:"status"`
 	RejectionReason    string `json:"rejection_reason"`
+	SuspendedReason    string `json:"suspended_reason"`
+	SuspendedAt        string `json:"suspended_at,omitempty"`
+	StatusVersion      int64  `json:"status_version"`
 	CreatedAt          string `json:"created_at,omitempty"`
 	UpdatedAt          string `json:"updated_at,omitempty"`
+}
+
+type userActivityEntryDTO struct {
+	ID           string `json:"id"`
+	UserID       string `json:"user_id"`
+	EventType    string `json:"event_type"`
+	IPAddress    string `json:"ip_address"`
+	MetadataJSON string `json:"metadata_json"`
+	CreatedAt    string `json:"created_at,omitempty"`
+}
+
+type shopSuspensionApprovalDTO struct {
+	ID            string `json:"id"`
+	ShopID        string `json:"shop_id"`
+	ShopName      string `json:"shop_name"`
+	Status        string `json:"status"`
+	Reason        string `json:"reason"`
+	RequestedBy   string `json:"requested_by"`
+	RequestedRole string `json:"requested_role"`
+	DecidedBy     string `json:"decided_by,omitempty"`
+	DecidedNote   string `json:"decided_note,omitempty"`
+	CreatedAt     string `json:"created_at,omitempty"`
+	DecidedAt     string `json:"decided_at,omitempty"`
 }
 
 // adminShopDTO extends shopDTO with admin-only operational flags.
@@ -221,8 +250,57 @@ func mapShop(s *userv1.Shop) *shopDTO {
 		BusinessLicenseDoc: s.GetBusinessLicenseDoc(),
 		Status:             shopStatusString(s.GetStatus()),
 		RejectionReason:    s.GetRejectionReason(),
+		SuspendedReason:    s.GetSuspendedReason(),
+		SuspendedAt:        httpx.FormatTimestamp(s.GetSuspendedAt()),
+		StatusVersion:      s.GetStatusVersion(),
 		CreatedAt:          httpx.FormatTimestamp(s.GetCreatedAt()),
 		UpdatedAt:          httpx.FormatTimestamp(s.GetUpdatedAt()),
+	}
+}
+
+func mapUserActivityEntry(e *userv1.UserActivityEntry) *userActivityEntryDTO {
+	if e == nil {
+		return nil
+	}
+	return &userActivityEntryDTO{
+		ID:           e.GetId(),
+		UserID:       e.GetUserId(),
+		EventType:    e.GetEventType(),
+		IPAddress:    e.GetIpAddress(),
+		MetadataJSON: e.GetMetadataJson(),
+		CreatedAt:    httpx.FormatTimestamp(e.GetCreatedAt()),
+	}
+}
+
+func shopApprovalStatusString(st userv1.ShopApprovalStatus) string {
+	switch st {
+	case userv1.ShopApprovalStatus_SHOP_APPROVAL_STATUS_PENDING:
+		return "PENDING"
+	case userv1.ShopApprovalStatus_SHOP_APPROVAL_STATUS_APPROVED:
+		return "APPROVED"
+	case userv1.ShopApprovalStatus_SHOP_APPROVAL_STATUS_REJECTED:
+		return "REJECTED"
+	default:
+		return ""
+	}
+}
+
+func mapShopSuspensionApproval(a *userv1.ShopSuspensionApproval) *shopSuspensionApprovalDTO {
+	if a == nil {
+		return nil
+	}
+	return &shopSuspensionApprovalDTO{
+		ID:            a.GetId(),
+		ShopID:        a.GetShopId(),
+		ShopName:      a.GetShopName(),
+		Status:        shopApprovalStatusString(a.GetStatus()),
+		Reason:        a.GetReason(),
+		RequestedBy:   a.GetRequestedBy(),
+		RequestedRole: a.GetRequestedRole(),
+		DecidedBy:     a.GetDecidedBy(),
+		DecidedNote:   a.GetDecidedNote(),
+		CreatedAt:     httpx.FormatTimestamp(a.GetCreatedAt()),
+		DecidedAt:     httpx.FormatTimestamp(a.GetDecidedAt()),
 	}
 }
 
@@ -303,6 +381,14 @@ func userRoleString(r userv1.UserRole) string {
 		return "admin"
 	case userv1.UserRole_USER_ROLE_SUPER_ADMIN:
 		return "super_admin"
+	case userv1.UserRole_USER_ROLE_MODERATOR:
+		return "moderator"
+	case userv1.UserRole_USER_ROLE_CSKH:
+		return "cskh"
+	case userv1.UserRole_USER_ROLE_ACCOUNTANT:
+		return "accountant"
+	case userv1.UserRole_USER_ROLE_OPS:
+		return "ops"
 	default:
 		return ""
 	}
@@ -318,6 +404,14 @@ func parseUserRole(s string) userv1.UserRole {
 		return userv1.UserRole_USER_ROLE_ADMIN
 	case "super_admin", "user_role_super_admin":
 		return userv1.UserRole_USER_ROLE_SUPER_ADMIN
+	case "moderator", "user_role_moderator":
+		return userv1.UserRole_USER_ROLE_MODERATOR
+	case "cskh", "user_role_cskh":
+		return userv1.UserRole_USER_ROLE_CSKH
+	case "accountant", "user_role_accountant":
+		return userv1.UserRole_USER_ROLE_ACCOUNTANT
+	case "ops", "user_role_ops":
+		return userv1.UserRole_USER_ROLE_OPS
 	default:
 		return userv1.UserRole_USER_ROLE_UNSPECIFIED
 	}
@@ -850,7 +944,11 @@ func (h *handler) handleRegisterShop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleListPublicShops(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
@@ -944,7 +1042,11 @@ func (h *handler) handleSellerGetShop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	q := r.URL.Query()
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
@@ -997,6 +1099,21 @@ func (h *handler) handleAdminUpdateUserStatus(w http.ResponseWriter, r *http.Req
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": mapUser(resp.GetUser())})
 }
 
+func isAssignableUserRole(r userv1.UserRole) bool {
+	switch r {
+	case userv1.UserRole_USER_ROLE_BUYER,
+		userv1.UserRole_USER_ROLE_SELLER,
+		userv1.UserRole_USER_ROLE_ADMIN,
+		userv1.UserRole_USER_ROLE_MODERATOR,
+		userv1.UserRole_USER_ROLE_CSKH,
+		userv1.UserRole_USER_ROLE_ACCOUNTANT,
+		userv1.UserRole_USER_ROLE_OPS:
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *handler) handleAdminUpdateUserRole(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Role   string `json:"role"`
@@ -1006,13 +1123,18 @@ func (h *handler) handleAdminUpdateUserRole(w http.ResponseWriter, r *http.Reque
 		httpx.WriteDecodeError(w, r, err)
 		return
 	}
+	role := parseUserRole(body.Role)
+	if !isAssignableUserRole(role) {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "role must be buyer, seller, admin, moderator, cskh, accountant, or ops")
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.User.AdminUpdateUserRole(ctx, &userv1.AdminUpdateUserRoleRequest{
 		AdminId:      auth.UserIDFromContext(r.Context()),
 		TargetUserId: chi.URLParam(r, "id"),
-		Role:         parseUserRole(body.Role),
+		Role:         role,
 		Reason:       body.Reason,
 	})
 	if err != nil {
@@ -1023,7 +1145,11 @@ func (h *handler) handleAdminUpdateUserRole(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *handler) handleAdminListShops(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
@@ -1081,7 +1207,11 @@ func (h *handler) handleAdminReviewShop(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *handler) handleAdminListAuditLogs(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	q := r.URL.Query()
 
 	fromTS, err := httpx.ParseTimestamp(q.Get("from_time"))
@@ -1245,5 +1375,326 @@ func (h *handler) handleAdminReviewShopBankAccount(w http.ResponseWriter, r *htt
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"bank_account": mapShopBankAccount(resp.GetBankAccount()),
+	})
+}
+
+// --- Wave 3b-2 (A7): Staff Creation, User Activities, Shop Suspension & Unified Approvals ---
+
+func isCreatableStaffRole(r userv1.UserRole) bool {
+	switch r {
+	case userv1.UserRole_USER_ROLE_ADMIN,
+		userv1.UserRole_USER_ROLE_MODERATOR,
+		userv1.UserRole_USER_ROLE_CSKH,
+		userv1.UserRole_USER_ROLE_ACCOUNTANT,
+		userv1.UserRole_USER_ROLE_OPS:
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *handler) handleAdminCreateStaffUser(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		FullName          string           `json:"full_name"`
+		Email             string           `json:"email"`
+		Phone             string           `json:"phone"`
+		Role              string           `json:"role"`
+		Password          *json.RawMessage `json:"password"`
+		TemporaryPassword *json.RawMessage `json:"temporary_password"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	// F14: staff creation must never accept an initial password; server sends a password-reset email instead.
+	if body.Password != nil || body.TemporaryPassword != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "password field is not accepted; staff accounts receive a password reset email")
+		return
+	}
+	role := parseUserRole(body.Role)
+	if !isCreatableStaffRole(role) {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "role must be admin, moderator, cskh, accountant, or ops")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.AdminCreateStaffUser(ctx, &userv1.AdminCreateStaffUserRequest{
+		FullName: body.FullName,
+		Email:    body.Email,
+		Phone:    body.Phone,
+		Role:     role,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+		"user":                mapUser(resp.GetUser()),
+		"password_reset_sent": resp.GetPasswordResetSent(),
+	})
+}
+
+func (h *handler) handleAdminListUserActivities(w http.ResponseWriter, r *http.Request) {
+	userID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if userID == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "user id is required")
+		return
+	}
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
+	q := r.URL.Query()
+
+	fromTS, err := httpx.ParseTimestamp(q.Get("from_time"))
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid from_time format")
+		return
+	}
+	toTS, err := httpx.ParseTimestamp(q.Get("to_time"))
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid to_time format")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.AdminListUserActivities(ctx, &userv1.AdminListUserActivitiesRequest{
+		UserId:   userID,
+		FromTime: fromTS,
+		ToTime:   toTS,
+		Category: strings.TrimSpace(q.Get("category")),
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	items := make([]*userActivityEntryDTO, 0, len(resp.GetItems()))
+	for _, entry := range resp.GetItems() {
+		items = append(items, mapUserActivityEntry(entry))
+	}
+
+	// F13: call OrderService.ListOrders using viewer's JWT ONLY when viewer has orders.read;
+	// otherwise return an empty slice without calling order (prevents 403 for moderator).
+	recentOrders := []*orderDTO{}
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	if auth.HasCapability(claims, auth.CapOrdersRead) && h.clients.Order != nil {
+		ordResp, ordErr := h.clients.Order.ListOrders(ctx, &orderv1.ListOrdersRequest{
+			BuyerId:   userID,
+			RoleScope: "admin",
+			Page:      1,
+			PageSize:  10,
+		})
+		if ordErr != nil {
+			httpx.WriteGRPCError(w, r, ordErr)
+			return
+		}
+		recentOrders = make([]*orderDTO, 0, len(ordResp.GetOrders()))
+		for _, o := range ordResp.GetOrders() {
+			recentOrders = append(recentOrders, mapOrderForAdmin(o))
+		}
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":              items,
+		"cod_rejected_count": resp.GetCodRejectedCount(),
+		"recent_orders":      recentOrders,
+		"page":               page,
+		"page_size":          pageSize,
+		"total":              resp.GetTotal(),
+	})
+}
+
+func (h *handler) handleAdminSuspendShop(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	reason := strings.TrimSpace(body.Reason)
+	if reason == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "reason is required")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.AdminRequestShopSuspension(ctx, &userv1.AdminRequestShopSuspensionRequest{
+		ShopId: chi.URLParam(r, "id"),
+		Reason: reason,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+		"approval": mapShopSuspensionApproval(resp.GetApproval()),
+	})
+}
+
+func (h *handler) handleAdminUnsuspendShop(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := httpx.DecodeOptionalJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.AdminUnsuspendShop(ctx, &userv1.AdminUnsuspendShopRequest{
+		ShopId: chi.URLParam(r, "id"),
+		Reason: strings.TrimSpace(body.Reason),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"shop": mapAdminShop(resp.GetShop()),
+	})
+}
+
+func (h *handler) handleAdminDecideShopSuspension(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Decision string `json:"decision"`
+		Note     string `json:"note"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	decision := parseReviewDecision(body.Decision)
+	if decision != userv1.ReviewDecision_REVIEW_DECISION_APPROVE && decision != userv1.ReviewDecision_REVIEW_DECISION_REJECT {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "decision must be APPROVE or REJECT")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.AdminDecideShopSuspension(ctx, &userv1.AdminDecideShopSuspensionRequest{
+		ApprovalId: chi.URLParam(r, "id"),
+		Decision:   decision,
+		Note:       body.Note,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"approval": mapShopSuspensionApproval(resp.GetApproval()),
+		"shop":     mapAdminShop(resp.GetShop()),
+	})
+}
+
+func (h *handler) handleAdminListApprovals(w http.ResponseWriter, r *http.Request) {
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
+	q := r.URL.Query()
+
+	approvalType := strings.ToLower(strings.TrimSpace(q.Get("type")))
+	if approvalType != "" && approvalType != "shop" && approvalType != "refund" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "type must be shop or refund")
+		return
+	}
+
+	rawStatus := strings.ToUpper(strings.TrimSpace(q.Get("status")))
+	var shopStatus userv1.ShopApprovalStatus
+	var refundStatus paymentv1.RefundStatus
+	queryRefundsForStatus := true
+
+	switch rawStatus {
+	case "", "PENDING", "PENDING_APPROVAL":
+		shopStatus = userv1.ShopApprovalStatus_SHOP_APPROVAL_STATUS_PENDING
+		refundStatus = paymentv1.RefundStatus_REFUND_STATUS_PENDING_APPROVAL
+	case "APPROVED":
+		shopStatus = userv1.ShopApprovalStatus_SHOP_APPROVAL_STATUS_APPROVED
+		// Approved refunds transition into standard PENDING/DONE lifecycle, so omit unrelated refunds here.
+		queryRefundsForStatus = false
+	case "REJECTED":
+		shopStatus = userv1.ShopApprovalStatus_SHOP_APPROVAL_STATUS_REJECTED
+		refundStatus = paymentv1.RefundStatus_REFUND_STATUS_REJECTED
+	case "ALL":
+		shopStatus = userv1.ShopApprovalStatus_SHOP_APPROVAL_STATUS_UNSPECIFIED
+		refundStatus = paymentv1.RefundStatus_REFUND_STATUS_PENDING_APPROVAL
+	default:
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "status must be PENDING, PENDING_APPROVAL, APPROVED, REJECTED, or ALL")
+		return
+	}
+
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	shopApprovals := []*shopSuspensionApprovalDTO{}
+	var shopTotal int64
+	if (approvalType == "" || approvalType == "shop") &&
+		auth.HasCapability(claims, auth.CapShopsApprovalsRead) &&
+		h.clients.User != nil {
+		sResp, err := h.clients.User.AdminListShopApprovals(ctx, &userv1.AdminListShopApprovalsRequest{
+			Status:   shopStatus,
+			ShopId:   strings.TrimSpace(q.Get("shop_id")),
+			Page:     page,
+			PageSize: pageSize,
+		})
+		if err != nil {
+			httpx.WriteGRPCError(w, r, err)
+			return
+		}
+		shopApprovals = make([]*shopSuspensionApprovalDTO, 0, len(sResp.GetItems()))
+		for _, item := range sResp.GetItems() {
+			shopApprovals = append(shopApprovals, mapShopSuspensionApproval(item))
+		}
+		shopTotal = sResp.GetTotal()
+	}
+
+	refundApprovals := []*refundDTO{}
+	var refundTotal int64
+	if (approvalType == "" || approvalType == "refund") &&
+		queryRefundsForStatus &&
+		auth.HasCapability(claims, auth.CapRefundsRead) &&
+		h.clients.Payment != nil {
+		rResp, err := h.clients.Payment.ListRefunds(ctx, &paymentv1.ListRefundsRequest{
+			Status:   refundStatus,
+			OrderId:  strings.TrimSpace(q.Get("order_id")),
+			Page:     page,
+			PageSize: pageSize,
+		})
+		if err != nil {
+			httpx.WriteGRPCError(w, r, err)
+			return
+		}
+		refundApprovals = make([]*refundDTO, 0, len(rResp.GetRefunds()))
+		for _, rf := range rResp.GetRefunds() {
+			refundApprovals = append(refundApprovals, mapRefund(rf, true))
+		}
+		refundTotal = rResp.GetTotal()
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"shop_approvals":   shopApprovals,
+		"refund_approvals": refundApprovals,
+		"shop_total":       shopTotal,
+		"refund_total":     refundTotal,
 	})
 }

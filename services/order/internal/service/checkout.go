@@ -42,6 +42,7 @@ type resolvedLineItem struct {
 
 type shopCheckoutPlan struct {
 	shopID                  string
+	shop                    *userv1.Shop
 	items                   []resolvedLineItem
 	subtotalVND             int64
 	defaultWeightGrams      int32
@@ -82,10 +83,10 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		return nil, err
 	}
 	buyerID := caller.UserID
-	if !caller.IsPrivileged && req.GetBuyerId() != "" && req.GetBuyerId() != buyerID {
+	if !caller.IsFullAdmin() && req.GetBuyerId() != "" && req.GetBuyerId() != buyerID {
 		return nil, status.Error(codes.PermissionDenied, "cannot checkout on behalf of another buyer")
 	}
-	if caller.IsPrivileged && strings.TrimSpace(req.GetBuyerId()) != "" {
+	if caller.IsFullAdmin() && strings.TrimSpace(req.GetBuyerId()) != "" {
 		buyerID = strings.TrimSpace(req.GetBuyerId())
 	}
 
@@ -94,9 +95,9 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		return nil, status.Error(codes.InvalidArgument, "address_id is required")
 	}
 
-	if req.GetPaymentMethod() != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD &&
-		req.GetPaymentMethod() != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR {
-		return nil, status.Error(codes.InvalidArgument, "payment_method must be COD or VIETQR")
+	methodStr := statemachine.PaymentMethodToString(req.GetPaymentMethod())
+	if !statemachine.IsValidPaymentMethod(methodStr) {
+		return nil, status.Error(codes.InvalidArgument, "payment_method must be COD, VIETQR, or ZALOPAY")
 	}
 	if req.GetCoinsToUse() < 0 {
 		return nil, status.Error(codes.InvalidArgument, "coins_to_use cannot be negative")
@@ -118,7 +119,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	unlock := s.idemLocks.Lock(buyerID + ":" + idemKey)
 	defer unlock()
 
-	checkoutGroupID, replay, err := s.acquireCheckoutGroup(ctx, buyerID, idemKey, reqHash, req.GetPaymentMethod(), caller)
+	checkoutGroupID, replay, err := s.acquireCheckoutGroup(ctx, buyerID, idemKey, reqHash, methodStr, caller)
 	if err != nil {
 		return nil, err
 	}
@@ -189,9 +190,9 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	}
 
 	// Step B: Resolve items from cart or explicit items[] and fetch authoritative SKU details.
-	requestedItems, err := s.resolveCheckoutInputs(ctx, buyerID, req)
+	requestedItems, resolveFailReason, err := s.resolveCheckoutInputs(ctx, buyerID, req)
 	if err != nil {
-		failGroupBeforePersist("ITEMS_RESOLVE_FAILED")
+		failGroupBeforePersist(fallbackStr(resolveFailReason, "ITEMS_RESOLVE_FAILED"))
 		return nil, err
 	}
 
@@ -212,10 +213,45 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		skuByID[sku.GetId()] = sku
 	}
 
+	// F12 + Item G (#8): Synchronously verify every shop in this checkout is ACTIVE via parallel User.GetShop
+	// BEFORE checking sku.IsActive (buildShopPlans) and before reserving stock/promotions, so a suspended shop
+	// always returns SHOP_SUSPENDED even after product-service redacts its SKUs to IsActive=false.
+	preShopIDs := make([]string, 0, len(requestedItems))
+	for _, reqItem := range requestedItems {
+		if sku := skuByID[reqItem.GetSkuId()]; sku != nil {
+			if sid := strings.TrimSpace(sku.GetShopId()); sid != "" {
+				preShopIDs = append(preShopIDs, sid)
+			}
+		}
+	}
+	var shopsByID map[string]*userv1.Shop
+	if len(preShopIDs) > 0 {
+		var shopFailReason string
+		shopsByID, shopFailReason, err = s.verifyShopsActive(ctx, preShopIDs)
+		if err != nil {
+			failGroupBeforePersist(shopFailReason)
+			return nil, err
+		}
+	}
+
 	plans, allStockItems, flashSaleItems, err := buildShopPlans(requestedItems, skuByID)
 	if err != nil {
 		failGroupBeforePersist("INVALID_ITEMS")
 		return nil, err
+	}
+
+	// F6: Read authoritative payment method configuration directly from PaymentService on every checkout
+	// (no caching; fails closed on disabled method or unavailable config source before any reservation).
+	methodCfg, cfgFailReason, err := s.loadPaymentMethodConfig(ctx, methodStr)
+	if err != nil {
+		failGroupBeforePersist(cfgFailReason)
+		return nil, err
+	}
+
+	planShopIDs := make([]string, 0, len(plans))
+	for _, p := range plans {
+		p.shop = shopsByID[p.shopID]
+		planShopIDs = append(planShopIDs, p.shopID)
 	}
 
 	checkNow := s.nowFn()
@@ -227,11 +263,11 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		earliestFlashEndsAt *time.Time
 	)
 	if len(flashSaleItems) > 0 {
-		if req.GetPaymentMethod() == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
+		if statemachine.IsCODMethod(methodStr) {
 			failGroupBeforePersist("FLASH_SALE_COD_NOT_ALLOWED")
 			return nil, status.Error(
 				codes.FailedPrecondition,
-				"FLASH_SALE_COD_NOT_ALLOWED: đơn hàng có sản phẩm Flash Sale không hỗ trợ thanh toán khi nhận hàng (COD), vui lòng chọn VietQR",
+				"FLASH_SALE_COD_NOT_ALLOWED: đơn hàng có sản phẩm Flash Sale không hỗ trợ thanh toán khi nhận hàng (COD), vui lòng chọn phương thức thanh toán trực tuyến",
 			)
 		}
 		flashPriceByItemID, earliestFlashEndsAt, err = s.resolveActiveFlashSales(ctx, flashSaleItems, skuByID, checkNow)
@@ -250,7 +286,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	}
 
 	// Step C: Fetch shop shipping settings (default_weight_grams + shop freeship) and calculate shipping fee per shop.
-	if err := s.calculateShippingFees(ctx, plans, req.GetShippingChoices(), addrSnapshot, req.GetPaymentMethod()); err != nil {
+	if err := s.calculateShippingFees(ctx, plans, req.GetShippingChoices(), addrSnapshot, methodStr); err != nil {
 		failReason := "SHIPPING_FEE_FAILED"
 		if strings.Contains(err.Error(), "SHOP_PICKUP_ADDRESS_REQUIRED") {
 			failReason = "SHOP_PICKUP_ADDRESS_REQUIRED"
@@ -261,13 +297,13 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 
 	// Wave 2b Payment Fee Config (UC-A09): fetch authoritative payment_fee_bps from PaymentService.
 	// Fail checkout clearly on error; never guess a fallback fee rate.
-	paymentFeeBPS, err := s.lookupPaymentFeeBPS(ctx, req.GetPaymentMethod(), checkNow)
+	paymentFeeBPS, err := s.lookupPaymentFeeBPS(ctx, methodStr, checkNow)
 	if err != nil {
 		failGroupBeforePersist("PAYMENT_FEE_CONFIG_FAILED")
 		return nil, err
 	}
 
-	// Step D: Early COD risk checks (UC-PAY02 / E19) before any stock or promotion reservation.
+	// Step D: Early payment method bounds (F6) and COD risk checks (UC-PAY02 / E19) before any stock or promotion reservation.
 	hasPromotions := len(req.GetShopVoucherIds()) > 0 ||
 		strings.TrimSpace(req.GetPlatformVoucherId()) != "" ||
 		strings.TrimSpace(req.GetFreeshipVoucherId()) != "" ||
@@ -276,17 +312,25 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		len(shopProgramItems) > 0
 
 	hasShopFreeship := false
+	var preTotal int64
+	shopCODSupport := make(map[string]bool, len(plans))
 	for _, p := range plans {
 		if p.freeShipEnabled && p.freeShipMaxVND > 0 {
 			hasShopFreeship = true
-			break
 		}
+		preTotal += p.subtotalVND + p.shippingFeeVND
+		shopCODSupport[p.shopID] = p.codSupported
 	}
 
-	if req.GetPaymentMethod() == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
-		if failReason, codErr := s.checkCODEligibility(ctx, buyerID, valResp, plans, hasPromotions, hasShopFreeship); codErr != nil {
+	if statemachine.IsCODMethod(methodStr) {
+		if failReason, codErr := s.assessCOD(ctx, buyerID, valResp, planShopIDs, shopCODSupport, preTotal, methodCfg, !hasPromotions && !hasShopFreeship); codErr != nil {
 			failGroupBeforePersist(failReason)
 			return nil, codErr
+		}
+	} else if !hasPromotions && !hasShopFreeship {
+		if failReason, boundErr := ValidatePaymentMethodAmountBounds(methodStr, methodCfg, preTotal); boundErr != nil {
+			failGroupBeforePersist(failReason)
+			return nil, boundErr
 		}
 	}
 
@@ -334,15 +378,10 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		grandTotalPayableVND += p.totalPayableVND
 	}
 
-	// Post-promotion COD max check (for orders where discounts might still leave total > COD limit).
-	if req.GetPaymentMethod() == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD && grandTotalPayableVND > s.cfg.CODMaxVND {
-		s.compensateBeforePersistAndFail(ctx, checkoutGroupID, true, promoReserved, "COD_LIMIT_EXCEEDED")
-		return nil, status.Errorf(
-			codes.FailedPrecondition,
-			"COD_LIMIT_EXCEEDED: order total %d VND exceeds COD maximum %d VND",
-			grandTotalPayableVND,
-			s.cfg.CODMaxVND,
-		)
+	// Post-promotion authoritative F6 payment method min/max check (compensating stock+promo on rejection).
+	if failReason, boundErr := ValidatePaymentMethodAmountBounds(methodStr, methodCfg, grandTotalPayableVND); boundErr != nil {
+		s.compensateBeforePersistAndFail(ctx, checkoutGroupID, true, promoReserved, failReason)
+		return nil, boundErr
 	}
 
 	// Saga Step 3: Persist Checkout Group Sub-Orders + Order Items + Timeline + Outbox in ONE TX.
@@ -350,15 +389,18 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	var paymentExpiresAt *time.Time
 	initialStatus := orderv1.OrderStatus_ORDER_STATUS_PENDING
 	initialPaymentStatus := "PENDING"
-	if req.GetPaymentMethod() == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD || grandTotalPayableVND == 0 {
+	if statemachine.IsCODMethod(methodStr) || grandTotalPayableVND == 0 {
 		initialStatus = orderv1.OrderStatus_ORDER_STATUS_CONFIRMED
 		if grandTotalPayableVND == 0 {
 			initialPaymentStatus = "SUCCEEDED"
 		}
 	} else {
-		exp := now.Add(s.paymentExpiryDuration())
+		exp := now.Add(time.Duration(methodCfg.ExpiryMinutes) * time.Minute)
 		if len(flashSaleItems) > 0 {
-			exp = now.Add(s.flashPaymentExpiryDuration())
+			flashExp := now.Add(s.flashPaymentExpiryDuration())
+			if flashExp.Before(exp) {
+				exp = flashExp
+			}
 			if earliestFlashEndsAt != nil && earliestFlashEndsAt.Before(exp) {
 				exp = *earliestFlashEndsAt
 			}
@@ -380,7 +422,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	batch, err := buildCheckoutBatch(
 		checkoutGroupID,
 		buyerID,
-		req.GetPaymentMethod(),
+		methodStr,
 		initialStatus,
 		initialPaymentStatus,
 		paymentExpiresAt,
@@ -433,21 +475,29 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	ordersPersisted = true
 
 	// Saga Step 4: Create Payment via PaymentService (always called, including 0 VND orders per PRM-B1).
-	var paymentID, paymentStatus, qrURL, qrCode string
+	var paymentID, paymentStatus, qrURL, qrCode, payURL string
 	paymentStatus = initialPaymentStatus
-	payReq := buildCreatePaymentRequest(
+	payReq, payReqErr := buildCreatePaymentRequest(
 		checkoutGroupID,
 		buyerID,
 		grandTotalPayableVND,
-		req.GetPaymentMethod(),
+		methodStr,
 		paymentExpiresAt,
 		persistedAggs,
 	)
-	// P2 M6: Run CreatePayment with detachedCallerContext (keeps buyer JWT metadata while insulating
-	// payment initialization from client disconnect after orders have already been persisted).
-	payCtx, payCancel := detachedCallerContext(ctx, s.cfg.GRPCCallTimeout)
-	defer payCancel()
-	payResp, payErr := s.clients.Payment.CreatePayment(payCtx, payReq)
+	var (
+		payResp *paymentv1.CreatePaymentResponse
+		payErr  error
+	)
+	if payReqErr != nil {
+		payErr = payReqErr
+	} else {
+		// P2 M6: Run CreatePayment with detachedCallerContext (keeps buyer JWT metadata while insulating
+		// payment initialization from client disconnect after orders have already been persisted).
+		payCtx, payCancel := detachedCallerContext(ctx, s.cfg.GRPCCallTimeout)
+		defer payCancel()
+		payResp, payErr = s.clients.Payment.CreatePayment(payCtx, payReq)
+	}
 	wasAmbiguousPayErr := payErr != nil && isAmbiguousReserveError(payErr)
 	if wasAmbiguousPayErr {
 		// P0 N2: Ambiguous CreatePayment failure (timeout/disconnect/Unavailable) — payment may have committed!
@@ -534,10 +584,11 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		paymentStatus = paymentStatusToString(pay.GetStatus(), initialPaymentStatus)
 		qrURL = pay.GetQrUrl()
 		qrCode = pay.GetQrCode()
+		payURL = pay.GetPayUrl()
 		if pay.GetExpiresAt() != nil {
 			exp := pay.GetExpiresAt().AsTime().UTC()
-			// Never allow PaymentService default expiry to extend a flash sale order's short window.
-			if len(flashSaleItems) == 0 || paymentExpiresAt == nil || exp.Before(*paymentExpiresAt) {
+			// Never allow PaymentService response to extend our computed expiry window (F6 / flash sale).
+			if paymentExpiresAt == nil || exp.Before(*paymentExpiresAt) {
 				paymentExpiresAt = &exp
 			}
 		}
@@ -573,6 +624,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		PaymentStatus:    paymentStatus,
 		QRURL:            qrURL,
 		QRCode:           qrCode,
+		PayURL:           payURL,
 		PaymentExpiresAt: paymentExpiresAt,
 		BuildSnapshot:    s.makeBuyerCheckoutSnapshotBuilder(promoWarnings, &finalGroup, &finalAggs, &builtSnapshot),
 	}, resetFinalState); err != nil {
@@ -787,7 +839,7 @@ func waitCheckoutAcquireBackoff(ctx context.Context, wait time.Duration, deadlin
 	}
 }
 
-func (s *OrderService) acquireCheckoutGroup(ctx context.Context, buyerID, idemKey, reqHash string, method orderv1.OrderPaymentMethod, caller callerIdentity) (string, *orderv1.CreateCheckoutResponse, error) {
+func (s *OrderService) acquireCheckoutGroup(ctx context.Context, buyerID, idemKey, reqHash, methodStr string, caller callerIdentity) (string, *orderv1.CreateCheckoutResponse, error) {
 	maxWait, backoff, maxBackoff := s.checkoutAcquireTimings()
 	deadline := time.Now().Add(maxWait)
 
@@ -848,7 +900,7 @@ func (s *OrderService) acquireCheckoutGroup(ctx context.Context, buyerID, idemKe
 			IdempotencyKey:  idemKey,
 			RequestHash:     reqHash,
 			Status:          "IN_PROGRESS",
-			PaymentMethod:   statemachine.PaymentMethodToString(method),
+			PaymentMethod:   statemachine.NormalizePaymentMethod(methodStr),
 			TotalPayableVND: 0,
 		})
 		if err == nil {
@@ -885,6 +937,9 @@ func (s *OrderService) buildReplayResponse(ctx context.Context, group *db.Checko
 			resp.IdempotentReplay = true
 			if group.PaymentStatus != "" {
 				resp.PaymentStatus = group.PaymentStatus
+			}
+			if resp.PayUrl == "" && group.PayURL != "" {
+				resp.PayUrl = group.PayURL
 			}
 			if len(resp.Warnings) == 0 && len(savedWarnings) > 0 {
 				resp.Warnings = savedWarnings
@@ -1069,6 +1124,7 @@ func buildCheckoutResponseFromState(
 		PaymentStatus:    grp.PaymentStatus,
 		QrUrl:            grp.QRURL,
 		QrCode:           grp.QRCode,
+		PayUrl:           grp.PayURL,
 		TotalPayableVnd:  grp.TotalPayableVND,
 		IdempotentReplay: false,
 		Warnings:         append([]string(nil), warnings...),
@@ -1204,17 +1260,17 @@ func (s *OrderService) compensateBeforePersistAndFail(
 	}
 }
 
-func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string, req *orderv1.CreateCheckoutRequest) ([]*orderv1.CheckoutItemInput, error) {
+func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string, req *orderv1.CreateCheckoutRequest) ([]*orderv1.CheckoutItemInput, string, error) {
 	merged := make(map[string]*orderv1.CheckoutItemInput)
 
 	if req.GetFromCart() {
 		cartResp, err := s.clients.Cart.GetCart(ctx, &cartv1.GetCartRequest{UserId: buyerID})
 		if err != nil {
-			return nil, err
+			return nil, "ITEMS_RESOLVE_FAILED", err
 		}
 		cart := cartResp.GetCart()
 		if cart == nil || len(cart.GetShopGroups()) == 0 {
-			return nil, status.Error(codes.FailedPrecondition, "shopping cart is empty")
+			return nil, "ITEMS_RESOLVE_FAILED", status.Error(codes.FailedPrecondition, "shopping cart is empty")
 		}
 
 		// Map any flash_sale_item_id overrides supplied alongside from_cart=true.
@@ -1226,7 +1282,7 @@ func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string
 				continue
 			}
 			if prev, exists := flashOverrides[skuID]; exists && prev != flashID {
-				return nil, status.Errorf(codes.InvalidArgument, "duplicate sku_id %s with conflicting flash_sale_item_id", skuID)
+				return nil, "ITEMS_RESOLVE_FAILED", status.Errorf(codes.InvalidArgument, "duplicate sku_id %s with conflicting flash_sale_item_id", skuID)
 			}
 			flashOverrides[skuID] = flashID
 		}
@@ -1244,6 +1300,9 @@ func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string
 			}
 		}
 
+		var unavailSelectedSKUs []string
+		var unavailMissingShopSKUs []string
+		var selectedShopIDs []string
 		for _, grp := range cart.GetShopGroups() {
 			for _, ci := range grp.GetItems() {
 				if ci.GetQuantity() <= 0 {
@@ -1256,10 +1315,18 @@ func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string
 				if skuID == "" {
 					continue
 				}
-				// E4: Never silently drop a selected unavailable item to place the rest.
+				shopID := fallbackStr(strings.TrimSpace(ci.GetShopId()), strings.TrimSpace(grp.GetShopId()))
+				if shopID != "" {
+					selectedShopIDs = append(selectedShopIDs, shopID)
+				}
+				// E4 + F12/Item G (#8): Never silently drop a selected unavailable item, AND check shop
+				// status BEFORE rejecting SKU_INACTIVE so a suspended shop always returns SHOP_SUSPENDED.
 				if ci.GetUnavailable() {
 					if ci.GetSelected() {
-						return nil, status.Errorf(codes.FailedPrecondition, "SKU_INACTIVE: SKU %s is not available for purchase", skuID)
+						unavailSelectedSKUs = append(unavailSelectedSKUs, skuID)
+						if shopID == "" {
+							unavailMissingShopSKUs = append(unavailMissingShopSKUs, skuID)
+						}
 					}
 					continue
 				}
@@ -1274,19 +1341,37 @@ func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string
 				}
 			}
 		}
+		if len(unavailSelectedSKUs) > 0 {
+			if len(unavailMissingShopSKUs) > 0 && s.clients.Product != nil {
+				sort.Strings(unavailMissingShopSKUs)
+				if skuResp, sErr := s.clients.Product.GetSKUsBatch(ctx, &productv1.GetSKUsBatchRequest{SkuIds: unavailMissingShopSKUs}); sErr == nil {
+					for _, sku := range skuResp.GetSkus() {
+						if sid := strings.TrimSpace(sku.GetShopId()); sid != "" {
+							selectedShopIDs = append(selectedShopIDs, sid)
+						}
+					}
+				}
+			}
+			if len(selectedShopIDs) > 0 {
+				if _, shopFailReason, shopErr := s.verifyShopsActive(ctx, selectedShopIDs); shopErr != nil {
+					return nil, shopFailReason, shopErr
+				}
+			}
+			return nil, "ITEMS_RESOLVE_FAILED", status.Errorf(codes.FailedPrecondition, "SKU_INACTIVE: SKU %s is not available for purchase", unavailSelectedSKUs[0])
+		}
 		if len(merged) == 0 {
-			return nil, status.Error(codes.FailedPrecondition, "shopping cart is empty")
+			return nil, "ITEMS_RESOLVE_FAILED", status.Error(codes.FailedPrecondition, "shopping cart is empty")
 		}
 	} else {
 		for _, it := range req.GetItems() {
 			skuID := strings.TrimSpace(it.GetSkuId())
 			if skuID == "" || it.GetQuantity() <= 0 {
-				return nil, status.Error(codes.InvalidArgument, "each checkout item must have sku_id and positive quantity")
+				return nil, "ITEMS_RESOLVE_FAILED", status.Error(codes.InvalidArgument, "each checkout item must have sku_id and positive quantity")
 			}
 			flashID := strings.TrimSpace(it.GetFlashSaleItemId())
 			if prev, ok := merged[skuID]; ok {
 				if prev.FlashSaleItemId != flashID {
-					return nil, status.Errorf(codes.InvalidArgument, "duplicate sku_id %s with conflicting flash_sale_item_id", skuID)
+					return nil, "ITEMS_RESOLVE_FAILED", status.Errorf(codes.InvalidArgument, "duplicate sku_id %s with conflicting flash_sale_item_id", skuID)
 				}
 				prev.Quantity += it.GetQuantity()
 			} else {
@@ -1300,7 +1385,7 @@ func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string
 	}
 
 	if len(merged) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "checkout must contain at least one item")
+		return nil, "ITEMS_RESOLVE_FAILED", status.Error(codes.InvalidArgument, "checkout must contain at least one item")
 	}
 
 	out := make([]*orderv1.CheckoutItemInput, 0, len(merged))
@@ -1308,7 +1393,7 @@ func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string
 		out = append(out, it)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].SkuId < out[j].SkuId })
-	return out, nil
+	return out, "", nil
 }
 
 func buildShopPlans(
@@ -1404,7 +1489,7 @@ func (s *OrderService) calculateShippingFees(
 	plans []*shopCheckoutPlan,
 	choices []*orderv1.ShopShippingChoice,
 	toAddr *orderv1.OrderAddressSnapshot,
-	paymentMethod orderv1.OrderPaymentMethod,
+	paymentMethod string,
 ) error {
 	choiceByShop := make(map[string]*orderv1.ShopShippingChoice, len(choices))
 	for _, c := range choices {
@@ -1453,13 +1538,21 @@ func (s *OrderService) calculateShippingFees(
 		}
 		plan.weightGrams = resolvedWeight
 
-		pickup, pErr := s.resolveShopPickupAddress(ctx, plan.shopID)
+		var (
+			pickup *shippingv1.ShipmentAddress
+			pErr   error
+		)
+		if plan.shop != nil {
+			pickup, pErr = s.resolveShopPickupAddressFromShop(ctx, plan.shop)
+		} else {
+			pickup, pErr = s.resolveShopPickupAddress(ctx, plan.shopID)
+		}
 		if pErr != nil {
 			return pErr
 		}
 		fromProvince, fromWard := pickup.GetProvinceCode(), pickup.GetWardCode()
 		var codEstimate int64
-		if paymentMethod == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
+		if statemachine.IsCODMethod(paymentMethod) {
 			codEstimate = plan.subtotalVND
 		}
 
@@ -1492,86 +1585,6 @@ func (s *OrderService) calculateShippingFees(
 	return nil
 }
 
-// checkCODEligibility enforces all E19 COD eligibility rules before reserving stock or promotions:
-//  1. Verified buyer phone when ORDER_COD_REQUIRE_PHONE_VERIFIED=true (COD_PHONE_NOT_VERIFIED).
-//  2. Destination ward and chosen carrier quote support COD for every shop (COD_AREA_NOT_SUPPORTED).
-//  3. Cumulative user cod_rejected_count < ORDER_COD_MAX_REJECTED_COUNT (COD_REJECTED_LIMIT_EXCEEDED).
-//  4. Single indexed terminal COD rejection rate: total >= ORDER_COD_MIN_ORDERS_FOR_RATE and
-//     rejected*10000 >= total*ORDER_COD_MAX_REJECT_RATE_BPS (COD_REJECTED_LIMIT_EXCEEDED).
-//  5. Pre-promotion COD order total ceiling when no promotions/shop freeship apply (COD_LIMIT_EXCEEDED).
-//
-// Shared across every path placing or switching an order to COD (CreateCheckout including D11 retries;
-// RetryPayment explicitly rejects switching to COD).
-func (s *OrderService) checkCODEligibility(
-	ctx context.Context,
-	buyerID string,
-	valResp *userv1.ValidateUserResponse,
-	plans []*shopCheckoutPlan,
-	hasPromotions, hasShopFreeship bool,
-) (string, error) {
-	if valResp == nil {
-		return "USER_VALIDATION_FAILED", status.Error(codes.Unavailable, "user validation response unavailable for COD check")
-	}
-	if s.cfg.CODRequirePhoneVerified && !valResp.GetPhoneVerified() {
-		return "COD_PHONE_NOT_VERIFIED", status.Error(
-			codes.FailedPrecondition,
-			"COD_PHONE_NOT_VERIFIED: vui lòng xác minh số điện thoại trước khi đặt hàng thanh toán khi nhận hàng (COD)",
-		)
-	}
-	for _, p := range plans {
-		if !p.codSupported {
-			return "COD_AREA_NOT_SUPPORTED", status.Errorf(
-				codes.FailedPrecondition,
-				"COD_AREA_NOT_SUPPORTED: khu vực giao hàng hoặc đơn vị vận chuyển của shop %s không hỗ trợ thanh toán khi nhận hàng (COD)",
-				p.shopID,
-			)
-		}
-	}
-	maxRejected := s.codMaxRejectedCount()
-	if valResp.GetCodRejectedCount() >= maxRejected {
-		return "COD_REJECTED_LIMIT_EXCEEDED", status.Errorf(
-			codes.FailedPrecondition,
-			"COD_REJECTED_LIMIT_EXCEEDED: account has %d rejected COD deliveries (limit %d)",
-			valResp.GetCodRejectedCount(),
-			maxRejected,
-		)
-	}
-	codStats, err := s.store.GetBuyerTerminalCODStats(ctx, buyerID)
-	if err != nil {
-		return "COD_RISK_CHECK_UNAVAILABLE", status.Errorf(
-			codes.Unavailable,
-			"COD_RISK_CHECK_UNAVAILABLE: failed to evaluate COD order history: %v",
-			err,
-		)
-	}
-	minOrders := s.codMinOrdersForRate()
-	maxRateBPS := s.codMaxRejectRateBPS()
-	if codStats.TotalTerminal >= minOrders && codStats.RejectedCount*10000 >= codStats.TotalTerminal*maxRateBPS {
-		return "COD_REJECTED_LIMIT_EXCEEDED", status.Errorf(
-			codes.FailedPrecondition,
-			"COD_REJECTED_LIMIT_EXCEEDED: account COD delivery rejection rate (%d/%d) exceeds allowed limit (%d bps)",
-			codStats.RejectedCount,
-			codStats.TotalTerminal,
-			maxRateBPS,
-		)
-	}
-	if !hasPromotions && !hasShopFreeship {
-		var preTotal int64
-		for _, p := range plans {
-			preTotal += p.subtotalVND + p.shippingFeeVND
-		}
-		if preTotal > s.cfg.CODMaxVND {
-			return "COD_LIMIT_EXCEEDED", status.Errorf(
-				codes.FailedPrecondition,
-				"COD_LIMIT_EXCEEDED: order total %d VND exceeds COD maximum %d VND",
-				preTotal,
-				s.cfg.CODMaxVND,
-			)
-		}
-	}
-	return "", nil
-}
-
 func wrapDownstreamError(prefix string, err error) error {
 	if err == nil {
 		return nil
@@ -1588,20 +1601,20 @@ func wrapDownstreamError(prefix string, err error) error {
 	return status.Errorf(codes.Unavailable, "%s: %v", prefix, err)
 }
 
-func (s *OrderService) lookupPaymentFeeBPS(ctx context.Context, method orderv1.OrderPaymentMethod, atTime time.Time) (int32, error) {
+func (s *OrderService) lookupPaymentFeeBPS(ctx context.Context, method string, atTime time.Time) (int32, error) {
 	if s.clients.Payment == nil {
 		return 0, status.Error(codes.Unavailable, "PAYMENT_FEE_CONFIG_UNAVAILABLE: payment client is not configured")
 	}
-	payMethod := paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR
-	if method == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
-		payMethod = paymentv1.PaymentMethod_PAYMENT_METHOD_COD
+	payMethod, err := paymentProtoMethod(method)
+	if err != nil {
+		return 0, err
 	}
 	resp, err := s.clients.Payment.GetFeeConfig(clients.WithInternalAdminContext(ctx), &paymentv1.GetFeeConfigRequest{
 		PaymentMethod: payMethod,
 		AtTime:        timestamppb.New(atTime),
 	})
 	if err != nil {
-		return 0, fmt.Errorf("PAYMENT_FEE_CONFIG_FAILED: load payment fee config for %s: %w", payMethod.String(), err)
+		return 0, wrapDownstreamError(fmt.Sprintf("PAYMENT_FEE_CONFIG_FAILED: load payment fee config for %s", payMethod.String()), err)
 	}
 	for _, cfg := range resp.GetActiveConfigs() {
 		if cfg == nil {
@@ -1622,7 +1635,7 @@ func (s *OrderService) lookupPaymentFeeBPS(ctx context.Context, method orderv1.O
 	)
 }
 
-func pickShippingQuote(quotes []*shippingv1.CarrierQuote, choice *orderv1.ShopShippingChoice, paymentMethod orderv1.OrderPaymentMethod) *shippingv1.CarrierQuote {
+func pickShippingQuote(quotes []*shippingv1.CarrierQuote, choice *orderv1.ShopShippingChoice, paymentMethod string) *shippingv1.CarrierQuote {
 	if choice != nil && choice.GetCarrierCode() != "" {
 		for _, q := range quotes {
 			if strings.EqualFold(q.GetCarrierCode(), choice.GetCarrierCode()) {
@@ -1638,7 +1651,7 @@ func pickShippingQuote(quotes []*shippingv1.CarrierQuote, choice *orderv1.ShopSh
 		}
 	}
 
-	if paymentMethod == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
+	if statemachine.IsCODMethod(paymentMethod) {
 		var cheapestCOD *shippingv1.CarrierQuote
 		for _, q := range quotes {
 			if !q.GetCodSupported() {
@@ -2102,19 +2115,14 @@ func applyDiscountsAndTotals(
 
 		// Payment fee C_pay = P * payment_fee_bps / 10000, seller-borne, capped so C_total = C_cat + C_pay <= R.
 		p.paymentFeeBPS = paymentFeeBPS
-		var rawPayFee int64
-		if paymentFeeBPS > 0 && p.totalPayableVND > 0 {
-			rawPayFee = (p.totalPayableVND * int64(paymentFeeBPS)) / 10000
-		}
-		remainingForPayFee := maxInt64(0, sellerRevenue-p.commissionVND)
-		p.paymentFeeVND = minInt64(maxInt64(0, rawPayFee), remainingForPayFee)
+		p.paymentFeeVND = ComputePaymentFeeVND(sellerRevenue, p.commissionVND, p.totalPayableVND, paymentFeeBPS)
 	}
 	return nil
 }
 
 func buildCheckoutBatch(
 	checkoutGroupID, buyerID string,
-	paymentMethod orderv1.OrderPaymentMethod,
+	paymentMethod string,
 	initialStatus orderv1.OrderStatus,
 	initialPaymentStatus string,
 	paymentExpiresAt *time.Time,
@@ -2131,7 +2139,7 @@ func buildCheckoutBatch(
 	}
 
 	statusStr := statemachine.StatusToString(initialStatus)
-	methodStr := statemachine.PaymentMethodToString(paymentMethod)
+	methodStr := statemachine.NormalizePaymentMethod(paymentMethod)
 	var confirmedAt *time.Time
 	if initialStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
 		ts := now
@@ -2289,13 +2297,13 @@ func buildShopAllocation(ord db.Order) *paymentv1.ShopAllocation {
 func buildCreatePaymentRequest(
 	checkoutGroupID, buyerID string,
 	totalPayableVND int64,
-	method orderv1.OrderPaymentMethod,
+	method string,
 	expiresAt *time.Time,
 	aggs []store.OrderAggregate,
-) *paymentv1.CreatePaymentRequest {
-	payMethod := paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR
-	if method == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
-		payMethod = paymentv1.PaymentMethod_PAYMENT_METHOD_COD
+) (*paymentv1.CreatePaymentRequest, error) {
+	payMethod, err := paymentProtoMethod(method)
+	if err != nil {
+		return nil, err
 	}
 
 	allocs := make([]*paymentv1.ShopAllocation, 0, len(aggs))
@@ -2315,7 +2323,7 @@ func buildCreatePaymentRequest(
 	if expiresAt != nil {
 		req.ExpiresAt = timestamppb.New(*expiresAt)
 	}
-	return req
+	return req, nil
 }
 
 func paymentStatusToString(ps paymentv1.PaymentStatus, fallback string) string {

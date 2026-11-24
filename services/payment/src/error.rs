@@ -15,6 +15,9 @@ pub enum PaymentError {
     #[error("conflict: {0}")]
     Conflict(String),
 
+    #[error("failed precondition: {0}")]
+    FailedPrecondition(String),
+
     #[error("unauthorized: {0}")]
     Unauthorized(String),
 
@@ -58,6 +61,7 @@ impl PaymentError {
             Self::Validation(_) => StatusCode::BAD_REQUEST,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Conflict(_)
+            | Self::FailedPrecondition(_)
             | Self::InsufficientBalance { .. }
             | Self::RefundExceedsPaid { .. }
             | Self::ProviderUnsupported(_) => StatusCode::CONFLICT,
@@ -75,6 +79,7 @@ impl PaymentError {
             Self::Validation(_) => "VALIDATION_ERROR",
             Self::NotFound(_) => "NOT_FOUND",
             Self::Conflict(_) => "CONFLICT",
+            Self::FailedPrecondition(_) => "FAILED_PRECONDITION",
             Self::Unauthorized(_) => "UNAUTHORIZED",
             Self::Forbidden(_) => "FORBIDDEN",
             Self::LedgerInvariant(_) => "LEDGER_INVARIANT_ERROR",
@@ -93,6 +98,7 @@ impl PaymentError {
             Self::Validation(m) => tonic::Status::invalid_argument(m.clone()),
             Self::NotFound(m) => tonic::Status::not_found(m.clone()),
             Self::Conflict(m) => tonic::Status::already_exists(m.clone()),
+            Self::FailedPrecondition(m) => tonic::Status::failed_precondition(m.clone()),
             Self::Unauthorized(m) => tonic::Status::unauthenticated(m.clone()),
             Self::Forbidden(m) => tonic::Status::permission_denied(m.clone()),
             Self::InsufficientBalance { .. } | Self::RefundExceedsPaid { .. } => {

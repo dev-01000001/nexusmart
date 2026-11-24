@@ -384,9 +384,9 @@ func (s *PromotionService) CreateVoucher(ctx context.Context, req *promotionv1.C
 
 	shopID := strings.TrimSpace(req.GetShopId())
 
-	claims, ok := auth.ClaimsFromContext(ctx)
-	if !ok {
-		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	claims, err := requireEndUserClaims(ctx)
+	if err != nil {
+		return nil, err
 	}
 	createdBy := claims.UserID()
 	switch {
@@ -401,7 +401,10 @@ func (s *PromotionService) CreateVoucher(ctx context.Context, req *promotionv1.C
 			return nil, status.Error(codes.PermissionDenied, "sellers can only create vouchers for their own shop")
 		}
 		shopID = claims.ShopID
-	case isAdmin(claims):
+		if err := s.requireShopNotSuspended(ctx, shopID); err != nil {
+			return nil, err
+		}
+	case auth.HasCapability(claims, auth.CapVouchersWrite):
 		if scopeStr != domain.VoucherScopePlatform && scopeStr != domain.VoucherScopeFreeship {
 			return nil, status.Error(codes.PermissionDenied, "admins can only create PLATFORM or FREESHIP vouchers")
 		}
@@ -539,9 +542,19 @@ func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promo
 		req.GetOrderAmountVnd() == 0
 
 	// Admin managing vouchers (GET /api/v1/admin/vouchers)
+	wantsManageView := req.GetIncludeInactive() || statusFilter != ""
+	if wantsManageView && !sellerManageView {
+		if !hasClaims {
+			return nil, status.Error(codes.Unauthenticated, "authentication required to list inactive or status-filtered vouchers")
+		}
+		if !auth.HasCapability(claims, auth.CapVouchersRead) {
+			return nil, status.Error(codes.PermissionDenied, "insufficient permissions to list vouchers in admin mode")
+		}
+	}
+
 	adminManageView := hasClaims &&
-		isAdmin(claims) &&
-		(req.GetIncludeInactive() || statusFilter != "")
+		auth.HasCapability(claims, auth.CapVouchersRead) &&
+		wantsManageView
 
 	manageView := sellerManageView || adminManageView
 
@@ -551,7 +564,7 @@ func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promo
 		if reqUserID != "" {
 			return nil, status.Error(codes.Unauthenticated, "authentication required to query user-specific vouchers")
 		}
-	case isAdmin(claims) || claims.Service != "":
+	case auth.HasCapability(claims, auth.CapVouchersRead) || claims.Service != "":
 		userID = reqUserID
 		if userID == "" && claims.Service == "" && !adminManageView {
 			userID = claims.UserID()
@@ -605,6 +618,22 @@ func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promo
 		}
 	}
 
+	var suspendedShops map[string]bool
+	if !manageView {
+		shopIDs := make([]string, 0, len(vouchers))
+		for _, v := range vouchers {
+			if v.Scope == domain.VoucherScopeShop && v.ShopID != "" {
+				shopIDs = append(shopIDs, v.ShopID)
+			}
+		}
+		if len(shopIDs) > 0 {
+			suspendedShops, err = s.store.GetSuspendedShopIDs(ctx, shopIDs)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "check suspended shops: %v", err)
+			}
+		}
+	}
+
 	now := s.nowFn()
 	resp := &promotionv1.ListAvailableVouchersResponse{
 		Vouchers: make([]*promotionv1.Voucher, 0, len(vouchers)),
@@ -642,6 +671,9 @@ func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promo
 				continue
 			}
 		} else {
+			if v.Scope == domain.VoucherScopeShop && v.ShopID != "" && suspendedShops[v.ShopID] {
+				continue
+			}
 			saved := savedMap[v.ID]
 			// Saved PAUSED/DELETED vouchers remain visible in the buyer's wallet as unusable (eligible=false).
 			if saved && (st == domain.VoucherStatusPaused || st == domain.VoucherStatusDeleted) {
@@ -689,6 +721,11 @@ func (s *PromotionService) SaveVoucher(ctx context.Context, req *promotionv1.Sav
 		}
 		return nil, status.Errorf(codes.Internal, "get voucher: %v", err)
 	}
+	if v.Scope == domain.VoucherScopeShop && v.ShopID != "" {
+		if err := s.requireShopNotSuspended(ctx, v.ShopID); err != nil {
+			return nil, err
+		}
+	}
 
 	now := s.nowFn()
 	switch v.EffectiveStatus() {
@@ -733,14 +770,14 @@ func (s *PromotionService) SaveVoucher(ctx context.Context, req *promotionv1.Sav
 	}, nil
 }
 
-// CreateFlashSale creates a flash sale time window (admin only).
+// CreateFlashSale creates a flash sale time window (requires flash_sales.write capability).
 func (s *PromotionService) CreateFlashSale(ctx context.Context, req *promotionv1.CreateFlashSaleRequest) (*promotionv1.CreateFlashSaleResponse, error) {
-	claims, ok := auth.ClaimsFromContext(ctx)
-	if !ok {
-		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	claims, err := requireEndUserClaims(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if !isAdmin(claims) {
-		return nil, status.Error(codes.PermissionDenied, "only admins can create flash sales")
+	if !auth.HasCapability(claims, auth.CapFlashSalesWrite) {
+		return nil, status.Error(codes.PermissionDenied, "insufficient permissions to create flash sales")
 	}
 	createdBy := claims.UserID()
 
@@ -777,9 +814,9 @@ func (s *PromotionService) CreateFlashSale(ctx context.Context, req *promotionv1
 // RegisterFlashSaleItem enrolls a seller SKU into a flash sale after full SKU, price, category, stock & overlap checks.
 func (s *PromotionService) RegisterFlashSaleItem(ctx context.Context, req *promotionv1.RegisterFlashSaleItemRequest) (*promotionv1.RegisterFlashSaleItemResponse, error) {
 	shopID := strings.TrimSpace(req.GetShopId())
-	claims, ok := auth.ClaimsFromContext(ctx)
-	if !ok {
-		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	claims, err := requireEndUserClaims(ctx)
+	if err != nil {
+		return nil, err
 	}
 	switch {
 	case isSeller(claims):
@@ -790,8 +827,11 @@ func (s *PromotionService) RegisterFlashSaleItem(ctx context.Context, req *promo
 			return nil, status.Error(codes.PermissionDenied, "sellers can only register items for their own shop")
 		}
 		shopID = claims.ShopID
-	case isAdmin(claims):
-		// Admin allowed when shop_id provided
+		if err := s.requireShopNotSuspended(ctx, shopID); err != nil {
+			return nil, err
+		}
+	case auth.HasCapability(claims, auth.CapFlashSalesWrite):
+		// Authorized staff with flash_sales.write allowed when shop_id provided
 	default:
 		return nil, status.Error(codes.PermissionDenied, "only sellers can register flash sale items")
 	}
@@ -862,12 +902,12 @@ func (s *PromotionService) RegisterFlashSaleItem(ctx context.Context, req *promo
 // Repeating the same decision is idempotent (no stock/price re-check, no Redis overwrite);
 // APPROVED <-> REJECTED transitions fail with FailedPrecondition.
 func (s *PromotionService) ApproveFlashSaleItem(ctx context.Context, req *promotionv1.ApproveFlashSaleItemRequest) (*promotionv1.ApproveFlashSaleItemResponse, error) {
-	claims, ok := auth.ClaimsFromContext(ctx)
-	if !ok {
-		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	claims, err := requireEndUserClaims(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if !isAdmin(claims) {
-		return nil, status.Error(codes.PermissionDenied, "only admins can review flash sale items")
+	if !auth.HasCapability(claims, auth.CapFlashSalesItemApprove) {
+		return nil, status.Error(codes.PermissionDenied, "insufficient permissions to review flash sale items")
 	}
 	adminID := claims.UserID()
 
@@ -1018,7 +1058,7 @@ func (s *PromotionService) GetCoinBalance(ctx context.Context, req *promotionv1.
 
 // CreditCoins atomically and idempotently (by reference_id) credits coins to a user's ledger.
 func (s *PromotionService) CreditCoins(ctx context.Context, req *promotionv1.CreditCoinsRequest) (*promotionv1.CreditCoinsResponse, error) {
-	if _, err := requireAdminOrService(ctx, "only admins or internal services can credit coins"); err != nil {
+	if _, err := requireCapabilityOrService(ctx, auth.CapCoinsCredit, "only authorized admins or internal services can credit coins"); err != nil {
 		return nil, err
 	}
 
@@ -2178,6 +2218,50 @@ func (s *PromotionService) buildCalcInput(
 		}
 	}
 
+	// Mark promotions belonging to suspended shops so neither PreviewDiscounts nor ReservePromotion
+	// applies shop vouchers, flash sale items, or shop discount programs of a suspended shop (F12).
+	promoShopIDs := make([]string, 0, len(shopVoucherCands)+len(flashCandidates)+len(shopProgCandidates))
+	for _, cand := range shopVoucherCands {
+		if cand != nil && cand.Found && cand.Voucher != nil && cand.Voucher.Scope == domain.VoucherScopeShop && cand.Voucher.ShopID != "" {
+			promoShopIDs = append(promoShopIDs, cand.Voucher.ShopID)
+		}
+	}
+	for _, cand := range flashCandidates {
+		if cand.Found && cand.Item != nil && cand.Item.ShopID != "" {
+			promoShopIDs = append(promoShopIDs, cand.Item.ShopID)
+		}
+	}
+	for _, cand := range shopProgCandidates {
+		if cand.Found && cand.Item != nil && cand.Item.ShopID != "" {
+			promoShopIDs = append(promoShopIDs, cand.Item.ShopID)
+		}
+	}
+	if len(promoShopIDs) > 0 {
+		suspendedShops, suspErr := s.store.GetSuspendedShopIDs(ctx, promoShopIDs)
+		if suspErr != nil {
+			return calculator.Input{}, status.Errorf(codes.Internal, "check suspended shops: %v", suspErr)
+		}
+		if len(suspendedShops) > 0 {
+			for _, cand := range shopVoucherCands {
+				if cand != nil && cand.Found && cand.Voucher != nil && cand.Voucher.Scope == domain.VoucherScopeShop && suspendedShops[cand.Voucher.ShopID] {
+					cand.ShopSuspended = true
+				}
+			}
+			for id, cand := range flashCandidates {
+				if cand.Found && cand.Item != nil && suspendedShops[cand.Item.ShopID] {
+					cand.ShopSuspended = true
+					flashCandidates[id] = cand
+				}
+			}
+			for id, cand := range shopProgCandidates {
+				if cand.Found && cand.Item != nil && suspendedShops[cand.Item.ShopID] {
+					cand.ShopSuspended = true
+					shopProgCandidates[id] = cand
+				}
+			}
+		}
+	}
+
 	var availCoins int64
 	if coinsToUse > 0 && userID != "" {
 		bal, _, err := s.store.GetCoinBalance(ctx, userID, 1)
@@ -2486,6 +2570,17 @@ func resolveUserID(ctx context.Context, reqUserID string) (string, error) {
 	return reqUserID, nil
 }
 
+func requireCapabilityOrService(ctx context.Context, capName, msg string) (*auth.Claims, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if claims.Service == "" && !auth.HasCapability(claims, capName) {
+		return nil, status.Error(codes.PermissionDenied, msg)
+	}
+	return claims, nil
+}
+
 func requireAdminOrService(ctx context.Context, msg string) (*auth.Claims, error) {
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
@@ -2498,11 +2593,26 @@ func requireAdminOrService(ctx context.Context, msg string) (*auth.Claims, error
 }
 
 func isAdmin(claims *auth.Claims) bool {
-	return auth.HasRole(claims, "admin", "super_admin")
+	return claims != nil && claims.Service == "" && auth.HasRole(claims, auth.RoleAdmin, auth.RoleSuperAdmin)
 }
 
 func isSeller(claims *auth.Claims) bool {
-	return auth.HasRole(claims, "seller")
+	return claims != nil && claims.Service == "" && auth.HasRole(claims, auth.RoleSeller)
+}
+
+func (s *PromotionService) requireShopNotSuspended(ctx context.Context, shopID string) error {
+	shopID = strings.TrimSpace(shopID)
+	if shopID == "" {
+		return nil
+	}
+	suspended, err := s.store.IsShopSuspended(ctx, shopID)
+	if err != nil {
+		return status.Errorf(codes.Internal, "check shop suspension: %v", err)
+	}
+	if suspended {
+		return status.Error(codes.FailedPrecondition, "SHOP_SUSPENDED: shop is currently suspended")
+	}
+	return nil
 }
 
 func validateKeySegment(field, val string) error {
@@ -2514,7 +2624,8 @@ func validateKeySegment(field, val string) error {
 
 func mapCalcError(err error) error {
 	switch {
-	case errors.Is(err, calculator.ErrVoucherIneligible),
+	case errors.Is(err, calculator.ErrShopSuspended),
+		errors.Is(err, calculator.ErrVoucherIneligible),
 		errors.Is(err, calculator.ErrInsufficientCoins),
 		errors.Is(err, calculator.ErrInvalidFlashSaleItem),
 		errors.Is(err, calculator.ErrInvalidShopDiscountProgram),

@@ -28,6 +28,7 @@ type EventHandler interface {
 	HandlePaymentFailed(ctx context.Context, eventID string, payload PaymentFailedPayload) error
 	HandlePaymentExpired(ctx context.Context, eventID string, payload PaymentFailedPayload) error
 	HandlePaymentRefunded(ctx context.Context, eventID string, payload PaymentRefundedPayload) error
+	HandlePaymentRefundRejected(ctx context.Context, eventID string, payload PaymentRefundRejectedPayload) error
 	HandleShipmentUpdated(ctx context.Context, eventID string, payload ShipmentUpdatedPayload) error
 	HandleShipmentCreateFailed(ctx context.Context, eventID string, payload ShipmentCreateFailedPayload) error
 }
@@ -309,6 +310,13 @@ func (c *Consumer) dispatch(ctx context.Context, eventType, eventID string, rawP
 			return fmt.Errorf("unmarshal payment.refunded payload: %w", err)
 		}
 		return c.handler.HandlePaymentRefunded(ctx, eventID, p)
+
+	case SubjectPaymentRefundRejected:
+		var p PaymentRefundRejectedPayload
+		if err := json.Unmarshal(rawPayload, &p); err != nil {
+			return fmt.Errorf("unmarshal payment.refund_rejected payload: %w", err)
+		}
+		return c.handler.HandlePaymentRefundRejected(ctx, eventID, p)
 
 	case SubjectShipmentUpdated:
 		var p ShipmentUpdatedPayload

@@ -370,6 +370,16 @@ func (c *supersedingPaymentClient) GetFeeConfig(_ context.Context, req *paymentv
 	}, nil
 }
 
+func (c *supersedingPaymentClient) GetPaymentMethodConfigs(_ context.Context, _ *paymentv1.GetPaymentMethodConfigsRequest, _ ...grpc.CallOption) (*paymentv1.GetPaymentMethodConfigsResponse, error) {
+	return &paymentv1.GetPaymentMethodConfigsResponse{
+		Configs: []*paymentv1.PaymentMethodConfig{
+			{Method: paymentv1.PaymentMethod_PAYMENT_METHOD_COD, Enabled: true, MaxOrderVnd: 5000000},
+			{Method: paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR, Enabled: true, ExpiryMinutes: 15},
+			{Method: paymentv1.PaymentMethod_PAYMENT_METHOD_ZALOPAY, Enabled: true, ExpiryMinutes: 15},
+		},
+	}, nil
+}
+
 // TestReview2O_P1_3_MultiReplicaRetryPayment_DifferentKeysSerialized reproduces review2-O P1-3.
 func TestReview2O_P1_3_MultiReplicaRetryPayment_DifferentKeysSerialized(t *testing.T) {
 	buyerCtx := ctxWithUser("buyer-1", "buyer", "")
@@ -377,20 +387,19 @@ func TestReview2O_P1_3_MultiReplicaRetryPayment_DifferentKeysSerialized(t *testi
 	payClient := newSupersedingPaymentClient()
 	hBase := newTestHarness()
 	cfg := config.Config{
-		ServiceName:          "order",
-		CODMaxVND:            5000000,
-		CODMaxRejectedCount:  3,
-		PaymentExpiryMinutes: 15,
-		RewardCoinsBPS:       100,
-		GRPCCallTimeout:      5 * time.Second,
+		ServiceName:         "order",
+		CODMaxRejectedCount: 3,
+		RewardCoinsBPS:      100,
+		GRPCCallTimeout:     5 * time.Second,
 	}
 	bundle := &clients.Bundle{
-		User:      hBase.user,
-		Product:   hBase.product,
-		Cart:      hBase.cart,
-		Promotion: hBase.promo,
-		Payment:   payClient,
-		Shipping:  hBase.shipping,
+		User:          hBase.user,
+		Product:       hBase.product,
+		Cart:          hBase.cart,
+		Promotion:     hBase.promo,
+		Payment:       payClient,
+		Shipping:      hBase.shipping,
+		MethodConfigs: hBase.methodConfigs,
 	}
 	// Two separate pods (independent in-process idemLocks!) sharing the same DB store.
 	pod1 := NewOrderService(cfg, sharedStore, bundle, logger.New("pod1", logger.WithWriter(io.Discard)))

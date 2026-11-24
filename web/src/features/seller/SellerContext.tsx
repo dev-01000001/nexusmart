@@ -9,6 +9,7 @@ import type {
   PaginatedResponse,
 } from "@/lib/gateway-types";
 import { ApiError, api, getErrorMessage, refreshSessionOnce } from "@/lib/api";
+import { formatDateTimeVi } from "@/lib/format";
 import { StateView } from "@/components";
 import { mapShopSlugToMockId } from "./types";
 import common from "./SellerCommon.module.css";
@@ -110,7 +111,7 @@ export function SellerProvider({
           setShop(fetched);
           const nextState = classifyShopState(fetched);
           setShopState(nextState);
-          if (nextState === "ready") {
+          if (nextState === "ready" || nextState === "suspended_shop") {
             void refreshPendingOrders();
             void refreshPendingReturns();
           }
@@ -133,7 +134,7 @@ export function SellerProvider({
         setShop(res.shop);
         const nextState = classifyShopState(res.shop);
         setShopState(nextState);
-        if (nextState === "ready") {
+        if (nextState === "ready" || nextState === "suspended_shop") {
           void refreshPendingOrders();
           void refreshPendingReturns();
         }
@@ -203,9 +204,11 @@ export function useSellerContext(): SellerContextValue {
  */
 export function SellerShopGate({
   pageTitle,
+  allowSuspended = false,
   children,
 }: {
   pageTitle: string;
+  allowSuspended?: boolean;
   children: (shop: GatewayShop) => React.ReactNode;
 }) {
   const { shop, shopState, shopError, reloadShop } = useSellerContext();
@@ -287,26 +290,19 @@ export function SellerShopGate({
     );
   }
 
-  if (shopState === "rejected_shop" || shopState === "suspended_shop") {
-    const isRejected = shopState === "rejected_shop";
+  if (shopState === "rejected_shop") {
     return (
       <div className={common.page}>
         <header className={common.pageHeader}>
           <div className={common.headerText}>
             <h1 className={common.title}>{pageTitle}</h1>
-            <p className={common.finding}>
-              {shop.name} · {isRejected ? "Hồ sơ bị từ chối" : "Gian hàng đang tạm ngưng"}
-            </p>
+            <p className={common.finding}>{shop.name} · Hồ sơ bị từ chối</p>
           </div>
         </header>
         <StateView
           kind="empty"
           surface="app"
-          title={
-            isRejected
-              ? `Hồ sơ gian hàng "${shop.name}" chưa được duyệt`
-              : `Gian hàng "${shop.name}" đang tạm ngưng hoạt động`
-          }
+          title={`Hồ sơ gian hàng "${shop.name}" chưa được duyệt`}
           message={
             shop.rejection_reason
               ? `Lý do từ quản trị viên: ${shop.rejection_reason}`
@@ -314,6 +310,65 @@ export function SellerShopGate({
           }
           actionLabel="Về trang Tài khoản"
           actionHref="/tai-khoan"
+        />
+      </div>
+    );
+  }
+
+  if (shopState === "suspended_shop") {
+    const suspendedReason = (shop.suspended_reason ?? "").trim();
+    const suspendedAtLabel = shop.suspended_at ? formatDateTimeVi(shop.suspended_at) : "";
+    if (allowSuspended) {
+      return (
+        <div className={common.page}>
+          <div className={common.suspendedBanner} role="status">
+            <strong className={common.suspendedBannerTitle}>
+              Gian hàng &ldquo;{shop.name}&rdquo; đang tạm ngưng hoạt động
+            </strong>
+            <p className={common.suspendedBannerText}>
+              {suspendedReason
+                ? `Lý do tạm ngưng: ${suspendedReason}. `
+                : "Gian hàng đang tạm ngưng theo quyết định quản trị viên. "}
+              Bạn vẫn cần xử lý các đơn đã đặt, yêu cầu trả hàng và theo dõi tài chính bình thường
+              trong thời gian tạm ngưng.
+            </p>
+            {suspendedAtLabel && (
+              <p className={`${common.suspendedBannerMeta} num`}>
+                Thời điểm tạm ngưng: {suspendedAtLabel}
+              </p>
+            )}
+          </div>
+          {children(shop)}
+        </div>
+      );
+    }
+
+    const detailParts: string[] = [];
+    if (suspendedReason) {
+      detailParts.push(`Lý do tạm ngưng: ${suspendedReason}.`);
+    }
+    if (suspendedAtLabel) {
+      detailParts.push(`Thời điểm tạm ngưng: ${suspendedAtLabel}.`);
+    }
+    detailParts.push(
+      "Tính năng này tạm khóa trong thời gian gian hàng tạm ngưng, nhưng bạn vẫn cần xử lý các đơn đã đặt tại mục Đơn hàng."
+    );
+
+    return (
+      <div className={common.page}>
+        <header className={common.pageHeader}>
+          <div className={common.headerText}>
+            <h1 className={common.title}>{pageTitle}</h1>
+            <p className={common.finding}>{shop.name} · Gian hàng đang tạm ngưng</p>
+          </div>
+        </header>
+        <StateView
+          kind="empty"
+          surface="app"
+          title={`Gian hàng "${shop.name}" đang tạm ngưng hoạt động`}
+          message={detailParts.join(" ")}
+          actionLabel="Xử lý đơn hàng đã đặt"
+          actionHref="/seller/don-hang"
         />
       </div>
     );

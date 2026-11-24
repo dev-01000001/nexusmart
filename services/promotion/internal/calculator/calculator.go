@@ -22,6 +22,8 @@ var (
 	ErrInvalidShopDiscountProgram = errors.New("invalid shop discount program item")
 	// ErrShopProgramLimitExceeded indicates a user exceeded a shop discount program's per-user limit.
 	ErrShopProgramLimitExceeded = errors.New("shop discount program per-user limit exceeded")
+	// ErrShopSuspended indicates a shop is suspended and its promotions cannot be applied (F12).
+	ErrShopSuspended = errors.New("SHOP_SUSPENDED")
 )
 
 // LineItemInput represents a SKU line inside a shop checkout group.
@@ -52,6 +54,7 @@ type ShopInput struct {
 type FlashItemCandidate struct {
 	Item           *domain.FlashSaleItem
 	Found          bool
+	ShopSuspended  bool
 	UserUsedCount  int32
 	CheckRemaining bool
 	RemainingSlots int32
@@ -61,6 +64,7 @@ type FlashItemCandidate struct {
 type ShopProgramItemCandidate struct {
 	Item          *domain.ShopDiscountProgramItem
 	Found         bool
+	ShopSuspended bool
 	UserUsedCount int32
 }
 
@@ -70,6 +74,7 @@ type VoucherCandidate struct {
 	RequestedID        string
 	Voucher            *domain.Voucher
 	Found              bool
+	ShopSuspended      bool
 	RemainingQuota     int32
 	RemainingBudget    int64
 	UserUsedCount      int32
@@ -197,6 +202,9 @@ func Calculate(in Input) (*Output, error) {
 				flashReason := validateFlashCandidate(cand, ok, item, s.ShopID, now, usedFlashQty[item.FlashSaleItemID])
 				if flashReason != "" {
 					if in.Strict {
+						if cand.ShopSuspended && cand.Item != nil {
+							return nil, fmt.Errorf("%w: shop for flash sale item %s is suspended", ErrShopSuspended, cand.Item.ID)
+						}
 						return nil, fmt.Errorf("%w: %s", ErrInvalidFlashSaleItem, flashReason)
 					}
 					warnings = append(warnings, flashReason)
@@ -223,6 +231,9 @@ func Calculate(in Input) (*Output, error) {
 					// in BOTH Preview and Reserve (never blocks buying the SKU at regular price).
 					// All other validation errors (missing, inactive, wrong SKU/shop) still fail in Strict mode.
 					if in.Strict && !errors.Is(progErr, ErrShopProgramLimitExceeded) {
+						if errors.Is(progErr, ErrShopSuspended) && cand.Item != nil {
+							return nil, fmt.Errorf("%w: shop for shop discount program item %s is suspended", ErrShopSuspended, cand.Item.ID)
+						}
 						return nil, fmt.Errorf("%w: %s", progErr, progReason)
 					}
 					warnings = append(warnings, progReason)
@@ -307,6 +318,9 @@ func Calculate(in Input) (*Output, error) {
 			disc, reason := evaluateVoucher(cand, domain.VoucherScopeShop, s.ShopID, afterItem[i], afterItem[i], now)
 			if reason != "" {
 				if in.Strict {
+					if cand.ShopSuspended && cand.Voucher != nil {
+						return nil, fmt.Errorf("%w: shop for voucher %s is suspended", ErrShopSuspended, cand.Voucher.Code)
+					}
 					return nil, fmt.Errorf("%w: %s", ErrVoucherIneligible, reason)
 				}
 				warnings = append(warnings, reason)
@@ -594,6 +608,9 @@ func validateFlashCandidate(
 		return fmt.Sprintf("flash sale item %s not found", item.FlashSaleItemID)
 	}
 	fi := cand.Item
+	if cand.ShopSuspended {
+		return fmt.Sprintf("SHOP_SUSPENDED: shop for flash sale item %s is suspended", fi.ID)
+	}
 	if fi.Status != domain.FlashStatusApproved {
 		return fmt.Sprintf("flash sale item %s is not approved", fi.ID)
 	}
@@ -628,6 +645,9 @@ func validateShopProgramCandidate(
 		return fmt.Sprintf("shop discount program item %s not found", item.ShopDiscountProgramItemID), ErrInvalidShopDiscountProgram
 	}
 	spi := cand.Item
+	if cand.ShopSuspended {
+		return fmt.Sprintf("SHOP_SUSPENDED: shop for shop discount program item %s is suspended", spi.ID), ErrShopSuspended
+	}
 	if !spi.IsActiveAt(now) {
 		return fmt.Sprintf("shop discount program item %s is not active", spi.ID), ErrInvalidShopDiscountProgram
 	}
@@ -658,6 +678,9 @@ func evaluateVoucherMetadata(
 		return nil, fmt.Sprintf("voucher %s not found", cand.RequestedID)
 	}
 	v := cand.Voucher
+	if cand.ShopSuspended {
+		return nil, fmt.Sprintf("SHOP_SUSPENDED: shop for voucher %s is suspended", v.Code)
+	}
 	switch v.EffectiveStatus() {
 	case domain.VoucherStatusDeleted:
 		return nil, fmt.Sprintf("voucher %s has been deleted", v.Code)

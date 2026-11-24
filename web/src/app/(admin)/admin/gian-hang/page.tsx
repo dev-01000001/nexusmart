@@ -26,6 +26,8 @@ import {
   submitAdminShopReviewDecision,
 } from "@/features/admin/types";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
+import { useAdminUser } from "@/features/admin/AdminUserContext";
+import { roleHasCapability } from "@/lib/admin-rbac";
 import { StatusPill } from "@/features/admin/StatusPill";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
@@ -48,6 +50,15 @@ function ShopApprovalContent({
   initialSelected: string | null;
 }) {
   const { showToast } = useMockStore();
+  const adminUser = useAdminUser();
+  const role = adminUser?.role ?? "";
+  const canReviewShop = roleHasCapability(role, "shops.review");
+  const canReadBank = roleHasCapability(role, "shops.bank.read");
+  const canReviewBank = roleHasCapability(role, "shops.bank.review");
+  const canRequestSuspend = roleHasCapability(role, "shops.suspend.request");
+  const canUnsuspend = roleHasCapability(role, "shops.unsuspend");
+  const [suspendReasonDrafts, setSuspendReasonDrafts] = useState<Record<string, string>>({});
+  const [suspendBusyByShopId, setSuspendBusyByShopId] = useState<Record<string, boolean>>({});
   const [shops, setShops] = useState<GatewayShop[]>([]);
   const [bankPendingShops, setBankPendingShops] = useState<GatewayShop[]>([]);
   const [bankPendingTotal, setBankPendingTotal] = useState(0);
@@ -127,9 +138,11 @@ function ShopApprovalContent({
     try {
       const [allRes, bankRes] = await Promise.all([
         api<PaginatedResponse<GatewayShop>>("admin/shops?page=1&page_size=100"),
-        api<PaginatedResponse<GatewayShop>>(
-          "admin/shops?bank_review_pending=true&page=1&page_size=100"
-        ),
+        canReadBank
+          ? api<PaginatedResponse<GatewayShop>>(
+              "admin/shops?bank_review_pending=true&page=1&page_size=100"
+            )
+          : Promise.resolve({ items: [] as GatewayShop[], page: 1, page_size: 100, total: 0 }),
       ]);
       const allItems = allRes.items ?? [];
       const bankItems = bankRes.items ?? [];
@@ -141,7 +154,7 @@ function ShopApprovalContent({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [canReadBank]);
 
   useEffect(() => {
     void loadShops();
@@ -248,11 +261,11 @@ function ShopApprovalContent({
   const inspectedOwnerId = inspectedShop?.owner_user_id;
 
   useEffect(() => {
-    if (!inspectedShopId) return;
+    if (!inspectedShopId || !canReadBank) return;
     const existing = bankByShopIdRef.current[inspectedShopId];
     if (existing && !existing.error) return;
     void loadShopBankAccount(inspectedShopId);
-  }, [inspectedShopId, loadShopBankAccount]);
+  }, [inspectedShopId, canReadBank, loadShopBankAccount]);
 
   useEffect(() => {
     if (!inspectedOwnerId) return;
@@ -263,10 +276,88 @@ function ShopApprovalContent({
 
   const handleRefreshAll = useCallback(async () => {
     const tasks: Array<Promise<unknown>> = [loadShops()];
-    if (inspectedShopId) tasks.push(loadShopBankAccount(inspectedShopId));
+    if (inspectedShopId && canReadBank) tasks.push(loadShopBankAccount(inspectedShopId));
     if (inspectedOwnerId) tasks.push(loadShopOwner(inspectedOwnerId));
     await Promise.all(tasks);
-  }, [loadShops, loadShopBankAccount, loadShopOwner, inspectedShopId, inspectedOwnerId]);
+  }, [
+    loadShops,
+    loadShopBankAccount,
+    loadShopOwner,
+    inspectedShopId,
+    inspectedOwnerId,
+    canReadBank,
+  ]);
+
+  const handleSuspendRequest = async (shop: GatewayShop) => {
+    if (!canRequestSuspend || suspendBusyByShopId[shop.id]) return;
+    const reason = (suspendReasonDrafts[shop.id] ?? "").trim();
+    if (reason.length < 4) {
+      showToast("Vui lòng nhập lý do đề xuất khoá gian hàng (tối thiểu 4 ký tự).");
+      return;
+    }
+    setSuspendBusyByShopId((prev) => ({ ...prev, [shop.id]: true }));
+    try {
+      await api(`admin/shops/${encodeURIComponent(shop.id)}/suspend`, {
+        method: "POST",
+        json: { reason },
+      });
+      setSuspendReasonDrafts((prev) => ({ ...prev, [shop.id]: "" }));
+      showToast(
+        `Đã gửi yêu cầu tạm khoá gian hàng "${shop.name}" sang hàng đợi Chờ duyệt 2 người.`
+      );
+      await loadShops();
+    } catch (err) {
+      if (
+        err instanceof ApiError &&
+        (err.status === 409 || err.code === "ALREADY_EXISTS") &&
+        (!err.message || err.message === "Thông tin đã tồn tại trong hệ thống.")
+      ) {
+        showToast("Gian hàng này đã có yêu cầu khoá đang chờ duyệt.");
+      } else {
+        showToast(getErrorMessage(err, "Không thể tạo yêu cầu khoá gian hàng lúc này."));
+      }
+    } finally {
+      setSuspendBusyByShopId((prev) => {
+        const next = { ...prev };
+        delete next[shop.id];
+        return next;
+      });
+    }
+  };
+
+  const handleUnsuspendShop = async (shop: GatewayShop) => {
+    if (!canUnsuspend || suspendBusyByShopId[shop.id]) return;
+    const reason = (suspendReasonDrafts[shop.id] ?? "").trim();
+    if (reason.length < 4) {
+      showToast("Vui lòng nhập lý do mở khoá gian hàng (tối thiểu 4 ký tự).");
+      return;
+    }
+    setSuspendBusyByShopId((prev) => ({ ...prev, [shop.id]: true }));
+    try {
+      const res = await api<{ shop?: GatewayShop }>(
+        `admin/shops/${encodeURIComponent(shop.id)}/unsuspend`,
+        {
+          method: "POST",
+          json: { reason },
+        }
+      );
+      if (res?.shop) {
+        setShops((prev) => prev.map((item) => (item.id === shop.id ? res.shop! : item)));
+      } else {
+        await loadShops();
+      }
+      setSuspendReasonDrafts((prev) => ({ ...prev, [shop.id]: "" }));
+      showToast(`Đã mở khoá gian hàng "${shop.name}".`);
+    } catch (err) {
+      showToast(getErrorMessage(err, "Không thể mở khoá gian hàng lúc này."));
+    } finally {
+      setSuspendBusyByShopId((prev) => {
+        const next = { ...prev };
+        delete next[shop.id];
+        return next;
+      });
+    }
+  };
 
   const handleBankReview = async (
     shop: GatewayShop,
@@ -510,204 +601,288 @@ function ShopApprovalContent({
               <span className={shared.detailValPlain}>{shop.rejection_reason}</span>
             </div>
           )}
+          {shop.suspended_reason && (
+            <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+              <span className={shared.detailKey}>Lý do tạm ngưng gian hàng</span>
+              <span className={shared.validationError}>
+                {shop.suspended_reason}
+                {shop.suspended_at ? ` · Từ ${formatDateTimeVi(shop.suspended_at)}` : ""}
+              </span>
+            </div>
+          )}
         </div>
 
-        <div className={shared.detailActionBar}>
-          <div className={shared.detailNoteGroup}>
-            <label htmlFor={`${panelPrefix}-shop-note-${shop.id}`} className={shared.fieldLabel}>
-              Ghi chú thẩm định hoặc lý do từ chối
-            </label>
-            <input
-              id={`${panelPrefix}-shop-note-${shop.id}`}
-              type="text"
-              className={shared.textInput}
-              value={draftValue}
-              onChange={(e) => {
-                setReasonDrafts((prev) => ({ ...prev, [shop.id]: e.target.value }));
-                if (showReasonError) setReasonErrorId(null);
-              }}
-              placeholder="Nhập ghi chú gửi chủ gian hàng (bắt buộc khi Từ chối hoặc Yêu cầu bổ sung)..."
-            />
-            {showReasonError && (
-              <span className={styles.validationError}>
-                Vui lòng nhập lý do cụ thể trước khi từ chối hoặc yêu cầu bổ sung.
-              </span>
-            )}
-          </div>
+        {canReviewShop && (
+          <div className={shared.detailActionBar}>
+            <div className={shared.detailNoteGroup}>
+              <label htmlFor={`${panelPrefix}-shop-note-${shop.id}`} className={shared.fieldLabel}>
+                Ghi chú thẩm định hoặc lý do từ chối
+              </label>
+              <input
+                id={`${panelPrefix}-shop-note-${shop.id}`}
+                type="text"
+                className={shared.textInput}
+                value={draftValue}
+                onChange={(e) => {
+                  setReasonDrafts((prev) => ({ ...prev, [shop.id]: e.target.value }));
+                  if (showReasonError) setReasonErrorId(null);
+                }}
+                placeholder="Nhập ghi chú gửi chủ gian hàng (bắt buộc khi Từ chối hoặc Yêu cầu bổ sung)..."
+              />
+              {showReasonError && (
+                <span className={styles.validationError}>
+                  Vui lòng nhập lý do cụ thể trước khi từ chối hoặc yêu cầu bổ sung.
+                </span>
+              )}
+            </div>
 
-          {isPendingShop && !canApprove && (
-            <div
-              className={shared.detailHeaderMeta}
-              role={ownerState?.loading ? "status" : "alert"}
-            >
-              <span className={ownerState?.loading ? shared.savedStamp : shared.validationError}>
-                {ownerState?.loading
-                  ? "Đang tải họ tên chủ gian hàng để đối chiếu trước khi phê duyệt..."
-                  : `${ownerState?.error ?? "Chưa có họ tên chủ gian hàng để đối chiếu."} Tạm chặn Phê duyệt cho tới khi tên chủ hiển thị (vẫn có thể Yêu cầu bổ sung hoặc Từ chối).`}
-              </span>
-              {shop.owner_user_id && (
+            {isPendingShop && !canApprove && (
+              <div
+                className={shared.detailHeaderMeta}
+                role={ownerState?.loading ? "status" : "alert"}
+              >
+                <span className={ownerState?.loading ? shared.savedStamp : shared.validationError}>
+                  {ownerState?.loading
+                    ? "Đang tải họ tên chủ gian hàng để đối chiếu trước khi phê duyệt..."
+                    : `${ownerState?.error ?? "Chưa có họ tên chủ gian hàng để đối chiếu."} Tạm chặn Phê duyệt cho tới khi tên chủ hiển thị (vẫn có thể Yêu cầu bổ sung hoặc Từ chối).`}
+                </span>
+                {shop.owner_user_id && (
+                  <button
+                    type="button"
+                    className={shared.rowActionBtn}
+                    disabled={ownerState?.loading}
+                    onClick={() => void loadShopOwner(shop.owner_user_id)}
+                  >
+                    Tải lại
+                  </button>
+                )}
+              </div>
+            )}
+
+            <div className={shared.detailButtons}>
+              <Button
+                variant="primary"
+                size="sm"
+                shape="app"
+                disabled={isBusy || !canApprove}
+                onClick={() => void handleDecision(shop, "APPROVE")}
+              >
+                {isBusy ? "Đang xử lý..." : "Phê duyệt"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                shape="app"
+                disabled={isBusy || !isPendingShop}
+                onClick={() => void handleDecision(shop, "REQUEST_INFO")}
+              >
+                Yêu cầu bổ sung
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                shape="app"
+                disabled={isBusy || !isPendingShop}
+                onClick={() => void handleDecision(shop, "REJECT")}
+              >
+                Từ chối
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Shop suspension request (2-person approval) & unsuspension (A7 F11/F12) */}
+        {shop.status === "ACTIVE" && canRequestSuspend && (
+          <div className={shared.detailActionBar}>
+            <div className={shared.detailNoteGroup}>
+              <label
+                htmlFor={`${panelPrefix}-suspend-note-${shop.id}`}
+                className={shared.fieldLabel}
+              >
+                Đề xuất tạm khoá gian hàng (yêu cầu duyệt 2 người)
+              </label>
+              <input
+                id={`${panelPrefix}-suspend-note-${shop.id}`}
+                type="text"
+                className={shared.textInput}
+                value={suspendReasonDrafts[shop.id] ?? ""}
+                onChange={(e) =>
+                  setSuspendReasonDrafts((prev) => ({ ...prev, [shop.id]: e.target.value }))
+                }
+                placeholder="Nhập lý do vi phạm cần tạm ngưng gian hàng..."
+              />
+            </div>
+            <div className={shared.detailButtons}>
+              <Button
+                variant="danger"
+                size="sm"
+                shape="app"
+                disabled={Boolean(suspendBusyByShopId[shop.id])}
+                onClick={() => void handleSuspendRequest(shop)}
+              >
+                {suspendBusyByShopId[shop.id] ? "Đang gửi..." : "Yêu cầu khoá gian hàng"}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {shop.status === "SUSPENDED" && canUnsuspend && (
+          <div className={shared.detailActionBar}>
+            <div className={shared.detailNoteGroup}>
+              <label
+                htmlFor={`${panelPrefix}-unsuspend-note-${shop.id}`}
+                className={shared.fieldLabel}
+              >
+                Mở khoá gian hàng hoạt động trở lại
+              </label>
+              <input
+                id={`${panelPrefix}-unsuspend-note-${shop.id}`}
+                type="text"
+                className={shared.textInput}
+                value={suspendReasonDrafts[shop.id] ?? ""}
+                onChange={(e) =>
+                  setSuspendReasonDrafts((prev) => ({ ...prev, [shop.id]: e.target.value }))
+                }
+                placeholder="Nhập lý do mở khoá sau khi gian hàng khắc phục vi phạm..."
+              />
+            </div>
+            <div className={shared.detailButtons}>
+              <Button
+                variant="primary"
+                size="sm"
+                shape="app"
+                disabled={Boolean(suspendBusyByShopId[shop.id])}
+                onClick={() => void handleUnsuspendShop(shop)}
+              >
+                {suspendBusyByShopId[shop.id] ? "Đang xử lý..." : "Mở khoá gian hàng"}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Shop Bank Account Inspection & Approval */}
+        {canReadBank && (
+          <div className={styles.bankSection}>
+            <div className={`${shared.detailHeader} ${styles.bankSectionHeader}`}>
+              <h3 className={shared.detailHeading}>Tài khoản ngân hàng nhận giải ngân</h3>
+              <div className={shared.detailHeaderMeta}>
+                {bankAcc && <StatusPill label={bankStatusLabel} tone={bankStatusTone} />}
                 <button
                   type="button"
                   className={shared.rowActionBtn}
-                  disabled={ownerState?.loading}
-                  onClick={() => void loadShopOwner(shop.owner_user_id)}
+                  onClick={() => void loadShopBankAccount(shop.id)}
                 >
                   Tải lại
                 </button>
-              )}
-            </div>
-          )}
-
-          <div className={shared.detailButtons}>
-            <Button
-              variant="primary"
-              size="sm"
-              shape="app"
-              disabled={isBusy || !canApprove}
-              onClick={() => void handleDecision(shop, "APPROVE")}
-            >
-              {isBusy ? "Đang xử lý..." : "Phê duyệt"}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              shape="app"
-              disabled={isBusy || !isPendingShop}
-              onClick={() => void handleDecision(shop, "REQUEST_INFO")}
-            >
-              Yêu cầu bổ sung
-            </Button>
-            <Button
-              variant="danger"
-              size="sm"
-              shape="app"
-              disabled={isBusy || !isPendingShop}
-              onClick={() => void handleDecision(shop, "REJECT")}
-            >
-              Từ chối
-            </Button>
-          </div>
-        </div>
-
-        {/* Shop Bank Account Inspection & Approval */}
-        <div className={styles.bankSection}>
-          <div className={`${shared.detailHeader} ${styles.bankSectionHeader}`}>
-            <h3 className={shared.detailHeading}>Tài khoản ngân hàng nhận giải ngân</h3>
-            <div className={shared.detailHeaderMeta}>
-              {bankAcc && <StatusPill label={bankStatusLabel} tone={bankStatusTone} />}
-              <button
-                type="button"
-                className={shared.rowActionBtn}
-                onClick={() => void loadShopBankAccount(shop.id)}
-              >
-                Tải lại
-              </button>
-            </div>
-          </div>
-
-          {!bankState || bankState.loading ? (
-            <span className={shared.savedStamp}>Đang tải thông tin tài khoản ngân hàng...</span>
-          ) : bankState.error ? (
-            <span className={shared.validationError} role="alert">
-              {bankState.error}
-            </span>
-          ) : !bankAcc ? (
-            <span className={shared.savedStamp}>
-              Gian hàng chưa đăng ký tài khoản ngân hàng nhận giải ngân.
-            </span>
-          ) : (
-            <>
-              <div className={shared.detailGrid}>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Ngân hàng</span>
-                  <span className={shared.detailVal}>
-                    {bankAcc.bank_code} · {bankAcc.bank_name}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Số tài khoản</span>
-                  <span className={`${shared.detailVal} num`}>{bankAcc.account_number_masked}</span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Chủ tài khoản</span>
-                  <span className={shared.detailVal}>
-                    {bankAcc.account_holder_name} (
-                    {bankAcc.holder_name_matched ? "Khớp tên chủ shop" : "Khác tên chủ shop"})
-                  </span>
-                </div>
-                {bankAcc.payout_locked_until && (
-                  <div className={shared.detailField}>
-                    <span className={shared.detailKey}>Khóa giải ngân an toàn đến</span>
-                    <span className={shared.detailValPlain}>
-                      {formatDateTimeVi(bankAcc.payout_locked_until)}
-                    </span>
-                  </div>
-                )}
-                {bankAcc.review_note && (
-                  <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                    <span className={shared.detailKey}>
-                      {bankAcc.status === "REJECTED"
-                        ? "Lý do từ chối ngân hàng"
-                        : "Ghi chú thẩm định ngân hàng"}
-                    </span>
-                    <span
-                      className={
-                        bankAcc.status === "REJECTED"
-                          ? shared.validationError
-                          : shared.detailValPlain
-                      }
-                    >
-                      {bankAcc.review_note}
-                    </span>
-                  </div>
-                )}
               </div>
+            </div>
 
-              {bankAcc.status === "PENDING_ADMIN_REVIEW" && (
-                <div className={shared.detailActionBar}>
-                  <div className={shared.detailNoteGroup}>
-                    <label
-                      htmlFor={`${panelPrefix}-bank-note-${shop.id}`}
-                      className={shared.fieldLabel}
-                    >
-                      Ghi chú thẩm định tài khoản ngân hàng
-                    </label>
-                    <input
-                      id={`${panelPrefix}-bank-note-${shop.id}`}
-                      type="text"
-                      className={shared.textInput}
-                      value={bankReasonDrafts[shop.id] ?? ""}
-                      onChange={(e) =>
-                        setBankReasonDrafts((prev) => ({ ...prev, [shop.id]: e.target.value }))
-                      }
-                      placeholder="Nhập lý do (bắt buộc khi từ chối tài khoản ngân hàng)..."
-                    />
+            {!bankState || bankState.loading ? (
+              <span className={shared.savedStamp}>Đang tải thông tin tài khoản ngân hàng...</span>
+            ) : bankState.error ? (
+              <span className={shared.validationError} role="alert">
+                {bankState.error}
+              </span>
+            ) : !bankAcc ? (
+              <span className={shared.savedStamp}>
+                Gian hàng chưa đăng ký tài khoản ngân hàng nhận giải ngân.
+              </span>
+            ) : (
+              <>
+                <div className={shared.detailGrid}>
+                  <div className={shared.detailField}>
+                    <span className={shared.detailKey}>Ngân hàng</span>
+                    <span className={shared.detailVal}>
+                      {bankAcc.bank_code} · {bankAcc.bank_name}
+                    </span>
                   </div>
-                  <div className={shared.detailButtons}>
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      shape="app"
-                      disabled={bankBusy}
-                      onClick={() => void handleBankReview(shop, bankAcc, "APPROVE")}
-                    >
-                      {bankBusy ? "Đang xử lý..." : "Duyệt tài khoản ngân hàng"}
-                    </Button>
-                    <Button
-                      variant="danger"
-                      size="sm"
-                      shape="app"
-                      disabled={bankBusy}
-                      onClick={() => void handleBankReview(shop, bankAcc, "REJECT")}
-                    >
-                      Từ chối ngân hàng
-                    </Button>
+                  <div className={shared.detailField}>
+                    <span className={shared.detailKey}>Số tài khoản</span>
+                    <span className={`${shared.detailVal} num`}>
+                      {bankAcc.account_number_masked}
+                    </span>
                   </div>
+                  <div className={shared.detailField}>
+                    <span className={shared.detailKey}>Chủ tài khoản</span>
+                    <span className={shared.detailVal}>
+                      {bankAcc.account_holder_name} (
+                      {bankAcc.holder_name_matched ? "Khớp tên chủ shop" : "Khác tên chủ shop"})
+                    </span>
+                  </div>
+                  {bankAcc.payout_locked_until && (
+                    <div className={shared.detailField}>
+                      <span className={shared.detailKey}>Khóa giải ngân an toàn đến</span>
+                      <span className={shared.detailValPlain}>
+                        {formatDateTimeVi(bankAcc.payout_locked_until)}
+                      </span>
+                    </div>
+                  )}
+                  {bankAcc.review_note && (
+                    <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+                      <span className={shared.detailKey}>
+                        {bankAcc.status === "REJECTED"
+                          ? "Lý do từ chối ngân hàng"
+                          : "Ghi chú thẩm định ngân hàng"}
+                      </span>
+                      <span
+                        className={
+                          bankAcc.status === "REJECTED"
+                            ? shared.validationError
+                            : shared.detailValPlain
+                        }
+                      >
+                        {bankAcc.review_note}
+                      </span>
+                    </div>
+                  )}
                 </div>
-              )}
-            </>
-          )}
-        </div>
+
+                {bankAcc.status === "PENDING_ADMIN_REVIEW" && canReviewBank && (
+                  <div className={shared.detailActionBar}>
+                    <div className={shared.detailNoteGroup}>
+                      <label
+                        htmlFor={`${panelPrefix}-bank-note-${shop.id}`}
+                        className={shared.fieldLabel}
+                      >
+                        Ghi chú thẩm định tài khoản ngân hàng
+                      </label>
+                      <input
+                        id={`${panelPrefix}-bank-note-${shop.id}`}
+                        type="text"
+                        className={shared.textInput}
+                        value={bankReasonDrafts[shop.id] ?? ""}
+                        onChange={(e) =>
+                          setBankReasonDrafts((prev) => ({ ...prev, [shop.id]: e.target.value }))
+                        }
+                        placeholder="Nhập lý do (bắt buộc khi từ chối tài khoản ngân hàng)..."
+                      />
+                    </div>
+                    <div className={shared.detailButtons}>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        shape="app"
+                        disabled={bankBusy}
+                        onClick={() => void handleBankReview(shop, bankAcc, "APPROVE")}
+                      >
+                        {bankBusy ? "Đang xử lý..." : "Duyệt tài khoản ngân hàng"}
+                      </Button>
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        shape="app"
+                        disabled={bankBusy}
+                        onClick={() => void handleBankReview(shop, bankAcc, "REJECT")}
+                      >
+                        Từ chối ngân hàng
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
     );
   };
@@ -715,7 +890,9 @@ function ShopApprovalContent({
   const tabs: Array<{ id: ShopFilterTab; label: string }> = [
     { id: "all", label: "Tất cả" },
     { id: "PENDING", label: "Chờ duyệt" },
-    { id: "BANK_REVIEW_PENDING", label: "Chờ duyệt tài khoản ngân hàng" },
+    ...(canReadBank
+      ? [{ id: "BANK_REVIEW_PENDING" as const, label: "Chờ duyệt tài khoản ngân hàng" }]
+      : []),
     { id: "ACTIVE", label: "Đang hoạt động" },
     { id: "REJECTED", label: "Từ chối" },
     { id: "SUSPENDED", label: "Tạm ngưng" },

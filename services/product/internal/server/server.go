@@ -107,7 +107,7 @@ func traceMetaFromContext(ctx context.Context) (string, string) {
 // --- Categories ---
 
 func (s *Server) CreateCategory(ctx context.Context, req *productv1.CreateCategoryRequest) (*productv1.CreateCategoryResponse, error) {
-	claims, err := requireAdmin(ctx)
+	claims, err := requireCapability(ctx, auth.CapCategoriesWrite)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +203,7 @@ func (s *Server) CreateCategory(ctx context.Context, req *productv1.CreateCatego
 }
 
 func (s *Server) UpdateCategory(ctx context.Context, req *productv1.UpdateCategoryRequest) (*productv1.UpdateCategoryResponse, error) {
-	claims, err := requireAdmin(ctx)
+	claims, err := requireCapability(ctx, auth.CapCategoriesWrite)
 	if err != nil {
 		return nil, err
 	}
@@ -341,7 +341,7 @@ func (s *Server) UpdateCategory(ctx context.Context, req *productv1.UpdateCatego
 }
 
 func (s *Server) DeleteCategory(ctx context.Context, req *productv1.DeleteCategoryRequest) (*productv1.DeleteCategoryResponse, error) {
-	if _, err := requireAdmin(ctx); err != nil {
+	if _, err := requireCapability(ctx, auth.CapCategoriesWrite); err != nil {
 		return nil, err
 	}
 	id := strings.TrimSpace(req.GetId())
@@ -447,7 +447,7 @@ func (s *Server) GetCategoryDescendants(ctx context.Context, req *productv1.GetC
 }
 
 func (s *Server) SetCategoryFeeSchedule(ctx context.Context, req *productv1.SetCategoryFeeScheduleRequest) (*productv1.SetCategoryFeeScheduleResponse, error) {
-	claims, err := requireAdmin(ctx)
+	claims, err := requireCapability(ctx, auth.CapFeesCategoryWrite)
 	if err != nil {
 		return nil, err
 	}
@@ -510,7 +510,7 @@ func (s *Server) SetCategoryFeeSchedule(ctx context.Context, req *productv1.SetC
 }
 
 func (s *Server) ListCategoryFeeSchedules(ctx context.Context, req *productv1.ListCategoryFeeSchedulesRequest) (*productv1.ListCategoryFeeSchedulesResponse, error) {
-	if _, err := requireAdmin(ctx); err != nil {
+	if _, err := requireCapability(ctx, auth.CapFeesCategoryRead); err != nil {
 		return nil, err
 	}
 	page := req.GetPage()
@@ -542,12 +542,21 @@ func (s *Server) ListCategoryFeeSchedules(ctx context.Context, req *productv1.Li
 // --- Products ---
 
 func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProductRequest) (*productv1.CreateProductResponse, error) {
-	shopID, claims, _, err := resolveSellerOrAdminShop(ctx, req.GetShopId())
+	shopID, claims, isAdmin, err := resolveSellerOrAdminShop(ctx, req.GetShopId())
 	if err != nil {
 		return nil, err
 	}
 	if shopID == "" {
 		return nil, status.Error(codes.InvalidArgument, "shop_id is required")
+	}
+	if !isAdmin {
+		suspended, suspErr := s.store.IsShopSuspended(ctx, shopID)
+		if suspErr != nil {
+			return nil, status.Errorf(codes.Internal, "check shop suspension: %v", suspErr)
+		}
+		if suspended {
+			return nil, status.Error(codes.FailedPrecondition, "SHOP_SUSPENDED: shop is suspended and cannot create products")
+		}
 	}
 
 	categoryID := strings.TrimSpace(req.GetCategoryId())
@@ -604,6 +613,17 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 	actorID := claims.UserID()
 
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
+		if lockErr := q.LockShopSuspension(ctx, shopID); lockErr != nil {
+			return lockErr
+		}
+		shopSuspended, suspErr := q.IsShopSuspended(ctx, shopID)
+		if suspErr != nil {
+			return suspErr
+		}
+		if !isAdmin && shopSuspended {
+			return status.Error(codes.FailedPrecondition, "SHOP_SUSPENDED: shop is suspended and cannot create products")
+		}
+
 		prodID := uuid.NewString()
 		prodSlug := explicitSlug
 		if prodSlug != "" {
@@ -634,6 +654,7 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 			MinPriceVND:     minPrice,
 			MaxPriceVND:     maxPrice,
 			FlaggedKeywords: modRes.FlaggedTerms,
+			ShopSuspended:   shopSuspended,
 		})
 		if createErr != nil {
 			return createErr
@@ -663,6 +684,7 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 				CommissionRateBps: cat.CommissionRateBps,
 				Status:            skuStatus,
 				ProductStatus:     p.Status,
+				ShopSuspended:     p.ShopSuspended,
 			})
 			if skuErr != nil {
 				return skuErr
@@ -740,10 +762,23 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 		resultSKUs  []store.SKU
 	)
 
-	// Lock order: products (FOR UPDATE) -> skus -> stock_history / sku_price_history.
+	// Lock order: shop_suspension (seller) -> products (FOR UPDATE) -> skus -> stock_history / sku_price_history.
 	// Reading product + SKUs, verifying ownership, computing nextStatus/isHideOnly, running moderation,
 	// and writing SKUs + product all happen inside the same transaction to eliminate TOCTOU races.
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
+		if !isAdmin {
+			if lockErr := q.LockShopSuspension(ctx, shopID); lockErr != nil {
+				return lockErr
+			}
+			suspended, suspErr := q.IsShopSuspended(ctx, shopID)
+			if suspErr != nil {
+				return suspErr
+			}
+			if suspended {
+				return status.Error(codes.FailedPrecondition, "SHOP_SUSPENDED: shop is suspended and cannot update products")
+			}
+		}
+
 		existing, getErr := q.GetProductByIDForUpdate(ctx, id)
 		if getErr != nil {
 			if errors.Is(getErr, store.ErrNotFound) {
@@ -1003,6 +1038,7 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 						CommissionRateBps: cat.CommissionRateBps,
 						Status:            skuStatus,
 						ProductStatus:     nextStatus,
+						ShopSuspended:     existing.ShopSuspended,
 					})
 					if createErr != nil {
 						return createErr
@@ -1115,8 +1151,21 @@ func (s *Server) DeleteProduct(ctx context.Context, req *productv1.DeleteProduct
 	now := s.now()
 	ctx = store.WithAsOf(ctx, now)
 
-	// Lock order: products (FOR UPDATE) -> skus (deactivate).
+	// Lock order: shop_suspension (seller) -> products (FOR UPDATE) -> skus (deactivate).
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
+		if !isAdmin {
+			if lockErr := q.LockShopSuspension(ctx, shopID); lockErr != nil {
+				return lockErr
+			}
+			suspended, suspErr := q.IsShopSuspended(ctx, shopID)
+			if suspErr != nil {
+				return suspErr
+			}
+			if suspended {
+				return status.Error(codes.FailedPrecondition, "SHOP_SUSPENDED: shop is suspended and cannot delete products")
+			}
+		}
+
 		existing, getErr := q.GetProductByIDForUpdate(ctx, id)
 		if getErr != nil {
 			return getErr
@@ -1146,7 +1195,7 @@ func (s *Server) DeleteProduct(ctx context.Context, req *productv1.DeleteProduct
 }
 
 func (s *Server) AdminReviewProduct(ctx context.Context, req *productv1.AdminReviewProductRequest) (*productv1.AdminReviewProductResponse, error) {
-	if _, err := requireAdmin(ctx); err != nil {
+	if _, err := requireCapability(ctx, auth.CapProductsReview); err != nil {
 		return nil, err
 	}
 	productID := strings.TrimSpace(req.GetProductId())
@@ -1364,12 +1413,15 @@ func (s *Server) GetProduct(ctx context.Context, req *productv1.GetProductReques
 		return nil, status.Errorf(codes.Internal, "get product: %v", err)
 	}
 	if !canViewProduct(ctx, prod) {
-		// E13: Previously-approved HIDDEN/REJECTED products return a discontinued stub on public slug lookup;
-		// discontinued_name is populated ONLY when current status is HIDDEN. Never-approved products still 404.
+		// E13 & F12: Previously-approved HIDDEN/REJECTED/shop-suspended products return a discontinued stub
+		// on public slug lookup without leaking suspension reason. discontinued_name is populated ONLY when
+		// current status is HIDDEN and shop is not suspended. Never-approved products still 404.
 		if slug != "" && req.GetIncludeDiscontinuedStub() && prod.FirstApprovedAt != nil &&
-			(prod.Status == store.ProductStatusHidden || prod.Status == store.ProductStatusRejected) {
+			(prod.Status == store.ProductStatusHidden ||
+				prod.Status == store.ProductStatusRejected ||
+				(prod.ShopSuspended && (prod.Status == store.ProductStatusApproved || prod.Status == store.ProductStatusOutOfStock))) {
 			discontinuedName := ""
-			if prod.Status == store.ProductStatusHidden {
+			if prod.Status == store.ProductStatusHidden && !prod.ShopSuspended {
 				discontinuedName = prod.Name
 			}
 			return &productv1.GetProductResponse{
@@ -1385,7 +1437,7 @@ func (s *Server) GetProduct(ctx context.Context, req *productv1.GetProductReques
 		return nil, status.Errorf(codes.Internal, "list product skus: %v", err)
 	}
 	return &productv1.GetProductResponse{
-		Product: toProtoProduct(prod, skus, canViewModerationDetails(ctx, prod)),
+		Product: toProtoProduct(prod, skus, canViewInternalProductFields(ctx, prod)),
 	}, nil
 }
 
@@ -1429,9 +1481,9 @@ func (s *Server) ListProducts(ctx context.Context, req *productv1.ListProductsRe
 	publicOnly := true
 	if len(skuIDs) == 0 {
 		if claims, ok := auth.ClaimsFromContext(ctx); ok {
-			if auth.HasRole(claims, "admin", "super_admin") {
+			if auth.HasCapability(claims, auth.CapProductsRead) {
 				publicOnly = false
-			} else if auth.HasRole(claims, "seller") && shopID != "" && claims.ShopID == shopID {
+			} else if auth.HasRole(claims, auth.RoleSeller) && shopID != "" && claims.ShopID == shopID {
 				publicOnly = false
 			}
 		}
@@ -1477,7 +1529,7 @@ func (s *Server) ListProducts(ctx context.Context, req *productv1.ListProductsRe
 
 	out := make([]*productv1.Product, 0, len(prods))
 	for _, p := range prods {
-		out = append(out, toProtoProduct(p, skusByProd[p.ID], canViewModerationDetails(ctx, p)))
+		out = append(out, toProtoProduct(p, skusByProd[p.ID], canViewInternalProductFields(ctx, p)))
 	}
 	return &productv1.ListProductsResponse{
 		Products: out,
@@ -1515,7 +1567,7 @@ func (s *Server) GetSKUsBatch(ctx context.Context, req *productv1.GetSKUsBatchRe
 
 	out := make([]*productv1.SKU, 0, len(skus))
 	for _, sk := range skus {
-		if sk.IsActive() || canViewHiddenSKU(ctx, sk) {
+		if sk.IsPubliclyActive() || canViewHiddenSKU(ctx, sk) {
 			out = append(out, toProtoSKU(sk))
 		} else {
 			out = append(out, toRedactedProtoSKU(sk))
@@ -1545,8 +1597,21 @@ func (s *Server) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequ
 
 	ctx = store.WithAsOf(ctx, s.now())
 	var updatedSKU store.SKU
-	// Lock order: products (FOR UPDATE) -> skus -> stock_history, matching UpdateProduct/AdminReview/Rescan.
+	// Lock order: shop_suspension (seller) -> products (FOR UPDATE) -> skus -> stock_history, matching UpdateProduct/AdminReview/Rescan.
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
+		if !isAdmin {
+			if lockErr := q.LockShopSuspension(ctx, shopID); lockErr != nil {
+				return lockErr
+			}
+			suspended, suspErr := q.IsShopSuspended(ctx, shopID)
+			if suspErr != nil {
+				return suspErr
+			}
+			if suspended {
+				return status.Error(codes.FailedPrecondition, "SHOP_SUSPENDED: shop is suspended and cannot update stock")
+			}
+		}
+
 		lookup, getErr := q.GetSKUWithContext(ctx, skuID)
 		if getErr != nil {
 			return getErr
@@ -2153,13 +2218,13 @@ func (s *Server) RestockOrderItems(ctx context.Context, req *productv1.RestockOr
 
 // --- Helpers ---
 
-func requireAdmin(ctx context.Context) (*auth.Claims, error) {
+func requireCapability(ctx context.Context, capName string) (*auth.Claims, error) {
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "authentication required")
 	}
-	if !auth.HasRole(claims, "admin", "super_admin") {
-		return nil, status.Error(codes.PermissionDenied, "admin role required")
+	if !auth.HasCapability(claims, capName) {
+		return nil, status.Errorf(codes.PermissionDenied, "capability %s required", capName)
 	}
 	return claims, nil
 }
@@ -2169,24 +2234,24 @@ func requireServiceOrAdmin(ctx context.Context) (*auth.Claims, error) {
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "authentication required")
 	}
-	if strings.TrimSpace(claims.Service) == "" && !auth.HasRole(claims, "admin", "super_admin") {
+	if strings.TrimSpace(claims.Service) == "" && !auth.HasRole(claims, auth.RoleAdmin, auth.RoleSuperAdmin) {
 		return nil, status.Error(codes.PermissionDenied, "service or admin identity required")
 	}
 	return claims, nil
 }
 
 func canViewProduct(ctx context.Context, prod store.Product) bool {
-	if prod.Status == store.ProductStatusApproved || prod.Status == store.ProductStatusOutOfStock {
+	if !prod.ShopSuspended && (prod.Status == store.ProductStatusApproved || prod.Status == store.ProductStatusOutOfStock) {
 		return true
 	}
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
 		return false
 	}
-	if auth.HasRole(claims, "admin", "super_admin") {
+	if auth.HasCapability(claims, auth.CapProductsRead) {
 		return true
 	}
-	if auth.HasRole(claims, "seller") && claims.ShopID != "" && claims.ShopID == prod.ShopID {
+	if auth.HasRole(claims, auth.RoleSeller) && claims.ShopID != "" && claims.ShopID == prod.ShopID {
 		return true
 	}
 	return false
@@ -2197,26 +2262,26 @@ func canViewHiddenSKU(ctx context.Context, sk store.SKU) bool {
 	if !ok {
 		return false
 	}
-	if auth.HasRole(claims, "admin", "super_admin") {
+	if auth.HasCapability(claims, auth.CapProductsRead) {
 		return true
 	}
-	if auth.HasRole(claims, "seller") && strings.TrimSpace(claims.ShopID) != "" && claims.ShopID == sk.ShopID {
+	if auth.HasRole(claims, auth.RoleSeller) && strings.TrimSpace(claims.ShopID) != "" && claims.ShopID == sk.ShopID {
 		return true
 	}
 	return false
 }
 
-// canViewModerationDetails reports whether the caller is allowed to see flagged_keywords (E10-bis:
-// owning shop seller and admin/super_admin only; public/buyer/other-seller responses leave it empty).
-func canViewModerationDetails(ctx context.Context, prod store.Product) bool {
+// canViewInternalProductFields reports whether the caller is allowed to see internal product fields
+// (flagged_keywords per E10-bis and shop_suspended per F12): owning shop seller and roles with products.read only.
+func canViewInternalProductFields(ctx context.Context, prod store.Product) bool {
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
 		return false
 	}
-	if auth.HasRole(claims, "admin", "super_admin") {
+	if auth.HasCapability(claims, auth.CapProductsRead) {
 		return true
 	}
-	if auth.HasRole(claims, "seller") && strings.TrimSpace(claims.ShopID) != "" && claims.ShopID == prod.ShopID {
+	if auth.HasRole(claims, auth.RoleSeller) && strings.TrimSpace(claims.ShopID) != "" && claims.ShopID == prod.ShopID {
 		return true
 	}
 	return false
@@ -2228,10 +2293,10 @@ func resolveSellerOrAdminShop(ctx context.Context, reqShopID string) (string, *a
 		return "", nil, false, status.Error(codes.Unauthenticated, "authentication required")
 	}
 	reqShopID = strings.TrimSpace(reqShopID)
-	if auth.HasRole(claims, "admin", "super_admin") {
+	if auth.HasRole(claims, auth.RoleAdmin, auth.RoleSuperAdmin) {
 		return reqShopID, claims, true, nil
 	}
-	if !auth.HasRole(claims, "seller") {
+	if !auth.HasRole(claims, auth.RoleSeller) {
 		return "", nil, false, status.Error(codes.PermissionDenied, "seller role required")
 	}
 	claimShopID := strings.TrimSpace(claims.ShopID)
@@ -2551,11 +2616,11 @@ func toProtoSKU(s store.SKU) *productv1.SKU {
 		ImageUrl:          s.ImageURL,
 		CategoryId:        s.CategoryID,
 		CommissionRateBps: s.CommissionRateBps,
-		IsActive:          s.IsActive(),
+		IsActive:          s.IsPubliclyActive(),
 	}
 }
 
-func toProtoProduct(p store.Product, skus []store.SKU, includeModeration bool) *productv1.Product {
+func toProtoProduct(p store.Product, skus []store.SKU, includeInternal bool) *productv1.Product {
 	minPrice := p.MinPriceVND
 	maxPrice := p.MaxPriceVND
 	protoSKUs := make([]*productv1.SKU, 0, len(skus))
@@ -2572,7 +2637,7 @@ func toProtoProduct(p store.Product, skus []store.SKU, includeModeration bool) *
 	copy(imgs, p.Images)
 
 	var flagged []string
-	if includeModeration && len(p.FlaggedKeywords) > 0 {
+	if includeInternal && len(p.FlaggedKeywords) > 0 {
 		flagged = make([]string, len(p.FlaggedKeywords))
 		copy(flagged, p.FlaggedKeywords)
 	}
@@ -2593,6 +2658,7 @@ func toProtoProduct(p store.Product, skus []store.SKU, includeModeration bool) *
 		RatingAvgX100:   p.RatingAvgX100(),
 		ReviewCount:     p.ReviewCount,
 		FlaggedKeywords: flagged,
+		ShopSuspended:   includeInternal && p.ShopSuspended,
 		CreatedAt:       timestamppb.New(p.CreatedAt),
 		UpdatedAt:       timestamppb.New(p.UpdatedAt),
 	}

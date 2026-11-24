@@ -318,6 +318,10 @@ SET status = CASE
         WHEN payment_status IN ('', 'PENDING') AND qr_code = '' THEN $5
         ELSE qr_code
     END,
+    pay_url = CASE
+        WHEN payment_status IN ('', 'PENDING') AND pay_url = '' THEN $9::text
+        ELSE pay_url
+    END,
     payment_expires_at = CASE
         WHEN payment_status IN ('', 'PENDING') THEN COALESCE($6, payment_expires_at)
         ELSE payment_expires_at
@@ -325,7 +329,7 @@ SET status = CASE
     total_payable_vnd = $7,
     response_snapshot_json = CASE
         WHEN $8::text = 'FAILED' THEN NULL
-        WHEN $9::jsonb IS NOT NULL THEN $9::jsonb
+        WHEN $10::jsonb IS NOT NULL THEN $10::jsonb
         ELSE response_snapshot_json
     END,
     pending_stock_confirm = CASE
@@ -336,7 +340,7 @@ SET status = CASE
     updated_at = NOW()
 WHERE id = $1
   AND status = 'IN_PROGRESS'
-RETURNING id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json
+RETURNING id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json, pay_url
 `
 
 type CompleteCheckoutGroupParams struct {
@@ -348,6 +352,7 @@ type CompleteCheckoutGroupParams struct {
 	PaymentExpiresAt     *time.Time `json:"payment_expires_at"`
 	TotalPayableVND      int64      `json:"total_payable_vnd"`
 	TargetStatus         string     `json:"target_status"`
+	PayURL               string     `json:"pay_url"`
 	ResponseSnapshotJSON []byte     `json:"response_snapshot_json"`
 }
 
@@ -361,6 +366,7 @@ func (q *Queries) CompleteCheckoutGroup(ctx context.Context, arg CompleteCheckou
 		arg.PaymentExpiresAt,
 		arg.TotalPayableVND,
 		arg.TargetStatus,
+		arg.PayURL,
 		arg.ResponseSnapshotJSON,
 	)
 	var i CheckoutGroup
@@ -385,6 +391,7 @@ func (q *Queries) CompleteCheckoutGroup(ctx context.Context, arg CompleteCheckou
 		&i.PendingStockConfirm,
 		&i.NeedsCleanup,
 		&i.WarningsJSON,
+		&i.PayURL,
 	)
 	return i, err
 }
@@ -450,7 +457,7 @@ INSERT INTO checkout_groups (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7
 )
-RETURNING id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json
+RETURNING id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json, pay_url
 `
 
 type CreateCheckoutGroupParams struct {
@@ -495,6 +502,7 @@ func (q *Queries) CreateCheckoutGroup(ctx context.Context, arg CreateCheckoutGro
 		&i.PendingStockConfirm,
 		&i.NeedsCleanup,
 		&i.WarningsJSON,
+		&i.PayURL,
 	)
 	return i, err
 }
@@ -505,7 +513,7 @@ SET deadline_at = $2,
     deadline_extension_count = deadline_extension_count + 1,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure
+RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
 `
 
 type ExtendReturnRequestDeadlineParams struct {
@@ -547,6 +555,11 @@ func (q *Queries) ExtendReturnRequestDeadline(ctx context.Context, arg ExtendRet
 		&i.DeadlineExtensionCount,
 		&i.EscalatedFromTransitTimeout,
 		&i.EscalatedFromCancelFailure,
+		&i.RequireApprovalIfLarge,
+		&i.RefundRequestedBy,
+		&i.RefundID,
+		&i.RefundApprovalStatus,
+		&i.RefundAttempt,
 	)
 	return i, err
 }
@@ -809,7 +822,7 @@ const findExpiredPendingOrders = `-- name: FindExpiredPendingOrders :many
 SELECT id, checkout_group_id, payment_id
 FROM orders
 WHERE status = 'PENDING'
-  AND payment_method = 'VIETQR'
+  AND payment_method IN ('VIETQR', 'ZALOPAY')
   AND payment_expires_at IS NOT NULL
   AND payment_expires_at <= NOW()
 ORDER BY random()
@@ -921,11 +934,13 @@ const findRefundingReturnRequests = `-- name: FindRefundingReturnRequests :many
 SELECT id
 FROM return_requests
 WHERE status = 'REFUNDING'
+  AND refund_approval_status <> 'PENDING_APPROVAL'
 ORDER BY random()
 LIMIT $1::int
 `
 
 // ponytail: P2-1 + ORDER BY random(); downstream CreateRefund/ReleasePromotionShop/RestockOrderItems are idempotent.
+// F11: Skip rows currently awaiting two-person checker approval so watchdog does not re-call CreateRefund every tick.
 func (q *Queries) FindRefundingReturnRequests(ctx context.Context, batchLimit int32) ([]string, error) {
 	rows, err := q.db.Query(ctx, findRefundingReturnRequests, batchLimit)
 	if err != nil {
@@ -1047,7 +1062,7 @@ func (q *Queries) GetBuyerTerminalCODStats(ctx context.Context, buyerID string) 
 }
 
 const getCheckoutGroupByID = `-- name: GetCheckoutGroupByID :one
-SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json
+SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json, pay_url
 FROM checkout_groups
 WHERE id = $1
 `
@@ -1076,12 +1091,13 @@ func (q *Queries) GetCheckoutGroupByID(ctx context.Context, id string) (Checkout
 		&i.PendingStockConfirm,
 		&i.NeedsCleanup,
 		&i.WarningsJSON,
+		&i.PayURL,
 	)
 	return i, err
 }
 
 const getCheckoutGroupByIDForUpdate = `-- name: GetCheckoutGroupByIDForUpdate :one
-SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json
+SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json, pay_url
 FROM checkout_groups
 WHERE id = $1
 FOR UPDATE
@@ -1111,12 +1127,13 @@ func (q *Queries) GetCheckoutGroupByIDForUpdate(ctx context.Context, id string) 
 		&i.PendingStockConfirm,
 		&i.NeedsCleanup,
 		&i.WarningsJSON,
+		&i.PayURL,
 	)
 	return i, err
 }
 
 const getCheckoutGroupByPaymentID = `-- name: GetCheckoutGroupByPaymentID :one
-SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json
+SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json, pay_url
 FROM checkout_groups
 WHERE payment_id = $1
   AND status <> 'FAILED'
@@ -1148,12 +1165,13 @@ func (q *Queries) GetCheckoutGroupByPaymentID(ctx context.Context, paymentID str
 		&i.PendingStockConfirm,
 		&i.NeedsCleanup,
 		&i.WarningsJSON,
+		&i.PayURL,
 	)
 	return i, err
 }
 
 const getCheckoutGroupForIdempotency = `-- name: GetCheckoutGroupForIdempotency :one
-SELECT g.id, g.buyer_id, g.idempotency_key, g.status, g.payment_method, g.payment_id, g.payment_status, g.qr_url, g.qr_code, g.payment_expires_at, g.total_payable_vnd, g.response_snapshot_json, g.created_at, g.updated_at, g.request_hash, g.retry_idempotency_key, g.retry_from_payment_id, g.pending_stock_confirm, g.needs_cleanup, g.warnings_json,
+SELECT g.id, g.buyer_id, g.idempotency_key, g.status, g.payment_method, g.payment_id, g.payment_status, g.qr_url, g.qr_code, g.payment_expires_at, g.total_payable_vnd, g.response_snapshot_json, g.created_at, g.updated_at, g.request_hash, g.retry_idempotency_key, g.retry_from_payment_id, g.pending_stock_confirm, g.needs_cleanup, g.warnings_json, g.pay_url,
        EXISTS (SELECT 1 FROM orders o WHERE o.checkout_group_id = g.id) AS has_orders
 FROM checkout_groups g
 WHERE g.buyer_id = $1
@@ -1197,6 +1215,7 @@ type GetCheckoutGroupForIdempotencyRow struct {
 	PendingStockConfirm  bool       `json:"pending_stock_confirm"`
 	NeedsCleanup         bool       `json:"needs_cleanup"`
 	WarningsJSON         []byte     `json:"warnings_json"`
+	PayURL               string     `json:"pay_url"`
 	HasOrders            bool       `json:"has_orders"`
 }
 
@@ -1224,6 +1243,7 @@ func (q *Queries) GetCheckoutGroupForIdempotency(ctx context.Context, arg GetChe
 		&i.PendingStockConfirm,
 		&i.NeedsCleanup,
 		&i.WarningsJSON,
+		&i.PayURL,
 		&i.HasOrders,
 	)
 	return i, err
@@ -1345,7 +1365,7 @@ func (q *Queries) GetOrderByIDForUpdate(ctx context.Context, id string) (Order, 
 }
 
 const getReturnRequestByID = `-- name: GetReturnRequestByID :one
-SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure
+SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
 FROM return_requests
 WHERE id = $1
 `
@@ -1384,12 +1404,17 @@ func (q *Queries) GetReturnRequestByID(ctx context.Context, id string) (ReturnRe
 		&i.DeadlineExtensionCount,
 		&i.EscalatedFromTransitTimeout,
 		&i.EscalatedFromCancelFailure,
+		&i.RequireApprovalIfLarge,
+		&i.RefundRequestedBy,
+		&i.RefundID,
+		&i.RefundApprovalStatus,
+		&i.RefundAttempt,
 	)
 	return i, err
 }
 
 const getReturnRequestByIDForUpdate = `-- name: GetReturnRequestByIDForUpdate :one
-SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure
+SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
 FROM return_requests
 WHERE id = $1
 FOR UPDATE
@@ -1429,12 +1454,17 @@ func (q *Queries) GetReturnRequestByIDForUpdate(ctx context.Context, id string) 
 		&i.DeadlineExtensionCount,
 		&i.EscalatedFromTransitTimeout,
 		&i.EscalatedFromCancelFailure,
+		&i.RequireApprovalIfLarge,
+		&i.RefundRequestedBy,
+		&i.RefundID,
+		&i.RefundApprovalStatus,
+		&i.RefundAttempt,
 	)
 	return i, err
 }
 
 const getReturnRequestByOrderID = `-- name: GetReturnRequestByOrderID :one
-SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure
+SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
 FROM return_requests
 WHERE order_id = $1
 `
@@ -1473,6 +1503,11 @@ func (q *Queries) GetReturnRequestByOrderID(ctx context.Context, orderID string)
 		&i.DeadlineExtensionCount,
 		&i.EscalatedFromTransitTimeout,
 		&i.EscalatedFromCancelFailure,
+		&i.RequireApprovalIfLarge,
+		&i.RefundRequestedBy,
+		&i.RefundID,
+		&i.RefundApprovalStatus,
+		&i.RefundAttempt,
 	)
 	return i, err
 }
@@ -1820,7 +1855,7 @@ INSERT INTO return_requests (
     $1, $2, $3, $4, $5, $6, $7,
     $8, $9, $10
 )
-RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure
+RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
 `
 
 type InsertReturnRequestParams struct {
@@ -1881,6 +1916,11 @@ func (q *Queries) InsertReturnRequest(ctx context.Context, arg InsertReturnReque
 		&i.DeadlineExtensionCount,
 		&i.EscalatedFromTransitTimeout,
 		&i.EscalatedFromCancelFailure,
+		&i.RequireApprovalIfLarge,
+		&i.RefundRequestedBy,
+		&i.RefundID,
+		&i.RefundApprovalStatus,
+		&i.RefundAttempt,
 	)
 	return i, err
 }
@@ -2366,7 +2406,7 @@ func (q *Queries) ListReturnEventsByRequestID(ctx context.Context, returnRequest
 }
 
 const listReturnRequestsFiltered = `-- name: ListReturnRequestsFiltered :many
-SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure
+SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
 FROM return_requests
 WHERE ($1::text = '' OR buyer_id = $1::text)
   AND ($2::text = '' OR shop_id = $2::text)
@@ -2429,6 +2469,11 @@ func (q *Queries) ListReturnRequestsFiltered(ctx context.Context, arg ListReturn
 			&i.DeadlineExtensionCount,
 			&i.EscalatedFromTransitTimeout,
 			&i.EscalatedFromCancelFailure,
+			&i.RequireApprovalIfLarge,
+			&i.RefundRequestedBy,
+			&i.RefundID,
+			&i.RefundApprovalStatus,
+			&i.RefundAttempt,
 		); err != nil {
 			return nil, err
 		}
@@ -3334,39 +3379,48 @@ func (q *Queries) TryMarkEventProcessed(ctx context.Context, arg TryMarkEventPro
 
 const updateCheckoutGroupPaymentOnRetry = `-- name: UpdateCheckoutGroupPaymentOnRetry :exec
 UPDATE checkout_groups
-SET payment_id = $2,
-    payment_status = $3,
-    qr_url = $4,
-    qr_code = $5,
-    payment_expires_at = $6,
+SET payment_method = $2,
+    payment_id = $3,
+    payment_status = $4,
+    qr_url = $5,
+    qr_code = $6,
+    pay_url = $7,
+    payment_expires_at = $8,
+    pending_stock_confirm = CASE WHEN $11::boolean THEN TRUE ELSE pending_stock_confirm END,
     response_snapshot_json = NULL,
-    retry_idempotency_key = $7,
-    retry_from_payment_id = $8,
+    retry_idempotency_key = $9,
+    retry_from_payment_id = $10,
     updated_at = NOW()
 WHERE id = $1
 `
 
 type UpdateCheckoutGroupPaymentOnRetryParams struct {
-	ID                  string     `json:"id"`
-	PaymentID           string     `json:"payment_id"`
-	PaymentStatus       string     `json:"payment_status"`
-	QRURL               string     `json:"qr_url"`
-	QRCode              string     `json:"qr_code"`
-	PaymentExpiresAt    *time.Time `json:"payment_expires_at"`
-	RetryIdempotencyKey string     `json:"retry_idempotency_key"`
-	RetryFromPaymentID  string     `json:"retry_from_payment_id"`
+	ID                     string     `json:"id"`
+	PaymentMethod          string     `json:"payment_method"`
+	PaymentID              string     `json:"payment_id"`
+	PaymentStatus          string     `json:"payment_status"`
+	QRURL                  string     `json:"qr_url"`
+	QRCode                 string     `json:"qr_code"`
+	PayURL                 string     `json:"pay_url"`
+	PaymentExpiresAt       *time.Time `json:"payment_expires_at"`
+	RetryIdempotencyKey    string     `json:"retry_idempotency_key"`
+	RetryFromPaymentID     string     `json:"retry_from_payment_id"`
+	SetPendingStockConfirm bool       `json:"set_pending_stock_confirm"`
 }
 
 func (q *Queries) UpdateCheckoutGroupPaymentOnRetry(ctx context.Context, arg UpdateCheckoutGroupPaymentOnRetryParams) error {
 	_, err := q.db.Exec(ctx, updateCheckoutGroupPaymentOnRetry,
 		arg.ID,
+		arg.PaymentMethod,
 		arg.PaymentID,
 		arg.PaymentStatus,
 		arg.QRURL,
 		arg.QRCode,
+		arg.PayURL,
 		arg.PaymentExpiresAt,
 		arg.RetryIdempotencyKey,
 		arg.RetryFromPaymentID,
+		arg.SetPendingStockConfirm,
 	)
 	return err
 }
@@ -3520,31 +3574,91 @@ func (q *Queries) UpdateOrderDelivered(ctx context.Context, arg UpdateOrderDeliv
 	return i, err
 }
 
-const updateOrderPaymentInfoByGroup = `-- name: UpdateOrderPaymentInfoByGroup :exec
+const updateOrderPaymentOnRetry = `-- name: UpdateOrderPaymentOnRetry :one
 UPDATE orders
-SET payment_id = $2,
-    payment_status = $3,
-    payment_expires_at = COALESCE($4, payment_expires_at),
+SET payment_method = $2,
+    payment_id = $3,
+    payment_status = $4,
+    payment_fee_vnd = $5,
+    payment_fee_bps = $6,
+    payment_expires_at = $7,
+    status = CASE WHEN $8::boolean THEN 'CONFIRMED' ELSE status END,
+    confirmed_at = CASE WHEN $8::boolean AND confirmed_at IS NULL THEN NOW() ELSE confirmed_at END,
     updated_at = NOW()
-WHERE checkout_group_id = $1
+WHERE id = $1
   AND status = 'PENDING'
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 `
 
-type UpdateOrderPaymentInfoByGroupParams struct {
-	CheckoutGroupID  string     `json:"checkout_group_id"`
+type UpdateOrderPaymentOnRetryParams struct {
+	ID               string     `json:"id"`
+	PaymentMethod    string     `json:"payment_method"`
 	PaymentID        string     `json:"payment_id"`
 	PaymentStatus    string     `json:"payment_status"`
+	PaymentFeeVND    int64      `json:"payment_fee_vnd"`
+	PaymentFeeBPS    int32      `json:"payment_fee_bps"`
 	PaymentExpiresAt *time.Time `json:"payment_expires_at"`
+	ConfirmOrder     bool       `json:"confirm_order"`
 }
 
-func (q *Queries) UpdateOrderPaymentInfoByGroup(ctx context.Context, arg UpdateOrderPaymentInfoByGroupParams) error {
-	_, err := q.db.Exec(ctx, updateOrderPaymentInfoByGroup,
-		arg.CheckoutGroupID,
+func (q *Queries) UpdateOrderPaymentOnRetry(ctx context.Context, arg UpdateOrderPaymentOnRetryParams) (Order, error) {
+	row := q.db.QueryRow(ctx, updateOrderPaymentOnRetry,
+		arg.ID,
+		arg.PaymentMethod,
 		arg.PaymentID,
 		arg.PaymentStatus,
+		arg.PaymentFeeVND,
+		arg.PaymentFeeBPS,
 		arg.PaymentExpiresAt,
+		arg.ConfirmOrder,
 	)
-	return err
+	var i Order
+	err := row.Scan(
+		&i.ID,
+		&i.OrderCode,
+		&i.CheckoutGroupID,
+		&i.BuyerID,
+		&i.ShopID,
+		&i.Status,
+		&i.PaymentMethod,
+		&i.PaymentID,
+		&i.PaymentStatus,
+		&i.SubtotalVND,
+		&i.FlashSaleDiscountVND,
+		&i.ShopVoucherDiscountVND,
+		&i.PlatformVoucherDiscountVND,
+		&i.FreeshipDiscountVND,
+		&i.CoinsDiscountVND,
+		&i.ShippingFeeVND,
+		&i.CommissionVND,
+		&i.TotalPayableVND,
+		&i.CarrierCode,
+		&i.ServiceCode,
+		&i.TrackingCode,
+		&i.LabelURL,
+		&i.CancelReason,
+		&i.ShippingAddressJSON,
+		&i.PaymentExpiresAt,
+		&i.DeliveredAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RefundedVND,
+		&i.ConfirmedAt,
+		&i.PendingShipmentCancel,
+		&i.PendingCancelCompensation,
+		&i.OrphanShipmentNeedsManualReview,
+		&i.PendingReturnCompensation,
+		&i.PendingShipmentCancelAt,
+		&i.PendingShipmentCancelToken,
+		&i.ShopProgramDiscountVND,
+		&i.ShopFreeshipDiscountVND,
+		&i.PaymentFeeVND,
+		&i.PaymentFeeBPS,
+		&i.SettlementRefundedVND,
+		&i.ShipmentJobStatus,
+	)
+	return i, err
 }
 
 const updateOrderPaymentStatus = `-- name: UpdateOrderPaymentStatus :exec
@@ -3924,18 +4038,24 @@ SET refund_done = $2,
     promo_released = $3,
     restock_done = $4,
     refund_amount_vnd = CASE WHEN $5::bool THEN $6::bigint ELSE refund_amount_vnd END,
+    refund_id = CASE WHEN $7::bool THEN $8::text ELSE refund_id END,
+    refund_approval_status = CASE WHEN $9::bool THEN $10::text ELSE refund_approval_status END,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure
+RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
 `
 
 type UpdateReturnRequestSideEffectsParams struct {
-	ID                 string `json:"id"`
-	RefundDone         bool   `json:"refund_done"`
-	PromoReleased      bool   `json:"promo_released"`
-	RestockDone        bool   `json:"restock_done"`
-	UpdateRefundAmount bool   `json:"update_refund_amount"`
-	RefundAmountVND    int64  `json:"refund_amount_vnd"`
+	ID                         string `json:"id"`
+	RefundDone                 bool   `json:"refund_done"`
+	PromoReleased              bool   `json:"promo_released"`
+	RestockDone                bool   `json:"restock_done"`
+	UpdateRefundAmount         bool   `json:"update_refund_amount"`
+	RefundAmountVND            int64  `json:"refund_amount_vnd"`
+	UpdateRefundID             bool   `json:"update_refund_id"`
+	RefundID                   string `json:"refund_id"`
+	UpdateRefundApprovalStatus bool   `json:"update_refund_approval_status"`
+	RefundApprovalStatus       string `json:"refund_approval_status"`
 }
 
 func (q *Queries) UpdateReturnRequestSideEffects(ctx context.Context, arg UpdateReturnRequestSideEffectsParams) (ReturnRequest, error) {
@@ -3946,6 +4066,10 @@ func (q *Queries) UpdateReturnRequestSideEffects(ctx context.Context, arg Update
 		arg.RestockDone,
 		arg.UpdateRefundAmount,
 		arg.RefundAmountVND,
+		arg.UpdateRefundID,
+		arg.RefundID,
+		arg.UpdateRefundApprovalStatus,
+		arg.RefundApprovalStatus,
 	)
 	var i ReturnRequest
 	err := row.Scan(
@@ -3979,6 +4103,11 @@ func (q *Queries) UpdateReturnRequestSideEffects(ctx context.Context, arg Update
 		&i.DeadlineExtensionCount,
 		&i.EscalatedFromTransitTimeout,
 		&i.EscalatedFromCancelFailure,
+		&i.RequireApprovalIfLarge,
+		&i.RefundRequestedBy,
+		&i.RefundID,
+		&i.RefundApprovalStatus,
+		&i.RefundAttempt,
 	)
 	return i, err
 }
@@ -4004,9 +4133,14 @@ SET status = $2,
     deadline_extension_count = $18,
     escalated_from_transit_timeout = $19,
     escalated_from_cancel_failure = $20,
+    require_approval_if_large = $21,
+    refund_requested_by = $22,
+    refund_id = $23,
+    refund_approval_status = $24,
+    refund_attempt = $25,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure
+RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
 `
 
 type UpdateReturnRequestStateParams struct {
@@ -4030,6 +4164,11 @@ type UpdateReturnRequestStateParams struct {
 	DeadlineExtensionCount      int32      `json:"deadline_extension_count"`
 	EscalatedFromTransitTimeout bool       `json:"escalated_from_transit_timeout"`
 	EscalatedFromCancelFailure  bool       `json:"escalated_from_cancel_failure"`
+	RequireApprovalIfLarge      bool       `json:"require_approval_if_large"`
+	RefundRequestedBy           string     `json:"refund_requested_by"`
+	RefundID                    string     `json:"refund_id"`
+	RefundApprovalStatus        string     `json:"refund_approval_status"`
+	RefundAttempt               int32      `json:"refund_attempt"`
 }
 
 func (q *Queries) UpdateReturnRequestState(ctx context.Context, arg UpdateReturnRequestStateParams) (ReturnRequest, error) {
@@ -4054,6 +4193,11 @@ func (q *Queries) UpdateReturnRequestState(ctx context.Context, arg UpdateReturn
 		arg.DeadlineExtensionCount,
 		arg.EscalatedFromTransitTimeout,
 		arg.EscalatedFromCancelFailure,
+		arg.RequireApprovalIfLarge,
+		arg.RefundRequestedBy,
+		arg.RefundID,
+		arg.RefundApprovalStatus,
+		arg.RefundAttempt,
 	)
 	var i ReturnRequest
 	err := row.Scan(
@@ -4087,6 +4231,11 @@ func (q *Queries) UpdateReturnRequestState(ctx context.Context, arg UpdateReturn
 		&i.DeadlineExtensionCount,
 		&i.EscalatedFromTransitTimeout,
 		&i.EscalatedFromCancelFailure,
+		&i.RequireApprovalIfLarge,
+		&i.RefundRequestedBy,
+		&i.RefundID,
+		&i.RefundApprovalStatus,
+		&i.RefundAttempt,
 	)
 	return i, err
 }
@@ -4103,7 +4252,7 @@ SET return_tracking_code = $2,
     escalated_from_cancel_failure = FALSE,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure
+RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
 `
 
 type UpdateReturnShipmentInfoParams struct {
@@ -4154,6 +4303,11 @@ func (q *Queries) UpdateReturnShipmentInfo(ctx context.Context, arg UpdateReturn
 		&i.DeadlineExtensionCount,
 		&i.EscalatedFromTransitTimeout,
 		&i.EscalatedFromCancelFailure,
+		&i.RequireApprovalIfLarge,
+		&i.RefundRequestedBy,
+		&i.RefundID,
+		&i.RefundApprovalStatus,
+		&i.RefundAttempt,
 	)
 	return i, err
 }

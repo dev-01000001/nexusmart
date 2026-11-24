@@ -88,7 +88,7 @@ func New(deps Dependencies) http.Handler {
 			}
 			// Enforce object-level ownership before streaming payment events.
 			claims, _ := auth.ClaimsFromContext(req.Context())
-			if !auth.HasRole(claims, "admin", "super_admin") && deps.Clients != nil && deps.Clients.Payment != nil {
+			if !canAdminReadPayment(claims) && deps.Clients != nil && deps.Clients.Payment != nil {
 				outCtx, cancel := deps.Clients.OutgoingContext(req.Context())
 				getResp, err := deps.Clients.Payment.GetPayment(outCtx, &paymentv1.GetPaymentRequest{
 					PaymentId: chi.URLParam(req, "id"),
@@ -123,6 +123,7 @@ func New(deps Dependencies) http.Handler {
 			if deps.PaymentWebhookProxy != nil {
 				wh.Post("/webhooks/payment", deps.PaymentWebhookProxy.ServeHTTP)
 				wh.Post("/webhooks/vietqr", deps.PaymentWebhookProxy.ServeHTTP)
+				wh.Post("/webhooks/zalopay", deps.PaymentWebhookProxy.ServeHTTP)
 			}
 			if deps.ShippingWebhookProxy != nil {
 				wh.Post("/webhooks/shipping/{carrier}", deps.ShippingWebhookProxy.ServeHTTP)
@@ -167,10 +168,11 @@ func New(deps Dependencies) http.Handler {
 				fee.Post("/shipping/calculate-fee", h.handleCalculateShippingFee)
 			})
 
-			// Optional-auth vouchers endpoint (forwards JWT claims when present for saved/eligible status).
+			// Optional-auth endpoints (vouchers forwards JWT claims when present; payment-methods always returns public-only fields).
 			api.Group(func(opt chi.Router) {
 				opt.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, false))
 				opt.Get("/vouchers", h.handleListVouchers)
+				opt.Get("/payment-methods", h.handleListPublicPaymentMethods)
 			})
 
 			// Public flash-sales list with flash-sale rate limit if configured.
@@ -318,9 +320,9 @@ func New(deps Dependencies) http.Handler {
 					seller.Put("/shipping-settings", h.handleSellerUpdateShippingSettings)
 				})
 
-				// --- Admin routes (`admin`, `super_admin`) ---
+				// --- Admin / Internal Staff routes (capability matrix per pkg/common/auth/capabilities.json, F9) ---
 				authed.Route("/admin", func(admin chi.Router) {
-					admin.Use(middleware.RequireRoles("admin", "super_admin"))
+					admin.Use(middleware.RequireRoles(auth.StaffRoles()...))
 					if deps.Clients != nil && deps.Clients.User != nil {
 						admin.Use(middleware.AdminAudit(middleware.AdminAuditConfig{
 							UserClient:     deps.Clients.User,
@@ -329,72 +331,81 @@ func New(deps Dependencies) http.Handler {
 						}))
 					}
 
-					// Section 4.1 Admin Users, Shops, Bank Accounts & Audit Logs
-					admin.Get("/users", h.handleAdminListUsers)
-					admin.Patch("/users/{id}/status", h.handleAdminUpdateUserStatus)
-					admin.Patch("/users/{id}/role", h.handleAdminUpdateUserRole)
-					admin.Get("/shops", h.handleAdminListShops)
-					admin.Post("/shops/{id}/review", h.handleAdminReviewShop)
-					admin.Get("/shops/{id}/bank-account", h.handleAdminGetShopBankAccount)
-					admin.Post("/shops/{id}/bank-account/review", h.handleAdminReviewShopBankAccount)
-					admin.Get("/audit-logs", h.handleAdminListAuditLogs)
+					// Section 4.1 Admin Users, Staff, Shops, Approvals, Bank Accounts & Audit Logs
+					admin.With(middleware.RequireCapability(auth.CapUsersRead)).Get("/users", h.handleAdminListUsers)
+					admin.With(middleware.RequireCapability(auth.CapStaffCreate)).Post("/staff", h.handleAdminCreateStaffUser)
+					admin.With(middleware.RequireCapability(auth.CapUsersRead)).Get("/users/{id}/activities", h.handleAdminListUserActivities)
+					admin.With(middleware.RequireCapability(auth.CapUsersStatusWrite)).Patch("/users/{id}/status", h.handleAdminUpdateUserStatus)
+					admin.With(middleware.RequireCapability(auth.CapUsersRoleWrite)).Patch("/users/{id}/role", h.handleAdminUpdateUserRole)
+					admin.With(middleware.RequireCapability(auth.CapShopsRead)).Get("/shops", h.handleAdminListShops)
+					admin.With(middleware.RequireCapability(auth.CapShopsReview)).Post("/shops/{id}/review", h.handleAdminReviewShop)
+					admin.With(middleware.RequireCapability(auth.CapShopsSuspendRequest)).Post("/shops/{id}/suspend", h.handleAdminSuspendShop)
+					admin.With(middleware.RequireCapability(auth.CapShopsUnsuspend)).Post("/shops/{id}/unsuspend", h.handleAdminUnsuspendShop)
+					admin.With(middleware.RequireCapability(auth.CapShopsBankRead)).Get("/shops/{id}/bank-account", h.handleAdminGetShopBankAccount)
+					admin.With(middleware.RequireCapability(auth.CapShopsBankReview)).Post("/shops/{id}/bank-account/review", h.handleAdminReviewShopBankAccount)
+					admin.With(middleware.RequireCapability(auth.CapApprovalsRead)).Get("/approvals", h.handleAdminListApprovals)
+					admin.With(middleware.RequireCapability(auth.CapShopsSuspendDecide)).Post("/approvals/shop/{id}/decide", h.handleAdminDecideShopSuspension)
+					admin.With(middleware.RequireCapability(auth.CapRefundsApprove)).Post("/approvals/refund/{id}/decide", h.handleAdminDecideRefundApproval)
+					admin.With(middleware.RequireCapability(auth.CapAuditLogsRead)).Get("/audit-logs", h.handleAdminListAuditLogs)
 
-					// Section 4.2 Admin Categories, Fee Schedules & Product Review
-					admin.Get("/categories", h.handleListCategoriesWithCommission)
-					admin.Post("/categories", h.handleCreateCategory)
-					admin.Put("/categories/{id}", h.handleUpdateCategory)
-					admin.Delete("/categories/{id}", h.handleDeleteCategory)
-					admin.Get("/fees/categories", h.handleAdminListCategoryFeeSchedules)
-					admin.Post("/fees/categories/{id}", h.handleAdminSetCategoryFeeSchedule)
-					admin.Get("/products", h.handleAdminListProducts)
-					admin.Get("/products/{id}", h.handleAdminGetProduct)
-					admin.Post("/products/{id}/review", h.handleAdminReviewProduct)
-					admin.Get("/banned-keywords", h.handleAdminListBannedKeywords)
-					admin.Post("/banned-keywords", h.handleAdminCreateBannedKeyword)
-					admin.Put("/banned-keywords/{id}", h.handleAdminUpdateBannedKeyword)
-					admin.Delete("/banned-keywords/{id}", h.handleAdminDeleteBannedKeyword)
-					admin.Post("/banned-keywords/preview", h.handleAdminPreviewBannedKeyword)
-					admin.Post("/banned-keywords/rescan", h.handleAdminRescanBannedContent)
+					// Section 4.2 Admin Categories, Fee Schedules, Products & Banned Keywords
+					admin.With(middleware.RequireCapability(auth.CapCategoriesRead)).Get("/categories", h.handleListCategoriesWithCommission)
+					admin.With(middleware.RequireCapability(auth.CapCategoriesWrite)).Post("/categories", h.handleCreateCategory)
+					admin.With(middleware.RequireCapability(auth.CapCategoriesWrite)).Put("/categories/{id}", h.handleUpdateCategory)
+					admin.With(middleware.RequireCapability(auth.CapCategoriesWrite)).Delete("/categories/{id}", h.handleDeleteCategory)
+					admin.With(middleware.RequireCapability(auth.CapFeesCategoryRead)).Get("/fees/categories", h.handleAdminListCategoryFeeSchedules)
+					admin.With(middleware.RequireCapability(auth.CapFeesCategoryWrite)).Post("/fees/categories/{id}", h.handleAdminSetCategoryFeeSchedule)
+					admin.With(middleware.RequireCapability(auth.CapProductsRead)).Get("/products", h.handleAdminListProducts)
+					admin.With(middleware.RequireCapability(auth.CapProductsRead)).Get("/products/{id}", h.handleAdminGetProduct)
+					admin.With(middleware.RequireCapability(auth.CapProductsReview)).Post("/products/{id}/review", h.handleAdminReviewProduct)
+					admin.With(middleware.RequireCapability(auth.CapBannedKeywordsRead)).Get("/banned-keywords", h.handleAdminListBannedKeywords)
+					admin.With(middleware.RequireCapability(auth.CapBannedKeywordsWrite)).Post("/banned-keywords", h.handleAdminCreateBannedKeyword)
+					admin.With(middleware.RequireCapability(auth.CapBannedKeywordsWrite)).Put("/banned-keywords/{id}", h.handleAdminUpdateBannedKeyword)
+					admin.With(middleware.RequireCapability(auth.CapBannedKeywordsWrite)).Delete("/banned-keywords/{id}", h.handleAdminDeleteBannedKeyword)
+					admin.With(middleware.RequireCapability(auth.CapBannedKeywordsRead)).Post("/banned-keywords/preview", h.handleAdminPreviewBannedKeyword)
+					admin.With(middleware.RequireCapability(auth.CapBannedKeywordsWrite)).Post("/banned-keywords/rescan", h.handleAdminRescanBannedContent)
 
 					// Section 4.4 Admin Vouchers, Flash Sales & Coins
-					admin.Get("/vouchers", h.handleAdminListVouchers)
-					admin.Post("/vouchers", h.handleAdminCreateVoucher)
-					admin.Put("/vouchers/{id}", h.handleAdminUpdateVoucher)
-					admin.Patch("/vouchers/{id}/status", h.handleSetVoucherStatus)
-					admin.Delete("/vouchers/{id}", h.handleDeleteVoucher)
-					admin.Get("/flash-sales", h.handleListAllFlashSales)
-					admin.Post("/flash-sales", h.handleAdminCreateFlashSale)
-					admin.Get("/flash-sale-items", h.handleAdminListFlashSaleItems)
-					admin.Post("/flash-sale-items/{item_id}/approve", h.handleAdminApproveFlashSaleItem)
-					admin.Post("/coins/credit", h.handleAdminCreditCoins)
+					admin.With(middleware.RequireCapability(auth.CapVouchersRead)).Get("/vouchers", h.handleAdminListVouchers)
+					admin.With(middleware.RequireCapability(auth.CapVouchersWrite)).Post("/vouchers", h.handleAdminCreateVoucher)
+					admin.With(middleware.RequireCapability(auth.CapVouchersWrite)).Put("/vouchers/{id}", h.handleAdminUpdateVoucher)
+					admin.With(middleware.RequireCapability(auth.CapVouchersWrite)).Patch("/vouchers/{id}/status", h.handleSetVoucherStatus)
+					admin.With(middleware.RequireCapability(auth.CapVouchersWrite)).Delete("/vouchers/{id}", h.handleDeleteVoucher)
+					admin.With(middleware.RequireCapability(auth.CapFlashSalesRead)).Get("/flash-sales", h.handleListAllFlashSales)
+					admin.With(middleware.RequireCapability(auth.CapFlashSalesWrite)).Post("/flash-sales", h.handleAdminCreateFlashSale)
+					admin.With(middleware.RequireCapability(auth.CapFlashSalesRead)).Get("/flash-sale-items", h.handleAdminListFlashSaleItems)
+					admin.With(middleware.RequireCapability(auth.CapFlashSalesItemApprove)).Post("/flash-sale-items/{item_id}/approve", h.handleAdminApproveFlashSaleItem)
+					admin.With(middleware.RequireCapability(auth.CapCoinsCredit)).Post("/coins/credit", h.handleAdminCreditCoins)
 
 					// Section 4.5 Admin Orders, Manual Review, Reports & Returns
-					admin.Get("/orders", h.handleAdminListOrders)
-					admin.Get("/orders/needs-review", h.handleAdminListOrdersNeedingReview)
-					admin.Post("/orders/{id}/resolve-review", h.handleAdminResolveOrderReview)
-					admin.Get("/reports", h.handleAdminReports)
-					admin.Get("/reports/export", h.handleAdminReportsExport)
-					admin.Get("/returns", h.handleAdminListReturns)
-					admin.Get("/returns/{id}", h.handleAdminGetReturn)
-					admin.Post("/returns/{id}/resolve", h.handleAdminResolveReturn)
+					admin.With(middleware.RequireCapability(auth.CapOrdersRead)).Get("/orders", h.handleAdminListOrders)
+					admin.With(middleware.RequireCapability(auth.CapOrdersRead)).Get("/orders/needs-review", h.handleAdminListOrdersNeedingReview)
+					admin.With(middleware.RequireCapability(auth.CapOrdersReviewResolve)).Post("/orders/{id}/resolve-review", h.handleAdminResolveOrderReview)
+					admin.With(middleware.RequireCapability(auth.CapReportsRead)).Get("/reports", h.handleAdminReports)
+					admin.With(middleware.RequireCapability(auth.CapReportsRead)).Get("/reports/export", h.handleAdminReportsExport)
+					admin.With(middleware.RequireCapability(auth.CapReturnsRead)).Get("/returns", h.handleAdminListReturns)
+					admin.With(middleware.RequireCapability(auth.CapReturnsRead)).Get("/returns/{id}", h.handleAdminGetReturn)
+					admin.With(middleware.RequireCapability(auth.CapReturnsResolve)).Post("/returns/{id}/resolve", h.handleAdminResolveReturn)
 
-					// Section 4.6 Admin Fee Config, Ledger, Refunds & Reconciliation
-					admin.Get("/fees/payment", h.handleAdminGetPaymentFeeConfig)
-					admin.Post("/fees/payment", h.handleAdminSetPaymentFeeConfig)
-					admin.Get("/ledger/summary", h.handleAdminLedgerSummary)
-					admin.Post("/payments/{id}/refund", h.handleAdminRefundPayment)
-					admin.Get("/refunds", h.handleAdminListRefunds)
-					admin.Post("/refunds/{id}/settle", h.handleAdminSettleRefund)
-					admin.Post("/payments/reconcile", h.handleAdminReconcilePayments)
-					admin.Post("/reconciliation/cod/import", h.handleAdminImportCodReconciliation)
-					admin.Get("/reconciliation/runs", h.handleAdminListReconciliationRuns)
-					admin.Get("/reconciliation/queue", h.handleAdminListReconciliationQueue)
-					admin.Post("/reconciliation/queue/{id}/resolve", h.handleAdminResolveReconciliationItem)
+					// Section 4.6 Admin Payment Methods, Fee Config, Ledger, Refunds & Reconciliation
+					admin.With(middleware.RequireCapability(auth.CapPaymentMethodsRead)).Get("/payment-methods", h.handleAdminListPaymentMethods)
+					admin.With(middleware.RequireCapability(auth.CapPaymentMethodsWrite)).Put("/payment-methods/{method}", h.handleAdminUpdatePaymentMethodConfig)
+					admin.With(middleware.RequireCapability(auth.CapFeesPaymentRead)).Get("/fees/payment", h.handleAdminGetPaymentFeeConfig)
+					admin.With(middleware.RequireCapability(auth.CapFeesPaymentWrite)).Post("/fees/payment", h.handleAdminSetPaymentFeeConfig)
+					admin.With(middleware.RequireCapability(auth.CapLedgerRead)).Get("/ledger/summary", h.handleAdminLedgerSummary)
+					admin.With(middleware.RequireCapability(auth.CapRefundsCreate)).Post("/payments/{id}/refund", h.handleAdminRefundPayment)
+					admin.With(middleware.RequireCapability(auth.CapRefundsRead)).Get("/refunds", h.handleAdminListRefunds)
+					admin.With(middleware.RequireCapability(auth.CapRefundsSettle)).Post("/refunds/{id}/settle", h.handleAdminSettleRefund)
+					admin.With(middleware.RequireCapability(auth.CapReconciliationWrite)).Post("/payments/reconcile", h.handleAdminReconcilePayments)
+					admin.With(middleware.RequireCapability(auth.CapReconciliationWrite)).Post("/reconciliation/cod/import", h.handleAdminImportCodReconciliation)
+					admin.With(middleware.RequireCapability(auth.CapLedgerRead)).Get("/reconciliation/runs", h.handleAdminListReconciliationRuns)
+					admin.With(middleware.RequireCapability(auth.CapLedgerRead)).Get("/reconciliation/queue", h.handleAdminListReconciliationQueue)
+					admin.With(middleware.RequireCapability(auth.CapReconciliationWrite)).Post("/reconciliation/queue/{id}/resolve", h.handleAdminResolveReconciliationItem)
 
 					// Section 4.7 Admin Carriers
-					admin.Get("/carriers", h.handleAdminListCarriers)
-					admin.Put("/carriers/{code}", h.handleAdminUpdateCarrier)
-					admin.Post("/carriers/{code}/test", h.handleAdminTestCarrier)
+					admin.With(middleware.RequireCapability(auth.CapCarriersRead)).Get("/carriers", h.handleAdminListCarriers)
+					admin.With(middleware.RequireCapability(auth.CapCarriersWrite)).Put("/carriers/{code}", h.handleAdminUpdateCarrier)
+					admin.With(middleware.RequireCapability(auth.CapCarriersWrite)).Post("/carriers/{code}/test", h.handleAdminTestCarrier)
 				})
 			})
 		})

@@ -925,7 +925,11 @@ func (h *handler) handleAdminCreateFlashSale(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *handler) handleListAllFlashSales(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	statusFilter := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("status")))
 	if statusFilter != "" && statusFilter != "UPCOMING" && statusFilter != "ACTIVE" && statusFilter != "ENDED" {
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "status must be UPCOMING, ACTIVE, or ENDED")
@@ -956,7 +960,11 @@ func (h *handler) handleListAllFlashSales(w http.ResponseWriter, r *http.Request
 }
 
 func (h *handler) handleListFlashSaleItemsCommon(w http.ResponseWriter, r *http.Request, shopID string) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	q := r.URL.Query()
 	rawStatus := strings.TrimSpace(q.Get("status"))
 	st := parseFlashSaleItemStatus(rawStatus)
@@ -1039,7 +1047,11 @@ func (h *handler) handleListActiveShopDiscounts(w http.ResponseWriter, r *http.R
 }
 
 func (h *handler) handleSellerListDiscountPrograms(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	rawStatus := strings.TrimSpace(r.URL.Query().Get("status"))
 	st := parseShopDiscountProgramStatus(rawStatus)
 	if rawStatus != "" && st == promotionv1.ShopDiscountProgramStatus_SHOP_DISCOUNT_PROGRAM_STATUS_UNSPECIFIED {

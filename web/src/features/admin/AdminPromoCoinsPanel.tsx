@@ -18,6 +18,8 @@ import { canEditVoucherField } from "@/features/seller/types";
 import { type StableReferenceCache, resolveStableReferenceKey } from "@/features/checkout/helpers";
 import type { PillTone } from "./adminMeta";
 import { StatusPill } from "./StatusPill";
+import { useAdminUser } from "./AdminUserContext";
+import { roleHasCapability } from "@/lib/admin-rbac";
 import shared from "./adminShared.module.css";
 
 function toDatetimeLocalValue(date: Date): string {
@@ -47,6 +49,16 @@ function getFlashItemStatusPill(status: string): { label: string; tone: PillTone
 
 export function AdminPromoCoinsPanel({ mode }: { mode: "promo" | "coins" }) {
   const { showToast } = useMockStore();
+  const adminUser = useAdminUser();
+  const role = adminUser?.role ?? "";
+
+  const canReadVouchers = roleHasCapability(role, "vouchers.read");
+  const canWriteVouchers = roleHasCapability(role, "vouchers.write");
+  const canReadFlashSales = roleHasCapability(role, "flash_sales.read");
+  const canWriteFlashSales = roleHasCapability(role, "flash_sales.write");
+  const canApproveFlashItems = roleHasCapability(role, "flash_sales.items.approve");
+  const canReadCategories = roleHasCapability(role, "categories.read");
+  const canCreditCoins = roleHasCapability(role, "coins.credit");
 
   const [vouchers, setVouchers] = useState<GatewayVoucher[]>([]);
   const [categories, setCategories] = useState<GatewayCategory[]>([]);
@@ -114,20 +126,28 @@ export function AdminPromoCoinsPanel({ mode }: { mode: "promo" | "coins" }) {
     try {
       if (mode === "promo") {
         const [vRes, catsRes, fsRes, fsItemsRes] = await Promise.all([
-          api<{ vouchers: GatewayVoucher[] }>("admin/vouchers?include_inactive=true").catch(() =>
-            api<{ vouchers: GatewayVoucher[] }>("vouchers")
-          ),
-          api<{ categories: GatewayCategory[] }>("admin/categories").catch(() => ({
-            categories: [] as GatewayCategory[],
-          })),
-          api<{ flash_sales?: GatewayFlashSale[]; items?: GatewayFlashSale[] }>(
-            "admin/flash-sales?page=1&page_size=50"
-          ).catch(() =>
-            api<{ flash_sales: GatewayFlashSale[] }>("flash-sales?include_upcoming=true")
-          ),
-          api<{ items?: GatewayFlashSaleItem[] }>(
-            "admin/flash-sale-items?page=1&page_size=100"
-          ).catch(() => ({ items: [] })),
+          canReadVouchers
+            ? api<{ vouchers: GatewayVoucher[] }>("admin/vouchers?include_inactive=true").catch(
+                () => api<{ vouchers: GatewayVoucher[] }>("vouchers")
+              )
+            : Promise.resolve({ vouchers: [] as GatewayVoucher[] }),
+          canReadCategories
+            ? api<{ categories: GatewayCategory[] }>("admin/categories").catch(() => ({
+                categories: [] as GatewayCategory[],
+              }))
+            : Promise.resolve({ categories: [] as GatewayCategory[] }),
+          canReadFlashSales
+            ? api<{ flash_sales?: GatewayFlashSale[]; items?: GatewayFlashSale[] }>(
+                "admin/flash-sales?page=1&page_size=50"
+              ).catch(() =>
+                api<{ flash_sales: GatewayFlashSale[] }>("flash-sales?include_upcoming=true")
+              )
+            : Promise.resolve({ flash_sales: [] as GatewayFlashSale[] }),
+          canReadFlashSales
+            ? api<{ items?: GatewayFlashSaleItem[] }>(
+                "admin/flash-sale-items?page=1&page_size=100"
+              ).catch(() => ({ items: [] }))
+            : Promise.resolve({ items: [] as GatewayFlashSaleItem[] }),
         ]);
         setVouchers(vRes.vouchers ?? []);
         setCategories(catsRes.categories ?? []);
@@ -137,7 +157,7 @@ export function AdminPromoCoinsPanel({ mode }: { mode: "promo" | "coins" }) {
           [];
         setFlashSales(nextFs);
         setFlashItems(fsItemsRes.items ?? []);
-      } else {
+      } else if (canCreditCoins) {
         const uRes = await api<PaginatedResponse<GatewayUser>>("admin/users?page=1&page_size=50");
         const list = uRes.items ?? [];
         setUsers(list);
@@ -150,7 +170,7 @@ export function AdminPromoCoinsPanel({ mode }: { mode: "promo" | "coins" }) {
     } finally {
       setLoading(false);
     }
-  }, [mode]);
+  }, [mode, canReadVouchers, canReadCategories, canReadFlashSales, canCreditCoins]);
 
   useEffect(() => {
     void loadData();
@@ -597,782 +617,810 @@ export function AdminPromoCoinsPanel({ mode }: { mode: "promo" | "coins" }) {
   return (
     <div className={shared.sectionStack}>
       {/* PLATFORM / FREESHIP VOUCHERS */}
-      <section className={shared.panel} aria-labelledby="admin-voucher-heading">
-        <div className={shared.panelHeader}>
-          <h2 id="admin-voucher-heading" className={shared.panelTitle}>
-            Tạo & quản lý Voucher cấp sàn ({formatInt(vouchers.length)})
-          </h2>
-          <Button variant="outline" size="sm" shape="app" onClick={() => void loadData()}>
-            Làm mới
-          </Button>
-        </div>
-
-        <form onSubmit={(e) => void handleSaveVoucher(e)} className={shared.detailWell}>
-          <div className={shared.detailHeader}>
-            <h3 className={shared.detailHeading}>
-              {editingVoucher
-                ? `Chỉnh sửa voucher ${editingVoucher.code}`
-                : "Phát hành voucher sàn / miễn phí vận chuyển"}
-            </h3>
-            {editingVoucher && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                shape="app"
-                onClick={resetVoucherForm}
-              >
-                Hủy chỉnh sửa
-              </Button>
-            )}
-          </div>
-
-          {editingVoucher && editingVoucher.used_count > 0 && (
-            <p className={shared.savedStamp}>
-              Voucher đã có {formatInt(editingVoucher.used_count)} lượt sử dụng — chỉ được chỉnh
-              tên, tăng lượt/ngân sách và gia hạn thời điểm kết thúc.
-            </p>
-          )}
-
-          <div className={shared.detailGrid}>
-            <div className={shared.detailField}>
-              <label htmlFor="av-code" className={shared.fieldLabel}>
-                Mã voucher sàn
-              </label>
-              <input
-                id="av-code"
-                type="text"
-                className={shared.textInput}
-                value={vCode}
-                onChange={(e) => setVCode(e.target.value)}
-                placeholder="VD: NEXUS30K"
-                disabled={Boolean(editingVoucher)}
-                required
-              />
-            </div>
-            <div className={shared.detailField}>
-              <label htmlFor="av-name" className={shared.fieldLabel}>
-                Tên chương trình
-              </label>
-              <input
-                id="av-name"
-                type="text"
-                className={shared.textInput}
-                value={vName}
-                onChange={(e) => setVName(e.target.value)}
-                placeholder="Giảm 30.000₫ toàn sàn"
-              />
-            </div>
-            <div className={shared.detailField}>
-              <label htmlFor="av-scope" className={shared.fieldLabel}>
-                Phạm vi áp dụng
-              </label>
-              <select
-                id="av-scope"
-                className={shared.toolbarSelect}
-                style={{ height: 38 }}
-                value={vScope}
-                onChange={(e) => setVScope(e.target.value as "PLATFORM" | "FREESHIP")}
-                disabled={Boolean(editingVoucher)}
-              >
-                <option value="PLATFORM">Toàn sàn (PLATFORM)</option>
-                <option value="FREESHIP">Miễn phí vận chuyển (FREESHIP)</option>
-              </select>
-            </div>
-            <div className={shared.detailField}>
-              <label htmlFor="av-type" className={shared.fieldLabel}>
-                Loại giảm giá
-              </label>
-              <select
-                id="av-type"
-                className={shared.toolbarSelect}
-                style={{ height: 38 }}
-                value={vType}
-                onChange={(e) => setVType(e.target.value as "FIXED" | "PERCENT")}
-                disabled={
-                  Boolean(editingVoucher) && !canEditVoucherField(editingVoucher!, "discount_type")
-                }
-              >
-                <option value="FIXED">Số tiền cố định (VND)</option>
-                <option value="PERCENT">Theo phần trăm (%)</option>
-              </select>
-            </div>
-            <div className={shared.detailField}>
-              <label htmlFor="av-val" className={shared.fieldLabel}>
-                {vType === "FIXED" ? "Mức giảm (VND)" : "Phần trăm giảm (%)"}
-              </label>
-              <input
-                id="av-val"
-                type="number"
-                className={shared.textInput}
-                value={vValue}
-                onChange={(e) => setVValue(e.target.value)}
-                disabled={
-                  Boolean(editingVoucher) &&
-                  !canEditVoucherField(
-                    editingVoucher!,
-                    vType === "FIXED" ? "value_vnd" : "discount_percent"
-                  )
-                }
-              />
-            </div>
-            {vType === "PERCENT" && (
-              <div className={shared.detailField}>
-                <label htmlFor="av-max" className={shared.fieldLabel}>
-                  Giảm tối đa (VND)
-                </label>
-                <input
-                  id="av-max"
-                  type="number"
-                  className={shared.textInput}
-                  value={vMaxDiscount}
-                  onChange={(e) => setVMaxDiscount(e.target.value)}
-                  disabled={
-                    Boolean(editingVoucher) &&
-                    !canEditVoucherField(editingVoucher!, "max_discount_vnd")
-                  }
-                />
-              </div>
-            )}
-            <div className={shared.detailField}>
-              <label htmlFor="av-min" className={shared.fieldLabel}>
-                Đơn tối thiểu (VND)
-              </label>
-              <input
-                id="av-min"
-                type="number"
-                className={shared.textInput}
-                value={vMinOrder}
-                onChange={(e) => setVMinOrder(e.target.value)}
-                disabled={
-                  Boolean(editingVoucher) && !canEditVoucherField(editingVoucher!, "min_order_vnd")
-                }
-              />
-            </div>
-            <div className={shared.detailField}>
-              <label htmlFor="av-quota" className={shared.fieldLabel}>
-                Tổng lượt phát hành
-              </label>
-              <input
-                id="av-quota"
-                type="number"
-                min={editingVoucher ? Math.max(1, editingVoucher.used_count) : 1}
-                className={shared.textInput}
-                value={vQuota}
-                onChange={(e) => setVQuota(e.target.value)}
-              />
-            </div>
-            <div className={shared.detailField}>
-              <label htmlFor="av-peruser" className={shared.fieldLabel}>
-                Giới hạn / khách
-              </label>
-              <input
-                id="av-peruser"
-                type="number"
-                min={1}
-                className={shared.textInput}
-                value={vPerUser}
-                onChange={(e) => setVPerUser(e.target.value)}
-                disabled={
-                  Boolean(editingVoucher) && !canEditVoucherField(editingVoucher!, "per_user_limit")
-                }
-              />
-            </div>
-            <div className={shared.detailField}>
-              <label htmlFor="av-budget" className={shared.fieldLabel}>
-                Ngân sách tối đa (VND)
-              </label>
-              <input
-                id="av-budget"
-                type="number"
-                className={shared.textInput}
-                value={vBudget}
-                onChange={(e) => setVBudget(e.target.value)}
-              />
-            </div>
-            <div className={shared.detailField}>
-              <label htmlFor="av-start" className={shared.fieldLabel}>
-                Bắt đầu
-              </label>
-              <input
-                id="av-start"
-                type="datetime-local"
-                className={shared.textInput}
-                value={vStartsAt}
-                onChange={(e) => setVStartsAt(e.target.value)}
-                disabled={
-                  Boolean(editingVoucher) && !canEditVoucherField(editingVoucher!, "starts_at")
-                }
-              />
-            </div>
-            <div className={shared.detailField}>
-              <label htmlFor="av-end" className={shared.fieldLabel}>
-                Kết thúc
-              </label>
-              <input
-                id="av-end"
-                type="datetime-local"
-                className={shared.textInput}
-                value={vEndsAt}
-                onChange={(e) => setVEndsAt(e.target.value)}
-              />
-            </div>
-            {categories.length > 0 && (
-              <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                <span className={shared.fieldLabel}>
-                  Phạm vi danh mục áp dụng (để trống = áp dụng toàn sàn)
-                </span>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
-                  {categories.map((c) => {
-                    const checked = vCategoryIds.includes(c.id);
-                    const disabled =
-                      Boolean(editingVoucher) &&
-                      !canEditVoucherField(editingVoucher!, "category_ids");
-                    return (
-                      <label
-                        key={c.id}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 6,
-                          fontSize: 13,
-                          padding: "4px 10px",
-                          borderRadius: 6,
-                          border: "1px solid var(--control)",
-                          background: checked ? "var(--active)" : "var(--card)",
-                          cursor: disabled ? "not-allowed" : "pointer",
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={disabled}
-                          onChange={() => toggleCategoryId(setVCategoryIds, c.id)}
-                        />
-                        <span>{c.name}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-          <div className={shared.detailActionBar}>
-            <span className={shared.savedStamp}>
-              Voucher sàn có thể gộp cùng voucher gian hàng và hỗ trợ giới hạn theo danh mục.
-            </span>
-            <Button type="submit" variant="primary" size="sm" shape="app" disabled={vBusy}>
-              {vBusy
-                ? "Đang lưu..."
-                : editingVoucher
-                  ? "Lưu thay đổi voucher"
-                  : "Phát hành voucher sàn"}
+      {canReadVouchers && (
+        <section className={shared.panel} aria-labelledby="admin-voucher-heading">
+          <div className={shared.panelHeader}>
+            <h2 id="admin-voucher-heading" className={shared.panelTitle}>
+              Tạo & quản lý Voucher cấp sàn ({formatInt(vouchers.length)})
+            </h2>
+            <Button variant="outline" size="sm" shape="app" onClick={() => void loadData()}>
+              Làm mới
             </Button>
           </div>
-        </form>
 
-        <div className={shared.tableWrap} style={{ marginTop: 14 }}>
-          <table className={shared.dataTable}>
-            <thead>
-              <tr>
-                <th>Mã & tên</th>
-                <th>Phạm vi & danh mục</th>
-                <th className={shared.colNum}>Mức giảm</th>
-                <th className={shared.colNum}>Đã dùng / Tổng suất</th>
-                <th>Trạng thái</th>
-                <th className={shared.colAction}>Thao tác</th>
-              </tr>
-            </thead>
-            <tbody>
-              {vouchers.map((v) => {
-                const stKey = getVoucherStatusKey(v);
-                const stPill = getVoucherStatusPill(stKey);
-                const isDeleted = stKey === "DELETED";
-                const isBusy = voucherActionBusyId === v.id;
-                const catNames = (v.category_ids ?? [])
-                  .map((id) => categoryNameById.get(id) ?? id.slice(0, 8))
-                  .join(", ");
-                return (
-                  <tr key={v.id}>
-                    <td>
-                      <div className={shared.cellPrimary}>{v.code}</div>
-                      <div className={shared.cellSub}>{v.name}</div>
-                    </td>
-                    <td>
-                      <StatusPill label={v.scope} tone="neutral" />
-                      {catNames && <div className={shared.cellSub}>Danh mục: {catNames}</div>}
-                    </td>
-                    <td className={shared.colNum}>
+          {canWriteVouchers && (
+            <form onSubmit={(e) => void handleSaveVoucher(e)} className={shared.detailWell}>
+              <div className={shared.detailHeader}>
+                <h3 className={shared.detailHeading}>
+                  {editingVoucher
+                    ? `Chỉnh sửa voucher ${editingVoucher.code}`
+                    : "Phát hành voucher sàn / miễn phí vận chuyển"}
+                </h3>
+                {editingVoucher && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    shape="app"
+                    onClick={resetVoucherForm}
+                  >
+                    Hủy chỉnh sửa
+                  </Button>
+                )}
+              </div>
+
+              {editingVoucher && editingVoucher.used_count > 0 && (
+                <p className={shared.savedStamp}>
+                  Voucher đã có {formatInt(editingVoucher.used_count)} lượt sử dụng — chỉ được chỉnh
+                  tên, tăng lượt/ngân sách và gia hạn thời điểm kết thúc.
+                </p>
+              )}
+
+              <div className={shared.detailGrid}>
+                <div className={shared.detailField}>
+                  <label htmlFor="av-code" className={shared.fieldLabel}>
+                    Mã voucher sàn
+                  </label>
+                  <input
+                    id="av-code"
+                    type="text"
+                    className={shared.textInput}
+                    value={vCode}
+                    onChange={(e) => setVCode(e.target.value)}
+                    placeholder="VD: NEXUS30K"
+                    disabled={Boolean(editingVoucher)}
+                    required
+                  />
+                </div>
+                <div className={shared.detailField}>
+                  <label htmlFor="av-name" className={shared.fieldLabel}>
+                    Tên chương trình
+                  </label>
+                  <input
+                    id="av-name"
+                    type="text"
+                    className={shared.textInput}
+                    value={vName}
+                    onChange={(e) => setVName(e.target.value)}
+                    placeholder="Giảm 30.000₫ toàn sàn"
+                  />
+                </div>
+                <div className={shared.detailField}>
+                  <label htmlFor="av-scope" className={shared.fieldLabel}>
+                    Phạm vi áp dụng
+                  </label>
+                  <select
+                    id="av-scope"
+                    className={shared.toolbarSelect}
+                    style={{ height: 38 }}
+                    value={vScope}
+                    onChange={(e) => setVScope(e.target.value as "PLATFORM" | "FREESHIP")}
+                    disabled={Boolean(editingVoucher)}
+                  >
+                    <option value="PLATFORM">Toàn sàn (PLATFORM)</option>
+                    <option value="FREESHIP">Miễn phí vận chuyển (FREESHIP)</option>
+                  </select>
+                </div>
+                <div className={shared.detailField}>
+                  <label htmlFor="av-type" className={shared.fieldLabel}>
+                    Loại giảm giá
+                  </label>
+                  <select
+                    id="av-type"
+                    className={shared.toolbarSelect}
+                    style={{ height: 38 }}
+                    value={vType}
+                    onChange={(e) => setVType(e.target.value as "FIXED" | "PERCENT")}
+                    disabled={
+                      Boolean(editingVoucher) &&
+                      !canEditVoucherField(editingVoucher!, "discount_type")
+                    }
+                  >
+                    <option value="FIXED">Số tiền cố định (VND)</option>
+                    <option value="PERCENT">Theo phần trăm (%)</option>
+                  </select>
+                </div>
+                <div className={shared.detailField}>
+                  <label htmlFor="av-val" className={shared.fieldLabel}>
+                    {vType === "FIXED" ? "Mức giảm (VND)" : "Phần trăm giảm (%)"}
+                  </label>
+                  <input
+                    id="av-val"
+                    type="number"
+                    className={shared.textInput}
+                    value={vValue}
+                    onChange={(e) => setVValue(e.target.value)}
+                    disabled={
+                      Boolean(editingVoucher) &&
+                      !canEditVoucherField(
+                        editingVoucher!,
+                        vType === "FIXED" ? "value_vnd" : "discount_percent"
+                      )
+                    }
+                  />
+                </div>
+                {vType === "PERCENT" && (
+                  <div className={shared.detailField}>
+                    <label htmlFor="av-max" className={shared.fieldLabel}>
+                      Giảm tối đa (VND)
+                    </label>
+                    <input
+                      id="av-max"
+                      type="number"
+                      className={shared.textInput}
+                      value={vMaxDiscount}
+                      onChange={(e) => setVMaxDiscount(e.target.value)}
+                      disabled={
+                        Boolean(editingVoucher) &&
+                        !canEditVoucherField(editingVoucher!, "max_discount_vnd")
+                      }
+                    />
+                  </div>
+                )}
+                <div className={shared.detailField}>
+                  <label htmlFor="av-min" className={shared.fieldLabel}>
+                    Đơn tối thiểu (VND)
+                  </label>
+                  <input
+                    id="av-min"
+                    type="number"
+                    className={shared.textInput}
+                    value={vMinOrder}
+                    onChange={(e) => setVMinOrder(e.target.value)}
+                    disabled={
+                      Boolean(editingVoucher) &&
+                      !canEditVoucherField(editingVoucher!, "min_order_vnd")
+                    }
+                  />
+                </div>
+                <div className={shared.detailField}>
+                  <label htmlFor="av-quota" className={shared.fieldLabel}>
+                    Tổng lượt phát hành
+                  </label>
+                  <input
+                    id="av-quota"
+                    type="number"
+                    min={editingVoucher ? Math.max(1, editingVoucher.used_count) : 1}
+                    className={shared.textInput}
+                    value={vQuota}
+                    onChange={(e) => setVQuota(e.target.value)}
+                  />
+                </div>
+                <div className={shared.detailField}>
+                  <label htmlFor="av-peruser" className={shared.fieldLabel}>
+                    Giới hạn / khách
+                  </label>
+                  <input
+                    id="av-peruser"
+                    type="number"
+                    min={1}
+                    className={shared.textInput}
+                    value={vPerUser}
+                    onChange={(e) => setVPerUser(e.target.value)}
+                    disabled={
+                      Boolean(editingVoucher) &&
+                      !canEditVoucherField(editingVoucher!, "per_user_limit")
+                    }
+                  />
+                </div>
+                <div className={shared.detailField}>
+                  <label htmlFor="av-budget" className={shared.fieldLabel}>
+                    Ngân sách tối đa (VND)
+                  </label>
+                  <input
+                    id="av-budget"
+                    type="number"
+                    className={shared.textInput}
+                    value={vBudget}
+                    onChange={(e) => setVBudget(e.target.value)}
+                  />
+                </div>
+                <div className={shared.detailField}>
+                  <label htmlFor="av-start" className={shared.fieldLabel}>
+                    Bắt đầu
+                  </label>
+                  <input
+                    id="av-start"
+                    type="datetime-local"
+                    className={shared.textInput}
+                    value={vStartsAt}
+                    onChange={(e) => setVStartsAt(e.target.value)}
+                    disabled={
+                      Boolean(editingVoucher) && !canEditVoucherField(editingVoucher!, "starts_at")
+                    }
+                  />
+                </div>
+                <div className={shared.detailField}>
+                  <label htmlFor="av-end" className={shared.fieldLabel}>
+                    Kết thúc
+                  </label>
+                  <input
+                    id="av-end"
+                    type="datetime-local"
+                    className={shared.textInput}
+                    value={vEndsAt}
+                    onChange={(e) => setVEndsAt(e.target.value)}
+                  />
+                </div>
+                {categories.length > 0 && (
+                  <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+                    <span className={shared.fieldLabel}>
+                      Phạm vi danh mục áp dụng (để trống = áp dụng toàn sàn)
+                    </span>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
+                      {categories.map((c) => {
+                        const checked = vCategoryIds.includes(c.id);
+                        const disabled =
+                          Boolean(editingVoucher) &&
+                          !canEditVoucherField(editingVoucher!, "category_ids");
+                        return (
+                          <label
+                            key={c.id}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 6,
+                              fontSize: 13,
+                              padding: "4px 10px",
+                              borderRadius: 6,
+                              border: "1px solid var(--control)",
+                              background: checked ? "var(--active)" : "var(--card)",
+                              cursor: disabled ? "not-allowed" : "pointer",
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={disabled}
+                              onChange={() => toggleCategoryId(setVCategoryIds, c.id)}
+                            />
+                            <span>{c.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className={shared.detailActionBar}>
+                <span className={shared.savedStamp}>
+                  Voucher sàn có thể gộp cùng voucher gian hàng và hỗ trợ giới hạn theo danh mục.
+                </span>
+                <Button type="submit" variant="primary" size="sm" shape="app" disabled={vBusy}>
+                  {vBusy
+                    ? "Đang lưu..."
+                    : editingVoucher
+                      ? "Lưu thay đổi voucher"
+                      : "Phát hành voucher sàn"}
+                </Button>
+              </div>
+            </form>
+          )}
+
+          <div className={shared.tableWrap} style={{ marginTop: 14 }}>
+            <table className={shared.dataTable}>
+              <thead>
+                <tr>
+                  <th>Mã & tên</th>
+                  <th>Phạm vi & danh mục</th>
+                  <th className={shared.colNum}>Mức giảm</th>
+                  <th className={shared.colNum}>Đã dùng / Tổng suất</th>
+                  <th>Trạng thái</th>
+                  <th className={shared.colAction}>Thao tác</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vouchers.map((v) => {
+                  const stKey = getVoucherStatusKey(v);
+                  const stPill = getVoucherStatusPill(stKey);
+                  const isDeleted = stKey === "DELETED";
+                  const isBusy = voucherActionBusyId === v.id;
+                  const catNames = (v.category_ids ?? [])
+                    .map((id) => categoryNameById.get(id) ?? id.slice(0, 8))
+                    .join(", ");
+                  return (
+                    <tr key={v.id}>
+                      <td>
+                        <div className={shared.cellPrimary}>{v.code}</div>
+                        <div className={shared.cellSub}>{v.name}</div>
+                      </td>
+                      <td>
+                        <StatusPill label={v.scope} tone="neutral" />
+                        {catNames && <div className={shared.cellSub}>Danh mục: {catNames}</div>}
+                      </td>
+                      <td className={shared.colNum}>
+                        {v.discount_type === "FIXED"
+                          ? formatVnd(v.value_vnd)
+                          : `${v.discount_percent}%`}
+                      </td>
+                      <td className={shared.colNum}>
+                        {formatInt(v.used_count)} / {formatInt(v.quota)}
+                      </td>
+                      <td>
+                        <StatusPill label={stPill.label} tone={stPill.tone} />
+                      </td>
+                      <td className={shared.colAction}>
+                        {isDeleted ? (
+                          <span className={shared.numMuted}>—</span>
+                        ) : v.scope.toUpperCase() === "SHOP" ? (
+                          <span className={shared.numMuted}>Voucher gian hàng (chỉ xem)</span>
+                        ) : (
+                          <div
+                            className={shared.detailButtons}
+                            style={{ justifyContent: "flex-end" }}
+                          >
+                            <button
+                              type="button"
+                              className={shared.rowActionBtn}
+                              disabled={isBusy}
+                              onClick={() => handleStartEditVoucher(v)}
+                            >
+                              Sửa
+                            </button>
+                            <button
+                              type="button"
+                              className={shared.rowActionBtn}
+                              disabled={isBusy}
+                              onClick={() => void handleToggleVoucherStatus(v)}
+                            >
+                              {stKey === "ACTIVE" ? "Tạm dừng" : "Bật lại"}
+                            </button>
+                            {confirmDeleteVoucherId === v.id ? (
+                              <button
+                                type="button"
+                                className={shared.rowActionBtn}
+                                disabled={isBusy}
+                                onClick={() => void handleDeleteVoucher(v)}
+                              >
+                                Xác nhận xóa
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                className={shared.rowActionBtn}
+                                disabled={isBusy}
+                                onClick={() => setConfirmDeleteVoucherId(v.id)}
+                              >
+                                Xóa
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className={shared.mobileList}>
+            {vouchers.map((v) => {
+              const stKey = getVoucherStatusKey(v);
+              const stPill = getVoucherStatusPill(stKey);
+              const isDeleted = stKey === "DELETED";
+              const isShopScope = v.scope.toUpperCase() === "SHOP";
+              return (
+                <div key={v.id} className={shared.mobileItem}>
+                  <div className={shared.mobileLine1}>
+                    <span className={shared.mobileIdentity}>
+                      {v.code} · {v.scope}
+                    </span>
+                    <StatusPill label={stPill.label} tone={stPill.tone} />
+                  </div>
+                  <div className={shared.mobileLine2}>
+                    <span className={shared.mobileMetaText}>
+                      {formatInt(v.used_count)}/{formatInt(v.quota)} lượt ·{" "}
                       {v.discount_type === "FIXED"
                         ? formatVnd(v.value_vnd)
                         : `${v.discount_percent}%`}
-                    </td>
-                    <td className={shared.colNum}>
-                      {formatInt(v.used_count)} / {formatInt(v.quota)}
-                    </td>
-                    <td>
-                      <StatusPill label={stPill.label} tone={stPill.tone} />
-                    </td>
-                    <td className={shared.colAction}>
-                      {isDeleted ? (
-                        <span className={shared.numMuted}>—</span>
-                      ) : v.scope.toUpperCase() === "SHOP" ? (
-                        <span className={shared.numMuted}>Voucher gian hàng (chỉ xem)</span>
-                      ) : (
-                        <div
-                          className={shared.detailButtons}
-                          style={{ justifyContent: "flex-end" }}
+                    </span>
+                    {!isDeleted && isShopScope ? (
+                      <span className={shared.numMuted}>Voucher gian hàng (chỉ xem)</span>
+                    ) : !isDeleted ? (
+                      <div className={shared.detailButtons}>
+                        <button
+                          type="button"
+                          className={shared.rowActionBtn}
+                          onClick={() => handleStartEditVoucher(v)}
                         >
-                          <button
-                            type="button"
-                            className={shared.rowActionBtn}
-                            disabled={isBusy}
-                            onClick={() => handleStartEditVoucher(v)}
-                          >
-                            Sửa
-                          </button>
-                          <button
-                            type="button"
-                            className={shared.rowActionBtn}
-                            disabled={isBusy}
-                            onClick={() => void handleToggleVoucherStatus(v)}
-                          >
-                            {stKey === "ACTIVE" ? "Tạm dừng" : "Bật lại"}
-                          </button>
-                          {confirmDeleteVoucherId === v.id ? (
-                            <button
-                              type="button"
-                              className={shared.rowActionBtn}
-                              disabled={isBusy}
-                              onClick={() => void handleDeleteVoucher(v)}
-                            >
-                              Xác nhận xóa
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              className={shared.rowActionBtn}
-                              disabled={isBusy}
-                              onClick={() => setConfirmDeleteVoucherId(v.id)}
-                            >
-                              Xóa
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        <div className={shared.mobileList}>
-          {vouchers.map((v) => {
-            const stKey = getVoucherStatusKey(v);
-            const stPill = getVoucherStatusPill(stKey);
-            const isDeleted = stKey === "DELETED";
-            const isShopScope = v.scope.toUpperCase() === "SHOP";
-            return (
-              <div key={v.id} className={shared.mobileItem}>
-                <div className={shared.mobileLine1}>
-                  <span className={shared.mobileIdentity}>
-                    {v.code} · {v.scope}
-                  </span>
-                  <StatusPill label={stPill.label} tone={stPill.tone} />
+                          Sửa
+                        </button>
+                        <button
+                          type="button"
+                          className={shared.rowActionBtn}
+                          onClick={() => void handleToggleVoucherStatus(v)}
+                        >
+                          {stKey === "ACTIVE" ? "Dừng" : "Bật"}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
-                <div className={shared.mobileLine2}>
-                  <span className={shared.mobileMetaText}>
-                    {formatInt(v.used_count)}/{formatInt(v.quota)} lượt ·{" "}
-                    {v.discount_type === "FIXED"
-                      ? formatVnd(v.value_vnd)
-                      : `${v.discount_percent}%`}
-                  </span>
-                  {!isDeleted && isShopScope ? (
-                    <span className={shared.numMuted}>Voucher gian hàng (chỉ xem)</span>
-                  ) : !isDeleted ? (
-                    <div className={shared.detailButtons}>
-                      <button
-                        type="button"
-                        className={shared.rowActionBtn}
-                        onClick={() => handleStartEditVoucher(v)}
-                      >
-                        Sửa
-                      </button>
-                      <button
-                        type="button"
-                        className={shared.rowActionBtn}
-                        onClick={() => void handleToggleVoucherStatus(v)}
-                      >
-                        {stKey === "ACTIVE" ? "Dừng" : "Bật"}
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* FLASH SALES WINDOWS + INTERACTIVE PENDING ITEMS QUEUE */}
-      <section className={shared.panel} aria-labelledby="admin-fs-heading">
-        <div className={shared.panelHeader}>
-          <h2 id="admin-fs-heading" className={shared.panelTitle}>
-            Khung giờ Flash sale ({formatInt(flashSales.length)}) & Hàng đợi duyệt suất SKU (
-            {formatInt(flashItemCounts.PENDING)} chờ duyệt)
-          </h2>
-        </div>
+      {canReadFlashSales && (
+        <section className={shared.panel} aria-labelledby="admin-fs-heading">
+          <div className={shared.panelHeader}>
+            <h2 id="admin-fs-heading" className={shared.panelTitle}>
+              Khung giờ Flash sale ({formatInt(flashSales.length)}) & Hàng đợi duyệt suất SKU (
+              {formatInt(flashItemCounts.PENDING)} chờ duyệt)
+            </h2>
+          </div>
 
-        <form onSubmit={(e) => void handleCreateFlashSale(e)} className={shared.detailWell}>
-          <div className={shared.detailGrid}>
-            <div className={shared.detailField}>
-              <label htmlFor="fs-name" className={shared.fieldLabel}>
-                Tên khung giờ Flash sale mới
-              </label>
-              <input
-                id="fs-name"
-                type="text"
-                className={shared.textInput}
-                value={fsName}
-                onChange={(e) => setFsName(e.target.value)}
-                placeholder="VD: Flash Sale Tối 20:00"
-                required
-              />
-            </div>
-            <div className={shared.detailField}>
-              <label htmlFor="fs-start" className={shared.fieldLabel}>
-                Thời điểm bắt đầu
-              </label>
-              <input
-                id="fs-start"
-                type="datetime-local"
-                className={shared.textInput}
-                value={fsStartsAt}
-                onChange={(e) => setFsStartsAt(e.target.value)}
-                required
-              />
-            </div>
-            <div className={shared.detailField}>
-              <label htmlFor="fs-end" className={shared.fieldLabel}>
-                Thời điểm kết thúc
-              </label>
-              <input
-                id="fs-end"
-                type="datetime-local"
-                className={shared.textInput}
-                value={fsEndsAt}
-                onChange={(e) => setFsEndsAt(e.target.value)}
-                required
-              />
-            </div>
-            <div className={shared.detailField}>
-              <label htmlFor="fs-min-disc" className={shared.fieldLabel}>
-                Mức giảm tối thiểu (%)
-              </label>
-              <input
-                id="fs-min-disc"
-                type="number"
-                min={0}
-                max={90}
-                className={shared.textInput}
-                value={fsMinDiscountStr}
-                onChange={(e) => setFsMinDiscountStr(e.target.value)}
-              />
-            </div>
-            {categories.length > 0 && (
-              <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                <span className={shared.fieldLabel}>
-                  Danh mục được phép đăng ký (để trống = tất cả danh mục)
+          {canWriteFlashSales && (
+            <form onSubmit={(e) => void handleCreateFlashSale(e)} className={shared.detailWell}>
+              <div className={shared.detailGrid}>
+                <div className={shared.detailField}>
+                  <label htmlFor="fs-name" className={shared.fieldLabel}>
+                    Tên khung giờ Flash sale mới
+                  </label>
+                  <input
+                    id="fs-name"
+                    type="text"
+                    className={shared.textInput}
+                    value={fsName}
+                    onChange={(e) => setFsName(e.target.value)}
+                    placeholder="VD: Flash Sale Tối 20:00"
+                    required
+                  />
+                </div>
+                <div className={shared.detailField}>
+                  <label htmlFor="fs-start" className={shared.fieldLabel}>
+                    Thời điểm bắt đầu
+                  </label>
+                  <input
+                    id="fs-start"
+                    type="datetime-local"
+                    className={shared.textInput}
+                    value={fsStartsAt}
+                    onChange={(e) => setFsStartsAt(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className={shared.detailField}>
+                  <label htmlFor="fs-end" className={shared.fieldLabel}>
+                    Thời điểm kết thúc
+                  </label>
+                  <input
+                    id="fs-end"
+                    type="datetime-local"
+                    className={shared.textInput}
+                    value={fsEndsAt}
+                    onChange={(e) => setFsEndsAt(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className={shared.detailField}>
+                  <label htmlFor="fs-min-disc" className={shared.fieldLabel}>
+                    Mức giảm tối thiểu (%)
+                  </label>
+                  <input
+                    id="fs-min-disc"
+                    type="number"
+                    min={0}
+                    max={90}
+                    className={shared.textInput}
+                    value={fsMinDiscountStr}
+                    onChange={(e) => setFsMinDiscountStr(e.target.value)}
+                  />
+                </div>
+                {categories.length > 0 && (
+                  <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+                    <span className={shared.fieldLabel}>
+                      Danh mục được phép đăng ký (để trống = tất cả danh mục)
+                    </span>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
+                      {categories.map((c) => {
+                        const checked = fsCategoryIds.includes(c.id);
+                        return (
+                          <label
+                            key={c.id}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 6,
+                              fontSize: 13,
+                              padding: "4px 10px",
+                              borderRadius: 6,
+                              border: "1px solid var(--control)",
+                              background: checked ? "var(--active)" : "var(--card)",
+                              cursor: "pointer",
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleCategoryId(setFsCategoryIds, c.id)}
+                            />
+                            <span>{c.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className={shared.detailActionBar}>
+                <span className={shared.savedStamp}>
+                  Gian hàng gửi đăng ký SKU sẽ vào hàng đợi duyệt bên dưới.
                 </span>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
-                  {categories.map((c) => {
-                    const checked = fsCategoryIds.includes(c.id);
+                <Button type="submit" variant="primary" size="sm" shape="app" disabled={fsBusy}>
+                  {fsBusy ? "Đang tạo..." : "Mở khung Flash sale"}
+                </Button>
+              </div>
+            </form>
+          )}
+
+          {/* Interactive Flash Sale Items Queue */}
+          <div style={{ marginTop: 18 }}>
+            <div className={shared.panelHeader}>
+              <div>
+                <h3 className={shared.panelTitle}>Hàng đợi duyệt suất Flash sale</h3>
+                <span className={shared.panelMeta}>
+                  Kiểm tra giá Flash sale so với giá gốc và duyệt / từ chối trực tiếp
+                </span>
+              </div>
+              <select
+                className={shared.toolbarSelect}
+                value={flashItemStatusFilter}
+                onChange={(e) =>
+                  setFlashItemStatusFilter(
+                    e.target.value as "PENDING" | "APPROVED" | "REJECTED" | "ALL"
+                  )
+                }
+                aria-label="Lọc trạng thái suất Flash sale"
+              >
+                <option value="PENDING">Chờ duyệt ({formatInt(flashItemCounts.PENDING)})</option>
+                <option value="APPROVED">Đã duyệt ({formatInt(flashItemCounts.APPROVED)})</option>
+                <option value="REJECTED">Từ chối ({formatInt(flashItemCounts.REJECTED)})</option>
+                <option value="ALL">Tất cả ({formatInt(flashItemCounts.ALL)})</option>
+              </select>
+            </div>
+
+            {filteredFlashItems.length === 0 ? (
+              <p className={shared.emptyRow}>
+                Không có suất Flash sale nào trong trạng thái đã chọn.
+              </p>
+            ) : (
+              <>
+                <div className={shared.tableWrap}>
+                  <table className={shared.dataTable}>
+                    <thead>
+                      <tr>
+                        <th>Suất / SKU & Shop</th>
+                        <th>Khung giờ</th>
+                        <th className={shared.colNum}>Giá Flash / Gốc</th>
+                        <th className={shared.colNum}>Suất</th>
+                        <th>Trạng thái</th>
+                        <th>Lý do / Thao tác</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredFlashItems.map((it) => {
+                        const pill = getFlashItemStatusPill(it.status);
+                        const isPending = it.status.toUpperCase() === "PENDING";
+                        const busy = itemBusyId === it.id;
+                        const winName =
+                          flashWindowNameById.get(it.flash_sale_id) ?? it.flash_sale_id.slice(0, 8);
+                        return (
+                          <tr key={it.id}>
+                            <td>
+                              <div className={shared.cellPrimary}>SKU: {it.sku_id}</div>
+                              <div className={shared.cellSub}>
+                                Shop: {it.shop_id.slice(0, 8)} · ID: {it.id.slice(0, 8)}
+                              </div>
+                            </td>
+                            <td>{winName}</td>
+                            <td className={shared.colNum}>
+                              <strong>{formatVnd(it.flash_price_vnd)}</strong>
+                              {it.original_price_vnd &&
+                                it.original_price_vnd > it.flash_price_vnd && (
+                                  <div className={shared.cellSub}>
+                                    Gốc {formatVnd(it.original_price_vnd)} (
+                                    {formatDiscountPercent(
+                                      it.original_price_vnd,
+                                      it.flash_price_vnd
+                                    )}
+                                    )
+                                  </div>
+                                )}
+                            </td>
+                            <td className={shared.colNum}>
+                              {formatInt(it.remaining_slots)} / {formatInt(it.total_slots)}
+                              <div className={shared.cellSub}>
+                                Tối đa {formatInt(it.per_user_limit)}/khách
+                              </div>
+                            </td>
+                            <td>
+                              <StatusPill label={pill.label} tone={pill.tone} />
+                              {it.rejection_reason && (
+                                <div className={shared.cellSub}>{it.rejection_reason}</div>
+                              )}
+                            </td>
+                            <td>
+                              {isPending && canApproveFlashItems ? (
+                                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                  <input
+                                    type="text"
+                                    className={shared.textInput}
+                                    style={{ height: 32, minWidth: 180 }}
+                                    value={itemReasons[it.id] ?? ""}
+                                    onChange={(e) =>
+                                      setItemReasons((prev) => ({
+                                        ...prev,
+                                        [it.id]: e.target.value,
+                                      }))
+                                    }
+                                    placeholder="Ghi chú duyệt / lý do từ chối..."
+                                    aria-label={`Lý do duyệt suất ${it.id}`}
+                                  />
+                                  <div className={shared.detailButtons}>
+                                    <Button
+                                      type="button"
+                                      variant="primary"
+                                      size="sm"
+                                      shape="app"
+                                      disabled={busy}
+                                      onClick={() => void handleReviewFlashItem(it, true)}
+                                    >
+                                      {busy ? "Đang xử lý..." : "Duyệt"}
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="danger"
+                                      size="sm"
+                                      shape="app"
+                                      disabled={busy}
+                                      onClick={() => void handleReviewFlashItem(it, false)}
+                                    >
+                                      Từ chối
+                                    </Button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <span className={shared.numMuted}>—</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className={shared.mobileList}>
+                  {filteredFlashItems.map((it) => {
+                    const pill = getFlashItemStatusPill(it.status);
+                    const isPending = it.status.toUpperCase() === "PENDING";
+                    const busy = itemBusyId === it.id;
                     return (
-                      <label
-                        key={c.id}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 6,
-                          fontSize: 13,
-                          padding: "4px 10px",
-                          borderRadius: 6,
-                          border: "1px solid var(--control)",
-                          background: checked ? "var(--active)" : "var(--card)",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleCategoryId(setFsCategoryIds, c.id)}
-                        />
-                        <span>{c.name}</span>
-                      </label>
+                      <div key={it.id} className={shared.mobileItem}>
+                        <div className={shared.mobileLine1}>
+                          <span className={shared.mobileIdentity}>
+                            SKU {it.sku_id.slice(0, 12)}
+                          </span>
+                          <span className={shared.mobileMetric}>
+                            {formatVnd(it.flash_price_vnd)}
+                          </span>
+                        </div>
+                        <div className={shared.mobileLine2}>
+                          <span className={shared.mobileMetaText}>
+                            {flashWindowNameById.get(it.flash_sale_id) ??
+                              it.flash_sale_id.slice(0, 8)}{" "}
+                            · {formatInt(it.remaining_slots)}/{formatInt(it.total_slots)} suất
+                          </span>
+                          <StatusPill label={pill.label} tone={pill.tone} />
+                        </div>
+                        {isPending && (
+                          <div
+                            style={{
+                              marginTop: 8,
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 6,
+                            }}
+                          >
+                            <input
+                              type="text"
+                              className={shared.textInput}
+                              value={itemReasons[it.id] ?? ""}
+                              onChange={(e) =>
+                                setItemReasons((prev) => ({ ...prev, [it.id]: e.target.value }))
+                              }
+                              placeholder="Nhập lý do khi từ chối..."
+                            />
+                            <div className={shared.detailButtons}>
+                              <Button
+                                type="button"
+                                variant="primary"
+                                size="sm"
+                                shape="app"
+                                disabled={busy}
+                                onClick={() => void handleReviewFlashItem(it, true)}
+                              >
+                                Duyệt
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="danger"
+                                size="sm"
+                                shape="app"
+                                disabled={busy}
+                                onClick={() => void handleReviewFlashItem(it, false)}
+                              >
+                                Từ chối
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
                 </div>
-              </div>
+              </>
             )}
           </div>
-          <div className={shared.detailActionBar}>
-            <span className={shared.savedStamp}>
-              Gian hàng gửi đăng ký SKU sẽ vào hàng đợi duyệt bên dưới.
-            </span>
-            <Button type="submit" variant="primary" size="sm" shape="app" disabled={fsBusy}>
-              {fsBusy ? "Đang tạo..." : "Mở khung Flash sale"}
-            </Button>
-          </div>
-        </form>
 
-        {/* Interactive Flash Sale Items Queue */}
-        <div style={{ marginTop: 18 }}>
-          <div className={shared.panelHeader}>
-            <div>
-              <h3 className={shared.panelTitle}>Hàng đợi duyệt suất Flash sale</h3>
-              <span className={shared.panelMeta}>
-                Kiểm tra giá Flash sale so với giá gốc và duyệt / từ chối trực tiếp
-              </span>
-            </div>
-            <select
-              className={shared.toolbarSelect}
-              value={flashItemStatusFilter}
-              onChange={(e) =>
-                setFlashItemStatusFilter(
-                  e.target.value as "PENDING" | "APPROVED" | "REJECTED" | "ALL"
-                )
-              }
-              aria-label="Lọc trạng thái suất Flash sale"
-            >
-              <option value="PENDING">Chờ duyệt ({formatInt(flashItemCounts.PENDING)})</option>
-              <option value="APPROVED">Đã duyệt ({formatInt(flashItemCounts.APPROVED)})</option>
-              <option value="REJECTED">Từ chối ({formatInt(flashItemCounts.REJECTED)})</option>
-              <option value="ALL">Tất cả ({formatInt(flashItemCounts.ALL)})</option>
-            </select>
-          </div>
-
-          {filteredFlashItems.length === 0 ? (
-            <p className={shared.emptyRow}>
-              Không có suất Flash sale nào trong trạng thái đã chọn.
-            </p>
-          ) : (
-            <>
-              <div className={shared.tableWrap}>
-                <table className={shared.dataTable}>
-                  <thead>
-                    <tr>
-                      <th>Suất / SKU & Shop</th>
-                      <th>Khung giờ</th>
-                      <th className={shared.colNum}>Giá Flash / Gốc</th>
-                      <th className={shared.colNum}>Suất</th>
-                      <th>Trạng thái</th>
-                      <th>Lý do / Thao tác</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredFlashItems.map((it) => {
-                      const pill = getFlashItemStatusPill(it.status);
-                      const isPending = it.status.toUpperCase() === "PENDING";
-                      const busy = itemBusyId === it.id;
-                      const winName =
-                        flashWindowNameById.get(it.flash_sale_id) ?? it.flash_sale_id.slice(0, 8);
-                      return (
-                        <tr key={it.id}>
-                          <td>
-                            <div className={shared.cellPrimary}>SKU: {it.sku_id}</div>
-                            <div className={shared.cellSub}>
-                              Shop: {it.shop_id.slice(0, 8)} · ID: {it.id.slice(0, 8)}
-                            </div>
-                          </td>
-                          <td>{winName}</td>
-                          <td className={shared.colNum}>
-                            <strong>{formatVnd(it.flash_price_vnd)}</strong>
-                            {it.original_price_vnd &&
-                              it.original_price_vnd > it.flash_price_vnd && (
-                                <div className={shared.cellSub}>
-                                  Gốc {formatVnd(it.original_price_vnd)} (
-                                  {formatDiscountPercent(it.original_price_vnd, it.flash_price_vnd)}
-                                  )
-                                </div>
-                              )}
-                          </td>
-                          <td className={shared.colNum}>
-                            {formatInt(it.remaining_slots)} / {formatInt(it.total_slots)}
-                            <div className={shared.cellSub}>
-                              Tối đa {formatInt(it.per_user_limit)}/khách
-                            </div>
-                          </td>
-                          <td>
-                            <StatusPill label={pill.label} tone={pill.tone} />
-                            {it.rejection_reason && (
-                              <div className={shared.cellSub}>{it.rejection_reason}</div>
-                            )}
-                          </td>
-                          <td>
-                            {isPending ? (
-                              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                                <input
-                                  type="text"
-                                  className={shared.textInput}
-                                  style={{ height: 32, minWidth: 180 }}
-                                  value={itemReasons[it.id] ?? ""}
-                                  onChange={(e) =>
-                                    setItemReasons((prev) => ({ ...prev, [it.id]: e.target.value }))
-                                  }
-                                  placeholder="Ghi chú duyệt / lý do từ chối..."
-                                  aria-label={`Lý do duyệt suất ${it.id}`}
-                                />
-                                <div className={shared.detailButtons}>
-                                  <Button
-                                    type="button"
-                                    variant="primary"
-                                    size="sm"
-                                    shape="app"
-                                    disabled={busy}
-                                    onClick={() => void handleReviewFlashItem(it, true)}
-                                  >
-                                    {busy ? "Đang xử lý..." : "Duyệt"}
-                                  </Button>
-                                  <Button
-                                    type="button"
-                                    variant="danger"
-                                    size="sm"
-                                    shape="app"
-                                    disabled={busy}
-                                    onClick={() => void handleReviewFlashItem(it, false)}
-                                  >
-                                    Từ chối
-                                  </Button>
-                                </div>
-                              </div>
-                            ) : (
-                              <span className={shared.numMuted}>—</span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className={shared.mobileList}>
-                {filteredFlashItems.map((it) => {
-                  const pill = getFlashItemStatusPill(it.status);
-                  const isPending = it.status.toUpperCase() === "PENDING";
-                  const busy = itemBusyId === it.id;
-                  return (
-                    <div key={it.id} className={shared.mobileItem}>
-                      <div className={shared.mobileLine1}>
-                        <span className={shared.mobileIdentity}>SKU {it.sku_id.slice(0, 12)}</span>
-                        <span className={shared.mobileMetric}>{formatVnd(it.flash_price_vnd)}</span>
-                      </div>
-                      <div className={shared.mobileLine2}>
-                        <span className={shared.mobileMetaText}>
-                          {flashWindowNameById.get(it.flash_sale_id) ??
-                            it.flash_sale_id.slice(0, 8)}{" "}
-                          · {formatInt(it.remaining_slots)}/{formatInt(it.total_slots)} suất
-                        </span>
-                        <StatusPill label={pill.label} tone={pill.tone} />
-                      </div>
-                      {isPending && (
-                        <div
-                          style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}
-                        >
-                          <input
-                            type="text"
-                            className={shared.textInput}
-                            value={itemReasons[it.id] ?? ""}
-                            onChange={(e) =>
-                              setItemReasons((prev) => ({ ...prev, [it.id]: e.target.value }))
-                            }
-                            placeholder="Nhập lý do khi từ chối..."
-                          />
-                          <div className={shared.detailButtons}>
-                            <Button
-                              type="button"
-                              variant="primary"
-                              size="sm"
-                              shape="app"
-                              disabled={busy}
-                              onClick={() => void handleReviewFlashItem(it, true)}
-                            >
-                              Duyệt
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="danger"
-                              size="sm"
-                              shape="app"
-                              disabled={busy}
-                              onClick={() => void handleReviewFlashItem(it, false)}
-                            >
-                              Từ chối
-                            </Button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* Flash sale windows list */}
-        <div className={shared.tableWrap} style={{ marginTop: 18 }}>
-          <table className={shared.dataTable}>
-            <thead>
-              <tr>
-                <th>Khung giờ Flash sale</th>
-                <th>Thời gian mở bán</th>
-                <th className={shared.colNum}>Giảm tối thiểu</th>
-                <th className={shared.colNum}>SKU đã duyệt</th>
-              </tr>
-            </thead>
-            <tbody>
-              {flashSales.map((fs) => (
-                <tr key={fs.id}>
-                  <td>
-                    <div className={shared.cellPrimary}>{fs.name}</div>
-                    <div className={shared.cellSub}>{fs.id}</div>
-                  </td>
-                  <td>
-                    {fs.starts_at ? formatDateTimeVi(fs.starts_at) : "—"} →{" "}
-                    {fs.ends_at ? formatDateTimeVi(fs.ends_at) : "—"}
-                  </td>
-                  <td className={shared.colNum}>
-                    {fs.min_discount_percent ? `${fs.min_discount_percent}%` : "Không giới hạn"}
-                  </td>
-                  <td className={shared.colNum}>{formatInt(fs.items?.length ?? 0)} SKU</td>
+          {/* Flash sale windows list */}
+          <div className={shared.tableWrap} style={{ marginTop: 18 }}>
+            <table className={shared.dataTable}>
+              <thead>
+                <tr>
+                  <th>Khung giờ Flash sale</th>
+                  <th>Thời gian mở bán</th>
+                  <th className={shared.colNum}>Giảm tối thiểu</th>
+                  <th className={shared.colNum}>SKU đã duyệt</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {flashSales.map((fs) => (
+                  <tr key={fs.id}>
+                    <td>
+                      <div className={shared.cellPrimary}>{fs.name}</div>
+                      <div className={shared.cellSub}>{fs.id}</div>
+                    </td>
+                    <td>
+                      {fs.starts_at ? formatDateTimeVi(fs.starts_at) : "—"} →{" "}
+                      {fs.ends_at ? formatDateTimeVi(fs.ends_at) : "—"}
+                    </td>
+                    <td className={shared.colNum}>
+                      {fs.min_discount_percent ? `${fs.min_discount_percent}%` : "Không giới hạn"}
+                    </td>
+                    <td className={shared.colNum}>{formatInt(fs.items?.length ?? 0)} SKU</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
-        <div className={shared.mobileList}>
-          {flashSales.map((fs) => (
-            <div key={fs.id} className={shared.mobileItem}>
-              <div className={shared.mobileLine1}>
-                <span className={shared.mobileIdentity}>{fs.name}</span>
-                <span className={shared.mobileMetric}>{formatInt(fs.items?.length ?? 0)} SKU</span>
+          <div className={shared.mobileList}>
+            {flashSales.map((fs) => (
+              <div key={fs.id} className={shared.mobileItem}>
+                <div className={shared.mobileLine1}>
+                  <span className={shared.mobileIdentity}>{fs.name}</span>
+                  <span className={shared.mobileMetric}>
+                    {formatInt(fs.items?.length ?? 0)} SKU
+                  </span>
+                </div>
+                <div className={shared.mobileLine2}>
+                  <span className={shared.mobileMetaText}>
+                    {fs.starts_at ? formatDateTimeVi(fs.starts_at) : "—"}
+                  </span>
+                  <span>
+                    {fs.min_discount_percent ? `Giảm ≥${fs.min_discount_percent}%` : "Mọi mức giảm"}
+                  </span>
+                </div>
               </div>
-              <div className={shared.mobileLine2}>
-                <span className={shared.mobileMetaText}>
-                  {fs.starts_at ? formatDateTimeVi(fs.starts_at) : "—"}
-                </span>
-                <span>
-                  {fs.min_discount_percent ? `Giảm ≥${fs.min_discount_percent}%` : "Mọi mức giảm"}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

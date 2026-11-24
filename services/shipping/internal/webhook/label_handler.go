@@ -62,11 +62,12 @@ func (h *LabelHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Object-level authorization: admin, seller owning the shop, or buyer_id owner (independent of role).
-	isAdmin := auth.HasRole(claims, "admin", "super_admin")
-	isShopOwner := auth.HasRole(claims, "seller") && claims.ShopID != "" && claims.ShopID == sh.ShopID
+	// Object-level authorization: staff with orders.read or carriers.read, seller owning the shop,
+	// or buyer_id owner (independent of role). Service tokens are rejected above.
+	canAdminRead := auth.HasCapability(claims, auth.CapOrdersRead) || auth.HasCapability(claims, auth.CapCarriersRead)
+	isShopOwner := auth.HasRole(claims, auth.RoleSeller) && claims.ShopID != "" && claims.ShopID == sh.ShopID
 	isBuyerOwner := sh.BuyerID != "" && sh.BuyerID == claims.UserID()
-	if !isAdmin && !isShopOwner && !isBuyerOwner {
+	if !canAdminRead && !isShopOwner && !isBuyerOwner {
 		writeLabelJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}

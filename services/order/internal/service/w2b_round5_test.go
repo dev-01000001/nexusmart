@@ -612,7 +612,11 @@ func TestW2B_R5_4_N4_CompleteCheckoutDoesNotClobberRetryPaymentP2(t *testing.T) 
 	}
 	h.svc.store = wrapped
 
-	h.svc.cfg.PaymentExpiryMinutes = 5 // exp1 = baseNow + 5m (< exp2 = baseNow + 15m)
+	h.methodConfigs.SetConfig(PaymentMethodConfig{
+		Method:        "VIETQR",
+		Enabled:       true,
+		ExpiryMinutes: 5, // exp1 = baseNow + 5m (< exp2 = baseNow + 15m)
+	})
 	resp, err := h.svc.CreateCheckout(buyerCtx, &orderv1.CreateCheckoutRequest{
 		IdempotencyKey: "r5-n4-p2-race",
 		AddressId:      "addr-buyer-1",

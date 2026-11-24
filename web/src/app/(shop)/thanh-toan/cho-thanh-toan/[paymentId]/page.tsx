@@ -36,7 +36,7 @@ export default async function PaymentWaitingPage({ params }: PageProps) {
         <Suspense
           fallback={
             <div className={shared.page}>
-              <StateView kind="loading" title="Đang tải thông tin thanh toán VietQR..." rows={4} />
+              <StateView kind="loading" title="Đang tải thông tin thanh toán..." rows={4} />
             </div>
           }
         >
@@ -125,7 +125,7 @@ export default async function PaymentWaitingPage({ params }: PageProps) {
     <Suspense
       fallback={
         <div className={shared.page}>
-          <StateView kind="loading" title="Đang tải thông tin thanh toán VietQR..." rows={4} />
+          <StateView kind="loading" title="Đang tải thông tin thanh toán..." rows={4} />
         </div>
       }
     >

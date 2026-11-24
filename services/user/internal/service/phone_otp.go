@@ -198,6 +198,10 @@ func (s *Server) RequestPhoneOTP(ctx context.Context, req *userv1.RequestPhoneOT
 		}
 	}
 
+	s.recordActivityBestEffort(ctx, user.ID, ActivityEventPhoneOTPRequested, ActivityCategoryPhone, auditIPFromContext(ctx, claims, ""), map[string]any{
+		"phone_masked": masked,
+	})
+
 	s.log.InfoContext(ctx, "phone otp requested",
 		slog.String("user_id", user.ID),
 		slog.String("phone_masked", masked),
@@ -241,9 +245,11 @@ func (s *Server) VerifyPhoneOTP(ctx context.Context, req *userv1.VerifyPhoneOTPR
 		explicitTargetPhone = canon
 	}
 
+	rawIP := auditIPFromContext(ctx, claims, "")
 	var (
 		updated     db.User
 		targetPhone string
+		otpFailed   bool
 	)
 	err = s.store.WithTx(ctx, func(q db.Querier) error {
 		user, txErr := q.GetUserByIDForUpdate(ctx, userID)
@@ -277,6 +283,7 @@ func (s *Server) VerifyPhoneOTP(ctx context.Context, req *userv1.VerifyPhoneOTPR
 			case errors.Is(vErr, security.ErrOTPNotFound),
 				errors.Is(vErr, security.ErrOTPInvalid),
 				errors.Is(vErr, security.ErrOTPTooManyAttempts):
+				otpFailed = true
 				return status.Error(codes.InvalidArgument, errMsgInvalidOrExpiredOTP)
 			default:
 				s.log.ErrorContext(ctx, "failed to verify phone otp in redis",
@@ -298,7 +305,7 @@ func (s *Server) VerifyPhoneOTP(ctx context.Context, req *userv1.VerifyPhoneOTPR
 			return txErr
 		}
 
-		_, txErr = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
+		if _, txErr = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
 			ID:         uuid.NewString(),
 			ActorID:    claims.UserID(),
 			ActorRole:  claims.Role,
@@ -308,11 +315,20 @@ func (s *Server) VerifyPhoneOTP(ctx context.Context, req *userv1.VerifyPhoneOTPR
 			BeforeJSON: marshalAuditJSON(auditPhoneVerificationSnapshot(user.ID, user.Phone, user.PhoneVerified)),
 			AfterJSON:  marshalAuditJSON(auditPhoneVerificationSnapshot(updated.ID, updated.Phone, updated.PhoneVerified)),
 			Reason:     "",
-			IPAddress:  auditIPFromContext(ctx, claims, ""),
+			IPAddress:  rawIP,
+		}); txErr != nil {
+			return txErr
+		}
+		return s.recordActivityTx(ctx, q, updated.ID, ActivityEventPhoneOTPVerified, ActivityCategoryPhone, rawIP, map[string]any{
+			"phone_masked": maskVNPhone(targetPhone),
 		})
-		return txErr
 	})
 	if err != nil {
+		if otpFailed {
+			s.recordActivityBestEffort(ctx, userID, ActivityEventPhoneOTPFailed, ActivityCategoryPhone, rawIP, map[string]any{
+				"phone_masked": maskVNPhone(targetPhone),
+			})
+		}
 		if _, ok := status.FromError(err); ok {
 			return nil, err
 		}

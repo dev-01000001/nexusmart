@@ -277,6 +277,7 @@ func (s *trustDownstreamStub) GetShop(ctx context.Context, req *userv1.GetShopRe
 			ContactPhone:    "0901234567",
 			OwnerUserId:     "seller-1",
 			PickupAddressId: "addr-shop-1",
+			Status:          userv1.ShopStatus_SHOP_STATUS_ACTIVE,
 		},
 	}, nil
 }
@@ -364,17 +365,25 @@ func TestGRPCTrust_OrderJobsAndConsumersRealAuthInterceptor(t *testing.T) {
 
 	mem := store.NewMemoryStore()
 	payMock := &mockPaymentClient{}
+	methodCfgs := clients.NewFakePaymentMethodConfigSource(nil)
+	methodCfgs.SetConfig(clients.PaymentMethodConfig{
+		Method:        "COD",
+		Enabled:       true,
+		MinOrderVND:   0,
+		MaxOrderVND:   20000000,
+		ExpiryMinutes: 0,
+	})
 	bundle := &clients.Bundle{
-		User:      userv1.NewUserServiceClient(authedConn),
-		Product:   productv1.NewProductServiceClient(authedConn),
-		Promotion: promotionv1.NewPromotionServiceClient(authedConn),
-		Shipping:  shippingv1.NewShippingServiceClient(authedConn),
-		Payment:   payMock,
+		User:          userv1.NewUserServiceClient(authedConn),
+		Product:       productv1.NewProductServiceClient(authedConn),
+		Promotion:     promotionv1.NewPromotionServiceClient(authedConn),
+		Shipping:      shippingv1.NewShippingServiceClient(authedConn),
+		Payment:       payMock,
+		MethodConfigs: methodCfgs,
 	}
 	cfg := config.Config{
 		ServiceName:              "order",
 		GRPCCallTimeout:          5 * time.Second,
-		CODMaxVND:                20000000,
 		CODMaxRejectedCount:      3,
 		CODRequirePhoneVerified:  true,
 		CODMinOrdersForRate:      3,

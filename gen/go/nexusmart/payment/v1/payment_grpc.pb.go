@@ -37,6 +37,9 @@ const (
 	PaymentService_ListSellerLedger_FullMethodName          = "/nexusmart.payment.v1.PaymentService/ListSellerLedger"
 	PaymentService_ImportCodReconciliation_FullMethodName   = "/nexusmart.payment.v1.PaymentService/ImportCodReconciliation"
 	PaymentService_ListReconciliationRuns_FullMethodName    = "/nexusmart.payment.v1.PaymentService/ListReconciliationRuns"
+	PaymentService_GetPaymentMethodConfigs_FullMethodName   = "/nexusmart.payment.v1.PaymentService/GetPaymentMethodConfigs"
+	PaymentService_UpdatePaymentMethodConfig_FullMethodName = "/nexusmart.payment.v1.PaymentService/UpdatePaymentMethodConfig"
+	PaymentService_DecideRefundApproval_FullMethodName      = "/nexusmart.payment.v1.PaymentService/DecideRefundApproval"
 )
 
 // PaymentServiceClient is the client API for PaymentService service.
@@ -61,6 +64,9 @@ type PaymentServiceClient interface {
 	ListSellerLedger(ctx context.Context, in *ListSellerLedgerRequest, opts ...grpc.CallOption) (*ListSellerLedgerResponse, error)
 	ImportCodReconciliation(ctx context.Context, in *ImportCodReconciliationRequest, opts ...grpc.CallOption) (*ImportCodReconciliationResponse, error)
 	ListReconciliationRuns(ctx context.Context, in *ListReconciliationRunsRequest, opts ...grpc.CallOption) (*ListReconciliationRunsResponse, error)
+	GetPaymentMethodConfigs(ctx context.Context, in *GetPaymentMethodConfigsRequest, opts ...grpc.CallOption) (*GetPaymentMethodConfigsResponse, error)
+	UpdatePaymentMethodConfig(ctx context.Context, in *UpdatePaymentMethodConfigRequest, opts ...grpc.CallOption) (*UpdatePaymentMethodConfigResponse, error)
+	DecideRefundApproval(ctx context.Context, in *DecideRefundApprovalRequest, opts ...grpc.CallOption) (*DecideRefundApprovalResponse, error)
 }
 
 type paymentServiceClient struct {
@@ -251,6 +257,36 @@ func (c *paymentServiceClient) ListReconciliationRuns(ctx context.Context, in *L
 	return out, nil
 }
 
+func (c *paymentServiceClient) GetPaymentMethodConfigs(ctx context.Context, in *GetPaymentMethodConfigsRequest, opts ...grpc.CallOption) (*GetPaymentMethodConfigsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPaymentMethodConfigsResponse)
+	err := c.cc.Invoke(ctx, PaymentService_GetPaymentMethodConfigs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) UpdatePaymentMethodConfig(ctx context.Context, in *UpdatePaymentMethodConfigRequest, opts ...grpc.CallOption) (*UpdatePaymentMethodConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdatePaymentMethodConfigResponse)
+	err := c.cc.Invoke(ctx, PaymentService_UpdatePaymentMethodConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) DecideRefundApproval(ctx context.Context, in *DecideRefundApprovalRequest, opts ...grpc.CallOption) (*DecideRefundApprovalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DecideRefundApprovalResponse)
+	err := c.cc.Invoke(ctx, PaymentService_DecideRefundApproval_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PaymentServiceServer is the server API for PaymentService service.
 // All implementations must embed UnimplementedPaymentServiceServer
 // for forward compatibility.
@@ -273,6 +309,9 @@ type PaymentServiceServer interface {
 	ListSellerLedger(context.Context, *ListSellerLedgerRequest) (*ListSellerLedgerResponse, error)
 	ImportCodReconciliation(context.Context, *ImportCodReconciliationRequest) (*ImportCodReconciliationResponse, error)
 	ListReconciliationRuns(context.Context, *ListReconciliationRunsRequest) (*ListReconciliationRunsResponse, error)
+	GetPaymentMethodConfigs(context.Context, *GetPaymentMethodConfigsRequest) (*GetPaymentMethodConfigsResponse, error)
+	UpdatePaymentMethodConfig(context.Context, *UpdatePaymentMethodConfigRequest) (*UpdatePaymentMethodConfigResponse, error)
+	DecideRefundApproval(context.Context, *DecideRefundApprovalRequest) (*DecideRefundApprovalResponse, error)
 	mustEmbedUnimplementedPaymentServiceServer()
 }
 
@@ -336,6 +375,15 @@ func (UnimplementedPaymentServiceServer) ImportCodReconciliation(context.Context
 }
 func (UnimplementedPaymentServiceServer) ListReconciliationRuns(context.Context, *ListReconciliationRunsRequest) (*ListReconciliationRunsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListReconciliationRuns not implemented")
+}
+func (UnimplementedPaymentServiceServer) GetPaymentMethodConfigs(context.Context, *GetPaymentMethodConfigsRequest) (*GetPaymentMethodConfigsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetPaymentMethodConfigs not implemented")
+}
+func (UnimplementedPaymentServiceServer) UpdatePaymentMethodConfig(context.Context, *UpdatePaymentMethodConfigRequest) (*UpdatePaymentMethodConfigResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdatePaymentMethodConfig not implemented")
+}
+func (UnimplementedPaymentServiceServer) DecideRefundApproval(context.Context, *DecideRefundApprovalRequest) (*DecideRefundApprovalResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DecideRefundApproval not implemented")
 }
 func (UnimplementedPaymentServiceServer) mustEmbedUnimplementedPaymentServiceServer() {}
 func (UnimplementedPaymentServiceServer) testEmbeddedByValue()                        {}
@@ -682,6 +730,60 @@ func _PaymentService_ListReconciliationRuns_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PaymentService_GetPaymentMethodConfigs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPaymentMethodConfigsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).GetPaymentMethodConfigs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_GetPaymentMethodConfigs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).GetPaymentMethodConfigs(ctx, req.(*GetPaymentMethodConfigsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_UpdatePaymentMethodConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdatePaymentMethodConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).UpdatePaymentMethodConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_UpdatePaymentMethodConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).UpdatePaymentMethodConfig(ctx, req.(*UpdatePaymentMethodConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_DecideRefundApproval_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DecideRefundApprovalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).DecideRefundApproval(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_DecideRefundApproval_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).DecideRefundApproval(ctx, req.(*DecideRefundApprovalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PaymentService_ServiceDesc is the grpc.ServiceDesc for PaymentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -760,6 +862,18 @@ var PaymentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListReconciliationRuns",
 			Handler:    _PaymentService_ListReconciliationRuns_Handler,
+		},
+		{
+			MethodName: "GetPaymentMethodConfigs",
+			Handler:    _PaymentService_GetPaymentMethodConfigs_Handler,
+		},
+		{
+			MethodName: "UpdatePaymentMethodConfig",
+			Handler:    _PaymentService_UpdatePaymentMethodConfig_Handler,
+		},
+		{
+			MethodName: "DecideRefundApproval",
+			Handler:    _PaymentService_DecideRefundApproval_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

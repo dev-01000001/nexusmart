@@ -529,6 +529,15 @@ func (p *pgQueries) CreateProduct(ctx context.Context, prod Product) (Product, e
 	if err != nil {
 		return Product{}, err
 	}
+	shopSuspended := prod.ShopSuspended
+	if !shopSuspended {
+		st, stErr := p.q.GetShopSuspensionState(ctx, prod.ShopID)
+		if stErr == nil && st.Suspended {
+			shopSuspended = true
+		} else if stErr != nil && !errors.Is(stErr, pgx.ErrNoRows) {
+			return Product{}, mapPgError(stErr)
+		}
+	}
 	row, err := p.q.CreateProduct(ctx, db.CreateProductParams{
 		ID:              prod.ID,
 		ShopID:          prod.ShopID,
@@ -543,6 +552,7 @@ func (p *pgQueries) CreateProduct(ctx context.Context, prod Product) (Product, e
 		Slug:            prod.Slug,
 		SearchText:      BuildProductSearchText(prod.Name, prod.Description),
 		FlaggedKeywords: flaggedBytes,
+		ShopSuspended:   shopSuspended,
 	})
 	if err != nil {
 		return Product{}, mapPgError(err)
@@ -888,7 +898,7 @@ func (p *pgQueries) ListSKUsByProductIDs(ctx context.Context, productIDs []strin
 			r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
 			r.Attributes, r.PriceVnd, r.MinPrice30dVnd, r.Stock, r.ReservedStock, r.Version,
 			r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
-			r.SkuStatus, r.ProductStatus, r.ProductDeletedAt,
+			r.SkuStatus, r.ProductStatus, r.ProductDeletedAt, r.ProductShopSuspended,
 		))
 	}
 	return out, nil
@@ -910,7 +920,7 @@ func (p *pgQueries) ListAllSKUsByProductID(ctx context.Context, productID string
 			r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
 			r.Attributes, r.PriceVnd, r.MinPrice30dVnd, r.Stock, r.ReservedStock, r.Version,
 			r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
-			r.SkuStatus, r.ProductStatus, r.ProductDeletedAt,
+			r.SkuStatus, r.ProductStatus, r.ProductDeletedAt, r.ProductShopSuspended,
 		))
 	}
 	return out, nil
@@ -935,7 +945,7 @@ func (p *pgQueries) GetSKUsBatch(ctx context.Context, skuIDs []string) ([]SKU, e
 			r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
 			r.Attributes, r.PriceVnd, r.MinPrice30dVnd, r.Stock, r.ReservedStock, r.Version,
 			r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
-			r.SkuStatus, r.ProductStatus, r.ProductDeletedAt,
+			r.SkuStatus, r.ProductStatus, r.ProductDeletedAt, r.ProductShopSuspended,
 		))
 	}
 	return out, nil
@@ -955,7 +965,7 @@ func (p *pgQueries) GetSKUWithContext(ctx context.Context, skuID string) (SKU, e
 		r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
 		r.Attributes, r.PriceVnd, r.MinPrice30dVnd, r.Stock, r.ReservedStock, r.Version,
 		r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
-		r.SkuStatus, r.ProductStatus, r.ProductDeletedAt,
+		r.SkuStatus, r.ProductStatus, r.ProductDeletedAt, r.ProductShopSuspended,
 	), nil
 }
 
@@ -973,7 +983,7 @@ func (p *pgQueries) GetSKUWithContextForUpdate(ctx context.Context, skuID string
 		r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
 		r.Attributes, r.PriceVnd, r.MinPrice30dVnd, r.Stock, r.ReservedStock, r.Version,
 		r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
-		r.SkuStatus, r.ProductStatus, r.ProductDeletedAt,
+		r.SkuStatus, r.ProductStatus, r.ProductDeletedAt, r.ProductShopSuspended,
 	), nil
 }
 
@@ -1403,6 +1413,83 @@ func (p *pgQueries) ListActiveBannedKeywords(ctx context.Context) ([]BannedKeywo
 	return out, nil
 }
 
+func (p *pgQueries) LockShopSuspension(ctx context.Context, shopID string) error {
+	return mapPgError(p.q.LockShopSuspension(ctx, shopID))
+}
+
+func (p *pgQueries) GetShopSuspensionState(ctx context.Context, shopID string) (ShopSuspensionState, error) {
+	row, err := p.q.GetShopSuspensionState(ctx, shopID)
+	if err != nil {
+		return ShopSuspensionState{}, mapPgError(err)
+	}
+	return ShopSuspensionState{
+		ShopID:    row.ShopID,
+		Suspended: row.Suspended,
+		Version:   row.Version,
+		UpdatedAt: row.UpdatedAt,
+	}, nil
+}
+
+func (p *pgQueries) IsShopSuspended(ctx context.Context, shopID string) (bool, error) {
+	st, err := p.GetShopSuspensionState(ctx, shopID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return st.Suspended, nil
+}
+
+func (p *pgQueries) UpsertShopSuspensionState(ctx context.Context, shopID string, suspended bool, version int64) (ShopSuspensionState, bool, error) {
+	row, err := p.q.UpsertShopSuspensionState(ctx, db.UpsertShopSuspensionStateParams{
+		ShopID:    shopID,
+		Suspended: suspended,
+		Version:   version,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ShopSuspensionState{}, false, nil
+		}
+		return ShopSuspensionState{}, false, mapPgError(err)
+	}
+	return ShopSuspensionState{
+		ShopID:    row.ShopID,
+		Suspended: row.Suspended,
+		Version:   row.Version,
+		UpdatedAt: row.UpdatedAt,
+	}, true, nil
+}
+
+func (p *pgQueries) SetProductsShopSuspendedByShop(ctx context.Context, shopID string, suspended bool) error {
+	return mapPgError(p.q.SetProductsShopSuspendedByShop(ctx, db.SetProductsShopSuspendedByShopParams{
+		ShopID:        shopID,
+		ShopSuspended: suspended,
+	}))
+}
+
+func (p *pgQueries) TryInsertProcessedEvent(ctx context.Context, eventID, eventType string) (bool, error) {
+	n, err := p.q.TryInsertProcessedEvent(ctx, db.TryInsertProcessedEventParams{
+		EventID:   eventID,
+		EventType: eventType,
+	})
+	if err != nil {
+		return false, mapPgError(err)
+	}
+	return n > 0, nil
+}
+
+func (p *pgQueries) InsertDeadLetterEvent(ctx context.Context, ev DeadLetterEvent) error {
+	return mapPgError(p.q.InsertDeadLetterEvent(ctx, db.InsertDeadLetterEventParams{
+		ID:           ev.ID,
+		Subject:      ev.Subject,
+		EventID:      ev.EventID,
+		Payload:      ev.Payload,
+		ErrorMessage: ev.ErrorMessage,
+		Attempts:     ev.Attempts,
+	}))
+}
+
 func mapPgError(err error) error {
 	if err == nil {
 		return nil
@@ -1532,6 +1619,7 @@ func fromDBProduct(p db.Product) Product {
 		ReviewCount:     p.ReviewCount,
 		FlaggedKeywords: unmarshalStringSlice(p.FlaggedKeywords),
 		FirstApprovedAt: p.FirstApprovedAt,
+		ShopSuspended:   p.ShopSuspended,
 		DeletedAt:       p.DeletedAt,
 		CreatedAt:       p.CreatedAt,
 		UpdatedAt:       p.UpdatedAt,
@@ -1560,7 +1648,7 @@ func fromSKUContextFields(
 	id, productID, shopID, productName, skuCode, name string,
 	attrs []byte, priceVND, minPrice30dVND int64, stock, reservedStock int32, version int64,
 	weightGrams int32, imageURL, categoryID string, commissionRateBps int32,
-	skuStatus, productStatus string, productDeletedAt *time.Time,
+	skuStatus, productStatus string, productDeletedAt *time.Time, productShopSuspended bool,
 ) SKU {
 	if minPrice30dVND <= 0 {
 		minPrice30dVND = priceVND
@@ -1585,6 +1673,7 @@ func fromSKUContextFields(
 		Status:            skuStatus,
 		ProductStatus:     productStatus,
 		ProductDeleted:    productDeletedAt != nil,
+		ShopSuspended:     productShopSuspended,
 	}
 }
 

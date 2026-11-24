@@ -74,6 +74,23 @@ type PhoneOTPRequestedPayload struct {
 	ExpiresAt   string `json:"expires_at"`
 }
 
+// SubjectShopStatusChanged is the NATS JetStream subject for shop status transitions (F12).
+const SubjectShopStatusChanged = "user.shop_status_changed"
+
+// ShopStatusChangedPayload is emitted on `user.shop_status_changed` via outbox_events (docs/contracts.md §5).
+type ShopStatusChangedPayload struct {
+	ShopID      string `json:"shop_id"`
+	OwnerUserID string `json:"owner_user_id"`
+	ShopName    string `json:"shop_name"`
+	FromStatus  string `json:"from_status"`
+	ToStatus    string `json:"to_status"`
+	Reason      string `json:"reason"`
+	ActorID     string `json:"actor_id"`
+	ApproverID  string `json:"approver_id"`
+	Version     int64  `json:"version"`
+	OccurredAt  string `json:"occurred_at"`
+}
+
 // Publisher publishes domain events to NATS JetStream.
 type Publisher interface {
 	PublishUserRegistered(ctx context.Context, payload UserRegisteredPayload) error
@@ -107,6 +124,11 @@ func NewNATSPublisher(nc *nats.Conn, stream string) (*NATSPublisher, error) {
 
 func ensureStream(js nats.JetStreamContext, stream string) error {
 	return jetstream.EnsurePrimaryStream(js, stream)
+}
+
+// JetStream returns the underlying JetStreamContext for OutboxRelay publishing.
+func (p *NATSPublisher) JetStream() nats.JetStreamContext {
+	return p.js
 }
 
 func (p *NATSPublisher) PublishUserRegistered(ctx context.Context, payload UserRegisteredPayload) error {

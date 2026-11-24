@@ -76,20 +76,19 @@ func newHookedHarness() (*testHarness, *hookStore) {
 	h := newTestHarness()
 	hs := &hookStore{MemoryStore: h.store}
 	cfg := config.Config{
-		ServiceName:          "order",
-		CODMaxVND:            5000000,
-		CODMaxRejectedCount:  3,
-		PaymentExpiryMinutes: 15,
-		RewardCoinsBPS:       100,
-		GRPCCallTimeout:      5 * time.Second,
+		ServiceName:         "order",
+		CODMaxRejectedCount: 3,
+		RewardCoinsBPS:      100,
+		GRPCCallTimeout:     5 * time.Second,
 	}
 	bundle := &clients.Bundle{
-		User:      h.user,
-		Product:   h.product,
-		Cart:      h.cart,
-		Promotion: h.promo,
-		Payment:   h.payment,
-		Shipping:  h.shipping,
+		User:          h.user,
+		Product:       h.product,
+		Cart:          h.cart,
+		Promotion:     h.promo,
+		Payment:       h.payment,
+		Shipping:      h.shipping,
+		MethodConfigs: h.methodConfigs,
 	}
 	h.svc = NewOrderService(cfg, hs, bundle, logger.New("order-test", logger.WithWriter(io.Discard)))
 	return h, hs

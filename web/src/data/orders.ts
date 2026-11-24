@@ -69,7 +69,7 @@ export const ALLOWED_ORDER_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   cod: "Thanh toán khi nhận hàng (COD)",
   vietqr: "Chuyển khoản nhanh VietQR",
-  vi_sandbox: "Ví điện tử NexusPay",
+  vi_sandbox: "Ví điện tử ZaloPay",
 };
 
 export const DELIVERY_METHOD_LABELS: Record<DeliveryMethod, string> = {
@@ -323,7 +323,7 @@ export const INITIAL_ORDERS: Order[] = [
           timestamp: "2026-11-20T02:15:00+07:00",
           status: "cho_xac_nhan",
           title: "Giữ đơn chờ thanh toán lại",
-          note: "Giao dịch chuyển khoản VietQR chưa hoàn tất. Sản phẩm trong đơn vẫn được giữ sẵn để bạn thanh toán lại hoặc đổi sang COD / Ví NexusPay.",
+          note: "Giao dịch chuyển khoản VietQR chưa hoàn tất. Sản phẩm trong đơn vẫn được giữ sẵn để bạn thanh toán lại hoặc đổi sang COD / Ví ZaloPay.",
         },
       ],
     },
@@ -448,7 +448,7 @@ export const INITIAL_ORDERS: Order[] = [
           timestamp: "2026-11-19T14:20:00+07:00",
           status: "cho_xac_nhan",
           title: "Đặt hàng thành công",
-          note: "Thanh toán thành công qua Ví NexusPay.",
+          note: "Thanh toán thành công qua Ví ZaloPay.",
         },
         {
           timestamp: "2026-11-19T16:05:00+07:00",

@@ -200,7 +200,7 @@ func TestUserW2AAccountSecurity(t *testing.T) {
 		}
 		env.mustDoJSON(t, http.MethodGet, "/api/v1/admin/users?page_size=1", reLoginOut.AccessToken, nil, nil, http.StatusOK)
 
-		// UC-A03: Admin cannot lock self or demote self -> 409.
+		// UC-A03 + F10: Admin cannot lock self -> 409; regular admin cannot update roles at all -> 403 (super_admin only).
 		selfStatusPath := fmt.Sprintf("/api/v1/admin/users/%s/status", url.PathEscape(u.UserID))
 		env.mustDoJSON(t, http.MethodPatch, selfStatusPath, reLoginOut.AccessToken, nil, usrW2UpdateStatusRequest{
 			Status: "LOCKED",
@@ -208,7 +208,19 @@ func TestUserW2AAccountSecurity(t *testing.T) {
 		}, http.StatusConflict)
 		env.mustDoJSON(t, http.MethodPatch, rolePath, reLoginOut.AccessToken, nil, usrW2UpdateRoleRequest{
 			Role:   "buyer",
-			Reason: "self demote attempt",
+			Reason: "admin role change forbidden under F10",
+		}, http.StatusForbidden)
+
+		// Super admin attempting to self-demote -> 409 Conflict (cannot demote self / last active super_admin).
+		meResp := env.mustDoJSON(t, http.MethodGet, "/api/v1/users/me", adminTok, nil, nil, http.StatusOK)
+		var superMe usrW2UserEnvelope
+		if err := DecodeJSON(meResp, &superMe); err != nil || superMe.User.ID == "" {
+			t.Fatalf("decode super_admin /users/me: err=%v body=%s", err, string(meResp.Body))
+		}
+		superRolePath := fmt.Sprintf("/api/v1/admin/users/%s/role", url.PathEscape(superMe.User.ID))
+		env.mustDoJSON(t, http.MethodPatch, superRolePath, adminTok, nil, usrW2UpdateRoleRequest{
+			Role:   "buyer",
+			Reason: "super_admin self demote attempt",
 		}, http.StatusConflict)
 
 		// Super admin demotes u back to buyer -> old admin access + refresh tokens immediately 401.

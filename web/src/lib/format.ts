@@ -266,6 +266,7 @@ export const GATEWAY_SHIPMENT_STATUS_LABELS: Record<string, string> = {
 export const GATEWAY_PAYMENT_METHOD_LABELS: Record<GatewayPaymentMethod, string> = {
   COD: "Thanh toán khi nhận hàng (COD)",
   VIETQR: "Chuyển khoản VietQR",
+  ZALOPAY: "Ví điện tử ZaloPay",
 };
 
 /**

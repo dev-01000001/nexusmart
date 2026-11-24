@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nexusmart/core/services/notification/internal/service"
+	"github.com/nexusmart/core/services/notification/internal/store"
 )
 
 type fakeMsg struct {
@@ -566,5 +567,165 @@ func TestConsumerCloseSkipsSubsequentOnMessageWithoutNakOrAck(t *testing.T) {
 
 	if calls != 0 || msg.acked || msg.naked {
 		t.Fatalf("E1: stopping consumer must skip onMessage without handler/Ack/Nak, calls=%d acked=%v naked=%v", calls, msg.acked, msg.naked)
+	}
+}
+
+type failOnProcessRepo struct {
+	t *testing.T
+}
+
+func (r *failOnProcessRepo) ListNotifications(_ context.Context, _, _ string, _ bool, _, _ int32) ([]store.Notification, int64, int64, error) {
+	return nil, 0, 0, nil
+}
+func (r *failOnProcessRepo) MarkRead(_ context.Context, _ string, _ []string, _ bool) (int32, int64, error) {
+	return 0, 0, nil
+}
+func (r *failOnProcessRepo) GetPreferences(_ context.Context, userID string) (store.Preferences, error) {
+	return store.DefaultPreferences(userID), nil
+}
+func (r *failOnProcessRepo) UpsertPreferences(_ context.Context, prefs store.Preferences) (store.Preferences, error) {
+	return prefs, nil
+}
+func (r *failOnProcessRepo) IsEventProcessed(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+func (r *failOnProcessRepo) DeleteProcessedEvent(_ context.Context, _ string) error {
+	return nil
+}
+func (r *failOnProcessRepo) GetUserContact(_ context.Context, _ string) (store.UserContact, bool, error) {
+	return store.UserContact{}, false, nil
+}
+func (r *failOnProcessRepo) GetOrderParticipant(_ context.Context, _ string) (store.OrderParticipant, bool, error) {
+	return store.OrderParticipant{}, false, nil
+}
+func (r *failOnProcessRepo) ListOrderParticipantsByGroup(_ context.Context, _ string) ([]store.OrderParticipant, error) {
+	return nil, nil
+}
+func (r *failOnProcessRepo) GetShopOwner(_ context.Context, _ string) (store.ShopOwner, bool, error) {
+	return store.ShopOwner{}, false, nil
+}
+func (r *failOnProcessRepo) RecordEmailDedup(_ context.Context, _, _ string) error {
+	return nil
+}
+func (r *failOnProcessRepo) ProcessEventTx(_ context.Context, eventID, _ string, _ func(tx store.TxStore) error) (bool, error) {
+	r.t.Helper()
+	r.t.Errorf("invalid payload must never record processed_events (event_id=%s)", eventID)
+	return false, nil
+}
+func (r *failOnProcessRepo) InsertDeadLetter(_ context.Context, _, _ string, _ []byte, _ string, _ int) error {
+	return nil
+}
+
+func TestConsumerShopStatusChangedInvalidPayloadRoutesToDLQ(t *testing.T) {
+	svc := service.NewNotificationService(&failOnProcessRepo{t: t}, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	cases := []struct {
+		name    string
+		eventID string
+		payload string
+	}{
+		{
+			name:    "MissingOwnerUserID",
+			eventID: "evt-shop-dlq-no-owner",
+			payload: `{"shop_id":"shop-1","shop_name":"Shop A","from_status":"ACTIVE","to_status":"SUSPENDED","reason":"vi phạm","version":1}`,
+		},
+		{
+			name:    "MissingShopID",
+			eventID: "evt-shop-dlq-no-shop",
+			payload: `{"owner_user_id":"owner-1","shop_name":"Shop A","from_status":"ACTIVE","to_status":"SUSPENDED","reason":"vi phạm","version":1}`,
+		},
+		{
+			name:    "InvalidToStatus",
+			eventID: "evt-shop-dlq-bad-status",
+			payload: `{"shop_id":"shop-1","owner_user_id":"owner-1","shop_name":"Shop A","from_status":"ACTIVE","to_status":"UNKNOWN","version":1}`,
+		},
+		{
+			name:    "ZeroVersion",
+			eventID: "evt-shop-dlq-zero-ver",
+			payload: `{"shop_id":"shop-1","owner_user_id":"owner-1","shop_name":"Shop A","from_status":"ACTIVE","to_status":"SUSPENDED","reason":"vi phạm","version":0}`,
+		},
+		{
+			name:    "NegativeVersion",
+			eventID: "evt-shop-dlq-neg-ver",
+			payload: `{"shop_id":"shop-1","owner_user_id":"owner-1","shop_name":"Shop A","from_status":"ACTIVE","to_status":"SUSPENDED","reason":"vi phạm","version":-1}`,
+		},
+		{
+			name:    "LegacyStatusVersionOnly",
+			eventID: "evt-shop-dlq-legacy-ver",
+			payload: `{"shop_id":"shop-1","owner_user_id":"owner-1","shop_name":"Shop A","from_status":"ACTIVE","to_status":"SUSPENDED","reason":"vi phạm","status_version":2}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dlq := &stubDLQ{}
+			c := NewTestableConsumer(svc, dlq, dlq, 5, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+			raw, _ := json.Marshal(service.Envelope{
+				EventID:   tc.eventID,
+				EventType: "user.shop_status_changed",
+				Payload:   json.RawMessage(tc.payload),
+			})
+			msg := &fakeMsg{subject: "user.shop_status_changed", data: raw, delivered: 1}
+			c.HandleMessage(context.Background(), msg)
+
+			if !msg.acked || msg.naked {
+				t.Fatalf("E1 (%s): invalid payload must route to DLQ and Ack once persisted, acked=%v naked=%v", tc.name, msg.acked, msg.naked)
+			}
+			if len(dlq.records) != 1 || dlq.records[0].eventID != tc.eventID || dlq.records[0].subject != "user.shop_status_changed" {
+				t.Fatalf("E1 (%s): expected 1 dead_letter_events record, got %+v", tc.name, dlq.records)
+			}
+			if len(dlq.pubSubj) != 1 || dlq.pubSubj[0] != "dlq.user.shop_status_changed" {
+				t.Fatalf("E1 (%s): expected publish to dlq.user.shop_status_changed, got %+v", tc.name, dlq.pubSubj)
+			}
+
+			// E1 guard: when BOTH DLQ sinks fail, message must NakWithDelay and NEVER be Acked away.
+			failingDLQ := &stubDLQ{
+				storeErr: errors.New("postgres down"),
+				pubErr:   errors.New("nats down"),
+			}
+			cFail := NewTestableConsumer(svc, failingDLQ, failingDLQ, 5, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			msgFail := &fakeMsg{subject: "user.shop_status_changed", data: raw, delivered: 1}
+			cFail.HandleMessage(context.Background(), msgFail)
+			if msgFail.acked || !msgFail.naked || msgFail.nakDelay <= 0 {
+				t.Fatalf("E1 (%s): must NakWithDelay and never Ack when both DLQ sinks fail, acked=%v naked=%v delay=%v", tc.name, msgFail.acked, msgFail.naked, msgFail.nakDelay)
+			}
+		})
+	}
+}
+
+func TestConsumerRedactsMalformedPasswordResetInDLQAndLogs(t *testing.T) {
+	var logBuf bytes.Buffer
+	dlq := &stubDLQ{}
+	c := NewTestableConsumer(
+		stubProcessor{fn: func(_ context.Context, _ string, _ service.Envelope) (bool, error) {
+			t.Fatal("processor must not run on malformed JSON envelope")
+			return false, nil
+		}},
+		dlq,
+		dlq,
+		2,
+		slog.New(slog.NewJSONHandler(&logBuf, nil)),
+	)
+
+	malformedToken := "staff-malformed-reset-secret-998877"
+	badMsg := &fakeMsg{
+		subject:   "user.password_reset_requested",
+		data:      []byte(`{"event_id":"evt-reset-bad","payload":{"reset_token":"` + malformedToken + `" broken`),
+		delivered: 1,
+	}
+	c.HandleMessage(context.Background(), badMsg)
+
+	if !badMsg.acked || len(dlq.records) != 1 || len(dlq.pubData) != 1 {
+		t.Fatalf("expected malformed password reset message Acked and DLQ'd, acked=%v records=%d pub=%d", badMsg.acked, len(dlq.records), len(dlq.pubData))
+	}
+	if strings.Contains(string(dlq.records[0].payload), malformedToken) {
+		t.Fatalf("SECURITY: malformed reset_token leaked into dead_letter_events: %s", string(dlq.records[0].payload))
+	}
+	if strings.Contains(string(dlq.pubData[0]), malformedToken) {
+		t.Fatalf("SECURITY: malformed reset_token leaked into NEXUSMART_DLQ: %s", string(dlq.pubData[0]))
+	}
+	if strings.Contains(logBuf.String(), malformedToken) {
+		t.Fatalf("SECURITY: malformed reset_token leaked into logs: %s", logBuf.String())
 	}
 }

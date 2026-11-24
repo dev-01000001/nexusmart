@@ -80,6 +80,7 @@ type fakeEventHandler struct {
 	failedEvents             []string
 	expiredEvents            []string
 	refundedEvents           []string
+	refundRejectedEvents     []string
 	shipmentEvents           []string
 	shipmentCreateFailEvents []string
 }
@@ -109,6 +110,13 @@ func (h *fakeEventHandler) HandlePaymentRefunded(_ context.Context, eventID stri
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.refundedEvents = append(h.refundedEvents, eventID)
+	return h.failErr
+}
+
+func (h *fakeEventHandler) HandlePaymentRefundRejected(_ context.Context, eventID string, _ PaymentRefundRejectedPayload) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.refundRejectedEvents = append(h.refundRejectedEvents, eventID)
 	return h.failErr
 }
 

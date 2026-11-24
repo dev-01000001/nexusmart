@@ -574,8 +574,9 @@ func (s *Server) GetShopBankAccount(ctx context.Context, req *userv1.GetShopBank
 		return nil, status.Error(codes.PermissionDenied, "service identity not allowed for GetShopBankAccount")
 	}
 
+	isBankAdmin := auth.HasCapability(claims, auth.CapShopsBankRead)
 	var shopID string
-	if isAdminRole(claims.Role) {
+	if isBankAdmin {
 		shopID = strings.TrimSpace(req.GetShopId())
 		if shopID == "" {
 			return nil, status.Error(codes.InvalidArgument, "shop_id is required")
@@ -603,13 +604,13 @@ func (s *Server) GetShopBankAccount(ctx context.Context, req *userv1.GetShopBank
 			return nil, status.Error(codes.PermissionDenied, "caller is not the owner of this shop")
 		}
 	} else {
-		return nil, status.Error(codes.PermissionDenied, "seller or admin role required")
+		return nil, status.Error(codes.PermissionDenied, "seller or authorized admin capability required")
 	}
 
 	acc, err := s.store.GetLatestShopBankAccountByShopID(ctx, db.GetLatestShopBankAccountByShopIDParams{
 		ShopID:            shopID,
 		NowTime:           s.now(),
-		PreferAdminReview: isAdminRole(claims.Role),
+		PreferAdminReview: isBankAdmin,
 	})
 	if err != nil {
 		if isNotFoundErr(err) {
@@ -624,12 +625,9 @@ func (s *Server) GetShopBankAccount(ctx context.Context, req *userv1.GetShopBank
 }
 
 func (s *Server) AdminReviewShopBankAccount(ctx context.Context, req *userv1.AdminReviewShopBankAccountRequest) (*userv1.AdminReviewShopBankAccountResponse, error) {
-	claims, err := s.requireAdminClaims(ctx)
+	claims, err := s.requireCapability(ctx, auth.CapShopsBankReview)
 	if err != nil {
 		return nil, err
-	}
-	if claims.Service != "" {
-		return nil, status.Error(codes.PermissionDenied, "service identity not allowed for AdminReviewShopBankAccount")
 	}
 
 	shopID := strings.TrimSpace(req.GetShopId())

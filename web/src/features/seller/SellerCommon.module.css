@@ -41,6 +41,35 @@
   color: var(--muted);
 }
 
+.suspendedBanner {
+  background: #fffbeb;
+  border: 1px solid #f5d08a; /* taste-skill-ignore: status banner 1px border per seller-sheet.md */
+  border-radius: var(--radius-card);
+  padding: 14px var(--card-pad);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.suspendedBannerTitle {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: #92400e;
+}
+
+.suspendedBannerText {
+  font-size: 13px;
+  line-height: 19px;
+  color: #78350f;
+}
+
+.suspendedBannerMeta {
+  font-size: 12px;
+  line-height: 18px;
+  color: #92400e;
+}
+
 .headerActions {
   display: flex;
   align-items: center;

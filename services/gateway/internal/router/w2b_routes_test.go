@@ -1923,7 +1923,7 @@ func TestW2BRound4ReviewFixes(t *testing.T) {
 		}
 
 		// Buyer POST /payments/{id}/retry: commission_vnd MUST also be 0 on all.
-		recBuyerRetry := do(http.MethodPost, "/api/v1/payments/pay-multi-1/retry", buyerTok, `{"method":"VIETQR"}`, nil)
+		recBuyerRetry := do(http.MethodPost, "/api/v1/payments/pay-multi-1/retry", buyerTok, `{"method":"VIETQR"}`, map[string]string{"Idempotency-Key": "idem-privacy-retry-1"})
 		if recBuyerRetry.Code != http.StatusOK {
 			t.Fatalf("buyer POST /payments/pay-multi-1/retry want 200, got %d (%s)", recBuyerRetry.Code, recBuyerRetry.Body.String())
 		}

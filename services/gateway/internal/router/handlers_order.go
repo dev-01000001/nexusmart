@@ -167,7 +167,7 @@ func mapOrderForAdmin(o *orderv1.Order) *orderDTO {
 // get zero values for platform/seller fee fields and internal operational flags.
 func mapOrderForCaller(ctx context.Context, o *orderv1.Order) *orderDTO {
 	claims, _ := auth.ClaimsFromContext(ctx)
-	isAdmin := auth.HasRole(claims, "admin", "super_admin")
+	isAdmin := auth.HasCapability(claims, auth.CapOrdersRead)
 	isSellerOwner := o != nil && auth.HasRole(claims, "seller") && claims.ShopID != "" && claims.ShopID == o.GetShopId()
 	return mapOrderView(o, isAdmin || isSellerOwner, isAdmin)
 }
@@ -456,6 +456,8 @@ func orderPaymentMethodString(m orderv1.OrderPaymentMethod) string {
 		return "COD"
 	case orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR:
 		return "VIETQR"
+	case orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_ZALOPAY:
+		return "ZALOPAY"
 	default:
 		return ""
 	}
@@ -467,6 +469,8 @@ func parseOrderPaymentMethod(s string) orderv1.OrderPaymentMethod {
 		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD
 	case "VIETQR", "ORDER_PAYMENT_METHOD_VIETQR":
 		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR
+	case "ZALOPAY", "ORDER_PAYMENT_METHOD_ZALOPAY":
+		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_ZALOPAY
 	default:
 		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED
 	}
@@ -564,6 +568,7 @@ func (h *handler) handleCheckout(w http.ResponseWriter, r *http.Request) {
 		"payment_status":     resp.GetPaymentStatus(),
 		"qr_url":             resp.GetQrUrl(),
 		"qr_code":            resp.GetQrCode(),
+		"pay_url":            resp.GetPayUrl(),
 		"payment_expires_at": httpx.FormatTimestamp(resp.GetPaymentExpiresAt()),
 		"total_payable_vnd":  resp.GetTotalPayableVnd(),
 		"idempotent_replay":  resp.GetIdempotentReplay(),
@@ -572,7 +577,11 @@ func (h *handler) handleCheckout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleListBuyerOrders(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
@@ -706,7 +715,11 @@ func (h *handler) handleRequestReturn(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleSellerListOrders(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
@@ -809,7 +822,11 @@ func (h *handler) handleSellerShipOrder(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *handler) handleAdminListOrders(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	q := r.URL.Query()
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
@@ -867,7 +884,11 @@ func (h *handler) handleGetReturn(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleListReturnsByScope(w http.ResponseWriter, r *http.Request, scope string) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
@@ -1207,7 +1228,11 @@ func mapTopProductStats(in []*orderv1.TopProductStat) []*topProductStatDTO {
 }
 
 func (h *handler) handleAdminListOrdersNeedingReview(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 

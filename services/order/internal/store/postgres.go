@@ -129,6 +129,7 @@ func checkoutGroupLookupFromRow(row db.GetCheckoutGroupForIdempotencyRow) *Check
 			PendingStockConfirm:  row.PendingStockConfirm,
 			NeedsCleanup:         row.NeedsCleanup,
 			WarningsJSON:         row.WarningsJSON,
+			PayURL:               row.PayURL,
 		},
 		HasOrders: row.HasOrders,
 	}
@@ -516,6 +517,9 @@ func (s *PostgresStore) CompleteCheckoutWithPayment(ctx context.Context, arg Upd
 		if effectiveGrp.QRCode == "" {
 			effectiveGrp.QRCode = arg.QRCode
 		}
+		if effectiveGrp.PayURL == "" {
+			effectiveGrp.PayURL = arg.PayURL
+		}
 		if arg.PaymentExpiresAt != nil {
 			effectiveGrp.PaymentExpiresAt = arg.PaymentExpiresAt
 		}
@@ -550,6 +554,7 @@ func (s *PostgresStore) CompleteCheckoutWithPayment(ctx context.Context, arg Upd
 		PaymentStatus:        resolvedPayStatus,
 		QRURL:                arg.QRURL,
 		QRCode:               arg.QRCode,
+		PayURL:               arg.PayURL,
 		PaymentExpiresAt:     arg.PaymentExpiresAt,
 		TotalPayableVND:      liveTotalPayableVND,
 		TargetStatus:         targetStatus,
@@ -588,6 +593,7 @@ func (s *PostgresStore) UpdateGroupPaymentOnRetry(ctx context.Context, params Re
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := s.queries.WithTx(tx)
+	// Canonical lock order: orders first (ordered shop_id ASC, created_at ASC, id ASC), then checkout_groups.
 	orders, err := q.ListOrdersByCheckoutGroupForUpdate(ctx, params.CheckoutGroupID)
 	if err != nil {
 		return err
@@ -595,53 +601,188 @@ func (s *PostgresStore) UpdateGroupPaymentOnRetry(ctx context.Context, params Re
 	if len(orders) == 0 {
 		return ErrNotFound
 	}
+	grp, grpErr := q.GetCheckoutGroupByIDForUpdate(ctx, params.CheckoutGroupID)
+	if grpErr != nil && !errors.Is(grpErr, pgx.ErrNoRows) {
+		return grpErr
+	}
+
 	now := params.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+
+	targetMethod := statemachine.NormalizePaymentMethod(params.TargetMethod)
+	if params.SwitchToCOD {
+		targetMethod = statemachine.PaymentMethodCOD
+	} else if targetMethod == "" {
+		targetMethod = statemachine.NormalizePaymentMethod(orders[0].PaymentMethod)
+	}
+	if !statemachine.IsValidPaymentMethod(targetMethod) {
+		return fmt.Errorf("%w: invalid target payment method %q", ErrRetryPrecondition, targetMethod)
+	}
+	switchToCOD := params.SwitchToCOD || statemachine.IsCODMethod(targetMethod)
+
 	alreadyApplied := params.NewPaymentID != ""
+	for _, ord := range orders {
+		expectedStatus := orderv1.OrderStatus_ORDER_STATUS_PENDING
+		if switchToCOD {
+			expectedStatus = orderv1.OrderStatus_ORDER_STATUS_CONFIRMED
+		}
+		if ord.PaymentID != params.NewPaymentID ||
+			statemachine.NormalizePaymentMethod(ord.PaymentMethod) != targetMethod ||
+			statemachine.StringToStatus(ord.Status) != expectedStatus {
+			alreadyApplied = false
+			break
+		}
+	}
+	if alreadyApplied {
+		// Review-A P0-3: idempotent success if another replica already committed this exact retry/switch.
+		return tx.Commit(ctx)
+	}
+
+	if grpErr == nil {
+		if grp.Status == "FAILED" {
+			return fmt.Errorf("%w: checkout group %s is FAILED", ErrRetryPrecondition, grp.ID)
+		}
+		if params.ExpectedPaymentID != "" && grp.PaymentID != "" && grp.PaymentID != params.ExpectedPaymentID {
+			return fmt.Errorf("%w: checkout group payment_id mismatch", ErrRetryPrecondition)
+		}
+	}
+
 	for _, ord := range orders {
 		if statemachine.StringToStatus(ord.Status) != orderv1.OrderStatus_ORDER_STATUS_PENDING {
 			return fmt.Errorf("%w: order %s is in status %s", ErrRetryPrecondition, ord.ID, ord.Status)
 		}
-		if statemachine.StringToPaymentMethod(ord.PaymentMethod) != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR {
+		if !statemachine.IsOnlineMethod(ord.PaymentMethod) {
 			return fmt.Errorf("%w: order %s payment method is %s", ErrRetryPrecondition, ord.ID, ord.PaymentMethod)
 		}
-		if ord.PaymentID != params.NewPaymentID {
-			alreadyApplied = false
-		}
-	}
-	if alreadyApplied {
-		// Review-A P0-3: idempotent success if another replica already committed this exact new payment_id.
-		return tx.Commit(ctx)
-	}
-	for _, ord := range orders {
 		if params.ExpectedPaymentID != "" && ord.PaymentID != params.ExpectedPaymentID {
 			return fmt.Errorf("%w: order %s payment_id mismatch", ErrRetryPrecondition, ord.ID)
 		}
-		if ord.PaymentExpiresAt != nil && !ord.PaymentExpiresAt.After(now) {
+		exp := ord.PaymentExpiresAt
+		if exp == nil && grpErr == nil {
+			exp = grp.PaymentExpiresAt
+		}
+		if exp != nil && !exp.After(now) {
 			return fmt.Errorf("%w: order %s payment expired", ErrRetryPrecondition, ord.ID)
 		}
 	}
 
-	if err := q.UpdateOrderPaymentInfoByGroup(ctx, db.UpdateOrderPaymentInfoByGroupParams{
-		CheckoutGroupID:  params.CheckoutGroupID,
-		PaymentID:        params.NewPaymentID,
-		PaymentStatus:    params.PaymentStatus,
-		PaymentExpiresAt: params.PaymentExpiresAt,
-	}); err != nil {
-		return fmt.Errorf("update orders payment info on retry: %w", err)
+	feeByOrder := make(map[string]RetryOrderFeeSpec, len(params.OrderFees))
+	for _, f := range params.OrderFees {
+		feeByOrder[f.OrderID] = f
+	}
+
+	for _, ord := range orders {
+		prevMethod := statemachine.NormalizePaymentMethod(ord.PaymentMethod)
+		feeVND := ord.PaymentFeeVND
+		feeBPS := ord.PaymentFeeBPS
+		if spec, ok := feeByOrder[ord.ID]; ok {
+			feeVND = spec.PaymentFeeVND
+			feeBPS = spec.PaymentFeeBPS
+		}
+		orderExpiresAt := params.PaymentExpiresAt
+		if switchToCOD {
+			orderExpiresAt = nil
+		}
+
+		updated, uErr := q.UpdateOrderPaymentOnRetry(ctx, db.UpdateOrderPaymentOnRetryParams{
+			ID:               ord.ID,
+			PaymentMethod:    targetMethod,
+			PaymentID:        params.NewPaymentID,
+			PaymentStatus:    params.PaymentStatus,
+			PaymentFeeVND:    feeVND,
+			PaymentFeeBPS:    feeBPS,
+			PaymentExpiresAt: orderExpiresAt,
+			ConfirmOrder:     switchToCOD,
+		})
+		if uErr != nil {
+			if errors.Is(uErr, pgx.ErrNoRows) {
+				return fmt.Errorf("%w: order %s left PENDING state concurrently", ErrRetryPrecondition, ord.ID)
+			}
+			return fmt.Errorf("update order %s payment on retry: %w", ord.ID, uErr)
+		}
+
+		actorID := strings.TrimSpace(params.ActorID)
+		if actorID == "" {
+			actorID = ord.BuyerID
+		}
+		actorRole := strings.TrimSpace(params.ActorRole)
+		if actorRole == "" {
+			actorRole = "buyer"
+		}
+
+		if switchToCOD {
+			if _, tlErr := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+				ID:         uuid.NewString(),
+				OrderID:    ord.ID,
+				FromStatus: ord.Status,
+				ToStatus:   updated.Status,
+				ActorID:    actorID,
+				ActorRole:  actorRole,
+				Note:       fmt.Sprintf("Switched payment method from %s to COD; order confirmed", prevMethod),
+			}); tlErr != nil {
+				return fmt.Errorf("insert COD switch timeline event: %w", tlErr)
+			}
+
+			payloadBytes, mErr := json.Marshal(events.OrderConfirmedPayload{
+				OrderID:         updated.ID,
+				OrderCode:       updated.OrderCode,
+				BuyerID:         updated.BuyerID,
+				ShopID:          updated.ShopID,
+				PaymentMethod:   updated.PaymentMethod,
+				TotalPayableVND: updated.TotalPayableVND,
+			})
+			if mErr != nil {
+				return fmt.Errorf("marshal order.confirmed on COD switch: %w", mErr)
+			}
+			if obErr := q.InsertOutboxEvent(ctx, db.InsertOutboxEventParams{
+				ID:          uuid.NewString(),
+				EventType:   events.SubjectOrderConfirmed,
+				TraceID:     params.TraceID,
+				Traceparent: params.Traceparent,
+				PayloadJSON: payloadBytes,
+			}); obErr != nil {
+				return fmt.Errorf("insert order.confirmed outbox on COD switch: %w", obErr)
+			}
+		} else if prevMethod != targetMethod {
+			if _, tlErr := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+				ID:         uuid.NewString(),
+				OrderID:    ord.ID,
+				FromStatus: ord.Status,
+				ToStatus:   updated.Status,
+				ActorID:    actorID,
+				ActorRole:  actorRole,
+				Note:       fmt.Sprintf("Switched payment method from %s to %s", prevMethod, targetMethod),
+			}); tlErr != nil {
+				return fmt.Errorf("insert method switch timeline event: %w", tlErr)
+			}
+		}
+	}
+
+	groupQRURL := params.QRURL
+	groupQRCode := params.QRCode
+	groupPayURL := params.PayURL
+	groupExpiresAt := params.PaymentExpiresAt
+	if switchToCOD {
+		groupQRURL = ""
+		groupQRCode = ""
+		groupPayURL = ""
+		groupExpiresAt = nil
 	}
 
 	if err := q.UpdateCheckoutGroupPaymentOnRetry(ctx, db.UpdateCheckoutGroupPaymentOnRetryParams{
-		ID:                  params.CheckoutGroupID,
-		PaymentID:           params.NewPaymentID,
-		PaymentStatus:       params.PaymentStatus,
-		QRURL:               params.QRURL,
-		QRCode:              params.QRCode,
-		PaymentExpiresAt:    params.PaymentExpiresAt,
-		RetryIdempotencyKey: params.RetryIdempotencyKey,
-		RetryFromPaymentID:  params.ExpectedPaymentID,
+		ID:                     params.CheckoutGroupID,
+		PaymentMethod:          targetMethod,
+		PaymentID:              params.NewPaymentID,
+		PaymentStatus:          params.PaymentStatus,
+		QRURL:                  groupQRURL,
+		QRCode:                 groupQRCode,
+		PayURL:                 groupPayURL,
+		PaymentExpiresAt:       groupExpiresAt,
+		RetryIdempotencyKey:    params.RetryIdempotencyKey,
+		RetryFromPaymentID:     params.ExpectedPaymentID,
+		SetPendingStockConfirm: switchToCOD,
 	}); err != nil {
 		return fmt.Errorf("update checkout group payment on retry: %w", err)
 	}
@@ -940,11 +1081,21 @@ func (s *PostgresStore) TransitionOrdersPaymentResult(ctx context.Context, param
 		return nil, grpErr
 	}
 	if grpErr == nil && params.PaymentID != "" && grp.PaymentID != "" && grp.PaymentID != params.PaymentID {
-		// PAY-B6: ignore payment events belonging to a superseded/non-current payment_id.
+		// PAY-B6 + F5 / Item B (#2 + #6.2): never mutate orders for a non-current payment_id,
+		// AND if payment.succeeded arrives for ANY non-current payment of this checkout group
+		// (whether >=2-hop superseded P1->P2->P3 or an orphaned unrecorded retry payment),
+		// return SupersededPaidOrders so HandlePaymentResult triggers automatic refund exactly once.
+		var supersededPaid []db.Order
+		if params.ResultStatus == orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_SUCCEEDED {
+			supersededPaid = append([]db.Order(nil), orders...)
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return nil, err
 		}
-		return &PaymentResultTransitionOutcome{CheckoutGroupID: groupID}, nil
+		return &PaymentResultTransitionOutcome{
+			CheckoutGroupID:      groupID,
+			SupersededPaidOrders: supersededPaid,
+		}, nil
 	}
 	groupAlreadyRefunded := grpErr == nil && strings.EqualFold(grp.PaymentStatus, "REFUNDED")
 
@@ -996,7 +1147,7 @@ func (s *PostgresStore) TransitionOrdersPaymentResult(ctx context.Context, param
 			// regardless of EventID (covers MarkPaymentResult, watchdog->payment.failed rescue,
 			// and payment.succeeded redelivery after seller already shipped the order).
 			if params.ResultStatus == orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_SUCCEEDED {
-				if statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+				if statemachine.IsOnlineMethod(ord.PaymentMethod) &&
 					(strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") || isOrderRefunded(ord)) &&
 					curStatus != orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
 					outcome.NeedsDownstream = true
@@ -1294,7 +1445,7 @@ func (s *PostgresStore) TransitionOrderStatus(ctx context.Context, params Single
 	for _, targetOrd := range toCancel {
 		payStatus := params.PaymentStatus
 		if params.TargetStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED && payStatus == "" {
-			ordPaid := statemachine.StringToPaymentMethod(targetOrd.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+			ordPaid := statemachine.IsOnlineMethod(targetOrd.PaymentMethod) &&
 				strings.EqualFold(targetOrd.PaymentStatus, "SUCCEEDED") &&
 				targetOrd.TotalPayableVND > 0
 			if !ordPaid && (isUnpaidPendingStatus(targetOrd.PaymentStatus) || targetOrd.TotalPayableVND == 0) {
@@ -2205,6 +2356,12 @@ func (s *PostgresStore) TransitionOrderReturnRequested(ctx context.Context, para
 	}
 
 	curStatus := statemachine.StringToStatus(ord.Status)
+	// F11 / Item E: RETURNED -> RETURN_REQUESTED is reserved strictly for rejected-refund rollback;
+	// new buyer return requests are only allowed from DELIVERED.
+	if curStatus != orderv1.OrderStatus_ORDER_STATUS_DELIVERED {
+		return nil, nil, fmt.Errorf("%w: return request requires order status DELIVERED, got %s",
+			statemachine.ErrInvalidTransition, statemachine.StatusToString(curStatus))
+	}
 	if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED); err != nil {
 		return nil, nil, err
 	}
@@ -2878,6 +3035,51 @@ func (s *PostgresStore) RecordPaymentRefunded(ctx context.Context, params Paymen
 					}); err != nil {
 						return false, err
 					}
+				}
+				// F11 / Item C (#4c): atomically mark matching approval-gated REFUNDING return as APPROVED + refund_done=TRUE
+				// inside the same TX (canonical lock order: orders -> return_requests) so ScanRefundingReturns recovers
+				// remaining promo/restock/REFUNDED work even if post-TX side effects fail transiently.
+				if rrPeek, rrErr := q.GetReturnRequestByOrderID(ctx, ord.ID); rrErr == nil {
+					rrLocked, lockErr := q.GetReturnRequestByIDForUpdate(ctx, rrPeek.ID)
+					if lockErr != nil && !errors.Is(lockErr, pgx.ErrNoRows) {
+						return false, lockErr
+					}
+					if lockErr == nil &&
+						statemachine.StringToReturnStatus(rrLocked.Status) == orderv1.ReturnStatus_RETURN_STATUS_REFUNDING &&
+						!rrLocked.RefundDone &&
+						(rrLocked.RequireApprovalIfLarge || strings.EqualFold(rrLocked.RefundApprovalStatus, "PENDING_APPROVAL")) {
+						if statemachine.MatchReturnRefundEvent(
+							rrLocked.OrderID,
+							rrLocked.RefundID,
+							rrLocked.RefundAttempt,
+							params.RefundID,
+							params.IdempotencyKey,
+						) == statemachine.ReturnRefundMatchMatched {
+							refID := strings.TrimSpace(params.RefundID)
+							var updAmt bool
+							var amt int64
+							if params.AmountVND > 0 {
+								updAmt = true
+								amt = params.AmountVND
+							}
+							if _, uErr := q.UpdateReturnRequestSideEffects(ctx, db.UpdateReturnRequestSideEffectsParams{
+								ID:                         rrLocked.ID,
+								RefundDone:                 true,
+								PromoReleased:              rrLocked.PromoReleased,
+								RestockDone:                rrLocked.RestockDone,
+								UpdateRefundAmount:         updAmt,
+								RefundAmountVND:            amt,
+								UpdateRefundID:             refID != "",
+								RefundID:                   refID,
+								UpdateRefundApprovalStatus: true,
+								RefundApprovalStatus:       "APPROVED",
+							}); uErr != nil {
+								return false, uErr
+							}
+						}
+					}
+				} else if !errors.Is(rrErr, pgx.ErrNoRows) {
+					return false, rrErr
 				}
 			}
 		} else if errors.Is(err, pgx.ErrNoRows) {

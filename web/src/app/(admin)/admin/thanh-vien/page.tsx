@@ -19,6 +19,8 @@ import {
 import { updateAdminLoyaltyState, useAdminLoyaltyState } from "@/features/admin/auditStore";
 import { AdminPromoCoinsPanel } from "@/features/admin/AdminPromoCoinsPanel";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
+import { useAdminUser } from "@/features/admin/AdminUserContext";
+import { roleHasCapability } from "@/lib/admin-rbac";
 import { StatusPill } from "@/features/admin/StatusPill";
 import { ToggleSwitch } from "@/features/admin/ToggleSwitch";
 import shared from "@/features/admin/adminShared.module.css";
@@ -29,10 +31,22 @@ type LoyaltyTab = "flash_voucher" | "cong_xu" | "hoi_vien" | "the_qua_tang";
 function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
   const loyalty = useAdminLoyaltyState();
   const { showToast } = useMockStore();
+  const adminUser = useAdminUser();
+  const role = adminUser?.role ?? "";
 
-  const initialTab: LoyaltyTab = initialQuery.toUpperCase().startsWith("NXGIFT")
-    ? "the_qua_tang"
-    : "flash_voucher";
+  const canSeePromo =
+    roleHasCapability(role, "vouchers.read") || roleHasCapability(role, "flash_sales.read");
+  const canCreditCoins = roleHasCapability(role, "coins.credit");
+  const canSeeMockLoyalty = role === "super_admin" || role === "admin" || role === "ops";
+
+  const initialTab: LoyaltyTab =
+    initialQuery.toUpperCase().startsWith("NXGIFT") && canSeeMockLoyalty
+      ? "the_qua_tang"
+      : canSeePromo
+        ? "flash_voucher"
+        : canCreditCoins
+          ? "cong_xu"
+          : "hoi_vien";
 
   const [activeTab, setActiveTab] = useState<LoyaltyTab>(initialTab);
   const [savedNotice, setSavedNotice] = useState<Record<string, string>>({});
@@ -286,49 +300,57 @@ function AdminLoyaltyWorkspace({ initialQuery }: { initialQuery: string }) {
 
       <div className={shared.tabsBar}>
         <div className={shared.tabList} role="tablist" aria-label="Phân mục hội viên và khuyến mãi">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "flash_voucher"}
-            className={`${shared.tabBtn} ${activeTab === "flash_voucher" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("flash_voucher")}
-          >
-            <span>Mã sàn & Flash sale</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "cong_xu"}
-            className={`${shared.tabBtn} ${activeTab === "cong_xu" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("cong_xu")}
-          >
-            <span>Cộng Xu thành viên</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "hoi_vien"}
-            className={`${shared.tabBtn} ${activeTab === "hoi_vien" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("hoi_vien")}
-          >
-            <span>Hội viên & .edu (mẫu)</span>
-            {pendingEduCount > 0 && <span className={shared.tabCount}>{pendingEduCount}</span>}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "the_qua_tang"}
-            className={`${shared.tabBtn} ${activeTab === "the_qua_tang" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("the_qua_tang")}
-          >
-            <span>Thẻ quà tặng (mẫu)</span>
-            <span className={shared.tabCount}>{loyalty.giftCards.length}</span>
-          </button>
+          {canSeePromo && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === "flash_voucher"}
+              className={`${shared.tabBtn} ${activeTab === "flash_voucher" ? shared.tabBtnActive : ""}`}
+              onClick={() => setActiveTab("flash_voucher")}
+            >
+              <span>Mã sàn &amp; Flash sale</span>
+            </button>
+          )}
+          {canCreditCoins && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === "cong_xu"}
+              className={`${shared.tabBtn} ${activeTab === "cong_xu" ? shared.tabBtnActive : ""}`}
+              onClick={() => setActiveTab("cong_xu")}
+            >
+              <span>Cộng Xu thành viên</span>
+            </button>
+          )}
+          {canSeeMockLoyalty && (
+            <>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "hoi_vien"}
+                className={`${shared.tabBtn} ${activeTab === "hoi_vien" ? shared.tabBtnActive : ""}`}
+                onClick={() => setActiveTab("hoi_vien")}
+              >
+                <span>Hội viên &amp; .edu (mẫu)</span>
+                {pendingEduCount > 0 && <span className={shared.tabCount}>{pendingEduCount}</span>}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "the_qua_tang"}
+                className={`${shared.tabBtn} ${activeTab === "the_qua_tang" ? shared.tabBtnActive : ""}`}
+                onClick={() => setActiveTab("the_qua_tang")}
+              >
+                <span>Thẻ quà tặng (mẫu)</span>
+                <span className={shared.tabCount}>{loyalty.giftCards.length}</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
 
-      {activeTab === "flash_voucher" && <AdminPromoCoinsPanel mode="promo" />}
-      {activeTab === "cong_xu" && <AdminPromoCoinsPanel mode="coins" />}
+      {activeTab === "flash_voucher" && canSeePromo && <AdminPromoCoinsPanel mode="promo" />}
+      {activeTab === "cong_xu" && canCreditCoins && <AdminPromoCoinsPanel mode="coins" />}
 
       {(activeTab === "hoi_vien" || activeTab === "the_qua_tang") && (
         <section className={shared.panel} role="note" style={{ marginTop: 16 }}>

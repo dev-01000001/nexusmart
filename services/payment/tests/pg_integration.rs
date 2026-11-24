@@ -361,6 +361,9 @@ async fn test_pg_d10_payment_refunded_is_post_settlement_all_paths() {
             reason: "admin_pre_settlement".into(),
             idempotency_key: format!("admin-pre-{}", Uuid::new_v4()),
             trace_id: "trace-d10-1".into(),
+            require_approval_if_large: false,
+            requested_by: None,
+            created_by_service: false,
         })
         .await
         .expect("pre-settlement admin refund");
@@ -374,6 +377,9 @@ async fn test_pg_d10_payment_refunded_is_post_settlement_all_paths() {
             reason: "return_approved".into(),
             idempotency_key: format!("order-return-refund:{ord_a2}"),
             trace_id: "trace-d10-2".into(),
+            require_approval_if_large: false,
+            requested_by: None,
+            created_by_service: false,
         })
         .await
         .expect("return refund");
@@ -396,6 +402,9 @@ async fn test_pg_d10_payment_refunded_is_post_settlement_all_paths() {
             reason: "admin_post_pending_release".into(),
             idempotency_key: format!("admin-post-pending-{}", Uuid::new_v4()),
             trace_id: "trace-d10-3".into(),
+            require_approval_if_large: false,
+            requested_by: None,
+            created_by_service: false,
         })
         .await
         .expect("post-settlement pending_release refund");
@@ -414,6 +423,9 @@ async fn test_pg_d10_payment_refunded_is_post_settlement_all_paths() {
             reason: "admin_post_released".into(),
             idempotency_key: format!("admin-post-released-{}", Uuid::new_v4()),
             trace_id: "trace-d10-4".into(),
+            require_approval_if_large: false,
+            requested_by: None,
+            created_by_service: false,
         })
         .await
         .expect("post-settlement released refund");
@@ -639,10 +651,12 @@ async fn test_pg_fee_config_index_explain_and_sql_tiebreak() {
         })
         .await
         .expect("get_fee_config method=None at t_tie");
-    assert_eq!(all_at_tie.active_configs.len(), 2);
+    assert_eq!(all_at_tie.active_configs.len(), 3);
     assert_eq!(all_at_tie.active_configs[0].payment_method, "COD");
     assert_eq!(all_at_tie.active_configs[1].payment_method, "VIETQR");
     assert_eq!(all_at_tie.active_configs[1].fee_bps, 222);
+    assert_eq!(all_at_tie.active_configs[2].payment_method, "ZALOPAY");
+    assert_eq!(all_at_tie.active_configs[2].fee_bps, 0);
     assert!(all_at_tie.history.is_empty());
 
     let all_with_history = svc
@@ -653,8 +667,10 @@ async fn test_pg_fee_config_index_explain_and_sql_tiebreak() {
         })
         .await
         .expect("get_fee_config method=None include_history=true");
-    assert_eq!(all_with_history.active_configs.len(), 2);
+    assert_eq!(all_with_history.active_configs.len(), 3);
     assert_eq!(all_with_history.active_configs[1].fee_bps, 333);
+    assert_eq!(all_with_history.active_configs[2].payment_method, "ZALOPAY");
+    assert_eq!(all_with_history.active_configs[2].fee_bps, 0);
     assert!(all_with_history.history.len() > 3000);
     assert!(all_with_history
         .history
@@ -664,6 +680,10 @@ async fn test_pg_fee_config_index_explain_and_sql_tiebreak() {
         .history
         .iter()
         .any(|r| r.payment_method == "VIETQR"));
+    assert!(all_with_history
+        .history
+        .iter()
+        .any(|r| r.payment_method == "ZALOPAY"));
     assert_eq!(all_with_history.history[0].fee_bps, 333);
 
     let before_2020: DateTime<Utc> = DateTime::parse_from_rfc3339("2019-01-01T00:00:00Z")
@@ -760,8 +780,8 @@ async fn test_pg_fee_config_index_explain_and_sql_tiebreak() {
     let plan_all_text = plan_all.join("\n");
     eprintln!("=== EXPLAIN fee_active_all (generic, default costs) ===\n{plan_all_text}");
     assert!(
-        plan_all_text.contains("Unique") && plan_all_text.contains("rows=2"),
-        "all-methods DISTINCT ON query must plan Unique returning 2 rows:\n{plan_all_text}"
+        plan_all_text.contains("Unique") && plan_all_text.contains("rows=3"),
+        "all-methods DISTINCT ON query must plan Unique returning 3 rows (COD, VIETQR, ZALOPAY):\n{plan_all_text}"
     );
 
     // 3. Single-method history query (`FEE_CONFIG_HISTORY_BY_METHOD_SQL` — P3-11):
@@ -1328,6 +1348,9 @@ async fn test_pg_concurrent_refund_races() {
                 reason: "race_same_key".into(),
                 idempotency_key: key,
                 trace_id: format!("tr-{i}"),
+                require_approval_if_large: false,
+                requested_by: None,
+                created_by_service: false,
             })
             .await
         }));
@@ -1366,6 +1389,9 @@ async fn test_pg_concurrent_refund_races() {
                 reason: "race_cap".into(),
                 idempotency_key: format!("rf-cap-{i}-{}", Uuid::new_v4()),
                 trace_id: format!("tr-cap-{i}"),
+                require_approval_if_large: false,
+                requested_by: None,
+                created_by_service: false,
             })
             .await
         }));
@@ -1430,6 +1456,9 @@ async fn test_pg_concurrent_refund_races() {
                 reason: "race_post_settlement".into(),
                 idempotency_key: format!("rf-post-{i}-{}", Uuid::new_v4()),
                 trace_id: format!("tr-post-{i}"),
+                require_approval_if_large: false,
+                requested_by: None,
+                created_by_service: false,
             })
             .await
         }));
@@ -1491,6 +1520,9 @@ async fn test_pg_concurrent_refund_races() {
             reason: "race_with_settle".into(),
             idempotency_key: format!("rf-race-settle-{}", Uuid::new_v4()),
             trace_id: "tr-race-rf".into(),
+            require_approval_if_large: false,
+            requested_by: None,
+            created_by_service: false,
         })
         .await
     });
@@ -2043,6 +2075,9 @@ async fn test_pg_sse_handler_and_grpc_privacy_real_db() {
             reason: "full_refund_sse".into(),
             idempotency_key: format!("rf-sse-1-{}", Uuid::new_v4()),
             trace_id: "tr-rf-sse-1".into(),
+            require_approval_if_large: false,
+            requested_by: None,
+            created_by_service: false,
         })
         .await
         .unwrap();
@@ -2202,6 +2237,9 @@ async fn test_pg_full_money_cod_reconciliation_and_hold_protection_sql() {
             reason: "post_settle_clawback".into(),
             idempotency_key: format!("rf-h1-{}", Uuid::new_v4()),
             trace_id: "tr-h1-rf".into(),
+            require_approval_if_large: false,
+            requested_by: None,
+            created_by_service: false,
         })
         .await
         .unwrap();
@@ -2466,6 +2504,9 @@ async fn test_pg_full_money_cod_reconciliation_and_hold_protection_sql() {
             reason: "uncollected".into(),
             idempotency_key: format!("rf-cod-uncol-{}", Uuid::new_v4()),
             trace_id: "tr-cod".into(),
+            require_approval_if_large: false,
+            requested_by: None,
+            created_by_service: false,
         })
         .await,
         Err(PaymentError::Conflict(_))
@@ -2759,6 +2800,9 @@ async fn test_pg_d9bis_interleaved_txs_same_group_strict_seq_order() {
             reason: "partial_r1".into(),
             idempotency_key: format!("idem-r1-{}", Uuid::new_v4()),
             trace_id: "tr-d9a-r1".into(),
+            require_approval_if_large: false,
+            requested_by: None,
+            created_by_service: false,
         })
         .await
         .unwrap();
@@ -4788,6 +4832,9 @@ async fn test_pg_w3b_r3_indep_review_cod_queue_refunded_stale_and_multi_mismatch
         reason: "buyer returned COD order".into(),
         idempotency_key: format!("order-return-refund:{ord_ref}"),
         trace_id: "tr-rf-ref".into(),
+        require_approval_if_large: false,
+        requested_by: None,
+        created_by_service: false,
     })
     .await
     .unwrap();
@@ -5256,4 +5303,389 @@ async fn test_pg_w3b_r3_indep_review_cod_queue_refunded_stale_and_multi_mismatch
     assert_eq!(cod_recv_final, 0);
 
     db.cleanup().await;
+}
+
+// =============================================================================
+// Wave 3b-2 Phase 1: Migration 0010 upgrade from 0009 with existing data
+// =============================================================================
+
+#[tokio::test]
+async fn test_pg_migration_0010_upgrade_from_0009_with_existing_data() {
+    let db_url = match std::env::var("TEST_PAYMENT_DB_URL") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => {
+            eprintln!(
+                "skipping test_pg_migration_0010_upgrade_from_0009_with_existing_data: TEST_PAYMENT_DB_URL not set"
+            );
+            return;
+        }
+    };
+
+    let _permit = SCHEMA_SEM.acquire().await.expect("schema semaphore");
+
+    EXT_INIT
+        .get_or_init(|| async {
+            let base = PgPoolOptions::new()
+                .max_connections(2)
+                .acquire_timeout(Duration::from_secs(10))
+                .connect(&db_url)
+                .await
+                .expect("connect base TEST_PAYMENT_DB_URL");
+            let mut conn = base.acquire().await.expect("acquire base conn");
+            sqlx::query("SELECT pg_advisory_lock(88442211)")
+                .execute(&mut *conn)
+                .await
+                .expect("advisory lock");
+            sqlx::query("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+                .execute(&mut *conn)
+                .await
+                .expect("create pgcrypto");
+            sqlx::query("SELECT pg_advisory_unlock(88442211)")
+                .execute(&mut *conn)
+                .await
+                .expect("advisory unlock");
+            drop(conn);
+            base.close().await;
+        })
+        .await;
+
+    let schema = format!("paymig10_{}", Uuid::new_v4().simple());
+    let base = PgPoolOptions::new()
+        .max_connections(2)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(&db_url)
+        .await
+        .expect("connect admin pool");
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&base)
+        .await
+        .expect("create isolated schema");
+    base.close().await;
+
+    let schema_for_hook = schema.clone();
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .acquire_timeout(Duration::from_secs(15))
+        .after_connect(move |conn, _meta| {
+            let s = schema_for_hook.clone();
+            Box::pin(async move {
+                conn.execute(format!("SET search_path TO {s}, public").as_str())
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&db_url)
+        .await
+        .expect("connect isolated schema pool");
+
+    // 1. Apply migrations 0001..0009 only (pre-0010 live database state).
+    let pre_migrations = [
+        include_str!("../migrations/0001_init.sql"),
+        include_str!("../migrations/0002_payment_money_model.sql"),
+        include_str!("../migrations/0003_refund_settlement_and_reconciliation.sql"),
+        include_str!("../migrations/0004_reconciliation_queue_unique_tx.sql"),
+        include_str!("../migrations/0005_reconciliation_fixes.sql"),
+        include_str!("../migrations/0006_trim_provider_tx_ids.sql"),
+        include_str!("../migrations/0007_payment_fee_configs.sql"),
+        include_str!("../migrations/0008_outbox_lease_and_fee_config_index.sql"),
+        include_str!("../migrations/0009_cod_reconciliation_and_dlq.sql"),
+    ];
+    for sql in pre_migrations {
+        pool.execute(sql).await.expect("apply pre-0010 migration");
+    }
+
+    // 2. Seed existing data (COD + VIETQR payments, multiple refunds, custom fee config).
+    let existing_vietqr_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO payments (
+            order_group_id, order_id, user_id, method, provider, amount_vnd,
+            status, provider_order_code, expires_at
+        )
+        VALUES (
+            'grp-pre10-vqr', 'ord-pre10-vqr', 'buyer-pre10', 'VIETQR', 'vietqr_mock',
+            250000, 'succeeded', 'NMPRE10VQR', NOW() + INTERVAL '15 minutes'
+        )
+        RETURNING id
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("insert existing vietqr payment");
+
+    let existing_cod_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO payments (
+            order_group_id, order_id, user_id, method, provider, amount_vnd,
+            status, provider_order_code
+        )
+        VALUES (
+            'grp-pre10-cod', 'ord-pre10-cod', 'buyer-pre10', 'COD', 'cod',
+            400000, 'pending', 'NMPRE10COD'
+        )
+        RETURNING id
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("insert existing cod payment");
+
+    sqlx::query(
+        r#"
+        INSERT INTO refunds (payment_id, order_id, amount_vnd, reason, status, idempotency_key)
+        VALUES
+            ($1, 'ord-pre10-vqr', 100000, 'legacy-ref-1', 'pending', 'idem-pre10-ref-1'),
+            ($1, 'ord-pre10-vqr', 50000, 'legacy-ref-2', 'pending', 'idem-pre10-ref-2')
+        "#,
+    )
+    .bind(existing_vietqr_id)
+    .execute(&pool)
+    .await
+    .expect("insert existing refunds");
+
+    // Pre-0010 CHECK must reject ZALOPAY on both payments and payment_fee_configs.
+    assert!(
+        sqlx::query(
+            r#"
+            INSERT INTO payments (
+                order_group_id, order_id, user_id, method, provider, amount_vnd,
+                status, provider_order_code
+            )
+            VALUES ('grp-pre-zlp', 'ord-pre-zlp', 'u1', 'ZALOPAY', 'zalopay_mock', 100000, 'pending', 'ZLP_PRE')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .is_err(),
+        "pre-0010 payments CHECK must reject ZALOPAY"
+    );
+
+    // 3. Apply migration 0010 on the populated database.
+    pool.execute(include_str!(
+        "../migrations/0010_zalopay_and_method_configs.sql"
+    ))
+    .await
+    .expect("apply migration 0010 on populated 0009 schema");
+
+    // 4. Verify pre-existing data survived cleanly with nullable defaults.
+    let existing_pay_url: Option<String> =
+        sqlx::query_scalar("SELECT pay_url FROM payments WHERE id = $1")
+            .bind(existing_cod_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(existing_pay_url, None);
+
+    let legacy_refund_nulls: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM refunds WHERE provider_m_refund_id IS NULL AND provider_status IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(legacy_refund_nulls, 2);
+
+    // 5. Verify ZALOPAY payment + pay_url accepted, invalid method still rejected.
+    let zlp_payment_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO payments (
+            order_group_id, order_id, user_id, method, provider, amount_vnd,
+            status, provider_order_code, pay_url, expires_at
+        )
+        VALUES (
+            'grp-post10-zlp', 'ord-post10-zlp', 'buyer-post10', 'ZALOPAY', 'zalopay_mock',
+            320000, 'pending', '261124_zlp001', '/thanh-toan/mock-zalopay?app_trans_id=261124_zlp001',
+            NOW() + INTERVAL '15 minutes'
+        )
+        RETURNING id
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("post-0010 must accept ZALOPAY payment with pay_url");
+
+    assert!(
+        sqlx::query(
+            r#"
+            INSERT INTO payments (
+                order_group_id, order_id, user_id, method, provider, amount_vnd,
+                status, provider_order_code
+            )
+            VALUES ('grp-bad', 'ord-bad', 'u1', 'UNKNOWN_METHOD', 'x', 100000, 'pending', 'BAD_M')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .is_err(),
+        "payments CHECK must still reject unknown methods"
+    );
+
+    // Verify rebuilt partial expiry index includes both VIETQR and ZALOPAY.
+    let expiry_idx_def: String = sqlx::query_scalar(
+        "SELECT indexdef FROM pg_indexes WHERE schemaname = $1 AND indexname = 'idx_payments_pending_expiry'",
+    )
+    .bind(&schema)
+    .fetch_one(&pool)
+    .await
+    .expect("idx_payments_pending_expiry must exist");
+    assert!(
+        expiry_idx_def.contains("VIETQR") && expiry_idx_def.contains("ZALOPAY"),
+        "idx_payments_pending_expiry must cover VIETQR and ZALOPAY, got: {expiry_idx_def}"
+    );
+
+    // 6. Verify refunds.provider_m_refund_id UNIQUE and provider_status CHECK.
+    sqlx::query(
+        r#"
+        INSERT INTO refunds (
+            payment_id, order_id, amount_vnd, reason, status, idempotency_key,
+            provider_m_refund_id, provider_status
+        )
+        VALUES (
+            $1, 'ord-post10-zlp', 100000, 'zlp-refund', 'pending', 'idem-zlp-ref-1',
+            '261124_100001_mref01', 'processing'
+        )
+        "#,
+    )
+    .bind(zlp_payment_id)
+    .execute(&pool)
+    .await
+    .expect("insert zalopay refund with provider_m_refund_id and provider_status");
+
+    // Duplicate provider_m_refund_id must fail UNIQUE.
+    assert!(
+        sqlx::query(
+            r#"
+            INSERT INTO refunds (
+                payment_id, order_id, amount_vnd, reason, status, idempotency_key,
+                provider_m_refund_id, provider_status
+            )
+            VALUES (
+                $1, 'ord-post10-zlp', 50000, 'zlp-refund-dup', 'pending', 'idem-zlp-ref-2',
+                '261124_100001_mref01', 'pending'
+            )
+            "#,
+        )
+        .bind(zlp_payment_id)
+        .execute(&pool)
+        .await
+        .is_err(),
+        "duplicate provider_m_refund_id must violate UNIQUE"
+    );
+
+    // Invalid provider_status must fail CHECK.
+    assert!(
+        sqlx::query(
+            r#"
+            INSERT INTO refunds (
+                payment_id, order_id, amount_vnd, reason, status, idempotency_key,
+                provider_m_refund_id, provider_status
+            )
+            VALUES (
+                $1, 'ord-post10-zlp', 50000, 'zlp-refund-bad', 'pending', 'idem-zlp-ref-3',
+                '261124_100001_mref02', 'invalid_status'
+            )
+            "#,
+        )
+        .bind(zlp_payment_id)
+        .execute(&pool)
+        .await
+        .is_err(),
+        "invalid refunds.provider_status must violate CHECK"
+    );
+
+    // 7. Verify payment_fee_configs seeded ZALOPAY at 0 bps and accepts new ZALOPAY rows.
+    let zlp_fee_bps: i32 = sqlx::query_scalar(
+        "SELECT fee_bps FROM payment_fee_configs WHERE payment_method = 'ZALOPAY' ORDER BY seq DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("seeded ZALOPAY fee config");
+    assert_eq!(zlp_fee_bps, 0);
+
+    // 8. Verify payment_method_configs seed rows, version=1 (F7), bounds, and optimistic lock.
+    let seeded_configs: Vec<(String, bool, i64, i64, i32, i64)> = sqlx::query_as(
+        r#"
+        SELECT method, enabled, min_order_vnd, max_order_vnd, expiry_minutes, version
+        FROM payment_method_configs
+        ORDER BY method ASC
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("query payment_method_configs");
+
+    assert_eq!(
+        seeded_configs,
+        vec![
+            ("COD".to_string(), true, 0, 5_000_000, 0, 1),
+            ("VIETQR".to_string(), true, 0, 0, 15, 1),
+            ("ZALOPAY".to_string(), true, 0, 0, 15, 1),
+        ]
+    );
+
+    // Optimistic lock update (F7): expected version=1 succeeds -> bumps to 2; stale version=1 -> 0 rows.
+    let updated_v1 = sqlx::query(
+        r#"
+        UPDATE payment_method_configs
+        SET max_order_vnd = 3000000, version = version + 1, updated_by = 'admin-1', updated_at = NOW()
+        WHERE method = 'COD' AND version = 1
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap()
+    .rows_affected();
+    assert_eq!(updated_v1, 1);
+
+    let stale_update = sqlx::query(
+        r#"
+        UPDATE payment_method_configs
+        SET max_order_vnd = 2000000, version = version + 1, updated_by = 'admin-2', updated_at = NOW()
+        WHERE method = 'COD' AND version = 1
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap()
+    .rows_affected();
+    assert_eq!(stale_update, 0, "stale version update must affect 0 rows");
+
+    // Bounds CHECK constraints: max < min (when max > 0), version < 1, expiry > 1440 all fail.
+    assert!(
+        sqlx::query(
+            "UPDATE payment_method_configs SET min_order_vnd = 500000, max_order_vnd = 100000 WHERE method = 'VIETQR'",
+        )
+        .execute(&pool)
+        .await
+        .is_err(),
+        "max_order_vnd < min_order_vnd (with max > 0) must fail CHECK"
+    );
+    assert!(
+        sqlx::query("UPDATE payment_method_configs SET version = 0 WHERE method = 'VIETQR'")
+            .execute(&pool)
+            .await
+            .is_err(),
+        "version = 0 must fail CHECK"
+    );
+    assert!(
+        sqlx::query(
+            "UPDATE payment_method_configs SET expiry_minutes = 1441 WHERE method = 'ZALOPAY'"
+        )
+        .execute(&pool)
+        .await
+        .is_err(),
+        "expiry_minutes > 1440 must fail CHECK"
+    );
+
+    // Cleanup isolated schema.
+    pool.close().await;
+    if let Ok(admin) = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(&db_url)
+        .await
+    {
+        let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
+            .execute(&admin)
+            .await;
+        admin.close().await;
+    }
 }

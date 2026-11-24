@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/netip"
 	"regexp"
 	"strings"
 	"unicode"
@@ -29,10 +30,14 @@ import (
 )
 
 const (
-	RoleBuyer      = "buyer"
-	RoleSeller     = "seller"
-	RoleAdmin      = "admin"
-	RoleSuperAdmin = "super_admin"
+	RoleBuyer      = auth.RoleBuyer
+	RoleSeller     = auth.RoleSeller
+	RoleModerator  = auth.RoleModerator
+	RoleCSKH       = auth.RoleCSKH
+	RoleAccountant = auth.RoleAccountant
+	RoleOps        = auth.RoleOps
+	RoleAdmin      = auth.RoleAdmin
+	RoleSuperAdmin = auth.RoleSuperAdmin
 
 	StatusPendingVerification = "PENDING_VERIFICATION"
 	StatusActive              = "ACTIVE"
@@ -42,6 +47,10 @@ const (
 	ShopStatusActive    = "ACTIVE"
 	ShopStatusRejected  = "REJECTED"
 	ShopStatusSuspended = "SUSPENDED"
+
+	ApprovalStatusPending  = "PENDING"
+	ApprovalStatusApproved = "APPROVED"
+	ApprovalStatusRejected = "REJECTED"
 
 	mdClientIP = "x-client-ip"
 )
@@ -83,6 +92,14 @@ func isUniqueViolation(err error) bool {
 	return false
 }
 
+func isCheckViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23514"
+	}
+	return false
+}
+
 func isNotFoundErr(err error) bool {
 	return errors.Is(err, pgx.ErrNoRows)
 }
@@ -110,8 +127,72 @@ func hashToken(plain string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func isAdminRole(role string) bool {
-	return strings.EqualFold(role, RoleAdmin) || strings.EqualFold(role, RoleSuperAdmin)
+func normalizeRole(role string) string {
+	return strings.ToLower(strings.TrimSpace(role))
+}
+
+func isValidRole(role string) bool {
+	switch normalizeRole(role) {
+	case RoleBuyer, RoleSeller, RoleModerator, RoleCSKH, RoleAccountant, RoleOps, RoleAdmin, RoleSuperAdmin:
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidStaffCreatableRole(role string) bool {
+	switch normalizeRole(role) {
+	case RoleModerator, RoleCSKH, RoleAccountant, RoleOps, RoleAdmin:
+		return true
+	default:
+		return false
+	}
+}
+
+// isScopedAuditViewerRole returns true for specialist roles whose ListAuditLogs access
+// is restricted to their own actor_id (w3b-design-a7 §2.1 †, contracts.md §4.11).
+func isScopedAuditViewerRole(role string) bool {
+	switch normalizeRole(role) {
+	case RoleModerator, RoleCSKH, RoleAccountant:
+		return true
+	default:
+		return false
+	}
+}
+
+// isFullAdminRank returns true for general admin tiers (admin, super_admin) allowed to
+// override self-resource checks on non-admin user/address endpoints.
+func isFullAdminRank(claims *auth.Claims) bool {
+	if claims == nil || claims.Service != "" {
+		return false
+	}
+	return auth.RoleRank(claims.Role) >= auth.RoleRank(auth.RoleAdmin)
+}
+
+// maskIP partially masks IPv4 (last octet -> .xxx) and IPv6 (keeps /48 prefix + ::xxxx)
+// for privacy-preserving activity logging (F13).
+func maskIP(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		s = host
+	}
+	addr, err := netip.ParseAddr(strings.TrimSpace(s))
+	if err != nil {
+		return "masked"
+	}
+	addr = addr.Unmap()
+	if addr.Is4() {
+		b := addr.As4()
+		return fmt.Sprintf("%d.%d.%d.xxx", b[0], b[1], b[2])
+	}
+	b := addr.As16()
+	g0 := uint16(b[0])<<8 | uint16(b[1])
+	g1 := uint16(b[2])<<8 | uint16(b[3])
+	g2 := uint16(b[4])<<8 | uint16(b[5])
+	return fmt.Sprintf("%x:%x:%x::xxxx", g0, g1, g2)
 }
 
 func requireAuthClaims(ctx context.Context) (*auth.Claims, error) {
@@ -198,6 +279,14 @@ func roleToProto(role string) userv1.UserRole {
 		return userv1.UserRole_USER_ROLE_ADMIN
 	case RoleSuperAdmin:
 		return userv1.UserRole_USER_ROLE_SUPER_ADMIN
+	case RoleModerator:
+		return userv1.UserRole_USER_ROLE_MODERATOR
+	case RoleCSKH:
+		return userv1.UserRole_USER_ROLE_CSKH
+	case RoleAccountant:
+		return userv1.UserRole_USER_ROLE_ACCOUNTANT
+	case RoleOps:
+		return userv1.UserRole_USER_ROLE_OPS
 	default:
 		return userv1.UserRole_USER_ROLE_UNSPECIFIED
 	}
@@ -213,6 +302,40 @@ func roleFromProto(role userv1.UserRole) string {
 		return RoleAdmin
 	case userv1.UserRole_USER_ROLE_SUPER_ADMIN:
 		return RoleSuperAdmin
+	case userv1.UserRole_USER_ROLE_MODERATOR:
+		return RoleModerator
+	case userv1.UserRole_USER_ROLE_CSKH:
+		return RoleCSKH
+	case userv1.UserRole_USER_ROLE_ACCOUNTANT:
+		return RoleAccountant
+	case userv1.UserRole_USER_ROLE_OPS:
+		return RoleOps
+	default:
+		return ""
+	}
+}
+
+func shopApprovalStatusToProto(st string) userv1.ShopApprovalStatus {
+	switch strings.ToUpper(strings.TrimSpace(st)) {
+	case ApprovalStatusPending:
+		return userv1.ShopApprovalStatus_SHOP_APPROVAL_STATUS_PENDING
+	case ApprovalStatusApproved:
+		return userv1.ShopApprovalStatus_SHOP_APPROVAL_STATUS_APPROVED
+	case ApprovalStatusRejected:
+		return userv1.ShopApprovalStatus_SHOP_APPROVAL_STATUS_REJECTED
+	default:
+		return userv1.ShopApprovalStatus_SHOP_APPROVAL_STATUS_UNSPECIFIED
+	}
+}
+
+func shopApprovalStatusFromProto(st userv1.ShopApprovalStatus) string {
+	switch st {
+	case userv1.ShopApprovalStatus_SHOP_APPROVAL_STATUS_PENDING:
+		return ApprovalStatusPending
+	case userv1.ShopApprovalStatus_SHOP_APPROVAL_STATUS_APPROVED:
+		return ApprovalStatusApproved
+	case userv1.ShopApprovalStatus_SHOP_APPROVAL_STATUS_REJECTED:
+		return ApprovalStatusRejected
 	default:
 		return ""
 	}
@@ -297,7 +420,7 @@ func toProtoUser(u db.User) *userv1.User {
 }
 
 func toProtoShop(s db.Shop) *userv1.Shop {
-	return &userv1.Shop{
+	out := &userv1.Shop{
 		Id:                 s.ID,
 		OwnerUserId:        s.OwnerUserID,
 		Name:               s.Name,
@@ -310,7 +433,66 @@ func toProtoShop(s db.Shop) *userv1.Shop {
 		RejectionReason:    s.RejectionReason,
 		CreatedAt:          timestamppb.New(s.CreatedAt),
 		UpdatedAt:          timestamppb.New(s.UpdatedAt),
+		SuspendedReason:    s.SuspendedReason,
+		StatusVersion:      s.StatusVersion,
 	}
+	if s.SuspendedAt != nil {
+		out.SuspendedAt = timestamppb.New(*s.SuspendedAt)
+	}
+	return out
+}
+
+func toProtoUserActivityEntry(e db.UserActivityLog) *userv1.UserActivityEntry {
+	return &userv1.UserActivityEntry{
+		Id:           e.ID,
+		UserId:       e.UserID,
+		EventType:    e.EventType,
+		IpAddress:    e.IPAddress,
+		MetadataJson: e.MetadataJSON,
+		CreatedAt:    timestamppb.New(e.CreatedAt),
+	}
+}
+
+func toProtoShopSuspensionApproval(a db.ShopSuspensionApproval, shopName string) *userv1.ShopSuspensionApproval {
+	out := &userv1.ShopSuspensionApproval{
+		Id:            a.ID,
+		ShopId:        a.ShopID,
+		ShopName:      shopName,
+		Status:        shopApprovalStatusToProto(a.Status),
+		Reason:        a.Reason,
+		RequestedBy:   a.RequestedBy,
+		RequestedRole: a.RequestedRole,
+		DecidedNote:   a.DecidedNote,
+		CreatedAt:     timestamppb.New(a.CreatedAt),
+	}
+	if a.DecidedBy != nil {
+		out.DecidedBy = *a.DecidedBy
+	}
+	if a.DecidedAt != nil {
+		out.DecidedAt = timestamppb.New(*a.DecidedAt)
+	}
+	return out
+}
+
+func toProtoShopSuspensionApprovalFromRow(r db.ListShopSuspensionApprovalsRow) *userv1.ShopSuspensionApproval {
+	out := &userv1.ShopSuspensionApproval{
+		Id:            r.ID,
+		ShopId:        r.ShopID,
+		ShopName:      r.ShopName,
+		Status:        shopApprovalStatusToProto(r.Status),
+		Reason:        r.Reason,
+		RequestedBy:   r.RequestedBy,
+		RequestedRole: r.RequestedRole,
+		DecidedNote:   r.DecidedNote,
+		CreatedAt:     timestamppb.New(r.CreatedAt),
+	}
+	if r.DecidedBy != nil {
+		out.DecidedBy = *r.DecidedBy
+	}
+	if r.DecidedAt != nil {
+		out.DecidedAt = timestamppb.New(*r.DecidedAt)
+	}
+	return out
 }
 
 func toAdminProtoShop(s db.Shop, bankReviewPending bool) *userv1.Shop {
@@ -333,6 +515,9 @@ func shopFromAdminListRow(r db.AdminListShopsRow) db.Shop {
 		CreatedAt:          r.CreatedAt,
 		UpdatedAt:          r.UpdatedAt,
 		Slug:               r.Slug,
+		SuspendedAt:        r.SuspendedAt,
+		SuspendedReason:    r.SuspendedReason,
+		StatusVersion:      r.StatusVersion,
 	}
 }
 
@@ -463,12 +648,18 @@ func lockedAccountMessage(reason string) string {
 }
 
 func auditShopSnapshot(s db.Shop) map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"id":                  s.ID,
 		"owner_user_id":       s.OwnerUserID,
 		"name":                s.Name,
 		"status":              s.Status,
+		"status_version":      s.StatusVersion,
 		"rejection_reason":    s.RejectionReason,
+		"suspended_reason":    s.SuspendedReason,
 		"verified_owner_name": s.VerifiedOwnerName,
 	}
+	if s.SuspendedAt != nil {
+		out["suspended_at"] = s.SuspendedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+	}
+	return out
 }

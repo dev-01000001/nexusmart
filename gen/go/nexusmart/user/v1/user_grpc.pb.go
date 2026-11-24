@@ -54,6 +54,12 @@ const (
 	UserService_GetShopBankAccountForPayout_FullMethodName = "/nexusmart.user.v1.UserService/GetShopBankAccountForPayout"
 	UserService_RequestPhoneOTP_FullMethodName             = "/nexusmart.user.v1.UserService/RequestPhoneOTP"
 	UserService_VerifyPhoneOTP_FullMethodName              = "/nexusmart.user.v1.UserService/VerifyPhoneOTP"
+	UserService_AdminCreateStaffUser_FullMethodName        = "/nexusmart.user.v1.UserService/AdminCreateStaffUser"
+	UserService_AdminListUserActivities_FullMethodName     = "/nexusmart.user.v1.UserService/AdminListUserActivities"
+	UserService_AdminRequestShopSuspension_FullMethodName  = "/nexusmart.user.v1.UserService/AdminRequestShopSuspension"
+	UserService_AdminListShopApprovals_FullMethodName      = "/nexusmart.user.v1.UserService/AdminListShopApprovals"
+	UserService_AdminDecideShopSuspension_FullMethodName   = "/nexusmart.user.v1.UserService/AdminDecideShopSuspension"
+	UserService_AdminUnsuspendShop_FullMethodName          = "/nexusmart.user.v1.UserService/AdminUnsuspendShop"
 )
 
 // UserServiceClient is the client API for UserService service.
@@ -95,6 +101,12 @@ type UserServiceClient interface {
 	GetShopBankAccountForPayout(ctx context.Context, in *GetShopBankAccountForPayoutRequest, opts ...grpc.CallOption) (*GetShopBankAccountForPayoutResponse, error)
 	RequestPhoneOTP(ctx context.Context, in *RequestPhoneOTPRequest, opts ...grpc.CallOption) (*RequestPhoneOTPResponse, error)
 	VerifyPhoneOTP(ctx context.Context, in *VerifyPhoneOTPRequest, opts ...grpc.CallOption) (*VerifyPhoneOTPResponse, error)
+	AdminCreateStaffUser(ctx context.Context, in *AdminCreateStaffUserRequest, opts ...grpc.CallOption) (*AdminCreateStaffUserResponse, error)
+	AdminListUserActivities(ctx context.Context, in *AdminListUserActivitiesRequest, opts ...grpc.CallOption) (*AdminListUserActivitiesResponse, error)
+	AdminRequestShopSuspension(ctx context.Context, in *AdminRequestShopSuspensionRequest, opts ...grpc.CallOption) (*AdminRequestShopSuspensionResponse, error)
+	AdminListShopApprovals(ctx context.Context, in *AdminListShopApprovalsRequest, opts ...grpc.CallOption) (*AdminListShopApprovalsResponse, error)
+	AdminDecideShopSuspension(ctx context.Context, in *AdminDecideShopSuspensionRequest, opts ...grpc.CallOption) (*AdminDecideShopSuspensionResponse, error)
+	AdminUnsuspendShop(ctx context.Context, in *AdminUnsuspendShopRequest, opts ...grpc.CallOption) (*AdminUnsuspendShopResponse, error)
 }
 
 type userServiceClient struct {
@@ -455,6 +467,66 @@ func (c *userServiceClient) VerifyPhoneOTP(ctx context.Context, in *VerifyPhoneO
 	return out, nil
 }
 
+func (c *userServiceClient) AdminCreateStaffUser(ctx context.Context, in *AdminCreateStaffUserRequest, opts ...grpc.CallOption) (*AdminCreateStaffUserResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdminCreateStaffUserResponse)
+	err := c.cc.Invoke(ctx, UserService_AdminCreateStaffUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) AdminListUserActivities(ctx context.Context, in *AdminListUserActivitiesRequest, opts ...grpc.CallOption) (*AdminListUserActivitiesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdminListUserActivitiesResponse)
+	err := c.cc.Invoke(ctx, UserService_AdminListUserActivities_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) AdminRequestShopSuspension(ctx context.Context, in *AdminRequestShopSuspensionRequest, opts ...grpc.CallOption) (*AdminRequestShopSuspensionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdminRequestShopSuspensionResponse)
+	err := c.cc.Invoke(ctx, UserService_AdminRequestShopSuspension_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) AdminListShopApprovals(ctx context.Context, in *AdminListShopApprovalsRequest, opts ...grpc.CallOption) (*AdminListShopApprovalsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdminListShopApprovalsResponse)
+	err := c.cc.Invoke(ctx, UserService_AdminListShopApprovals_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) AdminDecideShopSuspension(ctx context.Context, in *AdminDecideShopSuspensionRequest, opts ...grpc.CallOption) (*AdminDecideShopSuspensionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdminDecideShopSuspensionResponse)
+	err := c.cc.Invoke(ctx, UserService_AdminDecideShopSuspension_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) AdminUnsuspendShop(ctx context.Context, in *AdminUnsuspendShopRequest, opts ...grpc.CallOption) (*AdminUnsuspendShopResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdminUnsuspendShopResponse)
+	err := c.cc.Invoke(ctx, UserService_AdminUnsuspendShop_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UserServiceServer is the server API for UserService service.
 // All implementations must embed UnimplementedUserServiceServer
 // for forward compatibility.
@@ -494,6 +566,12 @@ type UserServiceServer interface {
 	GetShopBankAccountForPayout(context.Context, *GetShopBankAccountForPayoutRequest) (*GetShopBankAccountForPayoutResponse, error)
 	RequestPhoneOTP(context.Context, *RequestPhoneOTPRequest) (*RequestPhoneOTPResponse, error)
 	VerifyPhoneOTP(context.Context, *VerifyPhoneOTPRequest) (*VerifyPhoneOTPResponse, error)
+	AdminCreateStaffUser(context.Context, *AdminCreateStaffUserRequest) (*AdminCreateStaffUserResponse, error)
+	AdminListUserActivities(context.Context, *AdminListUserActivitiesRequest) (*AdminListUserActivitiesResponse, error)
+	AdminRequestShopSuspension(context.Context, *AdminRequestShopSuspensionRequest) (*AdminRequestShopSuspensionResponse, error)
+	AdminListShopApprovals(context.Context, *AdminListShopApprovalsRequest) (*AdminListShopApprovalsResponse, error)
+	AdminDecideShopSuspension(context.Context, *AdminDecideShopSuspensionRequest) (*AdminDecideShopSuspensionResponse, error)
+	AdminUnsuspendShop(context.Context, *AdminUnsuspendShopRequest) (*AdminUnsuspendShopResponse, error)
 	mustEmbedUnimplementedUserServiceServer()
 }
 
@@ -608,6 +686,24 @@ func (UnimplementedUserServiceServer) RequestPhoneOTP(context.Context, *RequestP
 }
 func (UnimplementedUserServiceServer) VerifyPhoneOTP(context.Context, *VerifyPhoneOTPRequest) (*VerifyPhoneOTPResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method VerifyPhoneOTP not implemented")
+}
+func (UnimplementedUserServiceServer) AdminCreateStaffUser(context.Context, *AdminCreateStaffUserRequest) (*AdminCreateStaffUserResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AdminCreateStaffUser not implemented")
+}
+func (UnimplementedUserServiceServer) AdminListUserActivities(context.Context, *AdminListUserActivitiesRequest) (*AdminListUserActivitiesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AdminListUserActivities not implemented")
+}
+func (UnimplementedUserServiceServer) AdminRequestShopSuspension(context.Context, *AdminRequestShopSuspensionRequest) (*AdminRequestShopSuspensionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AdminRequestShopSuspension not implemented")
+}
+func (UnimplementedUserServiceServer) AdminListShopApprovals(context.Context, *AdminListShopApprovalsRequest) (*AdminListShopApprovalsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AdminListShopApprovals not implemented")
+}
+func (UnimplementedUserServiceServer) AdminDecideShopSuspension(context.Context, *AdminDecideShopSuspensionRequest) (*AdminDecideShopSuspensionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AdminDecideShopSuspension not implemented")
+}
+func (UnimplementedUserServiceServer) AdminUnsuspendShop(context.Context, *AdminUnsuspendShopRequest) (*AdminUnsuspendShopResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AdminUnsuspendShop not implemented")
 }
 func (UnimplementedUserServiceServer) mustEmbedUnimplementedUserServiceServer() {}
 func (UnimplementedUserServiceServer) testEmbeddedByValue()                     {}
@@ -1260,6 +1356,114 @@ func _UserService_VerifyPhoneOTP_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserService_AdminCreateStaffUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdminCreateStaffUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).AdminCreateStaffUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_AdminCreateStaffUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).AdminCreateStaffUser(ctx, req.(*AdminCreateStaffUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_AdminListUserActivities_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdminListUserActivitiesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).AdminListUserActivities(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_AdminListUserActivities_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).AdminListUserActivities(ctx, req.(*AdminListUserActivitiesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_AdminRequestShopSuspension_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdminRequestShopSuspensionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).AdminRequestShopSuspension(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_AdminRequestShopSuspension_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).AdminRequestShopSuspension(ctx, req.(*AdminRequestShopSuspensionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_AdminListShopApprovals_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdminListShopApprovalsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).AdminListShopApprovals(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_AdminListShopApprovals_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).AdminListShopApprovals(ctx, req.(*AdminListShopApprovalsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_AdminDecideShopSuspension_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdminDecideShopSuspensionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).AdminDecideShopSuspension(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_AdminDecideShopSuspension_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).AdminDecideShopSuspension(ctx, req.(*AdminDecideShopSuspensionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_AdminUnsuspendShop_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdminUnsuspendShopRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).AdminUnsuspendShop(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_AdminUnsuspendShop_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).AdminUnsuspendShop(ctx, req.(*AdminUnsuspendShopRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UserService_ServiceDesc is the grpc.ServiceDesc for UserService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1406,6 +1610,30 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "VerifyPhoneOTP",
 			Handler:    _UserService_VerifyPhoneOTP_Handler,
+		},
+		{
+			MethodName: "AdminCreateStaffUser",
+			Handler:    _UserService_AdminCreateStaffUser_Handler,
+		},
+		{
+			MethodName: "AdminListUserActivities",
+			Handler:    _UserService_AdminListUserActivities_Handler,
+		},
+		{
+			MethodName: "AdminRequestShopSuspension",
+			Handler:    _UserService_AdminRequestShopSuspension_Handler,
+		},
+		{
+			MethodName: "AdminListShopApprovals",
+			Handler:    _UserService_AdminListShopApprovals_Handler,
+		},
+		{
+			MethodName: "AdminDecideShopSuspension",
+			Handler:    _UserService_AdminDecideShopSuspension_Handler,
+		},
+		{
+			MethodName: "AdminUnsuspendShop",
+			Handler:    _UserService_AdminUnsuspendShop_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -13,6 +13,7 @@ sql:
         rename:
           qr_url: "QRURL"
           qr_code: "QRCode"
+          pay_url: "PayURL"
           label_url: "LabelURL"
           response_snapshot_json: "ResponseSnapshotJSON"
           warnings_json: "WarningsJSON"
@@ -22,6 +23,7 @@ sql:
           previous_return_trackings_json: "PreviousReturnTrackingsJSON"
           payload_json: "PayloadJSON"
           return_label_url: "ReturnLabelURL"
+          refund_id: "RefundID"
           refund_amount_vnd: "RefundAmountVND"
           return_fee_vnd: "ReturnFeeVND"
           sku_id: "SKUID"

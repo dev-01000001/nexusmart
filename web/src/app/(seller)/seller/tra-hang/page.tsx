@@ -878,7 +878,7 @@ function SellerReturnsInner({ shop }: { shop: GatewayShop }) {
 
 function SellerReturnsContent() {
   return (
-    <SellerShopGate pageTitle="Trả hàng & hoàn tiền">
+    <SellerShopGate pageTitle="Trả hàng & hoàn tiền" allowSuspended>
       {(shop) => <SellerReturnsInner shop={shop} />}
     </SellerShopGate>
   );

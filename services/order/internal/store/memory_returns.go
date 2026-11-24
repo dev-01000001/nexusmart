@@ -238,6 +238,31 @@ func (m *MemoryStore) TransitionReturnRequest(_ context.Context, params ReturnTr
 			}
 		}
 		m.completeOrderLocked(ord, params.ActorID, params.ActorRole, params.Note, completedOutbox, now)
+	} else if curStatus == orderv1.ReturnStatus_RETURN_STATUS_REFUNDING &&
+		params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_ESCALATED {
+		if rr.RefundDone || rr.PromoReleased || rr.RestockDone {
+			return nil, fmt.Errorf("%w: cannot re-escalate REFUNDING return after refund/compensation already executed", statemachine.ErrInvalidReturnTransition)
+		}
+		ordCur := statemachine.StringToStatus(ord.Status)
+		if ordCur == orderv1.OrderStatus_ORDER_STATUS_RETURNED {
+			if err := statemachine.ValidateTransition(ordCur, orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED); err != nil {
+				return nil, err
+			}
+			prevOrdStatus := ord.Status
+			ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED)
+			ord.UpdatedAt = now
+			m.orders[ord.ID] = ord
+			m.timelines[ord.ID] = append(m.timelines[ord.ID], db.OrderTimelineEvent{
+				ID:         uuid.NewString(),
+				OrderID:    ord.ID,
+				FromStatus: prevOrdStatus,
+				ToStatus:   ord.Status,
+				ActorID:    params.ActorID,
+				ActorRole:  params.ActorRole,
+				Note:       params.Note,
+				CreatedAt:  now,
+			})
+		}
 	}
 
 	prevStatusStr := rr.Status
@@ -276,6 +301,21 @@ func (m *MemoryStore) TransitionReturnRequest(_ context.Context, params ReturnTr
 	if params.EscalatedFromCancelFailure != nil {
 		rr.EscalatedFromCancelFailure = *params.EscalatedFromCancelFailure
 	}
+	if params.RequireApprovalIfLarge != nil {
+		rr.RequireApprovalIfLarge = *params.RequireApprovalIfLarge
+	}
+	if params.RefundRequestedBy != nil {
+		rr.RefundRequestedBy = *params.RefundRequestedBy
+	}
+	if params.RefundID != nil {
+		rr.RefundID = *params.RefundID
+	}
+	if params.RefundApprovalStatus != nil {
+		rr.RefundApprovalStatus = *params.RefundApprovalStatus
+	}
+	if params.IncrementRefundAttempt {
+		rr.RefundAttempt++
+	}
 	if params.UpdateDeadline {
 		rr.DeadlineAt = params.DeadlineAt
 	}
@@ -303,6 +343,10 @@ func (m *MemoryStore) TransitionReturnRequest(_ context.Context, params ReturnTr
 		}
 		rr.RefundAmountVND = rem
 	}
+	if params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_REFUNDED &&
+		(strings.EqualFold(rr.RefundApprovalStatus, "PENDING_APPROVAL") || strings.EqualFold(rr.RefundApprovalStatus, "REJECTED")) {
+		return nil, fmt.Errorf("%w: cannot mark return REFUNDED while refund_approval_status is %q", statemachine.ErrInvalidReturnTransition, rr.RefundApprovalStatus)
+	}
 	rr.UpdatedAt = now
 	m.returnRequests[rr.ID] = rr
 
@@ -317,7 +361,17 @@ func (m *MemoryStore) TransitionReturnRequest(_ context.Context, params ReturnTr
 		CreatedAt:       now,
 	})
 
-	ob, err := buildReturnUpdatedOutbox(rr, ord.CheckoutGroupID, prevStatusStr, eventNote, params.ActorRole, params.TraceID, params.Traceparent)
+	outboxReason := strings.TrimSpace(params.OutboxReason)
+	if outboxReason == "" {
+		if curStatus == orderv1.ReturnStatus_RETURN_STATUS_REFUNDING &&
+			params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_ESCALATED &&
+			strings.EqualFold(rr.RefundApprovalStatus, "REJECTED") {
+			outboxReason = "refund_rejected"
+		} else {
+			outboxReason = eventNote
+		}
+	}
+	ob, err := buildReturnUpdatedOutbox(rr, ord.CheckoutGroupID, prevStatusStr, outboxReason, params.ActorRole, params.TraceID, params.Traceparent)
 	if err != nil {
 		return nil, err
 	}
@@ -428,6 +482,43 @@ func (m *MemoryStore) UpdateReturnSideEffectProgress(_ context.Context, returnRe
 	rr.RefundDone = rr.RefundDone || refundDone
 	rr.PromoReleased = rr.PromoReleased || promoReleased
 	rr.RestockDone = rr.RestockDone || restockDone
+	if refundAmountVND != nil {
+		amt := *refundAmountVND
+		if amt < 0 {
+			amt = 0
+		}
+		rr.RefundAmountVND = amt
+	}
+	rr.UpdatedAt = time.Now().UTC()
+	m.returnRequests[rr.ID] = rr
+	cp := rr
+	return &cp, nil
+}
+
+func (m *MemoryStore) UpdateReturnRefundApprovalState(_ context.Context, returnRequestID, refundID, approvalStatus string, refundDone bool, refundAmountVND *int64) (*db.ReturnRequest, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rr, ok := m.returnRequests[returnRequestID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cleanApprovalStatus := strings.TrimSpace(approvalStatus)
+	if statemachine.StringToReturnStatus(rr.Status) != orderv1.ReturnStatus_RETURN_STATUS_REFUNDING {
+		return nil, fmt.Errorf("%w: cannot update refund approval state from return status %s", statemachine.ErrInvalidReturnTransition, rr.Status)
+	}
+	if strings.EqualFold(cleanApprovalStatus, "PENDING_APPROVAL") &&
+		(rr.RefundDone || strings.EqualFold(rr.RefundApprovalStatus, "APPROVED") || strings.EqualFold(rr.RefundApprovalStatus, "REJECTED")) {
+		return nil, fmt.Errorf("%w: cannot downgrade refund approval status from %q to PENDING_APPROVAL", statemachine.ErrInvalidReturnTransition, rr.RefundApprovalStatus)
+	}
+	nextRefundDone := rr.RefundDone || refundDone
+	if nextRefundDone && (strings.EqualFold(cleanApprovalStatus, "PENDING_APPROVAL") || strings.EqualFold(cleanApprovalStatus, "REJECTED")) {
+		return nil, fmt.Errorf("%w: cannot set refund_done=true while refund_approval_status is %q", statemachine.ErrInvalidReturnTransition, cleanApprovalStatus)
+	}
+	rr.RefundDone = nextRefundDone
+	if id := strings.TrimSpace(refundID); id != "" {
+		rr.RefundID = id
+	}
+	rr.RefundApprovalStatus = cleanApprovalStatus
 	if refundAmountVND != nil {
 		amt := *refundAmountVND
 		if amt < 0 {
@@ -687,7 +778,7 @@ func (m *MemoryStore) FindRefundingReturnRequests(_ context.Context, limit int32
 	defer m.mu.Unlock()
 	var matched []string
 	for _, rr := range m.returnRequests {
-		if rr.Status == "REFUNDING" {
+		if rr.Status == "REFUNDING" && rr.RefundApprovalStatus != "PENDING_APPROVAL" {
 			matched = append(matched, rr.ID)
 		}
 	}

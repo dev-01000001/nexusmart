@@ -529,12 +529,20 @@ export function OrdersListClient({
                                 ? {
                                     ...o,
                                     payment_id: next.payment_id,
+                                    payment_method: next.method,
                                     payment_status: next.status,
                                     payment_expires_at: next.expires_at,
                                   }
                                 : o;
                             setOrderList((prev) => prev.map(patchOrder));
                             setPendingPool((prev) => prev.map(patchOrder));
+                            router.refresh();
+                          }}
+                          onSwitchedToCod={() => {
+                            setRetryingOrderId(null);
+                            showToast(
+                              `Đơn ${order.order_code} đã chuyển sang COD và được xác nhận.`
+                            );
                             router.refresh();
                           }}
                         />

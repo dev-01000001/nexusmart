@@ -19,7 +19,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
 	paymentv1 "github.com/nexusmart/core/gen/go/nexusmart/payment/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
@@ -46,12 +45,36 @@ type paymentDTO struct {
 	Status          string               `json:"status"`
 	QRURL           string               `json:"qr_url"`
 	QRCode          string               `json:"qr_code"`
+	PayURL          string               `json:"pay_url"`
 	Provider        string               `json:"provider"`
 	ProviderRef     string               `json:"provider_ref"`
 	ShopAllocations []*shopAllocationDTO `json:"shop_allocations"`
 	ExpiresAt       string               `json:"expires_at,omitempty"`
 	CreatedAt       string               `json:"created_at,omitempty"`
 	UpdatedAt       string               `json:"updated_at,omitempty"`
+}
+
+type publicPaymentMethodConfigDTO struct {
+	Method        string `json:"method"`
+	Enabled       bool   `json:"enabled"`
+	MinOrderVND   int64  `json:"min_order_vnd"`
+	MaxOrderVND   int64  `json:"max_order_vnd"`
+	ExpiryMinutes int32  `json:"expiry_minutes"`
+	Version       int64  `json:"version"`
+}
+
+type adminPaymentMethodConfigDTO struct {
+	Method                string `json:"method"`
+	Enabled               bool   `json:"enabled"`
+	MinOrderVND           int64  `json:"min_order_vnd"`
+	MaxOrderVND           int64  `json:"max_order_vnd"`
+	ExpiryMinutes         int32  `json:"expiry_minutes"`
+	CredentialsConfigured bool   `json:"credentials_configured"`
+	CredentialPreview     string `json:"credential_preview"`
+	UpdatedBy             string `json:"updated_by"`
+	UpdatedAt             string `json:"updated_at,omitempty"`
+	Note                  string `json:"note"`
+	Version               int64  `json:"version"`
 }
 
 type refundDTO struct {
@@ -71,6 +94,12 @@ type refundDTO struct {
 	IsLatePayment     bool   `json:"is_late_payment"`
 	SettledAt         string `json:"settled_at,omitempty"`
 	SettlementNote    string `json:"settlement_note"`
+	RequestedBy       string `json:"requested_by"`
+	ApprovedBy        string `json:"approved_by"`
+	ApprovedAt        string `json:"approved_at,omitempty"`
+	ApprovalNote      string `json:"approval_note"`
+	ProviderMRefundID string `json:"provider_m_refund_id"`
+	ProviderStatus    string `json:"provider_status"`
 }
 
 type reconciliationQueueItemDTO struct {
@@ -174,9 +203,48 @@ func parsePaymentMethod(s string) paymentv1.PaymentMethod {
 		return paymentv1.PaymentMethod_PAYMENT_METHOD_COD
 	case "VIETQR", "PAYMENT_METHOD_VIETQR":
 		return paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR
+	case "ZALOPAY", "PAYMENT_METHOD_ZALOPAY":
+		return paymentv1.PaymentMethod_PAYMENT_METHOD_ZALOPAY
 	default:
 		return paymentv1.PaymentMethod_PAYMENT_METHOD_UNSPECIFIED
 	}
+}
+
+func mapPublicPaymentMethodConfig(c *paymentv1.PaymentMethodConfig) *publicPaymentMethodConfigDTO {
+	if c == nil {
+		return nil
+	}
+	return &publicPaymentMethodConfigDTO{
+		Method:        paymentMethodString(c.GetMethod()),
+		Enabled:       c.GetEnabled(),
+		MinOrderVND:   c.GetMinOrderVnd(),
+		MaxOrderVND:   c.GetMaxOrderVnd(),
+		ExpiryMinutes: c.GetExpiryMinutes(),
+		Version:       c.GetVersion(),
+	}
+}
+
+func mapAdminPaymentMethodConfig(c *paymentv1.PaymentMethodConfig) *adminPaymentMethodConfigDTO {
+	if c == nil {
+		return nil
+	}
+	return &adminPaymentMethodConfigDTO{
+		Method:                paymentMethodString(c.GetMethod()),
+		Enabled:               c.GetEnabled(),
+		MinOrderVND:           c.GetMinOrderVnd(),
+		MaxOrderVND:           c.GetMaxOrderVnd(),
+		ExpiryMinutes:         c.GetExpiryMinutes(),
+		CredentialsConfigured: c.GetCredentialsConfigured(),
+		CredentialPreview:     c.GetCredentialPreview(),
+		UpdatedBy:             c.GetUpdatedBy(),
+		UpdatedAt:             httpx.FormatTimestamp(c.GetUpdatedAt()),
+		Note:                  c.GetNote(),
+		Version:               c.GetVersion(),
+	}
+}
+
+func canAdminReadPayment(claims *auth.Claims) bool {
+	return auth.HasCapability(claims, auth.CapRefundsRead) || auth.HasCapability(claims, auth.CapLedgerRead)
 }
 
 func paymentHasShopAllocation(p *paymentv1.Payment, shopID string) bool {
@@ -192,7 +260,7 @@ func paymentHasShopAllocation(p *paymentv1.Payment, shopID string) bool {
 }
 
 func canAccessPayment(claims *auth.Claims, p *paymentv1.Payment) bool {
-	if auth.HasRole(claims, "admin", "super_admin") {
+	if canAdminReadPayment(claims) {
 		return true
 	}
 	if claims == nil || p == nil || strings.TrimSpace(p.GetUserId()) == "" {
@@ -229,6 +297,7 @@ func mapPayment(p *paymentv1.Payment) *paymentDTO {
 		Status:          paymentStatusString(p.GetStatus()),
 		QRURL:           p.GetQrUrl(),
 		QRCode:          p.GetQrCode(),
+		PayURL:          p.GetPayUrl(),
 		Provider:        p.GetProvider(),
 		ProviderRef:     p.GetProviderRef(),
 		ShopAllocations: allocs,
@@ -239,16 +308,16 @@ func mapPayment(p *paymentv1.Payment) *paymentDTO {
 }
 
 // mapPaymentForCaller enforces role-scoped allocation and payment-credential privacy as
-// defense-in-depth: admins see full details; buyers see their payment allocations with
-// commission_vnd zeroed; non-buyer sellers see only their own shop's allocation with
-// qr_url, qr_code, and provider_ref cleared.
+// defense-in-depth: authorized staff (refunds.read/ledger.read) see full details; buyers see
+// their payment allocations with commission_vnd zeroed; non-buyer sellers see only their own
+// shop's allocation with qr_url, qr_code, pay_url, and provider_ref cleared.
 func mapPaymentForCaller(ctx context.Context, p *paymentv1.Payment) *paymentDTO {
 	dto := mapPayment(p)
 	if dto == nil {
 		return nil
 	}
 	claims, _ := auth.ClaimsFromContext(ctx)
-	if auth.HasRole(claims, "admin", "super_admin") {
+	if canAdminReadPayment(claims) {
 		return dto
 	}
 	if claims != nil && claims.UserID() != "" && p.GetUserId() == claims.UserID() {
@@ -267,12 +336,14 @@ func mapPaymentForCaller(ctx context.Context, p *paymentv1.Payment) *paymentDTO 
 		dto.ShopAllocations = filtered
 		dto.QRURL = ""
 		dto.QRCode = ""
+		dto.PayURL = ""
 		dto.ProviderRef = ""
 		return dto
 	}
 	dto.ShopAllocations = []*shopAllocationDTO{}
 	dto.QRURL = ""
 	dto.QRCode = ""
+	dto.PayURL = ""
 	dto.ProviderRef = ""
 	return dto
 }
@@ -302,6 +373,12 @@ func mapRefund(rf *paymentv1.Refund, includeFullBankAccount bool) *refundDTO {
 		IsLatePayment:     rf.GetIsLatePayment(),
 		SettledAt:         httpx.FormatTimestamp(rf.GetSettledAt()),
 		SettlementNote:    rf.GetSettlementNote(),
+		RequestedBy:       rf.GetRequestedBy(),
+		ApprovedBy:        rf.GetApprovedBy(),
+		ApprovedAt:        httpx.FormatTimestamp(rf.GetApprovedAt()),
+		ApprovalNote:      rf.GetApprovalNote(),
+		ProviderMRefundID: rf.GetProviderMRefundId(),
+		ProviderStatus:    rf.GetProviderStatus(),
 	}
 }
 
@@ -375,6 +452,8 @@ func paymentMethodString(m paymentv1.PaymentMethod) string {
 		return "COD"
 	case paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR:
 		return "VIETQR"
+	case paymentv1.PaymentMethod_PAYMENT_METHOD_ZALOPAY:
+		return "ZALOPAY"
 	default:
 		return ""
 	}
@@ -407,6 +486,12 @@ func refundStatusString(st paymentv1.RefundStatus) string {
 		return "DONE"
 	case paymentv1.RefundStatus_REFUND_STATUS_FAILED:
 		return "FAILED"
+	case paymentv1.RefundStatus_REFUND_STATUS_PENDING_APPROVAL:
+		return "PENDING_APPROVAL"
+	case paymentv1.RefundStatus_REFUND_STATUS_REJECTED:
+		return "REJECTED"
+	case paymentv1.RefundStatus_REFUND_STATUS_MANUAL_REVIEW:
+		return "MANUAL_REVIEW"
 	default:
 		return ""
 	}
@@ -420,6 +505,12 @@ func parseRefundStatus(s string) paymentv1.RefundStatus {
 		return paymentv1.RefundStatus_REFUND_STATUS_DONE
 	case "FAILED", "REFUND_STATUS_FAILED":
 		return paymentv1.RefundStatus_REFUND_STATUS_FAILED
+	case "PENDING_APPROVAL", "REFUND_STATUS_PENDING_APPROVAL":
+		return paymentv1.RefundStatus_REFUND_STATUS_PENDING_APPROVAL
+	case "REJECTED", "REFUND_STATUS_REJECTED":
+		return paymentv1.RefundStatus_REFUND_STATUS_REJECTED
+	case "MANUAL_REVIEW", "REFUND_STATUS_MANUAL_REVIEW":
+		return paymentv1.RefundStatus_REFUND_STATUS_MANUAL_REVIEW
 	default:
 		return paymentv1.RefundStatus_REFUND_STATUS_UNSPECIFIED
 	}
@@ -480,6 +571,12 @@ func (h *handler) handleGetPayment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleRetryPayment(w http.ResponseWriter, r *http.Request) {
+	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idemKey == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "MISSING_IDEMPOTENCY_KEY", "Idempotency-Key header is required")
+		return
+	}
+
 	var body struct {
 		Method string `json:"method"`
 	}
@@ -489,20 +586,11 @@ func (h *handler) handleRetryPayment(w http.ResponseWriter, r *http.Request) {
 	}
 	orderMethod := parseOrderPaymentMethod(body.Method)
 	if orderMethod == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "valid payment method (COD or VIETQR) is required")
-		return
-	}
-	if orderMethod == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
-		httpx.WriteError(w, r, http.StatusConflict, "FAILED_PRECONDITION", "cannot retry or switch to COD via payment retry; create a new checkout instead")
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "valid payment method (COD, VIETQR, or ZALOPAY) is required")
 		return
 	}
 
 	paymentID := chi.URLParam(r, "id")
-	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-	if idemKey == "" {
-		idemKey = "retry-" + paymentID + "-" + uuid.NewString()
-	}
-
 	ctx, cancel := h.clients.OutgoingContext(r.Context(), "idempotency-key", idemKey)
 	defer cancel()
 
@@ -530,7 +618,25 @@ func (h *handler) handleRetryPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"payment": mapPaymentForCaller(r.Context(), getResp.GetPayment())})
+	payDTO := mapPaymentForCaller(r.Context(), getResp.GetPayment())
+	payURL := retryResp.GetPayUrl()
+	if payURL == "" && payDTO != nil {
+		payURL = payDTO.PayURL
+	} else if payDTO != nil && payDTO.PayURL == "" && payURL != "" {
+		payDTO.PayURL = payURL
+	}
+
+	orders := make([]*orderDTO, 0, len(retryResp.GetOrders()))
+	for _, o := range retryResp.GetOrders() {
+		orders = append(orders, mapOrderForBuyer(o))
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"payment":         payDTO,
+		"pay_url":         payURL,
+		"switched_to_cod": retryResp.GetSwitchedToCod(),
+		"orders":          orders,
+	})
 }
 
 func (h *handler) handleSellerBalance(w http.ResponseWriter, r *http.Request) {
@@ -654,9 +760,13 @@ func (h *handler) handleAdminReconcilePayments(w http.ResponseWriter, r *http.Re
 
 func (h *handler) handleListOrderRefunds(w http.ResponseWriter, r *http.Request) {
 	orderID := chi.URLParam(r, "id")
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	claims, _ := auth.ClaimsFromContext(r.Context())
-	isAdmin := auth.HasRole(claims, "admin", "super_admin")
+	isAdmin := auth.HasCapability(claims, auth.CapRefundsRead)
 
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
@@ -730,7 +840,11 @@ func (h *handler) handleSubmitRefundBankAccount(w http.ResponseWriter, r *http.R
 }
 
 func (h *handler) handleAdminListRefunds(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	q := r.URL.Query()
 
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -793,7 +907,11 @@ func (h *handler) handleAdminSettleRefund(w http.ResponseWriter, r *http.Request
 }
 
 func (h *handler) handleAdminListReconciliationQueue(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
@@ -856,7 +974,11 @@ func (h *handler) handleAdminResolveReconciliationItem(w http.ResponseWriter, r 
 }
 
 func (h *handler) handleSellerLedger(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	q := r.URL.Query()
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
@@ -901,7 +1023,7 @@ func (h *handler) handleAdminGetPaymentFeeConfig(w http.ResponseWriter, r *http.
 	rawMethod := strings.TrimSpace(q.Get("payment_method"))
 	pm := parsePaymentMethod(rawMethod)
 	if rawMethod != "" && pm == paymentv1.PaymentMethod_PAYMENT_METHOD_UNSPECIFIED {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "payment_method must be COD or VIETQR")
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "payment_method must be COD, VIETQR, or ZALOPAY")
 		return
 	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -942,7 +1064,7 @@ func (h *handler) handleAdminSetPaymentFeeConfig(w http.ResponseWriter, r *http.
 	}
 	pm := parsePaymentMethod(body.PaymentMethod)
 	if pm == paymentv1.PaymentMethod_PAYMENT_METHOD_UNSPECIFIED {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "payment_method must be COD or VIETQR")
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "payment_method must be COD, VIETQR, or ZALOPAY")
 		return
 	}
 	if body.FeeBps == nil {
@@ -1360,7 +1482,11 @@ func (h *handler) handleAdminImportCodReconciliation(w http.ResponseWriter, r *h
 }
 
 func (h *handler) handleAdminListReconciliationRuns(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	runType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("run_type")))
 	if runType != "" && runType != "vietqr" && runType != "cod_file" {
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "run_type must be vietqr or cod_file")
@@ -1389,5 +1515,176 @@ func (h *handler) handleAdminListReconciliationRuns(w http.ResponseWriter, r *ht
 		"page":      page,
 		"page_size": pageSize,
 		"total":     resp.GetTotal(),
+	})
+}
+
+// --- Wave 3b-2 (A6 & A7): Payment Method Configs & Two-Person Refund Approval ---
+
+func (h *handler) handleListPublicPaymentMethods(w http.ResponseWriter, r *http.Request) {
+	rawMethod := strings.TrimSpace(r.URL.Query().Get("method"))
+	pm := parsePaymentMethod(rawMethod)
+	if rawMethod != "" && pm == paymentv1.PaymentMethod_PAYMENT_METHOD_UNSPECIFIED {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "method must be COD, VIETQR, or ZALOPAY")
+		return
+	}
+
+	// Always strip Authorization on public payment-methods route so upstream enforces public-only view (F6/F8).
+	ctx, cancel := h.clients.PublicOutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Payment.GetPaymentMethodConfigs(ctx, &paymentv1.GetPaymentMethodConfigsRequest{
+		Method: pm,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	methods := make([]*publicPaymentMethodConfigDTO, 0, len(resp.GetConfigs()))
+	for _, c := range resp.GetConfigs() {
+		methods = append(methods, mapPublicPaymentMethodConfig(c))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"methods": methods,
+	})
+}
+
+func (h *handler) handleAdminListPaymentMethods(w http.ResponseWriter, r *http.Request) {
+	rawMethod := strings.TrimSpace(r.URL.Query().Get("method"))
+	pm := parsePaymentMethod(rawMethod)
+	if rawMethod != "" && pm == paymentv1.PaymentMethod_PAYMENT_METHOD_UNSPECIFIED {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "method must be COD, VIETQR, or ZALOPAY")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Payment.GetPaymentMethodConfigs(ctx, &paymentv1.GetPaymentMethodConfigsRequest{
+		Method: pm,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	methods := make([]*adminPaymentMethodConfigDTO, 0, len(resp.GetConfigs()))
+	for _, c := range resp.GetConfigs() {
+		methods = append(methods, mapAdminPaymentMethodConfig(c))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"methods": methods,
+	})
+}
+
+func (h *handler) handleAdminUpdatePaymentMethodConfig(w http.ResponseWriter, r *http.Request) {
+	pm := parsePaymentMethod(chi.URLParam(r, "method"))
+	if pm == paymentv1.PaymentMethod_PAYMENT_METHOD_UNSPECIFIED {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "method must be COD, VIETQR, or ZALOPAY")
+		return
+	}
+
+	var body struct {
+		Enabled         *bool  `json:"enabled"`
+		MinOrderVND     int64  `json:"min_order_vnd"`
+		MaxOrderVND     int64  `json:"max_order_vnd"`
+		ExpiryMinutes   int32  `json:"expiry_minutes"`
+		Note            string `json:"note"`
+		ExpectedVersion *int64 `json:"expected_version"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	if body.Enabled == nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "enabled is required")
+		return
+	}
+	if body.MinOrderVND < 0 || body.MaxOrderVND < 0 {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "min_order_vnd and max_order_vnd must be non-negative")
+		return
+	}
+	if body.MaxOrderVND > 0 && body.MinOrderVND > body.MaxOrderVND {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "min_order_vnd must not exceed max_order_vnd")
+		return
+	}
+	if body.ExpiryMinutes < 0 || body.ExpiryMinutes > 1440 {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "expiry_minutes must be between 0 and 1440")
+		return
+	}
+	if body.ExpectedVersion == nil || *body.ExpectedVersion < 0 {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "expected_version is required and must be non-negative")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	// Capture best-effort before snapshot for full before/after audit logging (F7).
+	if beforeResp, bErr := h.clients.Payment.GetPaymentMethodConfigs(ctx, &paymentv1.GetPaymentMethodConfigsRequest{Method: pm}); bErr == nil {
+		for _, c := range beforeResp.GetConfigs() {
+			if c.GetMethod() == pm {
+				middleware.SetAuditBefore(r.Context(), map[string]any{
+					"method":         paymentMethodString(c.GetMethod()),
+					"enabled":        c.GetEnabled(),
+					"min_order_vnd":  c.GetMinOrderVnd(),
+					"max_order_vnd":  c.GetMaxOrderVnd(),
+					"expiry_minutes": c.GetExpiryMinutes(),
+					"note":           c.GetNote(),
+					"version":        c.GetVersion(),
+				})
+				break
+			}
+		}
+	}
+
+	resp, err := h.clients.Payment.UpdatePaymentMethodConfig(ctx, &paymentv1.UpdatePaymentMethodConfigRequest{
+		Method:          pm,
+		Enabled:         *body.Enabled,
+		MinOrderVnd:     body.MinOrderVND,
+		MaxOrderVnd:     body.MaxOrderVND,
+		ExpiryMinutes:   body.ExpiryMinutes,
+		Note:            body.Note,
+		ExpectedVersion: *body.ExpectedVersion,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"method": mapAdminPaymentMethodConfig(resp.GetConfig()),
+	})
+}
+
+func (h *handler) handleAdminDecideRefundApproval(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Approve *bool  `json:"approve"`
+		Note    string `json:"note"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	if body.Approve == nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "approve is required")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Payment.DecideRefundApproval(ctx, &paymentv1.DecideRefundApprovalRequest{
+		RefundId: chi.URLParam(r, "id"),
+		Approve:  *body.Approve,
+		Note:     body.Note,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"refund": mapRefund(resp.GetRefund(), true),
 	})
 }

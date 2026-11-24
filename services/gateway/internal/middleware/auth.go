@@ -152,3 +152,23 @@ func RequireRoles(allowed ...string) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// RequireCapability enforces a single-source-of-truth capability from pkg/common/auth/capabilities.json (F9)
+// after Auth middleware has populated Claims, rejecting unauthenticated callers with 401 and
+// unauthorized roles or internal service tokens with 403.
+func RequireCapability(capName string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims, ok := auth.ClaimsFromContext(r.Context())
+			if !ok {
+				httpx.WriteError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "authentication required")
+				return
+			}
+			if !auth.HasCapability(claims, capName) {
+				httpx.WriteError(w, r, http.StatusForbidden, "PERMISSION_DENIED", "insufficient permissions for this route")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}

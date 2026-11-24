@@ -23,6 +23,7 @@ enum OrderPaymentMethod {
   ORDER_PAYMENT_METHOD_UNSPECIFIED = 0;
   ORDER_PAYMENT_METHOD_COD = 1;
   ORDER_PAYMENT_METHOD_VIETQR = 2;
+  ORDER_PAYMENT_METHOD_ZALOPAY = 3;
 }
 
 enum PaymentResultStatus {
@@ -218,6 +219,8 @@ message CreateCheckoutResponse {
   int64 total_payable_vnd = 9;
   bool idempotent_replay = 10;
   repeated string warnings = 11;
+  // Redirect/deep-link URL for e-wallet payments (e.g. ZaloPay; empty for COD/VietQR) (F1/F8).
+  string pay_url = 12;
 }
 
 message GetOrderRequest {
@@ -338,6 +341,14 @@ message RetryPaymentResponse {
   string checkout_group_id = 1;
   string payment_id = 2;
   google.protobuf.Timestamp payment_expires_at = 3;
+  // Effective payment method after retry/method switch (F5).
+  OrderPaymentMethod payment_method = 4;
+  // True when the checkout group switched from online payment to COD (orders transition to CONFIRMED) (F5).
+  bool switched_to_cod = 5;
+  // Redirect/deep-link URL when payment_method is ZALOPAY (F1/F5/F8).
+  string pay_url = 6;
+  // Updated sub-orders in the checkout group (reflecting recalculated payment fee and status on switch) (F5).
+  repeated Order orders = 7;
 }
 
 message GetReturnRequestRequest {

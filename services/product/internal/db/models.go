@@ -45,6 +45,16 @@ type CategoryFeeSchedule struct {
 	CreatedAt         time.Time
 }
 
+type DeadLetterEvent struct {
+	ID           string
+	Subject      string
+	EventID      string
+	Payload      []byte
+	ErrorMessage string
+	Attempts     int32
+	CreatedAt    time.Time
+}
+
 type OutboxEvent struct {
 	ID           string
 	EventType    string
@@ -59,6 +69,12 @@ type OutboxEvent struct {
 	Seq          int64
 	ClaimedUntil *time.Time
 	ClaimToken   string
+}
+
+type ProcessedEvent struct {
+	EventID     string
+	EventType   string
+	ProcessedAt time.Time
 }
 
 type Product struct {
@@ -81,6 +97,7 @@ type Product struct {
 	ReviewCount     int32
 	FlaggedKeywords []byte
 	FirstApprovedAt *time.Time
+	ShopSuspended   bool
 }
 
 type ProductReview struct {
@@ -99,6 +116,13 @@ type ProductReview struct {
 	Status      string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+type ShopSuspensionState struct {
+	ShopID    string
+	Suspended bool
+	Version   int64
+	UpdatedAt time.Time
 }
 
 type Sku struct {

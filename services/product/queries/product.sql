@@ -203,24 +203,24 @@ OFFSET sqlc.arg(offset_val)::int;
 -- name: CreateProduct :one
 INSERT INTO products (
     id, shop_id, category_id, name, description, images, status,
-    rejection_reason, min_price_vnd, max_price_vnd, slug, search_text, flagged_keywords
+    rejection_reason, min_price_vnd, max_price_vnd, slug, search_text, flagged_keywords, shop_suspended
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 RETURNING id, shop_id, category_id, name, description, images, status,
           rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at;
+          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended;
 
 -- name: GetProductByID :one
 SELECT id, shop_id, category_id, name, description, images, status,
        rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
 FROM products
 WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: GetProductByIDForUpdate :one
 SELECT id, shop_id, category_id, name, description, images, status,
        rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
 FROM products
 WHERE id = $1 AND deleted_at IS NULL
 FOR UPDATE;
@@ -228,7 +228,7 @@ FOR UPDATE;
 -- name: GetProductByIDForUpdateAny :one
 SELECT id, shop_id, category_id, name, description, images, status,
        rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
 FROM products
 WHERE id = $1
 FOR UPDATE;
@@ -236,14 +236,14 @@ FOR UPDATE;
 -- name: GetProductBySlug :one
 SELECT id, shop_id, category_id, name, description, images, status,
        rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
 FROM products
 WHERE slug = $1 AND deleted_at IS NULL;
 
 -- name: GetDeletedApprovedProductBySlug :one
 SELECT id, shop_id, category_id, name, description, images, status,
        rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
 FROM products
 WHERE slug = $1
   AND deleted_at IS NOT NULL
@@ -272,7 +272,7 @@ SET category_id = $2,
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
           rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at;
+          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended;
 
 -- name: UpdateProductReview :one
 UPDATE products
@@ -287,7 +287,7 @@ SET status = $2,
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
           rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at;
+          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended;
 
 -- name: IncrementProductRating :one
 UPDATE products
@@ -299,7 +299,7 @@ RETURNING rating_sum, review_count;
 -- name: ListProductsForModerationScan :many
 SELECT id, shop_id, category_id, name, description, images, status,
        rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
 FROM products
 WHERE deleted_at IS NULL
   AND (sqlc.arg(cursor_id)::text = '' OR id > sqlc.arg(cursor_id)::text)
@@ -335,7 +335,7 @@ WHERE p.deleted_at IS NULL
   AND (sqlc.arg(category_id)::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
   AND (sqlc.arg(keyword)::text = '' OR p.search_text LIKE '%' || sqlc.arg(keyword)::text || '%' ESCAPE '\')
   AND (sqlc.arg(shop_id)::text = '' OR p.shop_id = sqlc.arg(shop_id)::text)
-  AND (NOT sqlc.arg(public_only)::bool OR p.status IN ('APPROVED', 'OUT_OF_STOCK'))
+  AND (NOT sqlc.arg(public_only)::bool OR (p.status IN ('APPROVED', 'OUT_OF_STOCK') AND p.shop_suspended = FALSE))
   AND (sqlc.arg(status_filter)::text = '' OR p.status = sqlc.arg(status_filter)::text)
   AND (
     (sqlc.arg(min_price_vnd)::bigint <= 0 AND sqlc.arg(max_price_vnd)::bigint <= 0)
@@ -360,13 +360,13 @@ WITH RECURSIVE cat_tree AS (
 )
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
        p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at,
-       p.slug, p.search_text, p.rating_sum, p.review_count, p.flagged_keywords, p.first_approved_at
+       p.slug, p.search_text, p.rating_sum, p.review_count, p.flagged_keywords, p.first_approved_at, p.shop_suspended
 FROM products p
 WHERE p.deleted_at IS NULL
   AND (sqlc.arg(category_id)::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
   AND (sqlc.arg(keyword)::text = '' OR p.search_text LIKE '%' || sqlc.arg(keyword)::text || '%' ESCAPE '\')
   AND (sqlc.arg(shop_id)::text = '' OR p.shop_id = sqlc.arg(shop_id)::text)
-  AND (NOT sqlc.arg(public_only)::bool OR p.status IN ('APPROVED', 'OUT_OF_STOCK'))
+  AND (NOT sqlc.arg(public_only)::bool OR (p.status IN ('APPROVED', 'OUT_OF_STOCK') AND p.shop_suspended = FALSE))
   AND (sqlc.arg(status_filter)::text = '' OR p.status = sqlc.arg(status_filter)::text)
   AND (
     (sqlc.arg(min_price_vnd)::bigint <= 0 AND sqlc.arg(max_price_vnd)::bigint <= 0)
@@ -409,6 +409,7 @@ FROM matched_products mp
 JOIN products p ON p.id = mp.product_id
 WHERE p.deleted_at IS NULL
   AND p.status IN ('APPROVED', 'OUT_OF_STOCK')
+  AND p.shop_suspended = FALSE
   AND (sqlc.arg(category_id)::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
   AND (sqlc.arg(keyword)::text = '' OR p.search_text LIKE '%' || sqlc.arg(keyword)::text || '%' ESCAPE '\')
   AND (sqlc.arg(shop_id)::text = '' OR p.shop_id = sqlc.arg(shop_id)::text)
@@ -442,11 +443,12 @@ matched_products AS (
 )
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
        p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at,
-       p.slug, p.search_text, p.rating_sum, p.review_count, p.flagged_keywords, p.first_approved_at
+       p.slug, p.search_text, p.rating_sum, p.review_count, p.flagged_keywords, p.first_approved_at, p.shop_suspended
 FROM matched_products mp
 JOIN products p ON p.id = mp.product_id
 WHERE p.deleted_at IS NULL
   AND p.status IN ('APPROVED', 'OUT_OF_STOCK')
+  AND p.shop_suspended = FALSE
   AND (sqlc.arg(category_id)::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
   AND (sqlc.arg(keyword)::text = '' OR p.search_text LIKE '%' || sqlc.arg(keyword)::text || '%' ESCAPE '\')
   AND (sqlc.arg(shop_id)::text = '' OR p.shop_id = sqlc.arg(shop_id)::text)
@@ -570,7 +572,7 @@ SELECT
         ),
         s.price_vnd
     )::bigint AS min_price_30d_vnd,
-    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at, p.shop_suspended AS product_shop_suspended
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
@@ -615,7 +617,7 @@ SELECT
         ),
         s.price_vnd
     )::bigint AS min_price_30d_vnd,
-    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at, p.shop_suspended AS product_shop_suspended
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
@@ -659,7 +661,7 @@ SELECT
         ),
         s.price_vnd
     )::bigint AS min_price_30d_vnd,
-    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at, p.shop_suspended AS product_shop_suspended
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
@@ -703,7 +705,7 @@ SELECT
         ),
         s.price_vnd
     )::bigint AS min_price_30d_vnd,
-    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at, p.shop_suspended AS product_shop_suspended
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
@@ -746,7 +748,7 @@ SELECT
         ),
         s.price_vnd
     )::bigint AS min_price_30d_vnd,
-    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at, p.shop_suspended AS product_shop_suspended
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
@@ -1078,3 +1080,46 @@ SELECT id, term, normalized_term, category, action, is_active, created_by, creat
 FROM banned_keywords
 WHERE is_active = TRUE
 ORDER BY id ASC;
+
+-- Shop suspension state & event consumption (E1/F12)
+
+-- name: LockShopSuspension :exec
+SELECT pg_advisory_xact_lock(1937010547, hashtext($1));
+
+-- name: GetShopSuspensionState :one
+SELECT shop_id, suspended, version, updated_at
+FROM shop_suspension_state
+WHERE shop_id = $1;
+
+-- name: UpsertShopSuspensionState :one
+INSERT INTO shop_suspension_state (shop_id, suspended, version, updated_at)
+VALUES ($1, $2, $3, NOW())
+ON CONFLICT (shop_id) DO UPDATE
+SET suspended = EXCLUDED.suspended,
+    version = EXCLUDED.version,
+    updated_at = NOW()
+WHERE shop_suspension_state.version < EXCLUDED.version
+RETURNING shop_id, suspended, version, updated_at;
+
+-- name: SetProductsShopSuspendedByShop :exec
+WITH target AS (
+    SELECT pr.id
+    FROM products pr
+    WHERE pr.shop_id = $1
+      AND pr.shop_suspended IS DISTINCT FROM $2
+    ORDER BY pr.id ASC
+    FOR UPDATE OF pr
+)
+UPDATE products p
+SET shop_suspended = $2
+FROM target t
+WHERE p.id = t.id;
+
+-- name: TryInsertProcessedEvent :execrows
+INSERT INTO processed_events (event_id, event_type)
+VALUES ($1, $2)
+ON CONFLICT (event_id) DO NOTHING;
+
+-- name: InsertDeadLetterEvent :exec
+INSERT INTO dead_letter_events (id, subject, event_id, payload, error_message, attempts)
+VALUES ($1, $2, $3, $4, $5, $6);

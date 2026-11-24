@@ -511,7 +511,7 @@ func TestE2E_PaymentMoney_R1_And_LatePayment(t *testing.T) {
 			t.Fatalf("R1: expected platform_discount_vnd=30000 persisted, got %+v", p1.GetShopAllocations())
 		}
 
-		// Supersede P1 with P2.
+		// Supersede P1 with P2 (preserving original deadline per payment p4 Item K).
 		p2Resp, err := payClient.CreatePayment(payFixAuthCtx(ctx, buyerTok), &paymentv1.CreatePaymentRequest{
 			OrderGroupId:      groupID,
 			OrderId:           groupID,
@@ -520,6 +520,7 @@ func TestE2E_PaymentMoney_R1_And_LatePayment(t *testing.T) {
 			Method:            paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR,
 			ShopAllocations:   allocs,
 			IdempotencyKey:    "payfix-p2-" + uuid.NewString(),
+			ExpiresAt:         p1.GetExpiresAt(),
 			SupersedePrevious: true,
 		})
 		if err != nil {
@@ -551,6 +552,7 @@ func TestE2E_PaymentMoney_R1_And_LatePayment(t *testing.T) {
 			Method:            paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR,
 			ShopAllocations:   allocs,
 			IdempotencyKey:    "payfix-p3-" + uuid.NewString(),
+			ExpiresAt:         p1.GetExpiresAt(),
 			SupersedePrevious: true,
 		})
 		if status.Code(err) != codes.AlreadyExists && status.Code(err) != codes.FailedPrecondition {
@@ -810,7 +812,9 @@ func TestE2E_PaymentMoney_R1_And_LatePayment(t *testing.T) {
 
 		// Note: POST /api/v1/payments/{id}/retry rejection on CANCELLED order is owned by gateway + order agents.
 		retryPath := fmt.Sprintf("/api/v1/payments/%s/retry", url.PathEscape(checkout.PaymentID))
-		retryResp, err := env.client.DoJSON(ctx, http.MethodPost, retryPath, buyer.AccessToken, nil, map[string]string{
+		retryResp, err := env.client.DoJSON(ctx, http.MethodPost, retryPath, buyer.AccessToken, map[string]string{
+			"Idempotency-Key": "payfix-retry-cancelled-" + uuid.NewString(),
+		}, map[string]string{
 			"method": "VIETQR",
 		})
 		if err != nil {
@@ -1012,6 +1016,7 @@ func TestE2E_PaymentMoney_Round2_ReviewB(t *testing.T) {
 			AmountVnd:         120000,
 			Method:            paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR,
 			IdempotencyKey:    "payfix-r2-p27-2-" + uuid.NewString(),
+			ExpiresAt:         p1Resp.GetPayment().GetExpiresAt(),
 			SupersedePrevious: true,
 		})
 		if status.Code(err) != codes.AlreadyExists && status.Code(err) != codes.FailedPrecondition {
@@ -1193,6 +1198,7 @@ func TestE2E_PaymentMoney_Round2_ReviewB(t *testing.T) {
 				AmountVnd:         180000,
 				Method:            paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR,
 				IdempotencyKey:    "payfix-r2-p15-2-" + uuid.NewString(),
+				ExpiresAt:         p1Resp.GetPayment().GetExpiresAt(),
 				SupersedePrevious: true,
 			})
 			if err != nil {
@@ -1247,6 +1253,7 @@ func TestE2E_PaymentMoney_Round2_ReviewB(t *testing.T) {
 					AmountVnd:         180000,
 					Method:            paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR,
 					IdempotencyKey:    "payfix-r2-p15-3-" + uuid.NewString(),
+					ExpiresAt:         p1Resp.GetPayment().GetExpiresAt(),
 					SupersedePrevious: true,
 				})
 				// Either succeeds (before P2 webhook) or returns AlreadyExists/FailedPrecondition (after P2 webhook),
@@ -1495,7 +1502,7 @@ func TestE2E_PaymentMoney_Round3_Review2P(t *testing.T) {
 			grpID := "payfix-r3-p13-grp-" + uuid.NewString()
 			ordID := "payfix-r3-p13-ord-" + uuid.NewString()
 
-			_, err := payClient.CreatePayment(payFixAuthCtx(ctx, tok), &paymentv1.CreatePaymentRequest{
+			p1Resp, err := payClient.CreatePayment(payFixAuthCtx(ctx, tok), &paymentv1.CreatePaymentRequest{
 				OrderGroupId: grpID,
 				OrderId:      grpID,
 				UserId:       buyerID,
@@ -1525,6 +1532,7 @@ func TestE2E_PaymentMoney_Round3_Review2P(t *testing.T) {
 						{OrderId: ordID, ShopId: "shop-p13", SubtotalVnd: 150000, CommissionVnd: 7500},
 					},
 					IdempotencyKey:    "payfix-r3-p13-2-" + uuid.NewString(),
+					ExpiresAt:         p1Resp.GetPayment().GetExpiresAt(),
 					SupersedePrevious: true,
 				})
 				if sErr == nil {

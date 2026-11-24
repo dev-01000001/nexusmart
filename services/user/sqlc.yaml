@@ -21,6 +21,8 @@ sql:
           otp_expires_at: "OTPExpiresAt"
           otp_attempts: "OTPAttempts"
           otp_publish_failed: "OTPPublishFailed"
+          payload_json: "PayloadJSON"
+          metadata_json: "MetadataJSON"
         overrides:
           - db_type: "timestamptz"
             go_type: "time.Time"

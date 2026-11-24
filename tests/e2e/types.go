@@ -19,6 +19,7 @@ func NormalizeStatus(s string) string {
 		"USER_STATUS_",
 		"USER_ROLE_",
 		"SHOP_STATUS_",
+		"SHOP_APPROVAL_STATUS_",
 		"PRODUCT_STATUS_",
 		"FLASH_SALE_ITEM_STATUS_",
 		"SHIPMENT_STATUS_",
@@ -135,6 +136,9 @@ type ShopDTO struct {
 	PickupAddressID string `json:"pickup_address_id"`
 	ContactPhone    string `json:"contact_phone"`
 	Status          string `json:"status"`
+	SuspendedReason string `json:"suspended_reason"`
+	SuspendedAt     string `json:"suspended_at"`
+	StatusVersion   int64  `json:"status_version"`
 }
 
 type ShopResponse struct {
@@ -221,6 +225,7 @@ type ProductDTO struct {
 	RatingAvgX100   int32    `json:"rating_avg_x100"`
 	ReviewCount     int32    `json:"review_count"`
 	FlaggedKeywords []string `json:"flagged_keywords"`
+	ShopSuspended   bool     `json:"shop_suspended"`
 }
 
 type ProductResponse struct {
@@ -566,6 +571,7 @@ type OrderDTO struct {
 	TrackingCode             string                  `json:"tracking_code"`
 	LabelURL                 string                  `json:"label_url"`
 	ShipmentJobStatus        string                  `json:"shipment_job_status"`
+	PaymentExpiresAt         string                  `json:"payment_expires_at"`
 	Items                    []OrderItemDTO          `json:"items"`
 	Timeline                 []OrderTimelineEventDTO `json:"timeline"`
 }
@@ -578,6 +584,7 @@ type CheckoutResponse struct {
 	PaymentStatus    string     `json:"payment_status"`
 	QRURL            string     `json:"qr_url"`
 	QRCode           string     `json:"qr_code"`
+	PayURL           string     `json:"pay_url"`
 	PaymentExpiresAt string     `json:"payment_expires_at"`
 	TotalPayableVND  int64      `json:"total_payable_vnd"`
 	IdempotentReplay bool       `json:"idempotent_replay"`
@@ -625,7 +632,9 @@ type PaymentDTO struct {
 	Status       string `json:"status"`
 	QRURL        string `json:"qr_url"`
 	QRCode       string `json:"qr_code"`
+	PayURL       string `json:"pay_url"`
 	ProviderRef  string `json:"provider_ref"`
+	ExpiresAt    string `json:"expires_at"`
 }
 
 type PaymentResponse struct {
@@ -657,13 +666,20 @@ type RefundRequest struct {
 }
 
 type RefundDTO struct {
-	RefundID       string `json:"refund_id"`
-	PaymentID      string `json:"payment_id"`
-	OrderID        string `json:"order_id"`
-	AmountVND      int64  `json:"amount_vnd"`
-	Status         string `json:"status"`
-	Reason         string `json:"reason"`
-	IdempotencyKey string `json:"idempotency_key"`
+	RefundID          string `json:"refund_id"`
+	PaymentID         string `json:"payment_id"`
+	OrderID           string `json:"order_id"`
+	AmountVND         int64  `json:"amount_vnd"`
+	Status            string `json:"status"`
+	Reason            string `json:"reason"`
+	IdempotencyKey    string `json:"idempotency_key"`
+	IsLatePayment     bool   `json:"is_late_payment"`
+	RequestedBy       string `json:"requested_by"`
+	ApprovedBy        string `json:"approved_by"`
+	ApprovedAt        string `json:"approved_at"`
+	ApprovalNote      string `json:"approval_note"`
+	ProviderMRefundID string `json:"provider_m_refund_id"`
+	ProviderStatus    string `json:"provider_status"`
 }
 
 type RefundResponse struct {

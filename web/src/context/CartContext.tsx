@@ -18,6 +18,7 @@ import { ApiError, api, getErrorMessage } from "@/lib/api";
 import { useSession } from "@/context/SessionContext";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { shouldClearUserClientState } from "@/features/checkout/helpers";
+import { formatPromotionErrorMessage } from "@/features/checkout/messages";
 import {
   type CartItem,
   type CartShopGroup,
@@ -484,7 +485,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         showToast(`Đã lưu mã ưu đãi ${savedCode}.`);
         return true;
       } catch (err) {
-        showToast(getErrorMessage(err, "Không thể lưu mã ưu đãi này."));
+        showToast(formatPromotionErrorMessage(err, "save_voucher", "Không thể lưu mã ưu đãi này."));
         return false;
       }
     },

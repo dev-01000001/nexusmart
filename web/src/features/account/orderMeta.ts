@@ -11,6 +11,7 @@ import {
   GATEWAY_PAYMENT_METHOD_LABELS,
   GATEWAY_SHIPMENT_STATUS_LABELS,
   formatCarrierLabel,
+  formatVnd,
   formatVoucherBenefit,
 } from "@/lib/format";
 import { isPaymentDeadlinePassed } from "@/features/checkout/helpers";
@@ -139,6 +140,9 @@ export function getPaymentStatusInfo(
     if (ordStatus === "DELIVERED" || ordStatus === "COMPLETED") {
       return { label: "Đã thu hộ COD", tone: "pos" };
     }
+    if (status === "SUCCEEDED" || status === "PAID") {
+      return { label: "Đã thanh toán", tone: "pos" };
+    }
     return { label: "Thu hộ khi giao", tone: "neutral" };
   }
   if (status === "SUCCEEDED" || status === "PAID") {
@@ -178,9 +182,14 @@ export function canRequestReturn(status: string): boolean {
   return status === "DELIVERED";
 }
 
+export function isOnlinePaymentMethod(method: string | null | undefined): boolean {
+  const key = (method ?? "").trim().toUpperCase();
+  return key === "VIETQR" || key === "ZALOPAY";
+}
+
 /**
- * An unpaid VietQR order is still PENDING and has not succeeded in payment.
- * Cancelling one unpaid VietQR sub-order cancels all remaining PENDING sub-orders in the same group.
+ * An unpaid online-payment order (VietQR or ZaloPay) is still PENDING and has not succeeded in payment.
+ * Cancelling one unpaid sub-order cancels all remaining PENDING sub-orders in the same group.
  */
 export function isUnpaidVietQrOrder(
   order: Pick<GatewayOrder, "status" | "payment_method" | "payment_status"> | null | undefined
@@ -188,7 +197,7 @@ export function isUnpaidVietQrOrder(
   if (!order) return false;
   return (
     order.status.toUpperCase() === "PENDING" &&
-    order.payment_method.toUpperCase() === "VIETQR" &&
+    isOnlinePaymentMethod(order.payment_method) &&
     order.payment_status.toUpperCase() !== "SUCCEEDED"
   );
 }
@@ -264,7 +273,7 @@ export function needsVietQrPayment(
   }
   return (
     order.status === "PENDING" &&
-    order.payment_method.toUpperCase() === "VIETQR" &&
+    isOnlinePaymentMethod(order.payment_method) &&
     Boolean(order.payment_id) &&
     payStatus !== "SUCCEEDED" &&
     payStatus !== "EXPIRED" &&
@@ -288,10 +297,131 @@ export function getShipmentStatusInfo(status: string): { label: string; tone: Ba
   };
 }
 
-export function localizeTimelineNote(rawNote: string): string {
-  const trimmed = rawNote.trim();
+function formatTimelinePaymentMethod(rawMethod: string): string {
+  const key = rawMethod.trim().toUpperCase();
+  if (key === "COD") return "Thanh toán khi nhận hàng (COD)";
+  if (key === "VIETQR") return "Chuyển khoản VietQR";
+  if (key === "ZALOPAY") return "Ví điện tử ZaloPay";
+  return (GATEWAY_PAYMENT_METHOD_LABELS as Record<string, string>)[key] ?? rawMethod.trim();
+}
+
+function formatCancelActorPrefix(rawActor: string): string {
+  const actor = rawActor.trim().toLowerCase();
+  if (actor === "buyer") return "Người mua hủy đơn";
+  if (actor === "seller") return "Gian hàng hủy đơn";
+  if (
+    actor === "admin" ||
+    actor === "super_admin" ||
+    actor === "ops" ||
+    actor === "cskh" ||
+    actor === "moderator" ||
+    actor === "accountant"
+  ) {
+    return "Quản trị viên hủy đơn";
+  }
+  return "Hủy đơn hàng";
+}
+
+/**
+ * Translates system-generated refund/cancellation reason codes and English literals to Vietnamese,
+ * while preserving human-typed free text verbatim.
+ */
+export function localizeRefundReason(raw: string | null | undefined): string {
+  const trimmed = (raw ?? "").trim();
   if (!trimmed) return "";
   const lower = trimmed.toLowerCase();
+
+  if (lower === "late_payment") {
+    return "Thanh toán đến trễ cho giao dịch đã hết hạn hoặc bị thay thế";
+  }
+  if (lower === "late payment succeeded for superseded checkout payment") {
+    return "Thanh toán đến trễ cho giao dịch đã bị thay thế";
+  }
+  if (lower === "order return refund") {
+    return "Hoàn tiền cho yêu cầu trả hàng";
+  }
+  if (lower === "order returned to seller") {
+    return "Hoàn tiền do kiện hàng đã hoàn về gian hàng";
+  }
+  if (lower === "order_cancelled_auto_refund" || lower === "order cancelled") {
+    return "Tự động hoàn tiền do đơn hàng đã bị hủy";
+  }
+  if (lower === "payment_timeout_expired" || lower === "payment expired") {
+    return "Đơn hàng quá hạn thanh toán";
+  }
+  if (lower === "seller_confirm_timeout" || lower === "seller confirm timeout") {
+    return "Gian hàng quá hạn xác nhận đơn hàng";
+  }
+  if (lower === "payment initialization failed") {
+    return "Khởi tạo thanh toán thất bại";
+  }
+  if (lower === "checkout group orders cancelled") {
+    return "Hủy nhóm đơn thanh toán";
+  }
+  if (lower === "retry payment db sync conflict") {
+    return "Xung đột đồng bộ khi đổi phương thức thanh toán";
+  }
+  if (lower === "reconciliation_refund") {
+    return "Hoàn tiền từ hàng đợi đối soát thanh toán";
+  }
+  if (lower === "reconciliation_overpayment") {
+    return "Hoàn tiền chênh lệch thanh toán dư (đối soát)";
+  }
+  if (lower.startsWith("reconciliation_overpayment:")) {
+    const note = trimmed.slice("reconciliation_overpayment:".length).trim();
+    return note
+      ? `Hoàn tiền chênh lệch thanh toán dư (đối soát): ${note}`
+      : "Hoàn tiền chênh lệch thanh toán dư (đối soát)";
+  }
+  const cancelledMatch = /^cancelled\s+by\s+([a-z_]+)(?:\s*:\s*(.*))?$/i.exec(trimmed);
+  if (cancelledMatch) {
+    const prefix = formatCancelActorPrefix(cancelledMatch[1]);
+    const detail = (cancelledMatch[2] ?? "").trim();
+    return detail ? `${prefix}: ${detail}` : prefix;
+  }
+  if (lower === "buyer_cancelled") return "Người mua hủy đơn";
+  if (lower === "seller_cancelled") return "Gian hàng hủy đơn";
+  if (lower === "admin_cancelled") return "Quản trị viên hủy đơn";
+
+  return trimmed;
+}
+
+function localizeCoreTimelineNote(trimmed: string): string {
+  const lower = trimmed.toLowerCase();
+
+  // [SHIPMENT_STATUS] <inner note>
+  const bracketStatusMatch = /^\[([A-Z0-9_]+)\]\s*(.+)$/.exec(trimmed);
+  if (bracketStatusMatch) {
+    const statusCode = bracketStatusMatch[1];
+    const statusLabel = getShipmentStatusInfo(statusCode).label;
+    const inner = localizeCoreTimelineNote(bracketStatusMatch[2].trim());
+    if (
+      inner.startsWith("Cập nhật vận chuyển:") ||
+      inner.startsWith("Cập nhật vận đơn hoàn trả:") ||
+      inner.startsWith("Đơn hàng đang trên đường vận chuyển")
+    ) {
+      return inner;
+    }
+    return `Cập nhật vận chuyển (${statusLabel}): ${inner}`;
+  }
+
+  // Switched payment method notes emitted by services/order/internal/store/postgres.go
+  const switchCodMatch =
+    /^switched\s+payment\s+method\s+from\s+([a-z0-9_]+)\s+to\s+cod;\s*order\s+confirmed$/i.exec(
+      trimmed
+    );
+  if (switchCodMatch) {
+    const prevLabel = formatTimelinePaymentMethod(switchCodMatch[1]);
+    return `Đã đổi phương thức thanh toán từ ${prevLabel} sang Thanh toán khi nhận hàng (COD); đơn hàng đã được xác nhận.`;
+  }
+  const switchMethodMatch =
+    /^switched\s+payment\s+method\s+from\s+([a-z0-9_]+)\s+to\s+([a-z0-9_]+)$/i.exec(trimmed);
+  if (switchMethodMatch) {
+    const prevLabel = formatTimelinePaymentMethod(switchMethodMatch[1]);
+    const nextLabel = formatTimelinePaymentMethod(switchMethodMatch[2]);
+    return `Đã đổi phương thức thanh toán từ ${prevLabel} sang ${nextLabel}.`;
+  }
+
   if (lower === "order created awaiting payment" || lower.includes("awaiting payment")) {
     return "Đơn hàng đã được tạo và đang chờ hoàn tất thanh toán.";
   }
@@ -301,11 +431,20 @@ export function localizeTimelineNote(rawNote: string): string {
   if (lower.includes("order created and confirmed (vietqr)")) {
     return "Đơn hàng VietQR đã được tạo và xác nhận.";
   }
+  if (lower.includes("order created and confirmed (zalopay)")) {
+    return "Đơn hàng Ví điện tử ZaloPay đã được tạo và xác nhận.";
+  }
   if (lower.includes("order created and confirmed")) {
     return "Đơn hàng đã được tạo và xác nhận, chờ gian hàng chuẩn bị.";
   }
   if (lower.includes("awaiting vietqr payment") || lower.includes("order created (vietqr)")) {
     return "Đơn hàng đã được tạo và đang chờ hoàn tất chuyển khoản VietQR.";
+  }
+  if (lower.includes("awaiting zalopay payment") || lower.includes("order created (zalopay)")) {
+    return "Đơn hàng đã được tạo và đang chờ hoàn tất thanh toán qua Ví ZaloPay.";
+  }
+  if (lower.includes("switched to cod") || lower.includes("payment switched to cod")) {
+    return "Người mua đã đổi sang thanh toán khi nhận hàng (COD) và đơn hàng được xác nhận.";
   }
   if (lower.includes("payment succeeded")) {
     return "Hệ thống đã xác nhận thanh toán thành công.";
@@ -319,8 +458,54 @@ export function localizeTimelineNote(rawNote: string): string {
   if (lower.includes("payment failed")) {
     return "Giao dịch thanh toán chưa thành công.";
   }
+
+  // Refund processed note: Refund <id> processed: <amount> VND (<reason>)
+  const refundProcessedMatch = /^refund\s+\S+\s+processed:\s*(\d+)\s*vnd(?:\s*\((.+)\))?$/i.exec(
+    trimmed
+  );
+  if (refundProcessedMatch) {
+    const amountVnd = Number.parseInt(refundProcessedMatch[1], 10);
+    const localizedReason = localizeRefundReason(refundProcessedMatch[2]);
+    const amountText = Number.isFinite(amountVnd)
+      ? formatVnd(amountVnd)
+      : `${refundProcessedMatch[1]}₫`;
+    return localizedReason
+      ? `Đã xử lý hoàn tiền ${amountText} (${localizedReason}).`
+      : `Đã xử lý hoàn tiền ${amountText}.`;
+  }
+  if (lower === "return refund and compensations completed") {
+    return "Đã hoàn tất xử lý hoàn tiền và hoàn khuyến mãi cho yêu cầu trả hàng.";
+  }
+  if (lower.startsWith("large refund approval rejected")) {
+    const colonIdx = trimmed.indexOf(":");
+    const rawDetail = colonIdx >= 0 ? trimmed.slice(colonIdx + 1).trim() : "";
+    if (!rawDetail || rawDetail.toLowerCase() === "large refund approval rejected by checker") {
+      return "Yêu cầu phê duyệt hoàn tiền lớn bị người duyệt từ chối.";
+    }
+    return `Yêu cầu phê duyệt hoàn tiền lớn bị từ chối: ${rawDetail}`;
+  }
   if (lower.includes("payment refunded") || lower.startsWith("refund ")) {
     return "Hệ thống đã ghi nhận lệnh hoàn tiền cho đơn hàng.";
+  }
+
+  // Return flow notes emitted by services/order/internal/service/returns.go
+  if (lower.startsWith("return requested:")) {
+    return `Lý do yêu cầu trả hàng: ${trimmed.slice("return requested:".length).trim()}`;
+  }
+  if (lower === "buyer submitted additional evidence") {
+    return "Người mua đã bổ sung thêm bằng chứng cho yêu cầu trả hàng.";
+  }
+  if (lower === "seller accepted refund without return shipment") {
+    return "Gian hàng đã chấp thuận hoàn tiền không cần gửi trả hàng.";
+  }
+  if (lower === "seller accepted return; awaiting buyer return shipment") {
+    return "Gian hàng đã chấp thuận yêu cầu trả hàng và đang chờ người mua gửi lại hàng.";
+  }
+  if (lower === "auto-accepted return after seller response deadline expired") {
+    return "Hệ thống tự động chấp thuận trả hàng do gian hàng quá hạn phản hồi.";
+  }
+  if (lower === "auto-confirmed returned goods after seller inspection deadline expired") {
+    return "Hệ thống tự động xác nhận nhận hàng trả do gian hàng quá hạn kiểm tra.";
   }
   if (
     lower.includes("seller confirmed return") ||
@@ -329,8 +514,68 @@ export function localizeTimelineNote(rawNote: string): string {
   ) {
     return "Gian hàng đã xác nhận nhận đủ hàng trả và chuyển bước hoàn tiền.";
   }
+  if (lower === "admin requested additional evidence from buyer") {
+    return "Quản trị viên đã yêu cầu người mua bổ sung thêm bằng chứng.";
+  }
+  if (lower === "admin approved refund") {
+    return "Quản trị viên đã phê duyệt hoàn tiền cho yêu cầu trả hàng.";
+  }
+  if (lower === "admin approved return and refund") {
+    return "Quản trị viên đã phê duyệt trả hàng và hoàn tiền.";
+  }
+  const adminRejectMatch = /^admin\s+rejected\s+return\s+dispute(?:\s+(\(.+\)))?$/i.exec(trimmed);
+  if (adminRejectMatch) {
+    return adminRejectMatch[1]
+      ? `Quản trị viên đã từ chối khiếu nại trả hàng ${adminRejectMatch[1]}.`
+      : "Quản trị viên đã từ chối khiếu nại trả hàng.";
+  }
+  if (lower === "escalated automatically: unable to create return shipment before deadline") {
+    return "Hệ thống tự động chuyển khiếu nại do không thể tạo vận đơn hoàn trả trước hạn.";
+  }
+  if (lower === "closed automatically: buyer did not ship return within deadline") {
+    return "Hệ thống tự động đóng yêu cầu do người mua quá hạn gửi hàng trả.";
+  }
+  const unsyncedEscMatch =
+    /^escalated\s+automatically:\s+return\s+shipment\s+could\s+not\s+be\s+cancelled\s+and\s+remained\s+unsynced\s+after\s+(\d+)\s+deadline\s+extensions$/i.exec(
+      trimmed
+    );
+  if (unsyncedEscMatch) {
+    return `Hệ thống tự động chuyển khiếu nại do vận đơn hoàn trả không thể hủy sau ${unsyncedEscMatch[1]} lần gia hạn.`;
+  }
+  if (lower === "escalated automatically: return shipment exceeded transit deadline (14 days)") {
+    return "Hệ thống tự động chuyển khiếu nại do vận đơn hoàn trả quá hạn vận chuyển (14 ngày).";
+  }
+  if (lower === "closed automatically: buyer did not escalate rejection within deadline") {
+    return "Hệ thống tự động đóng yêu cầu do người mua không khiếu nại trong thời hạn.";
+  }
+  if (lower === "closed automatically: buyer did not provide requested evidence within deadline") {
+    return "Hệ thống tự động đóng yêu cầu do người mua quá hạn bổ sung bằng chứng.";
+  }
+
+  // Forward / async shipment notes
   if (lower.includes("seller confirmed")) {
     return "Gian hàng đã xác nhận và bắt đầu đóng gói sản phẩm.";
+  }
+  if (lower === "shipment creation queued for async retry") {
+    return "Đang xếp hàng tạo vận đơn tự động với hãng vận chuyển.";
+  }
+  const asyncShipFailMatch =
+    /^async\s+shipment\s+creation\s+failed\s+after\s+(\d+)\s+attempts$/i.exec(trimmed);
+  if (asyncShipFailMatch) {
+    return `Tạo vận đơn tự động thất bại sau ${asyncShipFailMatch[1]} lần thử. Gian hàng có thể tạo lại vận đơn.`;
+  }
+  const createdViaMatch =
+    /^shipment\s+created\s+(asynchronously\s+)?via\s+([^\s(]+)(?:\s*\(tracking:\s*([^)]+)\))?/i.exec(
+      trimmed
+    );
+  if (createdViaMatch) {
+    const isAsync = Boolean(createdViaMatch[1]);
+    const carrierName = formatCarrierLabel(createdViaMatch[2]);
+    const track = createdViaMatch[3]?.trim();
+    const subject = isAsync ? "Hệ thống đã tạo vận đơn tự động" : "Gian hàng đã tạo vận đơn";
+    return track
+      ? `${subject} qua ${carrierName} (mã vận đơn: ${track}).`
+      : `${subject} qua ${carrierName}.`;
   }
   const shippedMatch = /^shipped\s+via\s+([^\s(]+)(?:\s*\(tracking:\s*([^)]+)\))?/i.exec(trimmed);
   if (shippedMatch) {
@@ -339,6 +584,24 @@ export function localizeTimelineNote(rawNote: string): string {
     return track
       ? `Gian hàng đã tạo vận đơn qua ${carrierName} (mã vận đơn: ${track}).`
       : `Gian hàng đã tạo vận đơn qua ${carrierName}.`;
+  }
+  if (lower === "synced live forward shipment after pending_shipment_cancel ttl expiry") {
+    return "Đã đồng bộ lại vận đơn thực tế sau khi hết thời gian chờ hủy vận đơn.";
+  }
+  if (lower.startsWith("manual_review_required:")) {
+    return "Cần vận hành rà soát: không thể hủy vận đơn do đơn vị vận chuyển đã lấy hàng.";
+  }
+  const transitMatch = /^shipment\s+in\s+transit\s*\(([^)]+)\)$/i.exec(trimmed);
+  if (transitMatch) {
+    return `Đơn hàng đang trên đường vận chuyển (${getShipmentStatusInfo(transitMatch[1]).label}).`;
+  }
+  if (lower.startsWith("return shipment update:")) {
+    const st = trimmed.slice("return shipment update:".length).trim();
+    return `Cập nhật vận đơn hoàn trả: ${getShipmentStatusInfo(st).label}.`;
+  }
+  if (lower.startsWith("shipment update:") || lower.startsWith("shipment status:")) {
+    const st = trimmed.slice(trimmed.indexOf(":") + 1).trim();
+    return `Cập nhật vận chuyển: ${getShipmentStatusInfo(st).label}.`;
   }
   if (lower.includes("shipment created")) {
     return "Gian hàng đã tạo vận đơn và đang chờ đơn vị vận chuyển lấy hàng.";
@@ -355,29 +618,36 @@ export function localizeTimelineNote(rawNote: string): string {
   if (lower.includes("auto-completed") || lower.includes("auto_complete")) {
     return "Đơn hàng tự động hoàn tất sau 7 ngày kể từ khi giao thành công.";
   }
-  if (lower.startsWith("return requested:")) {
-    return `Lý do yêu cầu trả hàng: ${trimmed.slice("return requested:".length).trim()}`;
-  }
-  if (lower.startsWith("cancelled by buyer:")) {
-    return `Người mua hủy đơn: ${trimmed.slice("cancelled by buyer:".length).trim()}`;
-  }
-  if (lower.startsWith("cancelled by seller:")) {
-    return `Gian hàng hủy đơn: ${trimmed.slice("cancelled by seller:".length).trim()}`;
-  }
-  if (lower.startsWith("cancelled by admin:")) {
-    return `Quản trị viên hủy đơn: ${trimmed.slice("cancelled by admin:".length).trim()}`;
-  }
-  if (lower.startsWith("shipment status:")) {
-    const st = trimmed.slice("shipment status:".length).trim();
-    return `Cập nhật vận chuyển: ${getShipmentStatusInfo(st).label}.`;
+  const cancelledMatch = /^cancelled\s+by\s+([a-z_]+)(?:\s*:\s*(.*))?$/i.exec(trimmed);
+  if (cancelledMatch) {
+    const prefix = formatCancelActorPrefix(cancelledMatch[1]);
+    const detail = (cancelledMatch[2] ?? "").trim();
+    return detail ? `${prefix}: ${detail}` : `${prefix}.`;
   }
   if (lower === "order delivered" || lower === "delivered") {
     return "Đơn vị vận chuyển đã giao hàng thành công.";
+  }
+  if (lower === "order returned to seller") {
+    return "Kiện hàng đã được hoàn trả về gian hàng.";
   }
   if (lower === "order returned" || lower === "returned") {
     return "Kiện hàng đã hoàn về gian hàng.";
   }
   return trimmed;
+}
+
+export function localizeTimelineNote(rawNote: string): string {
+  const trimmed = rawNote.trim();
+  if (!trimmed) return "";
+
+  const prevTrkMatch = /\s*\(previous\s+return\s+tracking:\s*([^)]+)\)\s*$/i.exec(trimmed);
+  if (prevTrkMatch) {
+    const core = trimmed.slice(0, prevTrkMatch.index).trim();
+    const trk = prevTrkMatch[1].trim();
+    return `${localizeCoreTimelineNote(core)} (mã vận đơn hoàn trả trước đó: ${trk})`;
+  }
+
+  return localizeCoreTimelineNote(trimmed);
 }
 
 export const MAX_EVIDENCE_URLS = 5;
@@ -557,18 +827,55 @@ export function getReturnFeeBearerLabel(rawBearer: string | undefined): string {
   }
 }
 
-export function getRefundStatusInfo(rawStatus: string | undefined): {
+export function isWalletRefund(refund?: { provider_m_refund_id?: string | null } | null): boolean {
+  return Boolean((refund?.provider_m_refund_id ?? "").trim());
+}
+
+export function canSubmitBuyerRefundBankAccount(
+  refund?: { status?: string | null; provider_m_refund_id?: string | null } | null
+): boolean {
+  const key = normalizeEnumSuffix(refund?.status ?? undefined, "REFUND_STATUS_");
+  if (key === "MANUAL_REVIEW") {
+    return true;
+  }
+  if (key === "PENDING") {
+    return !isWalletRefund(refund);
+  }
+  return false;
+}
+
+export function getRefundStatusInfo(
+  rawStatus: string | undefined,
+  refund?: { provider_m_refund_id?: string | null; bank_code?: string | null } | null
+): {
   label: string;
   tone: BadgeTone;
 } {
   const key = normalizeEnumSuffix(rawStatus, "REFUND_STATUS_");
+  const wallet = isWalletRefund(refund);
+  const settledViaBank = Boolean((refund?.bank_code ?? "").trim());
   if (key === "DONE" || key === "COMPLETED") {
+    if (wallet && !settledViaBank) {
+      return { label: "Đã hoàn về ví ZaloPay", tone: "pos" };
+    }
     return { label: "Đã chuyển khoản hoàn tiền", tone: "pos" };
   }
   if (key === "FAILED") {
     return { label: "Hoàn tiền thất bại", tone: "neg" };
   }
+  if (key === "PENDING_APPROVAL") {
+    return { label: "Chờ phê duyệt hoàn tiền", tone: "warn" };
+  }
+  if (key === "REJECTED") {
+    return { label: "Từ chối phê duyệt hoàn tiền", tone: "neg" };
+  }
+  if (key === "MANUAL_REVIEW") {
+    return { label: "Cần cung cấp tài khoản ngân hàng hoàn tiền", tone: "warn" };
+  }
   if (key === "PENDING") {
+    if (wallet) {
+      return { label: "Đang hoàn về ví ZaloPay", tone: "warn" };
+    }
     return { label: "Chờ chuyển khoản hoàn tiền", tone: "warn" };
   }
   return { label: "Đang cập nhật hoàn tiền", tone: "neutral" };

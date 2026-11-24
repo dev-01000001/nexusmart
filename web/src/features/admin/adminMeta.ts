@@ -54,7 +54,7 @@ export const RECON_STATUS_META: Record<ReconciliationStatus, { label: string; to
 export const CHANNEL_META: Record<PaymentMethod, string> = {
   vietqr: "VietQR",
   cod: "COD thu hộ",
-  vi_sandbox: "Ví NexusPay",
+  vi_sandbox: "Ví điện tử ZaloPay",
 };
 
 export interface ChannelReconciliationSummary {

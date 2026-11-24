@@ -7,6 +7,7 @@ import (
 	"time"
 
 	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
+	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/order/internal/statemachine"
 	"github.com/nexusmart/core/services/order/internal/store"
 	"google.golang.org/grpc/codes"
@@ -224,12 +225,12 @@ func (s *OrderService) GetSellerReport(ctx context.Context, req *orderv1.GetSell
 	}
 
 	var shopID string
-	if caller.IsPrivileged {
+	if caller.IsFullAdmin() {
 		shopID = strings.TrimSpace(req.GetShopId())
 		if shopID == "" {
 			return nil, status.Error(codes.InvalidArgument, "shop_id is required")
 		}
-	} else if caller.Role == "seller" && caller.ShopID != "" {
+	} else if caller.Role == auth.RoleSeller && caller.ShopID != "" {
 		if reqShop := strings.TrimSpace(req.GetShopId()); reqShop != "" && reqShop != caller.ShopID {
 			return nil, status.Error(codes.PermissionDenied, "cannot view report for another shop")
 		}
@@ -282,8 +283,8 @@ func (s *OrderService) GetPlatformReport(ctx context.Context, req *orderv1.GetPl
 	if err != nil {
 		return nil, err
 	}
-	if !caller.IsPrivileged {
-		return nil, status.Error(codes.PermissionDenied, "admin role required to view platform report")
+	if !caller.HasCapability(auth.CapReportsRead) {
+		return nil, status.Error(codes.PermissionDenied, "reports.read capability required to view platform report")
 	}
 
 	dr, err := parseReportDateRange(req.GetFromDate(), req.GetToDate(), s.nowFn())
@@ -329,8 +330,8 @@ func (s *OrderService) ListOrdersNeedingReview(ctx context.Context, req *orderv1
 	if err != nil {
 		return nil, err
 	}
-	if !caller.IsPrivileged {
-		return nil, status.Error(codes.PermissionDenied, "admin role required to list orders needing manual review")
+	if !caller.HasCapability(auth.CapOrdersRead) {
+		return nil, status.Error(codes.PermissionDenied, "orders.read capability required to list orders needing manual review")
 	}
 
 	page := req.GetPage()
@@ -367,8 +368,8 @@ func (s *OrderService) ResolveOrderReview(ctx context.Context, req *orderv1.Reso
 	if err != nil {
 		return nil, err
 	}
-	if !caller.IsPrivileged {
-		return nil, status.Error(codes.PermissionDenied, "admin role required to resolve order manual review")
+	if !caller.HasCapability(auth.CapOrdersReviewResolve) {
+		return nil, status.Error(codes.PermissionDenied, "orders.review.resolve capability required to resolve order manual review")
 	}
 	orderID := strings.TrimSpace(req.GetOrderId())
 	if orderID == "" {

@@ -75,7 +75,7 @@ func shouldMarkGroupRefunded(groupOrders []db.Order, overrideID, overrideStatus,
 }
 
 // shouldMarkGroupCancelled reports whether every sub-order in the checkout group is terminal
-// (CANCELLED or RETURNED) and no paid online (VIETQR) payable sub-order exists.
+// (CANCELLED or RETURNED) and no paid online (VIETQR/ZALOPAY) payable sub-order exists.
 func shouldMarkGroupCancelled(groupOrders []db.Order, overrideID, overrideStatus, overridePayStatus string) bool {
 	if len(groupOrders) == 0 {
 		return false
@@ -95,7 +95,7 @@ func shouldMarkGroupCancelled(groupOrders []db.Order, overrideID, overrideStatus
 		if st != orderv1.OrderStatus_ORDER_STATUS_CANCELLED && st != orderv1.OrderStatus_ORDER_STATUS_RETURNED {
 			return false
 		}
-		if statemachine.StringToPaymentMethod(sib.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+		if statemachine.IsOnlineMethod(sib.PaymentMethod) &&
 			(strings.EqualFold(paySt, "SUCCEEDED") || strings.EqualFold(paySt, "REFUNDED")) &&
 			sib.TotalPayableVND > 0 {
 			return false
@@ -380,6 +380,7 @@ type UpdateCheckoutPaymentParams struct {
 	PaymentStatus        string
 	QRURL                string
 	QRCode               string
+	PayURL               string
 	PaymentExpiresAt     *time.Time
 	ResponseSnapshotJSON []byte
 	// BuildSnapshot, when non-nil, is invoked inside the transaction after locking orders and
@@ -598,15 +599,31 @@ func canCancelGroupOrder(ord db.Order, onlyPending bool) bool {
 	return true
 }
 
-// RetryPaymentUpdateParams atomically updates payment_id and payment_expires_at on a pending group.
+// RetryOrderFeeSpec specifies the recalculated seller-borne payment fee for one sub-order on retry/switch (F5).
+type RetryOrderFeeSpec struct {
+	OrderID       string
+	PaymentFeeVND int64
+	PaymentFeeBPS int32
+}
+
+// RetryPaymentUpdateParams atomically updates payment details (and optionally switches payment method,
+// recalculates seller-borne payment fee, and confirms orders when switching to COD) on a pending group (F5).
 type RetryPaymentUpdateParams struct {
 	CheckoutGroupID     string
 	ExpectedPaymentID   string
+	TargetMethod        string // Optional: empty preserves each order's current online method.
 	NewPaymentID        string
 	PaymentStatus       string
 	QRURL               string
 	QRCode              string
+	PayURL              string
 	PaymentExpiresAt    *time.Time
+	SwitchToCOD         bool
+	OrderFees           []RetryOrderFeeSpec // Optional: omitted keeps existing payment_fee_vnd/bps.
+	ActorID             string
+	ActorRole           string
+	TraceID             string
+	Traceparent         string
 	RetryIdempotencyKey string
 	Now                 time.Time
 }
@@ -658,10 +675,11 @@ type PaymentResultTransitionParams struct {
 
 // PaymentResultTransitionOutcome reports what changed in TransitionOrdersPaymentResult.
 type PaymentResultTransitionOutcome struct {
-	AlreadyProcessed bool
-	CheckoutGroupID  string
-	Transitioned     []db.Order
-	NeedsDownstream  bool // True when orders transitioned OR matched an uncommitted redelivery requiring downstream completion.
+	AlreadyProcessed     bool
+	CheckoutGroupID      string
+	Transitioned         []db.Order
+	NeedsDownstream      bool       // True when orders transitioned OR matched an uncommitted redelivery requiring downstream completion.
+	SupersededPaidOrders []db.Order // Populated when a late payment.succeeded arrives for a payment just superseded by RetryPayment (F5 race guard).
 }
 
 // OrderTransitionResult reports the committed aggregate, its locked pre-transition snapshot,
@@ -753,6 +771,7 @@ type ReturnTransitionParams struct {
 	ActorID                     string
 	ActorRole                   string
 	Note                        string
+	OutboxReason                string
 	EvidenceURLsJSON            []byte
 	SellerResponse              *string
 	SellerEvidenceURLsJSON      []byte
@@ -764,6 +783,11 @@ type ReturnTransitionParams struct {
 	ReturnShipmentTerminal      *bool
 	EscalatedFromTransitTimeout *bool
 	EscalatedFromCancelFailure  *bool
+	RequireApprovalIfLarge      *bool
+	RefundRequestedBy           *string
+	RefundID                    *string
+	RefundApprovalStatus        *string
+	IncrementRefundAttempt      bool
 	UpdateDeadline              bool
 	DeadlineAt                  *time.Time
 	BuildCompletedOutboxFn      func(order db.Order) (db.InsertOutboxEventParams, error)
@@ -896,6 +920,7 @@ type PaymentRefundedParams struct {
 	PaymentID        string
 	OrderID          string
 	RefundID         string
+	IdempotencyKey   string
 	AmountVND        int64
 	Reason           string
 	IsPostSettlement *bool
@@ -958,6 +983,7 @@ type Store interface {
 	ExtendReturnDeadline(ctx context.Context, returnRequestID string, expectedStatus orderv1.ReturnStatus, newDeadline, now time.Time, maxExtensions int32) (bool, error)
 	SaveReturnShipmentInfo(ctx context.Context, params SaveReturnShipmentParams) (*ReturnAggregate, bool, error)
 	UpdateReturnSideEffectProgress(ctx context.Context, returnRequestID string, refundDone, promoReleased, restockDone bool, refundAmountVND *int64) (*db.ReturnRequest, error)
+	UpdateReturnRefundApprovalState(ctx context.Context, returnRequestID, refundID, approvalStatus string, refundDone bool, refundAmountVND *int64) (*db.ReturnRequest, error)
 
 	IsEventProcessed(ctx context.Context, eventID string) (bool, error)
 	MarkEventProcessed(ctx context.Context, eventID, eventType string) error

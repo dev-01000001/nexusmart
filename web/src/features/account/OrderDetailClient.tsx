@@ -50,6 +50,7 @@ import {
   canConfirmReceived,
   canRequestRedelivery,
   canRequestReturn,
+  canSubmitBuyerRefundBankAccount,
   formatUnpaidGroupCancelWarning,
   getOrderStatusInfo,
   getPaymentMethodLabel,
@@ -57,9 +58,10 @@ import {
   getRefundStatusInfo,
   getReturnFeeBearerLabel,
   getReturnStatusInfo,
+  localizeRefundReason,
   getShipmentStatusInfo,
   getTimelineEventTitle,
-  isRefundPending,
+  isWalletRefund,
   localizeTimelineNote,
   needsVietQrPayment,
   normalizeEnumSuffix,
@@ -719,7 +721,7 @@ export function OrderDetailClient({
 
   const handleSubmitBankAccount = async (e: React.FormEvent, rf: GatewayRefund) => {
     e.preventDefault();
-    if (savingBank) return;
+    if (savingBank || !canSubmitBuyerRefundBankAccount(rf)) return;
     const isEditingThis = editingBankRefundId === rf.refund_id;
     const activeCode = (isEditingThis ? bankCode : rf.bank_code || VN_BANK_OPTIONS[0].code).trim();
     const cleanNum = (isEditingThis ? bankAccountNumber : "").replace(/\s+/g, "").trim();
@@ -928,6 +930,7 @@ export function OrderDetailClient({
     : [];
   const showRefundSection =
     refunds.length > 0 || returnStatusKey === "REFUNDING" || returnStatusKey === "REFUNDED";
+  const isZaloPayOrder = (order.payment_method ?? "").toUpperCase().includes("ZALOPAY");
 
   const shopName = shop?.name ?? "Gian hàng NexusMart";
 
@@ -970,7 +973,7 @@ export function OrderDetailClient({
               size="md"
               href={`/thanh-toan/cho-thanh-toan/${encodeURIComponent(order.payment_id)}`}
             >
-              Thanh toán VietQR
+              Tiếp tục thanh toán
             </Button>
           )}
           {order.items.length > 0 && (
@@ -1039,10 +1042,17 @@ export function OrderDetailClient({
                         ? {
                             ...prev,
                             payment_id: next.payment_id,
+                            payment_method: next.method,
                             payment_status: next.status,
                             payment_expires_at: next.expires_at,
                           }
                         : prev
+                    );
+                    void refreshOrder();
+                  }}
+                  onSwitchedToCod={() => {
+                    showToast(
+                      `Đơn ${order.order_code} đã chuyển sang thanh toán COD và được xác nhận.`
                     );
                     void refreshOrder();
                   }}
@@ -1607,16 +1617,20 @@ export function OrderDetailClient({
 
                     {refunds.length === 0 ? (
                       <p className={styles.actionPanelDesc}>
-                        Yêu cầu hoàn tiền đang được hệ thống khởi tạo. Vui lòng tải lại sau ít phút
-                        để nhập tài khoản ngân hàng nhận tiền.
+                        {isZaloPayOrder
+                          ? "Yêu cầu hoàn tiền về ví ZaloPay đang được hệ thống khởi tạo. Vui lòng tải lại sau ít phút để theo dõi tiến trình hoàn tiền."
+                          : "Yêu cầu hoàn tiền đang được hệ thống khởi tạo. Vui lòng tải lại sau ít phút để nhập tài khoản ngân hàng nhận tiền."}
                       </p>
                     ) : (
                       refunds.map((rf) => {
-                        const rfMeta = getRefundStatusInfo(rf.status);
-                        const pending = isRefundPending(rf.status);
+                        const rfMeta = getRefundStatusInfo(rf.status, rf);
+                        const rfStatusKey = normalizeEnumSuffix(rf.status, "REFUND_STATUS_");
+                        const walletRefund = isWalletRefund(rf);
+                        const canSubmitBank = canSubmitBuyerRefundBankAccount(rf);
                         const hasBank = Boolean(rf.bank_code && rf.bank_account_masked);
+                        const settledViaWallet = walletRefund && !rf.bank_code;
                         const formOpen =
-                          pending && (!hasBank || editingBankRefundId === rf.refund_id);
+                          canSubmitBank && (!hasBank || editingBankRefundId === rf.refund_id);
 
                         return (
                           <div key={rf.refund_id} className={styles.refundItem}>
@@ -1630,19 +1644,35 @@ export function OrderDetailClient({
                             </div>
 
                             {rf.reason && (
-                              <p className={styles.sideLine}>Lý do hoàn tiền: {rf.reason}</p>
+                              <p className={styles.sideLine}>
+                                Lý do hoàn tiền: {localizeRefundReason(rf.reason)}
+                              </p>
                             )}
                             {rf.created_at && (
                               <p className={`${styles.sideMuted} num`}>
                                 Tạo lúc: {formatDateTimeVi(rf.created_at)}
                                 {rf.settled_at
-                                  ? ` · Đã chuyển khoản lúc: ${formatDateTimeVi(rf.settled_at)}`
+                                  ? settledViaWallet
+                                    ? ` · Đã hoàn về ví ZaloPay lúc: ${formatDateTimeVi(rf.settled_at)}`
+                                    : ` · Đã chuyển khoản lúc: ${formatDateTimeVi(rf.settled_at)}`
                                   : ""}
+                              </p>
+                            )}
+                            {rf.provider_m_refund_id && (
+                              <p className={`${styles.sideMuted} num`}>
+                                Mã hoàn ví ZaloPay: <strong>{rf.provider_m_refund_id}</strong>
                               </p>
                             )}
                             {rf.provider_refund_id && (
                               <p className={`${styles.sideMuted} num`}>
                                 Mã tham chiếu chuyển khoản: <strong>{rf.provider_refund_id}</strong>
+                              </p>
+                            )}
+
+                            {walletRefund && rfStatusKey === "PENDING" && (
+                              <p className={styles.actionPanelDesc}>
+                                Khoản hoàn tiền đang được hệ thống gửi tự động về ví ZaloPay của
+                                bạn. Bạn không cần nhập tài khoản ngân hàng.
                               </p>
                             )}
 
@@ -1653,7 +1683,7 @@ export function OrderDetailClient({
                                   <strong>{rf.bank_account_masked}</strong>
                                   {rf.bank_account_name ? ` · ${rf.bank_account_name}` : ""}
                                 </p>
-                                {pending && editingBankRefundId !== rf.refund_id && (
+                                {canSubmitBank && editingBankRefundId !== rf.refund_id && (
                                   <Button
                                     type="button"
                                     variant="secondary"
@@ -1680,7 +1710,9 @@ export function OrderDetailClient({
                                 <p className={styles.actionPanelDesc}>
                                   {hasBank
                                     ? "Bạn có thể cập nhật tài khoản ngân hàng nhận tiền trước khi quản trị viên tất toán."
-                                    : "Vui lòng nhập tài khoản ngân hàng nhận tiền để bộ phận kế toán NexusMart chuyển khoản hoàn tiền."}
+                                    : rfStatusKey === "MANUAL_REVIEW"
+                                      ? "Hoàn tiền tự động không thực hiện được và cần xử lý thủ công. Vui lòng nhập tài khoản ngân hàng nhận tiền để bộ phận kế toán NexusMart chuyển khoản hoàn tiền."
+                                      : "Vui lòng nhập tài khoản ngân hàng nhận tiền để bộ phận kế toán NexusMart chuyển khoản hoàn tiền."}
                                 </p>
                                 <div className={shared.formGrid}>
                                   <div className={shared.field}>

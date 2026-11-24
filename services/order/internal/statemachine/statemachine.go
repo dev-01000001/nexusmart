@@ -37,6 +37,11 @@ var allowedTransitions = map[orderv1.OrderStatus]map[orderv1.OrderStatus]struct{
 		orderv1.OrderStatus_ORDER_STATUS_RETURNED:  {},
 		orderv1.OrderStatus_ORDER_STATUS_COMPLETED: {},
 	},
+	// F11: ONLY for reverting an order when a large-refund approval is rejected before refund/compensation ran
+	// (return transition REFUNDING -> ESCALATED). Buyer RequestReturn strictly requires DELIVERED.
+	orderv1.OrderStatus_ORDER_STATUS_RETURNED: {
+		orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED: {},
+	},
 }
 
 // CanTransition returns true if transitioning from -> to is permitted by the order state machine.
@@ -116,13 +121,55 @@ func StringToStatus(raw string) orderv1.OrderStatus {
 	}
 }
 
+// Canonical persisted payment method names (string-based core for COD, VIETQR, and ZALOPAY).
+const (
+	PaymentMethodCOD     = "COD"
+	PaymentMethodVIETQR  = "VIETQR"
+	PaymentMethodZALOPAY = "ZALOPAY"
+)
+
+// NormalizePaymentMethod normalizes a persisted or API payment method string into its canonical uppercase form.
+func NormalizePaymentMethod(raw string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(raw))
+	normalized = strings.TrimPrefix(normalized, "ORDER_PAYMENT_METHOD_")
+	normalized = strings.TrimPrefix(normalized, "PAYMENT_METHOD_")
+	return normalized
+}
+
+// IsValidPaymentMethod reports whether method is a supported payment method (COD, VIETQR, or ZALOPAY).
+func IsValidPaymentMethod(method string) bool {
+	switch NormalizePaymentMethod(method) {
+	case PaymentMethodCOD, PaymentMethodVIETQR, PaymentMethodZALOPAY:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsOnlineMethod reports whether method is a pre-paid online payment method (VIETQR or ZALOPAY).
+func IsOnlineMethod(method string) bool {
+	switch NormalizePaymentMethod(method) {
+	case PaymentMethodVIETQR, PaymentMethodZALOPAY:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsCODMethod reports whether method is cash on delivery (COD).
+func IsCODMethod(method string) bool {
+	return NormalizePaymentMethod(method) == PaymentMethodCOD
+}
+
 // PaymentMethodToString converts OrderPaymentMethod to canonical DB string.
 func PaymentMethodToString(m orderv1.OrderPaymentMethod) string {
 	switch m {
 	case orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD:
-		return "COD"
+		return PaymentMethodCOD
 	case orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR:
-		return "VIETQR"
+		return PaymentMethodVIETQR
+	case orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_ZALOPAY:
+		return PaymentMethodZALOPAY
 	default:
 		return "UNSPECIFIED"
 	}
@@ -130,14 +177,65 @@ func PaymentMethodToString(m orderv1.OrderPaymentMethod) string {
 
 // StringToPaymentMethod converts canonical DB string to OrderPaymentMethod.
 func StringToPaymentMethod(raw string) orderv1.OrderPaymentMethod {
-	normalized := strings.ToUpper(strings.TrimSpace(raw))
-	normalized = strings.TrimPrefix(normalized, "ORDER_PAYMENT_METHOD_")
-	switch normalized {
-	case "COD":
+	switch NormalizePaymentMethod(raw) {
+	case PaymentMethodCOD:
 		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD
-	case "VIETQR":
+	case PaymentMethodVIETQR:
 		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR
+	case PaymentMethodZALOPAY:
+		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_ZALOPAY
 	default:
 		return orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED
 	}
+}
+
+// ReturnRefundIdempotencyKey builds the deterministic CreateRefund idempotency key for a return refund attempt.
+func ReturnRefundIdempotencyKey(orderID string, attempt int32) string {
+	if attempt <= 0 {
+		return "order-return-refund:" + orderID
+	}
+	return fmt.Sprintf("order-return-refund:%s:r%d", orderID, attempt)
+}
+
+// ReturnRefundMatchResult classifies how a payment.refunded / payment.refund_rejected event correlates to a return request.
+type ReturnRefundMatchResult int
+
+const (
+	// ReturnRefundMatchNone indicates the event belongs to a different refund (e.g., unrelated manual admin refund).
+	ReturnRefundMatchNone ReturnRefundMatchResult = iota
+	// ReturnRefundMatchMatched indicates the event strictly matched the return's saved refund_id or expected idempotency_key.
+	ReturnRefundMatchMatched
+	// ReturnRefundMatchMissingKeys indicates the event lacked correlation keys (e.g., legacy payload missing idempotency_key
+	// before refund_id was persisted, or missing both keys); caller must log WARN and ignore without guessing.
+	ReturnRefundMatchMissingKeys
+)
+
+// MatchReturnRefundEvent matches a payment refund event against a REFUNDING return request strictly by
+// saved refund_id (when persisted) or by idempotency_key == ReturnRefundIdempotencyKey(orderID, refundAttempt)
+// (when refund_id has not been persisted yet). Never guesses by amount_vnd or payment_id.
+func MatchReturnRefundEvent(orderID, savedRefundID string, refundAttempt int32, eventRefundID, eventIdempotencyKey string) ReturnRefundMatchResult {
+	savedRef := strings.TrimSpace(savedRefundID)
+	evRef := strings.TrimSpace(eventRefundID)
+	evKey := strings.TrimSpace(eventIdempotencyKey)
+
+	if savedRef != "" {
+		if evRef != "" {
+			if evRef == savedRef {
+				return ReturnRefundMatchMatched
+			}
+			return ReturnRefundMatchNone
+		}
+		if evKey == "" {
+			return ReturnRefundMatchMissingKeys
+		}
+		return ReturnRefundMatchNone
+	}
+
+	if evKey == "" {
+		return ReturnRefundMatchMissingKeys
+	}
+	if evKey == ReturnRefundIdempotencyKey(orderID, refundAttempt) {
+		return ReturnRefundMatchMatched
+	}
+	return ReturnRefundMatchNone
 }

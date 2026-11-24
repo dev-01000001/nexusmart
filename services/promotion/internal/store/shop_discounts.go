@@ -470,6 +470,10 @@ func (s *PostgresStore) ListActiveShopDiscounts(
 		  AND sdp.ends_at > $1
 		  AND ($2 = '' OR sdi.shop_id = $2)
 		  AND (cardinality($3::text[]) = 0 OR sdi.sku_id = ANY($3::text[]))
+		  AND NOT EXISTS (
+		      SELECT 1 FROM shop_suspension_state sss
+		      WHERE sss.shop_id = sdi.shop_id AND sss.suspended = TRUE
+		  )
 		ORDER BY sdp.starts_at ASC, sdi.id ASC
 		LIMIT 500
 	`

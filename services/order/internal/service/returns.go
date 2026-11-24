@@ -13,6 +13,7 @@ import (
 	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
 	paymentv1 "github.com/nexusmart/core/gen/go/nexusmart/payment/v1"
 	shippingv1 "github.com/nexusmart/core/gen/go/nexusmart/shipping/v1"
+	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/order/internal/clients"
 	"github.com/nexusmart/core/services/order/internal/db"
 	"github.com/nexusmart/core/services/order/internal/events"
@@ -107,7 +108,7 @@ func normalizeFeeBearer(raw string, defaultVal string) (string, error) {
 }
 
 func canViewReturnRequest(caller callerIdentity, rr db.ReturnRequest) bool {
-	if caller.IsPrivileged {
+	if caller.HasCapability(auth.CapReturnsRead) {
 		return true
 	}
 	if caller.UserID != "" && caller.UserID == rr.BuyerID {
@@ -160,6 +161,9 @@ func (s *OrderService) RequestReturn(ctx context.Context, req *orderv1.RequestRe
 	}
 
 	curStatus := statemachine.StringToStatus(agg.Order.Status)
+	if curStatus != orderv1.OrderStatus_ORDER_STATUS_DELIVERED {
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot request return for order in status %s (must be DELIVERED)", statemachine.StatusToString(curStatus))
+	}
 	if err := statemachine.ValidateTransition(curStatus, orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED); err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
@@ -261,15 +265,16 @@ func (s *OrderService) ListReturnRequests(ctx context.Context, req *orderv1.List
 		return nil, err
 	}
 	scope := strings.ToLower(strings.TrimSpace(req.GetRoleScope()))
+	canReadReturns := caller.HasCapability(auth.CapReturnsRead)
 	var buyerFilter, shopFilter string
 
 	switch scope {
 	case "admin":
-		if !caller.IsPrivileged {
-			return nil, status.Error(codes.PermissionDenied, "admin role required to list all return requests")
+		if !canReadReturns {
+			return nil, status.Error(codes.PermissionDenied, "returns.read capability required to list all return requests")
 		}
 	case "seller":
-		if caller.IsPrivileged {
+		if canReadReturns {
 			shopFilter = caller.ShopID
 		} else {
 			if caller.Role != "seller" || caller.ShopID == "" {
@@ -278,7 +283,7 @@ func (s *OrderService) ListReturnRequests(ctx context.Context, req *orderv1.List
 			shopFilter = caller.ShopID
 		}
 	default:
-		if caller.IsPrivileged && scope == "" {
+		if canReadReturns && scope == "" {
 			buyerFilter = ""
 		} else {
 			buyerFilter = caller.UserID
@@ -361,10 +366,16 @@ func (s *OrderService) RespondReturn(ctx context.Context, req *orderv1.RespondRe
 	switch req.GetDecision() {
 	case orderv1.ReturnSellerDecision_RETURN_SELLER_DECISION_ACCEPT_REFUND:
 		shouldRestock := false
+		requireApproval := false
+		empty := ""
 		bearer := feeBearerSeller
 		params.TargetStatus = orderv1.ReturnStatus_RETURN_STATUS_REFUNDING
 		params.ShouldRestock = &shouldRestock
 		params.ReturnFeeBearer = &bearer
+		params.RequireApprovalIfLarge = &requireApproval
+		params.RefundRequestedBy = &empty
+		params.RefundID = &empty
+		params.RefundApprovalStatus = &empty
 		params.DeadlineAt = nil
 		params.Note = fallbackStr(note, "Seller accepted refund without return shipment")
 	case orderv1.ReturnSellerDecision_RETURN_SELLER_DECISION_ACCEPT_RETURN:
@@ -542,20 +553,26 @@ func (s *OrderService) ConfirmReturnReceived(ctx context.Context, req *orderv1.C
 	}
 
 	shouldRestock := true
+	requireApproval := false
+	empty := ""
 	traceID, traceparent := traceMetaFromContext(ctx)
 	res, err := s.store.TransitionReturnRequest(ctx, store.ReturnTransitionParams{
-		ReturnRequestID: retID,
-		ExpectedStatus:  orderv1.ReturnStatus_RETURN_STATUS_RECEIVED,
-		TargetStatus:    orderv1.ReturnStatus_RETURN_STATUS_REFUNDING,
-		ActorID:         caller.UserID,
-		ActorRole:       "seller",
-		Note:            "Seller confirmed returned goods received in good condition",
-		ShouldRestock:   &shouldRestock,
-		UpdateDeadline:  true,
-		DeadlineAt:      nil,
-		TraceID:         traceID,
-		Traceparent:     traceparent,
-		Now:             s.nowFn(),
+		ReturnRequestID:        retID,
+		ExpectedStatus:         orderv1.ReturnStatus_RETURN_STATUS_RECEIVED,
+		TargetStatus:           orderv1.ReturnStatus_RETURN_STATUS_REFUNDING,
+		ActorID:                caller.UserID,
+		ActorRole:              "seller",
+		Note:                   "Seller confirmed returned goods received in good condition",
+		ShouldRestock:          &shouldRestock,
+		RequireApprovalIfLarge: &requireApproval,
+		RefundRequestedBy:      &empty,
+		RefundID:               &empty,
+		RefundApprovalStatus:   &empty,
+		UpdateDeadline:         true,
+		DeadlineAt:             nil,
+		TraceID:                traceID,
+		Traceparent:            traceparent,
+		Now:                    s.nowFn(),
 	})
 	if err != nil {
 		return nil, mapStoreError(err)
@@ -629,14 +646,14 @@ func (s *OrderService) DisputeReturnGoods(ctx context.Context, req *orderv1.Disp
 	}, nil
 }
 
-// AdminResolveReturn lets admin/super_admin arbitrate an ESCALATED return request.
+// AdminResolveReturn lets authorized staff (returns.resolve) arbitrate an ESCALATED return request.
 func (s *OrderService) AdminResolveReturn(ctx context.Context, req *orderv1.AdminResolveReturnRequest) (*orderv1.AdminResolveReturnResponse, error) {
 	caller, err := requireAuthenticatedCaller(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if !caller.IsPrivileged {
-		return nil, status.Error(codes.PermissionDenied, "admin role required to resolve return disputes")
+	if !caller.HasCapability(auth.CapReturnsResolve) {
+		return nil, status.Error(codes.PermissionDenied, "returns.resolve capability required to resolve return disputes")
 	}
 	retID := strings.TrimSpace(req.GetReturnRequestId())
 	if retID == "" {
@@ -679,9 +696,17 @@ func (s *OrderService) AdminResolveReturn(ctx context.Context, req *orderv1.Admi
 		params.Note = fallbackStr(note, "Admin requested additional evidence from buyer")
 	case orderv1.ReturnAdminDecision_RETURN_ADMIN_DECISION_REFUND:
 		// Never restock on admin REFUND branch (goods were either not returned or disputed as wrong/damaged).
+		// F11: Persist maker identity and require_approval_if_large=true so watchdog retries preserve maker != checker.
 		shouldRestock := false
+		requireApproval := true
+		requestedBy := caller.UserID
+		empty := ""
 		params.TargetStatus = orderv1.ReturnStatus_RETURN_STATUS_REFUNDING
 		params.ShouldRestock = &shouldRestock
+		params.RequireApprovalIfLarge = &requireApproval
+		params.RefundRequestedBy = &requestedBy
+		params.RefundID = &empty
+		params.RefundApprovalStatus = &empty
 		params.DeadlineAt = nil
 		params.Note = fallbackStr(note, "Admin approved refund")
 	case orderv1.ReturnAdminDecision_RETURN_ADMIN_DECISION_RETURN_AND_REFUND:
@@ -904,8 +929,14 @@ func (s *OrderService) ensureReturnShipment(ctx context.Context, rr db.ReturnReq
 	return updated, nil
 }
 
+func returnRefundIdempotencyKey(orderID string, attempt int32) string {
+	return statemachine.ReturnRefundIdempotencyKey(orderID, attempt)
+}
+
 // executeRefundingSideEffects runs all idempotent post-commit side effects for a REFUNDING return
 // (CreateRefund, ReleasePromotionShop, and conditional RestockOrderItems) and marks it REFUNDED once all succeed.
+// For F11 large refunds that enter PENDING_APPROVAL, the return remains REFUNDING (not REFUNDED) without
+// releasing promotions/stock or re-invoking CreateRefund on watchdog ticks until approved or rejected.
 func (s *OrderService) executeRefundingSideEffects(ctx context.Context, rr db.ReturnRequest, ordAgg *store.OrderAggregate) (*store.ReturnAggregate, error) {
 	unlock := s.idemLocks.Lock("refund:" + rr.ID)
 	defer unlock()
@@ -928,8 +959,13 @@ func (s *OrderService) executeRefundingSideEffects(ctx context.Context, rr db.Re
 	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 	defer cancel()
 
-	// 1. Refund remaining unrefunded balance P - refunded_vnd (applies to both VIETQR and delivered COD).
+	// 1. Refund remaining unrefunded balance P - refunded_vnd (applies to both online and delivered COD).
 	if !curRR.RefundDone {
+		// F11: Already waiting for two-person checker approval — never create another refund or mark REFUNDED.
+		if strings.EqualFold(curRR.RefundApprovalStatus, "PENDING_APPROVAL") {
+			return latest, nil
+		}
+
 		remaining := maxInt64(0, ord.TotalPayableVND-ord.RefundedVND)
 		var refundAmtToSave *int64
 		if remaining > 0 {
@@ -939,34 +975,111 @@ func (s *OrderService) executeRefundingSideEffects(ctx context.Context, rr db.Re
 			if strings.TrimSpace(ord.PaymentID) == "" {
 				return nil, fmt.Errorf("CreateRefund for return %s (order %s): order payment_id is empty for remaining %d VND", curRR.ID, ord.ID, remaining)
 			}
-			actualRefunded := remaining
+			reqBy := ""
+			if curRR.RequireApprovalIfLarge {
+				reqBy = strings.TrimSpace(curRR.RefundRequestedBy)
+			}
+			var refundObj *paymentv1.Refund
 			if rErr := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
 				resp, err := s.clients.Payment.CreateRefund(c, &paymentv1.CreateRefundRequest{
-					PaymentId:      ord.PaymentID,
-					OrderId:        ord.ID,
-					AmountVnd:      remaining,
-					Reason:         "Order return refund",
-					IdempotencyKey: "order-return-refund:" + ord.ID,
+					PaymentId:              ord.PaymentID,
+					OrderId:                ord.ID,
+					AmountVnd:              remaining,
+					Reason:                 "Order return refund",
+					IdempotencyKey:         returnRefundIdempotencyKey(ord.ID, curRR.RefundAttempt),
+					RequireApprovalIfLarge: curRR.RequireApprovalIfLarge,
+					RequestedBy:            reqBy,
 				})
 				if err != nil {
 					return err
 				}
-				if resp.GetRefund() != nil && resp.GetRefund().GetAmountVnd() > 0 {
-					actualRefunded = resp.GetRefund().GetAmountVnd()
-				}
+				refundObj = resp.GetRefund()
 				return nil
 			}); rErr != nil {
 				return nil, fmt.Errorf("CreateRefund for return %s (order %s): %w", curRR.ID, ord.ID, rErr)
 			}
-			refundAmtToSave = &actualRefunded
-		} else if ord.TotalPayableVND == 0 {
-			zero := int64(0)
-			refundAmtToSave = &zero
-		}
-		// P2-6 + P2-2: only update refund_amount_vnd when a refund was issued (or 0-VND order);
-		// never overwrite with 0 when recovering after CreateRefund + payment.refunded already settled the full amount.
-		if updated, uErr := s.store.UpdateReturnSideEffectProgress(compCtx, curRR.ID, true, false, false, refundAmtToSave); uErr == nil && updated != nil {
-			curRR = *updated
+
+			actualRefunded := remaining
+			refundID := ""
+			refundStatus := paymentv1.RefundStatus_REFUND_STATUS_UNSPECIFIED
+			approvalNote := ""
+			if refundObj != nil {
+				if refundObj.GetAmountVnd() > 0 {
+					actualRefunded = refundObj.GetAmountVnd()
+				}
+				refundID = strings.TrimSpace(refundObj.GetRefundId())
+				refundStatus = refundObj.GetStatus()
+				approvalNote = strings.TrimSpace(refundObj.GetApprovalNote())
+			}
+
+			switch refundStatus {
+			case paymentv1.RefundStatus_REFUND_STATUS_PENDING_APPROVAL:
+				// F11: Persist PENDING_APPROVAL + refund_id so watchdog skips this return and return stays REFUNDING.
+				// If an out-of-order payment.refund_rejected or payment.refunded already settled this return,
+				// UpdateReturnRefundApprovalState returns ErrInvalidReturnTransition and we return the latest state cleanly.
+				if _, uErr := s.store.UpdateReturnRefundApprovalState(
+					compCtx,
+					curRR.ID,
+					refundID,
+					"PENDING_APPROVAL",
+					false,
+					&actualRefunded,
+				); uErr != nil {
+					if !errors.Is(uErr, statemachine.ErrInvalidReturnTransition) {
+						return nil, fmt.Errorf("record PENDING_APPROVAL refund state for return %s: %w", curRR.ID, uErr)
+					}
+				}
+				if reloaded, gErr := s.store.GetReturnRequest(compCtx, curRR.ID, ""); gErr == nil {
+					return reloaded, nil
+				}
+				return latest, nil
+
+			case paymentv1.RefundStatus_REFUND_STATUS_REJECTED:
+				// F11: Checker already rejected this refund (e.g. crash recovery replay of idempotent CreateRefund).
+				return s.transitionReturnRefundRejectedLocked(
+					compCtx,
+					curRR,
+					refundID,
+					"payment-service",
+					fallbackStr(approvalNote, "Large refund approval rejected by checker"),
+				)
+
+			case paymentv1.RefundStatus_REFUND_STATUS_FAILED:
+				return nil, fmt.Errorf("CreateRefund for return %s (order %s) returned FAILED status", curRR.ID, ord.ID)
+
+			default:
+				approvalSt := ""
+				if curRR.RequireApprovalIfLarge {
+					approvalSt = "APPROVED"
+				}
+				if updated, uErr := s.store.UpdateReturnRefundApprovalState(
+					compCtx,
+					curRR.ID,
+					refundID,
+					approvalSt,
+					true,
+					&actualRefunded,
+				); uErr != nil {
+					if errors.Is(uErr, statemachine.ErrInvalidReturnTransition) {
+						if reloaded, gErr := s.store.GetReturnRequest(compCtx, curRR.ID, ""); gErr == nil {
+							return reloaded, nil
+						}
+					}
+					return nil, fmt.Errorf("record approved refund progress for return %s: %w", curRR.ID, uErr)
+				} else if updated != nil {
+					curRR = *updated
+				}
+			}
+		} else {
+			if ord.TotalPayableVND == 0 {
+				zero := int64(0)
+				refundAmtToSave = &zero
+			}
+			// P2-6 + P2-2: only update refund_amount_vnd when a refund was issued (or 0-VND order);
+			// never overwrite with 0 when recovering after CreateRefund + payment.refunded already settled the full amount.
+			if updated, uErr := s.store.UpdateReturnSideEffectProgress(compCtx, curRR.ID, true, false, false, refundAmtToSave); uErr == nil && updated != nil {
+				curRR = *updated
+			}
 		}
 	}
 
@@ -1013,6 +1126,217 @@ func (s *OrderService) executeRefundingSideEffects(ctx context.Context, rr db.Re
 	}
 	s.notifyOutbox()
 	return res.Return, nil
+}
+
+// transitionReturnRefundRejectedLocked transitions REFUNDING -> ESCALATED (reverting order to RETURN_REQUESTED
+// and incrementing refund_attempt) while caller holds idemLocks.Lock("refund:" + curRR.ID).
+func (s *OrderService) transitionReturnRefundRejectedLocked(
+	ctx context.Context,
+	curRR db.ReturnRequest,
+	refundID, actorID, reason string,
+) (*store.ReturnAggregate, error) {
+	if curRR.RefundDone || curRR.PromoReleased || curRR.RestockDone {
+		return s.store.GetReturnRequest(ctx, curRR.ID, "")
+	}
+	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+	defer cancel()
+
+	refID := fallbackStr(strings.TrimSpace(refundID), curRR.RefundID)
+	rejectedStatus := "REJECTED"
+	cleanReason := fallbackStr(strings.TrimSpace(reason), "Large refund approval rejected by checker")
+	note := "Large refund approval rejected: " + cleanReason
+	traceID, traceparent := traceMetaFromContext(ctx)
+
+	res, err := s.store.TransitionReturnRequest(compCtx, store.ReturnTransitionParams{
+		ReturnRequestID:        curRR.ID,
+		ExpectedStatus:         orderv1.ReturnStatus_RETURN_STATUS_REFUNDING,
+		TargetStatus:           orderv1.ReturnStatus_RETURN_STATUS_ESCALATED,
+		ActorID:                fallbackStr(strings.TrimSpace(actorID), "payment-service"),
+		ActorRole:              "system",
+		Note:                   note,
+		OutboxReason:           "refund_rejected",
+		RefundID:               &refID,
+		RefundApprovalStatus:   &rejectedStatus,
+		IncrementRefundAttempt: true,
+		UpdateDeadline:         true,
+		DeadlineAt:             nil,
+		TraceID:                traceID,
+		Traceparent:            traceparent,
+		Now:                    s.nowFn(),
+	})
+	if err != nil {
+		if errors.Is(err, statemachine.ErrInvalidReturnTransition) {
+			return s.store.GetReturnRequest(compCtx, curRR.ID, "")
+		}
+		return nil, err
+	}
+	s.notifyOutbox()
+	return res.Return, nil
+}
+
+// onPaymentRefundRejectedForReturn handles payment.refund_rejected under the per-return lock,
+// supporting both normal in-order delivery (matching saved refund_id) and out-of-order delivery
+// arriving before return_requests persisted refund_id, while cleanly ignoring manual admin refunds
+// that do not belong to an approval-gated REFUNDING return.
+func (s *OrderService) onPaymentRefundRejectedForReturn(ctx context.Context, payload events.PaymentRefundRejectedPayload) error {
+	orderID := strings.TrimSpace(payload.OrderID)
+	if orderID == "" {
+		return nil
+	}
+	retAgg, err := s.store.GetReturnRequest(ctx, "", orderID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if statemachine.StringToReturnStatus(retAgg.Request.Status) != orderv1.ReturnStatus_RETURN_STATUS_REFUNDING {
+		return nil
+	}
+
+	unlock := s.idemLocks.Lock("refund:" + retAgg.Request.ID)
+	defer unlock()
+
+	latest, err := s.store.GetReturnRequest(ctx, retAgg.Request.ID, "")
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	curRR := latest.Request
+	// Only F11 approval-gated REFUNDING returns that have not yet executed a refund may be re-escalated.
+	if statemachine.StringToReturnStatus(curRR.Status) != orderv1.ReturnStatus_RETURN_STATUS_REFUNDING ||
+		curRR.RefundDone ||
+		!curRR.RequireApprovalIfLarge {
+		return nil
+	}
+
+	payloadRefID := strings.TrimSpace(payload.RefundID)
+	switch statemachine.MatchReturnRefundEvent(curRR.OrderID, curRR.RefundID, curRR.RefundAttempt, payloadRefID, payload.IdempotencyKey) {
+	case statemachine.ReturnRefundMatchMatched:
+	case statemachine.ReturnRefundMatchMissingKeys:
+		s.logger.WarnContext(ctx, "payment.refund_rejected missing refund_id/idempotency_key correlation for approval-gated REFUNDING return; ignoring",
+			"order_id", curRR.OrderID,
+			"return_request_id", curRR.ID,
+			"saved_refund_id", curRR.RefundID,
+			"event_refund_id", payloadRefID,
+			"idempotency_key", payload.IdempotencyKey,
+		)
+		return nil
+	default:
+		return nil
+	}
+
+	_, err = s.transitionReturnRefundRejectedLocked(
+		ctx,
+		curRR,
+		payloadRefID,
+		payload.RejectedBy,
+		payload.Reason,
+	)
+	return err
+}
+
+// onPaymentRefundApprovedForReturn settles a REFUNDING return waiting on F11 large-refund approval
+// when payment.refunded matches by saved refund_id or idempotency_key, advancing to REFUNDED exactly once.
+func (s *OrderService) onPaymentRefundApprovedForReturn(ctx context.Context, payload events.PaymentRefundedPayload) error {
+	orderID := strings.TrimSpace(payload.OrderID)
+	if orderID == "" {
+		return nil
+	}
+	retAgg, err := s.store.GetReturnRequest(ctx, "", orderID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if statemachine.StringToReturnStatus(retAgg.Request.Status) != orderv1.ReturnStatus_RETURN_STATUS_REFUNDING {
+		return nil
+	}
+
+	var shouldExecute bool
+	var rrSnapshot db.ReturnRequest
+	func() {
+		unlock := s.idemLocks.Lock("refund:" + retAgg.Request.ID)
+		defer unlock()
+
+		latest, gErr := s.store.GetReturnRequest(ctx, retAgg.Request.ID, "")
+		if gErr != nil {
+			err = gErr
+			return
+		}
+		curRR := latest.Request
+		if statemachine.StringToReturnStatus(curRR.Status) != orderv1.ReturnStatus_RETURN_STATUS_REFUNDING {
+			return
+		}
+		payloadRefID := strings.TrimSpace(payload.RefundID)
+		if curRR.RefundDone {
+			// Refund already marked done (atomically inside RecordPaymentRefunded TX or earlier attempt);
+			// finish remaining promo/restock/REFUNDED side effects when event matches this return.
+			if statemachine.MatchReturnRefundEvent(curRR.OrderID, curRR.RefundID, curRR.RefundAttempt, payloadRefID, payload.IdempotencyKey) == statemachine.ReturnRefundMatchMatched ||
+				strings.EqualFold(curRR.RefundApprovalStatus, "APPROVED") {
+				shouldExecute = true
+				rrSnapshot = curRR
+			}
+			return
+		}
+		if !curRR.RequireApprovalIfLarge && !strings.EqualFold(curRR.RefundApprovalStatus, "PENDING_APPROVAL") {
+			return
+		}
+		switch statemachine.MatchReturnRefundEvent(curRR.OrderID, curRR.RefundID, curRR.RefundAttempt, payloadRefID, payload.IdempotencyKey) {
+		case statemachine.ReturnRefundMatchMatched:
+		case statemachine.ReturnRefundMatchMissingKeys:
+			s.logger.WarnContext(ctx, "payment.refunded missing refund_id/idempotency_key correlation for approval-gated REFUNDING return; ignoring",
+				"order_id", curRR.OrderID,
+				"return_request_id", curRR.ID,
+				"saved_refund_id", curRR.RefundID,
+				"event_refund_id", payloadRefID,
+				"idempotency_key", payload.IdempotencyKey,
+			)
+			return
+		default:
+			return
+		}
+
+		compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+		defer cancel()
+		var amtPtr *int64
+		if payload.AmountVND > 0 {
+			amt := payload.AmountVND
+			amtPtr = &amt
+		}
+		updated, uErr := s.store.UpdateReturnRefundApprovalState(
+			compCtx,
+			curRR.ID,
+			fallbackStr(payloadRefID, curRR.RefundID),
+			"APPROVED",
+			true,
+			amtPtr,
+		)
+		if uErr != nil {
+			if errors.Is(uErr, statemachine.ErrInvalidReturnTransition) {
+				return
+			}
+			err = fmt.Errorf("mark pending-approval return %s approved: %w", curRR.ID, uErr)
+			return
+		}
+		if updated != nil {
+			rrSnapshot = *updated
+		} else {
+			rrSnapshot = curRR
+		}
+		shouldExecute = true
+	}()
+	if err != nil {
+		return err
+	}
+	if !shouldExecute {
+		return nil
+	}
+	_, err = s.executeRefundingSideEffects(ctx, rrSnapshot, nil)
+	return err
 }
 
 func (s *OrderService) getReturnShipment(ctx context.Context, orderID, trackingCode string) (*shippingv1.GetShipmentResponse, error) {
@@ -1241,8 +1565,14 @@ func (s *OrderService) processExpiredReturnDeadline(ctx context.Context, returnI
 		}
 	case orderv1.ReturnStatus_RETURN_STATUS_RECEIVED:
 		shouldRestock := true
+		requireApproval := false
+		empty := ""
 		params.TargetStatus = orderv1.ReturnStatus_RETURN_STATUS_REFUNDING
 		params.ShouldRestock = &shouldRestock
+		params.RequireApprovalIfLarge = &requireApproval
+		params.RefundRequestedBy = &empty
+		params.RefundID = &empty
+		params.RefundApprovalStatus = &empty
 		params.Note = "Auto-confirmed returned goods after seller inspection deadline expired"
 	case orderv1.ReturnStatus_RETURN_STATUS_EVIDENCE_REQUESTED:
 		params.TargetStatus = orderv1.ReturnStatus_RETURN_STATUS_CLOSED

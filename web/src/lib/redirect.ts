@@ -1,3 +1,5 @@
+import { isAdminStaffRole } from "./admin-rbac";
+
 const BASE_ORIGIN = "http://nexusmart.local";
 const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f]/;
 
@@ -47,15 +49,14 @@ export function sanitizeNextPath(raw: string | null | undefined, fallback = "/")
 }
 
 export function getDefaultPathForRole(role: string | null | undefined): string {
-  switch ((role ?? "").trim().toLowerCase()) {
-    case "admin":
-    case "super_admin":
-      return "/admin";
-    case "seller":
-      return "/seller";
-    default:
-      return "/";
+  const normalized = (role ?? "").trim().toLowerCase();
+  if (isAdminStaffRole(normalized)) {
+    return "/admin";
   }
+  if (normalized === "seller") {
+    return "/seller";
+  }
+  return "/";
 }
 
 /**

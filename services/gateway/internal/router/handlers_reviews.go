@@ -134,7 +134,11 @@ func validateReviewImageURL(raw string) (string, bool) {
 }
 
 func (h *handler) handleListProductReviews(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	q := r.URL.Query()
 
 	var ratingFilter int32

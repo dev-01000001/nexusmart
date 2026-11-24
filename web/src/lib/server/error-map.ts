@@ -47,6 +47,11 @@ const KNOWN_PREFIXED_ERROR_CODES = new Set<string>([
   "PAYMENT_FEE_CONFIG_INVALID",
   "PAYMENT_FEE_CONFIG_NOT_FOUND",
   "PAYMENT_NOT_INITIALIZED",
+  "SHOP_SUSPENDED",
+  "PAYMENT_METHOD_DISABLED",
+  "ORDER_AMOUNT_OUT_OF_RANGE",
+  "VERSION_CONFLICT",
+  "MAKER_CHECKER_CONFLICT",
 ]);
 
 function normalizeDomainErrorCode(rawCode: string, rawMessage: string): string {
@@ -557,6 +562,65 @@ export function toSafeVietnameseMessage(status: number, code: string, rawMessage
   }
   if (code === "PAYMENT_NOT_INITIALIZED") {
     return "Đơn đang khởi tạo thanh toán, vui lòng thử lại sau ít phút.";
+  }
+  if (
+    lower.includes("pending suspension approval already exists") ||
+    (lower.includes("suspension approval") && lower.includes("already exists"))
+  ) {
+    return "Gian hàng này đã có yêu cầu khoá đang chờ duyệt.";
+  }
+  if (
+    code === "SHOP_SUSPENDED" ||
+    lower.includes("shop is currently suspended") ||
+    lower.includes("shop is suspended") ||
+    lower.includes("shop_suspended")
+  ) {
+    return "Gian hàng hiện đang tạm ngưng hoạt động nên không thể tiếp tục thao tác.";
+  }
+  if (
+    code === "PAYMENT_METHOD_DISABLED" ||
+    lower.includes("payment_method_disabled") ||
+    (lower.includes("payment method") && lower.includes("disabled"))
+  ) {
+    return "Phương thức thanh toán bạn chọn hiện đang tạm tắt. Vui lòng chọn phương thức khác.";
+  }
+  if (
+    code === "ORDER_AMOUNT_OUT_OF_RANGE" ||
+    lower.includes("order_amount_out_of_range") ||
+    lower.includes("exceeds max_order_vnd") ||
+    lower.includes("below min_order_vnd")
+  ) {
+    return "Giá trị đơn hàng nằm ngoài hạn mức cho phép của phương thức thanh toán đã chọn.";
+  }
+  if (
+    code === "VERSION_CONFLICT" ||
+    lower.includes("version_conflict") ||
+    lower.includes("version conflict") ||
+    lower.includes("expected_version")
+  ) {
+    return "Cấu hình đã được người khác cập nhật trước đó. Vui lòng tải lại dữ liệu mới nhất trước khi lưu.";
+  }
+  if (
+    code === "MAKER_CHECKER_CONFLICT" ||
+    lower.includes("maker_checker_conflict") ||
+    lower.includes("cannot approve own") ||
+    lower.includes("self-approval") ||
+    (lower.includes("maker") && lower.includes("checker"))
+  ) {
+    return "Người lập yêu cầu không thể tự phê duyệt (quy tắc duyệt 2 người).";
+  }
+  if (
+    (lower.includes("cannot disable") || lower.includes("at least one")) &&
+    lower.includes("payment method")
+  ) {
+    return "Phải giữ ít nhất một phương thức thanh toán đang bật.";
+  }
+  if (
+    lower.includes("higher or equal role") ||
+    lower.includes("insufficient role rank") ||
+    lower.includes("cannot modify own")
+  ) {
+    return "Bạn không có quyền thao tác với tài khoản có vai trò ngang cấp hoặc cao hơn.";
   }
   if (code === "PROMOTION_BREAKDOWN_MISSING" || code === "RESERVATION_ALREADY_RELEASED") {
     return "Hệ thống khuyến mãi vừa cập nhật lại phiên tính giá. Vui lòng kiểm tra lại và đặt lại đơn.";

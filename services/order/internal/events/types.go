@@ -16,10 +16,11 @@ const (
 	SubjectOrderReturnUpdated = "order.return_updated"
 	SubjectOrderCompleted     = "order.completed"
 
-	SubjectPaymentSucceeded = "payment.succeeded"
-	SubjectPaymentFailed    = "payment.failed"
-	SubjectPaymentExpired   = "payment.expired"
-	SubjectPaymentRefunded  = "payment.refunded"
+	SubjectPaymentSucceeded      = "payment.succeeded"
+	SubjectPaymentFailed         = "payment.failed"
+	SubjectPaymentExpired        = "payment.expired"
+	SubjectPaymentRefunded       = "payment.refunded"
+	SubjectPaymentRefundRejected = "payment.refund_rejected"
 
 	SubjectShipmentUpdated      = "shipment.updated"
 	SubjectShipmentCreateFailed = "shipment.create_failed"
@@ -103,18 +104,19 @@ type OrderReturnedPayload struct {
 
 // OrderReturnUpdatedPayload matches docs/contracts.md Section 5.
 type OrderReturnUpdatedPayload struct {
-	ReturnRequestID    string `json:"return_request_id"`
-	OrderID            string `json:"order_id"`
-	OrderCode          string `json:"order_code"`
-	CheckoutGroupID    string `json:"checkout_group_id"`
-	BuyerID            string `json:"buyer_id"`
-	ShopID             string `json:"shop_id"`
-	Status             string `json:"status"`
-	PreviousStatus     string `json:"previous_status"`
-	Reason             string `json:"reason"`
-	ReturnTrackingCode string `json:"return_tracking_code"`
-	DeadlineAt         string `json:"deadline_at,omitempty"`
-	ActorRole          string `json:"actor_role"`
+	ReturnRequestID      string `json:"return_request_id"`
+	OrderID              string `json:"order_id"`
+	OrderCode            string `json:"order_code"`
+	CheckoutGroupID      string `json:"checkout_group_id"`
+	BuyerID              string `json:"buyer_id"`
+	ShopID               string `json:"shop_id"`
+	Status               string `json:"status"`
+	PreviousStatus       string `json:"previous_status"`
+	Reason               string `json:"reason"`
+	ReturnTrackingCode   string `json:"return_tracking_code"`
+	DeadlineAt           string `json:"deadline_at,omitempty"`
+	ActorRole            string `json:"actor_role"`
+	RefundApprovalStatus string `json:"refund_approval_status,omitempty"`
 }
 
 // OrderCompletedPayload matches docs/contracts.md Section 5.
@@ -158,7 +160,20 @@ type PaymentRefundedPayload struct {
 	UserID           string `json:"user_id"`
 	AmountVND        int64  `json:"amount_vnd"`
 	Reason           string `json:"reason"`
+	IdempotencyKey   string `json:"idempotency_key,omitempty"`
 	IsPostSettlement *bool  `json:"is_post_settlement,omitempty"`
+}
+
+// PaymentRefundRejectedPayload matches payment.refund_rejected events (F11 large-refund rejection).
+type PaymentRefundRejectedPayload struct {
+	RefundID       string `json:"refund_id"`
+	PaymentID      string `json:"payment_id"`
+	OrderID        string `json:"order_id"`
+	UserID         string `json:"user_id"`
+	AmountVND      int64  `json:"amount_vnd"`
+	Reason         string `json:"reason"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	RejectedBy     string `json:"rejected_by,omitempty"`
 }
 
 // ShipmentUpdatedPayload matches shipment.updated events (E18).

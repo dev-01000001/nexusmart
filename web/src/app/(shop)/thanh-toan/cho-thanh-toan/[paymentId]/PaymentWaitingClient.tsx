@@ -52,6 +52,9 @@ export function PaymentWaitingClient({
 
   useRevealOnScroll(`${viewState ?? "live"}-${payment?.payment_id ?? "none"}-${paidConfirmed}`);
 
+  const isZaloPay = (payment?.method ?? "").toUpperCase() === "ZALOPAY";
+  const methodDisplayLabel = isZaloPay ? "Ví ZaloPay" : "VietQR";
+
   const renderHeader = (subtitle: string) => (
     <section className={shared.pageHeader}>
       <div className={shared.headerLeadGroup}>
@@ -64,12 +67,12 @@ export function PaymentWaitingClient({
             Đơn hàng của tôi
           </Link>
           <span aria-hidden="true">/</span>
-          <span>Thanh toán VietQR</span>
+          <span>Thanh toán {methodDisplayLabel}</span>
         </nav>
         <h1 className={`${shared.pageTitle} lines`}>
           <span className="line">
             <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-              {paidConfirmed ? "Thanh toán thành công" : "Chờ thanh toán VietQR"}
+              {paidConfirmed ? "Thanh toán thành công" : `Chờ thanh toán ${methodDisplayLabel}`}
             </span>
           </span>
         </h1>
@@ -88,7 +91,7 @@ export function PaymentWaitingClient({
   if (viewState === "loading") {
     return (
       <div className={shared.page}>
-        {renderHeader("Đang tải mã chuyển khoản VietQR và trạng thái xác nhận đơn hàng.")}
+        {renderHeader("Đang tải thông tin thanh toán và trạng thái xác nhận đơn hàng.")}
         <StateView kind="loading" title="Đang kết nối cổng thanh toán..." rows={4} />
       </div>
     );
@@ -136,8 +139,10 @@ export function PaymentWaitingClient({
     <div className={shared.page}>
       {renderHeader(
         paidConfirmed
-          ? "Giao dịch chuyển khoản đã được xác nhận. Các gian hàng đang chuẩn bị đơn cho bạn."
-          : "Quét mã VietQR bằng ứng dụng ngân hàng để hoàn tất đơn hàng. Trạng thái sẽ tự cập nhật ngay sau khi chuyển khoản."
+          ? "Giao dịch thanh toán đã được xác nhận. Các gian hàng đang chuẩn bị đơn cho bạn."
+          : isZaloPay
+            ? "Mở liên kết Ví ZaloPay bên dưới để hoàn tất thanh toán. Trạng thái sẽ tự động cập nhật ngay khi giao dịch hoàn tất."
+            : "Quét mã VietQR bằng ứng dụng ngân hàng để hoàn tất đơn hàng. Trạng thái sẽ tự cập nhật ngay sau khi chuyển khoản."
       )}
 
       <section className={shared.section}>
@@ -189,23 +194,55 @@ export function PaymentWaitingClient({
                 setPaidConfirmed(next.status.toUpperCase() === "SUCCEEDED");
                 router.replace(`/thanh-toan/cho-thanh-toan/${encodeURIComponent(next.payment_id)}`);
               }}
+              onSwitchedToCod={(orders) => {
+                const targetHref =
+                  orders.length === 1
+                    ? `/don-hang/${encodeURIComponent(orders[0].id)}`
+                    : primaryOrderHref;
+                router.replace(targetHref);
+              }}
             />
 
-            <div className={styles.stepsList}>
-              <h2 className={styles.stepsTitle}>Hướng dẫn hoàn tất chuyển khoản</h2>
-              <p className={styles.stepItem}>
-                Mở ứng dụng ngân hàng trên điện thoại, chọn tính năng quét mã QR và kiểm tra đúng số
-                tiền cùng nội dung chuyển khoản bắt buộc.
-              </p>
-              <p className={styles.stepItem}>
-                Giữ nguyên trang này trong vài giây sau khi chuyển khoản; đơn hàng sẽ tự động chuyển
-                sang trạng thái Đã xác nhận mà không cần tải lại thủ công.
-              </p>
-              <p className={styles.stepItem}>
-                Nếu mã VietQR hết hạn trước khi bạn kịp chuyển khoản, đơn hàng sẽ tự động hủy và
-                hoàn lại tồn kho; bạn hãy quay lại giỏ hàng hoặc trang sản phẩm để đặt lại đơn mới.
-              </p>
-            </div>
+            {!paidConfirmed && (payment.status ?? "").toUpperCase() === "PENDING" && (
+              <div className={styles.stepsList}>
+                <h2 className={styles.stepsTitle}>
+                  {isZaloPay
+                    ? "Hướng dẫn thanh toán qua Ví ZaloPay"
+                    : "Hướng dẫn hoàn tất chuyển khoản"}
+                </h2>
+                {isZaloPay ? (
+                  <>
+                    <p className={styles.stepItem}>
+                      Nhấn nút Thanh toán qua ZaloPay để mở cổng thanh toán an toàn và xác nhận đúng
+                      số tiền đơn hàng.
+                    </p>
+                    <p className={styles.stepItem}>
+                      Sau khi hoàn tất trên ZaloPay, giữ nguyên trang này trong vài giây; đơn hàng
+                      sẽ tự động chuyển sang trạng thái Đã xác nhận mà không cần tải lại thủ công.
+                    </p>
+                    <p className={styles.stepItem}>
+                      Bạn cũng có thể đổi sang VietQR hoặc COD ngay trong thời hạn giữ đơn nếu cần.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className={styles.stepItem}>
+                      Mở ứng dụng ngân hàng trên điện thoại, chọn tính năng quét mã QR và kiểm tra
+                      đúng số tiền cùng nội dung chuyển khoản bắt buộc.
+                    </p>
+                    <p className={styles.stepItem}>
+                      Giữ nguyên trang này trong vài giây sau khi chuyển khoản; đơn hàng sẽ tự động
+                      chuyển sang trạng thái Đã xác nhận mà không cần tải lại thủ công.
+                    </p>
+                    <p className={styles.stepItem}>
+                      Nếu mã VietQR hết hạn trước khi bạn kịp chuyển khoản, đơn hàng sẽ tự động hủy
+                      và hoàn lại tồn kho; bạn có thể đổi phương thức trong thời hạn giữ đơn hoặc
+                      đặt lại từ giỏ hàng.
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           <aside
@@ -265,13 +302,17 @@ export function PaymentWaitingClient({
 
             <div className={styles.darkBand}>
               <div className={styles.totalRow}>
-                <span className={styles.totalLabel}>Tổng cần thanh toán</span>
+                <span className={styles.totalLabel}>
+                  {paidConfirmed ? "Tổng đã thanh toán" : "Tổng cần thanh toán"}
+                </span>
                 <span className={`${styles.totalVal} num`}>{formatVnd(payment.amount_vnd)}</span>
               </div>
               <p className={styles.darkNote}>
                 {paidConfirmed
                   ? "Cảm ơn bạn đã đặt hàng tại NexusMart. Bạn có thể theo dõi hành trình đóng gói và giao hàng ngay bây giờ."
-                  : "Sản phẩm trong đơn đang được giữ riêng cho bạn trong thời gian chờ chuyển khoản."}
+                  : isZaloPay
+                    ? "Sản phẩm trong đơn đang được giữ riêng cho bạn trong thời gian chờ thanh toán."
+                    : "Sản phẩm trong đơn đang được giữ riêng cho bạn trong thời gian chờ chuyển khoản."}
               </p>
               <Button variant="primary" size="md" fullWidth href={primaryOrderHref}>
                 {initialOrders.length === 1 ? "Mở chi tiết đơn hàng" : "Về danh sách đơn hàng"}

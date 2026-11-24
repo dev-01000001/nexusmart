@@ -14,6 +14,9 @@ const (
 	// SubjectReviewCreated matches docs/contracts.md Section 5 (E6).
 	SubjectReviewCreated = "review.created"
 
+	// SubjectShopStatusChanged matches docs/contracts.md Section 5 / A7 §2.2 (F12).
+	SubjectShopStatusChanged = "user.shop_status_changed"
+
 	// DLQStreamName is the canonical NexusMart dead-letter stream name.
 	DLQStreamName = jetstream.DefaultDLQStream
 )
@@ -49,4 +52,18 @@ type ReviewCreatedPayload struct {
 	ReviewCount   int32  `json:"review_count"`
 	RatingAvgX100 int32  `json:"rating_avg_x100"`
 	OccurredAt    string `json:"occurred_at"`
+}
+
+// ShopStatusChangedPayload matches A7 §2.2 / F12 for user.shop_status_changed.
+type ShopStatusChangedPayload struct {
+	ShopID      string `json:"shop_id"`
+	OwnerUserID string `json:"owner_user_id,omitempty"`
+	ShopName    string `json:"shop_name,omitempty"`
+	FromStatus  string `json:"from_status,omitempty"`
+	ToStatus    string `json:"to_status"`
+	Version     int64  `json:"version"`
+	Reason      string `json:"reason,omitempty"`
+	ActorID     string `json:"actor_id,omitempty"`
+	ApproverID  string `json:"approver_id,omitempty"`
+	OccurredAt  string `json:"occurred_at,omitempty"`
 }

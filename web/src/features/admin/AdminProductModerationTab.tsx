@@ -14,6 +14,8 @@ import { Button, IconSearch, StateView } from "@/components";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { getAdminProductStatusMeta } from "./types";
 import { StatusPill } from "./StatusPill";
+import { useAdminUser } from "./AdminUserContext";
+import { roleHasCapability } from "@/lib/admin-rbac";
 import shared from "./adminShared.module.css";
 
 interface Props {
@@ -33,6 +35,10 @@ function getCoverImg(p: GatewayProduct): string {
 
 export function AdminProductModerationTab({ initialQuery = "", onPendingCountChange }: Props) {
   const { showToast } = useMockStore();
+  const adminUser = useAdminUser();
+  const role = adminUser?.role ?? "";
+  const canReadCategories = roleHasCapability(role, "categories.read");
+  const canReviewProducts = roleHasCapability(role, "products.review");
 
   const [products, setProducts] = useState<GatewayProduct[]>([]);
   const [shops, setShops] = useState<GatewayShop[]>([]);
@@ -62,9 +68,15 @@ export function AdminProductModerationTab({ initialQuery = "", onPendingCountCha
           page_size: 100,
           total: 0,
         })),
-        api<{ categories: GatewayCategory[] }>("admin/categories").catch(() => ({
-          categories: [],
-        })),
+        canReadCategories
+          ? api<{ categories: GatewayCategory[] }>("admin/categories").catch(() => ({
+              categories: [] as GatewayCategory[],
+            }))
+          : api<{ categories: GatewayCategory[] }>("categories", { retryOn401: false }).catch(
+              () => ({
+                categories: [] as GatewayCategory[],
+              })
+            ),
       ]);
       const items = prodRes.items ?? [];
       setProducts(items);
@@ -77,7 +89,7 @@ export function AdminProductModerationTab({ initialQuery = "", onPendingCountCha
     } finally {
       setLoading(false);
     }
-  }, [onPendingCountChange]);
+  }, [onPendingCountChange, canReadCategories]);
 
   useEffect(() => {
     void loadProducts();
@@ -506,50 +518,52 @@ export function AdminProductModerationTab({ initialQuery = "", onPendingCountCha
                   </>
                 )}
 
-                <div className={shared.detailActionBar}>
-                  <div className={shared.detailNoteGroup}>
-                    <label htmlFor={`prod-note-${inspected.id}`} className={shared.fieldLabel}>
-                      Ghi chú kiểm duyệt hoặc lý do từ chối
-                    </label>
-                    <input
-                      id={`prod-note-${inspected.id}`}
-                      type="text"
-                      className={shared.textInput}
-                      value={reasonDrafts[inspected.id] ?? ""}
-                      onChange={(e) => {
-                        setReasonDrafts((prev) => ({ ...prev, [inspected.id]: e.target.value }));
-                        if (reasonErrorId === inspected.id) setReasonErrorId(null);
-                      }}
-                      placeholder="Nhập lý do cụ thể khi từ chối sản phẩm..."
-                    />
-                    {reasonErrorId === inspected.id && (
-                      <span className={shared.validationError}>
-                        Vui lòng nhập lý do từ chối để người bán biết cần sửa nội dung nào.
-                      </span>
-                    )}
-                  </div>
+                {canReviewProducts && (
+                  <div className={shared.detailActionBar}>
+                    <div className={shared.detailNoteGroup}>
+                      <label htmlFor={`prod-note-${inspected.id}`} className={shared.fieldLabel}>
+                        Ghi chú kiểm duyệt hoặc lý do từ chối
+                      </label>
+                      <input
+                        id={`prod-note-${inspected.id}`}
+                        type="text"
+                        className={shared.textInput}
+                        value={reasonDrafts[inspected.id] ?? ""}
+                        onChange={(e) => {
+                          setReasonDrafts((prev) => ({ ...prev, [inspected.id]: e.target.value }));
+                          if (reasonErrorId === inspected.id) setReasonErrorId(null);
+                        }}
+                        placeholder="Nhập lý do cụ thể khi từ chối sản phẩm..."
+                      />
+                      {reasonErrorId === inspected.id && (
+                        <span className={shared.validationError}>
+                          Vui lòng nhập lý do từ chối để người bán biết cần sửa nội dung nào.
+                        </span>
+                      )}
+                    </div>
 
-                  <div className={shared.detailButtons}>
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      shape="app"
-                      disabled={submittingId === inspected.id || inspected.status === "APPROVED"}
-                      onClick={() => void handleReview(inspected, "APPROVE")}
-                    >
-                      {submittingId === inspected.id ? "Đang xử lý..." : "Phê duyệt sản phẩm"}
-                    </Button>
-                    <Button
-                      variant="danger"
-                      size="sm"
-                      shape="app"
-                      disabled={submittingId === inspected.id || inspected.status === "REJECTED"}
-                      onClick={() => void handleReview(inspected, "REJECT")}
-                    >
-                      Từ chối
-                    </Button>
+                    <div className={shared.detailButtons}>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        shape="app"
+                        disabled={submittingId === inspected.id || inspected.status === "APPROVED"}
+                        onClick={() => void handleReview(inspected, "APPROVE")}
+                      >
+                        {submittingId === inspected.id ? "Đang xử lý..." : "Phê duyệt sản phẩm"}
+                      </Button>
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        shape="app"
+                        disabled={submittingId === inspected.id || inspected.status === "REJECTED"}
+                        onClick={() => void handleReview(inspected, "REJECT")}
+                      >
+                        Từ chối
+                      </Button>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             </section>
           )}

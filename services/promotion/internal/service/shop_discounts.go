@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	promotionv1 "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1"
+	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/promotion/internal/domain"
 	"github.com/nexusmart/core/services/promotion/internal/store"
 )
@@ -37,6 +38,9 @@ func (s *PromotionService) CreateShopDiscountProgram(ctx context.Context, req *p
 		return nil, status.Error(codes.PermissionDenied, "sellers can only create discount programs for their own shop")
 	}
 	shopID = claims.ShopID
+	if err := s.requireShopNotSuspended(ctx, shopID); err != nil {
+		return nil, err
+	}
 
 	name := strings.TrimSpace(req.GetName())
 	if name == "" {
@@ -89,6 +93,9 @@ func (s *PromotionService) UpdateShopDiscountProgram(ctx context.Context, req *p
 	}
 	if !isSeller(claims) || claims.ShopID == "" {
 		return nil, status.Error(codes.PermissionDenied, "only sellers can update shop discount programs")
+	}
+	if err := s.requireShopNotSuspended(ctx, claims.ShopID); err != nil {
+		return nil, err
 	}
 
 	programID := strings.TrimSpace(req.GetProgramId())
@@ -273,10 +280,10 @@ func (s *PromotionService) ListShopDiscountPrograms(ctx context.Context, req *pr
 			return nil, status.Error(codes.PermissionDenied, "sellers can only list their own shop discount programs")
 		}
 		shopID = claims.ShopID
-	case isAdmin(claims):
-		// Admin may filter by shop_id or list across all shops.
+	case auth.HasCapability(claims, auth.CapVouchersRead):
+		// Authorized staff with vouchers.read may filter by shop_id or list across all shops.
 	default:
-		return nil, status.Error(codes.PermissionDenied, "only sellers or admins can list shop discount programs")
+		return nil, status.Error(codes.PermissionDenied, "only sellers or authorized admins can list shop discount programs")
 	}
 
 	var statusFilter string

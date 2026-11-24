@@ -22,7 +22,8 @@ export interface PaginatedResponse<T> {
 
 // --- Section 4.1: Auth, Profile, Addresses & Shops ---
 
-export type UserRole = "buyer" | "seller" | "admin" | "super_admin";
+export type UserRole =
+  "buyer" | "seller" | "admin" | "super_admin" | "moderator" | "cskh" | "accountant" | "ops";
 export type UserStatus = "PENDING_VERIFICATION" | "ACTIVE" | "LOCKED";
 export type ShopStatus = "PENDING" | "ACTIVE" | "REJECTED" | "SUSPENDED";
 
@@ -54,6 +55,9 @@ export interface GatewayShop {
   status: ShopStatus | string;
   rejection_reason: string;
   bank_review_pending?: boolean;
+  suspended_reason?: string;
+  suspended_at?: string;
+  status_version?: number;
   created_at?: string;
   updated_at?: string;
 }
@@ -369,7 +373,7 @@ export type GatewayOrderStatus =
   | "RETURN_REQUESTED"
   | "RETURNED";
 
-export type GatewayPaymentMethod = "COD" | "VIETQR";
+export type GatewayPaymentMethod = "COD" | "VIETQR" | "ZALOPAY";
 
 export interface GatewayOrderItem {
   id: string;
@@ -734,6 +738,7 @@ export interface GatewayCheckoutResponse {
   payment_status: string;
   qr_url: string;
   qr_code: string;
+  pay_url?: string;
   payment_expires_at?: string;
   total_payable_vnd: number;
   idempotent_replay: boolean;
@@ -764,6 +769,7 @@ export interface GatewayPayment {
   status: GatewayPaymentStatus | string;
   qr_url: string;
   qr_code: string;
+  pay_url?: string;
   provider: string;
   provider_ref: string;
   shop_allocations: GatewayShopAllocation[];
@@ -774,6 +780,31 @@ export interface GatewayPayment {
 
 export interface GatewayPaymentResponse {
   payment: GatewayPayment;
+}
+
+export interface GatewayRetryPaymentResponse {
+  payment: GatewayPayment;
+  pay_url?: string;
+  switched_to_cod?: boolean;
+  orders?: GatewayOrder[];
+}
+
+export interface GatewayPaymentMethodConfig {
+  method: GatewayPaymentMethod | string;
+  enabled: boolean;
+  min_order_vnd: number;
+  max_order_vnd: number;
+  expiry_minutes: number;
+  credentials_configured?: boolean;
+  credential_preview?: string;
+  updated_by?: string;
+  updated_at?: string;
+  note?: string;
+  version: number;
+}
+
+export interface GatewayPaymentMethodsResponse {
+  methods: GatewayPaymentMethodConfig[];
 }
 
 export interface GatewaySellerBalance {
@@ -855,7 +886,8 @@ export interface GatewayRefund {
   payment_id: string;
   order_id: string;
   amount_vnd: number;
-  status: "PENDING" | "DONE" | "FAILED" | string;
+  status:
+    "PENDING_APPROVAL" | "PENDING" | "DONE" | "FAILED" | "REJECTED" | "MANUAL_REVIEW" | string;
   reason: string;
   idempotency_key: string;
   created_at?: string;
@@ -864,9 +896,15 @@ export interface GatewayRefund {
   bank_account_name?: string;
   bank_account_number?: string;
   provider_refund_id?: string;
+  provider_m_refund_id?: string;
+  provider_status?: string;
   is_late_payment?: boolean;
   settled_at?: string;
   settlement_note?: string;
+  requested_by?: string;
+  approved_by?: string;
+  approved_at?: string;
+  approval_note?: string;
 }
 
 export interface GatewayRefundResponse {
@@ -1216,4 +1254,50 @@ export interface GatewayPlatformReport {
 
 export interface GatewayPlatformReportResponse {
   report: GatewayPlatformReport;
+}
+
+// --- Wave 3b-2 A7: Staff Creation, User Activities & Two-Person Approvals ---
+
+export interface GatewayCreateStaffResponse {
+  user: GatewayUser;
+  password_reset_sent: boolean;
+}
+
+export interface GatewayUserActivityEntry {
+  id: string;
+  user_id: string;
+  event_type: string;
+  ip_address: string;
+  metadata_json: string;
+  created_at?: string;
+}
+
+export interface GatewayUserActivitiesResponse {
+  items: GatewayUserActivityEntry[];
+  cod_rejected_count: number;
+  recent_orders: GatewayOrder[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface GatewayShopSuspensionApproval {
+  id: string;
+  shop_id: string;
+  shop_name: string;
+  status: "PENDING" | "APPROVED" | "REJECTED" | string;
+  reason: string;
+  requested_by: string;
+  requested_role: string;
+  decided_by?: string;
+  decided_note?: string;
+  created_at?: string;
+  decided_at?: string;
+}
+
+export interface GatewayAdminApprovalsResponse {
+  shop_approvals: GatewayShopSuspensionApproval[];
+  refund_approvals: GatewayRefund[];
+  shop_total: number;
+  refund_total: number;
 }

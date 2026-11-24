@@ -329,15 +329,7 @@ func TestRetryPayment_ValidAndRejectedCases(t *testing.T) {
 		t.Fatalf("other buyer RetryPayment = %v, want PermissionDenied", err)
 	}
 
-	// 2. Switching to COD rejected with FailedPrecondition (409).
-	if _, err := h.svc.RetryPayment(buyerCtx, &orderv1.RetryPaymentRequest{
-		PaymentId:     oldPayID,
-		PaymentMethod: orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD,
-	}); status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("COD RetryPayment = %v, want FailedPrecondition", err)
-	}
-
-	// 3. Valid retry 5 minutes later updates payment_id + payment_expires_at on ALL sub-orders!
+	// 2. Valid retry 5 minutes later updates payment_id on ALL sub-orders while preserving original expiry (F5).
 	h.svc.nowFn = func() time.Time { return baseNow.Add(5 * time.Minute) }
 	retryResp, err := h.svc.RetryPayment(buyerCtx, &orderv1.RetryPaymentRequest{
 		PaymentId:      oldPayID,
@@ -353,8 +345,8 @@ func TestRetryPayment_ValidAndRejectedCases(t *testing.T) {
 	if retryResp.PaymentId == "" || retryResp.PaymentId == oldPayID {
 		t.Fatalf("expected new payment_id != %q, got %q", oldPayID, retryResp.PaymentId)
 	}
-	if !retryResp.PaymentExpiresAt.AsTime().After(oldExp) {
-		t.Fatalf("expected new expiry %v > old expiry %v", retryResp.PaymentExpiresAt.AsTime(), oldExp)
+	if !retryResp.PaymentExpiresAt.AsTime().Equal(oldExp) {
+		t.Fatalf("F5: expected preserved original expiry %v, got %v", oldExp, retryResp.PaymentExpiresAt.AsTime())
 	}
 	lastPayReq := h.payment.createCalls[len(h.payment.createCalls)-1]
 	if !lastPayReq.SupersedePrevious || len(lastPayReq.ShopAllocations) != 2 {

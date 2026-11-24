@@ -821,7 +821,7 @@ function SellerOverviewInner({ shop }: { shop: GatewayShop }) {
 
 function SellerOverviewContent() {
   return (
-    <SellerShopGate pageTitle="Tổng quan gian hàng">
+    <SellerShopGate pageTitle="Tổng quan gian hàng" allowSuspended>
       {(shop) => <SellerOverviewInner shop={shop} />}
     </SellerShopGate>
   );

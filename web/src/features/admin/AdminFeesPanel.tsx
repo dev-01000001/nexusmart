@@ -14,6 +14,7 @@ import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, StateView } from "@/components";
 import { formatBpsPercent, formatDateTimeVi, formatInt } from "@/lib/format";
 import { StatusPill } from "./StatusPill";
+import { useAdminCapability } from "./AdminUserContext";
 import shared from "./adminShared.module.css";
 
 function toDatetimeLocalValue(date: Date): string {
@@ -29,6 +30,11 @@ function isEffectiveFuture(iso?: string): boolean {
 
 export function AdminFeesPanel() {
   const { showToast } = useMockStore();
+  const canReadCatFees = useAdminCapability("fees.category.read");
+  const canWriteCatFees = useAdminCapability("fees.category.write");
+  const canReadPayFees = useAdminCapability("fees.payment.read");
+  const canWritePayFees = useAdminCapability("fees.payment.write");
+  const canReadCategories = useAdminCapability("categories.read");
 
   const [categories, setCategories] = useState<GatewayCategory[]>([]);
   const [catSchedules, setCatSchedules] = useState<GatewayCategoryFeeSchedule[]>([]);
@@ -66,13 +72,24 @@ export function AdminFeesPanel() {
       if (catFilterId) catQs.set("category_id", catFilterId);
 
       const [catsRes, catFeesRes, payFeesRes] = await Promise.all([
-        api<{ categories: GatewayCategory[] }>("admin/categories").catch(() => ({
-          categories: [] as GatewayCategory[],
-        })),
-        api<PaginatedResponse<GatewayCategoryFeeSchedule>>(
-          `admin/fees/categories?${catQs.toString()}`
-        ),
-        api<GatewayPaymentFeeConfigResponse>("admin/fees/payment?include_history=true"),
+        canReadCategories
+          ? api<{ categories: GatewayCategory[] }>("admin/categories").catch(() => ({
+              categories: [] as GatewayCategory[],
+            }))
+          : Promise.resolve({ categories: [] as GatewayCategory[] }),
+        canReadCatFees
+          ? api<PaginatedResponse<GatewayCategoryFeeSchedule>>(
+              `admin/fees/categories?${catQs.toString()}`
+            )
+          : Promise.resolve({
+              items: [] as GatewayCategoryFeeSchedule[],
+              page: 1,
+              page_size: 100,
+              total: 0,
+            }),
+        canReadPayFees
+          ? api<GatewayPaymentFeeConfigResponse>("admin/fees/payment?include_history=true")
+          : Promise.resolve({ active_configs: [], history: [] } as GatewayPaymentFeeConfigResponse),
       ]);
 
       const catList = catsRes.categories ?? [];
@@ -100,7 +117,7 @@ export function AdminFeesPanel() {
     } finally {
       setLoading(false);
     }
-  }, [catFilterId]);
+  }, [catFilterId, canReadCategories, canReadCatFees, canReadPayFees]);
 
   useEffect(() => {
     void loadFees();
@@ -254,85 +271,87 @@ export function AdminFeesPanel() {
           </div>
         </div>
 
-        <form onSubmit={(e) => void handleSaveCategoryFee(e)} className={shared.detailWell}>
-          <div className={shared.detailGrid}>
-            <div className={shared.detailField}>
-              <label htmlFor="fee-cat-id" className={shared.fieldLabel}>
-                Danh mục áp dụng
-              </label>
-              <select
-                id="fee-cat-id"
-                className={shared.toolbarSelect}
-                style={{ height: 38 }}
-                value={catId}
-                onChange={(e) => setCatId(e.target.value)}
-              >
-                {categories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} (hiện tại {formatBpsPercent(c.commission_rate_bps ?? 0)})
-                  </option>
-                ))}
-              </select>
+        {canWriteCatFees && (
+          <form onSubmit={(e) => void handleSaveCategoryFee(e)} className={shared.detailWell}>
+            <div className={shared.detailGrid}>
+              <div className={shared.detailField}>
+                <label htmlFor="fee-cat-id" className={shared.fieldLabel}>
+                  Danh mục áp dụng
+                </label>
+                <select
+                  id="fee-cat-id"
+                  className={shared.toolbarSelect}
+                  style={{ height: 38 }}
+                  value={catId}
+                  onChange={(e) => setCatId(e.target.value)}
+                >
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} (hiện tại {formatBpsPercent(c.commission_rate_bps ?? 0)})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className={shared.detailField}>
+                <label htmlFor="fee-cat-bps" className={shared.fieldLabel}>
+                  Mức hoa hồng (bps — {formatBpsPercent(parsedCatBps)})
+                </label>
+                <input
+                  id="fee-cat-bps"
+                  type="number"
+                  min={0}
+                  max={5000}
+                  step={1}
+                  className={shared.textInput}
+                  value={catBpsStr}
+                  onChange={(e) => setCatBpsStr(e.target.value)}
+                  required
+                />
+              </div>
+              <div className={shared.detailField}>
+                <label htmlFor="fee-cat-eff" className={shared.fieldLabel}>
+                  Bắt đầu hiệu lực
+                </label>
+                <input
+                  id="fee-cat-eff"
+                  type="datetime-local"
+                  className={shared.textInput}
+                  value={catEffectiveFrom}
+                  onChange={(e) => setCatEffectiveFrom(e.target.value)}
+                  required
+                />
+              </div>
+              <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+                <label htmlFor="fee-cat-note" className={shared.fieldLabel}>
+                  Ghi chú điều chỉnh (lưu vào nhật ký kiểm toán)
+                </label>
+                <input
+                  id="fee-cat-note"
+                  type="text"
+                  className={shared.textInput}
+                  value={catNote}
+                  onChange={(e) => setCatNote(e.target.value)}
+                  placeholder="VD: Điều chỉnh biểu phí ngành hàng Quý 4..."
+                />
+              </div>
             </div>
-            <div className={shared.detailField}>
-              <label htmlFor="fee-cat-bps" className={shared.fieldLabel}>
-                Mức hoa hồng (bps — {formatBpsPercent(parsedCatBps)})
-              </label>
-              <input
-                id="fee-cat-bps"
-                type="number"
-                min={0}
-                max={5000}
-                step={1}
-                className={shared.textInput}
-                value={catBpsStr}
-                onChange={(e) => setCatBpsStr(e.target.value)}
-                required
-              />
-            </div>
-            <div className={shared.detailField}>
-              <label htmlFor="fee-cat-eff" className={shared.fieldLabel}>
-                Bắt đầu hiệu lực
-              </label>
-              <input
-                id="fee-cat-eff"
-                type="datetime-local"
-                className={shared.textInput}
-                value={catEffectiveFrom}
-                onChange={(e) => setCatEffectiveFrom(e.target.value)}
-                required
-              />
-            </div>
-            <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-              <label htmlFor="fee-cat-note" className={shared.fieldLabel}>
-                Ghi chú điều chỉnh (lưu vào nhật ký kiểm toán)
-              </label>
-              <input
-                id="fee-cat-note"
-                type="text"
-                className={shared.textInput}
-                value={catNote}
-                onChange={(e) => setCatNote(e.target.value)}
-                placeholder="VD: Điều chỉnh biểu phí ngành hàng Quý 4..."
-              />
-            </div>
-          </div>
 
-          {catFormError && (
-            <p className={shared.validationError} role="alert">
-              {catFormError}
-            </p>
-          )}
+            {catFormError && (
+              <p className={shared.validationError} role="alert">
+                {catFormError}
+              </p>
+            )}
 
-          <div className={shared.detailActionBar}>
-            <span className={shared.savedStamp}>
-              Hệ thống không ghi đè đơn hàng cũ; lịch mới có hiệu lực đúng mốc thời gian chọn.
-            </span>
-            <Button type="submit" variant="primary" size="sm" shape="app" disabled={catSaving}>
-              {catSaving ? "Đang lưu..." : "Lên lịch phí danh mục"}
-            </Button>
-          </div>
-        </form>
+            <div className={shared.detailActionBar}>
+              <span className={shared.savedStamp}>
+                Hệ thống không ghi đè đơn hàng cũ; lịch mới có hiệu lực đúng mốc thời gian chọn.
+              </span>
+              <Button type="submit" variant="primary" size="sm" shape="app" disabled={catSaving}>
+                {catSaving ? "Đang lưu..." : "Lên lịch phí danh mục"}
+              </Button>
+            </div>
+          </form>
+        )}
 
         {catSchedules.length === 0 ? (
           <p className={shared.emptyRow}>Chưa có lịch biểu phí danh mục nào được ghi nhận.</p>
@@ -419,12 +438,13 @@ export function AdminFeesPanel() {
         )}
       </section>
 
-      {/* Payment method fees (COD / VIETQR) */}
+      {/* Payment method fees (COD / VIETQR / ZALOPAY) */}
       <section className={shared.panel} aria-labelledby="pay-fee-heading">
         <div className={shared.panelHeader}>
           <div>
             <h2 id="pay-fee-heading" className={shared.panelTitle}>
-              Phí thanh toán theo phương thức (COD / VietQR) ({formatInt(paymentFees.length)})
+              Phí thanh toán theo phương thức (COD / VietQR / ZaloPay) (
+              {formatInt(paymentFees.length)})
             </h2>
             <span className={shared.panelMeta}>
               Tính theo tổng thanh toán của đơn con và hạch toán vào sổ cái ghi kép
@@ -432,82 +452,85 @@ export function AdminFeesPanel() {
           </div>
         </div>
 
-        <form onSubmit={(e) => void handleSavePaymentFee(e)} className={shared.detailWell}>
-          <div className={shared.detailGrid}>
-            <div className={shared.detailField}>
-              <label htmlFor="fee-pay-method" className={shared.fieldLabel}>
-                Phương thức thanh toán
-              </label>
-              <select
-                id="fee-pay-method"
-                className={shared.toolbarSelect}
-                style={{ height: 38 }}
-                value={payMethod}
-                onChange={(e) => setPayMethod(e.target.value as GatewayPaymentMethod)}
-              >
-                <option value="VIETQR">Chuyển khoản VietQR</option>
-                <option value="COD">Thu hộ khi nhận hàng (COD)</option>
-              </select>
+        {canWritePayFees && (
+          <form onSubmit={(e) => void handleSavePaymentFee(e)} className={shared.detailWell}>
+            <div className={shared.detailGrid}>
+              <div className={shared.detailField}>
+                <label htmlFor="fee-pay-method" className={shared.fieldLabel}>
+                  Phương thức thanh toán
+                </label>
+                <select
+                  id="fee-pay-method"
+                  className={shared.toolbarSelect}
+                  style={{ height: 38 }}
+                  value={payMethod}
+                  onChange={(e) => setPayMethod(e.target.value as GatewayPaymentMethod)}
+                >
+                  <option value="VIETQR">Chuyển khoản VietQR</option>
+                  <option value="ZALOPAY">Ví điện tử ZaloPay</option>
+                  <option value="COD">Thu hộ khi nhận hàng (COD)</option>
+                </select>
+              </div>
+              <div className={shared.detailField}>
+                <label htmlFor="fee-pay-bps" className={shared.fieldLabel}>
+                  Mức phí (bps — {formatBpsPercent(parsedPayBps)})
+                </label>
+                <input
+                  id="fee-pay-bps"
+                  type="number"
+                  min={0}
+                  max={2000}
+                  step={1}
+                  className={shared.textInput}
+                  value={payBpsStr}
+                  onChange={(e) => setPayBpsStr(e.target.value)}
+                  required
+                />
+              </div>
+              <div className={shared.detailField}>
+                <label htmlFor="fee-pay-eff" className={shared.fieldLabel}>
+                  Bắt đầu hiệu lực
+                </label>
+                <input
+                  id="fee-pay-eff"
+                  type="datetime-local"
+                  className={shared.textInput}
+                  value={payEffectiveFrom}
+                  onChange={(e) => setPayEffectiveFrom(e.target.value)}
+                  required
+                />
+              </div>
+              <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+                <label htmlFor="fee-pay-note" className={shared.fieldLabel}>
+                  Ghi chú thay đổi phí thanh toán
+                </label>
+                <input
+                  id="fee-pay-note"
+                  type="text"
+                  className={shared.textInput}
+                  value={payNote}
+                  onChange={(e) => setPayNote(e.target.value)}
+                  placeholder="VD: Biểu phí xử lý giao dịch ngân hàng..."
+                />
+              </div>
             </div>
-            <div className={shared.detailField}>
-              <label htmlFor="fee-pay-bps" className={shared.fieldLabel}>
-                Mức phí (bps — {formatBpsPercent(parsedPayBps)})
-              </label>
-              <input
-                id="fee-pay-bps"
-                type="number"
-                min={0}
-                max={2000}
-                step={1}
-                className={shared.textInput}
-                value={payBpsStr}
-                onChange={(e) => setPayBpsStr(e.target.value)}
-                required
-              />
-            </div>
-            <div className={shared.detailField}>
-              <label htmlFor="fee-pay-eff" className={shared.fieldLabel}>
-                Bắt đầu hiệu lực
-              </label>
-              <input
-                id="fee-pay-eff"
-                type="datetime-local"
-                className={shared.textInput}
-                value={payEffectiveFrom}
-                onChange={(e) => setPayEffectiveFrom(e.target.value)}
-                required
-              />
-            </div>
-            <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-              <label htmlFor="fee-pay-note" className={shared.fieldLabel}>
-                Ghi chú thay đổi phí thanh toán
-              </label>
-              <input
-                id="fee-pay-note"
-                type="text"
-                className={shared.textInput}
-                value={payNote}
-                onChange={(e) => setPayNote(e.target.value)}
-                placeholder="VD: Biểu phí xử lý giao dịch ngân hàng..."
-              />
-            </div>
-          </div>
 
-          {payFormError && (
-            <p className={shared.validationError} role="alert">
-              {payFormError}
-            </p>
-          )}
+            {payFormError && (
+              <p className={shared.validationError} role="alert">
+                {payFormError}
+              </p>
+            )}
 
-          <div className={shared.detailActionBar}>
-            <span className={shared.savedStamp}>
-              Lịch sử thay đổi được lưu bất biến phục vụ kiểm toán tài chính.
-            </span>
-            <Button type="submit" variant="primary" size="sm" shape="app" disabled={paySaving}>
-              {paySaving ? "Đang lưu..." : "Lên lịch phí thanh toán"}
-            </Button>
-          </div>
-        </form>
+            <div className={shared.detailActionBar}>
+              <span className={shared.savedStamp}>
+                Lịch sử thay đổi được lưu bất biến phục vụ kiểm toán tài chính.
+              </span>
+              <Button type="submit" variant="primary" size="sm" shape="app" disabled={paySaving}>
+                {paySaving ? "Đang lưu..." : "Lên lịch phí thanh toán"}
+              </Button>
+            </div>
+          </form>
+        )}
 
         {paymentFees.length === 0 ? (
           <p className={shared.emptyRow}>Chưa có cấu hình lịch phí thanh toán nào.</p>

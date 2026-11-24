@@ -23,12 +23,15 @@ import (
 )
 
 const (
-	SubjectOrderCompleted = "order.completed"
-	DurableConsumerName   = "promotion-order-completed"
-	QueueGroupName        = "promotion-order-completed-workers"
-	DefaultDLQStream      = "NEXUSMART_DLQ"
-	MaxDeliveryAttempts   = 5
-	JetStreamMaxDeliver   = MaxDeliveryAttempts + 1
+	SubjectOrderCompleted         = "order.completed"
+	SubjectShopStatusChanged      = "user.shop_status_changed"
+	DurableConsumerName           = "promotion-order-completed"
+	QueueGroupName                = "promotion-order-completed-workers"
+	ShopStatusDurableConsumerName = "promotion-shop-status"
+	ShopStatusQueueGroupName      = "promotion-shop-status-workers"
+	DefaultDLQStream              = "NEXUSMART_DLQ"
+	MaxDeliveryAttempts           = 5
+	JetStreamMaxDeliver           = MaxDeliveryAttempts + 1
 
 	defaultConsumerMsgTimeout = 25 * time.Second
 	defaultConsumerAckWait    = 30 * time.Second
@@ -68,6 +71,20 @@ type OrderCompletedPayload struct {
 	CommissionVND   int64  `json:"commission_vnd"`
 	TotalPayableVND int64  `json:"total_payable_vnd"`
 	CoinsReward     int64  `json:"coins_reward"`
+}
+
+// ShopStatusChangedPayload matches docs/contracts.md Section 5 for `user.shop_status_changed` (F12).
+type ShopStatusChangedPayload struct {
+	ShopID      string `json:"shop_id"`
+	OwnerUserID string `json:"owner_user_id,omitempty"`
+	ShopName    string `json:"shop_name,omitempty"`
+	FromStatus  string `json:"from_status,omitempty"`
+	ToStatus    string `json:"to_status"`
+	Reason      string `json:"reason,omitempty"`
+	ActorID     string `json:"actor_id,omitempty"`
+	ApproverID  string `json:"approver_id,omitempty"`
+	Version     int64  `json:"version"`
+	OccurredAt  string `json:"occurred_at,omitempty"`
 }
 
 // DLQPublisher publishes unprocessable messages to a dead letter subject.
@@ -139,7 +156,7 @@ func (c *OrderCompletedConsumer) EnsureStreams() error {
 	return jetstream.EnsureStreams(c.js, c.streamName, DefaultDLQStream)
 }
 
-// Start registers a durable JetStream queue subscription on `order.completed`.
+// Start registers durable JetStream queue subscriptions on `order.completed` and `user.shop_status_changed`.
 func (c *OrderCompletedConsumer) Start(ctx context.Context) error {
 	if c.js == nil {
 		return nil
@@ -148,6 +165,9 @@ func (c *OrderCompletedConsumer) Start(ctx context.Context) error {
 		return err
 	}
 	if err := c.ensureQueueConsumer(ctx); err != nil {
+		return err
+	}
+	if err := c.ensureShopStatusQueueConsumer(ctx); err != nil {
 		return err
 	}
 
@@ -168,13 +188,65 @@ func (c *OrderCompletedConsumer) Start(ctx context.Context) error {
 		_ = c.Stop()
 		return fmt.Errorf("queue subscribe %s (%s): %w", SubjectOrderCompleted, DurableConsumerName, err)
 	}
-	c.logger.Info("subscribed to order.completed jetstream queue consumer",
+	if _, err := c.js.QueueSubscribe(
+		SubjectShopStatusChanged,
+		ShopStatusQueueGroupName,
+		func(msg *nats.Msg) {
+			c.onMessage(ctx, msg)
+		},
+		nats.Bind(c.streamName, ShopStatusDurableConsumerName),
+		nats.ManualAck(),
+	); err != nil {
+		_ = c.Stop()
+		return fmt.Errorf("queue subscribe %s (%s): %w", SubjectShopStatusChanged, ShopStatusDurableConsumerName, err)
+	}
+	c.logger.Info("subscribed to promotion jetstream queue consumers",
 		slog.String("stream", c.streamName),
-		slog.String("durable", DurableConsumerName),
-		slog.String("queue", QueueGroupName),
+		slog.String("order_durable", DurableConsumerName),
+		slog.String("shop_status_durable", ShopStatusDurableConsumerName),
 		slog.Int("max_deliver", int(c.maxAttempts)+1),
 	)
 	return nil
+}
+
+func (c *OrderCompletedConsumer) ensureShopStatusQueueConsumer(ctx context.Context) error {
+	desiredMaxDeliver := int(c.maxAttempts) + 1
+	if desiredMaxDeliver < 2 {
+		desiredMaxDeliver = 2
+	}
+	opCtx, cancel := context.WithTimeout(ctx, defaultMigrationTimeout)
+	defer cancel()
+
+	info, err := c.js.ConsumerInfo(c.streamName, ShopStatusDurableConsumerName, nats.Context(opCtx))
+	if err != nil {
+		if !errors.Is(err, nats.ErrConsumerNotFound) {
+			return fmt.Errorf("inspect consumer %s: %w", ShopStatusDurableConsumerName, err)
+		}
+		cfg := &nats.ConsumerConfig{
+			Durable:        ShopStatusDurableConsumerName,
+			FilterSubject:  SubjectShopStatusChanged,
+			DeliverSubject: nats.NewInbox(),
+			DeliverGroup:   ShopStatusQueueGroupName,
+			DeliverPolicy:  nats.DeliverAllPolicy,
+			AckPolicy:      nats.AckExplicitPolicy,
+			AckWait:        c.ackWait,
+			MaxDeliver:     desiredMaxDeliver,
+			ReplayPolicy:   nats.ReplayInstantPolicy,
+		}
+		if _, addErr := c.js.AddConsumer(c.streamName, cfg, nats.Context(opCtx)); addErr != nil {
+			existing, infoErr := c.js.ConsumerInfo(c.streamName, ShopStatusDurableConsumerName, nats.Context(opCtx))
+			if infoErr == nil && existing != nil && existing.Config.DeliverGroup == ShopStatusQueueGroupName {
+				return c.syncNamedQueueConsumerConfig(opCtx, ShopStatusDurableConsumerName, existing, desiredMaxDeliver)
+			}
+			return fmt.Errorf("create queue consumer %s: %w", ShopStatusDurableConsumerName, addErr)
+		}
+		return nil
+	}
+	if info.Config.DeliverGroup != ShopStatusQueueGroupName {
+		return fmt.Errorf("existing durable consumer %q has incompatible deliver_group %q (expected %q)",
+			ShopStatusDurableConsumerName, info.Config.DeliverGroup, ShopStatusQueueGroupName)
+	}
+	return c.syncNamedQueueConsumerConfig(opCtx, ShopStatusDurableConsumerName, info, desiredMaxDeliver)
 }
 
 // ensureQueueConsumer ensures the durable consumer exists with QueueGroupName and MaxDeliver headroom.
@@ -287,6 +359,10 @@ func (c *OrderCompletedConsumer) createQueueConsumer(
 }
 
 func (c *OrderCompletedConsumer) syncQueueConsumerConfig(ctx context.Context, info *nats.ConsumerInfo, desiredMaxDeliver int) error {
+	return c.syncNamedQueueConsumerConfig(ctx, DurableConsumerName, info, desiredMaxDeliver)
+}
+
+func (c *OrderCompletedConsumer) syncNamedQueueConsumerConfig(ctx context.Context, durableName string, info *nats.ConsumerInfo, desiredMaxDeliver int) error {
 	if info.Config.MaxDeliver == desiredMaxDeliver && info.Config.AckWait == c.ackWait {
 		return nil
 	}
@@ -294,7 +370,7 @@ func (c *OrderCompletedConsumer) syncQueueConsumerConfig(ctx context.Context, in
 	updated.MaxDeliver = desiredMaxDeliver
 	updated.AckWait = c.ackWait
 	if _, err := c.js.UpdateConsumer(c.streamName, &updated, nats.Context(ctx)); err != nil {
-		return fmt.Errorf("update consumer %s config: %w", DurableConsumerName, err)
+		return fmt.Errorf("update consumer %s config: %w", durableName, err)
 	}
 	return nil
 }
@@ -353,12 +429,12 @@ func (c *OrderCompletedConsumer) handleNATSMsg(parentCtx context.Context, msg *n
 	msgCtx, cancel := context.WithTimeout(parentCtx, defaultConsumerMsgTimeout)
 	defer cancel()
 
-	action, retryErr := c.processMessage(msgCtx, msg.Data, headers, delivered)
+	action, retryErr := c.processMessageWithSubject(msgCtx, msg.Subject, msg.Data, headers, delivered)
 	if parentCtx.Err() != nil || c.isStopping() {
 		// Shutdown occurred during processing: never route to DLQ or Nak; Ack only if handler already succeeded.
 		if action == ActionAck {
 			if ackErr := msg.Ack(); ackErr != nil {
-				c.logger.WarnContext(msgCtx, "failed to ack order.completed message", slog.String("error", ackErr.Error()))
+				c.logger.WarnContext(msgCtx, "failed to ack nats message", slog.String("subject", msg.Subject), slog.String("error", ackErr.Error()))
 			}
 		}
 		return
@@ -367,7 +443,7 @@ func (c *OrderCompletedConsumer) handleNATSMsg(parentCtx context.Context, msg *n
 	switch action {
 	case ActionAck, ActionDLQ:
 		if ackErr := msg.Ack(); ackErr != nil {
-			c.logger.WarnContext(msgCtx, "failed to ack order.completed message", slog.String("error", ackErr.Error()))
+			c.logger.WarnContext(msgCtx, "failed to ack nats message", slog.String("subject", msg.Subject), slog.String("error", ackErr.Error()))
 		}
 	case ActionNak:
 		baseDelay := c.nakBaseDelay
@@ -378,21 +454,28 @@ func (c *OrderCompletedConsumer) handleNATSMsg(parentCtx context.Context, msg *n
 		if delay > 10*time.Second {
 			delay = 10 * time.Second
 		}
-		c.logger.WarnContext(msgCtx, "nacking order.completed message for retry",
+		c.logger.WarnContext(msgCtx, "nacking nats message for retry",
+			slog.String("subject", msg.Subject),
 			slog.Uint64("attempt", delivered),
 			slog.String("error", fmt.Sprint(retryErr)),
 		)
 		if nakErr := msg.NakWithDelay(delay); nakErr != nil {
-			c.logger.WarnContext(msgCtx, "failed to nak order.completed message", slog.String("error", nakErr.Error()))
+			c.logger.WarnContext(msgCtx, "failed to nak nats message", slog.String("subject", msg.Subject), slog.String("error", nakErr.Error()))
 		}
 	}
 }
 
-// ProcessRawMessage parses, traces, and idempotently processes an `order.completed` event.
+// ProcessRawMessage parses, traces, and idempotently processes an event envelope
+// (`order.completed` or `user.shop_status_changed`).
 // Returns (ack=true, nil) when handled or persisted to at least one durable DLQ sink,
 // or (ack=false, err) when retry/redelivery is required.
 func (c *OrderCompletedConsumer) ProcessRawMessage(ctx context.Context, data []byte, headers map[string]string, attempt uint64) (bool, error) {
-	action, err := c.processMessage(ctx, data, headers, attempt)
+	return c.ProcessRawMessageForSubject(ctx, "", data, headers, attempt)
+}
+
+// ProcessRawMessageForSubject processes a raw event message bound to a specific NATS subject.
+func (c *OrderCompletedConsumer) ProcessRawMessageForSubject(ctx context.Context, subject string, data []byte, headers map[string]string, attempt uint64) (bool, error) {
+	action, err := c.processMessageWithSubject(ctx, subject, data, headers, attempt)
 	switch action {
 	case ActionAck, ActionDLQ:
 		return true, nil
@@ -409,6 +492,10 @@ func (c *OrderCompletedConsumer) shutdownErr(ctx context.Context) error {
 }
 
 func (c *OrderCompletedConsumer) processMessage(ctx context.Context, data []byte, headers map[string]string, attempt uint64) (DeliveryAction, error) {
+	return c.processMessageWithSubject(ctx, "", data, headers, attempt)
+}
+
+func (c *OrderCompletedConsumer) processMessageWithSubject(ctx context.Context, subject string, data []byte, headers map[string]string, attempt uint64) (DeliveryAction, error) {
 	if attempt == 0 {
 		attempt = 1
 	}
@@ -416,13 +503,19 @@ func (c *OrderCompletedConsumer) processMessage(ctx context.Context, data []byte
 		return ActionNak, c.shutdownErr(ctx)
 	}
 
+	subject = strings.TrimSpace(subject)
+	spanSubject := subject
+	if spanSubject == "" {
+		spanSubject = SubjectOrderCompleted
+	}
+
 	if len(headers) > 0 {
 		ctx = telemetry.ExtractTraceHeaders(ctx, headers)
 	}
 	tracer := otel.Tracer("promotion")
-	ctx, span := tracer.Start(ctx, "nats.consume "+SubjectOrderCompleted,
+	ctx, span := tracer.Start(ctx, "nats.consume "+spanSubject,
 		trace.WithSpanKind(trace.SpanKindConsumer),
-		trace.WithAttributes(attribute.String("messaging.destination", SubjectOrderCompleted)),
+		trace.WithAttributes(attribute.String("messaging.destination", spanSubject)),
 	)
 	defer span.End()
 
@@ -431,28 +524,66 @@ func (c *OrderCompletedConsumer) processMessage(ctx context.Context, data []byte
 		if errors.Is(ctx.Err(), context.Canceled) || c.isStopping() {
 			return ActionNak, err
 		}
-		if c.sendToDLQ(ctx, "", data, headers, "invalid event envelope json: "+err.Error(), attempt) {
-			return ActionDLQ, err
-		}
-		return ActionNak, err
-	}
-	if strings.TrimSpace(env.EventID) == "" {
-		err := errors.New("missing event_id")
-		if errors.Is(ctx.Err(), context.Canceled) || c.isStopping() {
-			return ActionNak, err
-		}
-		if c.sendToDLQ(ctx, "", data, headers, err.Error(), attempt) {
+		if c.sendToDLQ(ctx, spanSubject, "", data, headers, "invalid event envelope json: "+err.Error(), attempt) {
 			return ActionDLQ, err
 		}
 		return ActionNak, err
 	}
 
+	eventType := strings.TrimSpace(env.EventType)
+	if eventType == "" {
+		eventType = subject
+	}
+	if eventType == "" {
+		eventType = SubjectOrderCompleted
+	}
+	dlqSubject := subject
+	if dlqSubject == "" {
+		dlqSubject = eventType
+	}
+
+	if strings.TrimSpace(env.EventID) == "" {
+		err := errors.New("missing event_id")
+		if errors.Is(ctx.Err(), context.Canceled) || c.isStopping() {
+			return ActionNak, err
+		}
+		if c.sendToDLQ(ctx, dlqSubject, "", data, headers, err.Error(), attempt) {
+			return ActionDLQ, err
+		}
+		return ActionNak, err
+	}
+
+	switch eventType {
+	case SubjectOrderCompleted:
+		return c.handleOrderCompleted(ctx, dlqSubject, env, data, headers, attempt)
+	case SubjectShopStatusChanged:
+		return c.handleShopStatusChanged(ctx, dlqSubject, env, data, headers, attempt)
+	default:
+		err := fmt.Errorf("unsupported event_type %q", eventType)
+		if errors.Is(ctx.Err(), context.Canceled) || c.isStopping() {
+			return ActionNak, err
+		}
+		if c.sendToDLQ(ctx, dlqSubject, env.EventID, data, headers, err.Error(), attempt) {
+			return ActionDLQ, err
+		}
+		return ActionNak, err
+	}
+}
+
+func (c *OrderCompletedConsumer) handleOrderCompleted(
+	ctx context.Context,
+	dlqSubject string,
+	env Envelope,
+	data []byte,
+	headers map[string]string,
+	attempt uint64,
+) (DeliveryAction, error) {
 	var payload OrderCompletedPayload
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) || c.isStopping() {
 			return ActionNak, err
 		}
-		if c.sendToDLQ(ctx, env.EventID, data, headers, "invalid order.completed payload json: "+err.Error(), attempt) {
+		if c.sendToDLQ(ctx, dlqSubject, env.EventID, data, headers, "invalid order.completed payload json: "+err.Error(), attempt) {
 			return ActionDLQ, err
 		}
 		return ActionNak, err
@@ -477,7 +608,7 @@ func (c *OrderCompletedConsumer) processMessage(ctx context.Context, data []byte
 			slog.String("error", err.Error()),
 		)
 		if attempt >= c.maxAttempts {
-			if c.sendToDLQ(ctx, env.EventID, data, headers, "max retries exceeded: "+err.Error(), attempt) {
+			if c.sendToDLQ(ctx, dlqSubject, env.EventID, data, headers, "max retries exceeded: "+err.Error(), attempt) {
 				return ActionDLQ, err
 			}
 			return ActionNak, err
@@ -494,18 +625,126 @@ func (c *OrderCompletedConsumer) processMessage(ctx context.Context, data []byte
 	return ActionAck, nil
 }
 
+func (c *OrderCompletedConsumer) handleShopStatusChanged(
+	ctx context.Context,
+	dlqSubject string,
+	env Envelope,
+	data []byte,
+	headers map[string]string,
+	attempt uint64,
+) (DeliveryAction, error) {
+	var payload ShopStatusChangedPayload
+	if err := json.Unmarshal(env.Payload, &payload); err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) || c.isStopping() {
+			return ActionNak, err
+		}
+		if c.sendToDLQ(ctx, dlqSubject, env.EventID, data, headers, "invalid user.shop_status_changed payload json: "+err.Error(), attempt) {
+			return ActionDLQ, err
+		}
+		return ActionNak, err
+	}
+
+	shopID := strings.TrimSpace(payload.ShopID)
+	if shopID == "" {
+		err := errors.New("missing shop_id in user.shop_status_changed payload")
+		if errors.Is(ctx.Err(), context.Canceled) || c.isStopping() {
+			return ActionNak, err
+		}
+		if c.sendToDLQ(ctx, dlqSubject, env.EventID, data, headers, err.Error(), attempt) {
+			return ActionDLQ, err
+		}
+		return ActionNak, err
+	}
+	if payload.Version < 1 {
+		err := fmt.Errorf("invalid version %d in user.shop_status_changed payload (must be >= 1)", payload.Version)
+		if errors.Is(ctx.Err(), context.Canceled) || c.isStopping() {
+			return ActionNak, err
+		}
+		if c.sendToDLQ(ctx, dlqSubject, env.EventID, data, headers, err.Error(), attempt) {
+			return ActionDLQ, err
+		}
+		return ActionNak, err
+	}
+	suspended, parseErr := parseShopStatusSuspended(payload.ToStatus)
+	if parseErr != nil {
+		if errors.Is(ctx.Err(), context.Canceled) || c.isStopping() {
+			return ActionNak, parseErr
+		}
+		if c.sendToDLQ(ctx, dlqSubject, env.EventID, data, headers, parseErr.Error(), attempt) {
+			return ActionDLQ, parseErr
+		}
+		return ActionNak, parseErr
+	}
+
+	already, stale, err := c.store.ProcessShopStatusChangedEvent(
+		ctx,
+		env.EventID,
+		SubjectShopStatusChanged,
+		shopID,
+		suspended,
+		payload.Version,
+	)
+	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) || c.isStopping() {
+			return ActionNak, err
+		}
+		c.logger.WarnContext(ctx, "user.shop_status_changed handler failed",
+			slog.String("event_id", env.EventID),
+			slog.String("shop_id", shopID),
+			slog.Uint64("attempt", attempt),
+			slog.String("error", err.Error()),
+		)
+		if attempt >= c.maxAttempts {
+			if c.sendToDLQ(ctx, dlqSubject, env.EventID, data, headers, "max retries exceeded: "+err.Error(), attempt) {
+				return ActionDLQ, err
+			}
+			return ActionNak, err
+		}
+		return ActionNak, err
+	}
+
+	c.logger.InfoContext(ctx, "processed user.shop_status_changed event",
+		slog.String("event_id", env.EventID),
+		slog.String("shop_id", shopID),
+		slog.Bool("suspended", suspended),
+		slog.Int64("version", payload.Version),
+		slog.Bool("already_processed", already),
+		slog.Bool("stale", stale),
+	)
+	return ActionAck, nil
+}
+
+func parseShopStatusSuspended(raw string) (bool, error) {
+	norm := strings.ToUpper(strings.TrimSpace(raw))
+	norm = strings.TrimPrefix(norm, "SHOP_STATUS_")
+	switch norm {
+	case "SUSPENDED":
+		return true, nil
+	case "ACTIVE":
+		return false, nil
+	default:
+		return false, fmt.Errorf("unknown to_status %q in user.shop_status_changed payload", raw)
+	}
+}
+
 // sendToDLQ persists the poison message to dead_letter_events and/or NEXUSMART_DLQ using a
 // detached bounded context (awaiting JetStream PubAck). Returns true iff at least one durable
 // DLQ sink succeeded (E1).
 func (c *OrderCompletedConsumer) sendToDLQ(
 	ctx context.Context,
+	subject string,
 	eventID string,
 	data []byte,
 	origHeaders map[string]string,
 	reason string,
 	attempts uint64,
 ) bool {
-	c.logger.ErrorContext(ctx, "sending order.completed message to DLQ",
+	subject = strings.TrimSpace(subject)
+	if subject == "" {
+		subject = SubjectOrderCompleted
+	}
+	c.logger.ErrorContext(ctx, "sending message to DLQ",
+		slog.String("subject", subject),
 		slog.String("event_id", eventID),
 		slog.Uint64("attempts", attempts),
 		slog.String("reason", reason),
@@ -518,14 +757,14 @@ func (c *OrderCompletedConsumer) sendToDLQ(
 	if c.dlqStore != nil {
 		if err := c.dlqStore.InsertDeadLetterEvent(dlqCtx, DeadLetterRecord{
 			ID:           uuid.NewString(),
-			Subject:      SubjectOrderCompleted,
+			Subject:      subject,
 			EventID:      eventID,
 			Payload:      data,
 			ErrorMessage: reason,
 			Attempts:     int(attempts),
 		}); err != nil {
 			c.logger.ErrorContext(dlqCtx, "failed to persist dead_letter_events record",
-				slog.String("subject", SubjectOrderCompleted),
+				slog.String("subject", subject),
 				slog.String("event_id", eventID),
 				slog.String("error", err.Error()),
 			)
@@ -540,8 +779,8 @@ func (c *OrderCompletedConsumer) sendToDLQ(
 			dlqHeaders[k] = v
 		}
 		dlqHeaders["x-dlq-reason"] = reason
-		dlqHeaders["x-original-subject"] = SubjectOrderCompleted
-		dlqHeaders["X-DLQ-Original-Subject"] = SubjectOrderCompleted
+		dlqHeaders["x-original-subject"] = subject
+		dlqHeaders["X-DLQ-Original-Subject"] = subject
 		dlqHeaders["X-DLQ-Error"] = reason
 		dlqHeaders["X-DLQ-Attempts"] = strconv.FormatUint(attempts, 10)
 		if eventID != "" {
@@ -549,9 +788,9 @@ func (c *OrderCompletedConsumer) sendToDLQ(
 		}
 		telemetry.InjectTraceHeaders(dlqCtx, dlqHeaders)
 
-		if err := c.dlq.PublishDLQ(dlqCtx, "dlq."+SubjectOrderCompleted, data, dlqHeaders); err != nil {
+		if err := c.dlq.PublishDLQ(dlqCtx, "dlq."+subject, data, dlqHeaders); err != nil {
 			c.logger.ErrorContext(dlqCtx, "failed to publish message to NATS DLQ",
-				slog.String("dlq_subject", "dlq."+SubjectOrderCompleted),
+				slog.String("dlq_subject", "dlq."+subject),
 				slog.String("event_id", eventID),
 				slog.String("error", err.Error()),
 			)

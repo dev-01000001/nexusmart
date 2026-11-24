@@ -36,6 +36,12 @@ type Config struct {
 	AdminPassword         string
 	PaymentWebhookSecret  string
 	ShippingWebhookSecret string
+	// ZaloPay mock/sandbox callback verification settings (F1/F2).
+	// When env vars are unset in mock mode, payment uses app_id=1 and dev-only-zalopay-mock-key1|key2.
+	ZaloPayAppID           int
+	ZaloPayKey1            string
+	ZaloPayKey2            string
+	LargeRefundApprovalVND int64
 	// JWTSecret is the dev user-token key, used only to mint buyer tokens for the direct-gRPC flash-sale burst.
 	JWTSecret        string
 	ServiceJWTSecret string
@@ -84,12 +90,16 @@ func LoadConfig() Config {
 
 		MailpitURL: envOr("MAILPIT_URL", "http://localhost:8025"),
 
-		AdminEmail:            envOrMulti([]string{"ADMIN_EMAIL", "ADMIN_BOOTSTRAP_EMAIL"}, "admin@nexusmart.local"),
-		AdminPassword:         envOrMulti([]string{"ADMIN_PASSWORD", "ADMIN_BOOTSTRAP_PASSWORD"}, "AdminDevPassword123!"),
-		PaymentWebhookSecret:  envOr("PAYMENT_WEBHOOK_SECRET", "dev-only-payment-webhook-hmac-secret"),
-		ShippingWebhookSecret: envOr("SHIPPING_WEBHOOK_SECRET", "dev-only-shipping-webhook-hmac-secret"),
-		JWTSecret:             envOr("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me"),
-		ServiceJWTSecret:      envOr("SERVICE_JWT_SECRET", "dev-only-nexusmart-service-hs256-secret-change-me"),
+		AdminEmail:             envOrMulti([]string{"ADMIN_EMAIL", "ADMIN_BOOTSTRAP_EMAIL"}, "admin@nexusmart.local"),
+		AdminPassword:          envOrMulti([]string{"ADMIN_PASSWORD", "ADMIN_BOOTSTRAP_PASSWORD"}, "AdminDevPassword123!"),
+		PaymentWebhookSecret:   envOr("PAYMENT_WEBHOOK_SECRET", "dev-only-payment-webhook-hmac-secret"),
+		ShippingWebhookSecret:  envOr("SHIPPING_WEBHOOK_SECRET", "dev-only-shipping-webhook-hmac-secret"),
+		ZaloPayAppID:           envInt("ZALOPAY_APP_ID", 1),
+		ZaloPayKey1:            envOr("ZALOPAY_KEY1", "dev-only-zalopay-mock-key1"),
+		ZaloPayKey2:            envOr("ZALOPAY_KEY2", "dev-only-zalopay-mock-key2"),
+		LargeRefundApprovalVND: int64(envInt("PAYMENT_LARGE_REFUND_APPROVAL_VND", 5000000)),
+		JWTSecret:              envOr("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me"),
+		ServiceJWTSecret:       envOr("SERVICE_JWT_SECRET", "dev-only-nexusmart-service-hs256-secret-change-me"),
 
 		ShippingTestFaultInjection:      envBool("SHIPPING_TEST_FAULT_INJECTION", false),
 		ShippingCreateRetryMax:          envInt("SHIPPING_CREATE_RETRY_MAX", 8),

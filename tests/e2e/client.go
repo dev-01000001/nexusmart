@@ -99,7 +99,9 @@ func parseRetryAfter(headerVal string) time.Duration {
 }
 
 // DoAbsolute sends an HTTP request to any full URL and returns the raw response.
-// On HTTP 429 it waits per Retry-After (default 5s) and retries up to 150s total wait.
+// On HTTP 429 with a Retry-After header (gateway rate limiter), it waits per Retry-After
+// and retries up to 150s total wait. HTTP 429 without Retry-After (business RESOURCE_EXHAUSTED
+// such as sold-out flash sales) is returned immediately without sleeping.
 func (c *Client) DoAbsolute(
 	ctx context.Context,
 	method string,
@@ -165,8 +167,12 @@ func (c *Client) DoAbsolute(
 		if resp.StatusCode != http.StatusTooManyRequests {
 			return rawResp, nil
 		}
+		retryAfterHeader := strings.TrimSpace(resp.Header.Get("Retry-After"))
+		if retryAfterHeader == "" {
+			return rawResp, nil
+		}
 
-		wait := parseRetryAfter(resp.Header.Get("Retry-After")) + 250*time.Millisecond
+		wait := parseRetryAfter(retryAfterHeader) + 250*time.Millisecond
 		if totalWaited+wait > rateLimitMaxWait {
 			return rawResp, nil
 		}

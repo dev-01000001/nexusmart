@@ -99,6 +99,8 @@ message Product {
   int32 review_count = 16;
   // Matched REVIEW-level banned keywords for moderation visibility (omitted from public gateway JSON) (E10).
   repeated string flagged_keywords = 17;
+  // True while the owning shop is SUSPENDED (F12); hides product from storefront without changing Product.status.
+  bool shop_suspended = 18;
 }
 
 message CreateCategoryRequest {

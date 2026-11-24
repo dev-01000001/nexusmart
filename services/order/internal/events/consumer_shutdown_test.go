@@ -42,6 +42,9 @@ func (h *shutdownTestHandler) HandlePaymentExpired(_ context.Context, _ string, 
 func (h *shutdownTestHandler) HandlePaymentRefunded(_ context.Context, _ string, _ PaymentRefundedPayload) error {
 	return nil
 }
+func (h *shutdownTestHandler) HandlePaymentRefundRejected(_ context.Context, _ string, _ PaymentRefundRejectedPayload) error {
+	return nil
+}
 func (h *shutdownTestHandler) HandleShipmentUpdated(_ context.Context, _ string, _ ShipmentUpdatedPayload) error {
 	return nil
 }

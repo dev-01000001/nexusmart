@@ -409,7 +409,9 @@ pub async fn connect_jetstream(nats_url: &str, stream_name: &str) -> Option<jets
     }
 }
 
-/// Background worker 1: Scans expired pending VietQR payments (UC-PAY06).
+/// Background worker 1: Scans expired pending online payments (VietQR & ZaloPay, UC-PAY06 / F3)
+/// and sweeps unsettled terminal ZALOPAY payments (`superseded`/`expired`/`cancelled`) within the
+/// finite post-expiry window to recover lost callbacks (p3 Item 1).
 pub async fn run_expiration_scanner(service: PaymentService, mut shutdown: watch::Receiver<bool>) {
     let mut ticker = interval(service.config().expiration_scan_interval);
     info!(
@@ -1053,6 +1055,33 @@ pub async fn run_escrow_hold_releaser(
                     .await
                 {
                     error!(error = %e, "stale COD reconciliation run sweep error");
+                }
+            }
+        }
+    }
+}
+
+/// Background worker 6: Polls pending/processing ZaloPay wallet refunds via `/v2/refund` and
+/// `/v2/query_refund` using `FOR UPDATE OF r SKIP LOCKED` for multi-replica safety (F4).
+pub async fn run_zalopay_refund_poller(
+    service: PaymentService,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut ticker = interval(service.config().zalopay_refund_poll_interval);
+    info!(
+        interval_secs = service.config().zalopay_refund_poll_interval.as_secs(),
+        "started ZaloPay async refund poller worker"
+    );
+
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => {
+                info!("stopping ZaloPay async refund poller worker");
+                break;
+            }
+            _ = ticker.tick() => {
+                if let Err(e) = service.poll_zalopay_refunds().await {
+                    error!(error = %e, "ZaloPay refund polling error");
                 }
             }
         }

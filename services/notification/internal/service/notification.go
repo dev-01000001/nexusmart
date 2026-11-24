@@ -680,6 +680,9 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 			}},
 		}, nil
 
+	case "user.shop_status_changed":
+		return buildShopStatusChangedPlan(env.Payload, env.OccurredAt, now)
+
 	case "user.shop_bank_account_otp":
 		var p struct {
 			UserID              string `json:"user_id"`
@@ -1457,19 +1460,112 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 	}
 }
 
+type shopStatusChangedPayload struct {
+	ShopID      string `json:"shop_id"`
+	OwnerUserID string `json:"owner_user_id"`
+	ShopName    string `json:"shop_name"`
+	FromStatus  string `json:"from_status"`
+	ToStatus    string `json:"to_status"`
+	Reason      string `json:"reason"`
+	ActorID     string `json:"actor_id"`
+	ApproverID  string `json:"approver_id"`
+	Version     int64  `json:"version"`
+	OccurredAt  string `json:"occurred_at"`
+}
+
+func buildShopStatusChangedPlan(raw json.RawMessage, envOccurredAt string, now time.Time) (*eventPlan, error) {
+	var p shopStatusChangedPayload
+	if err := json.Unmarshal(raw, &p); err != nil ||
+		strings.TrimSpace(p.ShopID) == "" ||
+		strings.TrimSpace(p.OwnerUserID) == "" {
+		return nil, fmt.Errorf("%w: invalid user.shop_status_changed payload", ErrMalformedPayload)
+	}
+	if p.Version <= 0 {
+		return nil, fmt.Errorf("%w: invalid user.shop_status_changed version %d", ErrMalformedPayload, p.Version)
+	}
+	shopID := strings.TrimSpace(p.ShopID)
+	ownerUserID := strings.TrimSpace(p.OwnerUserID)
+	rawShopName := strings.TrimSpace(p.ShopName)
+	shopName := rawShopName
+	if shopName == "" {
+		shopName = shopID
+	}
+	if envOccurredAt == "" && strings.TrimSpace(p.OccurredAt) != "" {
+		if parsed, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(p.OccurredAt)); parseErr == nil {
+			now = parsed.UTC()
+		}
+	}
+
+	fromStatus := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(p.FromStatus)), "SHOP_STATUS_")
+	toStatus := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(p.ToStatus)), "SHOP_STATUS_")
+	reason := strings.TrimSpace(p.Reason)
+
+	cacheShop := &store.ShopOwner{
+		ShopID:      shopID,
+		OwnerUserID: ownerUserID,
+		ShopName:    rawShopName,
+	}
+
+	var title, body, emailSubject string
+	switch toStatus {
+	case "SUSPENDED":
+		title = fmt.Sprintf("Gian hàng %s đã bị tạm khóa", shopName)
+		body = fmt.Sprintf("Gian hàng %s đã bị tạm khóa.", shopName)
+		if reason != "" {
+			body += fmt.Sprintf(" Lý do: %s.", strings.TrimSuffix(reason, "."))
+		}
+		body += " Các đơn hàng đang xử lý vẫn tiếp tục được thực hiện bình thường, tuy nhiên gian hàng tạm thời không thể nhận đơn hàng mới hoặc tạo/chỉnh sửa sản phẩm."
+		emailSubject = fmt.Sprintf("NexusMart - Gian hàng %s đã bị tạm khóa", shopName)
+	case "ACTIVE":
+		if fromStatus != "" && fromStatus != "SUSPENDED" {
+			return &eventPlan{cacheShop: cacheShop}, nil
+		}
+		title = fmt.Sprintf("Gian hàng %s đã được mở khóa", shopName)
+		body = fmt.Sprintf("Gian hàng %s đã được mở khóa và hoạt động trở lại trên NexusMart.", shopName)
+		if reason != "" {
+			body += fmt.Sprintf(" Ghi chú: %s.", strings.TrimSuffix(reason, "."))
+		}
+		body += " Sản phẩm đủ điều kiện sẽ hiển thị trở lại và gian hàng có thể tiếp tục nhận đơn hàng mới."
+		emailSubject = fmt.Sprintf("NexusMart - Gian hàng %s đã được mở khóa", shopName)
+	default:
+		return nil, fmt.Errorf("%w: invalid user.shop_status_changed to_status %q", ErrMalformedPayload, p.ToStatus)
+	}
+
+	return &eventPlan{
+		cacheShop: cacheShop,
+		deliveries: []recipientDelivery{{
+			role:     "user",
+			userID:   ownerUserID,
+			category: store.CategorySystem,
+			inApp: &store.Notification{
+				Category:  store.CategorySystem,
+				Title:     title,
+				Body:      body,
+				Link:      "/seller",
+				CreatedAt: now,
+			},
+			email: &mailer.Message{
+				Subject: emailSubject,
+				Body:    body + "\n",
+			},
+		}},
+	}, nil
+}
+
 type returnUpdatedPayload struct {
-	ReturnRequestID    string `json:"return_request_id"`
-	OrderID            string `json:"order_id"`
-	OrderCode          string `json:"order_code"`
-	CheckoutGroupID    string `json:"checkout_group_id"`
-	BuyerID            string `json:"buyer_id"`
-	ShopID             string `json:"shop_id"`
-	Status             string `json:"status"`
-	PreviousStatus     string `json:"previous_status"`
-	Reason             string `json:"reason"`
-	ReturnTrackingCode string `json:"return_tracking_code"`
-	DeadlineAt         string `json:"deadline_at"`
-	ActorRole          string `json:"actor_role"`
+	ReturnRequestID      string `json:"return_request_id"`
+	OrderID              string `json:"order_id"`
+	OrderCode            string `json:"order_code"`
+	CheckoutGroupID      string `json:"checkout_group_id"`
+	BuyerID              string `json:"buyer_id"`
+	ShopID               string `json:"shop_id"`
+	Status               string `json:"status"`
+	PreviousStatus       string `json:"previous_status"`
+	Reason               string `json:"reason"`
+	ReturnTrackingCode   string `json:"return_tracking_code"`
+	DeadlineAt           string `json:"deadline_at"`
+	ActorRole            string `json:"actor_role"`
+	RefundApprovalStatus string `json:"refund_approval_status"`
 }
 
 func buildReturnUpdatedPlan(raw json.RawMessage, now time.Time) (*eventPlan, error) {
@@ -1558,6 +1654,8 @@ func buildReturnUpdatedPlan(raw json.RawMessage, now time.Time) (*eventPlan, err
 
 func formatReturnMessages(p returnUpdatedPayload, code string) (buyerTitle, buyerBody, buyerSubj, sellerTitle, sellerBody, sellerSubj string) {
 	st := normalizeReturnStatus(p.Status)
+	approvalStatus := normalizeRefundApprovalStatus(p.RefundApprovalStatus)
+	isRefundRejected := strings.EqualFold(strings.TrimSpace(p.Reason), "refund_rejected") || approvalStatus == "REJECTED"
 	tracking := strings.TrimSpace(p.ReturnTrackingCode)
 	reason := localizeReason(p.Reason)
 	deadline := formatVietnamTime(p.DeadlineAt)
@@ -1609,13 +1707,23 @@ func formatReturnMessages(p returnUpdatedPayload, code string) (buyerTitle, buye
 		sellerSubj = fmt.Sprintf("NexusMart - Cập nhật trả hàng đơn %s", code)
 
 	case "ESCALATED":
-		buyerTitle = fmt.Sprintf("Yêu cầu trả hàng đơn %s đang được khiếu nại", code)
-		buyerBody = fmt.Sprintf("Khiếu nại trả hàng cho đơn %s đã được chuyển tới quản trị viên NexusMart xem xét phân xử.", code)
-		buyerSubj = fmt.Sprintf("NexusMart - Khiếu nại trả hàng đơn %s", code)
+		if isRefundRejected {
+			buyerTitle = fmt.Sprintf("Khoản hoàn tiền đơn %s cần được xem xét lại", code)
+			buyerBody = fmt.Sprintf("Khoản hoàn tiền cho yêu cầu trả hàng đơn %s hiện chưa được hoàn tiền và cần được xem xét lại. Đội ngũ NexusMart sẽ kiểm tra lại và liên hệ với bạn trong thời gian sớm nhất.", code)
+			buyerSubj = fmt.Sprintf("NexusMart - Khoản hoàn tiền đơn %s cần được xem xét lại", code)
 
-		sellerTitle = fmt.Sprintf("Đơn %s có khiếu nại trả hàng", code)
-		sellerBody = fmt.Sprintf("Yêu cầu trả hàng cho đơn %s đã chuyển sang trạng thái khiếu nại để quản trị viên NexusMart phân xử.", code)
-		sellerSubj = fmt.Sprintf("NexusMart - Khiếu nại trả hàng đơn %s", code)
+			sellerTitle = fmt.Sprintf("Khoản hoàn tiền trả hàng đơn %s cần xem xét lại", code)
+			sellerBody = fmt.Sprintf("Khoản hoàn tiền cho yêu cầu trả hàng đơn %s hiện chưa được hoàn tiền và cần được xem xét lại. Đội ngũ NexusMart sẽ kiểm tra lại và thông báo tới bạn khi có kết quả.", code)
+			sellerSubj = fmt.Sprintf("NexusMart - Khoản hoàn tiền đơn %s cần xem xét lại", code)
+		} else {
+			buyerTitle = fmt.Sprintf("Yêu cầu trả hàng đơn %s đang được khiếu nại", code)
+			buyerBody = fmt.Sprintf("Khiếu nại trả hàng cho đơn %s đã được chuyển tới quản trị viên NexusMart xem xét phân xử.", code)
+			buyerSubj = fmt.Sprintf("NexusMart - Khiếu nại trả hàng đơn %s", code)
+
+			sellerTitle = fmt.Sprintf("Đơn %s có khiếu nại trả hàng", code)
+			sellerBody = fmt.Sprintf("Yêu cầu trả hàng cho đơn %s đã chuyển sang trạng thái khiếu nại để quản trị viên NexusMart phân xử.", code)
+			sellerSubj = fmt.Sprintf("NexusMart - Khiếu nại trả hàng đơn %s", code)
+		}
 
 	case "EVIDENCE_REQUESTED":
 		buyerTitle = fmt.Sprintf("Yêu cầu bổ sung bằng chứng trả hàng đơn %s", code)
@@ -1627,13 +1735,32 @@ func formatReturnMessages(p returnUpdatedPayload, code string) (buyerTitle, buye
 		sellerSubj = fmt.Sprintf("NexusMart - Cập nhật khiếu nại đơn %s", code)
 
 	case "REFUNDING":
-		buyerTitle = fmt.Sprintf("Đơn %s đang được hoàn tiền", code)
-		buyerBody = fmt.Sprintf("Yêu cầu trả hàng cho đơn %s đã được chấp thuận. Hệ thống đang tiến hành hoàn tiền cho bạn.", code)
-		buyerSubj = fmt.Sprintf("NexusMart - Đang hoàn tiền đơn %s", code)
+		switch approvalStatus {
+		case "PENDING_APPROVAL":
+			buyerTitle = fmt.Sprintf("Đơn %s đang chờ phê duyệt hoàn tiền", code)
+			buyerBody = fmt.Sprintf("Yêu cầu trả hàng cho đơn %s đã được chấp thuận và khoản hoàn đang chờ phê duyệt hoàn tiền.", code)
+			buyerSubj = fmt.Sprintf("NexusMart - Chờ phê duyệt hoàn tiền đơn %s", code)
 
-		sellerTitle = fmt.Sprintf("Đơn %s đang xử lý hoàn tiền trả hàng", code)
-		sellerBody = fmt.Sprintf("Yêu cầu trả hàng cho đơn %s đang được xử lý hoàn tiền cho người mua.", code)
-		sellerSubj = fmt.Sprintf("NexusMart - Đang hoàn tiền trả hàng đơn %s", code)
+			sellerTitle = fmt.Sprintf("Đơn %s đang chờ phê duyệt hoàn tiền trả hàng", code)
+			sellerBody = fmt.Sprintf("Yêu cầu trả hàng cho đơn %s đã được chấp thuận và khoản hoàn đang chờ phê duyệt hoàn tiền cho người mua.", code)
+			sellerSubj = fmt.Sprintf("NexusMart - Chờ phê duyệt hoàn tiền trả hàng đơn %s", code)
+		case "APPROVED":
+			buyerTitle = fmt.Sprintf("Đơn %s đang được hoàn tiền", code)
+			buyerBody = fmt.Sprintf("Yêu cầu trả hàng cho đơn %s đã được chấp thuận. Hệ thống đang tiến hành hoàn tiền cho bạn.", code)
+			buyerSubj = fmt.Sprintf("NexusMart - Đang hoàn tiền đơn %s", code)
+
+			sellerTitle = fmt.Sprintf("Đơn %s đang xử lý hoàn tiền trả hàng", code)
+			sellerBody = fmt.Sprintf("Yêu cầu trả hàng cho đơn %s đang được xử lý hoàn tiền cho người mua.", code)
+			sellerSubj = fmt.Sprintf("NexusMart - Đang hoàn tiền trả hàng đơn %s", code)
+		default:
+			buyerTitle = fmt.Sprintf("Đơn %s đang xử lý hoàn tiền", code)
+			buyerBody = fmt.Sprintf("Yêu cầu trả hàng cho đơn %s đã được chấp thuận, khoản hoàn đang được xử lý.", code)
+			buyerSubj = fmt.Sprintf("NexusMart - Đang xử lý hoàn tiền đơn %s", code)
+
+			sellerTitle = fmt.Sprintf("Đơn %s đang xử lý hoàn tiền trả hàng", code)
+			sellerBody = fmt.Sprintf("Yêu cầu trả hàng cho đơn %s đã được chấp thuận, khoản hoàn đang được xử lý cho người mua.", code)
+			sellerSubj = fmt.Sprintf("NexusMart - Đang xử lý hoàn tiền trả hàng đơn %s", code)
+		}
 
 	case "REFUNDED":
 		buyerTitle = fmt.Sprintf("Đơn %s đã hoàn tất trả hàng và hoàn tiền", code)
@@ -1667,7 +1794,7 @@ func formatReturnMessages(p returnUpdatedPayload, code string) (buyerTitle, buye
 	if tracking != "" {
 		details += fmt.Sprintf(" Mã vận đơn trả hàng: %s.", tracking)
 	}
-	if reason != "" {
+	if reason != "" && !(st == "ESCALATED" && isRefundRejected) {
 		details += fmt.Sprintf(" Lý do: %s.", strings.TrimSuffix(reason, "."))
 	}
 	if deadline != "" && (st == "PENDING" || st == "AWAITING_SHIPMENT" || st == "RECEIVED" || st == "REJECTED" || st == "EVIDENCE_REQUESTED") {
@@ -2097,6 +2224,8 @@ func paymentMethodLabel(method string) string {
 		return "thanh toán khi nhận hàng"
 	case "VIETQR":
 		return "chuyển khoản VietQR"
+	case "ZALOPAY":
+		return "ví ZaloPay"
 	default:
 		return "thanh toán trực tuyến"
 	}
@@ -2118,6 +2247,11 @@ func shopReviewDecisionLabel(decision string) string {
 func normalizeReturnStatus(raw string) string {
 	s := strings.ToUpper(strings.TrimSpace(raw))
 	return strings.TrimPrefix(s, "RETURN_STATUS_")
+}
+
+func normalizeRefundApprovalStatus(raw string) string {
+	s := strings.ToUpper(strings.TrimSpace(raw))
+	return strings.TrimPrefix(s, "REFUND_STATUS_")
 }
 
 func shipmentStatusLabel(status string) string {
@@ -2206,6 +2340,8 @@ func localizeReason(raw string) string {
 		return "Đơn hàng đã hoàn trả"
 	case "return_approved":
 		return "Yêu cầu trả hàng đã được chấp thuận"
+	case "refund_rejected":
+		return "Khoản hoàn tiền cần được xem xét lại"
 	case "return_timeout", "return_ship_timeout":
 		return "Quá thời hạn gửi hàng trả"
 	case "seller_response_timeout":

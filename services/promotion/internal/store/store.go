@@ -103,6 +103,11 @@ type Store interface {
 	CreditCoins(ctx context.Context, userID string, amount int64, reason, referenceID string) (balance int64, alreadyCredited bool, err error)
 	ProcessOrderCompletedEvent(ctx context.Context, eventID, subject, orderID, buyerID string, coinsReward int64) (alreadyProcessed bool, err error)
 
+	// Shop suspension state (F12)
+	ProcessShopStatusChangedEvent(ctx context.Context, eventID, subject, shopID string, suspended bool, version int64) (alreadyProcessed bool, stale bool, err error)
+	IsShopSuspended(ctx context.Context, shopID string) (bool, error)
+	GetSuspendedShopIDs(ctx context.Context, shopIDs []string) (map[string]bool, error)
+
 	// Reservations
 	GetReservation(ctx context.Context, orderID string) (*domain.PromotionReservation, error)
 	CommitReservation(ctx context.Context, res domain.PromotionReservation, now time.Time) (existing *domain.PromotionReservation, alreadyReserved bool, err error)
@@ -776,6 +781,12 @@ func (s *PostgresStore) ProcessExpiringSavedVouchers(
 		  AND v.used_count < v.quota
 		  AND (v.budget_vnd = 0 OR v.used_budget_vnd < v.budget_vnd)
 		  AND (v.per_user_limit <= 0 OR COALESCE(puu.used_qty, 0) < v.per_user_limit)
+		  AND NOT (
+		      v.scope = 'SHOP' AND EXISTS (
+		          SELECT 1 FROM shop_suspension_state sss
+		          WHERE sss.shop_id = v.shop_id AND sss.suspended = TRUE
+		      )
+		  )
 		  AND v.ends_at > $1
 		  AND v.ends_at <= $2
 		ORDER BY v.ends_at ASC, uv.user_id ASC, uv.voucher_id ASC
@@ -1175,7 +1186,7 @@ func (s *PostgresStore) ListFlashSales(ctx context.Context, now time.Time, inclu
 		return sales, nil
 	}
 
-	if err := s.attachApprovedFlashItems(ctx, sales, saleIdx, saleIDs); err != nil {
+	if err := s.attachApprovedFlashItems(ctx, sales, saleIdx, saleIDs, true); err != nil {
 		return nil, err
 	}
 	return sales, nil
@@ -1243,7 +1254,7 @@ func (s *PostgresStore) ListAllFlashSales(ctx context.Context, now time.Time, st
 		return nil, 0, fmt.Errorf("iterate all flash sales: %w", err)
 	}
 	if len(saleIDs) > 0 {
-		if err := s.attachApprovedFlashItems(ctx, sales, saleIdx, saleIDs); err != nil {
+		if err := s.attachApprovedFlashItems(ctx, sales, saleIdx, saleIDs, false); err != nil {
 			return nil, 0, err
 		}
 	}
@@ -1255,13 +1266,22 @@ func (s *PostgresStore) attachApprovedFlashItems(
 	sales []domain.FlashSale,
 	saleIdx map[string]int,
 	saleIDs []string,
+	excludeSuspended bool,
 ) error {
-	const itemsQ = `
+	itemsQ := `
 		SELECT ` + flashItemSelectColumns + `
 		FROM flash_sale_items fsi
 		JOIN flash_sales fs ON fs.id = fsi.flash_sale_id
 		WHERE fsi.flash_sale_id = ANY($1)
-		  AND fsi.status = 'APPROVED'
+		  AND fsi.status = 'APPROVED'`
+	if excludeSuspended {
+		itemsQ += `
+		  AND NOT EXISTS (
+		      SELECT 1 FROM shop_suspension_state sss
+		      WHERE sss.shop_id = fsi.shop_id AND sss.suspended = TRUE
+		  )`
+	}
+	itemsQ += `
 		ORDER BY fsi.created_at ASC, fsi.id ASC
 	`
 	itemRows, err := s.pool.Query(ctx, itemsQ, saleIDs)
@@ -1485,6 +1505,110 @@ func (s *PostgresStore) ProcessOrderCompletedEvent(ctx context.Context, eventID,
 		return false, fmt.Errorf("commit order completed tx: %w", err)
 	}
 	return false, nil
+}
+
+func (s *PostgresStore) ProcessShopStatusChangedEvent(
+	ctx context.Context,
+	eventID, subject, shopID string,
+	suspended bool,
+	version int64,
+) (bool, bool, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, false, fmt.Errorf("begin shop status tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Serialize concurrent updates for the same shop_id across replicas.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "shop_suspension:"+shopID); err != nil {
+		return false, false, fmt.Errorf("lock shop suspension %s: %w", shopID, err)
+	}
+
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO processed_events (event_id, subject) VALUES ($1, $2) ON CONFLICT (event_id) DO NOTHING`,
+		eventID, subject,
+	)
+	if err != nil {
+		return false, false, fmt.Errorf("insert processed event: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return true, false, nil
+	}
+
+	upTag, err := tx.Exec(ctx, `
+		INSERT INTO shop_suspension_state (shop_id, suspended, version, updated_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (shop_id) DO UPDATE
+			SET suspended = EXCLUDED.suspended,
+				version = EXCLUDED.version,
+				updated_at = NOW()
+			WHERE shop_suspension_state.version < EXCLUDED.version
+	`, shopID, suspended, version)
+	if err != nil {
+		return false, false, fmt.Errorf("upsert shop_suspension_state: %w", err)
+	}
+	stale := upTag.RowsAffected() == 0
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, false, fmt.Errorf("commit shop status tx: %w", err)
+	}
+	return false, stale, nil
+}
+
+func (s *PostgresStore) IsShopSuspended(ctx context.Context, shopID string) (bool, error) {
+	shopID = strings.TrimSpace(shopID)
+	if shopID == "" {
+		return false, nil
+	}
+	var suspended bool
+	err := s.pool.QueryRow(ctx, `SELECT suspended FROM shop_suspension_state WHERE shop_id = $1`, shopID).Scan(&suspended)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("query shop_suspension_state: %w", err)
+	}
+	return suspended, nil
+}
+
+func (s *PostgresStore) GetSuspendedShopIDs(ctx context.Context, shopIDs []string) (map[string]bool, error) {
+	out := make(map[string]bool)
+	if len(shopIDs) == 0 {
+		return out, nil
+	}
+	seen := make(map[string]struct{}, len(shopIDs))
+	uniq := make([]string, 0, len(shopIDs))
+	for _, id := range shopIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniq = append(uniq, id)
+	}
+	if len(uniq) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT shop_id
+		FROM shop_suspension_state
+		WHERE shop_id = ANY($1::text[]) AND suspended = TRUE
+	`, uniq)
+	if err != nil {
+		return nil, fmt.Errorf("batch query shop_suspension_state: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			return nil, fmt.Errorf("scan suspended shop_id: %w", scanErr)
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
 }
 
 func creditCoinsInTx(ctx context.Context, tx pgx.Tx, userID string, amount int64, reason, referenceID string) (int64, bool, error) {

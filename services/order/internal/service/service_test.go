@@ -49,6 +49,9 @@ type mockUserClient struct {
 	userValid         bool
 	addresses         map[string]*userv1.Address
 	shops             map[string]*userv1.Shop
+	getShopCalls      []string
+	getShopErr        error
+	onGetShop         func(ctx context.Context, req *userv1.GetShopRequest) (*userv1.GetShopResponse, error)
 	getAddressAuth    map[string]authCallSnapshot
 	codRejectionErr   error
 	codRejectionCalls []*userv1.RecordCODRejectionRequest
@@ -106,8 +109,8 @@ func newMockUserClient() *mockUserClient {
 			},
 		},
 		shops: map[string]*userv1.Shop{
-			"shop-1": {Id: "shop-1", OwnerUserId: "seller-1", Name: "Shop Alpha", PickupAddressId: "addr-shop-1", ContactPhone: "0911111111"},
-			"shop-2": {Id: "shop-2", OwnerUserId: "seller-2", Name: "Shop Beta", PickupAddressId: "addr-shop-2", ContactPhone: "0922222222"},
+			"shop-1": {Id: "shop-1", OwnerUserId: "seller-1", Name: "Shop Alpha", PickupAddressId: "addr-shop-1", ContactPhone: "0911111111", Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE},
+			"shop-2": {Id: "shop-2", OwnerUserId: "seller-2", Name: "Shop Beta", PickupAddressId: "addr-shop-2", ContactPhone: "0922222222", Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE},
 		},
 	}
 }
@@ -145,20 +148,34 @@ func (m *mockUserClient) GetAddress(ctx context.Context, req *userv1.GetAddressR
 	if rawToken != "" && callerRole == "admin" {
 		return nil, status.Error(codes.PermissionDenied, "raw buyer token leaked onto admin call")
 	}
-	if callerID != "" && callerID != a.GetUserId() && callerRole != "admin" && callerRole != "super_admin" {
+	isService := false
+	if claims, ok := auth.ClaimsFromContext(ctx); ok && claims.Service != "" {
+		isService = true
+	}
+	if callerID != "" && callerID != a.GetUserId() && !isService && callerRole != auth.RoleAdmin && callerRole != auth.RoleSuperAdmin {
 		return nil, status.Error(codes.PermissionDenied, "cannot access another user's address")
 	}
 	return &userv1.GetAddressResponse{Address: a}, nil
 }
 
-func (m *mockUserClient) GetShop(_ context.Context, req *userv1.GetShopRequest, _ ...grpc.CallOption) (*userv1.GetShopResponse, error) {
+func (m *mockUserClient) GetShop(ctx context.Context, req *userv1.GetShopRequest, _ ...grpc.CallOption) (*userv1.GetShopResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.getShopCalls = append(m.getShopCalls, req.GetShopId())
+	hook := m.onGetShop
+	err := m.getShopErr
 	s, ok := m.shops[req.GetShopId()]
+	m.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, req)
+	}
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, status.Error(codes.NotFound, "shop not found")
 	}
-	return &userv1.GetShopResponse{Shop: s}, nil
+	cp, _ := proto.Clone(s).(*userv1.Shop)
+	return &userv1.GetShopResponse{Shop: cp}, nil
 }
 
 func (m *mockUserClient) RecordCODRejection(ctx context.Context, req *userv1.RecordCODRejectionRequest, _ ...grpc.CallOption) (*userv1.RecordCODRejectionResponse, error) {
@@ -499,30 +516,35 @@ func (m *mockPromotionClient) ReleasePromotionShop(ctx context.Context, req *pro
 }
 
 type mockPaymentClient struct {
-	mu                sync.Mutex
-	createErr         error
-	cancelErr         error
-	refundErr         error
-	getFeeConfigErr   error
-	feeConfigResp     *paymentv1.GetFeeConfigResponse
-	feeBPSByMethod    map[paymentv1.PaymentMethod]int32
-	feeConfigCalls    []*paymentv1.GetFeeConfigRequest
-	feeConfigAuth     []authCallSnapshot
-	getPaymentStatus  paymentv1.PaymentStatus
-	getPaymentErr     error
-	paymentsByID      map[string]*paymentv1.Payment
-	paymentsByIdemKey map[string]*paymentv1.Payment
-	onCreatePayment   func(req *paymentv1.CreatePaymentRequest)
-	onCreatePayCtx    func(ctx context.Context, req *paymentv1.CreatePaymentRequest)
-	afterCreatePay    func(pay *paymentv1.Payment)
-	onGetPayment      func(req *paymentv1.GetPaymentRequest) (*paymentv1.GetPaymentResponse, error)
-	onCancelPayment   func(req *paymentv1.CancelPaymentRequest) (*paymentv1.CancelPaymentResponse, error)
-	createCalls       []*paymentv1.CreatePaymentRequest
-	createAuth        []authCallSnapshot
-	createCtxErrs     []error
-	cancelCalls       []*paymentv1.CancelPaymentRequest
-	refundCalls       []*paymentv1.CreateRefundRequest
-	refundAuth        []authCallSnapshot
+	mu                  sync.Mutex
+	createErr           error
+	cancelErr           error
+	refundErr           error
+	getFeeConfigErr     error
+	getMethodConfigsErr error
+	methodConfigsResp   *paymentv1.GetPaymentMethodConfigsResponse
+	methodConfigsCalls  []*paymentv1.GetPaymentMethodConfigsRequest
+	methodConfigsAuth   []authCallSnapshot
+	feeConfigResp       *paymentv1.GetFeeConfigResponse
+	feeBPSByMethod      map[paymentv1.PaymentMethod]int32
+	feeConfigCalls      []*paymentv1.GetFeeConfigRequest
+	feeConfigAuth       []authCallSnapshot
+	getPaymentStatus    paymentv1.PaymentStatus
+	getPaymentErr       error
+	paymentsByID        map[string]*paymentv1.Payment
+	paymentsByIdemKey   map[string]*paymentv1.Payment
+	onCreatePayment     func(req *paymentv1.CreatePaymentRequest)
+	onCreatePayCtx      func(ctx context.Context, req *paymentv1.CreatePaymentRequest)
+	afterCreatePay      func(pay *paymentv1.Payment)
+	onGetPayment        func(req *paymentv1.GetPaymentRequest) (*paymentv1.GetPaymentResponse, error)
+	onCancelPayment     func(req *paymentv1.CancelPaymentRequest) (*paymentv1.CancelPaymentResponse, error)
+	onCreateRefund      func(ctx context.Context, req *paymentv1.CreateRefundRequest) (*paymentv1.CreateRefundResponse, error)
+	createCalls         []*paymentv1.CreatePaymentRequest
+	createAuth          []authCallSnapshot
+	createCtxErrs       []error
+	cancelCalls         []*paymentv1.CancelPaymentRequest
+	refundCalls         []*paymentv1.CreateRefundRequest
+	refundAuth          []authCallSnapshot
 }
 
 func (m *mockPaymentClient) CreatePayment(ctx context.Context, req *paymentv1.CreatePaymentRequest, _ ...grpc.CallOption) (*paymentv1.CreatePaymentResponse, error) {
@@ -561,19 +583,23 @@ func (m *mockPaymentClient) CreatePayment(ctx context.Context, req *paymentv1.Cr
 		}
 	}
 	st := paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING
-	qrURL, qrCode := "https://qr.sandbox/pay-1", "000201010212"
+	qrURL, qrCode, payURL := "https://qr.sandbox/pay-1", "000201010212", ""
 	if req.GetAmountVnd() == 0 {
 		st = paymentv1.PaymentStatus_PAYMENT_STATUS_SUCCEEDED
-		qrURL, qrCode = "", ""
+		qrURL, qrCode, payURL = "", "", ""
 	} else if req.GetMethod() == paymentv1.PaymentMethod_PAYMENT_METHOD_COD {
 		st = paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING
-		qrURL, qrCode = "", ""
+		qrURL, qrCode, payURL = "", "", ""
 	}
 	payID := "pay-" + req.GetOrderGroupId()
 	if req.GetSupersedePrevious() || len(m.createCalls) > 1 {
 		if _, exists := m.paymentsByID[payID]; exists {
 			payID = "pay-" + req.GetOrderGroupId() + "-" + string(rune('0'+len(m.createCalls)))
 		}
+	}
+	if req.GetAmountVnd() > 0 && req.GetMethod() == paymentv1.PaymentMethod_PAYMENT_METHOD_ZALOPAY {
+		qrURL, qrCode = "", ""
+		payURL = "https://sb-openapi.zalopay.vn/pay/" + payID
 	}
 	pay := &paymentv1.Payment{
 		PaymentId:       payID,
@@ -585,6 +611,7 @@ func (m *mockPaymentClient) CreatePayment(ctx context.Context, req *paymentv1.Cr
 		Status:          st,
 		QrUrl:           qrURL,
 		QrCode:          qrCode,
+		PayUrl:          payURL,
 		ShopAllocations: req.GetShopAllocations(),
 		ExpiresAt:       req.GetExpiresAt(),
 	}
@@ -621,11 +648,34 @@ func (m *mockPaymentClient) GetPayment(_ context.Context, req *paymentv1.GetPaym
 		}
 	}
 	if req.GetOrderGroupId() != "" && m.getPaymentStatus == paymentv1.PaymentStatus_PAYMENT_STATUS_UNSPECIFIED {
-		for _, p := range m.paymentsByID {
-			if p.GetOrderGroupId() == req.GetOrderGroupId() {
-				cp, _ := proto.Clone(p).(*paymentv1.Payment)
-				return &paymentv1.GetPaymentResponse{Payment: cp}, nil
+		// Mirror Rust payment get_payment priority: SUCCEEDED > REFUNDED > PENDING > latest payment_id.
+		statusRank := func(st paymentv1.PaymentStatus) int {
+			switch st {
+			case paymentv1.PaymentStatus_PAYMENT_STATUS_SUCCEEDED:
+				return 4
+			case paymentv1.PaymentStatus_PAYMENT_STATUS_REFUNDED:
+				return 3
+			case paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING:
+				return 2
+			default:
+				return 1
 			}
+		}
+		var best *paymentv1.Payment
+		bestRank := -1
+		for _, p := range m.paymentsByID {
+			if p.GetOrderGroupId() != req.GetOrderGroupId() {
+				continue
+			}
+			r := statusRank(p.GetStatus())
+			if best == nil || r > bestRank || (r == bestRank && p.GetPaymentId() > best.GetPaymentId()) {
+				best = p
+				bestRank = r
+			}
+		}
+		if best != nil {
+			cp, _ := proto.Clone(best).(*paymentv1.Payment)
+			return &paymentv1.GetPaymentResponse{Payment: cp}, nil
 		}
 		if req.GetPaymentId() == "" {
 			return nil, status.Error(codes.NotFound, "payment not found for order group")
@@ -666,7 +716,6 @@ func (m *mockPaymentClient) CancelPayment(_ context.Context, req *paymentv1.Canc
 
 func (m *mockPaymentClient) CreateRefund(ctx context.Context, req *paymentv1.CreateRefundRequest, _ ...grpc.CallOption) (*paymentv1.CreateRefundResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.refundCalls = append(m.refundCalls, req)
 	var svcName string
 	if c, ok := auth.ClaimsFromContext(ctx); ok {
@@ -677,8 +726,14 @@ func (m *mockPaymentClient) CreateRefund(ctx context.Context, req *paymentv1.Cre
 		service:  svcName,
 		rawToken: auth.RawTokenFromContext(ctx),
 	})
-	if m.refundErr != nil {
-		return nil, m.refundErr
+	hook := m.onCreateRefund
+	rErr := m.refundErr
+	m.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, req)
+	}
+	if rErr != nil {
+		return nil, rErr
 	}
 	return &paymentv1.CreateRefundResponse{
 		Refund: &paymentv1.Refund{
@@ -687,6 +742,34 @@ func (m *mockPaymentClient) CreateRefund(ctx context.Context, req *paymentv1.Cre
 			OrderId:   req.GetOrderId(),
 			AmountVnd: req.GetAmountVnd(),
 			Status:    paymentv1.RefundStatus_REFUND_STATUS_PENDING,
+		},
+	}, nil
+}
+
+func (m *mockPaymentClient) GetPaymentMethodConfigs(ctx context.Context, req *paymentv1.GetPaymentMethodConfigsRequest, _ ...grpc.CallOption) (*paymentv1.GetPaymentMethodConfigsResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.methodConfigsCalls = append(m.methodConfigsCalls, req)
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.methodConfigsAuth = append(m.methodConfigsAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
+	if m.getMethodConfigsErr != nil {
+		return nil, m.getMethodConfigsErr
+	}
+	if m.methodConfigsResp != nil {
+		return m.methodConfigsResp, nil
+	}
+	return &paymentv1.GetPaymentMethodConfigsResponse{
+		Configs: []*paymentv1.PaymentMethodConfig{
+			{Method: paymentv1.PaymentMethod_PAYMENT_METHOD_COD, Enabled: true, MinOrderVnd: 0, MaxOrderVnd: 5000000, ExpiryMinutes: 0},
+			{Method: paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR, Enabled: true, MinOrderVnd: 0, MaxOrderVnd: 0, ExpiryMinutes: 15},
+			{Method: paymentv1.PaymentMethod_PAYMENT_METHOD_ZALOPAY, Enabled: true, MinOrderVnd: 0, MaxOrderVnd: 0, ExpiryMinutes: 15},
 		},
 	}, nil
 }
@@ -947,14 +1030,15 @@ func (m *mockShippingClient) GetShopShippingSettings(ctx context.Context, req *s
 }
 
 type testHarness struct {
-	svc      *OrderService
-	store    *store.MemoryStore
-	user     *mockUserClient
-	product  *mockProductClient
-	cart     *mockCartClient
-	promo    *mockPromotionClient
-	payment  *mockPaymentClient
-	shipping *mockShippingClient
+	svc           *OrderService
+	store         *store.MemoryStore
+	user          *mockUserClient
+	product       *mockProductClient
+	cart          *mockCartClient
+	promo         *mockPromotionClient
+	payment       *mockPaymentClient
+	shipping      *mockShippingClient
+	methodConfigs *clients.FakePaymentMethodConfigSource
 }
 
 func newTestHarness() *testHarness {
@@ -965,15 +1049,14 @@ func newTestHarness() *testHarness {
 	pm := &mockPromotionClient{}
 	py := &mockPaymentClient{}
 	sh := newMockShippingClient()
+	mc := clients.NewFakePaymentMethodConfigSource(nil)
 
 	cfg := config.Config{
 		ServiceName:               "order",
-		CODMaxVND:                 5000000,
 		CODMaxRejectedCount:       3,
 		CODRequirePhoneVerified:   true,
 		CODMinOrdersForRate:       3,
 		CODMaxRejectRateBPS:       3000,
-		PaymentExpiryMinutes:      15,
 		FlashPaymentExpiryMinutes: 5,
 		RewardCoinsBPS:            100,
 		AutoCompleteDays:          7,
@@ -985,24 +1068,26 @@ func newTestHarness() *testHarness {
 	}
 
 	bundle := &clients.Bundle{
-		User:      u,
-		Product:   pr,
-		Cart:      ca,
-		Promotion: pm,
-		Payment:   py,
-		Shipping:  sh,
+		User:          u,
+		Product:       pr,
+		Cart:          ca,
+		Promotion:     pm,
+		Payment:       py,
+		Shipping:      sh,
+		MethodConfigs: mc,
 	}
 
 	log := logger.New("order-test", logger.WithWriter(io.Discard))
 	return &testHarness{
-		svc:      NewOrderService(cfg, st, bundle, log),
-		store:    st,
-		user:     u,
-		product:  pr,
-		cart:     ca,
-		promo:    pm,
-		payment:  py,
-		shipping: sh,
+		svc:           NewOrderService(cfg, st, bundle, log),
+		store:         st,
+		user:          u,
+		product:       pr,
+		cart:          ca,
+		promo:         pm,
+		payment:       py,
+		shipping:      sh,
+		methodConfigs: mc,
 	}
 }
 

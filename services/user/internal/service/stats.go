@@ -6,6 +6,7 @@ import (
 	"time"
 
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
+	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/user/internal/db"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -75,12 +76,8 @@ func parseVNDateRange(fromRaw, toRaw string, now time.Time) (fromStr, toStr stri
 }
 
 func (s *Server) GetPlatformUserStats(ctx context.Context, req *userv1.GetPlatformUserStatsRequest) (*userv1.GetPlatformUserStatsResponse, error) {
-	claims, err := s.requireAdminClaims(ctx)
-	if err != nil {
+	if _, err := s.requireCapability(ctx, auth.CapReportsRead); err != nil {
 		return nil, err
-	}
-	if claims.Service != "" {
-		return nil, status.Error(codes.PermissionDenied, "service identity not allowed for GetPlatformUserStats")
 	}
 
 	fromStr, toStr, startUTC, endUTC, dates, err := parseVNDateRange(req.GetFromDate(), req.GetToDate(), s.now())

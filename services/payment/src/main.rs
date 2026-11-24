@@ -21,7 +21,7 @@ use nexusmart_payment::workers;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = Config::from_env();
+    let config = Config::try_from_env().map_err(anyhow::Error::msg)?;
     let _tracer_provider = init_telemetry(&config.service_name, config.otel_endpoint.as_deref());
 
     info!(?config, "starting NexusMart Payment service");
@@ -61,6 +61,10 @@ async fn main() -> anyhow::Result<()> {
         shutdown_rx.clone(),
     ));
     let mut hold_handle = tokio::spawn(workers::run_escrow_hold_releaser(
+        service.clone(),
+        shutdown_rx.clone(),
+    ));
+    let mut zalopay_refund_handle = tokio::spawn(workers::run_zalopay_refund_poller(
         service.clone(),
         shutdown_rx.clone(),
     ));
@@ -123,7 +127,8 @@ async fn main() -> anyhow::Result<()> {
             &mut outbox_handle,
             &mut recon_handle,
             &mut consumer_handle,
-            &mut hold_handle
+            &mut hold_handle,
+            &mut zalopay_refund_handle
         );
     })
     .await;
@@ -138,6 +143,7 @@ async fn main() -> anyhow::Result<()> {
         recon_handle.abort();
         consumer_handle.abort();
         hold_handle.abort();
+        zalopay_refund_handle.abort();
     }
 
     pool_for_shutdown.close().await;

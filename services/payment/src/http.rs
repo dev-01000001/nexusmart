@@ -18,16 +18,19 @@ use uuid::Uuid;
 
 use crate::auth::{
     resolve_payment_read_scope, seller_scoped_amount_vnd, seller_scoped_order_id, Caller, GrpcAuth,
-    PaymentViewScope,
+    PaymentViewScope, CAP_LEDGER_READ, CAP_RECONCILIATION_WRITE,
 };
 use crate::domain::{vn_today, PaymentSseEvent, PaymentWithAllocations};
 use crate::error::PaymentError;
 use crate::metrics::red_metrics_middleware;
-use crate::service::PaymentService;
+use crate::service::{PaymentService, ZaloPayCallbackOutcome};
 use crate::telemetry::{
     attach_parent_context, extract_context_from_http, extract_or_generate_trace_id, mask_secret,
 };
 use crate::webhook_security::{verify_webhook_request, IncomingWebhookPayload};
+use crate::zalopay::{
+    ZaloPayCallbackRequest, ZALOPAY_CALLBACK_RETURN_INVALID_MAC, ZALOPAY_CALLBACK_RETURN_RETRY,
+};
 
 #[derive(Clone)]
 pub struct HttpState {
@@ -45,6 +48,7 @@ pub fn build_router(service: PaymentService, auth: GrpcAuth) -> Router {
         .route("/metrics", get(metrics_handler))
         .route("/webhooks/payment", post(handle_payment_webhook))
         .route("/webhooks/vietqr", post(handle_vietqr_webhook))
+        .route("/webhooks/zalopay", post(handle_zalopay_webhook))
         .route("/payments/{id}/events", get(payment_events_sse))
         .route("/internal/ledger/summary", get(internal_ledger_summary))
         .route(
@@ -206,6 +210,90 @@ async fn handle_vietqr_webhook(
 ) -> Result<impl IntoResponse, PaymentError> {
     let default_provider = state.service.vietqr().mode().as_str();
     process_webhook_http(state, trace_ext, headers, body, default_provider).await
+}
+
+/// ZaloPay v2 IPN / Callback endpoint (`POST /webhooks/zalopay`, F2 & F2-bis).
+/// Returns strictly `{ "return_code": 1 | -1 | 0, "return_message": "..." }`:
+/// - `1` (HTTP 200): confirmed, duplicate, queued for reconciliation/late-refund, or terminal ignore.
+/// - `-1` (HTTP 401 on invalid MAC; HTTP 400 on malformed/mismatched request): rejected, 0 DB writes.
+/// - `0` (HTTP 200): transient error / still processing so ZaloPay retries up to 3 times.
+///
+/// Never logs raw callback body, full MAC, or signing keys.
+async fn handle_zalopay_webhook(
+    State(state): State<HttpState>,
+    trace_ext: Option<Extension<RequestTraceId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    let trace_id = trace_ext
+        .map(|Extension(RequestTraceId(id))| id)
+        .unwrap_or_else(|| {
+            extract_or_generate_trace_id(
+                header_str(&headers, "traceparent"),
+                header_str(&headers, "x-trace-id"),
+            )
+        });
+
+    let cb_req: ZaloPayCallbackRequest = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(_) => {
+            state
+                .service
+                .metrics()
+                .record_webhook("zalopay_invalid_json");
+            warn!(
+                trace_id = %trace_id,
+                "rejected ZaloPay callback with invalid JSON envelope"
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "return_code": ZALOPAY_CALLBACK_RETURN_INVALID_MAC,
+                    "return_message": "invalid json payload"
+                })),
+            );
+        }
+    };
+
+    match state
+        .service
+        .process_zalopay_callback(cb_req, &trace_id)
+        .await
+    {
+        Ok(outcome) => {
+            let (return_code, return_message) = outcome.zalopay_return_code();
+            let status = match outcome {
+                ZaloPayCallbackOutcome::InvalidMac => StatusCode::UNAUTHORIZED,
+                ZaloPayCallbackOutcome::Rejected { .. } => StatusCode::BAD_REQUEST,
+                _ => StatusCode::OK,
+            };
+            (
+                status,
+                Json(json!({
+                    "return_code": return_code,
+                    "return_message": return_message,
+                })),
+            )
+        }
+        Err(err) => {
+            state
+                .service
+                .metrics()
+                .record_webhook("zalopay_internal_retry");
+            error!(
+                trace_id = %trace_id,
+                error = %err,
+                "transient error while processing ZaloPay callback; returning return_code=0 for retry"
+            );
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "return_code": ZALOPAY_CALLBACK_RETURN_RETRY,
+                    "return_message": "temporary error",
+                })),
+            )
+        }
+    }
 }
 
 async fn process_webhook_http(
@@ -411,18 +499,19 @@ fn status_to_sse_event_name(status: &str) -> &'static str {
     }
 }
 
-fn require_admin(
+fn require_capability(
     state: &HttpState,
     headers: &HeaderMap,
+    capability: &str,
     method: &str,
 ) -> Result<Caller, PaymentError> {
     let auth_header = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
     let caller = state.auth.authenticate_header(auth_header, method)?;
-    if !caller.is_admin() {
+    if !caller.has_capability(capability) {
         return Err(PaymentError::Forbidden(format!(
-            "{method} requires admin role"
+            "{method} requires capability '{capability}'"
         )));
     }
     Ok(caller)
@@ -432,7 +521,7 @@ async fn internal_ledger_summary(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, PaymentError> {
-    require_admin(&state, &headers, "InternalLedgerSummary")?;
+    require_capability(&state, &headers, CAP_LEDGER_READ, "InternalLedgerSummary")?;
     let summary = state.service.get_ledger_summary().await?;
     Ok((StatusCode::OK, Json(summary)))
 }
@@ -441,7 +530,12 @@ async fn internal_reconciliation_queue(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, PaymentError> {
-    require_admin(&state, &headers, "InternalReconciliationQueue")?;
+    require_capability(
+        &state,
+        &headers,
+        CAP_LEDGER_READ,
+        "InternalReconciliationQueue",
+    )?;
     let res = state
         .service
         .list_reconciliation_queue(None, 1, 100)
@@ -456,7 +550,12 @@ async fn internal_reconciliation_run(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, PaymentError> {
-    let caller = require_admin(&state, &headers, "InternalReconciliationRun")?;
+    let caller = require_capability(
+        &state,
+        &headers,
+        CAP_RECONCILIATION_WRITE,
+        "InternalReconciliationRun",
+    )?;
     info!(
         user_id = %caller.user_id,
         "admin triggered payment reconciliation"
@@ -996,6 +1095,7 @@ mod tests {
                 provider_order_code: "NM-SSE-1".into(),
                 qr_code: None,
                 qr_url: None,
+                pay_url: None,
                 idempotency_key: None,
                 expires_at: None,
                 paid_at: Some(now),
@@ -1054,7 +1154,7 @@ mod tests {
             updated_at: now,
         };
 
-        // Admin, buyer owner, and seller-as-buyer see full SSE payload.
+        // Admin, buyer owner, seller-as-buyer, and moderator-as-buyer see full buyer SSE payload.
         for caller in [
             Caller {
                 role: "admin".into(),
@@ -1070,6 +1170,11 @@ mod tests {
                 role: "seller".into(),
                 user_id: "buyer-owner".into(),
                 shop_id: "shop-other".into(),
+                ..Default::default()
+            },
+            Caller {
+                role: "moderator".into(),
+                user_id: "buyer-owner".into(),
                 ..Default::default()
             },
         ] {
@@ -1144,6 +1249,139 @@ mod tests {
                 let parsed: serde_json::Value =
                     serde_json::from_slice(&body).expect("clean JSON 400 body");
                 assert_eq!(parsed["error"], "VALIDATION_ERROR");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_w3b2_zalopay_webhook_rejects_bad_mac_and_bad_json_without_db_and_no_simulate_endpoint(
+    ) {
+        let (app, _cfg) = test_router();
+
+        // 1. Invalid JSON -> 400 with return_code = -1
+        let bad_json = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/zalopay")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_json.status(), StatusCode::BAD_REQUEST);
+        let bytes = bad_json.into_body().collect().await.unwrap().to_bytes();
+        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(val["return_code"], -1);
+
+        // 2. Tampered MAC / wrong key2 -> 401 with return_code = -1 (0 DB calls, does not hit lazy DB!)
+        let raw_data = r#"{"app_id":1,"app_trans_id":"261124_abc","app_time":1795478400000,"app_user":"u1","amount":100000,"embed_data":"{}","item":"[]","zp_trans_id":12345,"server_time":1795478410000,"channel":38,"merchant_user_id":"m1","user_fee_amount":0,"discount_amount":0}"#;
+        let valid_mac = crate::zalopay::compute_callback_mac(
+            crate::config::DEV_ONLY_ZALOPAY_MOCK_KEY2,
+            raw_data,
+        );
+        // Tamper 1 byte of data while keeping original MAC
+        let tampered_data = raw_data.replacen("100000", "100001", 1);
+        let payload = json!({
+            "data": tampered_data,
+            "mac": valid_mac,
+            "type": 1
+        });
+        let resp_bad_mac = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/zalopay")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp_bad_mac.status(), StatusCode::UNAUTHORIZED);
+        let bytes = resp_bad_mac.into_body().collect().await.unwrap().to_bytes();
+        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(val["return_code"], -1);
+        assert_eq!(val["return_message"], "mac not equal");
+
+        // 3. No browser "simulate payment" endpoint exists.
+        let sim_resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/zalopay/simulate")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sim_resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_w3b2_f9_internal_http_routes_enforce_capabilities_across_all_6_staff_roles() {
+        let (app, _) = test_router();
+        let now = Utc::now().timestamp();
+
+        let roles = [
+            "super_admin",
+            "admin",
+            "moderator",
+            "cskh",
+            "accountant",
+            "ops",
+        ];
+        for role in roles {
+            let tok = sign_hs256(
+                TEST_USER_JWT_SECRET,
+                json!({"sub": format!("u-{role}"), "role": role, "exp": now + 60}),
+            );
+
+            // ledger.read routes
+            for path in ["/internal/ledger/summary", "/internal/reconciliation/queue"] {
+                let allowed = matches!(role, "super_admin" | "admin" | "accountant" | "ops");
+                let resp = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(Method::GET)
+                            .uri(path)
+                            .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                if allowed {
+                    assert_ne!(resp.status(), StatusCode::UNAUTHORIZED, "{path} {role}");
+                    assert_ne!(resp.status(), StatusCode::FORBIDDEN, "{path} {role}");
+                } else {
+                    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{path} {role}");
+                }
+            }
+
+            // reconciliation.write route (`ops` MUST be denied!)
+            let allowed_recon = matches!(role, "super_admin" | "admin" | "accountant");
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/internal/reconciliation/run")
+                        .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            if allowed_recon {
+                assert_ne!(resp.status(), StatusCode::UNAUTHORIZED, "recon {role}");
+                assert_ne!(resp.status(), StatusCode::FORBIDDEN, "recon {role}");
+            } else {
+                assert_eq!(resp.status(), StatusCode::FORBIDDEN, "recon {role}");
             }
         }
     }

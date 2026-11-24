@@ -17,6 +17,7 @@ import { updateAdminModerationState, useAdminModerationState } from "@/features/
 import { AdminBannedKeywordsTab } from "@/features/admin/AdminBannedKeywordsTab";
 import { AdminProductModerationTab } from "@/features/admin/AdminProductModerationTab";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
+import { useAdminCapability } from "@/features/admin/AdminUserContext";
 import { StatusPill } from "@/features/admin/StatusPill";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
@@ -27,6 +28,8 @@ type StatusFilter = "all" | ModerationStatus;
 function ModerationContent({ initialQuery }: { initialQuery: string }) {
   const mod = useAdminModerationState();
   const { showToast } = useMockStore();
+  const canReadProducts = useAdminCapability("products.read");
+  const canReadBanned = useAdminCapability("banned_keywords.read");
 
   const initialTab: ModTab = initialQuery.toUpperCase().startsWith("QA-")
     ? "qa"
@@ -34,13 +37,16 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
       ? "media"
       : initialQuery.toUpperCase().startsWith("DG-")
         ? "reviews"
-        : "san_pham";
+        : canReadProducts
+          ? "san_pham"
+          : "tu_khoa_cam";
 
   const [activeTab, setActiveTab] = useState<ModTab>(initialTab);
   const [pendingProductCount, setPendingProductCount] = useState(0);
   const [activeBannedCount, setActiveBannedCount] = useState(0);
 
   const loadActiveBannedCount = useCallback(async () => {
+    if (!canReadBanned) return;
     try {
       const res = await api<PaginatedResponse<GatewayBannedKeyword>>(
         "admin/banned-keywords?page=1&page_size=1"
@@ -49,11 +55,12 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
     } catch {
       // Keep previous KPI count on transient error
     }
-  }, []);
+  }, [canReadBanned]);
 
   useEffect(() => {
+    if (!canReadBanned) return;
     void loadActiveBannedCount();
-  }, [loadActiveBannedCount]);
+  }, [canReadBanned, loadActiveBannedCount]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [query, setQuery] = useState(initialQuery);
   const [selectedReviewId, setSelectedReviewId] = useState<string | null>("rev-2");
@@ -583,26 +590,32 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
 
       <div className={shared.tabsBar}>
         <div className={shared.tabList} role="tablist" aria-label="Hàng đợi kiểm duyệt theo loại">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "san_pham"}
-            className={`${shared.tabBtn} ${activeTab === "san_pham" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("san_pham")}
-          >
-            <span>Sản phẩm chờ duyệt</span>
-            <span className={shared.tabCount}>{pendingProductCount}</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "tu_khoa_cam"}
-            className={`${shared.tabBtn} ${activeTab === "tu_khoa_cam" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("tu_khoa_cam")}
-          >
-            <span>Từ khoá cấm</span>
-            {activeBannedCount > 0 && <span className={shared.tabCount}>{activeBannedCount}</span>}
-          </button>
+          {canReadProducts && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === "san_pham"}
+              className={`${shared.tabBtn} ${activeTab === "san_pham" ? shared.tabBtnActive : ""}`}
+              onClick={() => setActiveTab("san_pham")}
+            >
+              <span>Sản phẩm chờ duyệt</span>
+              <span className={shared.tabCount}>{pendingProductCount}</span>
+            </button>
+          )}
+          {canReadBanned && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === "tu_khoa_cam"}
+              className={`${shared.tabBtn} ${activeTab === "tu_khoa_cam" ? shared.tabBtnActive : ""}`}
+              onClick={() => setActiveTab("tu_khoa_cam")}
+            >
+              <span>Từ khoá cấm</span>
+              {activeBannedCount > 0 && (
+                <span className={shared.tabCount}>{activeBannedCount}</span>
+              )}
+            </button>
+          )}
           <button
             type="button"
             role="tab"
@@ -636,14 +649,14 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
         </div>
       </div>
 
-      {activeTab === "san_pham" && (
+      {activeTab === "san_pham" && canReadProducts && (
         <AdminProductModerationTab
           initialQuery={initialQuery}
           onPendingCountChange={setPendingProductCount}
         />
       )}
 
-      {activeTab === "tu_khoa_cam" && (
+      {activeTab === "tu_khoa_cam" && canReadBanned && (
         <AdminBannedKeywordsTab onMutated={() => void loadActiveBannedCount()} />
       )}
 

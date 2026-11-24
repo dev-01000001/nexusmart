@@ -239,6 +239,9 @@ export function getErrorMessage(
   fallback = "Có lỗi xảy ra, vui lòng thử lại sau ít phút."
 ): string {
   if (err instanceof ApiError && err.message) {
+    if (err.code === "SHOP_SUSPENDED" && /\bSHOP_SUSPENDED\b/i.test(err.message)) {
+      return "Gian hàng hiện đang tạm ngưng hoạt động nên không thể tiếp tục thao tác.";
+    }
     return err.message;
   }
   return fallback;

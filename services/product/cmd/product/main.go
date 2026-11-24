@@ -149,9 +149,14 @@ func run() error {
 	reflection.Register(grpcServer)
 
 	outboxRelay := events.NewOutboxRelay(pgStore, js, log, 250*time.Millisecond, productSrv.OutboxTrigger())
+	shopStatusConsumer := events.NewConsumer(js, js, pgStore, events.NewShopStatusHandler(pgStore, log), log, natsStream)
+	if err := shopStatusConsumer.Start(ctx); err != nil {
+		return fmt.Errorf("start shop status consumer: %w", err)
+	}
 	var bgWG sync.WaitGroup
 	defer func() {
 		stop()
+		_ = shopStatusConsumer.Stop()
 		bgWG.Wait()
 	}()
 	bgWG.Add(1)
@@ -203,6 +208,7 @@ func run() error {
 		log.Info("shutting down product service")
 	case serveErr := <-errCh:
 		stop()
+		_ = shopStatusConsumer.Stop()
 		bgWG.Wait()
 		return serveErr
 	}
@@ -211,6 +217,7 @@ func run() error {
 	defer cancel()
 	_ = httpServer.Shutdown(shutCtx)
 	grpcServer.GracefulStop()
+	_ = shopStatusConsumer.Stop()
 	bgWG.Wait()
 	return nil
 }

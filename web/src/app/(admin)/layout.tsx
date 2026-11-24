@@ -1,5 +1,6 @@
 import React from "react";
 import type { GatewayUser } from "@/lib/gateway-types";
+import { ADMIN_STAFF_ROLES } from "@/lib/admin-rbac";
 import { requireRole } from "@/lib/server/auth";
 import { GatewayError } from "@/lib/server/gateway";
 import { StateView } from "@/components";
@@ -9,7 +10,7 @@ import { AdminShell } from "./AdminShell";
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   let user: GatewayUser;
   try {
-    user = await requireRole(["admin", "super_admin"], "/admin");
+    user = await requireRole([...ADMIN_STAFF_ROLES], "/admin");
   } catch (err) {
     if (err instanceof GatewayError) {
       return (

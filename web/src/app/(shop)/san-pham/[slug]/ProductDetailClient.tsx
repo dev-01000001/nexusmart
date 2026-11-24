@@ -13,6 +13,7 @@ import type {
   GatewayVoucher,
 } from "@/lib/gateway-types";
 import { api, ApiError, getErrorMessage } from "@/lib/api";
+import { formatPromotionErrorMessage } from "@/features/checkout/messages";
 import {
   findProductSku,
   type CatalogFlashSaleItem,
@@ -496,7 +497,9 @@ export function ProductDetailClient({
         router.push(`/dang-nhap?next=${encodeURIComponent(getCurrentReturnPath(pathname))}`);
         return;
       }
-      showToast(getErrorMessage(err, "Không thể lưu mã ưu đãi lúc này."));
+      showToast(
+        formatPromotionErrorMessage(err, "save_voucher", "Không thể lưu mã ưu đãi lúc này.")
+      );
     } finally {
       setSavingVoucherId(null);
     }

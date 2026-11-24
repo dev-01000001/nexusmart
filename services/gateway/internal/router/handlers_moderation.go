@@ -93,7 +93,11 @@ func mapBannedContentProductSamples(in []*productv1.BannedContentProductSample) 
 }
 
 func (h *handler) handleAdminListBannedKeywords(w http.ResponseWriter, r *http.Request) {
-	page, pageSize := httpx.ParsePagination(r)
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	q := r.URL.Query()
 
 	rawAction := strings.TrimSpace(q.Get("action"))

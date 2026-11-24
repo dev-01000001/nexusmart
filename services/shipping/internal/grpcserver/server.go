@@ -121,10 +121,11 @@ func (s *Server) CreateShipment(ctx context.Context, req *shippingv1.CreateShipm
 	if claims.Service != "" {
 		return nil, status.Error(codes.PermissionDenied, "service identity not allowed for CreateShipment")
 	}
-	if !auth.HasRole(claims, "seller", "admin", "super_admin") {
-		return nil, status.Error(codes.PermissionDenied, "only seller or admin may create shipments")
+	isSeller := auth.HasRole(claims, auth.RoleSeller)
+	if !isSeller && !auth.HasCapability(claims, auth.CapOrdersReviewResolve) {
+		return nil, status.Error(codes.PermissionDenied, "only seller or authorized operations staff may create shipments")
 	}
-	if auth.HasRole(claims, "seller") {
+	if isSeller {
 		if claims.ShopID == "" || req.GetShopId() == "" || claims.ShopID != req.GetShopId() {
 			return nil, status.Error(codes.PermissionDenied, "seller cannot create shipment for another shop")
 		}
@@ -160,8 +161,8 @@ func (s *Server) CreateReturnShipment(ctx context.Context, req *shippingv1.Creat
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "authentication required")
 	}
-	if !isServiceOrAdmin(claims) {
-		return nil, status.Error(codes.PermissionDenied, "only internal service or admin may create return shipments")
+	if !isServiceOrHasCapability(claims, auth.CapOrdersReviewResolve) {
+		return nil, status.Error(codes.PermissionDenied, "only internal service or authorized operations staff may create return shipments")
 	}
 
 	in := service.CreateReturnShipmentInput{
@@ -192,8 +193,8 @@ func (s *Server) CancelShipment(ctx context.Context, req *shippingv1.CancelShipm
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "authentication required")
 	}
-	if !isServiceOrAdmin(claims) {
-		return nil, status.Error(codes.PermissionDenied, "only internal service or admin may cancel shipments")
+	if !isServiceOrHasCapability(claims, auth.CapOrdersReviewResolve) {
+		return nil, status.Error(codes.PermissionDenied, "only internal service or authorized operations staff may cancel shipments")
 	}
 
 	sh, err := s.svc.CancelShipment(ctx, req.GetOrderId(), fromProtoDirection(req.GetDirection()), req.GetReason())
@@ -216,10 +217,10 @@ func (s *Server) GetShipment(ctx context.Context, req *shippingv1.GetShipmentReq
 		return nil, mapError(err)
 	}
 	if claims.Service == "" {
-		isAdmin := auth.HasRole(claims, "admin", "super_admin")
-		isShopOwner := auth.HasRole(claims, "seller") && claims.ShopID != "" && claims.ShopID == sh.ShopID
+		canAdminRead := auth.HasCapability(claims, auth.CapOrdersRead) || auth.HasCapability(claims, auth.CapCarriersRead)
+		isShopOwner := auth.HasRole(claims, auth.RoleSeller) && claims.ShopID != "" && claims.ShopID == sh.ShopID
 		isBuyerOwner := sh.BuyerID != "" && sh.BuyerID == claims.UserID()
-		if !isAdmin && !isShopOwner && !isBuyerOwner {
+		if !canAdminRead && !isShopOwner && !isBuyerOwner {
 			return nil, status.Error(codes.PermissionDenied, "caller is not authorized to access this shipment")
 		}
 	}
@@ -271,10 +272,10 @@ func (s *Server) GetShopShippingSettings(ctx context.Context, req *shippingv1.Ge
 		fullAccess bool
 	)
 	switch {
-	case isServiceOrAdmin(claims):
+	case claims.Service != "" || auth.HasCapability(claims, auth.CapCarriersRead) || auth.HasCapability(claims, auth.CapShopsReview):
 		shopID = reqShopID
 		fullAccess = true
-	case auth.HasRole(claims, "seller") && claims.ShopID != "" && (reqShopID == "" || reqShopID == claims.ShopID):
+	case auth.HasRole(claims, auth.RoleSeller) && claims.ShopID != "" && (reqShopID == "" || reqShopID == claims.ShopID):
 		shopID = claims.ShopID
 		fullAccess = true
 	default:
@@ -310,7 +311,7 @@ func (s *Server) UpdateShopShippingSettings(ctx context.Context, req *shippingv1
 
 	var shopID string
 	switch {
-	case auth.HasRole(claims, "seller"):
+	case auth.HasRole(claims, auth.RoleSeller):
 		if claims.ShopID == "" {
 			return nil, status.Error(codes.PermissionDenied, "seller token missing shop_id")
 		}
@@ -318,10 +319,10 @@ func (s *Server) UpdateShopShippingSettings(ctx context.Context, req *shippingv1
 			return nil, status.Error(codes.PermissionDenied, "seller cannot update another shop's shipping settings")
 		}
 		shopID = claims.ShopID
-	case auth.HasRole(claims, "admin", "super_admin"):
+	case auth.HasCapability(claims, auth.CapCarriersWrite):
 		shopID = req.GetShopId()
 	default:
-		return nil, status.Error(codes.PermissionDenied, "only seller or admin may update shop shipping settings")
+		return nil, status.Error(codes.PermissionDenied, "only seller or authorized operations staff may update shop shipping settings")
 	}
 
 	st, err := s.svc.UpdateShopShippingSettings(ctx, &store.ShopShippingSettings{
@@ -344,7 +345,7 @@ func (s *Server) UpdateShopShippingSettings(ctx context.Context, req *shippingv1
 }
 
 func (s *Server) AdminListCarriers(ctx context.Context, _ *shippingv1.AdminListCarriersRequest) (*shippingv1.AdminListCarriersResponse, error) {
-	if err := requireEndUserAdmin(ctx); err != nil {
+	if err := requireCapability(ctx, auth.CapCarriersRead); err != nil {
 		return nil, err
 	}
 	views, err := s.svc.AdminListCarriers(ctx)
@@ -359,7 +360,7 @@ func (s *Server) AdminListCarriers(ctx context.Context, _ *shippingv1.AdminListC
 }
 
 func (s *Server) AdminUpdateCarrier(ctx context.Context, req *shippingv1.AdminUpdateCarrierRequest) (*shippingv1.AdminUpdateCarrierResponse, error) {
-	if err := requireEndUserAdmin(ctx); err != nil {
+	if err := requireCapability(ctx, auth.CapCarriersWrite); err != nil {
 		return nil, err
 	}
 	rates := make([]carrier.FallbackRate, 0, len(req.GetFallbackRates()))
@@ -386,7 +387,7 @@ func (s *Server) AdminUpdateCarrier(ctx context.Context, req *shippingv1.AdminUp
 }
 
 func (s *Server) AdminTestCarrier(ctx context.Context, req *shippingv1.AdminTestCarrierRequest) (*shippingv1.AdminTestCarrierResponse, error) {
-	if err := requireEndUserAdmin(ctx); err != nil {
+	if err := requireCapability(ctx, auth.CapCarriersWrite); err != nil {
 		return nil, err
 	}
 	ok, msg, err := s.svc.AdminTestCarrier(ctx, req.GetCarrierCode())
@@ -399,20 +400,20 @@ func (s *Server) AdminTestCarrier(ctx context.Context, req *shippingv1.AdminTest
 	}, nil
 }
 
-func isServiceOrAdmin(claims *auth.Claims) bool {
+func isServiceOrHasCapability(claims *auth.Claims, capName string) bool {
 	if claims == nil {
 		return false
 	}
-	return claims.Service != "" || auth.HasRole(claims, "admin", "super_admin")
+	return claims.Service != "" || auth.HasCapability(claims, capName)
 }
 
-func requireEndUserAdmin(ctx context.Context) error {
+func requireCapability(ctx context.Context, capName string) error {
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
 		return status.Error(codes.Unauthenticated, "authentication required")
 	}
-	if claims.Service != "" || !auth.HasRole(claims, "admin", "super_admin") {
-		return status.Error(codes.PermissionDenied, "admin access required")
+	if !auth.HasCapability(claims, capName) {
+		return status.Error(codes.PermissionDenied, "insufficient permissions")
 	}
 	return nil
 }

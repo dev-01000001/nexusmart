@@ -20,6 +20,7 @@ import {
 } from "@/features/account/orderMeta";
 import { getAdminReturnStatusMeta } from "@/features/admin/types";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
+import { useAdminCapability } from "@/features/admin/AdminUserContext";
 import { StatusPill } from "@/features/admin/StatusPill";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
@@ -59,6 +60,7 @@ function AdminReturnsContent({
   initialSelected: string | null;
 }) {
   const { showToast } = useMockStore();
+  const canResolveReturn = useAdminCapability("returns.resolve");
 
   const [activeTab, setActiveTab] = useState<ReturnFilterTab>("all");
   const [query, setQuery] = useState(initialQuery);
@@ -256,7 +258,7 @@ function AdminReturnsContent({
     const record = detail && detail.id === summaryItem.id ? detail : summaryItem;
     const statusKey = normalizeReturnStatus(record.status);
     const meta = getAdminReturnStatusMeta(statusKey);
-    const canResolve = statusKey === "ESCALATED";
+    const canResolve = statusKey === "ESCALATED" && canResolveReturn;
     const buyerUrls = (record.evidence_urls ?? [])
       .map((u) => parseSafeEvidenceUrl(u))
       .filter((x): x is NonNullable<typeof x> => x !== null);

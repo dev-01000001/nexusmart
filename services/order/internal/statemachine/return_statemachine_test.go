@@ -48,6 +48,7 @@ func TestReturnStateMachine_ExhaustiveTransitions(t *testing.T) {
 		{orderv1.ReturnStatus_RETURN_STATUS_EVIDENCE_REQUESTED, orderv1.ReturnStatus_RETURN_STATUS_ESCALATED}: true,
 		{orderv1.ReturnStatus_RETURN_STATUS_EVIDENCE_REQUESTED, orderv1.ReturnStatus_RETURN_STATUS_CLOSED}:    true,
 		{orderv1.ReturnStatus_RETURN_STATUS_REFUNDING, orderv1.ReturnStatus_RETURN_STATUS_REFUNDED}:           true,
+		{orderv1.ReturnStatus_RETURN_STATUS_REFUNDING, orderv1.ReturnStatus_RETURN_STATUS_ESCALATED}:          true,
 	}
 
 	for _, from := range allStatuses {

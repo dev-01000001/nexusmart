@@ -18,6 +18,7 @@ import { Button, IconPlus, ProgressBar, StateView } from "@/components";
 import { formatDateTimeVi, formatDiscountPercent, formatInt, formatVnd } from "@/lib/format";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
+import { formatPromotionErrorMessage } from "@/features/checkout/messages";
 import { PromotionsDiscountProgramsTab } from "@/features/seller/PromotionsDiscountProgramsTab";
 import { PromotionsCampaignTab } from "@/features/seller/PromotionsCampaignTab";
 import {
@@ -409,7 +410,9 @@ function SellerPromotionsInner({ shop }: { shop: GatewayShop }) {
         showToast(`Đã phát hành mã voucher ${code} cho gian hàng.`);
       }
     } catch (err) {
-      setVError(getErrorMessage(err, "Không thể lưu voucher lúc này."));
+      setVError(
+        formatPromotionErrorMessage(err, "seller_voucher", "Không thể lưu voucher lúc này.")
+      );
     } finally {
       setVSubmitting(false);
     }
@@ -439,7 +442,9 @@ function SellerPromotionsInner({ shop }: { shop: GatewayShop }) {
           : `Đã kích hoạt lại voucher ${v.code}.`
       );
     } catch (err) {
-      showToast(getErrorMessage(err, "Không thể cập nhật trạng thái voucher."));
+      showToast(
+        formatPromotionErrorMessage(err, "seller_voucher", "Không thể cập nhật trạng thái voucher.")
+      );
     } finally {
       setVoucherActionBusyId(null);
     }
@@ -453,7 +458,9 @@ function SellerPromotionsInner({ shop }: { shop: GatewayShop }) {
       await loadData();
       showToast(`Đã xóa mềm voucher ${v.code}.`);
     } catch (err) {
-      showToast(getErrorMessage(err, "Không thể xóa voucher lúc này."));
+      showToast(
+        formatPromotionErrorMessage(err, "seller_voucher", "Không thể xóa voucher lúc này.")
+      );
     } finally {
       setVoucherActionBusyId(null);
     }
@@ -517,7 +524,13 @@ function SellerPromotionsInner({ shop }: { shop: GatewayShop }) {
       );
       await loadData();
     } catch (err) {
-      setFError(getErrorMessage(err, "Không thể đăng ký suất Flash sale lúc này."));
+      setFError(
+        formatPromotionErrorMessage(
+          err,
+          "seller_flash_sale",
+          "Không thể đăng ký suất Flash sale lúc này."
+        )
+      );
     } finally {
       setFSubmitting(false);
     }

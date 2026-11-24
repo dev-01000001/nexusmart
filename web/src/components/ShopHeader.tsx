@@ -423,7 +423,13 @@ export function ShopHeader() {
 
   const displayName = user?.full_name?.trim() || user?.email || "";
   const isSeller = user?.role === "seller";
-  const isAdmin = user?.role === "admin" || user?.role === "super_admin";
+  const isAdmin =
+    user?.role === "admin" ||
+    user?.role === "super_admin" ||
+    user?.role === "moderator" ||
+    user?.role === "cskh" ||
+    user?.role === "accountant" ||
+    user?.role === "ops";
 
   return (
     <>

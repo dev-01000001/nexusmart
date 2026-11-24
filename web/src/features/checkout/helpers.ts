@@ -5,6 +5,7 @@ import type {
   GatewayDiscountBreakdown,
   GatewayFlashSale,
   GatewayPaymentMethod,
+  GatewayPaymentMethodConfig,
   GatewayShopDiscountBreakdown,
   GatewayShopShippingChoice,
   GatewayVoucher,
@@ -99,7 +100,7 @@ export interface CalculateFeePayloadInput {
   toProvinceCode: string;
   toWardCode: string;
   items?: CalculateFeeItemInput[];
-  paymentMethod?: "COD" | "VIETQR";
+  paymentMethod?: GatewayPaymentMethod;
   weightGrams?: number;
   codAmountVnd?: number;
 }
@@ -109,7 +110,7 @@ export interface CalculateFeePayload {
   to_province_code: string;
   to_ward_code: string;
   items?: Array<{ sku_id: string; quantity: number }>;
-  payment_method?: "COD" | "VIETQR";
+  payment_method?: GatewayPaymentMethod;
   weight_grams?: number;
   cod_amount_vnd?: number;
 }
@@ -661,7 +662,7 @@ const FLASH_LIMIT_ERROR_CODES = new Set<string>([
 export function isFlashLimitOrSlotError(
   err: unknown,
   hasFlashSaleItem: boolean,
-  paymentMethod?: "COD" | "VIETQR"
+  paymentMethod?: GatewayPaymentMethod
 ): boolean {
   if (!hasFlashSaleItem || !err || typeof err !== "object") return false;
   if (isAmbiguousCheckoutSubmitError(err)) return false;
@@ -702,7 +703,7 @@ export function isFlashLimitOrSlotError(
  */
 export function classifyCheckoutSubmitError(
   err: unknown,
-  ctx?: { hasFlashSaleItem?: boolean; paymentMethod?: "COD" | "VIETQR" }
+  ctx?: { hasFlashSaleItem?: boolean; paymentMethod?: GatewayPaymentMethod }
 ): CheckoutSubmitErrorKind {
   if (err && typeof err === "object") {
     const e = err as { status?: unknown; code?: unknown };
@@ -1350,12 +1351,22 @@ export function clearCheckoutWarnings(storage?: Pick<Storage, "removeItem"> | nu
 }
 
 export type CodBlockCode =
-  "FLASH_SALE" | "PHONE_NOT_VERIFIED" | "AREA_NOT_SUPPORTED" | "REJECTED_LIMIT" | "AMOUNT_LIMIT";
+  | "FLASH_SALE"
+  | "PHONE_NOT_VERIFIED"
+  | "AREA_NOT_SUPPORTED"
+  | "REJECTED_LIMIT"
+  | "AMOUNT_LIMIT"
+  | "AMOUNT_BELOW_MIN";
+
+export type PaymentMethodBlockCode = CodBlockCode | "METHOD_DISABLED" | "AMOUNT_EXCEEDED";
 
 /**
  * Checks whether COD is allowed for the current checkout payload.
- * Flash sale orders strictly require VietQR (5-minute payment expiry).
- * Optional `phoneVerified` and `codAreaSupported` default to `true` for backward compatibility.
+ * Flash sale orders strictly require online payment (VietQR or ZaloPay, 5-minute payment expiry).
+ * When `codMaxVnd` is supplied from GET /api/v1/payment-methods:
+ *   - `codMaxVnd === 0` means no upper limit;
+ *   - `codMaxVnd > 0` caps COD at `codMaxVnd`.
+ * When `codMaxVnd` is omitted (legacy callers/tests), falls back to DEFAULT_COD_MAX_VND.
  */
 export function isCodAllowedForCheckout(input: {
   hasFlashSaleItem: boolean;
@@ -1363,13 +1374,15 @@ export function isCodAllowedForCheckout(input: {
   codRejectedCount: number;
   phoneVerified?: boolean;
   codAreaSupported?: boolean;
+  codMinVnd?: number;
+  codMaxVnd?: number;
 }): { allowed: boolean; reason: string; blockCode?: CodBlockCode } {
   if (input.hasFlashSaleItem) {
     return {
       allowed: false,
       blockCode: "FLASH_SALE",
       reason:
-        "Đơn hàng có sản phẩm Flash sale chỉ hỗ trợ chuyển khoản VietQR (hạn thanh toán 5 phút).",
+        "Đơn hàng có sản phẩm Flash sale chỉ hỗ trợ thanh toán trực tuyến (VietQR hoặc ZaloPay, hạn thanh toán 5 phút).",
     };
   }
   if (input.phoneVerified === false) {
@@ -1385,24 +1398,156 @@ export function isCodAllowedForCheckout(input: {
       allowed: false,
       blockCode: "AREA_NOT_SUPPORTED",
       reason:
-        "Khu vực giao hàng này hiện chưa hỗ trợ thanh toán khi nhận hàng (COD). Vui lòng đổi địa chỉ hoặc chọn chuyển khoản VietQR.",
+        "Khu vực giao hàng này hiện chưa hỗ trợ thanh toán khi nhận hàng (COD). Vui lòng đổi địa chỉ hoặc chọn thanh toán trực tuyến.",
     };
   }
   if (input.codRejectedCount >= DEFAULT_COD_MAX_REJECTED) {
     return {
       allowed: false,
       blockCode: "REJECTED_LIMIT",
-      reason: `Tài khoản có ${input.codRejectedCount} lần từ chối nhận hàng nên tạm không hỗ trợ COD. Vui lòng chọn VietQR.`,
+      reason: `Tài khoản có ${input.codRejectedCount} lần từ chối nhận hàng nên tạm không hỗ trợ COD. Vui lòng chọn thanh toán trực tuyến.`,
     };
   }
-  if (input.totalPayableVnd > DEFAULT_COD_MAX_VND) {
+  const minVnd = typeof input.codMinVnd === "number" && input.codMinVnd > 0 ? input.codMinVnd : 0;
+  if (input.totalPayableVnd > 0 && minVnd > 0 && input.totalPayableVnd < minVnd) {
+    return {
+      allowed: false,
+      blockCode: "AMOUNT_BELOW_MIN",
+      reason: `Đơn hàng cần tối thiểu ${formatVnd(minVnd)} để thanh toán khi nhận hàng (COD).`,
+    };
+  }
+  const effectiveMaxVnd =
+    typeof input.codMaxVnd === "number" ? input.codMaxVnd : DEFAULT_COD_MAX_VND;
+  if (effectiveMaxVnd > 0 && input.totalPayableVnd > effectiveMaxVnd) {
     return {
       allowed: false,
       blockCode: "AMOUNT_LIMIT",
-      reason: `Đơn hàng vượt hạn mức COD tối đa ${formatVnd(DEFAULT_COD_MAX_VND)}. Vui lòng chọn VietQR.`,
+      reason: `Đơn hàng vượt hạn mức COD tối đa ${formatVnd(effectiveMaxVnd)}. Vui lòng chọn thanh toán trực tuyến.`,
     };
   }
   return { allowed: true, reason: "" };
+}
+
+/**
+ * Evaluates a payment method config from GET /api/v1/payment-methods against current checkout inputs (F6).
+ */
+export function evaluatePaymentMethodForCheckout(
+  config: Pick<
+    GatewayPaymentMethodConfig,
+    "method" | "enabled" | "min_order_vnd" | "max_order_vnd"
+  >,
+  params: {
+    totalPayableVnd: number;
+    hasFlashSaleItem: boolean;
+    codRejectedCount: number;
+    phoneVerified?: boolean;
+    codAreaSupported?: boolean;
+  }
+): { allowed: boolean; reason: string; blockCode?: PaymentMethodBlockCode } {
+  const method = String(config.method ?? "")
+    .trim()
+    .toUpperCase();
+  if (!config.enabled) {
+    return {
+      allowed: false,
+      blockCode: "METHOD_DISABLED",
+      reason: "Phương thức thanh toán này hiện đang tạm tắt.",
+    };
+  }
+  if (method === "COD") {
+    const res = isCodAllowedForCheckout({
+      hasFlashSaleItem: params.hasFlashSaleItem,
+      totalPayableVnd: params.totalPayableVnd,
+      codRejectedCount: params.codRejectedCount,
+      phoneVerified: params.phoneVerified,
+      codAreaSupported: params.codAreaSupported,
+      codMinVnd: Math.max(0, Math.trunc(config.min_order_vnd || 0)),
+      codMaxVnd: Math.max(0, Math.trunc(config.max_order_vnd || 0)),
+    });
+    if (!res.allowed && res.blockCode === "AMOUNT_LIMIT") {
+      return { allowed: false, blockCode: "AMOUNT_EXCEEDED", reason: res.reason };
+    }
+    return res;
+  }
+  const minVnd = Math.max(0, Math.trunc(config.min_order_vnd || 0));
+  const maxVnd = Math.max(0, Math.trunc(config.max_order_vnd || 0));
+  if (params.totalPayableVnd > 0 && minVnd > 0 && params.totalPayableVnd < minVnd) {
+    return {
+      allowed: false,
+      blockCode: "AMOUNT_BELOW_MIN",
+      reason: `Đơn hàng cần tối thiểu ${formatVnd(minVnd)} để sử dụng phương thức này.`,
+    };
+  }
+  if (maxVnd > 0 && params.totalPayableVnd > maxVnd) {
+    return {
+      allowed: false,
+      blockCode: "AMOUNT_EXCEEDED",
+      reason: `Đơn hàng vượt quá hạn mức tối đa ${formatVnd(maxVnd)} của phương thức này.`,
+    };
+  }
+  return { allowed: true, reason: "" };
+}
+
+/**
+ * Resolves the post-checkout destination route:
+ * - Zero-VND orders (total_payable_vnd <= 0) or already-SUCCEEDED payments are immediately CONFIRMED
+ *   by the backend and MUST go straight to the order detail/list page (never to VietQR/ZaloPay waiting).
+ * - Positive-amount pending online payments (VietQR / ZaloPay) go to `/thanh-toan/cho-thanh-toan/[paymentId]`.
+ */
+export function resolvePostCheckoutHref(
+  res: Pick<
+    GatewayCheckoutResponse,
+    "payment_method" | "payment_id" | "payment_status" | "total_payable_vnd"
+  > & { orders?: ReadonlyArray<{ id: string }> }
+): string {
+  const method = String(res.payment_method ?? "")
+    .trim()
+    .toUpperCase();
+  const isOnline = method === "VIETQR" || method === "ZALOPAY";
+  const paymentStatus = String(res.payment_status ?? "")
+    .trim()
+    .toUpperCase();
+  const payable = typeof res.total_payable_vnd === "number" ? res.total_payable_vnd : 0;
+
+  if (isOnline && res.payment_id && payable > 0 && paymentStatus !== "SUCCEEDED") {
+    return `/thanh-toan/cho-thanh-toan/${encodeURIComponent(res.payment_id)}`;
+  }
+  if (Array.isArray(res.orders) && res.orders.length === 1 && res.orders[0]?.id) {
+    return `/don-hang/${encodeURIComponent(res.orders[0].id)}`;
+  }
+  return "/don-hang";
+}
+
+const CHECKOUT_METHOD_ORDER: readonly GatewayPaymentMethod[] = ["COD", "VIETQR", "ZALOPAY"];
+
+/**
+ * Picks the best enabled checkout payment method (keeping currentMethod when still eligible).
+ */
+export function resolveDefaultCheckoutMethod(
+  methods: readonly Pick<GatewayPaymentMethodConfig, "method" | "enabled">[],
+  params: { hasFlashSaleItem: boolean; currentMethod?: GatewayPaymentMethod }
+): GatewayPaymentMethod | null {
+  const enabledSet = new Set<GatewayPaymentMethod>();
+  for (const m of methods) {
+    if (!m?.enabled) continue;
+    const key = String(m.method ?? "")
+      .trim()
+      .toUpperCase();
+    if (key === "COD" || key === "VIETQR" || key === "ZALOPAY") {
+      if (params.hasFlashSaleItem && key === "COD") continue;
+      enabledSet.add(key);
+    }
+  }
+  if (params.currentMethod && enabledSet.has(params.currentMethod)) {
+    return params.currentMethod;
+  }
+  const priority: readonly GatewayPaymentMethod[] = params.hasFlashSaleItem
+    ? ["VIETQR", "ZALOPAY"]
+    : CHECKOUT_METHOD_ORDER;
+  for (const candidate of priority) {
+    if (enabledSet.has(candidate)) return candidate;
+  }
+  return null;
 }
 
 export interface BuyNowSlicePricing {

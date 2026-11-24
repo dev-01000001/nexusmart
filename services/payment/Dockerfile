@@ -13,8 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /workspace
 
-# Copy shared protobuf contracts and payment service sources (never host target/)
+# Copy shared protobuf contracts, RBAC capabilities matrix, and payment service sources (never host target/)
 COPY proto ./proto
+COPY pkg/common/auth/capabilities.json ./pkg/common/auth/capabilities.json
 COPY services/payment/Cargo.toml services/payment/Cargo.lock services/payment/build.rs ./services/payment/
 COPY services/payment/src ./services/payment/src
 COPY services/payment/migrations ./services/payment/migrations

@@ -997,9 +997,14 @@ func TestE2E_PaymentOps_ReviewFixes(t *testing.T) {
 				}
 				payID := pResp.GetPayment().GetPaymentId()
 				rfKey := "order-return-refund:" + ordID
+				svcSecret := envOr("SERVICE_JWT_SECRET", "dev-only-nexusmart-service-hs256-secret-change-me")
+				if v := strings.TrimSpace(os.Getenv("SERVICE_JWT_SECRET")); v != "" {
+					svcSecret = v
+				}
+				orderSvcTok := payW2MintServiceToken(svcSecret, "order-service")
 
 				callRefund := func() error {
-					_, rErr := grpcClient.CreateRefund(payW2AuthCtx(ctx, adminTok), &paymentv1.CreateRefundRequest{
+					_, rErr := grpcClient.CreateRefund(payW2AuthCtx(ctx, orderSvcTok), &paymentv1.CreateRefundRequest{
 						PaymentId:      payID,
 						OrderId:        ordID,
 						AmountVnd:      payAmt,
@@ -2260,7 +2265,7 @@ func TestE2E_PaymentOps_Review3EdgeCases(t *testing.T) {
 			t.Fatalf("CancelPayment on failed: want OK/FAILED, got err=%v resp=%+v", err, canFailResp)
 		}
 
-		// Superseded payment -> CancelPayment returns OK.
+		// Superseded payment -> CancelPayment returns OK (preserve original deadline per payment p4 Item K).
 		pSup1, grpSup, supBuyerTok := createVietQR(t, "can-sup", 120000, nil)
 		if _, err := grpcClient.CreatePayment(payW2AuthCtx(ctx, supBuyerTok), &paymentv1.CreatePaymentRequest{
 			OrderGroupId:      grpSup,
@@ -2269,6 +2274,7 @@ func TestE2E_PaymentOps_Review3EdgeCases(t *testing.T) {
 			AmountVnd:         120000,
 			Method:            paymentv1.PaymentMethod_PAYMENT_METHOD_VIETQR,
 			ShopAllocations:   []*paymentv1.ShopAllocation{{OrderId: grpSup, ShopId: "shop-r3-can-sup", SubtotalVnd: 120000}},
+			ExpiresAt:         pSup1.GetExpiresAt(),
 			SupersedePrevious: true,
 			IdempotencyKey:    "payw2-r3-can-sup2-" + uuid.NewString(),
 		}); err != nil {

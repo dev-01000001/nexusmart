@@ -81,6 +81,19 @@ func (s *OrderService) HandlePaymentResult(ctx context.Context, in PaymentResult
 		s.notifyOutbox()
 	}
 
+	// F5 race guard: if a late payment.succeeded arrived for an old online payment that was just
+	// superseded by RetryPayment (e.g. switched to COD or another online method), immediately trigger
+	// an automatic refund (RequireApprovalIfLarge=false) so the buyer is never left with a CONFIRMED
+	// COD order and unrefunded paid online funds.
+	if len(outcome.SupersededPaidOrders) > 0 &&
+		in.Status == orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_SUCCEEDED &&
+		strings.TrimSpace(in.PaymentID) != "" &&
+		s.clients.Payment != nil {
+		if err := s.refundSupersededPaidOrders(ctx, strings.TrimSpace(in.PaymentID), outcome.SupersededPaidOrders); err != nil {
+			return fmt.Errorf("refund superseded payment %s: %w", in.PaymentID, err)
+		}
+	}
+
 	groupID := outcome.CheckoutGroupID
 	if outcome.NeedsDownstream && groupID != "" {
 		sysCtx := clients.WithInternalAdminContext(ctx)
@@ -189,19 +202,113 @@ func (s *OrderService) HandlePaymentExpired(ctx context.Context, eventID string,
 	})
 }
 
-// HandlePaymentRefunded records a payment.refunded event idempotently on the order timeline.
+// refundSupersededPaidOrders automatically refunds each payable sub-order on a non-current payment_id
+// whose payment.succeeded arrived after RetryPayment moved the group forward or on an orphaned payment (F5 / Item A-B).
+// Only codes.OK (including true idempotent replay resp.AlreadyExisted=true with matching fields) is treated as done;
+// all errors (including codes.AlreadyExists which maps from PaymentError::Conflict in Rust payment, NotFound, and
+// FailedPrecondition) are logged at ERROR with payment_id/order_id and returned for consumer retry -> NEXUSMART_DLQ.
+func (s *OrderService) refundSupersededPaidOrders(ctx context.Context, supersededPaymentID string, orders []db.Order) error {
+	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+	defer cancel()
+
+	for _, ord := range orders {
+		if ord.TotalPayableVND <= 0 {
+			continue
+		}
+		idemKey := "superseded-late-refund:" + supersededPaymentID + ":" + ord.ID
+		if err := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
+			resp, rErr := s.clients.Payment.CreateRefund(c, &paymentv1.CreateRefundRequest{
+				PaymentId:              supersededPaymentID,
+				OrderId:                ord.ID,
+				AmountVnd:              ord.TotalPayableVND,
+				Reason:                 "Late payment succeeded for superseded checkout payment",
+				IdempotencyKey:         idemKey,
+				RequireApprovalIfLarge: false,
+			})
+			if rErr != nil {
+				return rErr
+			}
+			if ref := resp.GetRefund(); ref != nil {
+				if ref.GetStatus() == paymentv1.RefundStatus_REFUND_STATUS_FAILED {
+					return status.Errorf(codes.Internal, "superseded refund %s returned FAILED status", ref.GetRefundId())
+				}
+				if resp.GetAlreadyExisted() {
+					if pid := strings.TrimSpace(ref.GetPaymentId()); pid != "" && pid != supersededPaymentID {
+						return status.Errorf(codes.FailedPrecondition, "idempotent refund payment_id mismatch: got %s want %s", pid, supersededPaymentID)
+					}
+					if oid := strings.TrimSpace(ref.GetOrderId()); oid != "" && oid != ord.ID {
+						return status.Errorf(codes.FailedPrecondition, "idempotent refund order_id mismatch: got %s want %s", oid, ord.ID)
+					}
+					if k := strings.TrimSpace(ref.GetIdempotencyKey()); k != "" && k != idemKey {
+						return status.Errorf(codes.FailedPrecondition, "idempotent refund key mismatch: got %s want %s", k, idemKey)
+					}
+				}
+			}
+			return nil
+		}); err != nil {
+			s.logger.ErrorContext(ctx, "failed to create automatic refund for superseded paid order; returning error for consumer retry/DLQ",
+				"payment_id", supersededPaymentID,
+				"order_id", ord.ID,
+				"checkout_group_id", ord.CheckoutGroupID,
+				"amount_vnd", ord.TotalPayableVND,
+				"idempotency_key", idemKey,
+				"error", err,
+			)
+			return fmt.Errorf("create automatic refund for superseded payment %s order %s: %w", supersededPaymentID, ord.ID, err)
+		}
+	}
+	return nil
+}
+
+// HandlePaymentRefunded records a payment.refunded event idempotently on the order timeline
+// and settles any REFUNDING return request waiting on F11 large-refund approval.
 func (s *OrderService) HandlePaymentRefunded(ctx context.Context, eventID string, payload events.PaymentRefundedPayload) error {
-	_, err := s.store.RecordPaymentRefunded(ctx, store.PaymentRefundedParams{
+	if _, err := s.store.RecordPaymentRefunded(ctx, store.PaymentRefundedParams{
 		EventID:          eventID,
 		EventType:        events.SubjectPaymentRefunded,
 		PaymentID:        payload.PaymentID,
 		OrderID:          payload.OrderID,
 		RefundID:         payload.RefundID,
+		IdempotencyKey:   payload.IdempotencyKey,
 		AmountVND:        payload.AmountVND,
 		Reason:           payload.Reason,
 		IsPostSettlement: payload.IsPostSettlement,
-	})
-	return err
+	}); err != nil {
+		return err
+	}
+	if strings.TrimSpace(payload.OrderID) != "" {
+		if err := s.onPaymentRefundApprovedForReturn(ctx, payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// HandlePaymentRefundRejected processes payment.refund_rejected idempotently for F11 large-refund
+// approvals rejected by a checker, transitioning the waiting return from REFUNDING -> ESCALATED.
+// Handles duplicate event_id, out-of-order delivery before refund_id is persisted, and cleanly
+// ignores manual admin refunds that do not belong to an approval-gated REFUNDING return.
+func (s *OrderService) HandlePaymentRefundRejected(ctx context.Context, eventID string, payload events.PaymentRefundRejectedPayload) error {
+	if eventID != "" {
+		processed, err := s.store.IsEventProcessed(ctx, eventID)
+		if err != nil {
+			return fmt.Errorf("check processed_events: %w", err)
+		}
+		if processed {
+			return nil
+		}
+	}
+
+	if err := s.onPaymentRefundRejectedForReturn(ctx, payload); err != nil {
+		return err
+	}
+
+	if eventID != "" {
+		if err := s.store.MarkEventProcessed(ctx, eventID, events.SubjectPaymentRefundRejected); err != nil {
+			return fmt.Errorf("mark payment.refund_rejected processed: %w", err)
+		}
+	}
+	return nil
 }
 
 // HandleShipmentUpdated processes shipment.updated events idempotently for both FORWARD and RETURN directions.
@@ -395,7 +502,7 @@ func (s *OrderService) compensateReturnedOrder(
 	}
 
 	// Review-A P0-1: if order was paid online, refund only the remaining unrefunded balance.
-	wasPaidOnline := statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR &&
+	wasPaidOnline := statemachine.IsOnlineMethod(ord.PaymentMethod) &&
 		strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") &&
 		ord.TotalPayableVND > 0
 	remaining := ord.TotalPayableVND - ord.RefundedVND
@@ -437,12 +544,13 @@ func (s *OrderService) ScanExpiredPendingOrders(ctx context.Context) (int, error
 
 func (s *OrderService) processExpiredGroup(ctx context.Context, cand store.ExpiredGroupCandidate) error {
 	sysCtx := clients.WithInternalAdminContext(ctx)
-	resolvedPaymentID := strings.TrimSpace(cand.PaymentID)
+	candPaymentID := strings.TrimSpace(cand.PaymentID)
+	activePaymentID := candPaymentID
 
-	// UC-PAY06: Always check PaymentService before cancelling an expired PENDING order!
+	// UC-PAY06 + Item F (#6): Query the active payment by OrderGroupId ONLY (do not pin old cand.PaymentID,
+	// which can return a superseded/CANCELLED payment while an orphaned newer payment remains PENDING).
 	if s.clients.Payment != nil {
 		payResp, err := s.clients.Payment.GetPayment(sysCtx, &paymentv1.GetPaymentRequest{
-			PaymentId:    resolvedPaymentID,
 			OrderGroupId: cand.CheckoutGroupID,
 		})
 		if err != nil {
@@ -452,14 +560,22 @@ func (s *OrderService) processExpiredGroup(ctx context.Context, cand store.Expir
 			}
 		} else if pay := payResp.GetPayment(); pay != nil {
 			if pid := strings.TrimSpace(pay.GetPaymentId()); pid != "" {
-				resolvedPaymentID = pid
+				activePaymentID = pid
 			}
-			if done, hErr := s.handleExpiredGroupObservedPayment(sysCtx, cand.CheckoutGroupID, pay); done || hErr != nil {
+			// Guard against cancelling a legitimately moved, non-expired replacement payment in direct races.
+			if candPaymentID != "" && activePaymentID != candPaymentID && pay.GetStatus() == paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING {
+				if grp, gErr := s.store.GetCheckoutGroupByID(sysCtx, cand.CheckoutGroupID); gErr == nil && grp != nil {
+					if grp.PaymentID == activePaymentID && grp.PaymentExpiresAt != nil && grp.PaymentExpiresAt.After(s.nowFn()) {
+						return nil
+					}
+				}
+			}
+			if done, hErr := s.handleExpiredGroupObservedPayment(sysCtx, cand.CheckoutGroupID, candPaymentID, pay); done || hErr != nil {
 				return hErr
 			}
 			if pay.GetStatus() == paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING {
 				_, cancelErr := s.clients.Payment.CancelPayment(sysCtx, &paymentv1.CancelPaymentRequest{
-					PaymentId:    resolvedPaymentID,
+					PaymentId:    activePaymentID,
 					OrderGroupId: cand.CheckoutGroupID,
 					Reason:       "Payment expired",
 				})
@@ -470,9 +586,8 @@ func (s *OrderService) processExpiredGroup(ctx context.Context, cand store.Expir
 						// Payment already absent; safe to proceed with order expiry cancel.
 					case codes.AlreadyExists, codes.FailedPrecondition:
 						// Concurrent webhook or state transition raced ahead at payment service;
-						// re-read authoritative payment status before deciding.
+						// re-read authoritative active payment status for the group before deciding.
 						reResp, reErr := s.clients.Payment.GetPayment(sysCtx, &paymentv1.GetPaymentRequest{
-							PaymentId:    resolvedPaymentID,
 							OrderGroupId: cand.CheckoutGroupID,
 						})
 						if reErr != nil {
@@ -481,26 +596,35 @@ func (s *OrderService) processExpiredGroup(ctx context.Context, cand store.Expir
 							}
 						} else if rePay := reResp.GetPayment(); rePay != nil {
 							if pid := strings.TrimSpace(rePay.GetPaymentId()); pid != "" {
-								resolvedPaymentID = pid
+								activePaymentID = pid
 							}
-							if done, hErr := s.handleExpiredGroupObservedPayment(sysCtx, cand.CheckoutGroupID, rePay); done || hErr != nil {
+							if done, hErr := s.handleExpiredGroupObservedPayment(sysCtx, cand.CheckoutGroupID, candPaymentID, rePay); done || hErr != nil {
 								return hErr
 							}
 							if rePay.GetStatus() == paymentv1.PaymentStatus_PAYMENT_STATUS_PENDING {
-								return fmt.Errorf("payment %s remained PENDING after CancelPayment (%s); retry next tick", resolvedPaymentID, code)
+								return fmt.Errorf("payment %s remained PENDING after CancelPayment (%s); retry next tick", activePaymentID, code)
 							}
 						}
 					default:
-						return fmt.Errorf("cancel expired payment %s: %w", resolvedPaymentID, cancelErr)
+						return fmt.Errorf("cancel expired payment %s: %w", activePaymentID, cancelErr)
 					}
 				}
 			}
 		}
 	}
 
+	// Preserve candPaymentID when order_db still points to the pre-orphan payment so TransitionOrdersPaymentResult
+	// cancels the expired PENDING order; fall back to activePaymentID when candPaymentID was empty or order_db moved.
+	orderPaymentID := fallbackStr(candPaymentID, activePaymentID)
+	if candPaymentID != "" && activePaymentID != candPaymentID {
+		if grp, gErr := s.store.GetCheckoutGroupByID(sysCtx, cand.CheckoutGroupID); gErr == nil && grp != nil && grp.PaymentID == activePaymentID {
+			orderPaymentID = activePaymentID
+		}
+	}
+
 	return s.HandlePaymentResult(sysCtx, PaymentResultInput{
 		CheckoutGroupID: cand.CheckoutGroupID,
-		PaymentID:       resolvedPaymentID,
+		PaymentID:       orderPaymentID,
 		Status:          orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_EXPIRED,
 		Reason:          "Payment expired after timeout",
 		ActorID:         "order-expiry-watchdog",
@@ -508,10 +632,10 @@ func (s *OrderService) processExpiredGroup(ctx context.Context, cand store.Expir
 	})
 }
 
-func (s *OrderService) handleExpiredGroupObservedPayment(ctx context.Context, checkoutGroupID string, pay *paymentv1.Payment) (bool, error) {
+func (s *OrderService) handleExpiredGroupObservedPayment(ctx context.Context, checkoutGroupID, candPaymentID string, pay *paymentv1.Payment) (bool, error) {
 	switch pay.GetStatus() {
 	case paymentv1.PaymentStatus_PAYMENT_STATUS_SUCCEEDED:
-		// Late payment succeeded before cancel — confirm order instead of cancelling!
+		// Late payment succeeded before cancel — confirm order (or auto-refund if orphan/superseded via Item B).
 		return true, s.HandlePaymentResult(ctx, PaymentResultInput{
 			CheckoutGroupID: checkoutGroupID,
 			PaymentID:       pay.GetPaymentId(),
@@ -525,7 +649,7 @@ func (s *OrderService) handleExpiredGroupObservedPayment(ctx context.Context, ch
 		// cancel the pending order and release reservations without downgrading payment_status to EXPIRED.
 		return true, s.HandlePaymentResult(ctx, PaymentResultInput{
 			CheckoutGroupID:       checkoutGroupID,
-			PaymentID:             pay.GetPaymentId(),
+			PaymentID:             fallbackStr(candPaymentID, pay.GetPaymentId()),
 			Status:                orderv1.PaymentResultStatus_PAYMENT_RESULT_STATUS_EXPIRED,
 			PaymentStatusOverride: "REFUNDED",
 			Reason:                "Payment already refunded before order confirmation",
@@ -737,8 +861,10 @@ func (s *OrderService) reconcileIncompleteCheckoutGroup(ctx context.Context, gro
 			return fmt.Errorf("payment client unavailable for forward recovery of %s", groupID)
 		}
 		buyerID := liveAggs[0].Order.BuyerID
-		method := statemachine.StringToPaymentMethod(liveAggs[0].Order.PaymentMethod)
-		payReq := buildCreatePaymentRequest(groupID, buyerID, liveTotalPayableVND, method, paymentExpiresAt, liveAggs)
+		payReq, rErr := buildCreatePaymentRequest(groupID, buyerID, liveTotalPayableVND, liveAggs[0].Order.PaymentMethod, paymentExpiresAt, liveAggs)
+		if rErr != nil {
+			return fmt.Errorf("build forward-recover CreatePayment for %s: %w", groupID, rErr)
+		}
 		payResp, pErr := s.clients.Payment.CreatePayment(compCtx, payReq)
 		if pErr != nil {
 			return fmt.Errorf("forward-recover CreatePayment for %s: %w", groupID, pErr)
@@ -958,6 +1084,7 @@ func (s *OrderService) finalizeRecoveredCheckoutGroup(ctx context.Context, group
 		PaymentStatus:    paymentStatus,
 		QRURL:            qrURL,
 		QRCode:           qrCode,
+		PayURL:           pay.GetPayUrl(),
 		PaymentExpiresAt: paymentExpiresAt,
 		BuildSnapshot:    s.makeBuyerCheckoutSnapshotBuilder(nil, &finalGroup, &finalAggs, &builtSnapshot),
 	}, resetFinalState); err != nil {

@@ -241,7 +241,7 @@ func ordW2bDialPaymentGRPC(t *testing.T, env *testEnv) paymentv1.PaymentServiceC
 func ordW2bActivePaymentFeeBps(t *testing.T, env *testEnv, method paymentv1.PaymentMethod) int32 {
 	t.Helper()
 	pc := ordW2bDialPaymentGRPC(t, env)
-	svcTok := ordW2bMintServiceToken("order")
+	svcTok := ordW2bMintServiceToken("order-service")
 	resp, err := pc.GetFeeConfig(ordW2bAuthCtx(env.ctx(t), svcTok), &paymentv1.GetFeeConfigRequest{
 		PaymentMethod: method,
 	})

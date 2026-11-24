@@ -1,9 +1,17 @@
-//! gRPC caller authentication. Identity comes only from a verified HS256 JWT in the
-//! `authorization` metadata; plain `x-user-id` / `x-user-role` / `x-shop-id` are never trusted.
+//! gRPC and internal HTTP caller authentication + capability-based RBAC (F9).
+//! Identity comes only from a verified HS256 JWT in the `authorization` metadata/header;
+//! plain `x-user-id` / `x-user-role` / `x-shop-id` are never trusted.
+//!
+//! Staff role capabilities are loaded at compile time from the single shared matrix
+//! `pkg/common/auth/capabilities.json` (F9). Service tokens satisfy ZERO staff capabilities
+//! and are only accepted on explicitly listed `SERVICE_METHODS`.
 //!
 //! ponytail: one shared HS256 service key (same scheme as pkg/common/auth in Go); any holder can
 //! mint any service identity. Upgrade path: mTLS between services, or asymmetric per-service JWT
 //! (EdDSA) verified via JWKS.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -16,15 +24,119 @@ use tonic::Status;
 use crate::domain::PaymentWithAllocations;
 use crate::error::PaymentError;
 
-/// RPCs on which an internal service token (order saga / expiry watchdog / checkout forward
-/// recovery) is accepted.
-const SERVICE_METHODS: &[&str] = &[
-    "CreatePayment",
-    "GetPayment",
-    "CancelPayment",
-    "CreateRefund",
-    "GetFeeConfig",
+/// Shared single-source-of-truth RBAC matrix (also consumed by Go `pkg/common/auth`).
+const CAPABILITIES_JSON: &str = include_str!("../../../pkg/common/auth/capabilities.json");
+
+// Payment-service capability identifiers (exact keys in `pkg/common/auth/capabilities.json`).
+pub const CAP_FEES_PAYMENT_READ: &str = "fees.payment.read";
+pub const CAP_FEES_PAYMENT_WRITE: &str = "fees.payment.write";
+pub const CAP_LEDGER_READ: &str = "ledger.read";
+pub const CAP_RECONCILIATION_WRITE: &str = "reconciliation.write";
+pub const CAP_ESCROW_RELEASE: &str = "escrow.release";
+pub const CAP_REFUNDS_READ: &str = "refunds.read";
+pub const CAP_REFUNDS_CREATE: &str = "refunds.create";
+pub const CAP_REFUNDS_APPROVE: &str = "refunds.approve";
+pub const CAP_REFUNDS_SETTLE: &str = "refunds.settle";
+pub const CAP_PAYMENT_METHODS_READ: &str = "payment_methods.read";
+pub const CAP_PAYMENT_METHODS_WRITE: &str = "payment_methods.write";
+
+/// Per-RPC allowlist of internal services authorized to authenticate with a service token
+/// (verified via `claims.service` signed by `SERVICE_JWT_SECRET`) — p4 Item M.
+/// Audited across all `services/*`: only `order-service` calls `PaymentService` with a service
+/// token (gateway forwards end-user JWTs only; other services do not hold a `PaymentClient`).
+const SERVICE_METHOD_ALLOWLIST: &[(&str, &[&str])] = &[
+    ("CreatePayment", &["order-service"]),
+    ("GetPayment", &["order-service"]),
+    ("CancelPayment", &["order-service"]),
+    ("CreateRefund", &["order-service"]),
+    ("GetFeeConfig", &["order-service"]),
+    ("GetPaymentMethodConfigs", &["order-service"]),
 ];
+
+#[derive(Deserialize)]
+struct RawCapabilitiesFile {
+    roles: Vec<String>,
+    capabilities: HashMap<String, Vec<String>>,
+}
+
+struct CapabilityMatrix {
+    roles: Vec<String>,
+    role_set: HashSet<String>,
+    capabilities: HashMap<String, HashSet<String>>,
+}
+
+impl CapabilityMatrix {
+    fn parse(raw_json: &str) -> Self {
+        let parsed: RawCapabilitiesFile = serde_json::from_str(raw_json)
+            .expect("pkg/common/auth/capabilities.json must be valid JSON");
+        assert!(
+            !parsed.roles.is_empty(),
+            "capabilities.json must declare at least one staff role"
+        );
+        let mut roles = Vec::with_capacity(parsed.roles.len());
+        let mut role_set = HashSet::with_capacity(parsed.roles.len());
+        for role in parsed.roles {
+            let norm = role.trim().to_ascii_lowercase();
+            assert!(!norm.is_empty(), "capabilities.json contains empty role");
+            if role_set.insert(norm.clone()) {
+                roles.push(norm);
+            }
+        }
+        let mut capabilities = HashMap::with_capacity(parsed.capabilities.len());
+        for (cap, cap_roles) in parsed.capabilities {
+            let cap_norm = cap.trim().to_string();
+            assert!(
+                !cap_norm.is_empty(),
+                "capabilities.json contains empty capability key"
+            );
+            let mut allowed = HashSet::with_capacity(cap_roles.len());
+            for role in cap_roles {
+                let norm = role.trim().to_ascii_lowercase();
+                assert!(
+                    role_set.contains(&norm),
+                    "capabilities.json: capability '{cap_norm}' references unknown role '{norm}'"
+                );
+                allowed.insert(norm);
+            }
+            capabilities.insert(cap_norm, allowed);
+        }
+        Self {
+            roles,
+            role_set,
+            capabilities,
+        }
+    }
+}
+
+static CAPABILITY_MATRIX: OnceLock<CapabilityMatrix> = OnceLock::new();
+
+fn capability_matrix() -> &'static CapabilityMatrix {
+    CAPABILITY_MATRIX.get_or_init(|| CapabilityMatrix::parse(CAPABILITIES_JSON))
+}
+
+/// Returns all declared staff roles from `capabilities.json` in declaration order.
+pub fn staff_roles() -> &'static [String] {
+    &capability_matrix().roles
+}
+
+/// Returns true when `role` is a recognized staff role declared in `capabilities.json`.
+pub fn is_staff_role(role: &str) -> bool {
+    let norm = role.trim().to_ascii_lowercase();
+    capability_matrix().role_set.contains(&norm)
+}
+
+/// Returns true when `role` is granted `capability` in `capabilities.json`.
+pub fn role_has_capability(role: &str, capability: &str) -> bool {
+    let norm_role = role.trim().to_ascii_lowercase();
+    let norm_cap = capability.trim();
+    if norm_role.is_empty() || norm_cap.is_empty() {
+        return false;
+    }
+    capability_matrix()
+        .capabilities
+        .get(norm_cap)
+        .is_some_and(|roles| roles.contains(&norm_role))
+}
 
 /// Authenticated caller as seen by handlers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -33,64 +145,78 @@ pub struct Caller {
     pub user_id: String,
     pub shop_id: String,
     pub is_service: bool,
+    pub service: String,
     pub exp: Option<i64>,
 }
 
 impl Caller {
-    pub fn is_admin(&self) -> bool {
-        matches!(self.role.as_str(), "admin" | "super_admin")
+    /// Returns true iff caller is an authenticated `admin` or `super_admin` end-user (never a
+    /// service token, never narrower staff roles like `cskh`/`accountant`/`ops`/`moderator`).
+    /// Used for non-§4.11 payment-lifecycle ownership overrides (`CreatePayment`, `CancelPayment`).
+    pub fn is_admin_role(&self) -> bool {
+        !self.is_service && matches!(self.role.as_str(), "admin" | "super_admin")
     }
 
-    pub fn is_admin_or_service(&self) -> bool {
-        self.is_admin() || self.is_service
+    /// Checks whether this caller holds `capability` in `capabilities.json`.
+    /// Service tokens NEVER satisfy staff capabilities (F9).
+    pub fn has_capability(&self, capability: &str) -> bool {
+        !self.is_service && role_has_capability(&self.role, capability)
+    }
+
+    /// Checks whether this caller holds at least one capability in `capabilities`.
+    /// Service tokens NEVER satisfy staff capabilities (F9).
+    pub fn has_any_capability(&self, capabilities: &[&str]) -> bool {
+        !self.is_service
+            && capabilities
+                .iter()
+                .any(|cap| role_has_capability(&self.role, cap))
+    }
+
+    /// Returns true when this caller is an authenticated staff user (not a service token).
+    pub fn is_staff(&self) -> bool {
+        !self.is_service && is_staff_role(&self.role)
     }
 }
 
 /// Caller-scoped visibility for a payment record and its shop allocations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaymentViewScope {
-    /// Admin, super_admin, or verified internal service token: full payment and allocations.
+    /// Staff with payment/refund read capability (`refunds.read` or `ledger.read`), or verified
+    /// internal service token: full payment and allocations.
     Full,
     /// Buyer owner (including a seller purchasing as a buyer): all allocations with
-    /// `commission_vnd = 0`; buyer QR/provider_ref and full amount preserved.
+    /// `commission_vnd = 0`; buyer QR/pay_url/provider_ref and full amount preserved.
     BuyerOwner,
     /// Seller who only owns one or more shop allocations (not the buyer owner):
-    /// restricted to `shop_id`, with buyer QR/provider_ref redacted and shop-scoped amount.
+    /// restricted to `shop_id`, with buyer QR/pay_url/provider_ref redacted and shop-scoped amount.
     SellerAllocation { shop_id: String },
 }
 
 /// Enforces object-level read access for a payment and resolves the caller's visibility scope
-/// (admin/super_admin/service token, buyer owner including seller-as-buyer, or seller with a
-/// matching shop allocation). Shared by gRPC `GetPayment` and HTTP SSE.
+/// (staff with `refunds.read`/`ledger.read`, verified service token, payment owner regardless of
+/// role — including `seller` or `moderator` shopping as a buyer — or seller with a matching shop
+/// allocation). Shared by gRPC `GetPayment` and HTTP SSE.
 pub fn resolve_payment_read_scope(
     caller: &Caller,
     pwa: &PaymentWithAllocations,
 ) -> crate::error::Result<PaymentViewScope> {
-    if caller.is_admin_or_service() {
+    if caller.is_service || caller.has_any_capability(&[CAP_REFUNDS_READ, CAP_LEDGER_READ]) {
         return Ok(PaymentViewScope::Full);
     }
-    let owns_as_buyer = !caller.user_id.is_empty() && pwa.payment.user_id == caller.user_id;
-    match caller.role.as_str() {
-        "buyer" if owns_as_buyer => Ok(PaymentViewScope::BuyerOwner),
-        "seller" => {
-            if owns_as_buyer {
-                return Ok(PaymentViewScope::BuyerOwner);
-            }
-            if !caller.shop_id.is_empty()
-                && pwa.allocations.iter().any(|a| a.shop_id == caller.shop_id)
-            {
-                return Ok(PaymentViewScope::SellerAllocation {
-                    shop_id: caller.shop_id.clone(),
-                });
-            }
-            Err(PaymentError::Forbidden(
-                "cannot access another user's payment".to_string(),
-            ))
-        }
-        _ => Err(PaymentError::Forbidden(
-            "cannot access another user's payment".to_string(),
-        )),
+    if !caller.user_id.is_empty() && pwa.payment.user_id == caller.user_id {
+        return Ok(PaymentViewScope::BuyerOwner);
     }
+    if caller.role == "seller"
+        && !caller.shop_id.is_empty()
+        && pwa.allocations.iter().any(|a| a.shop_id == caller.shop_id)
+    {
+        return Ok(PaymentViewScope::SellerAllocation {
+            shop_id: caller.shop_id.clone(),
+        });
+    }
+    Err(PaymentError::Forbidden(
+        "cannot access another user's payment".to_string(),
+    ))
 }
 
 /// Enforces object-level read access for a payment. Shared by gRPC `GetPayment` and HTTP SSE.
@@ -160,6 +286,8 @@ impl GrpcAuth {
         if user_secret.trim().is_empty() || service_secret.trim().is_empty() {
             anyhow::bail!("JWT_SECRET and SERVICE_JWT_SECRET must both be set");
         }
+        // Eagerly validate the embedded capability matrix at startup.
+        let _ = capability_matrix();
         Ok(Self {
             user_key: user_secret.as_bytes().to_vec(),
             service_key: service_secret.as_bytes().to_vec(),
@@ -186,10 +314,19 @@ impl GrpcAuth {
             return to_caller(c, false);
         }
         if let Some(c) = verify_hs256(token, &self.service_key).filter(|c| !c.service.is_empty()) {
-            if !SERVICE_METHODS.contains(&method) {
+            let Some((_, allowed_services)) = SERVICE_METHOD_ALLOWLIST
+                .iter()
+                .find(|(rpc, _)| *rpc == method)
+            else {
                 return Err(PaymentError::Forbidden(
                     "service identity not allowed for this RPC".to_string(),
                 ));
+            };
+            let caller_service = c.service.trim();
+            if !allowed_services.contains(&caller_service) {
+                return Err(PaymentError::Forbidden(format!(
+                    "service '{caller_service}' is not allowed for RPC '{method}'"
+                )));
             }
             return to_caller(c, true);
         }
@@ -205,6 +342,28 @@ impl GrpcAuth {
         self.authenticate_header(header, method)
             .map_err(|e| e.to_tonic_status())
     }
+
+    /// Authenticates when an `authorization` header is present and non-empty; returns `Ok(None)`
+    /// for unauthenticated public callers (used by `GetPaymentMethodConfigs`).
+    #[allow(clippy::result_large_err)]
+    pub fn authenticate_optional(
+        &self,
+        md: &MetadataMap,
+        method: &str,
+    ) -> Result<Option<Caller>, Status> {
+        let Some(raw) = md.get("authorization") else {
+            return Ok(None);
+        };
+        let header = raw
+            .to_str()
+            .map_err(|_| Status::unauthenticated("invalid authorization metadata"))?;
+        if header.trim().is_empty() {
+            return Ok(None);
+        }
+        self.authenticate_header(Some(header), method)
+            .map(Some)
+            .map_err(|e| e.to_tonic_status())
+    }
 }
 
 fn to_caller(c: Claims, is_service: bool) -> crate::error::Result<Caller> {
@@ -217,6 +376,11 @@ fn to_caller(c: Claims, is_service: bool) -> crate::error::Result<Caller> {
         user_id: c.sub.trim().to_string(),
         shop_id: c.shop_id.trim().to_string(),
         is_service,
+        service: if is_service {
+            c.service.trim().to_string()
+        } else {
+            String::new()
+        },
         exp: Some(c.exp),
     })
 }
@@ -301,6 +465,8 @@ mod tests {
             "ListSellerLedger",
             "ImportCodReconciliation",
             "ListReconciliationRuns",
+            "UpdatePaymentMethodConfig",
+            "DecideRefundApproval",
         ] {
             let err = auth().authenticate(&m, method).unwrap_err();
             assert_eq!(err.code(), tonic::Code::Unauthenticated, "{method}");
@@ -327,6 +493,7 @@ mod tests {
                 user_id: "seller-a".into(),
                 shop_id: "shop-a".into(),
                 is_service: false,
+                service: String::new(),
                 exp: Some(exp),
             }
         );
@@ -347,12 +514,19 @@ mod tests {
             "CancelPayment",
             "CreateRefund",
             "GetFeeConfig",
+            "GetPaymentMethodConfigs",
         ] {
             let ok = a
                 .authenticate(&md(&[bearer(svc(SVC_KEY, exp_in(60)))]), method)
                 .unwrap();
             assert_eq!(ok.role, "admin", "{method}");
             assert!(ok.is_service, "{method}");
+            // Service token must NEVER satisfy any staff capability even if its role claim is "admin".
+            assert!(!ok.has_capability(CAP_PAYMENT_METHODS_READ));
+            assert!(!ok.has_capability(CAP_PAYMENT_METHODS_WRITE));
+            assert!(!ok.has_capability(CAP_REFUNDS_APPROVE));
+            assert!(!ok.has_capability(CAP_LEDGER_READ));
+            assert!(!ok.is_staff());
         }
 
         for method in [
@@ -367,6 +541,8 @@ mod tests {
             "ListSellerLedger",
             "ImportCodReconciliation",
             "ListReconciliationRuns",
+            "UpdatePaymentMethodConfig",
+            "DecideRefundApproval",
         ] {
             let denied = a
                 .authenticate(&md(&[bearer(svc(SVC_KEY, exp_in(60)))]), method)
@@ -384,6 +560,174 @@ mod tests {
                 .authenticate(&md(&[bearer(tok)]), "GetPayment")
                 .unwrap_err();
             assert_eq!(err.code(), tonic::Code::Unauthenticated, "{name}");
+        }
+    }
+
+    #[test]
+    fn authenticate_optional_handles_public_valid_and_invalid_tokens() {
+        let a = auth();
+        // Missing header -> public caller (Ok(None)).
+        assert_eq!(
+            a.authenticate_optional(&MetadataMap::new(), "GetPaymentMethodConfigs")
+                .unwrap(),
+            None
+        );
+
+        // Valid admin JWT -> Ok(Some(caller)).
+        let ops_tok = sign_hs256(
+            USER_KEY,
+            json!({"sub":"ops-1","role":"ops","exp":exp_in(60)}),
+        );
+        let ops = a
+            .authenticate_optional(&md(&[bearer(ops_tok)]), "GetPaymentMethodConfigs")
+            .unwrap()
+            .expect("authenticated caller");
+        assert!(ops.has_capability(CAP_PAYMENT_METHODS_READ));
+        assert!(ops.has_capability(CAP_PAYMENT_METHODS_WRITE));
+
+        // Valid service token -> Ok(Some(service caller)), zero capabilities.
+        let svc_tok = sign_hs256(
+            SVC_KEY,
+            json!({"sub":"order-service","role":"admin","service":"order-service","exp":exp_in(60)}),
+        );
+        let svc = a
+            .authenticate_optional(&md(&[bearer(svc_tok)]), "GetPaymentMethodConfigs")
+            .unwrap()
+            .expect("service caller");
+        assert!(svc.is_service);
+        assert!(!svc.has_capability(CAP_PAYMENT_METHODS_READ));
+
+        // Invalid token -> rejected as Unauthenticated (never silently downgraded to public).
+        let err = a
+            .authenticate_optional(
+                &md(&[bearer("bad.tok.val".into())]),
+                "GetPaymentMethodConfigs",
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn f9_capability_matrix_matches_shared_json_across_all_6_staff_roles_and_non_staff() {
+        // Verify exact 6 staff roles from pkg/common/auth/capabilities.json.
+        let expected_roles = [
+            "super_admin",
+            "admin",
+            "moderator",
+            "cskh",
+            "accountant",
+            "ops",
+        ];
+        assert_eq!(staff_roles(), expected_roles);
+
+        // Parse capabilities.json independently to ensure zero drift.
+        let raw: serde_json::Value =
+            serde_json::from_str(CAPABILITIES_JSON).expect("valid capabilities.json");
+        let caps_obj = raw["capabilities"].as_object().expect("capabilities map");
+
+        // Table of all 11 payment capabilities × expected allowed roles.
+        let expected_payment_matrix: &[(&str, &[&str])] = &[
+            (
+                CAP_FEES_PAYMENT_READ,
+                &["super_admin", "admin", "accountant", "ops"],
+            ),
+            (
+                CAP_FEES_PAYMENT_WRITE,
+                &["super_admin", "admin", "accountant"],
+            ),
+            (
+                CAP_LEDGER_READ,
+                &["super_admin", "admin", "accountant", "ops"],
+            ),
+            (
+                CAP_RECONCILIATION_WRITE,
+                &["super_admin", "admin", "accountant"],
+            ),
+            (CAP_ESCROW_RELEASE, &["super_admin", "admin", "accountant"]),
+            (
+                CAP_REFUNDS_READ,
+                &["super_admin", "admin", "cskh", "accountant", "ops"],
+            ),
+            (
+                CAP_REFUNDS_CREATE,
+                &["super_admin", "admin", "cskh", "accountant"],
+            ),
+            (CAP_REFUNDS_APPROVE, &["super_admin", "admin", "accountant"]),
+            (CAP_REFUNDS_SETTLE, &["super_admin", "admin", "accountant"]),
+            (
+                CAP_PAYMENT_METHODS_READ,
+                &["super_admin", "admin", "accountant", "ops"],
+            ),
+            (CAP_PAYMENT_METHODS_WRITE, &["super_admin", "admin", "ops"]),
+        ];
+
+        for &(cap, allowed_roles) in expected_payment_matrix {
+            // Confirm capabilities.json itself matches our expected table.
+            let json_roles: HashSet<&str> = caps_obj
+                .get(cap)
+                .unwrap_or_else(|| panic!("missing capability {cap} in capabilities.json"))
+                .as_array()
+                .expect("array of roles")
+                .iter()
+                .map(|v| v.as_str().expect("role string"))
+                .collect();
+            let expected_set: HashSet<&str> = allowed_roles.iter().copied().collect();
+            assert_eq!(
+                json_roles, expected_set,
+                "drift in capabilities.json for {cap}"
+            );
+
+            // Check every one of the 6 staff roles (positive & negative).
+            for role in expected_roles {
+                let caller = Caller {
+                    role: role.to_string(),
+                    user_id: format!("u-{role}"),
+                    shop_id: String::new(),
+                    is_service: false,
+                    service: String::new(),
+                    exp: Some(exp_in(60)),
+                };
+                let should_allow = expected_set.contains(role);
+                assert_eq!(
+                    caller.has_capability(cap),
+                    should_allow,
+                    "role={role} cap={cap} expected={should_allow}"
+                );
+                assert_eq!(role_has_capability(role, cap), should_allow);
+                assert!(caller.is_staff());
+            }
+
+            // Non-staff roles (buyer, seller, unknown) and service tokens MUST always be denied.
+            for non_staff in ["buyer", "seller", "", "unknown_role"] {
+                let caller = Caller {
+                    role: non_staff.to_string(),
+                    user_id: "u-non-staff".to_string(),
+                    shop_id: "shop-1".to_string(),
+                    is_service: false,
+                    service: String::new(),
+                    exp: Some(exp_in(60)),
+                };
+                assert!(
+                    !caller.has_capability(cap),
+                    "non-staff role={non_staff} must be denied {cap}"
+                );
+                assert!(!caller.is_staff());
+            }
+
+            // Service token carrying role="super_admin" MUST STILL be denied every capability (F9).
+            let svc_caller = Caller {
+                role: "super_admin".to_string(),
+                user_id: "order-service".to_string(),
+                shop_id: String::new(),
+                is_service: true,
+                service: "order-service".to_string(),
+                exp: Some(exp_in(60)),
+            };
+            assert!(
+                !svc_caller.has_capability(cap),
+                "service token must NEVER satisfy {cap}"
+            );
+            assert!(!svc_caller.is_staff());
         }
     }
 
@@ -420,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn require_payment_read_access_enforces_ownership_and_roles() {
+    fn require_payment_read_access_enforces_ownership_and_capabilities() {
         use crate::domain::{PaymentRecord, ShopAllocationRecord};
         use chrono::Utc;
         use uuid::Uuid;
@@ -441,6 +785,7 @@ mod tests {
                 provider_order_code: "NM-1".into(),
                 qr_code: None,
                 qr_url: None,
+                pay_url: None,
                 idempotency_key: None,
                 expires_at: None,
                 paid_at: None,
@@ -524,25 +869,72 @@ mod tests {
             PaymentViewScope::BuyerOwner
         );
 
-        let admin = Caller {
-            role: "admin".into(),
-            user_id: "admin-1".into(),
+        // Staff with `refunds.read` or `ledger.read` get Full scope.
+        for staff_role in ["super_admin", "admin", "cskh", "accountant", "ops"] {
+            let staff = Caller {
+                role: staff_role.into(),
+                user_id: format!("u-{staff_role}"),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve_payment_read_scope(&staff, &pwa).unwrap(),
+                PaymentViewScope::Full,
+                "role={staff_role}"
+            );
+        }
+
+        // `moderator` lacks both `refunds.read` and `ledger.read`:
+        // - Accessing ANOTHER user's payment -> Forbidden
+        // - Accessing OWN payment (moderator shopping as buyer) -> BuyerOwner (p3 item 3)
+        let moderator_other = Caller {
+            role: "moderator".into(),
+            user_id: "mod-1".into(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            require_payment_read_access(&moderator_other, &pwa),
+            Err(PaymentError::Forbidden(_))
+        ));
+
+        let moderator_owner = Caller {
+            role: "moderator".into(),
+            user_id: "buyer-owner".into(),
             ..Default::default()
         };
         assert_eq!(
-            resolve_payment_read_scope(&admin, &pwa).unwrap(),
-            PaymentViewScope::Full
+            resolve_payment_read_scope(&moderator_owner, &pwa).unwrap(),
+            PaymentViewScope::BuyerOwner
         );
 
-        let super_admin = Caller {
-            role: "super_admin".into(),
-            user_id: "sadmin-1".into(),
-            ..Default::default()
-        };
-        assert_eq!(
-            resolve_payment_read_scope(&super_admin, &pwa).unwrap(),
-            PaymentViewScope::Full
-        );
+        // Any other non-capability role owning the payment also gets BuyerOwner,
+        // while non-owners of every non-capability role are denied.
+        for role in ["moderator", "buyer", "seller", "support_readonly", ""] {
+            let own = Caller {
+                role: role.into(),
+                user_id: "buyer-owner".into(),
+                shop_id: "shop-unrelated".into(),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve_payment_read_scope(&own, &pwa).unwrap(),
+                PaymentViewScope::BuyerOwner,
+                "owner with role={role} must get BuyerOwner"
+            );
+
+            let stranger = Caller {
+                role: role.into(),
+                user_id: "stranger-99".into(),
+                shop_id: "shop-unrelated".into(),
+                ..Default::default()
+            };
+            assert!(
+                matches!(
+                    require_payment_read_access(&stranger, &pwa),
+                    Err(PaymentError::Forbidden(_))
+                ),
+                "non-owner with role={role} must be Forbidden"
+            );
+        }
 
         let service_caller = Caller {
             role: "service".into(),
@@ -559,5 +951,56 @@ mod tests {
             require_payment_read_access(&Caller::default(), &pwa),
             Err(PaymentError::Forbidden(_))
         ));
+    }
+
+    #[test]
+    fn p4_item_m_service_tokens_enforce_per_rpc_caller_allowlist() {
+        let a = auth();
+        let make_svc = |svc_name: &str| {
+            sign_hs256(
+                SVC_KEY,
+                json!({
+                    "sub": svc_name,
+                    "role": "admin",
+                    "service": svc_name,
+                    "exp": exp_in(60),
+                }),
+            )
+        };
+
+        for method in [
+            "CreatePayment",
+            "GetPayment",
+            "CancelPayment",
+            "CreateRefund",
+            "GetFeeConfig",
+            "GetPaymentMethodConfigs",
+        ] {
+            // Only `order-service` is authorized to call PaymentService internal RPCs.
+            let ok = a
+                .authenticate(&md(&[bearer(make_svc("order-service"))]), method)
+                .unwrap_or_else(|e| panic!("order-service must be allowed on {method}: {e}"));
+            assert!(ok.is_service);
+
+            // Other services sharing SERVICE_JWT_SECRET MUST be rejected with PermissionDenied.
+            for other_svc in [
+                "shipping-service",
+                "product-service",
+                "notification-service",
+                "promotion-service",
+                "user-service",
+                "cart-service",
+                "gateway",
+            ] {
+                let err = a
+                    .authenticate(&md(&[bearer(make_svc(other_svc))]), method)
+                    .unwrap_err();
+                assert_eq!(
+                    err.code(),
+                    tonic::Code::PermissionDenied,
+                    "service={other_svc} must be denied on {method}"
+                );
+            }
+        }
     }
 }

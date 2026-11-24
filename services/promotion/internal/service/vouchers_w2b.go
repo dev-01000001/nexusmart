@@ -24,6 +24,14 @@ func (s *PromotionService) UpdateVoucher(ctx context.Context, req *promotionv1.U
 	if err != nil {
 		return nil, err
 	}
+	if !isSeller(claims) && !auth.HasCapability(claims, auth.CapVouchersWrite) {
+		return nil, status.Error(codes.PermissionDenied, "insufficient permissions to manage voucher")
+	}
+	if isSeller(claims) && claims.ShopID != "" {
+		if err := s.requireShopNotSuspended(ctx, claims.ShopID); err != nil {
+			return nil, err
+		}
+	}
 
 	voucherID := strings.TrimSpace(req.GetVoucherId())
 	if voucherID == "" {
@@ -272,6 +280,14 @@ func (s *PromotionService) SetVoucherStatus(ctx context.Context, req *promotionv
 	if err != nil {
 		return nil, err
 	}
+	if !isSeller(claims) && !auth.HasCapability(claims, auth.CapVouchersWrite) {
+		return nil, status.Error(codes.PermissionDenied, "insufficient permissions to manage voucher")
+	}
+	if isSeller(claims) && claims.ShopID != "" {
+		if err := s.requireShopNotSuspended(ctx, claims.ShopID); err != nil {
+			return nil, err
+		}
+	}
 
 	voucherID := strings.TrimSpace(req.GetVoucherId())
 	if voucherID == "" {
@@ -326,6 +342,9 @@ func (s *PromotionService) DeleteVoucher(ctx context.Context, req *promotionv1.D
 	if err != nil {
 		return nil, err
 	}
+	if !isSeller(claims) && !auth.HasCapability(claims, auth.CapVouchersWrite) {
+		return nil, status.Error(codes.PermissionDenied, "insufficient permissions to manage voucher")
+	}
 
 	voucherID := strings.TrimSpace(req.GetVoucherId())
 	if voucherID == "" {
@@ -371,7 +390,7 @@ func checkVoucherManagePermission(claims *auth.Claims, v *domain.Voucher) error 
 			return status.Error(codes.PermissionDenied, "sellers can only manage vouchers for their own shop")
 		}
 		return nil
-	case isAdmin(claims):
+	case auth.HasCapability(claims, auth.CapVouchersWrite):
 		if v.Scope != domain.VoucherScopePlatform && v.Scope != domain.VoucherScopeFreeship {
 			return status.Error(codes.PermissionDenied, "admins can only manage PLATFORM or FREESHIP vouchers")
 		}

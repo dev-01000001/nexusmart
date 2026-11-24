@@ -31,6 +31,7 @@ import { useSession } from "@/context/SessionContext";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconPackage, ProductCard, StateView } from "@/components";
 import { AddressForm } from "@/features/commerce/AddressForm";
+import { formatPromotionErrorMessage } from "@/features/checkout/messages";
 import { useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "@/app/(shop)/tai-khoan/page.module.css";
@@ -132,9 +133,18 @@ function roleLabel(role: string): string {
   switch (role) {
     case "seller":
       return "Người bán";
-    case "admin":
     case "super_admin":
+      return "Siêu quản trị";
+    case "admin":
       return "Quản trị viên";
+    case "moderator":
+      return "Kiểm duyệt viên";
+    case "cskh":
+      return "Chăm sóc khách hàng";
+    case "accountant":
+      return "Kế toán";
+    case "ops":
+      return "Vận hành";
     default:
       return "Người mua";
   }
@@ -566,7 +576,9 @@ export function AccountClient({
       );
       showToast(`Đã lưu mã ${voucher.code} vào ví voucher.`);
     } catch (err) {
-      setVoucherActionError(getErrorMessage(err, "Chưa thể lưu mã ưu đãi này lúc này."));
+      setVoucherActionError(
+        formatPromotionErrorMessage(err, "save_voucher", "Chưa thể lưu mã ưu đãi này lúc này.")
+      );
     } finally {
       setSavingVoucherId(null);
     }

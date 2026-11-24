@@ -334,6 +334,13 @@ func TestPaymentW2bFeeConfigLifecycleAndRBAC(t *testing.T) {
 	if len(svcFeeResp.GetActiveConfigs()) < 2 {
 		t.Fatalf("GetFeeConfig as service: want >=2 active configs (COD, VIETQR), got %d", len(svcFeeResp.GetActiveConfigs()))
 	}
+	// Non-allowlisted service name ("order" instead of "order-service") must be rejected by payment SERVICE_METHOD_ALLOWLIST.
+	wrongSvcTok := payW2bMintServiceToken(payW2bServiceSecret(), "order")
+	if _, err := grpcClient.GetFeeConfig(payW2bAuthCtx(ctx, wrongSvcTok), &paymentv1.GetFeeConfigRequest{
+		IncludeHistory: false,
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("GetFeeConfig as non-allowlisted service 'order': want PermissionDenied, got %v", err)
+	}
 	if len(svcFeeResp.GetHistory()) != 0 {
 		t.Fatalf("GetFeeConfig(include_history=false) as service should return empty history, got %d", len(svcFeeResp.GetHistory()))
 	}

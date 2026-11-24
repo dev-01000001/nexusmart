@@ -2,8 +2,11 @@ package e2e
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -42,12 +45,13 @@ type testEnv struct {
 	phoneBase int64
 	seq       atomic.Int64
 
-	adminToken string
-	province   ProvinceDTO
-	ward       WardDTO
-	category   CategoryDTO
-	seller1    *sellerFixture
-	seller2    *sellerFixture
+	adminToken    string
+	province      ProvinceDTO
+	ward          WardDTO
+	category      CategoryDTO
+	seller1       *sellerFixture
+	seller2       *sellerFixture
+	verifiedBuyer *userFixture
 }
 
 var (
@@ -121,33 +125,111 @@ func (e *testEnv) mustDoJSON(
 	return nil
 }
 
-func (e *testEnv) adminLogin(t *testing.T) string {
-	t.Helper()
-	e.mu.Lock()
-	if e.adminToken != "" {
-		tok := e.adminToken
-		e.mu.Unlock()
-		return tok
+const fixtureTokenRefreshThreshold = 5 * time.Minute
+
+// jwtNeedsRefresh reports whether token is empty, malformed, lacks a valid numeric exp claim,
+// or has less than threshold remaining before expiry relative to now.
+func jwtNeedsRefresh(token string, now time.Time, threshold time.Duration) bool {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) != 3 || parts[1] == "" {
+		return true
 	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return true
+	}
+	var claims struct {
+		Exp *float64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.Exp == nil || *claims.Exp <= 0 {
+		return true
+	}
+	return time.Unix(int64(*claims.Exp), 0).Sub(now) < threshold
+}
+
+// ensureFreshToken returns the cached token if it has at least fixtureTokenRefreshThreshold
+// remaining; otherwise it re-authenticates via HTTP without holding e.mu and updates the cache
+// in place via apply under e.mu.
+func (e *testEnv) ensureFreshToken(
+	ctx context.Context,
+	readToken func() string,
+	email, password string,
+	apply func(LoginResponse),
+) (string, error) {
+	e.mu.Lock()
+	cur := readToken()
 	e.mu.Unlock()
+	if !jwtNeedsRefresh(cur, time.Now(), fixtureTokenRefreshThreshold) {
+		return cur, nil
+	}
 
-	resp := e.mustDoJSON(t, http.MethodPost, "/api/v1/auth/login", "", nil, LoginRequest{
-		Email:    e.cfg.AdminEmail,
-		Password: e.cfg.AdminPassword,
-	}, http.StatusOK)
-
+	resp, err := e.client.DoJSON(ctx, http.MethodPost, "/api/v1/auth/login", "", nil, LoginRequest{
+		Email:    email,
+		Password: password,
+	})
+	if err != nil {
+		return "", fmt.Errorf("login %s: %w", email, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("login %s returned HTTP %d: %s", email, resp.StatusCode, string(resp.Body))
+	}
 	var out LoginResponse
 	if err := DecodeJSON(resp, &out); err != nil {
-		t.Fatalf("decode admin login: %v", err)
+		return "", fmt.Errorf("decode login %s: %w", email, err)
 	}
 	if out.AccessToken == "" {
-		t.Fatalf("admin login returned empty access_token: %s", string(resp.Body))
+		return "", fmt.Errorf("login %s returned empty access_token: %s", email, string(resp.Body))
 	}
 
 	e.mu.Lock()
-	e.adminToken = out.AccessToken
+	if latest := readToken(); !jwtNeedsRefresh(latest, time.Now(), fixtureTokenRefreshThreshold) {
+		e.mu.Unlock()
+		return latest, nil
+	}
+	apply(out)
 	e.mu.Unlock()
-	return out.AccessToken
+	return out.AccessToken, nil
+}
+
+// adminTokenCtx returns a fresh cached admin access token without calling t.Fatalf (safe for t.Cleanup).
+func (e *testEnv) adminTokenCtx(ctx context.Context) (string, error) {
+	return e.ensureFreshToken(
+		ctx,
+		func() string { return e.adminToken },
+		e.cfg.AdminEmail,
+		e.cfg.AdminPassword,
+		func(out LoginResponse) { e.adminToken = out.AccessToken },
+	)
+}
+
+func (e *testEnv) refreshUserFixture(t *testing.T, u *userFixture) {
+	t.Helper()
+	if _, err := e.ensureFreshToken(
+		e.ctx(t),
+		func() string { return u.AccessToken },
+		u.Email,
+		u.Password,
+		func(out LoginResponse) {
+			u.AccessToken = out.AccessToken
+			if out.RefreshToken != "" {
+				u.RefreshToken = out.RefreshToken
+			}
+			if out.User.ID != "" {
+				u.User = out.User
+			}
+		},
+	); err != nil {
+		t.Fatalf("refresh fixture token (%s): %v", u.Email, err)
+	}
+}
+
+func (e *testEnv) adminLogin(t *testing.T) string {
+	t.Helper()
+	tok, err := e.adminTokenCtx(e.ctx(t))
+	if err != nil {
+		t.Fatalf("admin login: %v", err)
+	}
+	return tok
 }
 
 func (e *testEnv) ensureProvinceAndWard(t *testing.T) (ProvinceDTO, WardDTO) {
@@ -453,16 +535,53 @@ func (e *testEnv) ensureBaseMarketplace(t *testing.T) (CategoryDTO, *sellerFixtu
 	if s1 == nil {
 		s1 = e.createApprovedSeller(t, "seller1")
 		e.mu.Lock()
-		e.seller1 = s1
+		if e.seller1 == nil {
+			e.seller1 = s1
+		}
+		s1 = e.seller1
 		e.mu.Unlock()
+	} else {
+		e.refreshUserFixture(t, &s1.userFixture)
 	}
 	if s2 == nil {
 		s2 = e.createApprovedSeller(t, "seller2")
 		e.mu.Lock()
-		e.seller2 = s2
+		if e.seller2 == nil {
+			e.seller2 = s2
+		}
+		s2 = e.seller2
 		e.mu.Unlock()
+	} else {
+		e.refreshUserFixture(t, &s2.userFixture)
 	}
 	return cat, s1, s2
+}
+
+// ensureVerifiedBuyer lazily creates and caches a shared buyer whose email OTP and phone OTP
+// are verified once via Mailpit with a default COD-supported address so multiple tests can
+// reuse it without adding repeated registration/OTP overhead to the E2E runtime budget.
+func (e *testEnv) ensureVerifiedBuyer(t *testing.T) *userFixture {
+	t.Helper()
+	e.mu.Lock()
+	b := e.verifiedBuyer
+	e.mu.Unlock()
+	if b != nil {
+		e.refreshUserFixture(t, b)
+		return b
+	}
+
+	b = e.registerVerifyAndLogin(t, "shared-verified-buyer")
+	e.verifyBuyerPhone(t, b)
+	e.addAddress(t, b)
+
+	e.mu.Lock()
+	if e.verifiedBuyer == nil {
+		e.verifiedBuyer = b
+	}
+	res := e.verifiedBuyer
+	e.mu.Unlock()
+	e.refreshUserFixture(t, res)
+	return res
 }
 
 func (e *testEnv) createApprovedProduct(
@@ -740,5 +859,102 @@ func (e *testEnv) pollUntil(t *testing.T, timeout, interval time.Duration, desc 
 			t.Fatalf("timed out after %s waiting for %s; last state: %s", timeout, desc, lastMsg)
 		}
 		time.Sleep(interval)
+	}
+}
+
+func TestJWTNeedsRefresh(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	makeJWT := func(payloadJSON string) string {
+		hdr := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+		pay := base64.RawURLEncoding.EncodeToString([]byte(payloadJSON))
+		return hdr + "." + pay + ".sig"
+	}
+
+	cases := []struct {
+		name string
+		tok  string
+		want bool
+	}{
+		{
+			name: "6m remaining keeps cached token",
+			tok:  makeJWT(fmt.Sprintf(`{"sub":"u1","exp":%d}`, now.Add(6*time.Minute).Unix())),
+			want: false,
+		},
+		{
+			name: "4m remaining refreshes token",
+			tok:  makeJWT(fmt.Sprintf(`{"sub":"u1","exp":%d}`, now.Add(4*time.Minute).Unix())),
+			want: true,
+		},
+		{
+			name: "expired token refreshes",
+			tok:  makeJWT(fmt.Sprintf(`{"sub":"u1","exp":%d}`, now.Add(-1*time.Minute).Unix())),
+			want: true,
+		},
+		{
+			name: "empty token refreshes",
+			tok:  "",
+			want: true,
+		},
+		{
+			name: "malformed segments refresh",
+			tok:  "not-a-jwt",
+			want: true,
+		},
+		{
+			name: "invalid base64 payload refreshes",
+			tok:  "aaa.!!!invalid!!!.ccc",
+			want: true,
+		},
+		{
+			name: "missing exp claim refreshes",
+			tok:  makeJWT(`{"sub":"u1"}`),
+			want: true,
+		},
+		{
+			name: "non-numeric exp claim refreshes",
+			tok:  makeJWT(`{"sub":"u1","exp":"soon"}`),
+			want: true,
+		},
+		{
+			name: "zero exp claim refreshes",
+			tok:  makeJWT(`{"sub":"u1","exp":0}`),
+			want: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := jwtNeedsRefresh(tc.tok, now, fixtureTokenRefreshThreshold); got != tc.want {
+				t.Fatalf("jwtNeedsRefresh(%q) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClient429WithoutRetryAfterReturnsImmediately(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":"RESOURCE_EXHAUSTED","message":"FLASH_SOLD_OUT"}}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{GatewayURL: srv.URL, HTTPTimeout: 5 * time.Second})
+	start := time.Now()
+	resp, err := c.DoJSON(context.Background(), http.MethodPost, "/api/v1/checkout", "", nil, map[string]any{})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("DoJSON returned unexpected error: %v", err)
+	}
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", resp.StatusCode)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("hits = %d, want 1 (must not retry 429 without Retry-After)", got)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("429 without Retry-After slept unexpectedly (%s)", elapsed)
 	}
 }

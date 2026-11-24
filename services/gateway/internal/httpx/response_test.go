@@ -249,3 +249,62 @@ func TestWriteGRPCErrorMasksUnavailableAndDeadlineExceeded(t *testing.T) {
 		})
 	}
 }
+
+func TestParsePagination(t *testing.T) {
+	cases := []struct {
+		name         string
+		query        string
+		wantPage     int32
+		wantPageSize int32
+		wantErr      bool
+	}{
+		{"empty_defaults", "", 1, 20, false},
+		{"normal", "page=3&page_size=50", 3, 50, false},
+		{"non_positive_clamped", "page=0&page_size=-10", 1, 20, false},
+		{"negative_int64_overflow_clamped", "page=-99999999999999999999999&page_size=-99999999999999999999999", 1, 20, false},
+		{"non_numeric_fallback", "page=abc&page_size=xyz", 1, 20, false},
+		{"page_size_clamped_to_100", "page=2&page_size=200", 2, 100, false},
+		{"page_size_huge_clamped_to_100", "page=2&page_size=99999999999999999999999", 2, 100, false},
+		{"max_valid_size20", "page=107374183&page_size=20", 107374183, 20, false},
+		{"max_valid_size100", "page=21474837&page_size=100", 21474837, 100, false},
+		{"max_valid_size1", "page=2147483647&page_size=1", 2147483647, 1, false},
+		{"overflow_size20_boundary_plus_one", "page=107374184&page_size=20", 0, 0, true},
+		{"overflow_default_size20", "page=107374184", 0, 0, true},
+		{"overflow_size100_boundary_plus_one", "page=21474838&page_size=100", 0, 0, true},
+		{"overflow_int32_negative_wrap", "page=30000000&page_size=100", 0, 0, true},
+		{"overflow_int32_positive_wrap", "page=50000000&page_size=100", 0, 0, true},
+		{"overflow_page_above_max_int32", "page=2147483648&page_size=1", 0, 0, true},
+		{"overflow_page_above_max_int64", "page=99999999999999999999999&page_size=20", 0, 0, true},
+		{"overflow_page_plus_above_max_int64", "page=%2B99999999999999999999999&page_size=20", 0, 0, true},
+		{"overflow_with_huge_page_size", "page=21474838&page_size=99999999999999999999999", 0, 0, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			target := "/items"
+			if tc.query != "" {
+				target += "?" + tc.query
+			}
+			req := httptest.NewRequest(http.MethodGet, target, nil)
+			gotPage, gotSize, err := ParsePagination(req)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("query %q: expected error, got (%d, %d, nil)", tc.query, gotPage, gotSize)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("query %q: unexpected error: %v", tc.query, err)
+			}
+			if gotPage != tc.wantPage || gotSize != tc.wantPageSize {
+				t.Fatalf("query %q: got (%d, %d), want (%d, %d)", tc.query, gotPage, gotSize, tc.wantPage, tc.wantPageSize)
+			}
+			// Verify downstream int32 offset calculation never overflows or turns negative.
+			offset32 := (gotPage - 1) * gotSize
+			offset64 := (int64(gotPage) - 1) * int64(gotSize)
+			if offset32 < 0 || int64(offset32) != offset64 {
+				t.Fatalf("query %q: int32 offset overflowed: int32=%d int64=%d", tc.query, offset32, offset64)
+			}
+		})
+	}
+}

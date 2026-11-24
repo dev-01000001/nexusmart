@@ -20,6 +20,7 @@ import {
 import { getAdminProductStatusMeta } from "./types";
 import { StatusPill } from "./StatusPill";
 import { ToggleSwitch } from "./ToggleSwitch";
+import { useAdminCapability } from "./AdminUserContext";
 import shared from "./adminShared.module.css";
 
 interface Props {
@@ -48,6 +49,7 @@ function formatActionPill(action: string): { label: string; tone: "negative" | "
 
 export function AdminBannedKeywordsTab({ onMutated }: Props) {
   const { showToast } = useMockStore();
+  const canWriteKeywords = useAdminCapability("banned_keywords.write");
 
   const [items, setItems] = useState<GatewayBannedKeyword[]>([]);
   const [total, setTotal] = useState(0);
@@ -347,334 +349,338 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
 
   return (
     <div className={shared.sectionStack}>
-      <section className={shared.panel} aria-labelledby="kw-create-heading">
-        <div className={shared.panelHeader}>
-          <h2 id="kw-create-heading" className={shared.panelTitle}>
-            Thêm quy tắc từ khoá cấm & xem trước ảnh hưởng
-          </h2>
-          <span className={shared.panelMeta}>
-            Từ có dấu so đúng dấu, chữ không dấu khớp cả bản có dấu; cụm từ từ 2 tiếng trở lên khớp
-            cả khi viết không dấu hoặc tách chữ.
-          </span>
-        </div>
-
-        <form onSubmit={(e) => void handleCreate(e)} noValidate className={shared.detailGrid}>
-          <div className={shared.detailField}>
-            <label htmlFor="kw-new-term" className={shared.fieldLabel}>
-              Cụm từ cấm
-            </label>
-            <input
-              id="kw-new-term"
-              type="text"
-              className={shared.textInput}
-              value={newTerm}
-              onChange={(e) => {
-                setNewTerm(e.target.value);
-                if (formError) setFormError(null);
-              }}
-              placeholder="Ví dụ: hàng giả, zalo riêng, chuyển khoản ngoài..."
-              maxLength={120}
-            />
+      {canWriteKeywords && (
+        <section className={shared.panel} aria-labelledby="kw-create-heading">
+          <div className={shared.panelHeader}>
+            <h2 id="kw-create-heading" className={shared.panelTitle}>
+              Thêm quy tắc từ khoá cấm & xem trước ảnh hưởng
+            </h2>
+            <span className={shared.panelMeta}>
+              Từ có dấu so đúng dấu, chữ không dấu khớp cả bản có dấu; cụm từ từ 2 tiếng trở lên
+              khớp cả khi viết không dấu hoặc tách chữ.
+            </span>
           </div>
 
-          <div className={shared.detailField}>
-            <label htmlFor="kw-new-category" className={shared.fieldLabel}>
-              Nhóm vi phạm
-            </label>
-            <select
-              id="kw-new-category"
-              className={shared.toolbarSelect}
-              style={{ height: 38 }}
-              value={newCategory}
-              onChange={(e) => setNewCategory(e.target.value)}
-            >
-              {KEYWORD_CATEGORIES.map((cat) => (
-                <option key={cat.value} value={cat.value}>
-                  {cat.label}
-                </option>
-              ))}
-            </select>
-          </div>
+          <form onSubmit={(e) => void handleCreate(e)} noValidate className={shared.detailGrid}>
+            <div className={shared.detailField}>
+              <label htmlFor="kw-new-term" className={shared.fieldLabel}>
+                Cụm từ cấm
+              </label>
+              <input
+                id="kw-new-term"
+                type="text"
+                className={shared.textInput}
+                value={newTerm}
+                onChange={(e) => {
+                  setNewTerm(e.target.value);
+                  if (formError) setFormError(null);
+                }}
+                placeholder="Ví dụ: hàng giả, zalo riêng, chuyển khoản ngoài..."
+                maxLength={120}
+              />
+            </div>
 
-          <div className={shared.detailField}>
-            <label htmlFor="kw-new-action" className={shared.fieldLabel}>
-              Hành động áp dụng
-            </label>
-            <select
-              id="kw-new-action"
-              className={shared.toolbarSelect}
-              style={{ height: 38 }}
-              value={newAction}
-              onChange={(e) => setNewAction(e.target.value as GatewayBannedKeywordAction)}
-            >
-              <option value="BLOCK">Chặn đăng bán & đánh giá (BLOCK)</option>
-              <option value="REVIEW">Gắn cờ chuyển duyệt thủ công (REVIEW)</option>
-            </select>
-          </div>
+            <div className={shared.detailField}>
+              <label htmlFor="kw-new-category" className={shared.fieldLabel}>
+                Nhóm vi phạm
+              </label>
+              <select
+                id="kw-new-category"
+                className={shared.toolbarSelect}
+                style={{ height: 38 }}
+                value={newCategory}
+                onChange={(e) => setNewCategory(e.target.value)}
+              >
+                {KEYWORD_CATEGORIES.map((cat) => (
+                  <option key={cat.value} value={cat.value}>
+                    {cat.label}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-          {formError && (
+            <div className={shared.detailField}>
+              <label htmlFor="kw-new-action" className={shared.fieldLabel}>
+                Hành động áp dụng
+              </label>
+              <select
+                id="kw-new-action"
+                className={shared.toolbarSelect}
+                style={{ height: 38 }}
+                value={newAction}
+                onChange={(e) => setNewAction(e.target.value as GatewayBannedKeywordAction)}
+              >
+                <option value="BLOCK">Chặn đăng bán & đánh giá (BLOCK)</option>
+                <option value="REVIEW">Gắn cờ chuyển duyệt thủ công (REVIEW)</option>
+              </select>
+            </div>
+
+            {formError && (
+              <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+                <p className={shared.validationError} role="alert">
+                  {formError}
+                </p>
+              </div>
+            )}
+
             <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-              <p className={shared.validationError} role="alert">
-                {formError}
-              </p>
+              <div className={shared.detailButtons}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  shape="app"
+                  disabled={previewLoading || submitting}
+                  onClick={() => void handlePreview()}
+                >
+                  {previewLoading ? "Đang kiểm tra..." : "Xem trước ảnh hưởng"}
+                </Button>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  size="sm"
+                  shape="app"
+                  disabled={submitting || previewLoading}
+                >
+                  {submitting ? "Đang lưu..." : "Lưu từ khoá cấm"}
+                </Button>
+              </div>
+            </div>
+          </form>
+
+          {previewResult && (
+            <div className={shared.detailWell} style={{ marginTop: 16 }}>
+              <div className={shared.detailHeader}>
+                <h3 className={shared.detailHeading}>
+                  Kết quả xem trước: {formatInt(previewResult.affected_count)} sản phẩm bị ảnh hưởng
+                </h3>
+                <span className={shared.panelMeta}>
+                  Hiển thị tối đa {formatInt(previewResult.samples?.length ?? 0)} mẫu
+                </span>
+              </div>
+              {(previewResult.samples?.length ?? 0) === 0 ? (
+                <p className={shared.detailValPlain}>
+                  Không có sản phẩm đang bán hoặc chờ duyệt nào khớp với cụm từ này.
+                </p>
+              ) : (
+                <>
+                  <div className={shared.tableWrap}>
+                    <table className={shared.dataTable}>
+                      <thead>
+                        <tr>
+                          <th>Sản phẩm</th>
+                          <th>Trạng thái</th>
+                          <th>Từ khớp</th>
+                          <th>Mức xử lý</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {previewResult.samples.map((s) => {
+                          const statusMeta = getAdminProductStatusMeta(s.status);
+                          const actMeta = formatActionPill(s.highest_action);
+                          return (
+                            <tr key={s.product_id}>
+                              <td>
+                                <div className={shared.cellPrimary}>{s.name}</div>
+                                <div className={shared.cellSub}>/{s.slug}</div>
+                              </td>
+                              <td>
+                                <StatusPill label={statusMeta.label} tone={statusMeta.tone} />
+                              </td>
+                              <td>{(s.matched_terms ?? []).join(", ") || "—"}</td>
+                              <td>
+                                <StatusPill label={actMeta.label} tone={actMeta.tone} />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className={shared.mobileList}>
+                    {previewResult.samples.map((s) => {
+                      const statusMeta = getAdminProductStatusMeta(s.status);
+                      const actMeta = formatActionPill(s.highest_action);
+                      return (
+                        <article key={s.product_id} className={shared.mobileItem}>
+                          <div className={shared.mobileLine1}>
+                            <span className={shared.mobileIdentity}>{s.name}</span>
+                            <StatusPill label={actMeta.label} tone={actMeta.tone} />
+                          </div>
+                          <div className={shared.mobileLine2}>
+                            <span className={shared.mobileMetaText}>
+                              Trạng thái: {statusMeta.label} · Khớp:{" "}
+                              {(s.matched_terms ?? []).join(", ")}
+                            </span>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </div>
           )}
+        </section>
+      )}
 
-          <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-            <div className={shared.detailButtons}>
+      {canWriteKeywords && (
+        <section className={shared.panel} aria-labelledby="kw-rescan-heading">
+          <div className={shared.panelHeader}>
+            <h2 id="kw-rescan-heading" className={shared.panelTitle}>
+              Quét lại sản phẩm đang bán theo danh sách từ khoá cấm
+            </h2>
+            <span className={shared.panelMeta}>Xử lý theo lô 500 sản phẩm</span>
+          </div>
+
+          <p className={shared.pageSubtitle} style={{ marginTop: 0, marginBottom: 12 }}>
+            Quét toàn bộ sản phẩm đang hoạt động theo các quy tắc đang bật và danh mục hàng cấm. Quy
+            tắc BLOCK chuyển sản phẩm sang từ chối; quy tắc REVIEW chuyển về hàng đợi chờ duyệt.
+          </p>
+
+          <div className={shared.detailButtons}>
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 14,
+                cursor: "pointer",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={dryRun}
+                onChange={(e) => setDryRun(e.target.checked)}
+                disabled={rescanning}
+              />
+              <span>Chạy thử (chỉ thống kê, không đổi trạng thái sản phẩm)</span>
+            </label>
+
+            <Button
+              type="button"
+              variant={dryRun ? "outline" : "danger"}
+              size="sm"
+              shape="app"
+              disabled={rescanning}
+              onClick={() => void handleRescan()}
+            >
+              {rescanning
+                ? `Đang quét lô ${rescanProgress ? rescanProgress.batches + 1 : 1}...`
+                : dryRun
+                  ? "Chạy thử quét lại SP đang bán"
+                  : "Quét lại SP đang bán"}
+            </Button>
+            {rescanning && (
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 shape="app"
-                disabled={previewLoading || submitting}
-                onClick={() => void handlePreview()}
+                onClick={handleStopRescan}
               >
-                {previewLoading ? "Đang kiểm tra..." : "Xem trước ảnh hưởng"}
+                Dừng
               </Button>
-              <Button
-                type="submit"
-                variant="primary"
-                size="sm"
-                shape="app"
-                disabled={submitting || previewLoading}
-              >
-                {submitting ? "Đang lưu..." : "Lưu từ khoá cấm"}
-              </Button>
-            </div>
-          </div>
-        </form>
-
-        {previewResult && (
-          <div className={shared.detailWell} style={{ marginTop: 16 }}>
-            <div className={shared.detailHeader}>
-              <h3 className={shared.detailHeading}>
-                Kết quả xem trước: {formatInt(previewResult.affected_count)} sản phẩm bị ảnh hưởng
-              </h3>
-              <span className={shared.panelMeta}>
-                Hiển thị tối đa {formatInt(previewResult.samples?.length ?? 0)} mẫu
-              </span>
-            </div>
-            {(previewResult.samples?.length ?? 0) === 0 ? (
-              <p className={shared.detailValPlain}>
-                Không có sản phẩm đang bán hoặc chờ duyệt nào khớp với cụm từ này.
-              </p>
-            ) : (
-              <>
-                <div className={shared.tableWrap}>
-                  <table className={shared.dataTable}>
-                    <thead>
-                      <tr>
-                        <th>Sản phẩm</th>
-                        <th>Trạng thái</th>
-                        <th>Từ khớp</th>
-                        <th>Mức xử lý</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {previewResult.samples.map((s) => {
-                        const statusMeta = getAdminProductStatusMeta(s.status);
-                        const actMeta = formatActionPill(s.highest_action);
-                        return (
-                          <tr key={s.product_id}>
-                            <td>
-                              <div className={shared.cellPrimary}>{s.name}</div>
-                              <div className={shared.cellSub}>/{s.slug}</div>
-                            </td>
-                            <td>
-                              <StatusPill label={statusMeta.label} tone={statusMeta.tone} />
-                            </td>
-                            <td>{(s.matched_terms ?? []).join(", ") || "—"}</td>
-                            <td>
-                              <StatusPill label={actMeta.label} tone={actMeta.tone} />
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                <div className={shared.mobileList}>
-                  {previewResult.samples.map((s) => {
-                    const statusMeta = getAdminProductStatusMeta(s.status);
-                    const actMeta = formatActionPill(s.highest_action);
-                    return (
-                      <article key={s.product_id} className={shared.mobileItem}>
-                        <div className={shared.mobileLine1}>
-                          <span className={shared.mobileIdentity}>{s.name}</span>
-                          <StatusPill label={actMeta.label} tone={actMeta.tone} />
-                        </div>
-                        <div className={shared.mobileLine2}>
-                          <span className={shared.mobileMetaText}>
-                            Trạng thái: {statusMeta.label} · Khớp:{" "}
-                            {(s.matched_terms ?? []).join(", ")}
-                          </span>
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-              </>
             )}
           </div>
-        )}
-      </section>
 
-      <section className={shared.panel} aria-labelledby="kw-rescan-heading">
-        <div className={shared.panelHeader}>
-          <h2 id="kw-rescan-heading" className={shared.panelTitle}>
-            Quét lại sản phẩm đang bán theo danh sách từ khoá cấm
-          </h2>
-          <span className={shared.panelMeta}>Xử lý theo lô 500 sản phẩm</span>
-        </div>
-
-        <p className={shared.pageSubtitle} style={{ marginTop: 0, marginBottom: 12 }}>
-          Quét toàn bộ sản phẩm đang hoạt động theo các quy tắc đang bật và danh mục hàng cấm. Quy
-          tắc BLOCK chuyển sản phẩm sang từ chối; quy tắc REVIEW chuyển về hàng đợi chờ duyệt.
-        </p>
-
-        <div className={shared.detailButtons}>
-          <label
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 8,
-              fontSize: 14,
-              cursor: "pointer",
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={dryRun}
-              onChange={(e) => setDryRun(e.target.checked)}
-              disabled={rescanning}
-            />
-            <span>Chạy thử (chỉ thống kê, không đổi trạng thái sản phẩm)</span>
-          </label>
-
-          <Button
-            type="button"
-            variant={dryRun ? "outline" : "danger"}
-            size="sm"
-            shape="app"
-            disabled={rescanning}
-            onClick={() => void handleRescan()}
-          >
-            {rescanning
-              ? `Đang quét lô ${rescanProgress ? rescanProgress.batches + 1 : 1}...`
-              : dryRun
-                ? "Chạy thử quét lại SP đang bán"
-                : "Quét lại SP đang bán"}
-          </Button>
-          {rescanning && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              shape="app"
-              onClick={handleStopRescan}
-            >
-              Dừng
-            </Button>
+          {rescanError && (
+            <p className={shared.validationError} role="alert" style={{ marginTop: 10 }}>
+              {rescanError}
+            </p>
           )}
-        </div>
 
-        {rescanError && (
-          <p className={shared.validationError} role="alert" style={{ marginTop: 10 }}>
-            {rescanError}
-          </p>
-        )}
+          {rescanProgress && (
+            <div className={shared.detailWell} style={{ marginTop: 14 }}>
+              <div className={shared.detailGrid}>
+                <div className={shared.detailField}>
+                  <span className={shared.detailKey}>Tiến độ quét</span>
+                  <span className={shared.detailVal}>
+                    {rescanning
+                      ? `Đang quét (${formatInt(rescanProgress.batches)} lô)`
+                      : rescanStatus === "interrupted"
+                        ? `Gián đoạn ở lô ${formatInt(rescanFailedBatch ?? rescanProgress.batches + 1)}`
+                        : rescanStatus === "stopped"
+                          ? `Đã dừng sau ${formatInt(rescanProgress.batches)} lô`
+                          : `Hoàn tất (${formatInt(rescanProgress.batches)} lô)`}
+                  </span>
+                </div>
+                <div className={shared.detailField}>
+                  <span className={shared.detailKey}>Đã quét</span>
+                  <span className={`${shared.detailVal} num`}>
+                    {formatInt(rescanProgress.scannedCount)} sản phẩm
+                  </span>
+                </div>
+                <div className={shared.detailField}>
+                  <span className={shared.detailKey}>Chặn / Gắn cờ duyệt</span>
+                  <span className={`${shared.detailVal} num`}>
+                    {formatInt(rescanProgress.blockedCount)} chặn ·{" "}
+                    {formatInt(rescanProgress.flaggedCount)} gắn cờ
+                  </span>
+                </div>
+              </div>
 
-        {rescanProgress && (
-          <div className={shared.detailWell} style={{ marginTop: 14 }}>
-            <div className={shared.detailGrid}>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Tiến độ quét</span>
-                <span className={shared.detailVal}>
-                  {rescanning
-                    ? `Đang quét (${formatInt(rescanProgress.batches)} lô)`
-                    : rescanStatus === "interrupted"
-                      ? `Gián đoạn ở lô ${formatInt(rescanFailedBatch ?? rescanProgress.batches + 1)}`
-                      : rescanStatus === "stopped"
-                        ? `Đã dừng sau ${formatInt(rescanProgress.batches)} lô`
-                        : `Hoàn tất (${formatInt(rescanProgress.batches)} lô)`}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Đã quét</span>
-                <span className={`${shared.detailVal} num`}>
-                  {formatInt(rescanProgress.scannedCount)} sản phẩm
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Chặn / Gắn cờ duyệt</span>
-                <span className={`${shared.detailVal} num`}>
-                  {formatInt(rescanProgress.blockedCount)} chặn ·{" "}
-                  {formatInt(rescanProgress.flaggedCount)} gắn cờ
-                </span>
-              </div>
+              {rescanProgress.samples.length > 0 && (
+                <>
+                  <div className={shared.tableWrap}>
+                    <table className={shared.dataTable}>
+                      <thead>
+                        <tr>
+                          <th>Sản phẩm (tối đa 20 mẫu)</th>
+                          <th>Trạng thái trước khi quét</th>
+                          <th>Từ khoá khớp</th>
+                          <th>Mức xử lý</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rescanProgress.samples.map((s) => {
+                          const statusMeta = getAdminProductStatusMeta(s.status);
+                          const actMeta = formatActionPill(s.highest_action);
+                          return (
+                            <tr key={s.product_id}>
+                              <td>
+                                <div className={shared.cellPrimary}>{s.name}</div>
+                                <div className={shared.cellSub}>/{s.slug}</div>
+                              </td>
+                              <td>
+                                <StatusPill label={statusMeta.label} tone={statusMeta.tone} />
+                              </td>
+                              <td>{(s.matched_terms ?? []).join(", ") || "—"}</td>
+                              <td>
+                                <StatusPill label={actMeta.label} tone={actMeta.tone} />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className={shared.mobileList}>
+                    {rescanProgress.samples.map((s) => {
+                      const statusMeta = getAdminProductStatusMeta(s.status);
+                      const actMeta = formatActionPill(s.highest_action);
+                      return (
+                        <article key={s.product_id} className={shared.mobileItem}>
+                          <div className={shared.mobileLine1}>
+                            <span className={shared.mobileIdentity}>{s.name}</span>
+                            <StatusPill label={actMeta.label} tone={actMeta.tone} />
+                          </div>
+                          <div className={shared.mobileLine2}>
+                            <span className={shared.mobileMetaText}>
+                              Trước khi quét: {statusMeta.label} ·{" "}
+                              {(s.matched_terms ?? []).join(", ")}
+                            </span>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </div>
-
-            {rescanProgress.samples.length > 0 && (
-              <>
-                <div className={shared.tableWrap}>
-                  <table className={shared.dataTable}>
-                    <thead>
-                      <tr>
-                        <th>Sản phẩm (tối đa 20 mẫu)</th>
-                        <th>Trạng thái trước khi quét</th>
-                        <th>Từ khoá khớp</th>
-                        <th>Mức xử lý</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rescanProgress.samples.map((s) => {
-                        const statusMeta = getAdminProductStatusMeta(s.status);
-                        const actMeta = formatActionPill(s.highest_action);
-                        return (
-                          <tr key={s.product_id}>
-                            <td>
-                              <div className={shared.cellPrimary}>{s.name}</div>
-                              <div className={shared.cellSub}>/{s.slug}</div>
-                            </td>
-                            <td>
-                              <StatusPill label={statusMeta.label} tone={statusMeta.tone} />
-                            </td>
-                            <td>{(s.matched_terms ?? []).join(", ") || "—"}</td>
-                            <td>
-                              <StatusPill label={actMeta.label} tone={actMeta.tone} />
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                <div className={shared.mobileList}>
-                  {rescanProgress.samples.map((s) => {
-                    const statusMeta = getAdminProductStatusMeta(s.status);
-                    const actMeta = formatActionPill(s.highest_action);
-                    return (
-                      <article key={s.product_id} className={shared.mobileItem}>
-                        <div className={shared.mobileLine1}>
-                          <span className={shared.mobileIdentity}>{s.name}</span>
-                          <StatusPill label={actMeta.label} tone={actMeta.tone} />
-                        </div>
-                        <div className={shared.mobileLine2}>
-                          <span className={shared.mobileMetaText}>
-                            Trước khi quét: {statusMeta.label} ·{" "}
-                            {(s.matched_terms ?? []).join(", ")}
-                          </span>
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-      </section>
+          )}
+        </section>
+      )}
 
       <section className={shared.panel} aria-labelledby="kw-list-heading">
         <div className={shared.panelHeader}>
@@ -845,7 +851,7 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
                               onChange={(next) => setEditActive(next)}
                               label={`Trạng thái từ khoá ${kw.term}`}
                             />
-                          ) : (
+                          ) : canWriteKeywords ? (
                             <ToggleSwitch
                               id={`kw-active-${kw.id}`}
                               checked={kw.is_active}
@@ -854,75 +860,84 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
                               }}
                               label={`Bật hoặc tắt từ khoá ${kw.term}`}
                             />
+                          ) : (
+                            <StatusPill
+                              label={kw.is_active ? "Đang bật" : "Đã tắt"}
+                              tone={kw.is_active ? "positive" : "neutral"}
+                            />
                           )}
                         </td>
                         <td className={shared.colAction}>
-                          <div style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
-                            {isEditing ? (
-                              <>
-                                <Button
-                                  variant="primary"
-                                  size="sm"
-                                  shape="app"
-                                  disabled={isBusy}
-                                  onClick={() => void handleSaveEdit(kw.id)}
-                                >
-                                  {isBusy ? "Lưu..." : "Lưu"}
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  shape="app"
-                                  onClick={() => {
-                                    setEditingId(null);
-                                    setEditError(null);
-                                  }}
-                                >
-                                  Hủy
-                                </Button>
-                              </>
-                            ) : (
-                              <>
-                                <button
-                                  type="button"
-                                  className={shared.rowActionBtn}
-                                  disabled={isBusy}
-                                  onClick={() => startEdit(kw)}
-                                >
-                                  Sửa
-                                </button>
-                                {confirmDeleteId === kw.id ? (
-                                  <>
-                                    <Button
-                                      variant="danger"
-                                      size="sm"
-                                      shape="app"
-                                      disabled={isBusy}
-                                      onClick={() => void handleDelete(kw)}
-                                    >
-                                      Xác nhận xóa
-                                    </Button>
-                                    <button
-                                      type="button"
-                                      className={shared.rowActionBtn}
-                                      onClick={() => setConfirmDeleteId(null)}
-                                    >
-                                      Giữ lại
-                                    </button>
-                                  </>
-                                ) : (
+                          {canWriteKeywords ? (
+                            <div style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
+                              {isEditing ? (
+                                <>
+                                  <Button
+                                    variant="primary"
+                                    size="sm"
+                                    shape="app"
+                                    disabled={isBusy}
+                                    onClick={() => void handleSaveEdit(kw.id)}
+                                  >
+                                    {isBusy ? "Lưu..." : "Lưu"}
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    shape="app"
+                                    onClick={() => {
+                                      setEditingId(null);
+                                      setEditError(null);
+                                    }}
+                                  >
+                                    Hủy
+                                  </Button>
+                                </>
+                              ) : (
+                                <>
                                   <button
                                     type="button"
                                     className={shared.rowActionBtn}
                                     disabled={isBusy}
-                                    onClick={() => setConfirmDeleteId(kw.id)}
+                                    onClick={() => startEdit(kw)}
                                   >
-                                    Xóa
+                                    Sửa
                                   </button>
-                                )}
-                              </>
-                            )}
-                          </div>
+                                  {confirmDeleteId === kw.id ? (
+                                    <>
+                                      <Button
+                                        variant="danger"
+                                        size="sm"
+                                        shape="app"
+                                        disabled={isBusy}
+                                        onClick={() => void handleDelete(kw)}
+                                      >
+                                        Xác nhận xóa
+                                      </Button>
+                                      <button
+                                        type="button"
+                                        className={shared.rowActionBtn}
+                                        onClick={() => setConfirmDeleteId(null)}
+                                      >
+                                        Giữ lại
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className={shared.rowActionBtn}
+                                      disabled={isBusy}
+                                      onClick={() => setConfirmDeleteId(kw.id)}
+                                    >
+                                      Xóa
+                                    </button>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          ) : (
+                            <span className={shared.cellSub}>Chỉ xem</span>
+                          )}
                         </td>
                       </tr>
                     );
@@ -1042,58 +1057,62 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
                             {formatCategoryLabel(kw.category)} ·{" "}
                             {kw.is_active ? "Đang bật" : "Đã tắt"}
                           </span>
-                          <ToggleSwitch
-                            id={`kw-m-active-${kw.id}`}
-                            checked={kw.is_active}
-                            onChange={() => {
-                              if (!isBusy) void handleToggleActive(kw);
-                            }}
-                            label={`Bật hoặc tắt từ khoá ${kw.term}`}
-                          />
+                          {canWriteKeywords && (
+                            <ToggleSwitch
+                              id={`kw-m-active-${kw.id}`}
+                              checked={kw.is_active}
+                              onChange={() => {
+                                if (!isBusy) void handleToggleActive(kw);
+                              }}
+                              label={`Bật hoặc tắt từ khoá ${kw.term}`}
+                            />
+                          )}
                         </div>
                         <div className={shared.mobileLine2}>
                           <span className={shared.mobileMetaText}>
                             Chuẩn hóa: {kw.normalized_term}
                           </span>
-                          <div className={shared.detailButtons}>
-                            <button
-                              type="button"
-                              className={shared.rowActionBtn}
-                              disabled={isBusy}
-                              onClick={() => startEdit(kw)}
-                            >
-                              Sửa
-                            </button>
-                            {confirmDeleteId === kw.id ? (
-                              <>
-                                <Button
-                                  variant="danger"
-                                  size="sm"
-                                  shape="app"
-                                  disabled={isBusy}
-                                  onClick={() => void handleDelete(kw)}
-                                >
-                                  Xác nhận xóa
-                                </Button>
-                                <button
-                                  type="button"
-                                  className={shared.rowActionBtn}
-                                  onClick={() => setConfirmDeleteId(null)}
-                                >
-                                  Giữ lại
-                                </button>
-                              </>
-                            ) : (
+                          {canWriteKeywords && (
+                            <div className={shared.detailButtons}>
                               <button
                                 type="button"
                                 className={shared.rowActionBtn}
                                 disabled={isBusy}
-                                onClick={() => setConfirmDeleteId(kw.id)}
+                                onClick={() => startEdit(kw)}
                               >
-                                Xóa
+                                Sửa
                               </button>
-                            )}
-                          </div>
+                              {confirmDeleteId === kw.id ? (
+                                <>
+                                  <Button
+                                    variant="danger"
+                                    size="sm"
+                                    shape="app"
+                                    disabled={isBusy}
+                                    onClick={() => void handleDelete(kw)}
+                                  >
+                                    Xác nhận xóa
+                                  </Button>
+                                  <button
+                                    type="button"
+                                    className={shared.rowActionBtn}
+                                    onClick={() => setConfirmDeleteId(null)}
+                                  >
+                                    Giữ lại
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className={shared.rowActionBtn}
+                                  disabled={isBusy}
+                                  onClick={() => setConfirmDeleteId(kw.id)}
+                                >
+                                  Xóa
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </>
                     )}

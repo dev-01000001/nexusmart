@@ -259,14 +259,12 @@ function LoginPageContent() {
                     variant="ink"
                     size="sm"
                     href={
-                      user.role === "admin" || user.role === "super_admin"
+                      getDefaultPathForRole(user.role) !== "/"
                         ? getDefaultPathForRole(user.role)
-                        : user.role === "seller"
-                          ? getDefaultPathForRole(user.role)
-                          : "/tai-khoan"
+                        : "/tai-khoan"
                     }
                   >
-                    {user.role === "admin" || user.role === "super_admin"
+                    {getDefaultPathForRole(user.role) === "/admin"
                       ? "Vào Cổng Quản Trị"
                       : user.role === "seller"
                         ? "Vào Kênh Người Bán"

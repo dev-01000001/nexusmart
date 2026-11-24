@@ -8,30 +8,33 @@ import { formatInt, formatPercent, formatVnd } from "@/lib/format";
 import { formatNowHHMM } from "@/features/admin/adminMeta";
 import {
   updateAdminExtendedConfig,
-  updateAdminExtraConfig,
   updateAdminPlatformConfig,
   useAdminExtendedConfig,
-  useAdminExtraConfig,
   useAdminPlatformConfig,
 } from "@/features/admin/auditStore";
+import { AdminApprovalsPanel } from "@/features/admin/AdminApprovalsPanel";
 import { AdminCarriersPanel } from "@/features/admin/AdminCarriersPanel";
 import { AdminCategoriesPanel } from "@/features/admin/AdminCategoriesPanel";
 import { AdminFeesPanel } from "@/features/admin/AdminFeesPanel";
+import { AdminPaymentMethodsPanel } from "@/features/admin/AdminPaymentMethodsPanel";
 import { AdminUsersPanel } from "@/features/admin/AdminUsersPanel";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
+import { useAdminUser } from "@/features/admin/AdminUserContext";
+import { roleHasCapability } from "@/lib/admin-rbac";
 import { StatusPill } from "@/features/admin/StatusPill";
 import { ToggleSwitch } from "@/features/admin/ToggleSwitch";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
 
 type ConfigTab =
+  | "thanh_toan"
+  | "duyet_hai_nguoi"
   | "phi_san"
   | "danh_muc"
   | "nguoi_dung"
   | "van_chuyen"
   | "dat_hang"
   | "doi_tra"
-  | "thanh_toan"
   | "thong_bao";
 
 function renderNotificationPreview(template: string): string {
@@ -53,15 +56,54 @@ function renderNotificationPreview(template: string): string {
 
 function PlatformConfigContent() {
   const { showToast } = useMockStore();
+  const adminUser = useAdminUser();
+  const role = adminUser?.role ?? "";
+
+  const canReadPaymentMethods = roleHasCapability(role, "payment_methods.read");
+  const canReadApprovals = roleHasCapability(role, "approvals.read");
+  const canReadFees =
+    roleHasCapability(role, "fees.category.read") || roleHasCapability(role, "fees.payment.read");
+  const canReadCategories = roleHasCapability(role, "categories.read");
+  const canReadUsers = roleHasCapability(role, "users.read");
+  const canReadCarriers = roleHasCapability(role, "carriers.read");
+  const canSeeMockTabs = role === "super_admin" || role === "admin" || role === "ops";
+
+  const availableTabs = useMemo<Array<{ id: ConfigTab; label: string }>>(() => {
+    const list: Array<{ id: ConfigTab; label: string }> = [];
+    if (canReadPaymentMethods) list.push({ id: "thanh_toan", label: "Cổng thanh toán" });
+    if (canReadApprovals) list.push({ id: "duyet_hai_nguoi", label: "Chờ duyệt 2 người" });
+    if (canReadFees) list.push({ id: "phi_san", label: "Phí sàn & Thanh toán" });
+    if (canReadCategories) list.push({ id: "danh_muc", label: "Danh mục ngành hàng" });
+    if (canReadUsers) list.push({ id: "nguoi_dung", label: "Quản trị người dùng" });
+    if (canReadCarriers) list.push({ id: "van_chuyen", label: "Hãng vận chuyển" });
+    if (canSeeMockTabs) {
+      list.push({ id: "dat_hang", label: "Đặt hàng & Freeship (mẫu)" });
+      list.push({ id: "doi_tra", label: "Đổi trả & Hoa hồng (mẫu)" });
+      list.push({ id: "thong_bao", label: "Email & Zalo ZNS (mẫu)" });
+    }
+    return list;
+  }, [
+    canReadPaymentMethods,
+    canReadApprovals,
+    canReadFees,
+    canReadCategories,
+    canReadUsers,
+    canReadCarriers,
+    canSeeMockTabs,
+  ]);
+
   const platformConfig = useAdminPlatformConfig();
   const updatePlatformConfig = (next: typeof platformConfig) => {
     updateAdminPlatformConfig(next);
     showToast("Đã lưu cấu hình vận hành sàn.");
   };
-  const extraConfig = useAdminExtraConfig();
   const extendedConfig = useAdminExtendedConfig();
 
-  const [activeTab, setActiveTab] = useState<ConfigTab>("phi_san");
+  const [selectedTab, setSelectedTab] = useState<ConfigTab>(availableTabs[0]?.id ?? "nguoi_dung");
+  const activeTab: ConfigTab = availableTabs.some((t) => t.id === selectedTab)
+    ? selectedTab
+    : (availableTabs[0]?.id ?? "nguoi_dung");
+  const setActiveTab = (next: ConfigTab) => setSelectedTab(next);
   const [savedNotice, setSavedNotice] = useState<Record<string, string>>({});
 
   // Tab 1: Guest checkout, freeship, coins, shipping carriers
@@ -98,32 +140,7 @@ function PlatformConfigContent() {
     platformConfig.commissions
   );
 
-  // Tab 3: Payment gateways (COD, VietQR, NexusPay), Flash sale & alerts
-  const [codEnabled, setCodEnabled] = useState(extendedConfig.codEnabled);
-  const [vietqrEnabled, setVietqrEnabled] = useState(platformConfig.vietqrEnabled);
-  const [sandboxWalletEnabled, setSandboxWalletEnabled] = useState(
-    platformConfig.sandboxWalletEnabled
-  );
-  const [retryWindowMinutes, setRetryWindowMinutes] = useState(
-    extendedConfig.retryPaymentWindowMinutes
-  );
-  const [redisFlashLockEnabled, setRedisFlashLockEnabled] = useState(
-    platformConfig.redisFlashLockEnabled
-  );
-  const [aiSizeAssistantEnabled, setAiSizeAssistantEnabled] = useState(
-    platformConfig.aiSizeAssistantEnabled
-  );
-  const [reconAlertThresholdVnd, setReconAlertThresholdVnd] = useState(
-    extraConfig.reconAlertThresholdVnd
-  );
-  const [shopApprovalSlaHours, setShopApprovalSlaHours] = useState(
-    extraConfig.shopApprovalSlaHours
-  );
-  const [autoCheckTaxAndPhoto, setAutoCheckTaxAndPhoto] = useState(
-    extraConfig.autoCheckTaxAndPhoto
-  );
-
-  // Tab 4: Email & Zalo ZNS templates
+  // Tab 4: Email & Zalo ZNS templates (sample preview)
   const [groupParentNotif, setGroupParentNotif] = useState(
     extendedConfig.groupParentOrderNotification
   );
@@ -152,10 +169,6 @@ function PlatformConfigContent() {
   const sampleOrderVnd = 350000;
   const sampleMaxCoins = Math.round((sampleOrderVnd * maxCoinRedeemPercent) / 100);
   const sampleFreeshipEligible = sampleOrderVnd >= freeshipMinOrder;
-
-  const enabledGatewaysCount = [codEnabled, vietqrEnabled, sandboxWalletEnabled].filter(
-    Boolean
-  ).length;
 
   // --- Save handlers ---
   const handleSaveCheckoutLogistics = (e: React.FormEvent) => {
@@ -246,38 +259,6 @@ function PlatformConfigContent() {
     markSectionSaved("commissions");
   };
 
-  const handleSaveGateways = (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanRetry = Math.max(5, Math.min(120, Math.trunc(retryWindowMinutes)));
-    updatePlatformConfig({
-      ...platformConfig,
-      vietqrEnabled,
-      sandboxWalletEnabled,
-      redisFlashLockEnabled,
-      aiSizeAssistantEnabled,
-    });
-    updateAdminExtendedConfig((prev) => ({
-      ...prev,
-      codEnabled,
-      retryPaymentWindowMinutes: cleanRetry,
-    }));
-    markSectionSaved("gateways");
-  };
-
-  const handleSaveAlerts = (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanAlert = Math.max(0, Math.trunc(reconAlertThresholdVnd));
-    const cleanSla = Math.max(4, Math.min(72, Math.trunc(shopApprovalSlaHours)));
-
-    updateAdminExtraConfig({
-      reconAlertThresholdVnd: cleanAlert,
-      shopApprovalSlaHours: cleanSla,
-      autoCheckTaxAndPhoto,
-    });
-    showToast("Đã lưu quy tắc cảnh báo đối soát và thẩm định gian hàng.");
-    markSectionSaved("alerts");
-  };
-
   const handleSaveNotifications = (e: React.FormEvent) => {
     e.preventDefault();
     updateAdminExtendedConfig((prev) => ({
@@ -303,96 +284,35 @@ function PlatformConfigContent() {
 
       <div className={shared.tabsBar}>
         <div className={shared.tabList} role="tablist" aria-label="Phân nhóm cấu hình sàn">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "phi_san"}
-            className={`${shared.tabBtn} ${activeTab === "phi_san" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("phi_san")}
-          >
-            Phí sàn & Thanh toán
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "danh_muc"}
-            className={`${shared.tabBtn} ${activeTab === "danh_muc" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("danh_muc")}
-          >
-            Danh mục ngành hàng
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "nguoi_dung"}
-            className={`${shared.tabBtn} ${activeTab === "nguoi_dung" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("nguoi_dung")}
-          >
-            Quản trị người dùng
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "van_chuyen"}
-            className={`${shared.tabBtn} ${activeTab === "van_chuyen" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("van_chuyen")}
-          >
-            Hãng vận chuyển
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "dat_hang"}
-            className={`${shared.tabBtn} ${activeTab === "dat_hang" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("dat_hang")}
-          >
-            Đặt hàng & Freeship (mẫu)
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "doi_tra"}
-            className={`${shared.tabBtn} ${activeTab === "doi_tra" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("doi_tra")}
-          >
-            Đổi trả & Hoa hồng (mẫu)
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "thanh_toan"}
-            className={`${shared.tabBtn} ${activeTab === "thanh_toan" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("thanh_toan")}
-          >
-            Cổng thanh toán (mẫu)
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "thong_bao"}
-            className={`${shared.tabBtn} ${activeTab === "thong_bao" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("thong_bao")}
-          >
-            Email & Zalo ZNS (mẫu)
-          </button>
+          {availableTabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              className={`${shared.tabBtn} ${activeTab === tab.id ? shared.tabBtnActive : ""}`}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
       </div>
 
-      {activeTab === "phi_san" && <AdminFeesPanel />}
-      {activeTab === "danh_muc" && <AdminCategoriesPanel />}
-      {activeTab === "nguoi_dung" && <AdminUsersPanel />}
-      {activeTab === "van_chuyen" && <AdminCarriersPanel />}
+      {activeTab === "thanh_toan" && canReadPaymentMethods && <AdminPaymentMethodsPanel />}
+      {activeTab === "duyet_hai_nguoi" && canReadApprovals && <AdminApprovalsPanel />}
+      {activeTab === "phi_san" && canReadFees && <AdminFeesPanel />}
+      {activeTab === "danh_muc" && canReadCategories && <AdminCategoriesPanel />}
+      {activeTab === "nguoi_dung" && canReadUsers && <AdminUsersPanel />}
+      {activeTab === "van_chuyen" && canReadCarriers && <AdminCarriersPanel />}
 
-      {(activeTab === "dat_hang" ||
-        activeTab === "doi_tra" ||
-        activeTab === "thanh_toan" ||
-        activeTab === "thong_bao") && (
+      {(activeTab === "dat_hang" || activeTab === "doi_tra" || activeTab === "thong_bao") && (
         <section className={shared.panel} role="note" style={{ marginTop: 16 }}>
           <StatusPill label="Bản xem trước, dữ liệu mẫu" tone="warning" />
           <p className={shared.pageSubtitle} style={{ marginTop: 8 }}>
             Mục cấu hình này hiện chỉ lưu tạm trên phiên trình duyệt. Các cấu hình đang đồng bộ máy
-            chủ thật nằm tại 4 tab đầu: Phí sàn &amp; Thanh toán, Danh mục ngành hàng, Quản trị
-            người dùng và Hãng vận chuyển.
+            chủ thật nằm tại các tab: Cổng thanh toán, Chờ duyệt 2 người, Phí sàn &amp; Thanh toán,
+            Danh mục ngành hàng, Quản trị người dùng và Hãng vận chuyển.
           </p>
         </section>
       )}
@@ -710,7 +630,7 @@ function PlatformConfigContent() {
                       />
                     </div>
                     <p className={styles.switchDesc}>
-                      Hoàn tiền tức thời về Ví NexusPay cho đơn dưới{" "}
+                      Hoàn tiền tức thời qua kênh thanh toán gốc cho đơn dưới{" "}
                       {formatVnd(autoApproveThresholdVnd)}.
                     </p>
                   </div>
@@ -947,287 +867,6 @@ function PlatformConfigContent() {
                 </span>
                 <Button type="submit" variant="ink" size="sm" shape="app">
                   Lưu biểu phí ngành hàng
-                </Button>
-              </div>
-            </form>
-          </section>
-        </div>
-      )}
-
-      {/* TAB 3: CỔNG THANH TOÁN (COD/VIETQR/VÍ), FLASH SALE & CẢNH BÁO ĐỐI SOÁT */}
-      {activeTab === "thanh_toan" && (
-        <div className={styles.sectionList}>
-          <section className={styles.sectionRow} aria-labelledby="cfg-features-heading">
-            <div className={styles.labelCol}>
-              <h2 id="cfg-features-heading" className={styles.sectionTitle}>
-                Cổng thanh toán (COD / VietQR / Ví) & quy tắc Flash sale
-              </h2>
-              <p className={styles.sectionDesc}>
-                Quản trị 3 phương thức thanh toán được phép trên sàn (không lưu thẻ ngân hàng), giữ
-                đơn thanh toán lại khi gián đoạn, khóa suất Flash sale và trợ lý AI.
-              </p>
-
-              <dl className={styles.summaryList}>
-                <div className={styles.summaryPair}>
-                  <dt className={styles.summaryKey}>Cổng thanh toán đang bật</dt>
-                  <dd className={styles.summaryVal}>{enabledGatewaysCount} / 3 cổng</dd>
-                </div>
-                <div className={styles.summaryPair}>
-                  <dt className={styles.summaryKey}>Giữ đơn thanh toán lại</dt>
-                  <dd className={styles.summaryVal}>{retryWindowMinutes} phút</dd>
-                </div>
-                <div className={styles.summaryPair}>
-                  <dt className={styles.summaryKey}>Chống trùng giao dịch</dt>
-                  <dd className={styles.summaryVal}>Ký xác thực & chống lặp mã</dd>
-                </div>
-              </dl>
-            </div>
-
-            <form className={styles.settingsPanel} onSubmit={handleSaveGateways}>
-              <div className={styles.switchList}>
-                <div className={styles.switchRow}>
-                  <div className={styles.switchCopy}>
-                    <div className={styles.switchTitleLine}>
-                      <label htmlFor="sw-cod" className={styles.switchTitle}>
-                        Thanh toán khi nhận hàng (COD thu hộ)
-                      </label>
-                      <StatusPill
-                        label={codEnabled ? "Đang bật" : "Đang tắt"}
-                        tone={codEnabled ? "positive" : "neutral"}
-                      />
-                    </div>
-                    <p className={styles.switchDesc}>
-                      Hỗ trợ đồng kiểm với SPX và GHN; đối soát bảng kê thu hộ cuối ngày.
-                    </p>
-                  </div>
-                  <ToggleSwitch
-                    id="sw-cod"
-                    checked={codEnabled}
-                    label="Bật hoặc tắt thanh toán COD thu hộ"
-                    onChange={setCodEnabled}
-                  />
-                </div>
-
-                <div className={styles.switchRow}>
-                  <div className={styles.switchCopy}>
-                    <div className={styles.switchTitleLine}>
-                      <label htmlFor="sw-vietqr" className={styles.switchTitle}>
-                        Cổng chuyển khoản VietQR
-                      </label>
-                      <StatusPill
-                        label={vietqrEnabled ? "Đang bật" : "Đang tắt"}
-                        tone={vietqrEnabled ? "positive" : "neutral"}
-                      />
-                    </div>
-                    <p className={styles.switchDesc}>
-                      Xác nhận thanh toán tự động có ký xác thực và chống ghi nhận trùng theo mã
-                      giao dịch.
-                    </p>
-                  </div>
-                  <ToggleSwitch
-                    id="sw-vietqr"
-                    checked={vietqrEnabled}
-                    label="Bật hoặc tắt cổng chuyển khoản VietQR"
-                    onChange={setVietqrEnabled}
-                  />
-                </div>
-
-                <div className={styles.switchRow}>
-                  <div className={styles.switchCopy}>
-                    <div className={styles.switchTitleLine}>
-                      <label htmlFor="sw-wallet" className={styles.switchTitle}>
-                        Ví thanh toán nội bộ NexusPay
-                      </label>
-                      <StatusPill
-                        label={sandboxWalletEnabled ? "Đang bật" : "Đang tắt"}
-                        tone={sandboxWalletEnabled ? "positive" : "neutral"}
-                      />
-                    </div>
-                    <p className={styles.switchDesc}>
-                      Ghi nhận tức thời trên sổ cái ghi kép và dùng làm kênh hoàn tiền khiếu nại.
-                    </p>
-                  </div>
-                  <ToggleSwitch
-                    id="sw-wallet"
-                    checked={sandboxWalletEnabled}
-                    label="Bật hoặc tắt ví thanh toán nội bộ NexusPay"
-                    onChange={setSandboxWalletEnabled}
-                  />
-                </div>
-
-                <div className={styles.switchRow}>
-                  <div className={styles.switchCopy}>
-                    <div className={styles.switchTitleLine}>
-                      <label htmlFor="sw-redis" className={styles.switchTitle}>
-                        Khóa suất Flash sale theo thời gian thực
-                      </label>
-                      <StatusPill
-                        label={redisFlashLockEnabled ? "Đang bật" : "Đang tắt"}
-                        tone={redisFlashLockEnabled ? "positive" : "neutral"}
-                      />
-                    </div>
-                    <p className={styles.switchDesc}>
-                      Trừ suất tồn kho chính xác theo khung giờ, ngăn vượt suất khi lưu lượng cao.
-                    </p>
-                  </div>
-                  <ToggleSwitch
-                    id="sw-redis"
-                    checked={redisFlashLockEnabled}
-                    label="Bật hoặc tắt khóa suất Flash sale theo thời gian thực"
-                    onChange={setRedisFlashLockEnabled}
-                  />
-                </div>
-
-                <div className={styles.switchRow}>
-                  <div className={styles.switchCopy}>
-                    <div className={styles.switchTitleLine}>
-                      <label htmlFor="sw-ai" className={styles.switchTitle}>
-                        Trợ lý AI gợi ý chọn size (theo quyền phiên người dùng)
-                      </label>
-                      <StatusPill
-                        label={aiSizeAssistantEnabled ? "Đang bật" : "Đang tắt"}
-                        tone={aiSizeAssistantEnabled ? "positive" : "neutral"}
-                      />
-                    </div>
-                    <p className={styles.switchDesc}>
-                      Tra đơn và đối chiếu bảng size theo từng xưởng, không có quyền truy cập riêng.
-                    </p>
-                  </div>
-                  <ToggleSwitch
-                    id="sw-ai"
-                    checked={aiSizeAssistantEnabled}
-                    label="Bật hoặc tắt trợ lý AI chọn size"
-                    onChange={setAiSizeAssistantEnabled}
-                  />
-                </div>
-              </div>
-
-              <div className={styles.fieldGrid}>
-                <div className={styles.fieldGroup}>
-                  <label htmlFor="cfg-retry-min" className={styles.fieldLabel}>
-                    Thời gian giữ đơn Thanh toán lại (phút)
-                  </label>
-                  <input
-                    id="cfg-retry-min"
-                    type="number"
-                    min={5}
-                    max={120}
-                    className={`${styles.settingInput} ${styles.settingInputNum}`}
-                    value={retryWindowMinutes}
-                    onChange={(e) => setRetryWindowMinutes(Number(e.target.value) || 30)}
-                  />
-                  <span className={styles.fieldHint}>
-                    Giữ nguyên tồn kho SKU khi giao dịch QR/Ví gặp lỗi tạm thời.
-                  </span>
-                </div>
-              </div>
-
-              <div className={styles.panelFooter}>
-                <span className={styles.savedStamp}>
-                  {savedNotice.gateways ?? "Mọi thay đổi được ghi nhận đầy đủ trong Nhật ký."}
-                </span>
-                <Button type="submit" variant="primary" size="sm" shape="app">
-                  Lưu cấu hình thanh toán
-                </Button>
-              </div>
-            </form>
-          </section>
-
-          <section className={styles.sectionRow} aria-labelledby="cfg-alerts-heading">
-            <div className={styles.labelCol}>
-              <h2 id="cfg-alerts-heading" className={styles.sectionTitle}>
-                Cảnh báo lệch đối soát & SLA thẩm định gian hàng
-              </h2>
-              <p className={styles.sectionDesc}>
-                Đặt ngưỡng phát cảnh báo sai lệch VND giữa sao kê cổng thanh toán với sổ cái nội bộ
-                và cam kết SLA duyệt hồ sơ gian hàng.
-              </p>
-
-              <dl className={styles.summaryList}>
-                <div className={styles.summaryPair}>
-                  <dt className={styles.summaryKey}>Ngưỡng cảnh báo sai lệch</dt>
-                  <dd className={styles.summaryVal}>
-                    Từ {formatVnd(extraConfig.reconAlertThresholdVnd)}
-                  </dd>
-                </div>
-                <div className={styles.summaryPair}>
-                  <dt className={styles.summaryKey}>Hạn SLA duyệt gian hàng</dt>
-                  <dd className={styles.summaryVal}>{extraConfig.shopApprovalSlaHours} giờ</dd>
-                </div>
-                <div className={styles.summaryPair}>
-                  <dt className={styles.summaryKey}>Tiền kiểm GPKD & ảnh phẳng</dt>
-                  <dd className={styles.summaryVal}>
-                    {extraConfig.autoCheckTaxAndPhoto ? "Đang bật" : "Đang tắt"}
-                  </dd>
-                </div>
-              </dl>
-            </div>
-
-            <form className={styles.settingsPanel} onSubmit={handleSaveAlerts}>
-              <div className={styles.fieldGrid}>
-                <div className={styles.fieldGroup}>
-                  <label htmlFor="cfg-recon-alert" className={styles.fieldLabel}>
-                    Ngưỡng cảnh báo lệch đối soát (VND)
-                  </label>
-                  <input
-                    id="cfg-recon-alert"
-                    type="number"
-                    min={0}
-                    step={10000}
-                    className={`${styles.settingInput} ${styles.settingInputNum}`}
-                    value={reconAlertThresholdVnd}
-                    onChange={(e) => setReconAlertThresholdVnd(Number(e.target.value) || 0)}
-                  />
-                </div>
-
-                <div className={styles.fieldGroup}>
-                  <label htmlFor="cfg-shop-sla" className={styles.fieldLabel}>
-                    Hạn SLA thẩm định gian hàng (giờ)
-                  </label>
-                  <input
-                    id="cfg-shop-sla"
-                    type="number"
-                    min={4}
-                    max={72}
-                    step={2}
-                    className={`${styles.settingInput} ${styles.settingInputNum}`}
-                    value={shopApprovalSlaHours}
-                    onChange={(e) => setShopApprovalSlaHours(Number(e.target.value) || 24)}
-                  />
-                </div>
-              </div>
-
-              <div className={styles.switchList}>
-                <div className={styles.switchRow}>
-                  <div className={styles.switchCopy}>
-                    <div className={styles.switchTitleLine}>
-                      <label htmlFor="sw-auto-check" className={styles.switchTitle}>
-                        Kiểm duyệt sơ bộ mã số thuế và ảnh nền phẳng
-                      </label>
-                      <StatusPill
-                        label={autoCheckTaxAndPhoto ? "Đang bật" : "Đang tắt"}
-                        tone={autoCheckTaxAndPhoto ? "positive" : "neutral"}
-                      />
-                    </div>
-                    <p className={styles.switchDesc}>
-                      Tự động gắn cờ hồ sơ có ảnh GPKD mờ hoặc ảnh sản phẩm dính chữ, logo ngoài.
-                    </p>
-                  </div>
-                  <ToggleSwitch
-                    id="sw-auto-check"
-                    checked={autoCheckTaxAndPhoto}
-                    label="Bật hoặc tắt kiểm duyệt sơ bộ GPKD và ảnh phẳng"
-                    onChange={setAutoCheckTaxAndPhoto}
-                  />
-                </div>
-              </div>
-
-              <div className={styles.panelFooter}>
-                <span className={styles.savedStamp}>
-                  {savedNotice.alerts ?? "Đang giám sát đối soát theo chu kỳ cuối ngày."}
-                </span>
-                <Button type="submit" variant="ink" size="sm" shape="app">
-                  Lưu quy tắc cảnh báo
                 </Button>
               </div>
             </form>

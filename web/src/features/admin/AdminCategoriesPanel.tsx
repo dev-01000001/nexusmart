@@ -8,6 +8,7 @@ import { Button, StateView } from "@/components";
 import { formatInt } from "@/lib/format";
 import { formatCommissionBps } from "./types";
 import { StatusPill } from "./StatusPill";
+import { useAdminCapability } from "./AdminUserContext";
 import shared from "./adminShared.module.css";
 
 function slugify(raw: string): string {
@@ -22,6 +23,7 @@ function slugify(raw: string): string {
 
 export function AdminCategoriesPanel() {
   const { showToast } = useMockStore();
+  const canWriteCategories = useAdminCapability("categories.write");
   const [categories, setCategories] = useState<GatewayCategory[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -190,123 +192,125 @@ export function AdminCategoriesPanel() {
 
   return (
     <div className={shared.sectionStack}>
-      <section className={shared.panel} aria-labelledby="cat-create-heading">
-        <div className={shared.panelHeader}>
-          <h2 id="cat-create-heading" className={shared.panelTitle}>
-            Tạo danh mục & tỷ lệ hoa hồng mới
-          </h2>
-          <span className={shared.panelMeta}>100 bps = 1,0% hoa hồng sàn</span>
-        </div>
+      {canWriteCategories && (
+        <section className={shared.panel} aria-labelledby="cat-create-heading">
+          <div className={shared.panelHeader}>
+            <h2 id="cat-create-heading" className={shared.panelTitle}>
+              Tạo danh mục & tỷ lệ hoa hồng mới
+            </h2>
+            <span className={shared.panelMeta}>100 bps = 1,0% hoa hồng sàn</span>
+          </div>
 
-        <form onSubmit={(e) => void handleCreate(e)} noValidate className={shared.detailGrid}>
-          <div className={shared.detailField}>
-            <label htmlFor="cat-new-name" className={shared.fieldLabel}>
-              Tên danh mục
-            </label>
-            <input
-              id="cat-new-name"
-              type="text"
-              className={shared.textInput}
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder="Ví dụ: Áo khoác thể thao"
-              required
-            />
-          </div>
-          <div className={shared.detailField}>
-            <label htmlFor="cat-new-slug" className={shared.fieldLabel}>
-              Đường dẫn (slug)
-            </label>
-            <input
-              id="cat-new-slug"
-              type="text"
-              className={shared.textInput}
-              value={newSlug}
-              onChange={(e) => setNewSlug(e.target.value)}
-              placeholder={newName ? slugify(newName) : "ao-khoac-the-thao"}
-            />
-          </div>
-          <div className={shared.detailField}>
-            <label htmlFor="cat-new-parent" className={shared.fieldLabel}>
-              Danh mục cha (tùy chọn)
-            </label>
-            <select
-              id="cat-new-parent"
-              className={shared.toolbarSelect}
-              style={{ height: 38 }}
-              value={newParentId}
-              onChange={(e) => setNewParentId(e.target.value)}
-            >
-              <option value="">Danh mục gốc</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className={shared.detailField}>
-            <label htmlFor="cat-new-bps" className={shared.fieldLabel}>
-              Hoa hồng (bps, VD: 500 = 5%)
-            </label>
-            <input
-              id="cat-new-bps"
-              type="number"
-              min={0}
-              max={5000}
-              step={1}
-              className={shared.textInput}
-              value={newBps}
-              onChange={(e) => setNewBps(e.target.value)}
-            />
-          </div>
-          <div className={shared.detailField}>
-            <label htmlFor="cat-new-sort" className={shared.fieldLabel}>
-              Thứ tự hiển thị
-            </label>
-            <input
-              id="cat-new-sort"
-              type="number"
-              className={shared.textInput}
-              value={newSortOrder}
-              onChange={(e) => setNewSortOrder(e.target.value)}
-            />
-          </div>
-          <div className={shared.detailField}>
-            <span className={shared.fieldLabel}>Chính sách kinh doanh</span>
-            <label
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                minHeight: 38,
-                fontSize: 14,
-                cursor: "pointer",
-              }}
-            >
+          <form onSubmit={(e) => void handleCreate(e)} noValidate className={shared.detailGrid}>
+            <div className={shared.detailField}>
+              <label htmlFor="cat-new-name" className={shared.fieldLabel}>
+                Tên danh mục
+              </label>
               <input
-                id="cat-new-prohibited"
-                type="checkbox"
-                checked={newIsProhibited}
-                onChange={(e) => setNewIsProhibited(e.target.checked)}
+                id="cat-new-name"
+                type="text"
+                className={shared.textInput}
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Ví dụ: Áo khoác thể thao"
+                required
               />
-              <span>Danh mục hàng cấm</span>
-            </label>
-          </div>
-          {createError && (
-            <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-              <p className={shared.validationError} role="alert">
-                {createError}
-              </p>
             </div>
-          )}
-          <div className={shared.detailField} style={{ justifyContent: "flex-end" }}>
-            <Button type="submit" variant="primary" size="sm" shape="app" disabled={creating}>
-              {creating ? "Đang tạo..." : "Thêm danh mục"}
-            </Button>
-          </div>
-        </form>
-      </section>
+            <div className={shared.detailField}>
+              <label htmlFor="cat-new-slug" className={shared.fieldLabel}>
+                Đường dẫn (slug)
+              </label>
+              <input
+                id="cat-new-slug"
+                type="text"
+                className={shared.textInput}
+                value={newSlug}
+                onChange={(e) => setNewSlug(e.target.value)}
+                placeholder={newName ? slugify(newName) : "ao-khoac-the-thao"}
+              />
+            </div>
+            <div className={shared.detailField}>
+              <label htmlFor="cat-new-parent" className={shared.fieldLabel}>
+                Danh mục cha (tùy chọn)
+              </label>
+              <select
+                id="cat-new-parent"
+                className={shared.toolbarSelect}
+                style={{ height: 38 }}
+                value={newParentId}
+                onChange={(e) => setNewParentId(e.target.value)}
+              >
+                <option value="">Danh mục gốc</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className={shared.detailField}>
+              <label htmlFor="cat-new-bps" className={shared.fieldLabel}>
+                Hoa hồng (bps, VD: 500 = 5%)
+              </label>
+              <input
+                id="cat-new-bps"
+                type="number"
+                min={0}
+                max={5000}
+                step={1}
+                className={shared.textInput}
+                value={newBps}
+                onChange={(e) => setNewBps(e.target.value)}
+              />
+            </div>
+            <div className={shared.detailField}>
+              <label htmlFor="cat-new-sort" className={shared.fieldLabel}>
+                Thứ tự hiển thị
+              </label>
+              <input
+                id="cat-new-sort"
+                type="number"
+                className={shared.textInput}
+                value={newSortOrder}
+                onChange={(e) => setNewSortOrder(e.target.value)}
+              />
+            </div>
+            <div className={shared.detailField}>
+              <span className={shared.fieldLabel}>Chính sách kinh doanh</span>
+              <label
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  minHeight: 38,
+                  fontSize: 14,
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  id="cat-new-prohibited"
+                  type="checkbox"
+                  checked={newIsProhibited}
+                  onChange={(e) => setNewIsProhibited(e.target.checked)}
+                />
+                <span>Danh mục hàng cấm</span>
+              </label>
+            </div>
+            {createError && (
+              <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+                <p className={shared.validationError} role="alert">
+                  {createError}
+                </p>
+              </div>
+            )}
+            <div className={shared.detailField} style={{ justifyContent: "flex-end" }}>
+              <Button type="submit" variant="primary" size="sm" shape="app" disabled={creating}>
+                {creating ? "Đang tạo..." : "Thêm danh mục"}
+              </Button>
+            </div>
+          </form>
+        </section>
+      )}
 
       <section className={shared.panel} aria-labelledby="cat-list-heading">
         <div className={shared.panelHeader}>
@@ -427,67 +431,71 @@ export function AdminCategoriesPanel() {
                       )}
                     </td>
                     <td className={shared.colAction}>
-                      <div style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
-                        {isEditing ? (
-                          <>
-                            <Button
-                              variant="primary"
-                              size="sm"
-                              shape="app"
-                              disabled={isBusy}
-                              onClick={() => void handleSaveEdit(cat.id)}
-                            >
-                              {isBusy ? "Lưu..." : "Lưu"}
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              shape="app"
-                              onClick={() => setEditingId(null)}
-                            >
-                              Hủy
-                            </Button>
-                          </>
-                        ) : (
-                          <>
-                            <button
-                              type="button"
-                              className={shared.rowActionBtn}
-                              onClick={() => startEdit(cat)}
-                            >
-                              Sửa
-                            </button>
-                            {confirmDeleteId === cat.id ? (
-                              <>
-                                <Button
-                                  variant="danger"
-                                  size="sm"
-                                  shape="app"
-                                  disabled={isBusy}
-                                  onClick={() => void handleDelete(cat)}
-                                >
-                                  Xác nhận xóa
-                                </Button>
-                                <button
-                                  type="button"
-                                  className={shared.rowActionBtn}
-                                  onClick={() => setConfirmDeleteId(null)}
-                                >
-                                  Giữ lại
-                                </button>
-                              </>
-                            ) : (
+                      {canWriteCategories ? (
+                        <div style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
+                          {isEditing ? (
+                            <>
+                              <Button
+                                variant="primary"
+                                size="sm"
+                                shape="app"
+                                disabled={isBusy}
+                                onClick={() => void handleSaveEdit(cat.id)}
+                              >
+                                {isBusy ? "Lưu..." : "Lưu"}
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                shape="app"
+                                onClick={() => setEditingId(null)}
+                              >
+                                Hủy
+                              </Button>
+                            </>
+                          ) : (
+                            <>
                               <button
                                 type="button"
                                 className={shared.rowActionBtn}
-                                onClick={() => setConfirmDeleteId(cat.id)}
+                                onClick={() => startEdit(cat)}
                               >
-                                Xóa
+                                Sửa
                               </button>
-                            )}
-                          </>
-                        )}
-                      </div>
+                              {confirmDeleteId === cat.id ? (
+                                <>
+                                  <Button
+                                    variant="danger"
+                                    size="sm"
+                                    shape="app"
+                                    disabled={isBusy}
+                                    onClick={() => void handleDelete(cat)}
+                                  >
+                                    Xác nhận xóa
+                                  </Button>
+                                  <button
+                                    type="button"
+                                    className={shared.rowActionBtn}
+                                    onClick={() => setConfirmDeleteId(null)}
+                                  >
+                                    Giữ lại
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className={shared.rowActionBtn}
+                                  onClick={() => setConfirmDeleteId(cat.id)}
+                                >
+                                  Xóa
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      ) : (
+                        <span className={shared.cellSub}>Chỉ xem</span>
+                      )}
                     </td>
                   </tr>
                 );
@@ -622,46 +630,48 @@ export function AdminCategoriesPanel() {
                         <StatusPill label="Danh mục hàng cấm" tone="negative" />
                       )}
                     </div>
-                    <div className={shared.mobileLine2}>
-                      <span className={shared.mobileMetaText} />
-                      <div className={shared.detailButtons}>
-                        <button
-                          type="button"
-                          className={shared.rowActionBtn}
-                          onClick={() => startEdit(cat)}
-                        >
-                          Sửa
-                        </button>
-                        {confirmDeleteId === cat.id ? (
-                          <>
-                            <Button
-                              variant="danger"
-                              size="sm"
-                              shape="app"
-                              disabled={isBusy}
-                              onClick={() => void handleDelete(cat)}
-                            >
-                              Xác nhận xóa
-                            </Button>
-                            <button
-                              type="button"
-                              className={shared.rowActionBtn}
-                              onClick={() => setConfirmDeleteId(null)}
-                            >
-                              Giữ lại
-                            </button>
-                          </>
-                        ) : (
+                    {canWriteCategories && (
+                      <div className={shared.mobileLine2}>
+                        <span className={shared.mobileMetaText} />
+                        <div className={shared.detailButtons}>
                           <button
                             type="button"
                             className={shared.rowActionBtn}
-                            onClick={() => setConfirmDeleteId(cat.id)}
+                            onClick={() => startEdit(cat)}
                           >
-                            Xóa
+                            Sửa
                           </button>
-                        )}
+                          {confirmDeleteId === cat.id ? (
+                            <>
+                              <Button
+                                variant="danger"
+                                size="sm"
+                                shape="app"
+                                disabled={isBusy}
+                                onClick={() => void handleDelete(cat)}
+                              >
+                                Xác nhận xóa
+                              </Button>
+                              <button
+                                type="button"
+                                className={shared.rowActionBtn}
+                                onClick={() => setConfirmDeleteId(null)}
+                              >
+                                Giữ lại
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              className={shared.rowActionBtn}
+                              onClick={() => setConfirmDeleteId(cat.id)}
+                            >
+                              Xóa
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </>
                 )}
               </article>

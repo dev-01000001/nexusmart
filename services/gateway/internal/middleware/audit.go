@@ -30,7 +30,11 @@ const (
 var userSelfAuditedRoutes = map[string]struct{}{
 	"PATCH /api/v1/admin/users/{id}/status":             {},
 	"PATCH /api/v1/admin/users/{id}/role":               {},
+	"POST /api/v1/admin/staff":                          {},
 	"POST /api/v1/admin/shops/{id}/review":              {},
+	"POST /api/v1/admin/shops/{id}/suspend":             {},
+	"POST /api/v1/admin/shops/{id}/unsuspend":           {},
+	"POST /api/v1/admin/approvals/shop/{id}/decide":     {},
 	"POST /api/v1/admin/shops/{id}/bank-account/review": {},
 }
 
@@ -48,10 +52,25 @@ type AdminAuditConfig struct {
 
 type auditSummaryHolder struct {
 	targetID string
+	before   map[string]any
 	summary  map[string]any
 }
 
 type auditSummaryContextKey struct{}
+
+// SetAuditBefore attaches a structured before-state snapshot to the current request context
+// for AdminAudit so mutations that read previous state (e.g. payment method config per F7)
+// record both before_json and after_json safely sanitized.
+func SetAuditBefore(ctx context.Context, before map[string]any) {
+	if ctx == nil || len(before) == 0 {
+		return
+	}
+	holder, ok := ctx.Value(auditSummaryContextKey{}).(*auditSummaryHolder)
+	if !ok || holder == nil {
+		return
+	}
+	holder.before = before
+}
 
 // SetAuditSummary attaches a compact handler-provided target ID and structured summary
 // to the current request context for AdminAudit. AdminAudit prioritizes this summary over
@@ -225,13 +244,20 @@ func AdminAudit(cfg AdminAuditConfig) func(http.Handler) http.Handler {
 				targetID = auditTargetID(r, aw.capture.Bytes(), routePattern)
 			}
 
+			beforeJSON := "{}"
+			if len(holder.before) > 0 {
+				if encoded, encErr := json.Marshal(sanitizeAuditValue(holder.before)); encErr == nil {
+					beforeJSON = string(encoded)
+				}
+			}
+
 			auditReq := &userv1.WriteAuditLogRequest{
 				ActorId:    claims.UserID(),
 				ActorRole:  claims.Role,
 				Action:     action,
 				TargetType: auditTargetType(routePattern),
 				TargetId:   targetID,
-				BeforeJson: "{}",
+				BeforeJson: beforeJSON,
 				AfterJson:  buildAuditAfterJSON(reqBytes, reqTrunc, aw.capture.Bytes(), aw.truncated, holder.summary),
 				IpAddress:  cfg.TrustedProxies.ClientIP(r),
 			}
@@ -326,6 +352,12 @@ func auditTargetType(routePattern string) string {
 		return "payment_fee_config"
 	case strings.HasPrefix(trimmed, "reconciliation/cod"):
 		return "reconciliation_run"
+	case strings.HasPrefix(trimmed, "approvals/refund"):
+		return "refund"
+	case strings.HasPrefix(trimmed, "approvals/shop"):
+		return "shop_suspension_approval"
+	case strings.HasPrefix(trimmed, "payment-methods"):
+		return "payment_method_config"
 	}
 	seg, _, _ := strings.Cut(trimmed, "/")
 	switch seg {
@@ -369,7 +401,7 @@ func auditTargetType(routePattern string) string {
 
 func auditTargetID(r *http.Request, respBody []byte, routePattern string) string {
 	if rctx := chi.RouteContext(r.Context()); rctx != nil {
-		for _, key := range []string{"id", "item_id", "code"} {
+		for _, key := range []string{"id", "item_id", "code", "method"} {
 			if val := strings.TrimSpace(rctx.URLParam(key)); val != "" {
 				return val
 			}
@@ -445,7 +477,7 @@ var auditSensitiveSubstrings = []string{
 func isSensitiveAuditKey(key string) bool {
 	lower := strings.ToLower(strings.TrimSpace(key))
 	switch lower {
-	case "token_configured", "bank_account_masked", "account_number_masked", "bank_account_id", "bank_account_name", "otp_sent":
+	case "token_configured", "credentials_configured", "credential_preview", "bank_account_masked", "account_number_masked", "bank_account_id", "bank_account_name", "otp_sent":
 		return false
 	}
 	for _, sub := range auditSensitiveSubstrings {

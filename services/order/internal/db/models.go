@@ -29,6 +29,7 @@ type CheckoutGroup struct {
 	PendingStockConfirm  bool       `json:"pending_stock_confirm"`
 	NeedsCleanup         bool       `json:"needs_cleanup"`
 	WarningsJSON         []byte     `json:"warnings_json"`
+	PayURL               string     `json:"pay_url"`
 }
 
 type DeadLetterEvent struct {
@@ -179,4 +180,9 @@ type ReturnRequest struct {
 	DeadlineExtensionCount      int32      `json:"deadline_extension_count"`
 	EscalatedFromTransitTimeout bool       `json:"escalated_from_transit_timeout"`
 	EscalatedFromCancelFailure  bool       `json:"escalated_from_cancel_failure"`
+	RequireApprovalIfLarge      bool       `json:"require_approval_if_large"`
+	RefundRequestedBy           string     `json:"refund_requested_by"`
+	RefundID                    string     `json:"refund_id"`
+	RefundApprovalStatus        string     `json:"refund_approval_status"`
+	RefundAttempt               int32      `json:"refund_attempt"`
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -119,6 +120,7 @@ func run() error {
 	}
 
 	store := db.NewSQLStore(pool)
+	store.SetLogger(log)
 	secStore := security.NewRedisStore(rdb)
 	hasher := password.NewDefaultHasher()
 
@@ -151,6 +153,7 @@ func run() error {
 			auth.GRPCUnaryServerInterceptor(authMgr, svcMgr),
 		),
 	)
+	outboxTrigger := make(chan struct{}, 1)
 	userSrv := service.NewServer(store, secStore, hasher, authMgr, pub, log, service.Options{
 		AccessTTL:              cfg.JWTAccessTTL,
 		RefreshTTL:             cfg.RefreshTokenTTL,
@@ -164,6 +167,7 @@ func run() error {
 		PhoneOTPCooldown:       cfg.PhoneOTPCooldown,
 		PhoneOTPMaxPerHour:     cfg.PhoneOTPMaxPerHour,
 		AddressCatalog:         addrCatalog,
+		OutboxTrigger:          outboxTrigger,
 	})
 	userv1.RegisterUserServiceServer(grpcSrv, userSrv)
 	reflection.Register(grpcSrv)
@@ -172,6 +176,20 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("listen grpc :%s: %w", cfg.GRPCPort, err)
 	}
+
+	outboxRelay := events.NewOutboxRelay(store, pub.JetStream(), log, 0, outboxTrigger)
+	bgCtx, bgCancel := context.WithCancel(ctx)
+	defer bgCancel()
+	var bgWG sync.WaitGroup
+	bgWG.Add(2)
+	go func() {
+		defer bgWG.Done()
+		outboxRelay.Run(bgCtx)
+	}()
+	go func() {
+		defer bgWG.Done()
+		userSrv.RunActivityRetentionLoop(bgCtx, 24*time.Hour, 500)
+	}()
 
 	readyFn := func(rctx context.Context) error {
 		checkCtx, cancel := context.WithTimeout(rctx, 2*time.Second)
@@ -215,6 +233,8 @@ func run() error {
 	case <-ctx.Done():
 		log.Info("shutting down user service")
 	case err := <-errCh:
+		bgCancel()
+		bgWG.Wait()
 		return err
 	}
 
@@ -222,6 +242,8 @@ func run() error {
 	defer cancel()
 	_ = opsSrv.Shutdown(shutCtx)
 	grpcSrv.GracefulStop()
+	bgCancel()
+	bgWG.Wait()
 	return nil
 }
 

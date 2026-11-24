@@ -293,6 +293,7 @@ FROM matched_products mp
 JOIN products p ON p.id = mp.product_id
 WHERE p.deleted_at IS NULL
   AND p.status IN ('APPROVED', 'OUT_OF_STOCK')
+  AND p.shop_suspended = FALSE
   AND ($1::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
   AND ($2::text = '' OR p.search_text LIKE '%' || $2::text || '%' ESCAPE '\')
   AND ($3::text = '' OR p.shop_id = $3::text)
@@ -350,7 +351,7 @@ WHERE p.deleted_at IS NULL
   AND ($1::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
   AND ($2::text = '' OR p.search_text LIKE '%' || $2::text || '%' ESCAPE '\')
   AND ($3::text = '' OR p.shop_id = $3::text)
-  AND (NOT $4::bool OR p.status IN ('APPROVED', 'OUT_OF_STOCK'))
+  AND (NOT $4::bool OR (p.status IN ('APPROVED', 'OUT_OF_STOCK') AND p.shop_suspended = FALSE))
   AND ($5::text = '' OR p.status = $5::text)
   AND (
     ($6::bigint <= 0 AND $7::bigint <= 0)
@@ -513,12 +514,12 @@ const createProduct = `-- name: CreateProduct :one
 
 INSERT INTO products (
     id, shop_id, category_id, name, description, images, status,
-    rejection_reason, min_price_vnd, max_price_vnd, slug, search_text, flagged_keywords
+    rejection_reason, min_price_vnd, max_price_vnd, slug, search_text, flagged_keywords, shop_suspended
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 RETURNING id, shop_id, category_id, name, description, images, status,
           rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
 `
 
 type CreateProductParams struct {
@@ -535,6 +536,7 @@ type CreateProductParams struct {
 	Slug            string
 	SearchText      string
 	FlaggedKeywords []byte
+	ShopSuspended   bool
 }
 
 // Products
@@ -553,6 +555,7 @@ func (q *Queries) CreateProduct(ctx context.Context, arg CreateProductParams) (P
 		arg.Slug,
 		arg.SearchText,
 		arg.FlaggedKeywords,
+		arg.ShopSuspended,
 	)
 	var i Product
 	err := row.Scan(
@@ -575,6 +578,7 @@ func (q *Queries) CreateProduct(ctx context.Context, arg CreateProductParams) (P
 		&i.ReviewCount,
 		&i.FlaggedKeywords,
 		&i.FirstApprovedAt,
+		&i.ShopSuspended,
 	)
 	return i, err
 }
@@ -938,7 +942,7 @@ func (q *Queries) GetCategoryDescendants(ctx context.Context, categoryIds []stri
 const getDeletedApprovedProductBySlug = `-- name: GetDeletedApprovedProductBySlug :one
 SELECT id, shop_id, category_id, name, description, images, status,
        rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
 FROM products
 WHERE slug = $1
   AND deleted_at IS NOT NULL
@@ -970,6 +974,7 @@ func (q *Queries) GetDeletedApprovedProductBySlug(ctx context.Context, slug stri
 		&i.ReviewCount,
 		&i.FlaggedKeywords,
 		&i.FirstApprovedAt,
+		&i.ShopSuspended,
 	)
 	return i, err
 }
@@ -977,7 +982,7 @@ func (q *Queries) GetDeletedApprovedProductBySlug(ctx context.Context, slug stri
 const getProductByID = `-- name: GetProductByID :one
 SELECT id, shop_id, category_id, name, description, images, status,
        rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
 FROM products
 WHERE id = $1 AND deleted_at IS NULL
 `
@@ -1005,6 +1010,7 @@ func (q *Queries) GetProductByID(ctx context.Context, id string) (Product, error
 		&i.ReviewCount,
 		&i.FlaggedKeywords,
 		&i.FirstApprovedAt,
+		&i.ShopSuspended,
 	)
 	return i, err
 }
@@ -1012,7 +1018,7 @@ func (q *Queries) GetProductByID(ctx context.Context, id string) (Product, error
 const getProductByIDForUpdate = `-- name: GetProductByIDForUpdate :one
 SELECT id, shop_id, category_id, name, description, images, status,
        rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
 FROM products
 WHERE id = $1 AND deleted_at IS NULL
 FOR UPDATE
@@ -1041,6 +1047,7 @@ func (q *Queries) GetProductByIDForUpdate(ctx context.Context, id string) (Produ
 		&i.ReviewCount,
 		&i.FlaggedKeywords,
 		&i.FirstApprovedAt,
+		&i.ShopSuspended,
 	)
 	return i, err
 }
@@ -1048,7 +1055,7 @@ func (q *Queries) GetProductByIDForUpdate(ctx context.Context, id string) (Produ
 const getProductByIDForUpdateAny = `-- name: GetProductByIDForUpdateAny :one
 SELECT id, shop_id, category_id, name, description, images, status,
        rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
 FROM products
 WHERE id = $1
 FOR UPDATE
@@ -1077,6 +1084,7 @@ func (q *Queries) GetProductByIDForUpdateAny(ctx context.Context, id string) (Pr
 		&i.ReviewCount,
 		&i.FlaggedKeywords,
 		&i.FirstApprovedAt,
+		&i.ShopSuspended,
 	)
 	return i, err
 }
@@ -1084,7 +1092,7 @@ func (q *Queries) GetProductByIDForUpdateAny(ctx context.Context, id string) (Pr
 const getProductBySlug = `-- name: GetProductBySlug :one
 SELECT id, shop_id, category_id, name, description, images, status,
        rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
 FROM products
 WHERE slug = $1 AND deleted_at IS NULL
 `
@@ -1112,6 +1120,7 @@ func (q *Queries) GetProductBySlug(ctx context.Context, slug string) (Product, e
 		&i.ReviewCount,
 		&i.FlaggedKeywords,
 		&i.FirstApprovedAt,
+		&i.ShopSuspended,
 	)
 	return i, err
 }
@@ -1186,7 +1195,7 @@ SELECT
         ),
         s.price_vnd
     )::bigint AS min_price_30d_vnd,
-    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at, p.shop_suspended AS product_shop_suspended
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
@@ -1200,25 +1209,26 @@ type GetSKUWithContextParams struct {
 }
 
 type GetSKUWithContextRow struct {
-	ID                string
-	ProductID         string
-	ShopID            string
-	ProductName       string
-	SkuCode           string
-	Name              string
-	Attributes        []byte
-	PriceVnd          int64
-	Stock             int32
-	ReservedStock     int32
-	Version           int64
-	WeightGrams       int32
-	ImageURL          string
-	CategoryID        string
-	CommissionRateBps int32
-	MinPrice30dVnd    int64
-	SkuStatus         string
-	ProductStatus     string
-	ProductDeletedAt  *time.Time
+	ID                   string
+	ProductID            string
+	ShopID               string
+	ProductName          string
+	SkuCode              string
+	Name                 string
+	Attributes           []byte
+	PriceVnd             int64
+	Stock                int32
+	ReservedStock        int32
+	Version              int64
+	WeightGrams          int32
+	ImageURL             string
+	CategoryID           string
+	CommissionRateBps    int32
+	MinPrice30dVnd       int64
+	SkuStatus            string
+	ProductStatus        string
+	ProductDeletedAt     *time.Time
+	ProductShopSuspended bool
 }
 
 func (q *Queries) GetSKUWithContext(ctx context.Context, arg GetSKUWithContextParams) (GetSKUWithContextRow, error) {
@@ -1244,6 +1254,7 @@ func (q *Queries) GetSKUWithContext(ctx context.Context, arg GetSKUWithContextPa
 		&i.SkuStatus,
 		&i.ProductStatus,
 		&i.ProductDeletedAt,
+		&i.ProductShopSuspended,
 	)
 	return i, err
 }
@@ -1285,7 +1296,7 @@ SELECT
         ),
         s.price_vnd
     )::bigint AS min_price_30d_vnd,
-    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at, p.shop_suspended AS product_shop_suspended
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
@@ -1300,25 +1311,26 @@ type GetSKUWithContextForUpdateParams struct {
 }
 
 type GetSKUWithContextForUpdateRow struct {
-	ID                string
-	ProductID         string
-	ShopID            string
-	ProductName       string
-	SkuCode           string
-	Name              string
-	Attributes        []byte
-	PriceVnd          int64
-	Stock             int32
-	ReservedStock     int32
-	Version           int64
-	WeightGrams       int32
-	ImageURL          string
-	CategoryID        string
-	CommissionRateBps int32
-	MinPrice30dVnd    int64
-	SkuStatus         string
-	ProductStatus     string
-	ProductDeletedAt  *time.Time
+	ID                   string
+	ProductID            string
+	ShopID               string
+	ProductName          string
+	SkuCode              string
+	Name                 string
+	Attributes           []byte
+	PriceVnd             int64
+	Stock                int32
+	ReservedStock        int32
+	Version              int64
+	WeightGrams          int32
+	ImageURL             string
+	CategoryID           string
+	CommissionRateBps    int32
+	MinPrice30dVnd       int64
+	SkuStatus            string
+	ProductStatus        string
+	ProductDeletedAt     *time.Time
+	ProductShopSuspended bool
 }
 
 func (q *Queries) GetSKUWithContextForUpdate(ctx context.Context, arg GetSKUWithContextForUpdateParams) (GetSKUWithContextForUpdateRow, error) {
@@ -1344,6 +1356,7 @@ func (q *Queries) GetSKUWithContextForUpdate(ctx context.Context, arg GetSKUWith
 		&i.SkuStatus,
 		&i.ProductStatus,
 		&i.ProductDeletedAt,
+		&i.ProductShopSuspended,
 	)
 	return i, err
 }
@@ -1385,7 +1398,7 @@ SELECT
         ),
         s.price_vnd
     )::bigint AS min_price_30d_vnd,
-    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at, p.shop_suspended AS product_shop_suspended
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
@@ -1400,25 +1413,26 @@ type GetSKUsBatchParams struct {
 }
 
 type GetSKUsBatchRow struct {
-	ID                string
-	ProductID         string
-	ShopID            string
-	ProductName       string
-	SkuCode           string
-	Name              string
-	Attributes        []byte
-	PriceVnd          int64
-	Stock             int32
-	ReservedStock     int32
-	Version           int64
-	WeightGrams       int32
-	ImageURL          string
-	CategoryID        string
-	CommissionRateBps int32
-	MinPrice30dVnd    int64
-	SkuStatus         string
-	ProductStatus     string
-	ProductDeletedAt  *time.Time
+	ID                   string
+	ProductID            string
+	ShopID               string
+	ProductName          string
+	SkuCode              string
+	Name                 string
+	Attributes           []byte
+	PriceVnd             int64
+	Stock                int32
+	ReservedStock        int32
+	Version              int64
+	WeightGrams          int32
+	ImageURL             string
+	CategoryID           string
+	CommissionRateBps    int32
+	MinPrice30dVnd       int64
+	SkuStatus            string
+	ProductStatus        string
+	ProductDeletedAt     *time.Time
+	ProductShopSuspended bool
 }
 
 func (q *Queries) GetSKUsBatch(ctx context.Context, arg GetSKUsBatchParams) ([]GetSKUsBatchRow, error) {
@@ -1450,6 +1464,7 @@ func (q *Queries) GetSKUsBatch(ctx context.Context, arg GetSKUsBatchParams) ([]G
 			&i.SkuStatus,
 			&i.ProductStatus,
 			&i.ProductDeletedAt,
+			&i.ProductShopSuspended,
 		); err != nil {
 			return nil, err
 		}
@@ -1459,6 +1474,24 @@ func (q *Queries) GetSKUsBatch(ctx context.Context, arg GetSKUsBatchParams) ([]G
 		return nil, err
 	}
 	return items, nil
+}
+
+const getShopSuspensionState = `-- name: GetShopSuspensionState :one
+SELECT shop_id, suspended, version, updated_at
+FROM shop_suspension_state
+WHERE shop_id = $1
+`
+
+func (q *Queries) GetShopSuspensionState(ctx context.Context, shopID string) (ShopSuspensionState, error) {
+	row := q.db.QueryRow(ctx, getShopSuspensionState, shopID)
+	var i ShopSuspensionState
+	err := row.Scan(
+		&i.ShopID,
+		&i.Suspended,
+		&i.Version,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const hasStockReleaseTombstone = `-- name: HasStockReleaseTombstone :one
@@ -1541,6 +1574,32 @@ func (q *Queries) InsertCategoryFeeSchedule(ctx context.Context, arg InsertCateg
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const insertDeadLetterEvent = `-- name: InsertDeadLetterEvent :exec
+INSERT INTO dead_letter_events (id, subject, event_id, payload, error_message, attempts)
+VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type InsertDeadLetterEventParams struct {
+	ID           string
+	Subject      string
+	EventID      string
+	Payload      []byte
+	ErrorMessage string
+	Attempts     int32
+}
+
+func (q *Queries) InsertDeadLetterEvent(ctx context.Context, arg InsertDeadLetterEventParams) error {
+	_, err := q.db.Exec(ctx, insertDeadLetterEvent,
+		arg.ID,
+		arg.Subject,
+		arg.EventID,
+		arg.Payload,
+		arg.ErrorMessage,
+		arg.Attempts,
+	)
+	return err
 }
 
 const insertOutboxEvent = `-- name: InsertOutboxEvent :exec
@@ -1810,7 +1869,7 @@ SELECT
         ),
         s.price_vnd
     )::bigint AS min_price_30d_vnd,
-    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at, p.shop_suspended AS product_shop_suspended
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
@@ -1825,25 +1884,26 @@ type ListAllSKUsByProductIDParams struct {
 }
 
 type ListAllSKUsByProductIDRow struct {
-	ID                string
-	ProductID         string
-	ShopID            string
-	ProductName       string
-	SkuCode           string
-	Name              string
-	Attributes        []byte
-	PriceVnd          int64
-	Stock             int32
-	ReservedStock     int32
-	Version           int64
-	WeightGrams       int32
-	ImageURL          string
-	CategoryID        string
-	CommissionRateBps int32
-	MinPrice30dVnd    int64
-	SkuStatus         string
-	ProductStatus     string
-	ProductDeletedAt  *time.Time
+	ID                   string
+	ProductID            string
+	ShopID               string
+	ProductName          string
+	SkuCode              string
+	Name                 string
+	Attributes           []byte
+	PriceVnd             int64
+	Stock                int32
+	ReservedStock        int32
+	Version              int64
+	WeightGrams          int32
+	ImageURL             string
+	CategoryID           string
+	CommissionRateBps    int32
+	MinPrice30dVnd       int64
+	SkuStatus            string
+	ProductStatus        string
+	ProductDeletedAt     *time.Time
+	ProductShopSuspended bool
 }
 
 func (q *Queries) ListAllSKUsByProductID(ctx context.Context, arg ListAllSKUsByProductIDParams) ([]ListAllSKUsByProductIDRow, error) {
@@ -1875,6 +1935,7 @@ func (q *Queries) ListAllSKUsByProductID(ctx context.Context, arg ListAllSKUsByP
 			&i.SkuStatus,
 			&i.ProductStatus,
 			&i.ProductDeletedAt,
+			&i.ProductShopSuspended,
 		); err != nil {
 			return nil, err
 		}
@@ -2137,11 +2198,12 @@ matched_products AS (
 )
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
        p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at,
-       p.slug, p.search_text, p.rating_sum, p.review_count, p.flagged_keywords, p.first_approved_at
+       p.slug, p.search_text, p.rating_sum, p.review_count, p.flagged_keywords, p.first_approved_at, p.shop_suspended
 FROM matched_products mp
 JOIN products p ON p.id = mp.product_id
 WHERE p.deleted_at IS NULL
   AND p.status IN ('APPROVED', 'OUT_OF_STOCK')
+  AND p.shop_suspended = FALSE
   AND ($1::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
   AND ($2::text = '' OR p.search_text LIKE '%' || $2::text || '%' ESCAPE '\')
   AND ($3::text = '' OR p.shop_id = $3::text)
@@ -2220,6 +2282,7 @@ func (q *Queries) ListProductsBySKUIDs(ctx context.Context, arg ListProductsBySK
 			&i.ReviewCount,
 			&i.FlaggedKeywords,
 			&i.FirstApprovedAt,
+			&i.ShopSuspended,
 		); err != nil {
 			return nil, err
 		}
@@ -2243,13 +2306,13 @@ WITH RECURSIVE cat_tree AS (
 )
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
        p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at,
-       p.slug, p.search_text, p.rating_sum, p.review_count, p.flagged_keywords, p.first_approved_at
+       p.slug, p.search_text, p.rating_sum, p.review_count, p.flagged_keywords, p.first_approved_at, p.shop_suspended
 FROM products p
 WHERE p.deleted_at IS NULL
   AND ($1::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
   AND ($2::text = '' OR p.search_text LIKE '%' || $2::text || '%' ESCAPE '\')
   AND ($3::text = '' OR p.shop_id = $3::text)
-  AND (NOT $4::bool OR p.status IN ('APPROVED', 'OUT_OF_STOCK'))
+  AND (NOT $4::bool OR (p.status IN ('APPROVED', 'OUT_OF_STOCK') AND p.shop_suspended = FALSE))
   AND ($5::text = '' OR p.status = $5::text)
   AND (
     ($6::bigint <= 0 AND $7::bigint <= 0)
@@ -2325,6 +2388,7 @@ func (q *Queries) ListProductsFiltered(ctx context.Context, arg ListProductsFilt
 			&i.ReviewCount,
 			&i.FlaggedKeywords,
 			&i.FirstApprovedAt,
+			&i.ShopSuspended,
 		); err != nil {
 			return nil, err
 		}
@@ -2339,7 +2403,7 @@ func (q *Queries) ListProductsFiltered(ctx context.Context, arg ListProductsFilt
 const listProductsForModerationScan = `-- name: ListProductsForModerationScan :many
 SELECT id, shop_id, category_id, name, description, images, status,
        rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
 FROM products
 WHERE deleted_at IS NULL
   AND ($1::text = '' OR id > $1::text)
@@ -2381,6 +2445,7 @@ func (q *Queries) ListProductsForModerationScan(ctx context.Context, arg ListPro
 			&i.ReviewCount,
 			&i.FlaggedKeywords,
 			&i.FirstApprovedAt,
+			&i.ShopSuspended,
 		); err != nil {
 			return nil, err
 		}
@@ -2649,7 +2714,7 @@ SELECT
         ),
         s.price_vnd
     )::bigint AS min_price_30d_vnd,
-    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at
+    s.status AS sku_status, p.status AS product_status, p.deleted_at AS product_deleted_at, p.shop_suspended AS product_shop_suspended
 FROM skus s
 JOIN products p ON p.id = s.product_id
 JOIN categories c ON c.id = p.category_id
@@ -2665,25 +2730,26 @@ type ListSKUsByProductIDsParams struct {
 }
 
 type ListSKUsByProductIDsRow struct {
-	ID                string
-	ProductID         string
-	ShopID            string
-	ProductName       string
-	SkuCode           string
-	Name              string
-	Attributes        []byte
-	PriceVnd          int64
-	Stock             int32
-	ReservedStock     int32
-	Version           int64
-	WeightGrams       int32
-	ImageURL          string
-	CategoryID        string
-	CommissionRateBps int32
-	MinPrice30dVnd    int64
-	SkuStatus         string
-	ProductStatus     string
-	ProductDeletedAt  *time.Time
+	ID                   string
+	ProductID            string
+	ShopID               string
+	ProductName          string
+	SkuCode              string
+	Name                 string
+	Attributes           []byte
+	PriceVnd             int64
+	Stock                int32
+	ReservedStock        int32
+	Version              int64
+	WeightGrams          int32
+	ImageURL             string
+	CategoryID           string
+	CommissionRateBps    int32
+	MinPrice30dVnd       int64
+	SkuStatus            string
+	ProductStatus        string
+	ProductDeletedAt     *time.Time
+	ProductShopSuspended bool
 }
 
 func (q *Queries) ListSKUsByProductIDs(ctx context.Context, arg ListSKUsByProductIDsParams) ([]ListSKUsByProductIDsRow, error) {
@@ -2715,6 +2781,7 @@ func (q *Queries) ListSKUsByProductIDs(ctx context.Context, arg ListSKUsByProduc
 			&i.SkuStatus,
 			&i.ProductStatus,
 			&i.ProductDeletedAt,
+			&i.ProductShopSuspended,
 		); err != nil {
 			return nil, err
 		}
@@ -2745,6 +2812,17 @@ SELECT pg_advisory_xact_lock(7956455656534110829)
 // Outbox events
 func (q *Queries) LockOutboxClaim(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, lockOutboxClaim)
+	return err
+}
+
+const lockShopSuspension = `-- name: LockShopSuspension :exec
+
+SELECT pg_advisory_xact_lock(1937010547, hashtext($1))
+`
+
+// Shop suspension state & event consumption (E1/F12)
+func (q *Queries) LockShopSuspension(ctx context.Context, hashtext string) error {
+	_, err := q.db.Exec(ctx, lockShopSuspension, hashtext)
 	return err
 }
 
@@ -3029,6 +3107,31 @@ func (q *Queries) RestockSKUAtomic(ctx context.Context, arg RestockSKUAtomicPara
 	return i, err
 }
 
+const setProductsShopSuspendedByShop = `-- name: SetProductsShopSuspendedByShop :exec
+WITH target AS (
+    SELECT pr.id
+    FROM products pr
+    WHERE pr.shop_id = $1
+      AND pr.shop_suspended IS DISTINCT FROM $2
+    ORDER BY pr.id ASC
+    FOR UPDATE OF pr
+)
+UPDATE products p
+SET shop_suspended = $2
+FROM target t
+WHERE p.id = t.id
+`
+
+type SetProductsShopSuspendedByShopParams struct {
+	ShopID        string
+	ShopSuspended bool
+}
+
+func (q *Queries) SetProductsShopSuspendedByShop(ctx context.Context, arg SetProductsShopSuspendedByShopParams) error {
+	_, err := q.db.Exec(ctx, setProductsShopSuspendedByShop, arg.ShopID, arg.ShopSuspended)
+	return err
+}
+
 const softDeleteProduct = `-- name: SoftDeleteProduct :execrows
 UPDATE products
 SET deleted_at = NOW(),
@@ -3060,6 +3163,25 @@ type TransitionStockReservationParams struct {
 
 func (q *Queries) TransitionStockReservation(ctx context.Context, arg TransitionStockReservationParams) (int64, error) {
 	result, err := q.db.Exec(ctx, transitionStockReservation, arg.ID, arg.Status, arg.Status_2)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const tryInsertProcessedEvent = `-- name: TryInsertProcessedEvent :execrows
+INSERT INTO processed_events (event_id, event_type)
+VALUES ($1, $2)
+ON CONFLICT (event_id) DO NOTHING
+`
+
+type TryInsertProcessedEventParams struct {
+	EventID   string
+	EventType string
+}
+
+func (q *Queries) TryInsertProcessedEvent(ctx context.Context, arg TryInsertProcessedEventParams) (int64, error) {
+	result, err := q.db.Exec(ctx, tryInsertProcessedEvent, arg.EventID, arg.EventType)
 	if err != nil {
 		return 0, err
 	}
@@ -3251,7 +3373,7 @@ SET category_id = $2,
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
           rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
 `
 
 type UpdateProductParams struct {
@@ -3305,6 +3427,7 @@ func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (P
 		&i.ReviewCount,
 		&i.FlaggedKeywords,
 		&i.FirstApprovedAt,
+		&i.ShopSuspended,
 	)
 	return i, err
 }
@@ -3322,7 +3445,7 @@ SET status = $2,
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
           rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
-          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
 `
 
 type UpdateProductReviewParams struct {
@@ -3360,6 +3483,7 @@ func (q *Queries) UpdateProductReview(ctx context.Context, arg UpdateProductRevi
 		&i.ReviewCount,
 		&i.FlaggedKeywords,
 		&i.FirstApprovedAt,
+		&i.ShopSuspended,
 	)
 	return i, err
 }
@@ -3477,6 +3601,35 @@ func (q *Queries) UpdateSKUStockOptimistic(ctx context.Context, arg UpdateSKUSto
 		&i.ImageURL,
 		&i.Status,
 		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertShopSuspensionState = `-- name: UpsertShopSuspensionState :one
+INSERT INTO shop_suspension_state (shop_id, suspended, version, updated_at)
+VALUES ($1, $2, $3, NOW())
+ON CONFLICT (shop_id) DO UPDATE
+SET suspended = EXCLUDED.suspended,
+    version = EXCLUDED.version,
+    updated_at = NOW()
+WHERE shop_suspension_state.version < EXCLUDED.version
+RETURNING shop_id, suspended, version, updated_at
+`
+
+type UpsertShopSuspensionStateParams struct {
+	ShopID    string
+	Suspended bool
+	Version   int64
+}
+
+func (q *Queries) UpsertShopSuspensionState(ctx context.Context, arg UpsertShopSuspensionStateParams) (ShopSuspensionState, error) {
+	row := q.db.QueryRow(ctx, upsertShopSuspensionState, arg.ShopID, arg.Suspended, arg.Version)
+	var i ShopSuspensionState
+	err := row.Scan(
+		&i.ShopID,
+		&i.Suspended,
+		&i.Version,
 		&i.UpdatedAt,
 	)
 	return i, err

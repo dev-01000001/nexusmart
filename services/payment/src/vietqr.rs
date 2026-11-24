@@ -573,63 +573,124 @@ impl VietQrAdapter {
     where
         F: Fn() -> reqwest::RequestBuilder,
     {
-        self.breaker.allow_request()?;
+        execute_http_json_with_retry(&self.breaker, self.max_retries, op_name, build_req).await
+    }
+}
 
-        let mut last_err = String::new();
-        let total_attempts = self.max_retries.saturating_add(1);
+/// Retry classification for [`execute_with_retry`].
+pub enum RetryError {
+    Retryable(PaymentError),
+    NonRetryable(PaymentError),
+}
 
-        for attempt in 0..total_attempts {
+/// Shared circuit-breaker + exponential backoff retry runner reused across external payment
+/// adapters (`VietQrAdapter`, `ZaloPayAdapter`).
+pub async fn execute_with_retry<T, F, Fut>(
+    breaker: &CircuitBreaker,
+    max_retries: u32,
+    base_backoff: Duration,
+    op_name: &str,
+    mut attempt_fn: F,
+) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, RetryError>>,
+{
+    breaker.allow_request()?;
+
+    let mut last_err: Option<PaymentError> = None;
+    let total_attempts = max_retries.saturating_add(1);
+
+    for attempt in 0..total_attempts {
+        match attempt_fn().await {
+            Ok(val) => {
+                breaker.record_success();
+                info!(
+                    op = op_name,
+                    attempt = attempt + 1,
+                    "external provider call succeeded"
+                );
+                return Ok(val);
+            }
+            Err(RetryError::NonRetryable(err)) => {
+                breaker.record_failure();
+                warn!(
+                    op = op_name,
+                    attempt = attempt + 1,
+                    max_attempts = total_attempts,
+                    error = %err,
+                    "external provider call rejected without retry"
+                );
+                return Err(err);
+            }
+            Err(RetryError::Retryable(err)) => {
+                breaker.record_failure();
+                warn!(
+                    op = op_name,
+                    attempt = attempt + 1,
+                    max_attempts = total_attempts,
+                    error = %err,
+                    "external provider call failed"
+                );
+                last_err = Some(err);
+            }
+        }
+
+        if attempt + 1 < total_attempts && !base_backoff.is_zero() {
+            let multiplier = 1_u32 << attempt.min(5);
+            sleep(base_backoff.saturating_mul(multiplier)).await;
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| PaymentError::Provider(format!("{op_name} failed"))))
+}
+
+/// Executes an outbound HTTP JSON request with the shared circuit breaker, `reqwest` client
+/// timeout, and exponential backoff retry (no retry on non-429 4xx client errors).
+pub async fn execute_http_json_with_retry<F>(
+    breaker: &CircuitBreaker,
+    max_retries: u32,
+    op_name: &str,
+    build_req: F,
+) -> Result<serde_json::Value>
+where
+    F: Fn() -> reqwest::RequestBuilder,
+{
+    execute_with_retry(
+        breaker,
+        max_retries,
+        Duration::from_millis(200),
+        op_name,
+        || async {
             match build_req().send().await {
                 Ok(resp) => {
                     let status = resp.status();
                     if status.is_success() {
                         match resp.json::<serde_json::Value>().await {
-                            Ok(val) => {
-                                self.breaker.record_success();
-                                info!(
-                                    op = op_name,
-                                    attempt = attempt + 1,
-                                    "external provider call succeeded"
-                                );
-                                return Ok(val);
-                            }
-                            Err(e) => {
-                                last_err = format!("invalid provider JSON response: {e}");
-                            }
+                            Ok(val) => Ok(val),
+                            Err(e) => Err(RetryError::Retryable(PaymentError::Provider(format!(
+                                "invalid provider JSON response: {e}"
+                            )))),
                         }
                     } else if status.is_client_error() && status.as_u16() != 429 {
-                        // Do not retry non-429 4xx client errors
-                        self.breaker.record_failure();
-                        return Err(PaymentError::Provider(format!(
+                        Err(RetryError::NonRetryable(PaymentError::Provider(format!(
                             "{op_name} rejected with HTTP {}",
                             status.as_u16()
-                        )));
+                        ))))
                     } else {
-                        last_err = format!("{op_name} returned HTTP {}", status.as_u16());
+                        Err(RetryError::Retryable(PaymentError::Provider(format!(
+                            "{op_name} returned HTTP {}",
+                            status.as_u16()
+                        ))))
                     }
                 }
-                Err(e) => {
-                    last_err = format!("{op_name} transport error: {e}");
-                }
+                Err(e) => Err(RetryError::Retryable(PaymentError::Provider(format!(
+                    "{op_name} transport error: {e}"
+                )))),
             }
-
-            self.breaker.record_failure();
-            warn!(
-                op = op_name,
-                attempt = attempt + 1,
-                max_attempts = total_attempts,
-                error = %last_err,
-                "external provider call failed"
-            );
-
-            if attempt + 1 < total_attempts {
-                let backoff_ms = 200_u64.saturating_mul(1_u64 << attempt.min(5));
-                sleep(Duration::from_millis(backoff_ms)).await;
-            }
-        }
-
-        Err(PaymentError::Provider(last_err))
-    }
+        },
+    )
+    .await
 }
 
 /// Parses provider/webhook timestamps in RFC3339 or Vietnam local time (`Asia/Ho_Chi_Minh`, +07:00).

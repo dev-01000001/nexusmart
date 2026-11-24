@@ -61,6 +61,7 @@ type PaymentClient interface {
 	CancelPayment(ctx context.Context, req *paymentv1.CancelPaymentRequest, opts ...grpc.CallOption) (*paymentv1.CancelPaymentResponse, error)
 	CreateRefund(ctx context.Context, req *paymentv1.CreateRefundRequest, opts ...grpc.CallOption) (*paymentv1.CreateRefundResponse, error)
 	GetFeeConfig(ctx context.Context, req *paymentv1.GetFeeConfigRequest, opts ...grpc.CallOption) (*paymentv1.GetFeeConfigResponse, error)
+	GetPaymentMethodConfigs(ctx context.Context, req *paymentv1.GetPaymentMethodConfigsRequest, opts ...grpc.CallOption) (*paymentv1.GetPaymentMethodConfigsResponse, error)
 }
 
 // ShippingClient defines the subset of ShippingService RPCs required by OrderService.
@@ -75,12 +76,13 @@ type ShippingClient interface {
 
 // Bundle groups all downstream gRPC clients used by OrderService.
 type Bundle struct {
-	User      UserClient
-	Product   ProductClient
-	Cart      CartClient
-	Promotion PromotionClient
-	Payment   PaymentClient
-	Shipping  ShippingClient
+	User          UserClient
+	Product       ProductClient
+	Cart          CartClient
+	Promotion     PromotionClient
+	Payment       PaymentClient
+	Shipping      ShippingClient
+	MethodConfigs PaymentMethodConfigSource
 
 	conns []*grpc.ClientConn
 }
@@ -147,6 +149,7 @@ func DialAll(cfg config.Config, svc *auth.Manager) (*Bundle, error) {
 	}
 	b.conns = append(b.conns, paymentConn)
 	b.Payment = paymentv1.NewPaymentServiceClient(paymentConn)
+	b.MethodConfigs = NewGRPCPaymentMethodConfigSource(b.Payment)
 
 	shippingConn, err := dial(cfg.ShippingGRPCAddr)
 	if err != nil {

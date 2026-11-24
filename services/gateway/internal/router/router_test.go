@@ -356,11 +356,20 @@ func TestGatewayRouterCheckoutRBACOwnershipAndProxies(t *testing.T) {
 		t.Fatalf("expected 403 for seller with empty shop_id, got %d", rec.Code)
 	}
 
-	// 11. Payment retry rejects terminal statuses (CANCELLED, EXPIRED, SUCCEEDED) and rejects VIETQR -> COD.
+	// 11. Payment retry requires Idempotency-Key (F5), rejects terminal statuses (CANCELLED, EXPIRED, SUCCEEDED), and delegates method switching (VIETQR/ZALOPAY/COD) to OrderService.RetryPayment.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/payments/pay-1/retry", strings.NewReader(`{"method":"VIETQR"}`))
+	req.Header.Set("Authorization", "Bearer "+buyerTok)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 retrying payment without Idempotency-Key, got %d (%s)", rec.Code, rec.Body.String())
+	}
+
 	for _, pid := range []string{"pay-cancelled", "pay-expired", "pay-succeeded"} {
 		rec = httptest.NewRecorder()
 		req = httptest.NewRequest(http.MethodPost, "/api/v1/payments/"+pid+"/retry", strings.NewReader(`{"method":"VIETQR"}`))
 		req.Header.Set("Authorization", "Bearer "+buyerTok)
+		req.Header.Set("Idempotency-Key", "idem-term-"+pid)
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusConflict {
 			t.Fatalf("expected 409 retrying terminal payment %s, got %d (%s)", pid, rec.Code, rec.Body.String())
@@ -370,15 +379,17 @@ func TestGatewayRouterCheckoutRBACOwnershipAndProxies(t *testing.T) {
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/payments/pay-1/retry", strings.NewReader(`{"method":"COD"}`))
 	req.Header.Set("Authorization", "Bearer "+buyerTok)
+	req.Header.Set("Idempotency-Key", "idem-switch-cod")
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("expected 409 switching VIETQR -> COD on retry, got %d (%s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || orderMock.lastRetryReq == nil || orderMock.lastRetryReq.GetPaymentMethod() != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
+		t.Fatalf("expected 200 delegating VIETQR -> COD switch to OrderService.RetryPayment, got code=%d req=%+v (%s)", rec.Code, orderMock.lastRetryReq, rec.Body.String())
 	}
 
 	// Valid PENDING VIETQR -> VIETQR retry delegates to OrderService.RetryPayment and never calls Payment.CreatePayment.
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/payments/pay-1/retry", strings.NewReader(`{"method":"VIETQR"}`))
 	req.Header.Set("Authorization", "Bearer "+buyerTok)
+	req.Header.Set("Idempotency-Key", "idem-retry-vqr")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || orderMock.lastRetryReq == nil || orderMock.lastRetryReq.GetPaymentId() != "pay-1" || paymentMock.lastCreateReq != nil {
 		t.Fatalf("expected 200 via OrderService.RetryPayment without CreatePayment, got code=%d retryReq=%+v createReq=%+v", rec.Code, orderMock.lastRetryReq, paymentMock.lastCreateReq)

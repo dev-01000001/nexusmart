@@ -7,6 +7,8 @@ import type {
   GatewayCoinBalance,
   GatewayFlashSale,
   GatewayFlashSalesResponse,
+  GatewayPaymentMethodConfig,
+  GatewayPaymentMethodsResponse,
   GatewayProduct,
   GatewayPublicShop,
   GatewayUser,
@@ -111,6 +113,7 @@ export default async function CheckoutPage({
     productsRes,
     buyNowProductRes,
     flashSalesRes,
+    paymentMethodsRes,
   ] = await Promise.allSettled([
     gatewayFetch<{ addresses: GatewayAddress[] }>("/users/me/addresses", { cache: "no-store" }),
     gatewayFetch<GatewayCoinBalance>("/coins/balance", { cache: "no-store" }),
@@ -133,7 +136,16 @@ export default async function CheckoutPage({
     gatewayFetch<GatewayFlashSalesResponse>("/flash-sales?include_upcoming=true", {
       cache: "no-store",
     }),
+    gatewayFetch<GatewayPaymentMethodsResponse>("/payment-methods", {
+      token: false,
+      cache: "no-store",
+    }),
   ]);
+
+  const initialPaymentMethods: GatewayPaymentMethodConfig[] =
+    paymentMethodsRes.status === "fulfilled" && Array.isArray(paymentMethodsRes.value?.methods)
+      ? paymentMethodsRes.value.methods
+      : [];
 
   const initialFlashSales: GatewayFlashSale[] =
     flashSalesRes.status === "fulfilled" && Array.isArray(flashSalesRes.value?.flash_sales)
@@ -329,6 +341,7 @@ export default async function CheckoutPage({
         initialShops={initialShops}
         initialFlashSales={initialFlashSales}
         initialActiveShopDiscounts={initialActiveShopDiscounts}
+        initialPaymentMethods={initialPaymentMethods}
         initialError={initialError}
         buyNowItem={buyNowItem}
         buyNowError={buyNowError}

@@ -27,31 +27,49 @@ import (
 // --- In-memory test doubles ---
 
 type memStore struct {
-	mu                   sync.Mutex
-	userLocks            map[string]*sync.RWMutex
-	users                map[string]db.User
-	refreshTokens        map[string]db.RefreshToken
-	passwordResets       map[string]db.PasswordReset
-	shops                map[string]db.Shop
-	shopBankAccounts     map[string]db.ShopBankAccount
-	addresses            map[string]db.Address
-	codRejections        map[string]string
-	auditLogs            []db.AuditLog
-	forceReplaceZeroRows bool
-	onUpdateUserPassword func(userID string)
+	mu                      sync.Mutex
+	userLocks               map[string]*sync.RWMutex
+	shopLocks               map[string]*sync.Mutex
+	users                   map[string]db.User
+	refreshTokens           map[string]db.RefreshToken
+	passwordResets          map[string]db.PasswordReset
+	shops                   map[string]db.Shop
+	shopBankAccounts        map[string]db.ShopBankAccount
+	shopSuspensionApprovals map[string]db.ShopSuspensionApproval
+	addresses               map[string]db.Address
+	codRejections           map[string]string
+	auditLogs               []db.AuditLog
+	userActivityLogs        []db.UserActivityLog
+	outboxEvents            []db.OutboxEvent
+	outboxSeq               int64
+	forceReplaceZeroRows    bool
+	onUpdateUserPassword    func(userID string)
 }
 
 func newMemStore() *memStore {
 	return &memStore{
-		userLocks:        make(map[string]*sync.RWMutex),
-		users:            make(map[string]db.User),
-		refreshTokens:    make(map[string]db.RefreshToken),
-		passwordResets:   make(map[string]db.PasswordReset),
-		shops:            make(map[string]db.Shop),
-		shopBankAccounts: make(map[string]db.ShopBankAccount),
-		addresses:        make(map[string]db.Address),
-		codRejections:    make(map[string]string),
+		userLocks:               make(map[string]*sync.RWMutex),
+		shopLocks:               make(map[string]*sync.Mutex),
+		users:                   make(map[string]db.User),
+		refreshTokens:           make(map[string]db.RefreshToken),
+		passwordResets:          make(map[string]db.PasswordReset),
+		shops:                   make(map[string]db.Shop),
+		shopBankAccounts:        make(map[string]db.ShopBankAccount),
+		shopSuspensionApprovals: make(map[string]db.ShopSuspensionApproval),
+		addresses:               make(map[string]db.Address),
+		codRejections:           make(map[string]string),
 	}
+}
+
+func (m *memStore) shopLock(shopID string) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l, ok := m.shopLocks[shopID]
+	if !ok {
+		l = &sync.Mutex{}
+		m.shopLocks[shopID] = l
+	}
+	return l
 }
 
 func (m *memStore) userLock(userID string) *sync.RWMutex {
@@ -70,9 +88,19 @@ func (m *memStore) Ping(_ context.Context) error { return nil }
 // memTx models PostgreSQL per-user FOR SHARE vs UPDATE row locking and per-tx rollback.
 type memTx struct {
 	*memStore
-	shared map[string]*sync.RWMutex
-	excl   map[string]*sync.RWMutex
-	undo   []func()
+	shared   map[string]*sync.RWMutex
+	excl     map[string]*sync.RWMutex
+	shopExcl map[string]*sync.Mutex
+	undo     []func()
+}
+
+func (t *memTx) lockShop(shopID string) {
+	if _, ok := t.shopExcl[shopID]; ok {
+		return
+	}
+	l := t.shopLock(shopID)
+	l.Lock()
+	t.shopExcl[shopID] = l
 }
 
 func (t *memTx) lockShared(userID string) {
@@ -109,6 +137,124 @@ func (t *memTx) release() {
 		l.RUnlock()
 		delete(t.shared, id)
 	}
+	for id, l := range t.shopExcl {
+		l.Unlock()
+		delete(t.shopExcl, id)
+	}
+}
+
+func (t *memTx) GetShopByIDForUpdate(ctx context.Context, id string) (db.Shop, error) {
+	t.lockShop(id)
+	return t.memStore.GetShopByID(ctx, id)
+}
+
+func (t *memTx) CreateUser(ctx context.Context, arg db.CreateUserParams) (db.User, error) {
+	u, err := t.memStore.CreateUser(ctx, arg)
+	if err == nil {
+		id := u.ID
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			delete(t.users, id)
+			t.mu.Unlock()
+		})
+	}
+	return u, err
+}
+
+func (t *memTx) SuspendShop(ctx context.Context, arg db.SuspendShopParams) (db.Shop, error) {
+	t.lockShop(arg.ID)
+	t.mu.Lock()
+	prev, hadPrev := t.shops[arg.ID]
+	t.mu.Unlock()
+	sh, err := t.memStore.SuspendShop(ctx, arg)
+	if err == nil && hadPrev {
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			t.shops[arg.ID] = prev
+			t.mu.Unlock()
+		})
+	}
+	return sh, err
+}
+
+func (t *memTx) UnsuspendShop(ctx context.Context, arg db.UnsuspendShopParams) (db.Shop, error) {
+	t.lockShop(arg.ID)
+	t.mu.Lock()
+	prev, hadPrev := t.shops[arg.ID]
+	t.mu.Unlock()
+	sh, err := t.memStore.UnsuspendShop(ctx, arg)
+	if err == nil && hadPrev {
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			t.shops[arg.ID] = prev
+			t.mu.Unlock()
+		})
+	}
+	return sh, err
+}
+
+func (t *memTx) CreateShopSuspensionApproval(ctx context.Context, arg db.CreateShopSuspensionApprovalParams) (db.ShopSuspensionApproval, error) {
+	a, err := t.memStore.CreateShopSuspensionApproval(ctx, arg)
+	if err == nil {
+		id := a.ID
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			delete(t.shopSuspensionApprovals, id)
+			t.mu.Unlock()
+		})
+	}
+	return a, err
+}
+
+func (t *memTx) DecideShopSuspensionApproval(ctx context.Context, arg db.DecideShopSuspensionApprovalParams) (db.ShopSuspensionApproval, error) {
+	t.mu.Lock()
+	prev, hadPrev := t.shopSuspensionApprovals[arg.ID]
+	t.mu.Unlock()
+	a, err := t.memStore.DecideShopSuspensionApproval(ctx, arg)
+	if err == nil && hadPrev {
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			t.shopSuspensionApprovals[arg.ID] = prev
+			t.mu.Unlock()
+		})
+	}
+	return a, err
+}
+
+func (t *memTx) InsertUserActivityLog(ctx context.Context, arg db.InsertUserActivityLogParams) (db.UserActivityLog, error) {
+	l, err := t.memStore.InsertUserActivityLog(ctx, arg)
+	if err == nil {
+		id := l.ID
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			for i := len(t.userActivityLogs) - 1; i >= 0; i-- {
+				if t.userActivityLogs[i].ID == id {
+					t.userActivityLogs = append(t.userActivityLogs[:i], t.userActivityLogs[i+1:]...)
+					break
+				}
+			}
+			t.mu.Unlock()
+		})
+	}
+	return l, err
+}
+
+func (t *memTx) InsertOutboxEvent(ctx context.Context, arg db.InsertOutboxEventParams) error {
+	err := t.memStore.InsertOutboxEvent(ctx, arg)
+	if err == nil {
+		id := arg.ID
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			for i := len(t.outboxEvents) - 1; i >= 0; i-- {
+				if t.outboxEvents[i].ID == id {
+					t.outboxEvents = append(t.outboxEvents[:i], t.outboxEvents[i+1:]...)
+					break
+				}
+			}
+			t.mu.Unlock()
+		})
+	}
+	return err
 }
 
 func (t *memTx) GetUserByIDForShare(ctx context.Context, id string) (db.User, error) {
@@ -414,6 +560,7 @@ func (m *memStore) WithTx(_ context.Context, fn func(q db.Querier) error) error 
 		memStore: m,
 		shared:   make(map[string]*sync.RWMutex),
 		excl:     make(map[string]*sync.RWMutex),
+		shopExcl: make(map[string]*sync.Mutex),
 	}
 	defer tx.release()
 	if err := fn(tx); err != nil {
@@ -635,18 +782,6 @@ func (m *memStore) GrantUserSellerShop(_ context.Context, arg db.GrantUserSeller
 	return u, nil
 }
 
-func (m *memStore) ListActiveAdminIDsForUpdate(_ context.Context) ([]string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var ids []string
-	for _, u := range m.users {
-		if isAdminRole(u.Role) && u.Status == StatusActive {
-			ids = append(ids, u.ID)
-		}
-	}
-	return ids, nil
-}
-
 func (m *memStore) ListUsers(_ context.Context, arg db.ListUsersParams) ([]db.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -845,6 +980,7 @@ func (m *memStore) CreateShop(_ context.Context, arg db.CreateShopParams) (db.Sh
 		ContactPhone:       arg.ContactPhone,
 		BusinessLicenseDoc: arg.BusinessLicenseDoc,
 		Status:             arg.Status,
+		StatusVersion:      1,
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
@@ -947,6 +1083,9 @@ func (m *memStore) AdminListShops(_ context.Context, arg db.AdminListShopsParams
 			CreatedAt:          sh.CreatedAt,
 			UpdatedAt:          sh.UpdatedAt,
 			Slug:               sh.Slug,
+			SuspendedAt:        sh.SuspendedAt,
+			SuspendedReason:    sh.SuspendedReason,
+			StatusVersion:      sh.StatusVersion,
 			BankReviewPending:  pending,
 		})
 	}
@@ -1001,6 +1140,9 @@ func (m *memStore) ResubmitShop(_ context.Context, arg db.ResubmitShopParams) (d
 	sh.PickupAddressID = arg.PickupAddressID
 	sh.ContactPhone = arg.ContactPhone
 	sh.BusinessLicenseDoc = arg.BusinessLicenseDoc
+	if sh.Status != ShopStatusPending {
+		sh.StatusVersion++
+	}
 	sh.Status = ShopStatusPending
 	sh.RejectionReason = ""
 	sh.VerifiedOwnerName = ""
@@ -1016,12 +1158,53 @@ func (m *memStore) UpdateShopReview(_ context.Context, arg db.UpdateShopReviewPa
 	if !ok || sh.Status != ShopStatusPending {
 		return db.Shop{}, pgx.ErrNoRows
 	}
+	if sh.Status != arg.Status {
+		sh.StatusVersion++
+	}
 	sh.Status = arg.Status
 	sh.RejectionReason = arg.RejectionReason
 	if arg.Status == ShopStatusActive {
 		sh.VerifiedOwnerName = arg.VerifiedOwnerName
 	}
 	sh.UpdatedAt = time.Now().UTC()
+	m.shops[sh.ID] = sh
+	return sh, nil
+}
+
+func (m *memStore) SuspendShop(_ context.Context, arg db.SuspendShopParams) (db.Shop, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sh, ok := m.shops[arg.ID]
+	if !ok || sh.Status != ShopStatusActive {
+		return db.Shop{}, pgx.ErrNoRows
+	}
+	sh.Status = ShopStatusSuspended
+	sh.SuspendedAt = arg.SuspendedAt
+	sh.SuspendedReason = arg.SuspendedReason
+	if sh.StatusVersion < 1 {
+		sh.StatusVersion = 1
+	}
+	sh.StatusVersion++
+	sh.UpdatedAt = arg.UpdatedAt
+	m.shops[sh.ID] = sh
+	return sh, nil
+}
+
+func (m *memStore) UnsuspendShop(_ context.Context, arg db.UnsuspendShopParams) (db.Shop, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sh, ok := m.shops[arg.ID]
+	if !ok || sh.Status != ShopStatusSuspended {
+		return db.Shop{}, pgx.ErrNoRows
+	}
+	sh.Status = ShopStatusActive
+	sh.SuspendedAt = nil
+	sh.SuspendedReason = ""
+	if sh.StatusVersion < 1 {
+		sh.StatusVersion = 1
+	}
+	sh.StatusVersion++
+	sh.UpdatedAt = arg.UpdatedAt
 	m.shops[sh.ID] = sh
 	return sh, nil
 }
@@ -1036,7 +1219,8 @@ func (m *memStore) ExistsActiveShopByPickupAddressID(_ context.Context, pickupAd
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, sh := range m.shops {
-		if sh.Status == ShopStatusActive && sh.PickupAddressID == pickupAddressID {
+		if (sh.Status == ShopStatusActive || sh.Status == ShopStatusSuspended || sh.Status == ShopStatusPending) &&
+			sh.PickupAddressID == pickupAddressID {
 			return true, nil
 		}
 	}
@@ -1489,6 +1673,330 @@ func (m *memStore) ListDailyNewShopsVN(_ context.Context, arg db.ListDailyNewSho
 		rows = append(rows, db.ListDailyNewShopsVNRow{VnDate: day, Cnt: cnt})
 	}
 	return rows, nil
+}
+
+func (m *memStore) CreateShopSuspensionApproval(_ context.Context, arg db.CreateShopSuspensionApprovalParams) (db.ShopSuspensionApproval, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, existing := range m.shopSuspensionApprovals {
+		if existing.ShopID == arg.ShopID && existing.Status == ApprovalStatusPending {
+			return db.ShopSuspensionApproval{}, &pgconn.PgError{Code: "23505", ConstraintName: "idx_shop_suspension_approvals_one_pending_per_shop"}
+		}
+	}
+	a := db.ShopSuspensionApproval{
+		ID:            arg.ID,
+		ShopID:        arg.ShopID,
+		Status:        ApprovalStatusPending,
+		Reason:        arg.Reason,
+		RequestedBy:   arg.RequestedBy,
+		RequestedRole: arg.RequestedRole,
+		CreatedAt:     arg.CreatedAt,
+	}
+	m.shopSuspensionApprovals[a.ID] = a
+	return a, nil
+}
+
+func (m *memStore) GetShopSuspensionApprovalByID(_ context.Context, id string) (db.ShopSuspensionApproval, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.shopSuspensionApprovals[id]
+	if !ok {
+		return db.ShopSuspensionApproval{}, pgx.ErrNoRows
+	}
+	return a, nil
+}
+
+func (m *memStore) GetShopSuspensionApprovalByIDForUpdate(ctx context.Context, id string) (db.ShopSuspensionApproval, error) {
+	return m.GetShopSuspensionApprovalByID(ctx, id)
+}
+
+func (m *memStore) GetPendingShopSuspensionApprovalByShopID(_ context.Context, shopID string) (db.ShopSuspensionApproval, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, a := range m.shopSuspensionApprovals {
+		if a.ShopID == shopID && a.Status == ApprovalStatusPending {
+			return a, nil
+		}
+	}
+	return db.ShopSuspensionApproval{}, pgx.ErrNoRows
+}
+
+func (m *memStore) DecideShopSuspensionApproval(_ context.Context, arg db.DecideShopSuspensionApprovalParams) (db.ShopSuspensionApproval, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.shopSuspensionApprovals[arg.ID]
+	if !ok || a.Status != ApprovalStatusPending {
+		return db.ShopSuspensionApproval{}, pgx.ErrNoRows
+	}
+	if arg.DecidedBy != nil && *arg.DecidedBy == a.RequestedBy {
+		return db.ShopSuspensionApproval{}, &pgconn.PgError{Code: "23514", ConstraintName: "chk_shop_suspension_maker_neq_checker"}
+	}
+	a.Status = arg.Status
+	a.DecidedBy = arg.DecidedBy
+	a.DecidedRole = arg.DecidedRole
+	a.DecidedNote = arg.DecidedNote
+	a.DecidedAt = arg.DecidedAt
+	m.shopSuspensionApprovals[a.ID] = a
+	return a, nil
+}
+
+func (m *memStore) ListShopSuspensionApprovals(_ context.Context, arg db.ListShopSuspensionApprovalsParams) ([]db.ListShopSuspensionApprovalsRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var rows []db.ListShopSuspensionApprovalsRow
+	for _, a := range m.shopSuspensionApprovals {
+		if arg.Status != "" && a.Status != arg.Status {
+			continue
+		}
+		if arg.ShopID != nil && a.ShopID != *arg.ShopID {
+			continue
+		}
+		sh, ok := m.shops[a.ShopID]
+		if !ok {
+			continue
+		}
+		rows = append(rows, db.ListShopSuspensionApprovalsRow{
+			ID:            a.ID,
+			ShopID:        a.ShopID,
+			Status:        a.Status,
+			Reason:        a.Reason,
+			RequestedBy:   a.RequestedBy,
+			RequestedRole: a.RequestedRole,
+			DecidedBy:     a.DecidedBy,
+			DecidedRole:   a.DecidedRole,
+			DecidedNote:   a.DecidedNote,
+			CreatedAt:     a.CreatedAt,
+			DecidedAt:     a.DecidedAt,
+			ShopName:      sh.Name,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if !rows[i].CreatedAt.Equal(rows[j].CreatedAt) {
+			return rows[i].CreatedAt.After(rows[j].CreatedAt)
+		}
+		return rows[i].ID > rows[j].ID
+	})
+	offset := int(arg.PageOffset)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(rows) {
+		return []db.ListShopSuspensionApprovalsRow{}, nil
+	}
+	end := len(rows)
+	if arg.PageLimit > 0 && offset+int(arg.PageLimit) < end {
+		end = offset + int(arg.PageLimit)
+	}
+	return rows[offset:end], nil
+}
+
+func (m *memStore) CountShopSuspensionApprovals(_ context.Context, arg db.CountShopSuspensionApprovalsParams) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var total int64
+	for _, a := range m.shopSuspensionApprovals {
+		if arg.Status != "" && a.Status != arg.Status {
+			continue
+		}
+		if arg.ShopID != nil && a.ShopID != *arg.ShopID {
+			continue
+		}
+		total++
+	}
+	return total, nil
+}
+
+func (m *memStore) InsertUserActivityLog(_ context.Context, arg db.InsertUserActivityLogParams) (db.UserActivityLog, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l := db.UserActivityLog(arg)
+	m.userActivityLogs = append(m.userActivityLogs, l)
+	return l, nil
+}
+
+func (m *memStore) ListUserActivityLogs(_ context.Context, arg db.ListUserActivityLogsParams) ([]db.UserActivityLog, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var rows []db.UserActivityLog
+	for _, l := range m.userActivityLogs {
+		if l.UserID != arg.UserID {
+			continue
+		}
+		if arg.Category != "" && l.Category != arg.Category {
+			continue
+		}
+		if arg.FromTime != nil && l.CreatedAt.Before(*arg.FromTime) {
+			continue
+		}
+		if arg.ToTime != nil && l.CreatedAt.After(*arg.ToTime) {
+			continue
+		}
+		rows = append(rows, l)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if !rows[i].CreatedAt.Equal(rows[j].CreatedAt) {
+			return rows[i].CreatedAt.After(rows[j].CreatedAt)
+		}
+		return rows[i].ID > rows[j].ID
+	})
+	offset := int(arg.PageOffset)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(rows) {
+		return []db.UserActivityLog{}, nil
+	}
+	end := len(rows)
+	if arg.PageLimit > 0 && offset+int(arg.PageLimit) < end {
+		end = offset + int(arg.PageLimit)
+	}
+	return rows[offset:end], nil
+}
+
+func (m *memStore) CountUserActivityLogs(_ context.Context, arg db.CountUserActivityLogsParams) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var total int64
+	for _, l := range m.userActivityLogs {
+		if l.UserID != arg.UserID {
+			continue
+		}
+		if arg.Category != "" && l.Category != arg.Category {
+			continue
+		}
+		if arg.FromTime != nil && l.CreatedAt.Before(*arg.FromTime) {
+			continue
+		}
+		if arg.ToTime != nil && l.CreatedAt.After(*arg.ToTime) {
+			continue
+		}
+		total++
+	}
+	return total, nil
+}
+
+func (m *memStore) DeleteExpiredUserActivityLogs(_ context.Context, arg db.DeleteExpiredUserActivityLogsParams) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var expiredIdx []int
+	for i, l := range m.userActivityLogs {
+		if l.CreatedAt.Before(arg.Cutoff) {
+			expiredIdx = append(expiredIdx, i)
+		}
+	}
+	sort.Slice(expiredIdx, func(i, j int) bool {
+		return m.userActivityLogs[expiredIdx[i]].CreatedAt.Before(m.userActivityLogs[expiredIdx[j]].CreatedAt)
+	})
+	limit := int(arg.BatchLimit)
+	if limit > 0 && len(expiredIdx) > limit {
+		expiredIdx = expiredIdx[:limit]
+	}
+	toDelete := make(map[int]struct{}, len(expiredIdx))
+	for _, idx := range expiredIdx {
+		toDelete[idx] = struct{}{}
+	}
+	kept := make([]db.UserActivityLog, 0, len(m.userActivityLogs)-len(toDelete))
+	for i, l := range m.userActivityLogs {
+		if _, drop := toDelete[i]; !drop {
+			kept = append(kept, l)
+		}
+	}
+	m.userActivityLogs = kept
+	return int64(len(toDelete)), nil
+}
+
+func (m *memStore) InsertOutboxEvent(_ context.Context, arg db.InsertOutboxEventParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.outboxSeq++
+	m.outboxEvents = append(m.outboxEvents, db.OutboxEvent{
+		ID:          arg.ID,
+		Seq:         m.outboxSeq,
+		AggregateID: arg.AggregateID,
+		EventType:   arg.EventType,
+		TraceID:     arg.TraceID,
+		Traceparent: arg.Traceparent,
+		PayloadJSON: append([]byte(nil), arg.PayloadJSON...),
+		CreatedAt:   time.Now().UTC(),
+	})
+	return nil
+}
+
+func (m *memStore) ClaimPendingOutboxEvents(_ context.Context, arg db.ClaimPendingOutboxEventsParams) ([]db.OutboxEvent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	until := now.Add(time.Duration(arg.LeaseMs) * time.Millisecond)
+	var claimed []db.OutboxEvent
+	for i := range m.outboxEvents {
+		ev := &m.outboxEvents[i]
+		if ev.PublishedAt != nil {
+			continue
+		}
+		if ev.ClaimedUntil != nil && ev.ClaimedUntil.After(now) {
+			continue
+		}
+		ev.ClaimedUntil = &until
+		ev.ClaimToken = arg.ClaimToken
+		claimed = append(claimed, *ev)
+		if arg.BatchLimit > 0 && int32(len(claimed)) >= arg.BatchLimit {
+			break
+		}
+	}
+	return claimed, nil
+}
+
+func (m *memStore) MarkOutboxEventPublished(_ context.Context, arg db.MarkOutboxEventPublishedParams) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	for i := range m.outboxEvents {
+		ev := &m.outboxEvents[i]
+		if ev.ID == arg.ID && ev.PublishedAt == nil && ev.ClaimToken == arg.ClaimToken {
+			ev.PublishedAt = &now
+			ev.Attempts++
+			ev.LastError = ""
+			ev.ClaimedUntil = nil
+			ev.ClaimToken = ""
+			return 1, nil
+		}
+	}
+	return 0, nil
+}
+
+func (m *memStore) MarkOutboxEventAttemptFailed(_ context.Context, arg db.MarkOutboxEventAttemptFailedParams) (int32, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.outboxEvents {
+		ev := &m.outboxEvents[i]
+		if ev.ID == arg.ID && ev.PublishedAt == nil && ev.ClaimToken == arg.ClaimToken {
+			ev.Attempts++
+			ev.LastError = arg.LastError
+			ev.ClaimedUntil = nil
+			ev.ClaimToken = ""
+			return ev.Attempts, nil
+		}
+	}
+	return 0, pgx.ErrNoRows
+}
+
+func (m *memStore) ReleaseOutboxEventClaims(_ context.Context, arg db.ReleaseOutboxEventClaimsParams) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idSet := make(map[string]struct{}, len(arg.Ids))
+	for _, id := range arg.Ids {
+		idSet[id] = struct{}{}
+	}
+	var released int64
+	for i := range m.outboxEvents {
+		ev := &m.outboxEvents[i]
+		if _, ok := idSet[ev.ID]; ok && ev.PublishedAt == nil && ev.ClaimToken == arg.ClaimToken {
+			ev.ClaimedUntil = nil
+			ev.ClaimToken = ""
+			released++
+		}
+	}
+	return released, nil
 }
 
 type memOTP struct {

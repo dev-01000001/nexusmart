@@ -40,6 +40,7 @@ func TestStateMachine_ExhaustiveTransitions(t *testing.T) {
 		{orderv1.OrderStatus_ORDER_STATUS_DELIVERED, orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED}: true,
 		{orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED, orderv1.OrderStatus_ORDER_STATUS_RETURNED}:  true,
 		{orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED, orderv1.OrderStatus_ORDER_STATUS_COMPLETED}: true,
+		{orderv1.OrderStatus_ORDER_STATUS_RETURNED, orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED}:  true,
 	}
 
 	for _, from := range allStatuses {
@@ -118,5 +119,51 @@ func TestStatusAndPaymentMethodRoundTrip(t *testing.T) {
 	}
 	if got := StringToPaymentMethod("vietqr"); got != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR {
 		t.Fatalf("got %v, want VIETQR", got)
+	}
+	if got := PaymentMethodToString(orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_ZALOPAY); got != "ZALOPAY" {
+		t.Fatalf("got %q, want ZALOPAY", got)
+	}
+	if got := StringToPaymentMethod("zalopay"); got != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_ZALOPAY {
+		t.Fatalf("got %v, want ZALOPAY", got)
+	}
+}
+
+func TestPaymentMethodHelpers_OnlineAndValid(t *testing.T) {
+	cases := []struct {
+		raw      string
+		norm     string
+		valid    bool
+		isOnline bool
+		isCOD    bool
+	}{
+		{"COD", "COD", true, false, true},
+		{" cod ", "COD", true, false, true},
+		{"ORDER_PAYMENT_METHOD_COD", "COD", true, false, true},
+		{"PAYMENT_METHOD_COD", "COD", true, false, true},
+		{"VIETQR", "VIETQR", true, true, false},
+		{"vietqr", "VIETQR", true, true, false},
+		{"ORDER_PAYMENT_METHOD_VIETQR", "VIETQR", true, true, false},
+		{"ZALOPAY", "ZALOPAY", true, true, false},
+		{" zalopay ", "ZALOPAY", true, true, false},
+		{"ORDER_PAYMENT_METHOD_ZALOPAY", "ZALOPAY", true, true, false},
+		{"PAYMENT_METHOD_ZALOPAY", "ZALOPAY", true, true, false},
+		{"UNSPECIFIED", "UNSPECIFIED", false, false, false},
+		{"", "", false, false, false},
+		{"CRYPTO", "CRYPTO", false, false, false},
+	}
+
+	for _, tc := range cases {
+		if got := NormalizePaymentMethod(tc.raw); got != tc.norm {
+			t.Errorf("NormalizePaymentMethod(%q) = %q, want %q", tc.raw, got, tc.norm)
+		}
+		if got := IsValidPaymentMethod(tc.raw); got != tc.valid {
+			t.Errorf("IsValidPaymentMethod(%q) = %v, want %v", tc.raw, got, tc.valid)
+		}
+		if got := IsOnlineMethod(tc.raw); got != tc.isOnline {
+			t.Errorf("IsOnlineMethod(%q) = %v, want %v", tc.raw, got, tc.isOnline)
+		}
+		if got := IsCODMethod(tc.raw); got != tc.isCOD {
+			t.Errorf("IsCODMethod(%q) = %v, want %v", tc.raw, got, tc.isCOD)
+		}
 	}
 }

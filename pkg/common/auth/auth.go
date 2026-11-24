@@ -63,6 +63,12 @@ var internalRPCs = map[string]bool{
 	"/nexusmart.user.v1.UserService/GetPlatformUserStats":        false,
 	"/nexusmart.user.v1.UserService/RequestPhoneOTP":             false,
 	"/nexusmart.user.v1.UserService/VerifyPhoneOTP":              false,
+	"/nexusmart.user.v1.UserService/AdminCreateStaffUser":        false,
+	"/nexusmart.user.v1.UserService/AdminListUserActivities":     false,
+	"/nexusmart.user.v1.UserService/AdminRequestShopSuspension":  false,
+	"/nexusmart.user.v1.UserService/AdminListShopApprovals":      false,
+	"/nexusmart.user.v1.UserService/AdminDecideShopSuspension":   false,
+	"/nexusmart.user.v1.UserService/AdminUnsuspendShop":          false,
 	// ProductService (public: ListCategories, GetProduct, ListProducts, GetSKUsBatch, ListProductReviews)
 	"/nexusmart.product.v1.ProductService/ReleaseStock":                   true,
 	"/nexusmart.product.v1.ProductService/ConfirmStock":                   true,

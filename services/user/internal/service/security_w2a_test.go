@@ -601,13 +601,22 @@ func TestW2A_UCA03_LastActiveAdminGuards(t *testing.T) {
 		t.Fatalf("self lock: want FailedPrecondition, got %v", err)
 	}
 
-	// Admin cannot demote self.
+	// F10: Regular admin cannot update user roles (only super_admin may change roles).
 	if _, err := srv.AdminUpdateUserRole(adm2Ctx, &userv1.AdminUpdateUserRoleRequest{
 		TargetUserId: adm2ID,
 		Role:         userv1.UserRole_USER_ROLE_BUYER,
 		Reason:       "self demote",
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("admin role update: want PermissionDenied (F10), got %v", err)
+	}
+
+	// Super admin cannot demote self.
+	if _, err := srv.AdminUpdateUserRole(superCtx, &userv1.AdminUpdateUserRoleRequest{
+		TargetUserId: superID,
+		Role:         userv1.UserRole_USER_ROLE_BUYER,
+		Reason:       "self demote",
 	}); status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("self demote: want FailedPrecondition, got %v", err)
+		t.Fatalf("super_admin self demote: want FailedPrecondition, got %v", err)
 	}
 
 	// With 2 active admins (super + adm2), super_admin CAN lock adm2 (leaving 1 active admin).
@@ -619,22 +628,30 @@ func TestW2A_UCA03_LastActiveAdminGuards(t *testing.T) {
 		t.Fatalf("lock second admin: %v", err)
 	}
 
-	// Now only 1 active admin remains (superID); adm2 & adm3 are LOCKED.
-	// Even another actor context (simulating a second super_admin session) cannot lock or demote the last active admin!
+	// Now only 1 active super_admin remains (superID); adm2 & adm3 are LOCKED.
+	// Self lock/demote is rejected with FailedPrecondition, and any peer super_admin is rejected
+	// with PermissionDenied (F10 CanActOnTargetRole), so the last active super_admin can never be locked or demoted.
+	if _, err := srv.AdminUpdateUserStatus(superCtx, &userv1.AdminUpdateUserStatusRequest{
+		TargetUserId: superID,
+		Status:       userv1.UserStatus_USER_STATUS_LOCKED,
+		Reason:       "self lock last active super_admin",
+	}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("self lock last active super_admin: want FailedPrecondition, got %v", err)
+	}
 	otherSuperCtx := ctxWithUser("00000000-0000-0000-0000-000000000099", RoleSuperAdmin, "")
 	if _, err := srv.AdminUpdateUserStatus(otherSuperCtx, &userv1.AdminUpdateUserStatusRequest{
 		TargetUserId: superID,
 		Status:       userv1.UserStatus_USER_STATUS_LOCKED,
-		Reason:       "lock last active admin",
-	}); status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("lock last active admin: want FailedPrecondition, got %v", err)
+		Reason:       "lock last active super_admin",
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("peer super_admin lock last active super_admin: want PermissionDenied, got %v", err)
 	}
 	if _, err := srv.AdminUpdateUserRole(otherSuperCtx, &userv1.AdminUpdateUserRoleRequest{
 		TargetUserId: superID,
 		Role:         userv1.UserRole_USER_ROLE_BUYER,
-		Reason:       "demote last active admin",
-	}); status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("demote last active admin: want FailedPrecondition, got %v", err)
+		Reason:       "demote last active super_admin",
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("peer super_admin demote last active super_admin: want PermissionDenied, got %v", err)
 	}
 }
 

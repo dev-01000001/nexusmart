@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sort"
 	"strings"
@@ -30,6 +31,11 @@ type MemoryStore struct {
 	outbox               []OutboxEvent
 	reviews              map[string]ProductReview
 	bannedKeywords       map[string]BannedKeyword
+	shopSuspension       map[string]ShopSuspensionState
+	processedEvents      map[string]string
+	deadLetterEvents     []DeadLetterEvent
+	shopLocksMu          sync.Mutex
+	shopLocks            map[string]*sync.Mutex
 	nextOutboxSeq        int64
 	outboxLease          time.Duration
 	outboxPublishTimeout time.Duration
@@ -53,6 +59,9 @@ func NewMemoryStore() *MemoryStore {
 		releaseTombstones:    make(map[string]time.Time),
 		reviews:              make(map[string]ProductReview),
 		bannedKeywords:       make(map[string]BannedKeyword),
+		shopSuspension:       make(map[string]ShopSuspensionState),
+		processedEvents:      make(map[string]string),
+		shopLocks:            make(map[string]*sync.Mutex),
 		outboxLease:          jetstream.DefaultOutboxLease,
 		outboxPublishTimeout: jetstream.DefaultOutboxPublishTimeout,
 	}
@@ -416,23 +425,51 @@ type stagedResTransition struct {
 	toStatus   string
 }
 
+// DeadLetterEvents returns a copy of all recorded dead letter events (for test assertions).
+func (m *MemoryStore) DeadLetterEvents() []DeadLetterEvent {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]DeadLetterEvent, len(m.deadLetterEvents))
+	for i, ev := range m.deadLetterEvents {
+		ev.Payload = append([]byte(nil), ev.Payload...)
+		out[i] = ev
+	}
+	return out
+}
+
+func (m *MemoryStore) getShopLock(shopID string) *sync.Mutex {
+	m.shopLocksMu.Lock()
+	defer m.shopLocksMu.Unlock()
+	mu, ok := m.shopLocks[shopID]
+	if !ok {
+		mu = &sync.Mutex{}
+		m.shopLocks[shopID] = mu
+	}
+	return mu
+}
+
 // WithTx executes fn with optimistic snapshot reads and atomic validation+commit on exit.
 func (m *MemoryStore) WithTx(ctx context.Context, fn func(q Queries) error) error {
 	tx := &memTx{
-		store:            m,
-		stagedCats:       make(map[string]Category),
-		deletedCats:      make(map[string]bool),
-		stagedProds:      make(map[string]Product),
-		stagedSKUs:       make(map[string]SKU),
-		updatedSKUMeta:   make(map[string]bool),
-		deactivatedSKUs:  make(map[string]bool),
-		stagedRes:        make(map[string]StockReservation),
-		stagedTombstones: make(map[string]time.Time),
-		ratingDeltas:     make(map[string]ratingDelta),
-		stagedReviews:    make(map[string]ProductReview),
-		stagedKeywords:   make(map[string]BannedKeyword),
-		deletedKeywords:  make(map[string]bool),
+		store:                m,
+		stagedCats:           make(map[string]Category),
+		deletedCats:          make(map[string]bool),
+		stagedProds:          make(map[string]Product),
+		stagedSKUs:           make(map[string]SKU),
+		updatedSKUMeta:       make(map[string]bool),
+		deactivatedSKUs:      make(map[string]bool),
+		stagedRes:            make(map[string]StockReservation),
+		stagedTombstones:     make(map[string]time.Time),
+		ratingDeltas:         make(map[string]ratingDelta),
+		stagedReviews:        make(map[string]ProductReview),
+		stagedKeywords:       make(map[string]BannedKeyword),
+		deletedKeywords:      make(map[string]bool),
+		stagedShopSuspension: make(map[string]ShopSuspensionState),
+		stagedShopProdFlag:   make(map[string]bool),
+		stagedProcessed:      make(map[string]string),
+		lockedShopSet:        make(map[string]bool),
 	}
+	defer tx.unlockShops()
 	if err := fn(tx); err != nil {
 		return err
 	}
@@ -814,7 +851,7 @@ func (m *MemoryStore) filterProductsLocked(filter ListProductsFilter) []Product 
 			if !matchedBySKUs[p.ID] {
 				continue
 			}
-			if p.Status != ProductStatusApproved && p.Status != ProductStatusOutOfStock {
+			if p.ShopSuspended || (p.Status != ProductStatusApproved && p.Status != ProductStatusOutOfStock) {
 				continue
 			}
 		}
@@ -833,7 +870,7 @@ func (m *MemoryStore) filterProductsLocked(filter ListProductsFilter) []Product 
 		if filter.ShopID != "" && p.ShopID != filter.ShopID {
 			continue
 		}
-		if filter.PublicOnly && p.Status != ProductStatusApproved && p.Status != ProductStatusOutOfStock {
+		if filter.PublicOnly && (p.ShopSuspended || (p.Status != ProductStatusApproved && p.Status != ProductStatusOutOfStock)) {
 			continue
 		}
 		if filter.Status != "" && p.Status != filter.Status {
@@ -1324,6 +1361,65 @@ func (m *MemoryStore) ListActiveBannedKeywords(_ context.Context) ([]BannedKeywo
 	return out, nil
 }
 
+func (m *MemoryStore) LockShopSuspension(_ context.Context, _ string) error {
+	return nil
+}
+
+func (m *MemoryStore) GetShopSuspensionState(_ context.Context, shopID string) (ShopSuspensionState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.shopSuspension[shopID]
+	if !ok {
+		return ShopSuspensionState{}, ErrNotFound
+	}
+	return st, nil
+}
+
+func (m *MemoryStore) IsShopSuspended(_ context.Context, shopID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.shopSuspension[shopID]
+	if !ok {
+		return false, nil
+	}
+	return st.Suspended, nil
+}
+
+func (m *MemoryStore) UpsertShopSuspensionState(ctx context.Context, shopID string, suspended bool, version int64) (ShopSuspensionState, bool, error) {
+	var (
+		out     ShopSuspensionState
+		applied bool
+	)
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		out, applied, e = q.UpsertShopSuspensionState(ctx, shopID, suspended, version)
+		return e
+	})
+	return out, applied, err
+}
+
+func (m *MemoryStore) SetProductsShopSuspendedByShop(ctx context.Context, shopID string, suspended bool) error {
+	return m.WithTx(ctx, func(q Queries) error {
+		return q.SetProductsShopSuspendedByShop(ctx, shopID, suspended)
+	})
+}
+
+func (m *MemoryStore) TryInsertProcessedEvent(ctx context.Context, eventID, eventType string) (bool, error) {
+	var inserted bool
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		inserted, e = q.TryInsertProcessedEvent(ctx, eventID, eventType)
+		return e
+	})
+	return inserted, err
+}
+
+func (m *MemoryStore) InsertDeadLetterEvent(ctx context.Context, ev DeadLetterEvent) error {
+	return m.WithTx(ctx, func(q Queries) error {
+		return q.InsertDeadLetterEvent(ctx, ev)
+	})
+}
+
 func (m *MemoryStore) effectiveCommissionBpsLocked(categoryID string, fallbackBps int32, asOf time.Time, staged []CategoryFeeSchedule) int32 {
 	found := false
 	var best CategoryFeeSchedule
@@ -1398,6 +1494,7 @@ func (m *MemoryStore) enrichSKULocked(s SKU, asOf time.Time) SKU {
 		out.CategoryID = p.CategoryID
 		out.ProductStatus = p.Status
 		out.ProductDeleted = p.DeletedAt != nil
+		out.ShopSuspended = p.ShopSuspended
 		if c, ok := m.categories[p.CategoryID]; ok {
 			out.CommissionRateBps = m.effectiveCommissionBpsLocked(c.ID, c.CommissionRateBps, asOf, nil)
 		}
@@ -1501,26 +1598,40 @@ type ratingDelta struct {
 
 // memTx buffers writes and validates optimistic locks atomically on commit.
 type memTx struct {
-	store              *MemoryStore
-	stagedCats         map[string]Category
-	deletedCats        map[string]bool
-	stagedFeeSchedules []CategoryFeeSchedule
-	stagedProds        map[string]Product
-	ratingDeltas       map[string]ratingDelta
-	stagedSKUs         map[string]SKU
-	stagedPriceHistory []SKUPriceHistoryEntry
-	updatedSKUMeta     map[string]bool
-	deactivatedSKUs    map[string]bool
-	stagedRes          map[string]StockReservation
-	stagedTombstones   map[string]time.Time
-	skuOps             []stagedSKUOp
-	resTransitions     []stagedResTransition
-	newRes             []StockReservation
-	stagedHistory      []StockHistoryEntry
-	stagedOutbox       []OutboxEvent
-	stagedReviews      map[string]ProductReview
-	stagedKeywords     map[string]BannedKeyword
-	deletedKeywords    map[string]bool
+	store                *MemoryStore
+	stagedCats           map[string]Category
+	deletedCats          map[string]bool
+	stagedFeeSchedules   []CategoryFeeSchedule
+	stagedProds          map[string]Product
+	ratingDeltas         map[string]ratingDelta
+	stagedSKUs           map[string]SKU
+	stagedPriceHistory   []SKUPriceHistoryEntry
+	updatedSKUMeta       map[string]bool
+	deactivatedSKUs      map[string]bool
+	stagedRes            map[string]StockReservation
+	stagedTombstones     map[string]time.Time
+	skuOps               []stagedSKUOp
+	resTransitions       []stagedResTransition
+	newRes               []StockReservation
+	stagedHistory        []StockHistoryEntry
+	stagedOutbox         []OutboxEvent
+	stagedReviews        map[string]ProductReview
+	stagedKeywords       map[string]BannedKeyword
+	deletedKeywords      map[string]bool
+	stagedShopSuspension map[string]ShopSuspensionState
+	stagedShopProdFlag   map[string]bool
+	stagedProcessed      map[string]string
+	stagedDLQ            []DeadLetterEvent
+	lockedShopSet        map[string]bool
+	lockedShops          []string
+}
+
+func (t *memTx) unlockShops() {
+	for i := len(t.lockedShops) - 1; i >= 0; i-- {
+		t.store.getShopLock(t.lockedShops[i]).Unlock()
+	}
+	t.lockedShops = nil
+	t.lockedShopSet = nil
 }
 
 func (t *memTx) commit() error {
@@ -1833,7 +1944,37 @@ func (t *memTx) commit() error {
 		t.store.feeSchedules = append(t.store.feeSchedules, f)
 	}
 	for id, p := range t.stagedProds {
+		_, existed := t.store.products[id]
+		if !existed && !p.ShopSuspended {
+			if st, ok := t.store.shopSuspension[p.ShopID]; ok && st.Suspended {
+				p.ShopSuspended = true
+			}
+		}
 		t.store.products[id] = cloneProduct(p)
+	}
+	for shopID, st := range t.stagedShopSuspension {
+		t.store.shopSuspension[shopID] = st
+	}
+	for shopID, suspended := range t.stagedShopProdFlag {
+		for id, p := range t.store.products {
+			if p.ShopID == shopID {
+				p.ShopSuspended = suspended
+				t.store.products[id] = p
+			}
+		}
+	}
+	for eventID, eventType := range t.stagedProcessed {
+		if _, exists := t.store.processedEvents[eventID]; !exists {
+			t.store.processedEvents[eventID] = eventType
+		}
+	}
+	for _, ev := range t.stagedDLQ {
+		cp := ev
+		cp.Payload = append([]byte(nil), ev.Payload...)
+		if cp.CreatedAt.IsZero() {
+			cp.CreatedAt = now
+		}
+		t.store.deadLetterEvents = append(t.store.deadLetterEvents, cp)
 	}
 	for prodID, d := range t.ratingDeltas {
 		if p, ok := t.store.products[prodID]; ok {
@@ -2106,6 +2247,13 @@ func (t *memTx) ListCategoryFeeSchedules(ctx context.Context, categoryID string,
 
 func (t *memTx) CreateProduct(ctx context.Context, p Product) (Product, error) {
 	now := AsOfFromContext(ctx)
+	if !p.ShopSuspended {
+		if suspended, err := t.IsShopSuspended(ctx, p.ShopID); err != nil {
+			return Product{}, err
+		} else if suspended {
+			p.ShopSuspended = true
+		}
+	}
 	p.SearchText = BuildProductSearchText(p.Name, p.Description)
 	p.CreatedAt = now
 	p.UpdatedAt = now
@@ -2183,6 +2331,7 @@ func (t *memTx) UpdateProduct(ctx context.Context, p Product) (Product, error) {
 	p.RatingSum = cur.RatingSum
 	p.ReviewCount = cur.ReviewCount
 	p.FirstApprovedAt = cur.FirstApprovedAt
+	p.ShopSuspended = cur.ShopSuspended
 	if (p.Status == ProductStatusApproved || p.Status == ProductStatusOutOfStock) && p.FirstApprovedAt == nil {
 		ts := now
 		p.FirstApprovedAt = &ts
@@ -2467,6 +2616,7 @@ func (t *memTx) enrichWithStaged(s SKU, asOf time.Time) SKU {
 		out.CategoryID = p.CategoryID
 		out.ProductStatus = p.Status
 		out.ProductDeleted = p.DeletedAt != nil
+		out.ShopSuspended = p.ShopSuspended
 	} else {
 		t.store.mu.Lock()
 		if p, ok := t.store.products[s.ProductID]; ok {
@@ -2475,6 +2625,7 @@ func (t *memTx) enrichWithStaged(s SKU, asOf time.Time) SKU {
 			out.CategoryID = p.CategoryID
 			out.ProductStatus = p.Status
 			out.ProductDeleted = p.DeletedAt != nil
+			out.ShopSuspended = p.ShopSuspended
 		}
 		t.store.mu.Unlock()
 	}
@@ -2875,6 +3026,93 @@ func (t *memTx) ListActiveBannedKeywords(_ context.Context) ([]BannedKeyword, er
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+func (t *memTx) LockShopSuspension(_ context.Context, shopID string) error {
+	if shopID == "" || t.lockedShopSet[shopID] {
+		return nil
+	}
+	t.store.getShopLock(shopID).Lock()
+	t.lockedShopSet[shopID] = true
+	t.lockedShops = append(t.lockedShops, shopID)
+	return nil
+}
+
+func (t *memTx) GetShopSuspensionState(_ context.Context, shopID string) (ShopSuspensionState, error) {
+	if st, ok := t.stagedShopSuspension[shopID]; ok {
+		return st, nil
+	}
+	t.store.mu.Lock()
+	defer t.store.mu.Unlock()
+	st, ok := t.store.shopSuspension[shopID]
+	if !ok {
+		return ShopSuspensionState{}, ErrNotFound
+	}
+	return st, nil
+}
+
+func (t *memTx) IsShopSuspended(ctx context.Context, shopID string) (bool, error) {
+	st, err := t.GetShopSuspensionState(ctx, shopID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return st.Suspended, nil
+}
+
+func (t *memTx) UpsertShopSuspensionState(ctx context.Context, shopID string, suspended bool, version int64) (ShopSuspensionState, bool, error) {
+	existing, err := t.GetShopSuspensionState(ctx, shopID)
+	if err == nil && version <= existing.Version {
+		return ShopSuspensionState{}, false, nil
+	}
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return ShopSuspensionState{}, false, err
+	}
+	st := ShopSuspensionState{
+		ShopID:    shopID,
+		Suspended: suspended,
+		Version:   version,
+		UpdatedAt: AsOfFromContext(ctx),
+	}
+	t.stagedShopSuspension[shopID] = st
+	return st, true, nil
+}
+
+func (t *memTx) SetProductsShopSuspendedByShop(_ context.Context, shopID string, suspended bool) error {
+	t.stagedShopProdFlag[shopID] = suspended
+	for id, p := range t.stagedProds {
+		if p.ShopID == shopID {
+			p.ShopSuspended = suspended
+			t.stagedProds[id] = p
+		}
+	}
+	return nil
+}
+
+func (t *memTx) TryInsertProcessedEvent(_ context.Context, eventID, eventType string) (bool, error) {
+	if _, ok := t.stagedProcessed[eventID]; ok {
+		return false, nil
+	}
+	t.store.mu.Lock()
+	_, exists := t.store.processedEvents[eventID]
+	t.store.mu.Unlock()
+	if exists {
+		return false, nil
+	}
+	t.stagedProcessed[eventID] = eventType
+	return true, nil
+}
+
+func (t *memTx) InsertDeadLetterEvent(ctx context.Context, ev DeadLetterEvent) error {
+	cp := ev
+	cp.Payload = append([]byte(nil), ev.Payload...)
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = AsOfFromContext(ctx)
+	}
+	t.stagedDLQ = append(t.stagedDLQ, cp)
+	return nil
 }
 
 func cloneProduct(p Product) Product {

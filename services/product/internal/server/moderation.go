@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
+	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/product/internal/events"
 	"github.com/nexusmart/core/services/product/internal/moderation"
 	"github.com/nexusmart/core/services/product/internal/store"
@@ -36,7 +37,7 @@ type moderationSKU struct {
 // --- Banned Keywords CRUD (Admin — E9/E10/E11) ---
 
 func (s *Server) ListBannedKeywords(ctx context.Context, req *productv1.ListBannedKeywordsRequest) (*productv1.ListBannedKeywordsResponse, error) {
-	if _, err := requireAdmin(ctx); err != nil {
+	if _, err := requireCapability(ctx, auth.CapBannedKeywordsRead); err != nil {
 		return nil, err
 	}
 	actionFilter := ""
@@ -79,7 +80,7 @@ func (s *Server) ListBannedKeywords(ctx context.Context, req *productv1.ListBann
 }
 
 func (s *Server) CreateBannedKeyword(ctx context.Context, req *productv1.CreateBannedKeywordRequest) (*productv1.CreateBannedKeywordResponse, error) {
-	claims, err := requireAdmin(ctx)
+	claims, err := requireCapability(ctx, auth.CapBannedKeywordsWrite)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +122,7 @@ func (s *Server) CreateBannedKeyword(ctx context.Context, req *productv1.CreateB
 }
 
 func (s *Server) UpdateBannedKeyword(ctx context.Context, req *productv1.UpdateBannedKeywordRequest) (*productv1.UpdateBannedKeywordResponse, error) {
-	if _, err := requireAdmin(ctx); err != nil {
+	if _, err := requireCapability(ctx, auth.CapBannedKeywordsWrite); err != nil {
 		return nil, err
 	}
 	id := strings.TrimSpace(req.GetId())
@@ -194,7 +195,7 @@ func (s *Server) UpdateBannedKeyword(ctx context.Context, req *productv1.UpdateB
 }
 
 func (s *Server) DeleteBannedKeyword(ctx context.Context, req *productv1.DeleteBannedKeywordRequest) (*productv1.DeleteBannedKeywordResponse, error) {
-	if _, err := requireAdmin(ctx); err != nil {
+	if _, err := requireCapability(ctx, auth.CapBannedKeywordsWrite); err != nil {
 		return nil, err
 	}
 	id := strings.TrimSpace(req.GetId())
@@ -213,7 +214,7 @@ func (s *Server) DeleteBannedKeyword(ctx context.Context, req *productv1.DeleteB
 
 // PreviewBannedKeyword counts all non-deleted products matching a candidate term and returns up to 20 samples (E11).
 func (s *Server) PreviewBannedKeyword(ctx context.Context, req *productv1.PreviewBannedKeywordRequest) (*productv1.PreviewBannedKeywordResponse, error) {
-	if _, err := requireAdmin(ctx); err != nil {
+	if _, err := requireCapability(ctx, auth.CapBannedKeywordsRead); err != nil {
 		return nil, err
 	}
 	term := strings.TrimSpace(req.GetTerm())
@@ -287,7 +288,7 @@ func (s *Server) PreviewBannedKeyword(ctx context.Context, req *productv1.Previe
 //   - REVIEW rules -> never flip admin-approved products unless a NEW REVIEW keyword (not in flagged_keywords) matches;
 //     never touch HIDDEN or REJECTED products.
 func (s *Server) RescanProductsForBannedContent(ctx context.Context, req *productv1.RescanProductsForBannedContentRequest) (*productv1.RescanProductsForBannedContentResponse, error) {
-	if _, err := requireAdmin(ctx); err != nil {
+	if _, err := requireCapability(ctx, auth.CapBannedKeywordsWrite); err != nil {
 		return nil, err
 	}
 

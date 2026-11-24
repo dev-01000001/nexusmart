@@ -1,4 +1,4 @@
-import { ApiError } from "@/lib/api";
+import { ApiError, getErrorMessage } from "@/lib/api";
 import { formatVnd, formatVoucherBenefit } from "@/lib/format";
 import type { GatewayVoucher } from "@/lib/gateway-types";
 
@@ -70,6 +70,16 @@ export function translateVoucherReason(rawReason?: string): string {
   if (!clean) return "";
 
   const lower = clean.toLowerCase();
+
+  if (lower.includes("shop_suspended") || lower.includes("is suspended")) {
+    if (lower.includes("flash sale")) {
+      return "Gian hàng hiện đang tạm ngưng hoạt động nên ưu đãi Flash sale không được áp dụng.";
+    }
+    if (lower.includes("shop discount") || lower.includes("discount program")) {
+      return "Gian hàng hiện đang tạm ngưng hoạt động nên chương trình giảm giá không được áp dụng.";
+    }
+    return "Gian hàng hiện đang tạm ngưng hoạt động nên mã ưu đãi của gian hàng không thể áp dụng.";
+  }
 
   if (lower.includes("not found")) {
     return "Mã ưu đãi không tồn tại hoặc chưa được mở áp dụng.";
@@ -150,10 +160,48 @@ export function translateVoucherReason(rawReason?: string): string {
   return "Mã ưu đãi chưa đủ điều kiện áp dụng cho đơn hàng hiện tại.";
 }
 
+export type PromotionActionContext =
+  "save_voucher" | "seller_voucher" | "seller_discount_program" | "seller_flash_sale";
+
+const SHOP_SUSPENDED_PROMOTION_MESSAGES: Record<PromotionActionContext, string> = {
+  save_voucher: "Gian hàng hiện đang tạm ngưng hoạt động nên không thể lưu mã ưu đãi này.",
+  seller_voucher:
+    "Gian hàng hiện đang tạm ngưng hoạt động nên không thể tạo, chỉnh sửa hoặc thay đổi trạng thái voucher.",
+  seller_discount_program:
+    "Gian hàng hiện đang tạm ngưng hoạt động nên không thể tạo hoặc cập nhật chương trình giảm giá.",
+  seller_flash_sale:
+    "Gian hàng hiện đang tạm ngưng hoạt động nên không thể đăng ký suất Flash sale.",
+};
+
+export function isShopSuspendedError(err: unknown): boolean {
+  if (!(err instanceof ApiError)) return false;
+  return (
+    err.code === "SHOP_SUSPENDED" ||
+    /\bSHOP_SUSPENDED\b/i.test(err.message) ||
+    /shop\s+is\s+(?:currently\s+)?suspended/i.test(err.message)
+  );
+}
+
+/**
+ * Translates promotion-related API errors (buyer save-voucher & seller voucher / discount / flash sale)
+ * with explicit Vietnamese copy when the shop is suspended (F12), never exposing raw error codes.
+ */
+export function formatPromotionErrorMessage(
+  err: unknown,
+  action: PromotionActionContext,
+  fallback: string
+): string {
+  if (isShopSuspendedError(err)) {
+    return SHOP_SUSPENDED_PROMOTION_MESSAGES[action];
+  }
+  return getErrorMessage(err, fallback);
+}
+
 export interface CheckoutErrorContext {
-  paymentMethod?: "COD" | "VIETQR";
+  paymentMethod?: "COD" | "VIETQR" | "ZALOPAY";
   totalPayableVnd?: number;
   codRejectedCount?: number;
+  codMaxVnd?: number;
   hasVouchers?: boolean;
   isFlashSale?: boolean;
 }
@@ -200,7 +248,19 @@ export function translateCheckoutError(err: unknown, ctx?: CheckoutErrorContext)
   }
 
   if (err.code === "COD_AREA_NOT_SUPPORTED") {
-    return "Khu vực giao hàng hiện chưa hỗ trợ thanh toán khi nhận hàng (COD). Vui lòng đổi địa chỉ hoặc chọn chuyển khoản VietQR.";
+    return "Khu vực giao hàng hiện chưa hỗ trợ thanh toán khi nhận hàng (COD). Vui lòng đổi địa chỉ hoặc chọn phương thức thanh toán trực tuyến.";
+  }
+
+  if (err.code === "SHOP_SUSPENDED") {
+    return "Gian hàng hiện đang tạm ngưng hoạt động nên không thể đặt đơn từ gian hàng này.";
+  }
+
+  if (err.code === "PAYMENT_METHOD_DISABLED") {
+    return "Phương thức thanh toán bạn chọn hiện đang tạm tắt. Vui lòng chọn phương thức khác.";
+  }
+
+  if (err.code === "ORDER_AMOUNT_OUT_OF_RANGE") {
+    return "Giá trị đơn hàng nằm ngoài hạn mức cho phép của phương thức thanh toán đã chọn.";
   }
 
   if (err.code === "CART_NO_AVAILABLE_ITEMS") {
@@ -208,15 +268,18 @@ export function translateCheckoutError(err: unknown, ctx?: CheckoutErrorContext)
   }
 
   if (err.code === "COD_REJECTED_LIMIT_EXCEEDED") {
-    return "Tài khoản tạm không áp dụng thanh toán khi nhận hàng (COD) do vượt giới hạn từ chối nhận hàng. Vui lòng chọn chuyển khoản VietQR.";
+    return "Tài khoản tạm không áp dụng thanh toán khi nhận hàng (COD) do vượt giới hạn từ chối nhận hàng. Vui lòng chọn thanh toán trực tuyến.";
   }
 
   if (err.code === "COD_LIMIT_EXCEEDED") {
-    return `Đơn hàng vượt quá hạn mức thanh toán khi nhận hàng (tối đa ${formatVnd(DEFAULT_COD_MAX_VND)}). Vui lòng chọn chuyển khoản VietQR.`;
+    const limitVnd = typeof ctx?.codMaxVnd === "number" && ctx.codMaxVnd > 0 ? ctx.codMaxVnd : 0;
+    return limitVnd > 0
+      ? `Đơn hàng vượt quá hạn mức thanh toán khi nhận hàng (tối đa ${formatVnd(limitVnd)}). Vui lòng chọn thanh toán trực tuyến.`
+      : "Đơn hàng vượt quá hạn mức thanh toán khi nhận hàng (COD). Vui lòng chọn thanh toán trực tuyến.";
   }
 
   if (err.code === "FLASH_SALE_COD_NOT_ALLOWED") {
-    return "Đơn hàng có sản phẩm Flash sale không hỗ trợ COD. Vui lòng chọn chuyển khoản VietQR.";
+    return "Đơn hàng có sản phẩm Flash sale không hỗ trợ COD. Vui lòng chọn thanh toán trực tuyến (VietQR hoặc ZaloPay).";
   }
 
   if (
@@ -270,10 +333,14 @@ export function translateCheckoutError(err: unknown, ctx?: CheckoutErrorContext)
       if ((ctx.codRejectedCount ?? 0) >= DEFAULT_COD_MAX_REJECTED) {
         return "Tài khoản tạm không áp dụng thanh toán khi nhận hàng (COD). Vui lòng chọn chuyển khoản VietQR.";
       }
-      if ((ctx.totalPayableVnd ?? 0) > DEFAULT_COD_MAX_VND) {
-        return `Đơn hàng vượt quá hạn mức thanh toán khi nhận hàng (tối đa ${formatVnd(DEFAULT_COD_MAX_VND)}). Vui lòng chọn chuyển khoản VietQR.`;
+      if (
+        typeof ctx.codMaxVnd === "number" &&
+        ctx.codMaxVnd > 0 &&
+        (ctx.totalPayableVnd ?? 0) > ctx.codMaxVnd
+      ) {
+        return `Đơn hàng vượt quá hạn mức thanh toán khi nhận hàng (tối đa ${formatVnd(ctx.codMaxVnd)}). Vui lòng chọn thanh toán trực tuyến.`;
       }
-      return "Không thể đặt đơn COD lúc này (có thể do vượt hạn mức COD, tồn kho thay đổi hoặc ưu đãi không còn hiệu lực). Bạn có thể thử chuyển sang VietQR hoặc kiểm tra lại ưu đãi.";
+      return "Không thể đặt đơn COD lúc này (có thể do vượt hạn mức COD, tồn kho thay đổi hoặc ưu đãi không còn hiệu lực). Bạn có thể thử chọn phương thức thanh toán trực tuyến hoặc kiểm tra lại ưu đãi.";
     }
     if (ctx?.hasVouchers) {
       return "Mã ưu đãi hoặc số lượng sản phẩm không còn đủ điều kiện đặt hàng. Vui lòng kiểm tra lại.";
@@ -294,7 +361,8 @@ export interface PaymentStatusView {
   description: string;
 }
 
-export function getPaymentStatusView(rawStatus: string): PaymentStatusView {
+export function getPaymentStatusView(rawStatus: string, method?: string): PaymentStatusView {
+  const isZaloPay = (method ?? "").trim().toUpperCase() === "ZALOPAY";
   switch (rawStatus.toUpperCase()) {
     case "SUCCEEDED":
       return {
@@ -307,22 +375,23 @@ export function getPaymentStatusView(rawStatus: string): PaymentStatusView {
       return {
         label: "Chờ thanh toán",
         tone: "warn",
-        description:
-          "Mở ứng dụng ngân hàng để quét mã VietQR bên dưới. Hệ thống sẽ tự động xác nhận ngay khi nhận được chuyển khoản.",
+        description: isZaloPay
+          ? "Nhấn nút Thanh toán qua ZaloPay bên dưới để mở cổng thanh toán. Hệ thống sẽ tự động xác nhận ngay khi nhận được kết quả."
+          : "Mở ứng dụng ngân hàng để quét mã VietQR bên dưới. Hệ thống sẽ tự động xác nhận ngay khi nhận được chuyển khoản.",
       };
     case "EXPIRED":
       return {
         label: "Hết hạn thanh toán",
         tone: "neg",
         description:
-          "Giao dịch chuyển khoản đã quá thời hạn giữ đơn và đơn hàng đã tự động hủy. Vui lòng đặt lại đơn mới từ giỏ hàng hoặc trang sản phẩm.",
+          "Giao dịch thanh toán đã quá thời hạn giữ đơn và đơn hàng đã tự động hủy. Vui lòng đặt lại đơn mới từ giỏ hàng hoặc trang sản phẩm.",
       };
     case "FAILED":
       return {
         label: "Thanh toán chưa thành công",
         tone: "neg",
         description:
-          "Giao dịch trước đó chưa hoàn tất. Bạn có thể tạo mã VietQR mới để thanh toán lại mà không cần đặt lại giỏ hàng.",
+          "Giao dịch trước đó chưa hoàn tất. Bạn có thể thử thanh toán lại hoặc đổi phương thức thanh toán mà không cần đặt lại giỏ hàng.",
       };
     case "CANCELLED":
       return {

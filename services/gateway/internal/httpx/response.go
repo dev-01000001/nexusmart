@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -104,6 +105,9 @@ func MapGRPCError(err error) (int, string, string) {
 	case codes.Unauthenticated:
 		return http.StatusUnauthorized, "UNAUTHENTICATED", msg
 	case codes.PermissionDenied:
+		if code := extractDomainCode(msg, "MAKER_CHECKER_CONFLICT"); code != "" {
+			return http.StatusForbidden, code, msg
+		}
 		return http.StatusForbidden, "PERMISSION_DENIED", msg
 	case codes.NotFound:
 		return http.StatusNotFound, "NOT_FOUND", msg
@@ -118,6 +122,10 @@ func MapGRPCError(err error) (int, string, string) {
 			"COD_AREA_NOT_SUPPORTED",
 			"COD_REJECTED_LIMIT_EXCEEDED",
 			"OWNER_NAME_CHANGED",
+			"SHOP_SUSPENDED",
+			"PAYMENT_METHOD_DISABLED",
+			"ORDER_AMOUNT_OUT_OF_RANGE",
+			"VERSION_CONFLICT",
 		); code != "" {
 			return http.StatusConflict, code, msg
 		}
@@ -208,20 +216,51 @@ func WriteDecodeError(w http.ResponseWriter, r *http.Request, err error) {
 	WriteError(w, r, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 }
 
-// ParsePagination parses page and page_size query params with defaults (1, 20).
-func ParsePagination(r *http.Request) (page int32, pageSize int32) {
-	page = ParseInt32Query(r, "page", 1)
-	if page <= 0 {
-		page = 1
+// ParsePagination parses page and page_size query params with defaults (1, 20)
+// and caps page_size at 100. It rejects page values whose 0-based SQL offset
+// (page-1)*page_size (or page itself) would exceed math.MaxInt32.
+func ParsePagination(r *http.Request) (page int32, pageSize int32, err error) {
+	pageSize = parsePageSize(r)
+
+	rawPage := strings.TrimSpace(r.URL.Query().Get("page"))
+	if rawPage == "" {
+		return 1, pageSize, nil
 	}
-	pageSize = ParseInt32Query(r, "page_size", 20)
-	if pageSize <= 0 {
-		pageSize = 20
+	page64, parseErr := strconv.ParseInt(rawPage, 10, 64)
+	if parseErr != nil {
+		if errors.Is(parseErr, strconv.ErrRange) && !strings.HasPrefix(rawPage, "-") {
+			return 0, 0, errors.New("page exceeds maximum pagination offset")
+		}
+		return 1, pageSize, nil
 	}
-	if pageSize > 100 {
-		pageSize = 100
+	if page64 <= 0 {
+		return 1, pageSize, nil
 	}
-	return page, pageSize
+	if page64 > math.MaxInt32 || (page64-1)*int64(pageSize) > math.MaxInt32 {
+		return 0, 0, errors.New("page exceeds maximum pagination offset")
+	}
+	return int32(page64), pageSize, nil
+}
+
+func parsePageSize(r *http.Request) int32 {
+	raw := strings.TrimSpace(r.URL.Query().Get("page_size"))
+	if raw == "" {
+		return 20
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(raw, "-") {
+			return 100
+		}
+		return 20
+	}
+	if n <= 0 {
+		return 20
+	}
+	if n > 100 {
+		return 100
+	}
+	return int32(n)
 }
 
 func ParseInt32Query(r *http.Request, key string, def int32) int32 {

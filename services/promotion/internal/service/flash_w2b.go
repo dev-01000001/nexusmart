@@ -10,6 +10,7 @@ import (
 
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	promotionv1 "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1"
+	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/promotion/internal/domain"
 	"github.com/nexusmart/core/services/promotion/internal/lua"
 )
@@ -117,8 +118,8 @@ func (s *PromotionService) ListFlashSaleItems(ctx context.Context, req *promotio
 
 	shopID := strings.TrimSpace(req.GetShopId())
 	switch {
-	case isAdmin(claims):
-		// Admin may filter by any shop_id or leave empty for all shops.
+	case auth.HasCapability(claims, auth.CapFlashSalesRead):
+		// Authorized staff with flash_sales.read may filter by any shop_id or leave empty for all shops.
 	case isSeller(claims):
 		if claims.ShopID == "" {
 			return nil, status.Error(codes.PermissionDenied, "seller account has no shop_id")
@@ -185,8 +186,8 @@ func (s *PromotionService) ListAllFlashSales(ctx context.Context, req *promotion
 	if err != nil {
 		return nil, err
 	}
-	if !isAdmin(claims) && !isSeller(claims) {
-		return nil, status.Error(codes.PermissionDenied, "only sellers or admins can list all flash sales")
+	if !auth.HasCapability(claims, auth.CapFlashSalesRead) && !isSeller(claims) {
+		return nil, status.Error(codes.PermissionDenied, "only sellers or authorized admins can list all flash sales")
 	}
 
 	statusFilter := strings.ToUpper(strings.TrimSpace(req.GetStatus()))

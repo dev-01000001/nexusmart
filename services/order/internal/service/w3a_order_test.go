@@ -829,7 +829,7 @@ func TestW3A_7_ResolveShopPickupAddressNeverFallsBackToBuyer(t *testing.T) {
 				skuID:  "sku-nopickup",
 				setup: func(h *testHarness) {
 					h.user.shops["shop-nopickup"] = &userv1.Shop{
-						Id: "shop-nopickup", OwnerUserId: "seller-np", Name: "No Pickup Shop", ContactPhone: "0933333333",
+						Id: "shop-nopickup", OwnerUserId: "seller-np", Name: "No Pickup Shop", ContactPhone: "0933333333", Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE,
 					}
 					h.product.skus["sku-nopickup"] = &productv1.SKU{
 						Id: "sku-nopickup", ProductId: "p-np", ShopId: "shop-nopickup", ProductName: "Item NP",
@@ -843,7 +843,7 @@ func TestW3A_7_ResolveShopPickupAddressNeverFallsBackToBuyer(t *testing.T) {
 				skuID:  "sku-addr-gone",
 				setup: func(h *testHarness) {
 					h.user.shops["shop-addr-gone"] = &userv1.Shop{
-						Id: "shop-addr-gone", OwnerUserId: "seller-ag", Name: "Gone Addr Shop", PickupAddressId: "addr-deleted",
+						Id: "shop-addr-gone", OwnerUserId: "seller-ag", Name: "Gone Addr Shop", PickupAddressId: "addr-deleted", Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE,
 					}
 					h.product.skus["sku-addr-gone"] = &productv1.SKU{
 						Id: "sku-addr-gone", ProductId: "p-ag", ShopId: "shop-addr-gone", ProductName: "Item AG",
@@ -857,7 +857,7 @@ func TestW3A_7_ResolveShopPickupAddressNeverFallsBackToBuyer(t *testing.T) {
 				skuID:  "sku-noprov",
 				setup: func(h *testHarness) {
 					h.user.shops["shop-noprov"] = &userv1.Shop{
-						Id: "shop-noprov", OwnerUserId: "seller-pr", Name: "No Prov Shop", PickupAddressId: "addr-noprov",
+						Id: "shop-noprov", OwnerUserId: "seller-pr", Name: "No Prov Shop", PickupAddressId: "addr-noprov", Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE,
 					}
 					h.user.addresses["addr-noprov"] = &userv1.Address{
 						Id: "addr-noprov", UserId: "seller-pr", RecipientName: "WH", RecipientPhone: "0944444444",
@@ -1590,7 +1590,7 @@ func verifyR7ReplayBehavior(t *testing.T, svc *OrderService, st store.Store, h *
 	if gErr != nil {
 		t.Fatalf("GetCheckoutGroupByID: %v", gErr)
 	}
-	adminRep, err := svc.buildReplayResponse(context.Background(), grp, callerIdentity{UserID: "admin-1", Role: "admin", IsPrivileged: true})
+	adminRep, err := svc.buildReplayResponse(context.Background(), grp, callerIdentity{UserID: "admin-1", Role: "admin", Claims: &auth.Claims{Role: "admin"}})
 	if err != nil || len(adminRep.Orders) != 1 || adminRep.Orders[0].Status != orderv1.OrderStatus_ORDER_STATUS_CANCELLED ||
 		adminRep.Orders[0].CommissionVnd == 0 || !adminRep.Orders[0].NeedsManualReview {
 		t.Fatalf("admin replay must see CANCELLED + fees + NeedsManualReview, got %+v err=%v", adminRep, err)

@@ -10,6 +10,7 @@ enum PaymentMethod {
   PAYMENT_METHOD_UNSPECIFIED = 0;
   PAYMENT_METHOD_COD = 1;
   PAYMENT_METHOD_VIETQR = 2;
+  PAYMENT_METHOD_ZALOPAY = 3;
 }
 
 enum PaymentStatus {
@@ -27,6 +28,9 @@ enum RefundStatus {
   REFUND_STATUS_PENDING = 1;
   REFUND_STATUS_DONE = 2;
   REFUND_STATUS_FAILED = 3;
+  REFUND_STATUS_PENDING_APPROVAL = 4;
+  REFUND_STATUS_REJECTED = 5;
+  REFUND_STATUS_MANUAL_REVIEW = 6;
 }
 
 enum ReconciliationStatus {
@@ -76,6 +80,8 @@ message Payment {
   google.protobuf.Timestamp expires_at = 13;
   google.protobuf.Timestamp created_at = 14;
   google.protobuf.Timestamp updated_at = 15;
+  // Redirect/deep-link URL for e-wallet payments (e.g. ZaloPay order_url; empty for COD/VietQR) (F1/F8).
+  string pay_url = 16;
 }
 
 message Refund {
@@ -96,6 +102,14 @@ message Refund {
   bool is_late_payment = 14;
   google.protobuf.Timestamp settled_at = 15;
   string settlement_note = 16;
+  // Two-person approval metadata for large manual/return refunds (F11).
+  string requested_by = 17;
+  string approved_by = 18;
+  google.protobuf.Timestamp approved_at = 19;
+  string approval_note = 20;
+  // E-wallet refund idempotency reference (e.g. ZaloPay m_refund_id) and provider status (F4).
+  string provider_m_refund_id = 21;
+  string provider_status = 22;
 }
 
 message AccountBalance {
@@ -179,6 +193,13 @@ message CreateRefundRequest {
   int64 amount_vnd = 3;
   string reason = 4;
   string idempotency_key = 5;
+  // Set true on service-token return refunds triggered by AdminResolveReturn so F11 large-refund
+  // two-person approval applies (automatic saga cancel/failed-delivery refunds leave this false).
+  // End-user admin JWT calls always enforce the large-refund approval threshold regardless of this flag.
+  bool require_approval_if_large = 6;
+  // Honoured only on service-token calls with require_approval_if_large=true to record the maker user ID
+  // for maker!=checker enforcement (ignored on end-user JWT calls where claims.sub is authoritative).
+  string requested_by = 7;
 }
 
 message CreateRefundResponse {
@@ -410,6 +431,58 @@ message ListReconciliationRunsResponse {
   int64 total = 2;
 }
 
+message PaymentMethodConfig {
+  PaymentMethod method = 1;
+  bool enabled = 2;
+  int64 min_order_vnd = 3;
+  // 0 means no upper limit.
+  int64 max_order_vnd = 4;
+  // Payment expiry in minutes (0 for COD).
+  int32 expiry_minutes = 5;
+  // Populated only for callers with payment_methods.read capability; false/empty on public responses.
+  bool credentials_configured = 6;
+  string credential_preview = 7;
+  string updated_by = 8;
+  google.protobuf.Timestamp updated_at = 9;
+  string note = 10;
+  // Monotonic optimistic locking version (F7).
+  int64 version = 11;
+}
+
+message GetPaymentMethodConfigsRequest {
+  // Optional filter; PAYMENT_METHOD_UNSPECIFIED returns all configured methods.
+  PaymentMethod method = 1;
+}
+
+message GetPaymentMethodConfigsResponse {
+  repeated PaymentMethodConfig configs = 1;
+}
+
+message UpdatePaymentMethodConfigRequest {
+  PaymentMethod method = 1;
+  bool enabled = 2;
+  int64 min_order_vnd = 3;
+  int64 max_order_vnd = 4;
+  int32 expiry_minutes = 5;
+  string note = 6;
+  // Required optimistic locking version (F7); version mismatch returns FailedPrecondition (409).
+  int64 expected_version = 7;
+}
+
+message UpdatePaymentMethodConfigResponse {
+  PaymentMethodConfig config = 1;
+}
+
+message DecideRefundApprovalRequest {
+  string refund_id = 1;
+  bool approve = 2;
+  string note = 3;
+}
+
+message DecideRefundApprovalResponse {
+  Refund refund = 1;
+}
+
 service PaymentService {
   rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse);
   rpc GetPayment(GetPaymentRequest) returns (GetPaymentResponse);
@@ -429,4 +502,7 @@ service PaymentService {
   rpc ListSellerLedger(ListSellerLedgerRequest) returns (ListSellerLedgerResponse);
   rpc ImportCodReconciliation(ImportCodReconciliationRequest) returns (ImportCodReconciliationResponse);
   rpc ListReconciliationRuns(ListReconciliationRunsRequest) returns (ListReconciliationRunsResponse);
+  rpc GetPaymentMethodConfigs(GetPaymentMethodConfigsRequest) returns (GetPaymentMethodConfigsResponse);
+  rpc UpdatePaymentMethodConfig(UpdatePaymentMethodConfigRequest) returns (UpdatePaymentMethodConfigResponse);
+  rpc DecideRefundApproval(DecideRefundApprovalRequest) returns (DecideRefundApprovalResponse);
 }

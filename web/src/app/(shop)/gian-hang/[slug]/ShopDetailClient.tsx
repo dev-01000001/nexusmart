@@ -5,7 +5,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import type { GatewayVoucher } from "@/lib/gateway-types";
-import { api, ApiError, getErrorMessage } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
+import { formatPromotionErrorMessage } from "@/features/checkout/messages";
 import type {
   CatalogCategory,
   CatalogProduct,
@@ -185,7 +186,9 @@ export function ShopDetailClient({
         router.push(`/dang-nhap?next=${encodeURIComponent(getCurrentReturnPath(pathname))}`);
         return;
       }
-      showToast(getErrorMessage(err, "Không thể lưu mã ưu đãi lúc này."));
+      showToast(
+        formatPromotionErrorMessage(err, "save_voucher", "Không thể lưu mã ưu đãi lúc này.")
+      );
     } finally {
       setSavingVoucherId(null);
     }

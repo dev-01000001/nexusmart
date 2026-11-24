@@ -952,7 +952,7 @@ function SellerFinanceInner({ shop }: { shop: GatewayShop }) {
 
 function SellerFinanceContent() {
   return (
-    <SellerShopGate pageTitle="Tài chính & đối soát">
+    <SellerShopGate pageTitle="Tài chính & đối soát" allowSuspended>
       {(shop) => <SellerFinanceInner shop={shop} />}
     </SellerShopGate>
   );

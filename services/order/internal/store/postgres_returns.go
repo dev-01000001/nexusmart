@@ -28,18 +28,19 @@ func buildReturnUpdatedOutbox(
 	checkoutGroupID, prevStatus, reason, actorRole, traceID, traceparent string,
 ) (db.InsertOutboxEventParams, error) {
 	payloadBytes, err := json.Marshal(events.OrderReturnUpdatedPayload{
-		ReturnRequestID:    rr.ID,
-		OrderID:            rr.OrderID,
-		OrderCode:          rr.OrderCode,
-		CheckoutGroupID:    checkoutGroupID,
-		BuyerID:            rr.BuyerID,
-		ShopID:             rr.ShopID,
-		Status:             rr.Status,
-		PreviousStatus:     prevStatus,
-		Reason:             reason,
-		ReturnTrackingCode: rr.ReturnTrackingCode,
-		DeadlineAt:         formatOptionalRFC3339(rr.DeadlineAt),
-		ActorRole:          actorRole,
+		ReturnRequestID:      rr.ID,
+		OrderID:              rr.OrderID,
+		OrderCode:            rr.OrderCode,
+		CheckoutGroupID:      checkoutGroupID,
+		BuyerID:              rr.BuyerID,
+		ShopID:               rr.ShopID,
+		Status:               rr.Status,
+		PreviousStatus:       prevStatus,
+		Reason:               reason,
+		ReturnTrackingCode:   rr.ReturnTrackingCode,
+		DeadlineAt:           formatOptionalRFC3339(rr.DeadlineAt),
+		ActorRole:            actorRole,
+		RefundApprovalStatus: rr.RefundApprovalStatus,
 	})
 	if err != nil {
 		return db.InsertOutboxEventParams{}, err
@@ -215,6 +216,26 @@ func (s *PostgresStore) TransitionReturnRequest(ctx context.Context, params Retu
 	if params.EscalatedFromCancelFailure != nil {
 		nextEscCancelFail = *params.EscalatedFromCancelFailure
 	}
+	nextRequireApproval := rr.RequireApprovalIfLarge
+	if params.RequireApprovalIfLarge != nil {
+		nextRequireApproval = *params.RequireApprovalIfLarge
+	}
+	nextRefundRequestedBy := rr.RefundRequestedBy
+	if params.RefundRequestedBy != nil {
+		nextRefundRequestedBy = *params.RefundRequestedBy
+	}
+	nextRefundID := rr.RefundID
+	if params.RefundID != nil {
+		nextRefundID = *params.RefundID
+	}
+	nextRefundApprovalStatus := rr.RefundApprovalStatus
+	if params.RefundApprovalStatus != nil {
+		nextRefundApprovalStatus = *params.RefundApprovalStatus
+	}
+	nextRefundAttempt := rr.RefundAttempt
+	if params.IncrementRefundAttempt {
+		nextRefundAttempt++
+	}
 	nextExtCount := rr.DeadlineExtensionCount
 	nextPrevTrackings := rr.PreviousReturnTrackingsJSON
 	if len(nextPrevTrackings) == 0 {
@@ -323,6 +344,36 @@ func (s *PostgresStore) TransitionReturnRequest(ctx context.Context, params Retu
 		if _, err := completeOrderInTx(ctx, q, ord, params.ActorID, params.ActorRole, params.Note, completedOutbox); err != nil {
 			return nil, err
 		}
+	} else if curStatus == orderv1.ReturnStatus_RETURN_STATUS_REFUNDING &&
+		params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_ESCALATED {
+		// F11: Large refund approval was rejected by checker before any refund/promo/restock ran.
+		// Re-escalate the return cleanly and restore order RETURNED -> RETURN_REQUESTED so admin can re-arbitrate.
+		if rr.RefundDone || rr.PromoReleased || rr.RestockDone {
+			return nil, fmt.Errorf("%w: cannot re-escalate REFUNDING return after refund/compensation already executed", statemachine.ErrInvalidReturnTransition)
+		}
+		ordCur := statemachine.StringToStatus(ord.Status)
+		if ordCur == orderv1.OrderStatus_ORDER_STATUS_RETURNED {
+			if err := statemachine.ValidateTransition(ordCur, orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED); err != nil {
+				return nil, err
+			}
+			if _, err := q.UpdateOrderStatus(ctx, db.UpdateOrderStatusParams{
+				ID:     ord.ID,
+				Status: statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED),
+			}); err != nil {
+				return nil, err
+			}
+			if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+				ID:         uuid.NewString(),
+				OrderID:    ord.ID,
+				FromStatus: ord.Status,
+				ToStatus:   statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED),
+				ActorID:    params.ActorID,
+				ActorRole:  params.ActorRole,
+				Note:       params.Note,
+			}); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	prevStatusStr := rr.Status
@@ -369,6 +420,11 @@ func (s *PostgresStore) TransitionReturnRequest(ctx context.Context, params Retu
 		DeadlineExtensionCount:      nextExtCount,
 		EscalatedFromTransitTimeout: nextEscTransit,
 		EscalatedFromCancelFailure:  nextEscCancelFail,
+		RequireApprovalIfLarge:      nextRequireApproval,
+		RefundRequestedBy:           nextRefundRequestedBy,
+		RefundID:                    nextRefundID,
+		RefundApprovalStatus:        nextRefundApprovalStatus,
+		RefundAttempt:               nextRefundAttempt,
 	})
 	if err != nil {
 		return nil, err
@@ -386,7 +442,17 @@ func (s *PostgresStore) TransitionReturnRequest(ctx context.Context, params Retu
 		return nil, err
 	}
 
-	ob, err := buildReturnUpdatedOutbox(updatedRR, ord.CheckoutGroupID, prevStatusStr, eventNote, params.ActorRole, params.TraceID, params.Traceparent)
+	outboxReason := strings.TrimSpace(params.OutboxReason)
+	if outboxReason == "" {
+		if curStatus == orderv1.ReturnStatus_RETURN_STATUS_REFUNDING &&
+			params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_ESCALATED &&
+			strings.EqualFold(updatedRR.RefundApprovalStatus, "REJECTED") {
+			outboxReason = "refund_rejected"
+		} else {
+			outboxReason = eventNote
+		}
+	}
+	ob, err := buildReturnUpdatedOutbox(updatedRR, ord.CheckoutGroupID, prevStatusStr, outboxReason, params.ActorRole, params.TraceID, params.Traceparent)
 	if err != nil {
 		return nil, err
 	}
@@ -549,12 +615,71 @@ func (s *PostgresStore) UpdateReturnSideEffectProgress(ctx context.Context, retu
 		}
 	}
 	updated, err := q.UpdateReturnRequestSideEffects(ctx, db.UpdateReturnRequestSideEffectsParams{
-		ID:                 rr.ID,
-		RefundDone:         rr.RefundDone || refundDone,
-		PromoReleased:      rr.PromoReleased || promoReleased,
-		RestockDone:        rr.RestockDone || restockDone,
-		UpdateRefundAmount: updAmt,
-		RefundAmountVND:    amt,
+		ID:                         rr.ID,
+		RefundDone:                 rr.RefundDone || refundDone,
+		PromoReleased:              rr.PromoReleased || promoReleased,
+		RestockDone:                rr.RestockDone || restockDone,
+		UpdateRefundAmount:         updAmt,
+		RefundAmountVND:            amt,
+		UpdateRefundID:             false,
+		RefundID:                   rr.RefundID,
+		UpdateRefundApprovalStatus: false,
+		RefundApprovalStatus:       rr.RefundApprovalStatus,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (s *PostgresStore) UpdateReturnRefundApprovalState(ctx context.Context, returnRequestID, refundID, approvalStatus string, refundDone bool, refundAmountVND *int64) (*db.ReturnRequest, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := s.queries.WithTx(tx)
+	rr, err := q.GetReturnRequestByIDForUpdate(ctx, returnRequestID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	cleanApprovalStatus := strings.TrimSpace(approvalStatus)
+	if statemachine.StringToReturnStatus(rr.Status) != orderv1.ReturnStatus_RETURN_STATUS_REFUNDING {
+		return nil, fmt.Errorf("%w: cannot update refund approval state from return status %s", statemachine.ErrInvalidReturnTransition, rr.Status)
+	}
+	if strings.EqualFold(cleanApprovalStatus, "PENDING_APPROVAL") &&
+		(rr.RefundDone || strings.EqualFold(rr.RefundApprovalStatus, "APPROVED") || strings.EqualFold(rr.RefundApprovalStatus, "REJECTED")) {
+		return nil, fmt.Errorf("%w: cannot downgrade refund approval status from %q to PENDING_APPROVAL", statemachine.ErrInvalidReturnTransition, rr.RefundApprovalStatus)
+	}
+	var updAmt bool
+	var amt int64
+	if refundAmountVND != nil {
+		updAmt = true
+		amt = *refundAmountVND
+		if amt < 0 {
+			amt = 0
+		}
+	}
+	nextRefundID := strings.TrimSpace(refundID)
+	updRefundID := nextRefundID != ""
+	updated, err := q.UpdateReturnRequestSideEffects(ctx, db.UpdateReturnRequestSideEffectsParams{
+		ID:                         rr.ID,
+		RefundDone:                 rr.RefundDone || refundDone,
+		PromoReleased:              rr.PromoReleased,
+		RestockDone:                rr.RestockDone,
+		UpdateRefundAmount:         updAmt,
+		RefundAmountVND:            amt,
+		UpdateRefundID:             updRefundID,
+		RefundID:                   nextRefundID,
+		UpdateRefundApprovalStatus: true,
+		RefundApprovalStatus:       cleanApprovalStatus,
 	})
 	if err != nil {
 		return nil, err
@@ -761,6 +886,11 @@ func (s *PostgresStore) ApplyReturnShipmentUpdate(ctx context.Context, params Re
 		DeadlineExtensionCount:      nextExtCount,
 		EscalatedFromTransitTimeout: rr.EscalatedFromTransitTimeout,
 		EscalatedFromCancelFailure:  rr.EscalatedFromCancelFailure,
+		RequireApprovalIfLarge:      rr.RequireApprovalIfLarge,
+		RefundRequestedBy:           rr.RefundRequestedBy,
+		RefundID:                    rr.RefundID,
+		RefundApprovalStatus:        rr.RefundApprovalStatus,
+		RefundAttempt:               rr.RefundAttempt,
 	})
 	if err != nil {
 		return nil, err

@@ -825,7 +825,7 @@ export const PLATFORM_CHANGELOG: PlatformChangelogEntry[] = [
     title: "Mở rộng giao hàng toàn quốc đủ 34 tỉnh thành",
     changes: [
       "Cập nhật đầy đủ danh sách 34 tỉnh, thành phố và phường, xã giúp nhập địa chỉ giao hàng nhanh hơn.",
-      "Cập nhật tình trạng còn hàng theo màu và size tại từng kho xưởng cùng 3 hình thức thanh toán: COD, chuyển khoản VietQR và Ví NexusPay.",
+      "Cập nhật tình trạng còn hàng theo màu và size tại từng kho xưởng cùng 3 hình thức thanh toán: COD, chuyển khoản VietQR và Ví ZaloPay.",
     ],
   },
 ];
@@ -1053,7 +1053,7 @@ export const HELP_FAQ_ITEMS: HelpFaqItem[] = [
     id: "faq-pay-1",
     topic: "thanh-toan-vat",
     scope: "san",
-    question: "Nếu thanh toán VietQR hoặc Ví NexusPay bị gián đoạn thì đơn hàng có bị hủy không?",
+    question: "Nếu thanh toán VietQR hoặc Ví ZaloPay bị gián đoạn thì đơn hàng có bị hủy không?",
     answer:
       "Không. Hệ thống giữ nguyên đơn ở trạng thái Chờ thanh toán để bạn bấm Thanh toán lại hoặc chuyển sang phương thức thanh toán khác (như COD) ngay trong Lịch sử đơn hàng mà không cần chọn lại sản phẩm.",
   },

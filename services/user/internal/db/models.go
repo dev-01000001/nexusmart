@@ -47,6 +47,22 @@ type CodRejection struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type OutboxEvent struct {
+	ID           string     `json:"id"`
+	Seq          int64      `json:"seq"`
+	AggregateID  string     `json:"aggregate_id"`
+	EventType    string     `json:"event_type"`
+	TraceID      string     `json:"trace_id"`
+	Traceparent  string     `json:"traceparent"`
+	PayloadJSON  []byte     `json:"payload_json"`
+	PublishedAt  *time.Time `json:"published_at"`
+	ClaimedUntil *time.Time `json:"claimed_until"`
+	ClaimToken   string     `json:"claim_token"`
+	Attempts     int32      `json:"attempts"`
+	LastError    string     `json:"last_error"`
+	CreatedAt    time.Time  `json:"created_at"`
+}
+
 type PasswordReset struct {
 	ID        string     `json:"id"`
 	UserID    string     `json:"user_id"`
@@ -68,19 +84,22 @@ type RefreshToken struct {
 }
 
 type Shop struct {
-	ID                 string    `json:"id"`
-	OwnerUserID        string    `json:"owner_user_id"`
-	Name               string    `json:"name"`
-	Description        string    `json:"description"`
-	PickupAddressID    string    `json:"pickup_address_id"`
-	ContactPhone       string    `json:"contact_phone"`
-	BusinessLicenseDoc string    `json:"business_license_doc"`
-	Status             string    `json:"status"`
-	RejectionReason    string    `json:"rejection_reason"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
-	Slug               string    `json:"slug"`
-	VerifiedOwnerName  string    `json:"verified_owner_name"`
+	ID                 string     `json:"id"`
+	OwnerUserID        string     `json:"owner_user_id"`
+	Name               string     `json:"name"`
+	Description        string     `json:"description"`
+	PickupAddressID    string     `json:"pickup_address_id"`
+	ContactPhone       string     `json:"contact_phone"`
+	BusinessLicenseDoc string     `json:"business_license_doc"`
+	Status             string     `json:"status"`
+	RejectionReason    string     `json:"rejection_reason"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	Slug               string     `json:"slug"`
+	VerifiedOwnerName  string     `json:"verified_owner_name"`
+	SuspendedAt        *time.Time `json:"suspended_at"`
+	SuspendedReason    string     `json:"suspended_reason"`
+	StatusVersion      int64      `json:"status_version"`
 }
 
 type ShopBankAccount struct {
@@ -105,6 +124,20 @@ type ShopBankAccount struct {
 	AccountNumberEnc    []byte     `json:"account_number_enc"`
 }
 
+type ShopSuspensionApproval struct {
+	ID            string     `json:"id"`
+	ShopID        string     `json:"shop_id"`
+	Status        string     `json:"status"`
+	Reason        string     `json:"reason"`
+	RequestedBy   string     `json:"requested_by"`
+	RequestedRole string     `json:"requested_role"`
+	DecidedBy     *string    `json:"decided_by"`
+	DecidedRole   string     `json:"decided_role"`
+	DecidedNote   string     `json:"decided_note"`
+	CreatedAt     time.Time  `json:"created_at"`
+	DecidedAt     *time.Time `json:"decided_at"`
+}
+
 type User struct {
 	ID               string    `json:"id"`
 	FullName         string    `json:"full_name"`
@@ -120,4 +153,14 @@ type User struct {
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 	LockReason       string    `json:"lock_reason"`
+}
+
+type UserActivityLog struct {
+	ID           string    `json:"id"`
+	UserID       string    `json:"user_id"`
+	EventType    string    `json:"event_type"`
+	Category     string    `json:"category"`
+	IPAddress    string    `json:"ip_address"`
+	MetadataJSON string    `json:"metadata_json"`
+	CreatedAt    time.Time `json:"created_at"`
 }

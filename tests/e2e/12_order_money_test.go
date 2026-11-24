@@ -368,7 +368,9 @@ func TestE2E_OrderMoneyAndLifecycleFixes(t *testing.T) {
 
 		// Attempting retry after group cancel -> MUST return 409 Conflict!
 		retryCancelledPath := fmt.Sprintf("/api/v1/payments/%s/retry", url.PathEscape(newPayID))
-		env.mustDoJSON(t, http.MethodPost, retryCancelledPath, buyer.AccessToken, nil, map[string]string{
+		env.mustDoJSON(t, http.MethodPost, retryCancelledPath, buyer.AccessToken, map[string]string{
+			"Idempotency-Key": "ordfix-d-retry-cancelled-" + uuid.NewString(),
+		}, map[string]string{
 			"method": "VIETQR",
 		}, http.StatusConflict)
 	})

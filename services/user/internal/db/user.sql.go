@@ -85,6 +85,9 @@ SELECT
     s.created_at,
     s.updated_at,
     s.slug,
+    s.suspended_at,
+    s.suspended_reason,
+    s.status_version,
     EXISTS (
         SELECT 1 FROM shop_bank_accounts sba
         WHERE sba.shop_id = s.id
@@ -112,19 +115,22 @@ type AdminListShopsParams struct {
 }
 
 type AdminListShopsRow struct {
-	ID                 string    `json:"id"`
-	OwnerUserID        string    `json:"owner_user_id"`
-	Name               string    `json:"name"`
-	Description        string    `json:"description"`
-	PickupAddressID    string    `json:"pickup_address_id"`
-	ContactPhone       string    `json:"contact_phone"`
-	BusinessLicenseDoc string    `json:"business_license_doc"`
-	Status             string    `json:"status"`
-	RejectionReason    string    `json:"rejection_reason"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
-	Slug               string    `json:"slug"`
-	BankReviewPending  bool      `json:"bank_review_pending"`
+	ID                 string     `json:"id"`
+	OwnerUserID        string     `json:"owner_user_id"`
+	Name               string     `json:"name"`
+	Description        string     `json:"description"`
+	PickupAddressID    string     `json:"pickup_address_id"`
+	ContactPhone       string     `json:"contact_phone"`
+	BusinessLicenseDoc string     `json:"business_license_doc"`
+	Status             string     `json:"status"`
+	RejectionReason    string     `json:"rejection_reason"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	Slug               string     `json:"slug"`
+	SuspendedAt        *time.Time `json:"suspended_at"`
+	SuspendedReason    string     `json:"suspended_reason"`
+	StatusVersion      int64      `json:"status_version"`
+	BankReviewPending  bool       `json:"bank_review_pending"`
 }
 
 func (q *Queries) AdminListShops(ctx context.Context, arg AdminListShopsParams) ([]AdminListShopsRow, error) {
@@ -154,7 +160,91 @@ func (q *Queries) AdminListShops(ctx context.Context, arg AdminListShopsParams) 
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Slug,
+			&i.SuspendedAt,
+			&i.SuspendedReason,
+			&i.StatusVersion,
 			&i.BankReviewPending,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const claimPendingOutboxEvents = `-- name: ClaimPendingOutboxEvents :many
+WITH locked AS (
+    SELECT e.id,
+           COALESCE(NULLIF(e.aggregate_id, ''), e.id) AS agg_id,
+           e.seq
+    FROM outbox_events e
+    WHERE e.published_at IS NULL
+      AND (e.claimed_until IS NULL OR e.claimed_until <= NOW())
+      AND NOT EXISTS (
+          SELECT 1
+          FROM outbox_events prev
+          WHERE prev.published_at IS NULL
+            AND COALESCE(NULLIF(prev.aggregate_id, ''), prev.id) = COALESCE(NULLIF(e.aggregate_id, ''), e.id)
+            AND prev.seq < e.seq
+            AND prev.claimed_until IS NOT NULL
+            AND prev.claimed_until > NOW()
+      )
+    ORDER BY e.seq ASC
+    LIMIT $3::int
+    FOR UPDATE OF e SKIP LOCKED
+),
+eligible AS (
+    SELECT l.id
+    FROM locked l
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM outbox_events prev
+        WHERE prev.published_at IS NULL
+          AND COALESCE(NULLIF(prev.aggregate_id, ''), prev.id) = l.agg_id
+          AND prev.seq < l.seq
+          AND NOT EXISTS (SELECT 1 FROM locked l2 WHERE l2.id = prev.id)
+    )
+)
+UPDATE outbox_events o
+SET claimed_until = NOW() + ($1::bigint * INTERVAL '1 millisecond'),
+    claim_token = $2::text
+FROM eligible
+WHERE o.id = eligible.id
+RETURNING o.id, o.seq, o.aggregate_id, o.event_type, o.trace_id, o.traceparent, o.payload_json, o.published_at, o.claimed_until, o.claim_token, o.attempts, o.last_error, o.created_at
+`
+
+type ClaimPendingOutboxEventsParams struct {
+	LeaseMs    int64  `json:"lease_ms"`
+	ClaimToken string `json:"claim_token"`
+	BatchLimit int32  `json:"batch_limit"`
+}
+
+func (q *Queries) ClaimPendingOutboxEvents(ctx context.Context, arg ClaimPendingOutboxEventsParams) ([]OutboxEvent, error) {
+	rows, err := q.db.Query(ctx, claimPendingOutboxEvents, arg.LeaseMs, arg.ClaimToken, arg.BatchLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OutboxEvent{}
+	for rows.Next() {
+		var i OutboxEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.Seq,
+			&i.AggregateID,
+			&i.EventType,
+			&i.TraceID,
+			&i.Traceparent,
+			&i.PayloadJSON,
+			&i.PublishedAt,
+			&i.ClaimedUntil,
+			&i.ClaimToken,
+			&i.Attempts,
+			&i.LastError,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -284,6 +374,24 @@ func (q *Queries) CountShopBankAccountsCreatedSince(ctx context.Context, arg Cou
 	return column_1, err
 }
 
+const countShopSuspensionApprovals = `-- name: CountShopSuspensionApprovals :one
+SELECT COUNT(*)::bigint FROM shop_suspension_approvals
+WHERE ($1::text = '' OR status = $1::text)
+  AND ($2::uuid IS NULL OR shop_id = $2::uuid)
+`
+
+type CountShopSuspensionApprovalsParams struct {
+	Status string  `json:"status"`
+	ShopID *string `json:"shop_id"`
+}
+
+func (q *Queries) CountShopSuspensionApprovals(ctx context.Context, arg CountShopSuspensionApprovalsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countShopSuspensionApprovals, arg.Status, arg.ShopID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countShops = `-- name: CountShops :one
 SELECT COUNT(*)::bigint FROM shops
 WHERE ($1::text = '' OR status = $1::text)
@@ -291,6 +399,33 @@ WHERE ($1::text = '' OR status = $1::text)
 
 func (q *Queries) CountShops(ctx context.Context, status string) (int64, error) {
 	row := q.db.QueryRow(ctx, countShops, status)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countUserActivityLogs = `-- name: CountUserActivityLogs :one
+SELECT COUNT(*)::bigint FROM user_activity_logs
+WHERE user_id = $1::uuid
+  AND ($2::text = '' OR category = $2::text)
+  AND ($3::timestamptz IS NULL OR created_at >= $3::timestamptz)
+  AND ($4::timestamptz IS NULL OR created_at <= $4::timestamptz)
+`
+
+type CountUserActivityLogsParams struct {
+	UserID   string     `json:"user_id"`
+	Category string     `json:"category"`
+	FromTime *time.Time `json:"from_time"`
+	ToTime   *time.Time `json:"to_time"`
+}
+
+func (q *Queries) CountUserActivityLogs(ctx context.Context, arg CountUserActivityLogsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countUserActivityLogs,
+		arg.UserID,
+		arg.Category,
+		arg.FromTime,
+		arg.ToTime,
+	)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -475,7 +610,7 @@ INSERT INTO shops (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9
 )
-RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name
+RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name, suspended_at, suspended_reason, status_version
 `
 
 type CreateShopParams struct {
@@ -517,6 +652,9 @@ func (q *Queries) CreateShop(ctx context.Context, arg CreateShopParams) (Shop, e
 		&i.UpdatedAt,
 		&i.Slug,
 		&i.VerifiedOwnerName,
+		&i.SuspendedAt,
+		&i.SuspendedReason,
+		&i.StatusVersion,
 	)
 	return i, err
 }
@@ -595,6 +733,50 @@ func (q *Queries) CreateShopBankAccount(ctx context.Context, arg CreateShopBankA
 	return i, err
 }
 
+const createShopSuspensionApproval = `-- name: CreateShopSuspensionApproval :one
+INSERT INTO shop_suspension_approvals (
+    id, shop_id, status, reason, requested_by, requested_role, created_at
+) VALUES (
+    $1, $2, 'PENDING', $3, $4, $5, $6
+)
+RETURNING id, shop_id, status, reason, requested_by, requested_role, decided_by, decided_role, decided_note, created_at, decided_at
+`
+
+type CreateShopSuspensionApprovalParams struct {
+	ID            string    `json:"id"`
+	ShopID        string    `json:"shop_id"`
+	Reason        string    `json:"reason"`
+	RequestedBy   string    `json:"requested_by"`
+	RequestedRole string    `json:"requested_role"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+func (q *Queries) CreateShopSuspensionApproval(ctx context.Context, arg CreateShopSuspensionApprovalParams) (ShopSuspensionApproval, error) {
+	row := q.db.QueryRow(ctx, createShopSuspensionApproval,
+		arg.ID,
+		arg.ShopID,
+		arg.Reason,
+		arg.RequestedBy,
+		arg.RequestedRole,
+		arg.CreatedAt,
+	)
+	var i ShopSuspensionApproval
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.Status,
+		&i.Reason,
+		&i.RequestedBy,
+		&i.RequestedRole,
+		&i.DecidedBy,
+		&i.DecidedRole,
+		&i.DecidedNote,
+		&i.CreatedAt,
+		&i.DecidedAt,
+	)
+	return i, err
+}
+
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (
     id, full_name, email, phone, password_hash, role, status, phone_verified
@@ -646,6 +828,53 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 	return i, err
 }
 
+const decideShopSuspensionApproval = `-- name: DecideShopSuspensionApproval :one
+UPDATE shop_suspension_approvals
+SET status = $2,
+    decided_by = $3,
+    decided_role = $4,
+    decided_note = $5,
+    decided_at = $6
+WHERE id = $1
+  AND status = 'PENDING'
+RETURNING id, shop_id, status, reason, requested_by, requested_role, decided_by, decided_role, decided_note, created_at, decided_at
+`
+
+type DecideShopSuspensionApprovalParams struct {
+	ID          string     `json:"id"`
+	Status      string     `json:"status"`
+	DecidedBy   *string    `json:"decided_by"`
+	DecidedRole string     `json:"decided_role"`
+	DecidedNote string     `json:"decided_note"`
+	DecidedAt   *time.Time `json:"decided_at"`
+}
+
+func (q *Queries) DecideShopSuspensionApproval(ctx context.Context, arg DecideShopSuspensionApprovalParams) (ShopSuspensionApproval, error) {
+	row := q.db.QueryRow(ctx, decideShopSuspensionApproval,
+		arg.ID,
+		arg.Status,
+		arg.DecidedBy,
+		arg.DecidedRole,
+		arg.DecidedNote,
+		arg.DecidedAt,
+	)
+	var i ShopSuspensionApproval
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.Status,
+		&i.Reason,
+		&i.RequestedBy,
+		&i.RequestedRole,
+		&i.DecidedBy,
+		&i.DecidedRole,
+		&i.DecidedNote,
+		&i.CreatedAt,
+		&i.DecidedAt,
+	)
+	return i, err
+}
+
 const deleteAddress = `-- name: DeleteAddress :exec
 DELETE FROM addresses
 WHERE id = $1
@@ -656,11 +885,35 @@ func (q *Queries) DeleteAddress(ctx context.Context, id string) error {
 	return err
 }
 
+const deleteExpiredUserActivityLogs = `-- name: DeleteExpiredUserActivityLogs :execrows
+DELETE FROM user_activity_logs
+WHERE id IN (
+    SELECT id FROM user_activity_logs
+    WHERE created_at < $1::timestamptz
+      AND created_at < NOW() - INTERVAL '180 days'
+    ORDER BY created_at ASC
+    LIMIT $2::int
+)
+`
+
+type DeleteExpiredUserActivityLogsParams struct {
+	Cutoff     time.Time `json:"cutoff"`
+	BatchLimit int32     `json:"batch_limit"`
+}
+
+func (q *Queries) DeleteExpiredUserActivityLogs(ctx context.Context, arg DeleteExpiredUserActivityLogsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredUserActivityLogs, arg.Cutoff, arg.BatchLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const existsActiveShopByPickupAddressID = `-- name: ExistsActiveShopByPickupAddressID :one
 SELECT EXISTS (
     SELECT 1 FROM shops
     WHERE pickup_address_id = $1
-      AND status = 'ACTIVE'
+      AND status IN ('ACTIVE', 'SUSPENDED', 'PENDING')
 )::boolean AS used
 `
 
@@ -825,6 +1078,32 @@ func (q *Queries) GetPendingOTPShopBankAccountForUpdate(ctx context.Context, sho
 	return i, err
 }
 
+const getPendingShopSuspensionApprovalByShopID = `-- name: GetPendingShopSuspensionApprovalByShopID :one
+SELECT id, shop_id, status, reason, requested_by, requested_role, decided_by, decided_role, decided_note, created_at, decided_at FROM shop_suspension_approvals
+WHERE shop_id = $1
+  AND status = 'PENDING'
+LIMIT 1
+`
+
+func (q *Queries) GetPendingShopSuspensionApprovalByShopID(ctx context.Context, shopID string) (ShopSuspensionApproval, error) {
+	row := q.db.QueryRow(ctx, getPendingShopSuspensionApprovalByShopID, shopID)
+	var i ShopSuspensionApproval
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.Status,
+		&i.Reason,
+		&i.RequestedBy,
+		&i.RequestedRole,
+		&i.DecidedBy,
+		&i.DecidedRole,
+		&i.DecidedNote,
+		&i.CreatedAt,
+		&i.DecidedAt,
+	)
+	return i, err
+}
+
 const getRefreshTokenByHash = `-- name: GetRefreshTokenByHash :one
 SELECT id, user_id, family_id, token_hash, expires_at, revoked_at, replaced_by_id, created_at FROM refresh_tokens
 WHERE token_hash = $1
@@ -882,7 +1161,7 @@ func (q *Queries) GetShopBankAccountByIDForUpdate(ctx context.Context, id string
 }
 
 const getShopByID = `-- name: GetShopByID :one
-SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name FROM shops
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name, suspended_at, suspended_reason, status_version FROM shops
 WHERE id = $1
 LIMIT 1
 `
@@ -904,12 +1183,15 @@ func (q *Queries) GetShopByID(ctx context.Context, id string) (Shop, error) {
 		&i.UpdatedAt,
 		&i.Slug,
 		&i.VerifiedOwnerName,
+		&i.SuspendedAt,
+		&i.SuspendedReason,
+		&i.StatusVersion,
 	)
 	return i, err
 }
 
 const getShopByIDForUpdate = `-- name: GetShopByIDForUpdate :one
-SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name FROM shops
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name, suspended_at, suspended_reason, status_version FROM shops
 WHERE id = $1
 LIMIT 1
 FOR UPDATE
@@ -932,12 +1214,15 @@ func (q *Queries) GetShopByIDForUpdate(ctx context.Context, id string) (Shop, er
 		&i.UpdatedAt,
 		&i.Slug,
 		&i.VerifiedOwnerName,
+		&i.SuspendedAt,
+		&i.SuspendedReason,
+		&i.StatusVersion,
 	)
 	return i, err
 }
 
 const getShopByName = `-- name: GetShopByName :one
-SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name FROM shops
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name, suspended_at, suspended_reason, status_version FROM shops
 WHERE LOWER(name) = LOWER($1)
 LIMIT 1
 `
@@ -959,12 +1244,15 @@ func (q *Queries) GetShopByName(ctx context.Context, lower string) (Shop, error)
 		&i.UpdatedAt,
 		&i.Slug,
 		&i.VerifiedOwnerName,
+		&i.SuspendedAt,
+		&i.SuspendedReason,
+		&i.StatusVersion,
 	)
 	return i, err
 }
 
 const getShopByOwnerID = `-- name: GetShopByOwnerID :one
-SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name FROM shops
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name, suspended_at, suspended_reason, status_version FROM shops
 WHERE owner_user_id = $1
 ORDER BY created_at DESC
 LIMIT 1
@@ -987,12 +1275,15 @@ func (q *Queries) GetShopByOwnerID(ctx context.Context, ownerUserID string) (Sho
 		&i.UpdatedAt,
 		&i.Slug,
 		&i.VerifiedOwnerName,
+		&i.SuspendedAt,
+		&i.SuspendedReason,
+		&i.StatusVersion,
 	)
 	return i, err
 }
 
 const getShopBySlug = `-- name: GetShopBySlug :one
-SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name FROM shops
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name, suspended_at, suspended_reason, status_version FROM shops
 WHERE slug = $1
 LIMIT 1
 `
@@ -1014,6 +1305,9 @@ func (q *Queries) GetShopBySlug(ctx context.Context, slug string) (Shop, error) 
 		&i.UpdatedAt,
 		&i.Slug,
 		&i.VerifiedOwnerName,
+		&i.SuspendedAt,
+		&i.SuspendedReason,
+		&i.StatusVersion,
 	)
 	return i, err
 }
@@ -1036,6 +1330,57 @@ func (q *Queries) GetShopPlatformCounts(ctx context.Context) (GetShopPlatformCou
 	row := q.db.QueryRow(ctx, getShopPlatformCounts)
 	var i GetShopPlatformCountsRow
 	err := row.Scan(&i.TotalShops, &i.ActiveShops, &i.PendingShops)
+	return i, err
+}
+
+const getShopSuspensionApprovalByID = `-- name: GetShopSuspensionApprovalByID :one
+SELECT id, shop_id, status, reason, requested_by, requested_role, decided_by, decided_role, decided_note, created_at, decided_at FROM shop_suspension_approvals
+WHERE id = $1
+LIMIT 1
+`
+
+func (q *Queries) GetShopSuspensionApprovalByID(ctx context.Context, id string) (ShopSuspensionApproval, error) {
+	row := q.db.QueryRow(ctx, getShopSuspensionApprovalByID, id)
+	var i ShopSuspensionApproval
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.Status,
+		&i.Reason,
+		&i.RequestedBy,
+		&i.RequestedRole,
+		&i.DecidedBy,
+		&i.DecidedRole,
+		&i.DecidedNote,
+		&i.CreatedAt,
+		&i.DecidedAt,
+	)
+	return i, err
+}
+
+const getShopSuspensionApprovalByIDForUpdate = `-- name: GetShopSuspensionApprovalByIDForUpdate :one
+SELECT id, shop_id, status, reason, requested_by, requested_role, decided_by, decided_role, decided_note, created_at, decided_at FROM shop_suspension_approvals
+WHERE id = $1
+LIMIT 1
+FOR UPDATE
+`
+
+func (q *Queries) GetShopSuspensionApprovalByIDForUpdate(ctx context.Context, id string) (ShopSuspensionApproval, error) {
+	row := q.db.QueryRow(ctx, getShopSuspensionApprovalByIDForUpdate, id)
+	var i ShopSuspensionApproval
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.Status,
+		&i.Reason,
+		&i.RequestedBy,
+		&i.RequestedRole,
+		&i.DecidedBy,
+		&i.DecidedRole,
+		&i.DecidedNote,
+		&i.CreatedAt,
+		&i.DecidedAt,
+	)
 	return i, err
 }
 
@@ -1375,6 +1720,77 @@ func (q *Queries) InsertCODRejection(ctx context.Context, arg InsertCODRejection
 	return result.RowsAffected(), nil
 }
 
+const insertOutboxEvent = `-- name: InsertOutboxEvent :exec
+INSERT INTO outbox_events (
+    id, aggregate_id, event_type, trace_id, traceparent, payload_json
+) VALUES (
+    $1, $2, $3, $4, $5, $6
+)
+`
+
+type InsertOutboxEventParams struct {
+	ID          string `json:"id"`
+	AggregateID string `json:"aggregate_id"`
+	EventType   string `json:"event_type"`
+	TraceID     string `json:"trace_id"`
+	Traceparent string `json:"traceparent"`
+	PayloadJSON []byte `json:"payload_json"`
+}
+
+func (q *Queries) InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventParams) error {
+	_, err := q.db.Exec(ctx, insertOutboxEvent,
+		arg.ID,
+		arg.AggregateID,
+		arg.EventType,
+		arg.TraceID,
+		arg.Traceparent,
+		arg.PayloadJSON,
+	)
+	return err
+}
+
+const insertUserActivityLog = `-- name: InsertUserActivityLog :one
+INSERT INTO user_activity_logs (
+    id, user_id, event_type, category, ip_address, metadata_json, created_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7
+)
+RETURNING id, user_id, event_type, category, ip_address, metadata_json, created_at
+`
+
+type InsertUserActivityLogParams struct {
+	ID           string    `json:"id"`
+	UserID       string    `json:"user_id"`
+	EventType    string    `json:"event_type"`
+	Category     string    `json:"category"`
+	IPAddress    string    `json:"ip_address"`
+	MetadataJSON string    `json:"metadata_json"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+func (q *Queries) InsertUserActivityLog(ctx context.Context, arg InsertUserActivityLogParams) (UserActivityLog, error) {
+	row := q.db.QueryRow(ctx, insertUserActivityLog,
+		arg.ID,
+		arg.UserID,
+		arg.EventType,
+		arg.Category,
+		arg.IPAddress,
+		arg.MetadataJSON,
+		arg.CreatedAt,
+	)
+	var i UserActivityLog
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EventType,
+		&i.Category,
+		&i.IPAddress,
+		&i.MetadataJSON,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const invalidateUserPasswordResets = `-- name: InvalidateUserPasswordResets :exec
 UPDATE password_resets
 SET used_at = $2
@@ -1390,34 +1806,6 @@ type InvalidateUserPasswordResetsParams struct {
 func (q *Queries) InvalidateUserPasswordResets(ctx context.Context, arg InvalidateUserPasswordResetsParams) error {
 	_, err := q.db.Exec(ctx, invalidateUserPasswordResets, arg.UserID, arg.UsedAt)
 	return err
-}
-
-const listActiveAdminIDsForUpdate = `-- name: ListActiveAdminIDsForUpdate :many
-SELECT id FROM users
-WHERE role IN ('admin', 'super_admin')
-  AND status = 'ACTIVE'
-ORDER BY id
-FOR UPDATE
-`
-
-func (q *Queries) ListActiveAdminIDsForUpdate(ctx context.Context) ([]string, error) {
-	rows, err := q.db.Query(ctx, listActiveAdminIDsForUpdate)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const listAddressesByUserID = `-- name: ListAddressesByUserID :many
@@ -1605,8 +1993,90 @@ func (q *Queries) ListDailyNewUsersVN(ctx context.Context, arg ListDailyNewUsers
 	return items, nil
 }
 
+const listShopSuspensionApprovals = `-- name: ListShopSuspensionApprovals :many
+SELECT
+    a.id,
+    a.shop_id,
+    a.status,
+    a.reason,
+    a.requested_by,
+    a.requested_role,
+    a.decided_by,
+    a.decided_role,
+    a.decided_note,
+    a.created_at,
+    a.decided_at,
+    s.name AS shop_name
+FROM shop_suspension_approvals a
+JOIN shops s ON s.id = a.shop_id
+WHERE ($1::text = '' OR a.status = $1::text)
+  AND ($2::uuid IS NULL OR a.shop_id = $2::uuid)
+ORDER BY a.created_at DESC, a.id DESC
+LIMIT $4 OFFSET $3
+`
+
+type ListShopSuspensionApprovalsParams struct {
+	Status     string  `json:"status"`
+	ShopID     *string `json:"shop_id"`
+	PageOffset int32   `json:"page_offset"`
+	PageLimit  int32   `json:"page_limit"`
+}
+
+type ListShopSuspensionApprovalsRow struct {
+	ID            string     `json:"id"`
+	ShopID        string     `json:"shop_id"`
+	Status        string     `json:"status"`
+	Reason        string     `json:"reason"`
+	RequestedBy   string     `json:"requested_by"`
+	RequestedRole string     `json:"requested_role"`
+	DecidedBy     *string    `json:"decided_by"`
+	DecidedRole   string     `json:"decided_role"`
+	DecidedNote   string     `json:"decided_note"`
+	CreatedAt     time.Time  `json:"created_at"`
+	DecidedAt     *time.Time `json:"decided_at"`
+	ShopName      string     `json:"shop_name"`
+}
+
+func (q *Queries) ListShopSuspensionApprovals(ctx context.Context, arg ListShopSuspensionApprovalsParams) ([]ListShopSuspensionApprovalsRow, error) {
+	rows, err := q.db.Query(ctx, listShopSuspensionApprovals,
+		arg.Status,
+		arg.ShopID,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListShopSuspensionApprovalsRow{}
+	for rows.Next() {
+		var i ListShopSuspensionApprovalsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ShopID,
+			&i.Status,
+			&i.Reason,
+			&i.RequestedBy,
+			&i.RequestedRole,
+			&i.DecidedBy,
+			&i.DecidedRole,
+			&i.DecidedNote,
+			&i.CreatedAt,
+			&i.DecidedAt,
+			&i.ShopName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listShops = `-- name: ListShops :many
-SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name FROM shops
+SELECT id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name, suspended_at, suspended_reason, status_version FROM shops
 WHERE ($1::text = '' OR status = $1::text)
 ORDER BY created_at DESC
 LIMIT $3 OFFSET $2
@@ -1641,6 +2111,63 @@ func (q *Queries) ListShops(ctx context.Context, arg ListShopsParams) ([]Shop, e
 			&i.UpdatedAt,
 			&i.Slug,
 			&i.VerifiedOwnerName,
+			&i.SuspendedAt,
+			&i.SuspendedReason,
+			&i.StatusVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUserActivityLogs = `-- name: ListUserActivityLogs :many
+SELECT id, user_id, event_type, category, ip_address, metadata_json, created_at FROM user_activity_logs
+WHERE user_id = $1::uuid
+  AND ($2::text = '' OR category = $2::text)
+  AND ($3::timestamptz IS NULL OR created_at >= $3::timestamptz)
+  AND ($4::timestamptz IS NULL OR created_at <= $4::timestamptz)
+ORDER BY created_at DESC, id DESC
+LIMIT $6 OFFSET $5
+`
+
+type ListUserActivityLogsParams struct {
+	UserID     string     `json:"user_id"`
+	Category   string     `json:"category"`
+	FromTime   *time.Time `json:"from_time"`
+	ToTime     *time.Time `json:"to_time"`
+	PageOffset int32      `json:"page_offset"`
+	PageLimit  int32      `json:"page_limit"`
+}
+
+func (q *Queries) ListUserActivityLogs(ctx context.Context, arg ListUserActivityLogsParams) ([]UserActivityLog, error) {
+	rows, err := q.db.Query(ctx, listUserActivityLogs,
+		arg.UserID,
+		arg.Category,
+		arg.FromTime,
+		arg.ToTime,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserActivityLog{}
+	for rows.Next() {
+		var i UserActivityLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.EventType,
+			&i.Category,
+			&i.IPAddress,
+			&i.MetadataJSON,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1719,6 +2246,66 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 		return nil, err
 	}
 	return items, nil
+}
+
+const markOutboxEventAttemptFailed = `-- name: MarkOutboxEventAttemptFailed :one
+UPDATE outbox_events
+SET attempts = attempts + 1,
+    last_error = $2,
+    claimed_until = CASE
+        WHEN $4::boolean THEN
+            NOW() + (LEAST(POWER(2, LEAST(attempts + 1, 6)), 60)::bigint * INTERVAL '1 second')
+        ELSE NULL
+    END,
+    claim_token = ''
+WHERE id = $1
+  AND published_at IS NULL
+  AND claim_token = $3
+RETURNING attempts
+`
+
+type MarkOutboxEventAttemptFailedParams struct {
+	ID           string `json:"id"`
+	LastError    string `json:"last_error"`
+	ClaimToken   string `json:"claim_token"`
+	ApplyBackoff bool   `json:"apply_backoff"`
+}
+
+func (q *Queries) MarkOutboxEventAttemptFailed(ctx context.Context, arg MarkOutboxEventAttemptFailedParams) (int32, error) {
+	row := q.db.QueryRow(ctx, markOutboxEventAttemptFailed,
+		arg.ID,
+		arg.LastError,
+		arg.ClaimToken,
+		arg.ApplyBackoff,
+	)
+	var attempts int32
+	err := row.Scan(&attempts)
+	return attempts, err
+}
+
+const markOutboxEventPublished = `-- name: MarkOutboxEventPublished :execrows
+UPDATE outbox_events
+SET published_at = NOW(),
+    attempts = attempts + 1,
+    last_error = '',
+    claimed_until = NULL,
+    claim_token = ''
+WHERE id = $1
+  AND published_at IS NULL
+  AND claim_token = $2
+`
+
+type MarkOutboxEventPublishedParams struct {
+	ID         string `json:"id"`
+	ClaimToken string `json:"claim_token"`
+}
+
+func (q *Queries) MarkOutboxEventPublished(ctx context.Context, arg MarkOutboxEventPublishedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markOutboxEventPublished, arg.ID, arg.ClaimToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const markPasswordResetUsed = `-- name: MarkPasswordResetUsed :execrows
@@ -1852,6 +2439,28 @@ func (q *Queries) RecordShopBankAccountOTPFailure(ctx context.Context, arg Recor
 	return i, err
 }
 
+const releaseOutboxEventClaims = `-- name: ReleaseOutboxEventClaims :execrows
+UPDATE outbox_events
+SET claimed_until = NULL,
+    claim_token = ''
+WHERE id = ANY($1::text[])
+  AND published_at IS NULL
+  AND claim_token = $2::text
+`
+
+type ReleaseOutboxEventClaimsParams struct {
+	Ids        []string `json:"ids"`
+	ClaimToken string   `json:"claim_token"`
+}
+
+func (q *Queries) ReleaseOutboxEventClaims(ctx context.Context, arg ReleaseOutboxEventClaimsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseOutboxEventClaims, arg.Ids, arg.ClaimToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const resubmitShop = `-- name: ResubmitShop :one
 UPDATE shops
 SET name = $2,
@@ -1863,10 +2472,11 @@ SET name = $2,
     status = 'PENDING',
     rejection_reason = '',
     verified_owner_name = '',
+    status_version = CASE WHEN status <> 'PENDING' THEN status_version + 1 ELSE status_version END,
     updated_at = NOW()
 WHERE id = $1
   AND (status = 'REJECTED' OR (status = 'PENDING' AND btrim(rejection_reason) <> ''))
-RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name
+RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name, suspended_at, suspended_reason, status_version
 `
 
 type ResubmitShopParams struct {
@@ -1904,6 +2514,9 @@ func (q *Queries) ResubmitShop(ctx context.Context, arg ResubmitShopParams) (Sho
 		&i.UpdatedAt,
 		&i.Slug,
 		&i.VerifiedOwnerName,
+		&i.SuspendedAt,
+		&i.SuspendedReason,
+		&i.StatusVersion,
 	)
 	return i, err
 }
@@ -2023,6 +2636,95 @@ type SupersedeShopBankAccountParams struct {
 func (q *Queries) SupersedeShopBankAccount(ctx context.Context, arg SupersedeShopBankAccountParams) error {
 	_, err := q.db.Exec(ctx, supersedeShopBankAccount, arg.ID, arg.UpdatedAt)
 	return err
+}
+
+const suspendShop = `-- name: SuspendShop :one
+UPDATE shops
+SET status = 'SUSPENDED',
+    suspended_at = $2,
+    suspended_reason = $3,
+    status_version = status_version + 1,
+    updated_at = $4
+WHERE id = $1
+  AND status = 'ACTIVE'
+RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name, suspended_at, suspended_reason, status_version
+`
+
+type SuspendShopParams struct {
+	ID              string     `json:"id"`
+	SuspendedAt     *time.Time `json:"suspended_at"`
+	SuspendedReason string     `json:"suspended_reason"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+func (q *Queries) SuspendShop(ctx context.Context, arg SuspendShopParams) (Shop, error) {
+	row := q.db.QueryRow(ctx, suspendShop,
+		arg.ID,
+		arg.SuspendedAt,
+		arg.SuspendedReason,
+		arg.UpdatedAt,
+	)
+	var i Shop
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerUserID,
+		&i.Name,
+		&i.Description,
+		&i.PickupAddressID,
+		&i.ContactPhone,
+		&i.BusinessLicenseDoc,
+		&i.Status,
+		&i.RejectionReason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Slug,
+		&i.VerifiedOwnerName,
+		&i.SuspendedAt,
+		&i.SuspendedReason,
+		&i.StatusVersion,
+	)
+	return i, err
+}
+
+const unsuspendShop = `-- name: UnsuspendShop :one
+UPDATE shops
+SET status = 'ACTIVE',
+    suspended_at = NULL,
+    suspended_reason = '',
+    status_version = status_version + 1,
+    updated_at = $2
+WHERE id = $1
+  AND status = 'SUSPENDED'
+RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name, suspended_at, suspended_reason, status_version
+`
+
+type UnsuspendShopParams struct {
+	ID        string    `json:"id"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (q *Queries) UnsuspendShop(ctx context.Context, arg UnsuspendShopParams) (Shop, error) {
+	row := q.db.QueryRow(ctx, unsuspendShop, arg.ID, arg.UpdatedAt)
+	var i Shop
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerUserID,
+		&i.Name,
+		&i.Description,
+		&i.PickupAddressID,
+		&i.ContactPhone,
+		&i.BusinessLicenseDoc,
+		&i.Status,
+		&i.RejectionReason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Slug,
+		&i.VerifiedOwnerName,
+		&i.SuspendedAt,
+		&i.SuspendedReason,
+		&i.StatusVersion,
+	)
+	return i, err
 }
 
 const updateAddress = `-- name: UpdateAddress :one
@@ -2145,10 +2847,11 @@ UPDATE shops
 SET status = $2,
     rejection_reason = $3,
     verified_owner_name = CASE WHEN $2 = 'ACTIVE' THEN $4 ELSE verified_owner_name END,
+    status_version = CASE WHEN status <> $2 THEN status_version + 1 ELSE status_version END,
     updated_at = NOW()
 WHERE id = $1
   AND status = 'PENDING'
-RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name
+RETURNING id, owner_user_id, name, description, pickup_address_id, contact_phone, business_license_doc, status, rejection_reason, created_at, updated_at, slug, verified_owner_name, suspended_at, suspended_reason, status_version
 `
 
 type UpdateShopReviewParams struct {
@@ -2180,6 +2883,9 @@ func (q *Queries) UpdateShopReview(ctx context.Context, arg UpdateShopReviewPara
 		&i.UpdatedAt,
 		&i.Slug,
 		&i.VerifiedOwnerName,
+		&i.SuspendedAt,
+		&i.SuspendedReason,
+		&i.StatusVersion,
 	)
 	return i, err
 }

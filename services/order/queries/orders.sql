@@ -65,6 +65,10 @@ SET status = CASE
         WHEN payment_status IN ('', 'PENDING') AND qr_code = '' THEN $5
         ELSE qr_code
     END,
+    pay_url = CASE
+        WHEN payment_status IN ('', 'PENDING') AND pay_url = '' THEN sqlc.arg(pay_url)::text
+        ELSE pay_url
+    END,
     payment_expires_at = CASE
         WHEN payment_status IN ('', 'PENDING') THEN COALESCE($6, payment_expires_at)
         ELSE payment_expires_at
@@ -149,14 +153,17 @@ WHERE id = $1;
 
 -- name: UpdateCheckoutGroupPaymentOnRetry :exec
 UPDATE checkout_groups
-SET payment_id = $2,
-    payment_status = $3,
-    qr_url = $4,
-    qr_code = $5,
-    payment_expires_at = $6,
+SET payment_method = $2,
+    payment_id = $3,
+    payment_status = $4,
+    qr_url = $5,
+    qr_code = $6,
+    pay_url = $7,
+    payment_expires_at = $8,
+    pending_stock_confirm = CASE WHEN sqlc.arg(set_pending_stock_confirm)::boolean THEN TRUE ELSE pending_stock_confirm END,
     response_snapshot_json = NULL,
-    retry_idempotency_key = $7,
-    retry_from_payment_id = $8,
+    retry_idempotency_key = $9,
+    retry_from_payment_id = $10,
     updated_at = NOW()
 WHERE id = $1;
 
@@ -276,14 +283,20 @@ WHERE checkout_group_id = $1
   AND (payment_id = '' OR payment_id = $2)
   AND (payment_status IN ('', 'PENDING') OR payment_id = '');
 
--- name: UpdateOrderPaymentInfoByGroup :exec
+-- name: UpdateOrderPaymentOnRetry :one
 UPDATE orders
-SET payment_id = $2,
-    payment_status = $3,
-    payment_expires_at = COALESCE($4, payment_expires_at),
+SET payment_method = $2,
+    payment_id = $3,
+    payment_status = $4,
+    payment_fee_vnd = $5,
+    payment_fee_bps = $6,
+    payment_expires_at = $7,
+    status = CASE WHEN sqlc.arg(confirm_order)::boolean THEN 'CONFIRMED' ELSE status END,
+    confirmed_at = CASE WHEN sqlc.arg(confirm_order)::boolean AND confirmed_at IS NULL THEN NOW() ELSE confirmed_at END,
     updated_at = NOW()
-WHERE checkout_group_id = $1
-  AND status = 'PENDING';
+WHERE id = $1
+  AND status = 'PENDING'
+RETURNING *;
 
 -- name: UpdateOrderStatus :one
 UPDATE orders
@@ -554,6 +567,11 @@ SET status = $2,
     deadline_extension_count = $18,
     escalated_from_transit_timeout = $19,
     escalated_from_cancel_failure = $20,
+    require_approval_if_large = $21,
+    refund_requested_by = $22,
+    refund_id = $23,
+    refund_approval_status = $24,
+    refund_attempt = $25,
     updated_at = NOW()
 WHERE id = $1
 RETURNING *;
@@ -572,6 +590,8 @@ SET refund_done = $2,
     promo_released = $3,
     restock_done = $4,
     refund_amount_vnd = CASE WHEN sqlc.arg(update_refund_amount)::bool THEN sqlc.arg(refund_amount_vnd)::bigint ELSE refund_amount_vnd END,
+    refund_id = CASE WHEN sqlc.arg(update_refund_id)::bool THEN sqlc.arg(refund_id)::text ELSE refund_id END,
+    refund_approval_status = CASE WHEN sqlc.arg(update_refund_approval_status)::bool THEN sqlc.arg(refund_approval_status)::text ELSE refund_approval_status END,
     updated_at = NOW()
 WHERE id = $1
 RETURNING *;
@@ -694,7 +714,7 @@ INSERT INTO dead_letter_events (
 SELECT id, checkout_group_id, payment_id
 FROM orders
 WHERE status = 'PENDING'
-  AND payment_method = 'VIETQR'
+  AND payment_method IN ('VIETQR', 'ZALOPAY')
   AND payment_expires_at IS NOT NULL
   AND payment_expires_at <= NOW()
 ORDER BY random()
@@ -771,10 +791,12 @@ ORDER BY random()
 LIMIT sqlc.arg(batch_limit)::int;
 
 -- ponytail: P2-1 + ORDER BY random(); downstream CreateRefund/ReleasePromotionShop/RestockOrderItems are idempotent.
+-- F11: Skip rows currently awaiting two-person checker approval so watchdog does not re-call CreateRefund every tick.
 -- name: FindRefundingReturnRequests :many
 SELECT id
 FROM return_requests
 WHERE status = 'REFUNDING'
+  AND refund_approval_status <> 'PENDING_APPROVAL'
 ORDER BY random()
 LIMIT sqlc.arg(batch_limit)::int;
 

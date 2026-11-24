@@ -56,6 +56,7 @@ type Options struct {
 	PhoneOTPRateWindow      time.Duration
 	PhoneOTPMaxAttempts     int
 	AddressCatalog          AddressCatalog
+	OutboxTrigger           chan<- struct{}
 	Now                     func() time.Time
 }
 
@@ -124,15 +125,16 @@ func (o Options) withDefaults() Options {
 type Server struct {
 	userv1.UnimplementedUserServiceServer
 
-	store    db.Store
-	sec      security.Store
-	hasher   *password.Hasher
-	authMgr  *auth.Manager
-	pub      events.Publisher
-	bankBox  *secretbox.Box
-	shipping AddressCatalog
-	log      *slog.Logger
-	opts     Options
+	store         db.Store
+	sec           security.Store
+	hasher        *password.Hasher
+	authMgr       *auth.Manager
+	pub           events.Publisher
+	bankBox       *secretbox.Box
+	shipping      AddressCatalog
+	outboxTrigger chan<- struct{}
+	log           *slog.Logger
+	opts          Options
 }
 
 // NewServer constructs a UserService gRPC server.
@@ -146,15 +148,16 @@ func NewServer(
 	opts Options,
 ) *Server {
 	return &Server{
-		store:    store,
-		sec:      sec,
-		hasher:   hasher,
-		authMgr:  authMgr,
-		pub:      pub,
-		bankBox:  opts.BankAccountBox,
-		shipping: opts.AddressCatalog,
-		log:      log,
-		opts:     opts.withDefaults(),
+		store:         store,
+		sec:           sec,
+		hasher:        hasher,
+		authMgr:       authMgr,
+		pub:           pub,
+		bankBox:       opts.BankAccountBox,
+		shipping:      opts.AddressCatalog,
+		outboxTrigger: opts.OutboxTrigger,
+		log:           log,
+		opts:          opts.withDefaults(),
 	}
 }
 
@@ -217,13 +220,13 @@ func (s *Server) requireAuthClaims(ctx context.Context) (*auth.Claims, error) {
 	return claims, nil
 }
 
-func (s *Server) requireAdminClaims(ctx context.Context) (*auth.Claims, error) {
+func (s *Server) requireCapability(ctx context.Context, capName string) (*auth.Claims, error) {
 	claims, err := s.requireAuthClaims(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if !auth.HasRole(claims, RoleAdmin, RoleSuperAdmin) {
-		return nil, status.Error(codes.PermissionDenied, "admin role required")
+	if !auth.HasCapability(claims, capName) {
+		return nil, status.Errorf(codes.PermissionDenied, "missing required capability: %s", capName)
 	}
 	return claims, nil
 }
@@ -237,7 +240,7 @@ func (s *Server) resolveOwnerUserID(ctx context.Context, requestedUserID string)
 	if target == "" {
 		return claims.UserID(), nil
 	}
-	if target != claims.UserID() && !isAdminRole(claims.Role) {
+	if target != claims.UserID() && !isFullAdminRank(claims) {
 		return "", status.Error(codes.PermissionDenied, "cannot access another user's resource")
 	}
 	return target, nil
@@ -451,6 +454,7 @@ func (s *Server) ForgotPassword(ctx context.Context, req *userv1.ForgotPasswordR
 	now := s.now()
 	expiresAt := now.Add(s.opts.PasswordResetTTL)
 
+	rawIP := auditIPFromContext(ctx, nil, "")
 	err = s.store.WithTx(ctx, func(q db.Querier) error {
 		if txErr := q.InvalidateUserPasswordResets(ctx, db.InvalidateUserPasswordResetsParams{
 			UserID: user.ID,
@@ -458,13 +462,17 @@ func (s *Server) ForgotPassword(ctx context.Context, req *userv1.ForgotPasswordR
 		}); txErr != nil {
 			return txErr
 		}
-		_, txErr := q.CreatePasswordReset(ctx, db.CreatePasswordResetParams{
+		if _, txErr := q.CreatePasswordReset(ctx, db.CreatePasswordResetParams{
 			ID:        resetID,
 			UserID:    user.ID,
 			TokenHash: resetHash,
 			ExpiresAt: expiresAt,
+		}); txErr != nil {
+			return txErr
+		}
+		return s.recordActivityTx(ctx, q, user.ID, ActivityEventPasswordResetRequested, ActivityCategoryAuth, rawIP, map[string]any{
+			"source": "self",
 		})
-		return txErr
 	})
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to persist password reset request")
@@ -565,6 +573,11 @@ func (s *Server) ResetPassword(ctx context.Context, req *userv1.ResetPasswordReq
 		if txErr = q.RevokeAllUserRefreshTokens(ctx, user.ID); txErr != nil {
 			return txErr
 		}
+		if txErr = s.recordActivityTx(ctx, q, user.ID, ActivityEventPasswordResetCompleted, ActivityCategoryAuth, auditIPFromContext(ctx, nil, ""), map[string]any{
+			"source": "reset_token",
+		}); txErr != nil {
+			return txErr
+		}
 		if s.sec != nil {
 			if rErr := s.sec.SetRevokedBefore(ctx, user.ID, revokedAt.Unix(), s.revokedBeforeTTL()); rErr != nil {
 				s.log.ErrorContext(ctx, "failed to set revoked_before on password reset", slog.String("user_id", user.ID), slog.String("error", rErr.Error()))
@@ -616,12 +629,17 @@ func (s *Server) Login(ctx context.Context, req *userv1.LoginRequest) (*userv1.L
 		return nil, status.Error(codes.Internal, "failed to lookup user")
 	}
 
+	rawIP := auditIPFromContext(ctx, nil, "")
 	ok, err := s.hasher.Verify(plainPassword, user.PasswordHash)
 	if err != nil || !ok {
 		nowLocked, _, recErr := s.sec.RecordLoginFailure(ctx, email, s.opts.LoginMaxFailedAttempts, s.opts.LoginLockoutDuration)
 		if recErr != nil {
 			s.log.WarnContext(ctx, "failed to record login failure", slog.String("error", recErr.Error()))
 		}
+		s.recordActivityBestEffort(ctx, user.ID, ActivityEventLoginFailed, ActivityCategoryAuth, rawIP, map[string]any{
+			"reason": "invalid_credentials",
+			"locked": nowLocked,
+		})
 		if nowLocked {
 			return nil, status.Error(codes.ResourceExhausted, "account temporarily locked due to too many failed login attempts")
 		}
@@ -630,11 +648,20 @@ func (s *Server) Login(ctx context.Context, req *userv1.LoginRequest) (*userv1.L
 
 	switch user.Status {
 	case StatusPendingVerification:
+		s.recordActivityBestEffort(ctx, user.ID, ActivityEventLoginFailed, ActivityCategoryAuth, rawIP, map[string]any{
+			"reason": "pending_verification",
+		})
 		return nil, status.Error(codes.FailedPrecondition, "account pending verification")
 	case StatusLocked:
+		s.recordActivityBestEffort(ctx, user.ID, ActivityEventLoginFailed, ActivityCategoryAuth, rawIP, map[string]any{
+			"reason": "account_locked",
+		})
 		return nil, status.Error(codes.PermissionDenied, lockedAccountMessage(user.LockReason))
 	case StatusActive:
 	default:
+		s.recordActivityBestEffort(ctx, user.ID, ActivityEventLoginFailed, ActivityCategoryAuth, rawIP, map[string]any{
+			"reason": "account_inactive",
+		})
 		return nil, status.Error(codes.PermissionDenied, "account is not active")
 	}
 
@@ -685,6 +712,11 @@ func (s *Server) Login(ctx context.Context, req *userv1.LoginRequest) (*userv1.L
 		}); txErr != nil {
 			return txErr
 		}
+		if txErr = s.recordActivityTx(ctx, q, u.ID, ActivityEventLoginSucceeded, ActivityCategoryAuth, rawIP, map[string]any{
+			"role": u.Role,
+		}); txErr != nil {
+			return txErr
+		}
 		freshUser = u
 		accessToken = tok
 		refreshPlain = rPlain
@@ -692,6 +724,12 @@ func (s *Server) Login(ctx context.Context, req *userv1.LoginRequest) (*userv1.L
 	})
 	if err != nil {
 		if _, ok := status.FromError(err); ok {
+			switch status.Code(err) {
+			case codes.Unauthenticated, codes.PermissionDenied, codes.FailedPrecondition:
+				s.recordActivityBestEffort(ctx, user.ID, ActivityEventLoginFailed, ActivityCategoryAuth, rawIP, map[string]any{
+					"reason": strings.ToLower(status.Code(err).String()),
+				})
+			}
 			return nil, err
 		}
 		return nil, status.Error(codes.Internal, "failed to issue login session")
@@ -818,7 +856,7 @@ func (s *Server) Logout(ctx context.Context, req *userv1.LogoutRequest) (*userv1
 		tokenHash := hashToken(rawToken)
 		existing, err := s.store.GetRefreshTokenByHash(ctx, tokenHash)
 		if err == nil {
-			if hasClaims && !isAdminRole(claims.Role) && existing.UserID != claims.UserID() {
+			if hasClaims && !isFullAdminRank(claims) && existing.UserID != claims.UserID() {
 				return nil, status.Error(codes.PermissionDenied, "cannot revoke another user's refresh token")
 			}
 			_ = s.store.RevokeRefreshTokenFamily(ctx, existing.FamilyID)
@@ -834,6 +872,9 @@ func (s *Server) Logout(ctx context.Context, req *userv1.LogoutRequest) (*userv1
 		}
 		_ = s.sec.RevokeJTI(ctx, claims.JTI(), ttl)
 	}
+	if hasClaims && claims.Service == "" && isValidUUID(claims.UserID()) {
+		s.recordActivityBestEffort(ctx, claims.UserID(), ActivityEventLogout, ActivityCategoryAuth, auditIPFromContext(ctx, claims, ""), map[string]any{})
+	}
 
 	return &userv1.LogoutResponse{Ok: true}, nil
 }
@@ -848,7 +889,7 @@ func (s *Server) GetProfile(ctx context.Context, req *userv1.GetProfileRequest) 
 		if targetID == "" {
 			targetID = claims.UserID()
 		}
-		if targetID != claims.UserID() && !isAdminRole(claims.Role) {
+		if targetID != claims.UserID() && claims.Service == "" && !isFullAdminRank(claims) {
 			return nil, status.Error(codes.PermissionDenied, "cannot read another user's profile")
 		}
 	}
@@ -878,6 +919,9 @@ func (s *Server) UpdateProfile(ctx context.Context, req *userv1.UpdateProfileReq
 		return nil, status.Error(codes.NotFound, "user not found")
 	}
 
+	claims, _ := auth.ClaimsFromContext(ctx)
+	rawIP := auditIPFromContext(ctx, claims, "")
+
 	var (
 		updated      db.User
 		phoneChanged bool
@@ -891,8 +935,12 @@ func (s *Server) UpdateProfile(ctx context.Context, req *userv1.UpdateProfileReq
 			return txErr
 		}
 
+		changedFields := make([]string, 0, 3)
 		fullName := existing.FullName
 		if v := strings.TrimSpace(req.GetFullName()); v != "" {
+			if v != existing.FullName {
+				changedFields = append(changedFields, "full_name")
+			}
 			fullName = v
 		}
 		existingCanon := canonicalizeAccountPhone(existing.Phone)
@@ -907,6 +955,7 @@ func (s *Server) UpdateProfile(ctx context.Context, req *userv1.UpdateProfileReq
 				phone = newPhone
 				phoneVerified = false
 				phoneChanged = true
+				changedFields = append(changedFields, "phone")
 			} else {
 				// Same phone in another format (e.g. "+84..." or spaces/hyphens): treat as unchanged,
 				// preserve phone_verified, and persist canonical form.
@@ -915,6 +964,9 @@ func (s *Server) UpdateProfile(ctx context.Context, req *userv1.UpdateProfileReq
 		}
 		avatarURL := existing.AvatarURL
 		if v := strings.TrimSpace(req.GetAvatarUrl()); v != "" {
+			if v != existing.AvatarURL {
+				changedFields = append(changedFields, "avatar_url")
+			}
 			avatarURL = v
 		}
 
@@ -931,7 +983,18 @@ func (s *Server) UpdateProfile(ctx context.Context, req *userv1.UpdateProfileReq
 			}
 			return txErr
 		}
-		return nil
+
+		meta := map[string]any{
+			"changed_fields": changedFields,
+		}
+		if phoneChanged {
+			meta["phone_masked"] = maskVNPhone(updated.Phone)
+		}
+		if claims != nil && claims.UserID() != "" && claims.UserID() != updated.ID {
+			meta["actor_id"] = claims.UserID()
+			meta["actor_role"] = claims.Role
+		}
+		return s.recordActivityTx(ctx, q, updated.ID, ActivityEventProfileUpdated, ActivityCategoryProfile, rawIP, meta)
 	})
 	if err != nil {
 		if _, ok := status.FromError(err); ok {
@@ -965,7 +1028,7 @@ func (s *Server) ValidateUser(ctx context.Context, req *userv1.ValidateUserReque
 	if targetID == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id is required")
 	}
-	if targetID != claims.UserID() && !isAdminRole(claims.Role) {
+	if targetID != claims.UserID() && !isFullAdminRank(claims) {
 		return nil, status.Error(codes.PermissionDenied, "cannot validate another user")
 	}
 	if !isValidUUID(targetID) {
@@ -991,7 +1054,7 @@ func (s *Server) ValidateUser(ctx context.Context, req *userv1.ValidateUserReque
 }
 
 func (s *Server) AdminListUsers(ctx context.Context, req *userv1.AdminListUsersRequest) (*userv1.AdminListUsersResponse, error) {
-	if _, err := s.requireAdminClaims(ctx); err != nil {
+	if _, err := s.requireCapability(ctx, auth.CapUsersRead); err != nil {
 		return nil, err
 	}
 
@@ -1030,7 +1093,7 @@ func (s *Server) AdminListUsers(ctx context.Context, req *userv1.AdminListUsersR
 }
 
 func (s *Server) AdminUpdateUserStatus(ctx context.Context, req *userv1.AdminUpdateUserStatusRequest) (*userv1.AdminUpdateUserStatusResponse, error) {
-	claims, err := s.requireAdminClaims(ctx)
+	claims, err := s.requireCapability(ctx, auth.CapUsersStatusWrite)
 	if err != nil {
 		return nil, err
 	}
@@ -1054,29 +1117,21 @@ func (s *Server) AdminUpdateUserStatus(ctx context.Context, req *userv1.AdminUpd
 	if newStatus == StatusLocked {
 		lockReason = reason
 	}
+	rawIP := auditIPFromContext(ctx, claims, "")
 
 	var updated db.User
 	err = s.store.WithTx(ctx, func(q db.Querier) error {
-		var activeAdmins []string
-		if newStatus == StatusLocked {
-			var txErr error
-			activeAdmins, txErr = q.ListActiveAdminIDsForUpdate(ctx)
-			if txErr != nil {
-				return txErr
-			}
-		}
-		target, txErr := q.GetUserByID(ctx, targetID)
+		target, txErr := q.GetUserByIDForUpdate(ctx, targetID)
 		if txErr != nil {
 			if isNotFoundErr(txErr) {
 				return status.Error(codes.NotFound, "target user not found")
 			}
 			return txErr
 		}
-		if target.Role == RoleSuperAdmin && !strings.EqualFold(claims.Role, RoleSuperAdmin) {
-			return status.Error(codes.PermissionDenied, "only super_admin can modify a super_admin account")
-		}
-		if isAdminRole(target.Role) && target.Status == StatusActive && newStatus == StatusLocked && len(activeAdmins) <= 1 {
-			return status.Error(codes.FailedPrecondition, "cannot lock the last active admin")
+		// F10: self-lock is already blocked above with FailedPrecondition, and strict
+		// RoleRank(actor) > RoleRank(target) blocks locking any super_admin (protecting the last super_admin).
+		if !auth.CanActOnTargetRole(claims.Role, target.Role) {
+			return status.Error(codes.PermissionDenied, "cannot modify an account with equal or higher role")
 		}
 
 		updated, txErr = q.UpdateUserStatus(ctx, db.UpdateUserStatusParams{
@@ -1102,7 +1157,16 @@ func (s *Server) AdminUpdateUserStatus(ctx context.Context, req *userv1.AdminUpd
 			BeforeJSON: marshalAuditJSON(auditUserSnapshot(target)),
 			AfterJSON:  marshalAuditJSON(auditUserSnapshot(updated)),
 			Reason:     reason,
-			IPAddress:  auditIPFromContext(ctx, claims, ""),
+			IPAddress:  rawIP,
+		}); txErr != nil {
+			return txErr
+		}
+		if txErr = s.recordActivityTx(ctx, q, target.ID, ActivityEventStatusChanged, ActivityCategoryStatus, rawIP, map[string]any{
+			"from_status": target.Status,
+			"to_status":   updated.Status,
+			"actor_id":    actorID,
+			"actor_role":  claims.Role,
+			"reason":      reason,
 		}); txErr != nil {
 			return txErr
 		}
@@ -1125,93 +1189,14 @@ func (s *Server) AdminUpdateUserStatus(ctx context.Context, req *userv1.AdminUpd
 }
 
 func (s *Server) AdminUpdateUserRole(ctx context.Context, req *userv1.AdminUpdateUserRoleRequest) (*userv1.AdminUpdateUserRoleResponse, error) {
-	claims, err := s.requireAdminClaims(ctx)
+	updated, err := s.UpdateUserRole(ctx, UpdateUserRoleInput{
+		TargetUserID: req.GetTargetUserId(),
+		Role:         roleFromProto(req.GetRole()),
+		Reason:       req.GetReason(),
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	targetID := strings.TrimSpace(req.GetTargetUserId())
-	newRole := roleFromProto(req.GetRole())
-	if targetID == "" || newRole == "" {
-		return nil, status.Error(codes.InvalidArgument, "target_user_id and valid role are required")
-	}
-	if !isValidUUID(targetID) {
-		return nil, status.Error(codes.NotFound, "target user not found")
-	}
-
-	if newRole == RoleSuperAdmin && !strings.EqualFold(claims.Role, RoleSuperAdmin) {
-		return nil, status.Error(codes.PermissionDenied, "only super_admin can assign super_admin role")
-	}
-
-	actorID := claims.UserID()
-	reason := strings.TrimSpace(req.GetReason())
-
-	var updated db.User
-	err = s.store.WithTx(ctx, func(q db.Querier) error {
-		var activeAdmins []string
-		if !isAdminRole(newRole) {
-			var txErr error
-			activeAdmins, txErr = q.ListActiveAdminIDsForUpdate(ctx)
-			if txErr != nil {
-				return txErr
-			}
-		}
-		target, txErr := q.GetUserByID(ctx, targetID)
-		if txErr != nil {
-			if isNotFoundErr(txErr) {
-				return status.Error(codes.NotFound, "target user not found")
-			}
-			return txErr
-		}
-		if target.Role == RoleSuperAdmin && !strings.EqualFold(claims.Role, RoleSuperAdmin) {
-			return status.Error(codes.PermissionDenied, "only super_admin can modify a super_admin account")
-		}
-		if actorID == target.ID && isAdminRole(target.Role) && !isAdminRole(newRole) {
-			return status.Error(codes.FailedPrecondition, "admin cannot demote own admin role")
-		}
-		if isAdminRole(target.Role) && !isAdminRole(newRole) && target.Status == StatusActive && len(activeAdmins) <= 1 {
-			return status.Error(codes.FailedPrecondition, "cannot demote the last active admin")
-		}
-
-		updated, txErr = q.UpdateUserRole(ctx, db.UpdateUserRoleParams{
-			ID:   target.ID,
-			Role: newRole,
-		})
-		if txErr != nil {
-			return txErr
-		}
-		if txErr = q.RevokeAllUserRefreshTokens(ctx, target.ID); txErr != nil {
-			return txErr
-		}
-		if _, txErr = q.InsertAuditLog(ctx, db.InsertAuditLogParams{
-			ID:         uuid.NewString(),
-			ActorID:    actorID,
-			ActorRole:  claims.Role,
-			Action:     "admin.user.update_role",
-			TargetType: "user",
-			TargetID:   target.ID,
-			BeforeJSON: marshalAuditJSON(auditUserSnapshot(target)),
-			AfterJSON:  marshalAuditJSON(auditUserSnapshot(updated)),
-			Reason:     reason,
-			IPAddress:  auditIPFromContext(ctx, claims, ""),
-		}); txErr != nil {
-			return txErr
-		}
-		if s.sec != nil {
-			if rErr := s.sec.SetRevokedBefore(ctx, target.ID, s.now().Unix(), s.revokedBeforeTTL()); rErr != nil {
-				s.log.ErrorContext(ctx, "failed to set revoked_before on role change", slog.String("user_id", target.ID), slog.String("error", rErr.Error()))
-				return status.Error(codes.Unavailable, "failed to revoke active sessions")
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		if _, ok := status.FromError(err); ok {
-			return nil, err
-		}
-		return nil, status.Error(codes.Internal, "failed to update user role")
-	}
-
 	return &userv1.AdminUpdateUserRoleResponse{User: toProtoUser(updated)}, nil
 }
 
@@ -1411,12 +1396,8 @@ func (s *Server) ListPublicShops(ctx context.Context, req *userv1.ListPublicShop
 }
 
 func (s *Server) AdminListShops(ctx context.Context, req *userv1.AdminListShopsRequest) (*userv1.AdminListShopsResponse, error) {
-	claims, err := s.requireAdminClaims(ctx)
-	if err != nil {
+	if _, err := s.requireCapability(ctx, auth.CapShopsRead); err != nil {
 		return nil, err
-	}
-	if claims.Service != "" {
-		return nil, status.Error(codes.PermissionDenied, "service identity not allowed for AdminListShops")
 	}
 
 	page, pageSize := normalizePagination(req.GetPage(), req.GetPageSize())
@@ -1451,7 +1432,7 @@ func (s *Server) AdminListShops(ctx context.Context, req *userv1.AdminListShopsR
 }
 
 func (s *Server) AdminReviewShop(ctx context.Context, req *userv1.AdminReviewShopRequest) (*userv1.AdminReviewShopResponse, error) {
-	claims, err := s.requireAdminClaims(ctx)
+	claims, err := s.requireCapability(ctx, auth.CapShopsReview)
 	if err != nil {
 		return nil, err
 	}
@@ -1790,7 +1771,7 @@ func (s *Server) GetAddress(ctx context.Context, req *userv1.GetAddressRequest) 
 	}
 
 	if claims, ok := auth.ClaimsFromContext(ctx); ok && claims.UserID() != "" {
-		if !isAdminRole(claims.Role) && addr.UserID != claims.UserID() {
+		if claims.Service == "" && !isFullAdminRank(claims) && addr.UserID != claims.UserID() {
 			return nil, status.Error(codes.PermissionDenied, "cannot access another user's address")
 		}
 	} else if reqUserID := strings.TrimSpace(req.GetUserId()); reqUserID != "" && addr.UserID != reqUserID {
@@ -1823,7 +1804,7 @@ func (s *Server) UpdateAddress(ctx context.Context, req *userv1.UpdateAddressReq
 	}
 
 	claims, _ := auth.ClaimsFromContext(ctx)
-	if existing.UserID != ownerID && !isAdminRole(claims.Role) {
+	if existing.UserID != ownerID && !isFullAdminRank(claims) {
 		return nil, status.Error(codes.PermissionDenied, "cannot modify another user's address")
 	}
 
@@ -1930,7 +1911,7 @@ func (s *Server) DeleteAddress(ctx context.Context, req *userv1.DeleteAddressReq
 	}
 
 	claims, _ := auth.ClaimsFromContext(ctx)
-	if existing.UserID != ownerID && !isAdminRole(claims.Role) {
+	if existing.UserID != ownerID && !isFullAdminRank(claims) {
 		return nil, status.Error(codes.PermissionDenied, "cannot delete another user's address")
 	}
 
@@ -1940,7 +1921,7 @@ func (s *Server) DeleteAddress(ctx context.Context, req *userv1.DeleteAddressReq
 			return txErr
 		}
 		if inUse {
-			return status.Error(codes.FailedPrecondition, "cannot delete pickup address of an active shop")
+			return status.Error(codes.FailedPrecondition, "cannot delete pickup address of an active, pending, or suspended shop")
 		}
 		return q.DeleteAddress(ctx, existing.ID)
 	})
@@ -1954,9 +1935,12 @@ func (s *Server) DeleteAddress(ctx context.Context, req *userv1.DeleteAddressReq
 }
 
 func (s *Server) WriteAuditLog(ctx context.Context, req *userv1.WriteAuditLogRequest) (*userv1.WriteAuditLogResponse, error) {
-	claims, err := s.requireAdminClaims(ctx)
+	claims, err := s.requireAuthClaims(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if claims.Service == "" && !auth.IsStaffRole(claims.Role) {
+		return nil, status.Error(codes.PermissionDenied, "staff role or service token required")
 	}
 
 	actorID := claims.UserID()
@@ -2081,7 +2065,8 @@ func (s *Server) RecordCODRejection(ctx context.Context, req *userv1.RecordCODRe
 }
 
 func (s *Server) ListAuditLogs(ctx context.Context, req *userv1.ListAuditLogsRequest) (*userv1.ListAuditLogsResponse, error) {
-	if _, err := s.requireAdminClaims(ctx); err != nil {
+	claims, err := s.requireCapability(ctx, auth.CapAuditLogsRead)
+	if err != nil {
 		return nil, err
 	}
 
@@ -2097,6 +2082,14 @@ func (s *Server) ListAuditLogs(ctx context.Context, req *userv1.ListAuditLogsReq
 	}
 
 	actorID := strings.TrimSpace(req.GetActorId())
+	if isScopedAuditViewerRole(claims.Role) {
+		// Fail-safe default per §2.1 † / contracts.md §4.11: moderator/cskh/accountant
+		// may only inspect their own audit logs (actor_id = me).
+		if actorID != "" && actorID != claims.UserID() {
+			return nil, status.Error(codes.PermissionDenied, "role can only view own audit logs")
+		}
+		actorID = claims.UserID()
+	}
 	targetType := strings.TrimSpace(req.GetTargetType())
 	targetID := strings.TrimSpace(req.GetTargetId())
 

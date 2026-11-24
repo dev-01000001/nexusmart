@@ -738,7 +738,7 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
 
 function SellerOrdersContent() {
   return (
-    <SellerShopGate pageTitle="Quản lý đơn hàng">
+    <SellerShopGate pageTitle="Quản lý đơn hàng" allowSuspended>
       {(shop) => <SellerOrdersInner shop={shop} />}
     </SellerShopGate>
   );

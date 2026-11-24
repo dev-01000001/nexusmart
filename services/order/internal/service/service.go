@@ -18,6 +18,7 @@ import (
 	"github.com/nexusmart/core/services/order/internal/config"
 	"github.com/nexusmart/core/services/order/internal/db"
 	"github.com/nexusmart/core/services/order/internal/events"
+	"github.com/nexusmart/core/services/order/internal/resilience"
 	"github.com/nexusmart/core/services/order/internal/statemachine"
 	"github.com/nexusmart/core/services/order/internal/store"
 	"google.golang.org/grpc/codes"
@@ -30,6 +31,8 @@ type OrderService struct {
 	cfg                   config.Config
 	store                 store.Store
 	clients               *clients.Bundle
+	methodConfigs         PaymentMethodConfigSource
+	userShopBreaker       *resilience.CircuitBreaker
 	logger                *slog.Logger
 	outboxTrigger         chan struct{}
 	idemLocks             *keyedLocker
@@ -44,14 +47,23 @@ func NewOrderService(cfg config.Config, st store.Store, cl *clients.Bundle, logg
 	if logger == nil {
 		logger = slog.Default()
 	}
+	var methodConfigs PaymentMethodConfigSource
+	if cl != nil {
+		methodConfigs = cl.MethodConfigs
+		if methodConfigs == nil && cl.Payment != nil {
+			methodConfigs = clients.NewGRPCPaymentMethodConfigSource(cl.Payment)
+		}
+	}
 	return &OrderService{
-		cfg:           cfg,
-		store:         st,
-		clients:       cl,
-		logger:        logger,
-		outboxTrigger: make(chan struct{}, 1),
-		idemLocks:     newKeyedLocker(),
-		nowFn:         func() time.Time { return time.Now().UTC() },
+		cfg:             cfg,
+		store:           st,
+		clients:         cl,
+		methodConfigs:   methodConfigs,
+		userShopBreaker: resilience.NewCircuitBreaker(5, 15*time.Second),
+		logger:          logger,
+		outboxTrigger:   make(chan struct{}, 1),
+		idemLocks:       newKeyedLocker(),
+		nowFn:           func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -68,11 +80,25 @@ func (s *OrderService) notifyOutbox() {
 }
 
 type callerIdentity struct {
-	UserID       string
-	Role         string
-	ShopID       string
-	FromAuthCtx  bool
-	IsPrivileged bool
+	UserID      string
+	Role        string
+	ShopID      string
+	Service     string
+	FromAuthCtx bool
+	Claims      *auth.Claims
+}
+
+func (c callerIdentity) HasCapability(capName string) bool {
+	return auth.HasCapability(c.Claims, capName)
+}
+
+// IsFullAdmin reports whether caller is an authenticated end-user admin or super_admin
+// (never satisfied by specialist staff roles or internal service tokens).
+func (c callerIdentity) IsFullAdmin() bool {
+	if c.Claims == nil || c.Service != "" {
+		return false
+	}
+	return c.Role == auth.RoleAdmin || c.Role == auth.RoleSuperAdmin
 }
 
 func requireAuthenticatedCaller(ctx context.Context) (callerIdentity, error) {
@@ -82,28 +108,24 @@ func requireAuthenticatedCaller(ctx context.Context) (callerIdentity, error) {
 	}
 	role := strings.ToLower(strings.TrimSpace(claims.Role))
 	return callerIdentity{
-		UserID:       strings.TrimSpace(claims.UserID()),
-		Role:         role,
-		ShopID:       strings.TrimSpace(claims.ShopID),
-		FromAuthCtx:  true,
-		IsPrivileged: isAdminRole(role),
+		UserID:      strings.TrimSpace(claims.UserID()),
+		Role:        role,
+		ShopID:      strings.TrimSpace(claims.ShopID),
+		Service:     strings.TrimSpace(claims.Service),
+		FromAuthCtx: true,
+		Claims:      claims,
 	}, nil
 }
 
 func canViewOrderFees(caller callerIdentity, shopID string) bool {
-	if caller.IsPrivileged {
+	if caller.HasCapability(auth.CapOrdersRead) {
 		return true
 	}
 	return caller.Role == "seller" && caller.ShopID != "" && caller.ShopID == shopID
 }
 
-func isAdminRole(role string) bool {
-	r := strings.ToLower(strings.TrimSpace(role))
-	return r == "admin" || r == "super_admin"
-}
-
-func canViewOrCancelOrder(caller callerIdentity, ord db.Order) bool {
-	if caller.IsPrivileged {
+func canViewOrder(caller callerIdentity, ord db.Order) bool {
+	if caller.HasCapability(auth.CapOrdersRead) {
 		return true
 	}
 	if caller.UserID != "" && caller.UserID == ord.BuyerID {
@@ -115,11 +137,24 @@ func canViewOrCancelOrder(caller callerIdentity, ord db.Order) bool {
 	return false
 }
 
-func canManageShopOrder(caller callerIdentity, ord db.Order, reqShopID string) bool {
-	if caller.IsPrivileged {
+func canCancelOrder(caller callerIdentity, ord db.Order) bool {
+	if caller.IsFullAdmin() {
 		return true
 	}
-	if caller.FromAuthCtx && caller.Role != "seller" {
+	if caller.UserID != "" && caller.UserID == ord.BuyerID {
+		return true
+	}
+	if caller.Role == auth.RoleSeller && caller.ShopID != "" && caller.ShopID == ord.ShopID {
+		return true
+	}
+	return false
+}
+
+func canManageShopOrder(caller callerIdentity, ord db.Order, reqShopID string) bool {
+	if caller.IsFullAdmin() {
+		return true
+	}
+	if caller.FromAuthCtx && caller.Role != auth.RoleSeller {
 		return false
 	}
 	if caller.FromAuthCtx && reqShopID != "" && caller.ShopID != "" && reqShopID != caller.ShopID {
@@ -198,14 +233,6 @@ func (s *OrderService) codMaxRejectRateBPS() int64 {
 		return 3000
 	}
 	return int64(s.cfg.CODMaxRejectRateBPS)
-}
-
-func (s *OrderService) paymentExpiryDuration() time.Duration {
-	mins := s.cfg.PaymentExpiryMinutes
-	if mins <= 0 {
-		mins = 15
-	}
-	return time.Duration(mins) * time.Minute
 }
 
 func (s *OrderService) flashPaymentExpiryDuration() time.Duration {
@@ -326,7 +353,7 @@ func ComputeOrderRewardCoins(ord db.Order, rewardBPS int32) int64 {
 
 func aggregateToProtoForCaller(agg store.OrderAggregate, caller callerIdentity) *orderv1.Order {
 	ord := agg.Order
-	isAdmin := caller.IsPrivileged
+	canReadAdminOrders := caller.HasCapability(auth.CapOrdersRead)
 	showFees := canViewOrderFees(caller, ord.ShopID)
 	var addr orderv1.OrderAddressSnapshot
 	if len(ord.ShippingAddressJSON) > 0 {
@@ -403,7 +430,7 @@ func aggregateToProtoForCaller(agg store.OrderAggregate, caller callerIdentity) 
 		Timeline:                   timeline,
 		CreatedAt:                  timestamppb.New(ord.CreatedAt),
 		UpdatedAt:                  timestamppb.New(ord.UpdatedAt),
-		NeedsManualReview:          isAdmin && ord.OrphanShipmentNeedsManualReview,
+		NeedsManualReview:          canReadAdminOrders && ord.OrphanShipmentNeedsManualReview,
 		ShipmentJobStatus:          ord.ShipmentJobStatus,
 	}
 	if ord.PaymentExpiresAt != nil {

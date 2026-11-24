@@ -7,11 +7,89 @@ use uuid::Uuid;
 use crate::error::{PaymentError, Result};
 use crate::telemetry::mask_bank_account;
 
+// =============================================================================
+// Internal ZaloPay & Payment Method Constants (Wave 3b-2 Phase 1, not wired to gRPC yet)
+// =============================================================================
+
+pub const PAYMENT_METHOD_ZALOPAY: &str = "ZALOPAY";
+pub const PROVIDER_ZALOPAY_MOCK: &str = "zalopay_mock";
+pub const PROVIDER_ZALOPAY_SANDBOX: &str = "zalopay_sandbox";
+
+pub const DEFAULT_COD_MAX_ORDER_VND: i64 = 5_000_000;
+pub const DEFAULT_ONLINE_PAYMENT_EXPIRY_MINUTES: i32 = 15;
+pub const ZALOPAY_DEFAULT_EXPIRY_MINUTES: i32 = 15;
+pub const ZALOPAY_MIN_EXPIRE_DURATION_SECS: i64 = 300;
+pub const ZALOPAY_MAX_EXPIRE_DURATION_SECS: i64 = 2_592_000;
+pub const ZALOPAY_CALLBACK_REPLAY_WINDOW_SECS: i64 = 300;
+
+pub const REFUND_PROVIDER_STATUS_PENDING: &str = "pending";
+pub const REFUND_PROVIDER_STATUS_PROCESSING: &str = "processing";
+pub const REFUND_PROVIDER_STATUS_SUCCEEDED: &str = "succeeded";
+pub const REFUND_PROVIDER_STATUS_FAILED: &str = "failed";
+
+pub const PROVIDER_FINAL_STATUS_PAID_CONFIRMED: &str = "paid_confirmed";
+pub const PROVIDER_FINAL_STATUS_LATE_REFUND_QUEUED: &str = "late_refund_queued";
+pub const PROVIDER_FINAL_STATUS_AMOUNT_MISMATCH: &str = "amount_mismatch";
+pub const PROVIDER_FINAL_STATUS_NOT_PAID: &str = "not_paid";
+pub const PROVIDER_FINAL_STATUS_MANUAL_REVIEW: &str = "manual_review";
+
+/// Computes bounded exponential backoff between late-payment `/v2/query` retries on terminal
+/// unpaid `ZALOPAY` payments (`superseded` / `expired` / `cancelled`):
+/// `min(base_secs * 2^(attempts - 1), 3600)` seconds (default `base_secs = 60` -> 1m, 2m, 4m,
+/// 8m, 16m, 32m, 60m cap).
+pub fn zalopay_late_sweep_backoff(attempts: i32, base_secs: i64) -> chrono::Duration {
+    let base = base_secs.max(1);
+    let exp = attempts.saturating_sub(1).clamp(0, 10) as u32;
+    let factor = 1_i64.checked_shl(exp).unwrap_or(i64::MAX);
+    let secs = base.saturating_mul(factor).min(3600);
+    chrono::Duration::seconds(secs)
+}
+
+/// Final conclusion for a terminal unpaid `ZALOPAY` payment when its bounded post-expiry
+/// late-payment sweep window (default 24h) expires without a `return_code = 1` confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZaloPayWindowExhaustedDecision {
+    /// Final `/v2/query` returned `return_code = 2` (failed) or `return_code = 3` with
+    /// `is_processing = false` (unpaid/abandoned by buyer) -> conclude `not_paid` (INFO log,
+    /// do NOT enqueue `reconciliation_queue`).
+    ConcludeNotPaid,
+    /// Final `/v2/query` returned `return_code = 3` with `is_processing = true`, an unexpected
+    /// `return_code`, or failed with a transport/network error (`None`) -> escalate to
+    /// `reconciliation_queue` (`manual_review`) with ERROR log.
+    EscalateManualReview,
+}
+
+/// Pure decision function for ZaloPay late-payment sweep window exhaustion derived strictly from
+/// the persisted `(provider_last_query_return_code, provider_last_query_is_processing)` tuple.
+pub fn decide_zalopay_window_exhausted(
+    last_return_code: Option<i32>,
+    last_is_processing: Option<bool>,
+) -> ZaloPayWindowExhaustedDecision {
+    match (last_return_code, last_is_processing) {
+        (Some(2), _) | (Some(3), Some(false)) => ZaloPayWindowExhaustedDecision::ConcludeNotPaid,
+        _ => ZaloPayWindowExhaustedDecision::EscalateManualReview,
+    }
+}
+
+/// Returns true when the method identifier represents an online prepaid payment channel.
+pub fn is_online_method(method: &str) -> bool {
+    matches!(
+        method.trim().to_ascii_uppercase().as_str(),
+        "VIETQR" | "ZALOPAY"
+    )
+}
+
+/// Backwards-compatible alias for [`is_online_method`].
+pub fn is_online_payment_method_str(method: &str) -> bool {
+    is_online_method(method)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum PaymentMethod {
     Cod,
     VietQr,
+    ZaloPay,
 }
 
 impl PaymentMethod {
@@ -19,13 +97,19 @@ impl PaymentMethod {
         match self {
             Self::Cod => "COD",
             Self::VietQr => "VIETQR",
+            Self::ZaloPay => "ZALOPAY",
         }
+    }
+
+    pub fn is_online(self) -> bool {
+        matches!(self, Self::VietQr | Self::ZaloPay)
     }
 
     pub fn parse(raw: &str) -> Result<Self> {
         match raw.trim().to_ascii_uppercase().as_str() {
             "COD" => Ok(Self::Cod),
             "VIETQR" | "VIET_QR" | "QR" => Ok(Self::VietQr),
+            "ZALOPAY" | "ZALO_PAY" => Ok(Self::ZaloPay),
             other => Err(PaymentError::Validation(format!(
                 "unsupported payment method: {other}"
             ))),
@@ -110,6 +194,8 @@ pub struct PaymentRecord {
     pub provider_order_code: String,
     pub qr_code: Option<String>,
     pub qr_url: Option<String>,
+    #[serde(default)]
+    pub pay_url: Option<String>,
     pub idempotency_key: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
     pub paid_at: Option<DateTime<Utc>>,
@@ -166,6 +252,30 @@ pub struct RefundRecord {
     pub idempotency_key: String,
     pub provider_refund_id: Option<String>,
     #[serde(default)]
+    pub provider_m_refund_id: Option<String>,
+    #[serde(default)]
+    pub provider_status: Option<String>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub provider_lease_token: Option<Uuid>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub provider_lease_until: Option<DateTime<Utc>>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub provider_dispatch_attempted: bool,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub created_by_service: bool,
+    #[serde(default)]
+    pub requested_by: Option<String>,
+    #[serde(default)]
+    pub approved_by: Option<String>,
+    #[serde(default)]
+    pub approved_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub approval_note: Option<String>,
+    #[serde(default)]
     pub is_late_payment: bool,
     #[serde(default)]
     pub bank_code: Option<String>,
@@ -199,6 +309,12 @@ impl fmt::Debug for RefundRecord {
             .field("status", &self.status)
             .field("idempotency_key", &self.idempotency_key)
             .field("provider_refund_id", &self.provider_refund_id)
+            .field("provider_m_refund_id", &self.provider_m_refund_id)
+            .field("provider_status", &self.provider_status)
+            .field("requested_by", &self.requested_by)
+            .field("approved_by", &self.approved_by)
+            .field("approved_at", &self.approved_at)
+            .field("approval_note", &self.approval_note)
             .field("is_late_payment", &self.is_late_payment)
             .field("bank_code", &self.bank_code)
             .field(
@@ -224,6 +340,53 @@ pub struct CreateRefundInput {
     pub reason: String,
     pub idempotency_key: String,
     pub trace_id: String,
+    /// When true, applies the F11 two-person large-refund approval policy (single refund or 24h
+    /// per-payment manual refund sum >= threshold enters `pending_approval`) and requires a
+    /// non-empty `requested_by`. When false (automatic saga cancel / late payment), `requested_by`
+    /// is ignored and approval is bypassed.
+    #[serde(default)]
+    pub require_approval_if_large: bool,
+    /// Maker user ID for manual/return-admin refunds (verified JWT `sub`, or forwarded from
+    /// trusted service caller strictly when `require_approval_if_large == true`).
+    #[serde(default)]
+    pub requested_by: Option<String>,
+    /// True strictly when invoked via a verified internal service token (`order-service`).
+    #[serde(default)]
+    pub created_by_service: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DecideRefundApprovalInput {
+    pub refund_id: Uuid,
+    pub approve: bool,
+    pub note: String,
+    pub checker_user_id: String,
+    pub trace_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct PaymentMethodConfigRecord {
+    pub method: String,
+    pub enabled: bool,
+    pub min_order_vnd: i64,
+    pub max_order_vnd: i64,
+    pub expiry_minutes: i32,
+    pub version: i64,
+    pub note: String,
+    pub updated_by: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdatePaymentMethodConfigInput {
+    pub method: PaymentMethod,
+    pub enabled: bool,
+    pub min_order_vnd: i64,
+    pub max_order_vnd: i64,
+    pub expiry_minutes: i32,
+    pub note: String,
+    pub expected_version: i64,
+    pub updated_by: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -822,11 +985,40 @@ pub fn validate_payment_idempotency_match(
     Ok(())
 }
 
+/// Reserved internal refund `idempotency_key` prefixes that end-user callers MUST NOT use
+/// (F11 / p4 Item E): prevents staff from pre-claiming cancel/return/late/reconciliation keys.
+pub const RESERVED_INTERNAL_REFUND_IDEMPOTENCY_PREFIXES: &[&str] = &[
+    "order-cancel-refund:",
+    "order-return-refund:",
+    "superseded-late-refund:",
+    "late-webhook:",
+    "recon-refund:",
+    "recon-overpay:",
+    "refund-settle:",
+];
+
+/// Rejects end-user refund `idempotency_key` values carrying any reserved internal prefix
+/// (trimmed, ASCII case-insensitive) — p4 Item E.
+pub fn validate_user_refund_idempotency_key(raw: &str) -> Result<()> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    for prefix in RESERVED_INTERNAL_REFUND_IDEMPOTENCY_PREFIXES {
+        if normalized.starts_with(prefix) {
+            return Err(PaymentError::Validation(format!(
+                "idempotency_key cannot use reserved internal prefix '{prefix}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Validates that an existing refund matched by `idempotency_key` belongs to the same target
-/// payment/order (and amount for non-cancel admin refunds) (review-B P2-8 / review2-P P3-8).
-/// Keys prefixed with `order-cancel-refund:` skip the `amount_vnd` check so synchronous
-/// `OrderService.CancelOrder` and asynchronous `order.cancelled` still deduplicate cleanly
-/// after a prior partial refund.
+/// payment/order and amount (review-B P2-8 / review2-P P3-8 / p4 Item E).
+///
+/// Only `order-cancel-refund:` rows created by a trusted service identity (`created_by_service == true`)
+/// skip the `amount_vnd` check so synchronous `OrderService.CancelOrder` and asynchronous
+/// `order.cancelled` still deduplicate cleanly after a prior partial refund.
+/// `order-return-refund:` and all other keys MUST match `amount_vnd` strictly.
+///
 /// `accepted_order_aliases` allows single-shop payment replays that pass `order_group_id`
 /// (or `payment.order_id`) while the stored refund records `alloc.order_id`.
 pub fn validate_refund_idempotency_match(
@@ -852,12 +1044,85 @@ pub fn validate_refund_idempotency_match(
             "idempotency_key already used for a different order".to_string(),
         ));
     }
-    if !existing.idempotency_key.starts_with("order-cancel-refund:")
-        && !existing.idempotency_key.starts_with("order-return-refund:")
-        && existing.amount_vnd != requested_amount_vnd
-    {
+    let skip_amount_check = existing.created_by_service
+        && existing
+            .idempotency_key
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("order-cancel-refund:");
+    if !skip_amount_check && existing.amount_vnd != requested_amount_vnd {
         return Err(PaymentError::Conflict(
             "idempotency_key already used with different refund amount".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Verifies that a `reconciliation_queue` item's `provider` matches the target payment's `method`
+/// before `ASSIGN` (p4 Item H):
+/// - `zalopay*` providers match ONLY `ZALOPAY`.
+/// - `cod*` providers cannot be assigned as online transfers.
+/// - All other online providers (`vietqr_mock`, `sepay`, `payos`, etc.) match ONLY `VIETQR`.
+pub fn reconciliation_provider_matches_method(provider: &str, method: &str) -> bool {
+    let p = provider.trim().to_ascii_lowercase();
+    let m = method.trim().to_ascii_uppercase();
+    if p.starts_with("zalopay") {
+        m == "ZALOPAY"
+    } else if p.starts_with("cod") {
+        false
+    } else {
+        m == "VIETQR"
+    }
+}
+
+/// Defense-in-depth guards for `create_payment(supersede_previous = true)` (F5 / p4 Item K):
+/// - Every superseded pending payment MUST be an online method (`VIETQR`/`ZALOPAY`), never `COD`.
+/// - `amount_vnd` MUST match the superseded payment's `amount_vnd`.
+/// - No allocation on any superseded payment may be in `'held' | 'pending_release' | 'released' | 'refunded'`.
+/// - When the replacement payment is also online, its `expires_at` MUST NOT exceed the old payment's `expires_at`.
+pub fn validate_supersede_previous_payments(
+    old_pending: &[PaymentRecord],
+    old_alloc_statuses: &[&str],
+    new_method: PaymentMethod,
+    new_amount_vnd: i64,
+    new_expires_at: Option<DateTime<Utc>>,
+) -> Result<()> {
+    if old_pending.is_empty() {
+        return Err(PaymentError::Conflict(
+            "cannot supersede: no pending payment exists for checkout group".to_string(),
+        ));
+    }
+    for old in old_pending {
+        if !is_online_method(&old.method) {
+            return Err(PaymentError::Conflict(format!(
+                "cannot supersede non-online payment {} (method='{}')",
+                old.id, old.method
+            )));
+        }
+        if old.amount_vnd != new_amount_vnd {
+            return Err(PaymentError::Conflict(format!(
+                "cannot supersede payment {}: amount_vnd {} does not match existing {}",
+                old.id, new_amount_vnd, old.amount_vnd
+            )));
+        }
+        if is_online_method(new_method.as_str()) {
+            if let (Some(old_exp), Some(new_exp)) = (old.expires_at, new_expires_at) {
+                if new_exp > old_exp {
+                    return Err(PaymentError::FailedPrecondition(format!(
+                        "cannot extend payment expiry beyond original deadline when superseding payment {}",
+                        old.id
+                    )));
+                }
+            }
+        }
+    }
+    if old_alloc_statuses
+        .iter()
+        .any(|s| matches!(*s, "held" | "pending_release" | "released" | "refunded"))
+    {
+        return Err(PaymentError::Conflict(
+            "cannot supersede payment whose shop allocation is already held, settled, or refunded"
+                .to_string(),
         ));
     }
     Ok(())
@@ -1335,12 +1600,13 @@ pub fn compute_settlement_split(
     })
 }
 
-/// Initial status and QR creation plan for `create_payment` (R1 0 VND + R2 COD awaiting collection).
+/// Initial status and provider creation plan for `create_payment` (R1 0 VND + R2 COD + F1 ZaloPay).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InitialPaymentPlan {
     pub initial_status: &'static str,
     pub initial_escrow_status: &'static str,
     pub create_qr: bool,
+    pub create_zalopay: bool,
     pub mark_paid_now: bool,
 }
 
@@ -1355,6 +1621,7 @@ pub fn plan_initial_payment(method: PaymentMethod, amount_vnd: i64) -> Result<In
             initial_status: "succeeded",
             initial_escrow_status: "held",
             create_qr: false,
+            create_zalopay: false,
             mark_paid_now: true,
         });
     }
@@ -1363,15 +1630,135 @@ pub fn plan_initial_payment(method: PaymentMethod, amount_vnd: i64) -> Result<In
             initial_status: "pending",
             initial_escrow_status: "awaiting_collection",
             create_qr: false,
+            create_zalopay: false,
             mark_paid_now: false,
         }),
         PaymentMethod::VietQr => Ok(InitialPaymentPlan {
             initial_status: "pending",
             initial_escrow_status: "awaiting_collection",
             create_qr: true,
+            create_zalopay: false,
+            mark_paid_now: false,
+        }),
+        PaymentMethod::ZaloPay => Ok(InitialPaymentPlan {
+            initial_status: "pending",
+            initial_escrow_status: "awaiting_collection",
+            create_qr: false,
+            create_zalopay: true,
             mark_paid_now: false,
         }),
     }
+}
+
+/// Validates an incoming `UpdatePaymentMethodConfigInput` before acquiring DB locks (F6/F7).
+pub fn validate_update_payment_method_config(input: &UpdatePaymentMethodConfigInput) -> Result<()> {
+    if input.expected_version < 1 {
+        return Err(PaymentError::Validation(
+            "expected_version must be >= 1".to_string(),
+        ));
+    }
+    if input.min_order_vnd < 0 {
+        return Err(PaymentError::Validation(
+            "min_order_vnd must be >= 0".to_string(),
+        ));
+    }
+    if input.max_order_vnd < 0 {
+        return Err(PaymentError::Validation(
+            "max_order_vnd must be >= 0".to_string(),
+        ));
+    }
+    if input.max_order_vnd > 0 && input.max_order_vnd < input.min_order_vnd {
+        return Err(PaymentError::Validation(
+            "max_order_vnd must be 0 (unlimited) or >= min_order_vnd".to_string(),
+        ));
+    }
+    match input.method {
+        PaymentMethod::Cod => {
+            if input.expiry_minutes != 0 {
+                return Err(PaymentError::Validation(
+                    "COD expiry_minutes must be 0".to_string(),
+                ));
+            }
+        }
+        PaymentMethod::VietQr => {
+            if !(1..=1440).contains(&input.expiry_minutes) {
+                return Err(PaymentError::Validation(
+                    "VIETQR expiry_minutes must be between 1 and 1440".to_string(),
+                ));
+            }
+        }
+        PaymentMethod::ZaloPay => {
+            if !(5..=1440).contains(&input.expiry_minutes) {
+                return Err(PaymentError::Validation(
+                    "ZALOPAY expiry_minutes must be between 5 and 1440".to_string(),
+                ));
+            }
+        }
+    }
+    if input.note.chars().count() > 500 {
+        return Err(PaymentError::Validation(
+            "note must be at most 500 characters".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Enforces `payment_method_configs` enabled status and min/max order amount bounds (F6/F7).
+/// Zero-payable orders (`amount_vnd == 0`) still require the method to be enabled, while skipping
+/// min/max bounds (handled by zero-payable fast path).
+pub fn validate_payment_method_eligibility(
+    cfg: &PaymentMethodConfigRecord,
+    method: PaymentMethod,
+    amount_vnd: i64,
+) -> Result<()> {
+    if !cfg.enabled {
+        return Err(PaymentError::FailedPrecondition(format!(
+            "PAYMENT_METHOD_DISABLED: payment method {} is currently disabled",
+            method.as_str()
+        )));
+    }
+    if amount_vnd <= 0 {
+        return Ok(());
+    }
+    if cfg.min_order_vnd > 0 && amount_vnd < cfg.min_order_vnd {
+        return Err(PaymentError::FailedPrecondition(format!(
+            "ORDER_AMOUNT_OUT_OF_RANGE: amount {} VND is below minimum {} VND for {}",
+            amount_vnd,
+            cfg.min_order_vnd,
+            method.as_str()
+        )));
+    }
+    if cfg.max_order_vnd > 0 && amount_vnd > cfg.max_order_vnd {
+        if method == PaymentMethod::Cod {
+            return Err(PaymentError::FailedPrecondition(format!(
+                "COD_LIMIT_EXCEEDED: amount {} VND exceeds maximum {} VND for COD",
+                amount_vnd, cfg.max_order_vnd
+            )));
+        }
+        return Err(PaymentError::FailedPrecondition(format!(
+            "ORDER_AMOUNT_OUT_OF_RANGE: amount {} VND exceeds maximum {} VND for {}",
+            amount_vnd,
+            cfg.max_order_vnd,
+            method.as_str()
+        )));
+    }
+    Ok(())
+}
+
+/// Returns true when a manual/return-admin refund requires two-person approval under F11:
+/// either this single refund `amount_vnd >= threshold_vnd`, OR the 24-hour rolling manual refund
+/// sum on the same `payment_id` (including `pending_approval` + `pending` + `completed` +
+/// `manual_review`, excluding `rejected`) plus `amount_vnd` reaches `>= threshold_vnd`.
+pub fn should_require_large_refund_approval(
+    amount_vnd: i64,
+    rolling_24h_manual_sum_vnd: i64,
+    threshold_vnd: i64,
+) -> bool {
+    if threshold_vnd <= 0 || amount_vnd <= 0 {
+        return false;
+    }
+    let effective_rolling = rolling_24h_manual_sum_vnd.max(0);
+    amount_vnd >= threshold_vnd || effective_rolling.saturating_add(amount_vnd) >= threshold_vnd
 }
 
 /// Validates whether a payment / sub-order allocation has actually collected funds from the buyer
@@ -2294,6 +2681,7 @@ mod tests {
             provider_order_code: "NM123".into(),
             qr_code: None,
             qr_url: None,
+            pay_url: None,
             idempotency_key: Some("retry-1".into()),
             expires_at: None,
             paid_at: None,
@@ -2421,6 +2809,16 @@ mod tests {
             status: "pending".into(),
             idempotency_key: "admin-key-1".into(),
             provider_refund_id: None,
+            provider_m_refund_id: None,
+            provider_status: None,
+            provider_lease_token: None,
+            provider_lease_until: None,
+            provider_dispatch_attempted: false,
+            created_by_service: false,
+            requested_by: None,
+            approved_by: None,
+            approved_at: None,
+            approval_note: None,
             is_late_payment: false,
             bank_code: None,
             bank_account_number: None,
@@ -2470,25 +2868,95 @@ mod tests {
             Err(PaymentError::Conflict(_))
         ));
 
-        // Cancel-order dedup key allows differing requested amount between sync CancelOrder and async order.cancelled
-        let cancel_refund = RefundRecord {
+        // Cancel-order dedup key allows differing requested amount ONLY when created_by_service == true (p4 Item E)
+        let cancel_refund_service = RefundRecord {
             idempotency_key: order_cancel_refund_key("ord-1"),
             amount_vnd: 190_000,
-            ..admin_refund
+            created_by_service: true,
+            ..admin_refund.clone()
         };
         assert!(validate_refund_idempotency_match(
-            &cancel_refund,
+            &cancel_refund_service,
             Some(pid1),
             "ord-1",
             200_000,
             &[]
         )
         .is_ok());
-        // Still rejects wrong order/payment on cancel key
+        // Non-service record with cancel prefix must STILL enforce exact amount
+        let cancel_refund_user = RefundRecord {
+            created_by_service: false,
+            ..cancel_refund_service.clone()
+        };
         assert!(matches!(
-            validate_refund_idempotency_match(&cancel_refund, Some(pid1), "ord-2", 190_000, &[]),
+            validate_refund_idempotency_match(
+                &cancel_refund_user,
+                Some(pid1),
+                "ord-1",
+                200_000,
+                &[]
+            ),
             Err(PaymentError::Conflict(_))
         ));
+        // order-return-refund: MUST enforce exact amount even when created_by_service == true
+        let return_refund_service = RefundRecord {
+            idempotency_key: "order-return-refund:ord-1".into(),
+            amount_vnd: 190_000,
+            created_by_service: true,
+            ..admin_refund
+        };
+        assert!(matches!(
+            validate_refund_idempotency_match(
+                &return_refund_service,
+                Some(pid1),
+                "ord-1",
+                200_000,
+                &[]
+            ),
+            Err(PaymentError::Conflict(_))
+        ));
+        // Still rejects wrong order/payment on cancel key
+        assert!(matches!(
+            validate_refund_idempotency_match(
+                &cancel_refund_service,
+                Some(pid1),
+                "ord-2",
+                190_000,
+                &[]
+            ),
+            Err(PaymentError::Conflict(_))
+        ));
+
+        // p4 Item E user key validation & Item H provider-method matching
+        assert!(validate_user_refund_idempotency_key("admin-refund-42").is_ok());
+        for bad in [
+            "order-cancel-refund:o1",
+            "  ORDER-RETURN-REFUND:o1",
+            "superseded-late-refund:p:o",
+            "Late-Webhook:tx",
+            "recon-refund:tx",
+            "recon-overpay:tx",
+            "refund-settle:r1",
+        ] {
+            assert!(validate_user_refund_idempotency_key(bad).is_err(), "{bad}");
+        }
+        assert!(reconciliation_provider_matches_method(
+            "zalopay_mock",
+            "ZALOPAY"
+        ));
+        assert!(!reconciliation_provider_matches_method(
+            "zalopay_mock",
+            "VIETQR"
+        ));
+        assert!(reconciliation_provider_matches_method(
+            "vietqr_mock",
+            "VIETQR"
+        ));
+        assert!(!reconciliation_provider_matches_method(
+            "vietqr_mock",
+            "ZALOPAY"
+        ));
+        assert!(!reconciliation_provider_matches_method("cod_ghn", "COD"));
     }
 
     #[test]
@@ -2516,6 +2984,7 @@ mod tests {
             provider_order_code: "NM1".into(),
             qr_code: None,
             qr_url: None,
+            pay_url: None,
             idempotency_key: None,
             expires_at: None,
             paid_at: None,
@@ -2666,6 +3135,16 @@ mod tests {
             status: "pending".into(),
             idempotency_key: "k1".into(),
             provider_refund_id: None,
+            provider_m_refund_id: None,
+            provider_status: None,
+            provider_lease_token: None,
+            provider_lease_until: None,
+            provider_dispatch_attempted: false,
+            created_by_service: false,
+            requested_by: None,
+            approved_by: None,
+            approved_at: None,
+            approval_note: None,
             is_late_payment: false,
             bank_code: Some("VCB".into()),
             bank_account_number: Some("19034567890123".into()),
@@ -2806,6 +3285,16 @@ mod tests {
             status: "completed".into(),
             idempotency_key: "rf-k".into(),
             provider_refund_id: Some("FT-1".into()),
+            provider_m_refund_id: None,
+            provider_status: None,
+            provider_lease_token: None,
+            provider_lease_until: None,
+            provider_dispatch_attempted: false,
+            created_by_service: false,
+            requested_by: None,
+            approved_by: None,
+            approved_at: None,
+            approval_note: None,
             is_late_payment: false,
             bank_code: Some("VCB".into()),
             bank_account_number: Some("19034567890123".into()),
@@ -3302,6 +3791,188 @@ mod tests {
         assert_eq!(
             find_cod_carrier_mismatch(&[None, Some(" VTP ")], "ghn"),
             Some("vtp".to_string())
+        );
+    }
+
+    #[test]
+    fn test_w3b2_domain_is_online_method_config_validation_and_approval_threshold() {
+        // is_online_method covers VIETQR & ZALOPAY (case-insensitive) and excludes COD/unknown.
+        assert!(is_online_method("VIETQR"));
+        assert!(is_online_method("vietqr"));
+        assert!(is_online_method("ZALOPAY"));
+        assert!(is_online_method(" zalopay "));
+        assert!(!is_online_method("COD"));
+        assert!(!is_online_method(""));
+
+        // PaymentMethod::parse & is_online
+        assert_eq!(
+            PaymentMethod::parse("ZALOPAY").unwrap(),
+            PaymentMethod::ZaloPay
+        );
+        assert_eq!(
+            PaymentMethod::parse("zalo_pay").unwrap(),
+            PaymentMethod::ZaloPay
+        );
+        assert!(PaymentMethod::ZaloPay.is_online());
+        assert!(PaymentMethod::VietQr.is_online());
+        assert!(!PaymentMethod::Cod.is_online());
+
+        // plan_initial_payment for ZALOPAY (positive & 0 VND)
+        let zp_plan = plan_initial_payment(PaymentMethod::ZaloPay, 250_000).unwrap();
+        assert_eq!(zp_plan.initial_status, "pending");
+        assert!(!zp_plan.create_qr);
+        assert!(zp_plan.create_zalopay);
+        assert!(!zp_plan.mark_paid_now);
+
+        let zp_zero = plan_initial_payment(PaymentMethod::ZaloPay, 0).unwrap();
+        assert_eq!(zp_zero.initial_status, "succeeded");
+        assert!(!zp_zero.create_qr);
+        assert!(!zp_zero.create_zalopay);
+        assert!(zp_zero.mark_paid_now);
+
+        // validate_update_payment_method_config edge cases
+        let base_update = UpdatePaymentMethodConfigInput {
+            method: PaymentMethod::ZaloPay,
+            enabled: true,
+            min_order_vnd: 10_000,
+            max_order_vnd: 50_000_000,
+            expiry_minutes: 15,
+            note: "ok".into(),
+            expected_version: 1,
+            updated_by: "ops-1".into(),
+        };
+        assert!(validate_update_payment_method_config(&base_update).is_ok());
+        assert!(
+            validate_update_payment_method_config(&UpdatePaymentMethodConfigInput {
+                expected_version: 0,
+                ..base_update.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            validate_update_payment_method_config(&UpdatePaymentMethodConfigInput {
+                min_order_vnd: -1,
+                ..base_update.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            validate_update_payment_method_config(&UpdatePaymentMethodConfigInput {
+                min_order_vnd: 500_000,
+                max_order_vnd: 100_000,
+                ..base_update.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            validate_update_payment_method_config(&UpdatePaymentMethodConfigInput {
+                expiry_minutes: 4, // ZALOPAY min is 5 min (300s)
+                ..base_update.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            validate_update_payment_method_config(&UpdatePaymentMethodConfigInput {
+                method: PaymentMethod::Cod,
+                expiry_minutes: 15, // COD must be 0
+                ..base_update.clone()
+            })
+            .is_err()
+        );
+
+        // validate_payment_method_eligibility
+        let cod_cfg = PaymentMethodConfigRecord {
+            method: "COD".into(),
+            enabled: true,
+            min_order_vnd: 20_000,
+            max_order_vnd: 5_000_000,
+            expiry_minutes: 0,
+            version: 1,
+            note: String::new(),
+            updated_by: "system".into(),
+            updated_at: Utc::now(),
+        };
+        assert!(
+            validate_payment_method_eligibility(&cod_cfg, PaymentMethod::Cod, 5_000_000).is_ok()
+        );
+        assert!(validate_payment_method_eligibility(&cod_cfg, PaymentMethod::Cod, 0).is_ok());
+        let over_cod = validate_payment_method_eligibility(&cod_cfg, PaymentMethod::Cod, 5_000_001)
+            .unwrap_err();
+        assert!(
+            matches!(over_cod, PaymentError::FailedPrecondition(ref m) if m.starts_with("COD_LIMIT_EXCEEDED"))
+        );
+        let below_min =
+            validate_payment_method_eligibility(&cod_cfg, PaymentMethod::Cod, 10_000).unwrap_err();
+        assert!(
+            matches!(below_min, PaymentError::FailedPrecondition(ref m) if m.starts_with("ORDER_AMOUNT_OUT_OF_RANGE"))
+        );
+        let mut disabled_cfg = cod_cfg;
+        disabled_cfg.enabled = false;
+        let disabled_err =
+            validate_payment_method_eligibility(&disabled_cfg, PaymentMethod::Cod, 100_000)
+                .unwrap_err();
+        assert!(
+            matches!(disabled_err, PaymentError::FailedPrecondition(ref m) if m.starts_with("PAYMENT_METHOD_DISABLED"))
+        );
+
+        // F11 should_require_large_refund_approval (single & 24h anti-splitting)
+        assert!(!should_require_large_refund_approval(
+            4_999_999, 0, 5_000_000
+        ));
+        assert!(should_require_large_refund_approval(
+            5_000_000, 0, 5_000_000
+        ));
+        assert!(!should_require_large_refund_approval(
+            2_000_000, 2_999_999, 5_000_000
+        ));
+        assert!(should_require_large_refund_approval(
+            2_000_000, 3_000_000, 5_000_000
+        ));
+        assert!(should_require_large_refund_approval(
+            3_000_000, 3_000_000, 5_000_000
+        ));
+
+        // p3 Item 1: exponential backoff capped at 3600s (1 hour)
+        assert_eq!(zalopay_late_sweep_backoff(1, 60).num_seconds(), 60);
+        assert_eq!(zalopay_late_sweep_backoff(2, 60).num_seconds(), 120);
+        assert_eq!(zalopay_late_sweep_backoff(3, 60).num_seconds(), 240);
+        assert_eq!(zalopay_late_sweep_backoff(4, 60).num_seconds(), 480);
+        assert_eq!(zalopay_late_sweep_backoff(6, 60).num_seconds(), 1920);
+        assert_eq!(zalopay_late_sweep_backoff(7, 60).num_seconds(), 3600);
+        assert_eq!(zalopay_late_sweep_backoff(20, 60).num_seconds(), 3600);
+
+        // p5: window-exhausted decision table from persisted (return_code, is_processing)
+        assert_eq!(
+            decide_zalopay_window_exhausted(Some(3), Some(false)),
+            ZaloPayWindowExhaustedDecision::ConcludeNotPaid
+        );
+        assert_eq!(
+            decide_zalopay_window_exhausted(Some(2), Some(false)),
+            ZaloPayWindowExhaustedDecision::ConcludeNotPaid
+        );
+        assert_eq!(
+            decide_zalopay_window_exhausted(Some(2), None),
+            ZaloPayWindowExhaustedDecision::ConcludeNotPaid
+        );
+        assert_eq!(
+            decide_zalopay_window_exhausted(Some(3), Some(true)),
+            ZaloPayWindowExhaustedDecision::EscalateManualReview
+        );
+        assert_eq!(
+            decide_zalopay_window_exhausted(Some(3), None),
+            ZaloPayWindowExhaustedDecision::EscalateManualReview
+        );
+        assert_eq!(
+            decide_zalopay_window_exhausted(None, None),
+            ZaloPayWindowExhaustedDecision::EscalateManualReview
+        );
+        assert_eq!(
+            decide_zalopay_window_exhausted(Some(1), Some(false)),
+            ZaloPayWindowExhaustedDecision::EscalateManualReview
+        );
+        assert_eq!(
+            decide_zalopay_window_exhausted(Some(99), Some(false)),
+            ZaloPayWindowExhaustedDecision::EscalateManualReview
         );
     }
 }

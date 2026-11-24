@@ -7,19 +7,24 @@ use tracing::{error, info, warn, Instrument};
 use uuid::Uuid;
 
 use crate::auth::{
-    require_payment_read_access, seller_scoped_amount_vnd, seller_scoped_order_id, Caller,
-    GrpcAuth, PaymentViewScope,
+    require_payment_read_access, resolve_payment_read_scope, seller_scoped_amount_vnd,
+    seller_scoped_order_id, Caller, GrpcAuth, PaymentViewScope, CAP_ESCROW_RELEASE,
+    CAP_FEES_PAYMENT_READ, CAP_FEES_PAYMENT_WRITE, CAP_LEDGER_READ, CAP_PAYMENT_METHODS_READ,
+    CAP_PAYMENT_METHODS_WRITE, CAP_RECONCILIATION_WRITE, CAP_REFUNDS_APPROVE, CAP_REFUNDS_CREATE,
+    CAP_REFUNDS_READ, CAP_REFUNDS_SETTLE,
 };
 use crate::domain::{
     normalize_cod_carrier_code, parse_and_validate_reconciliation_date,
     parse_reconciliation_run_type_filter, parse_seller_ledger_account_filter,
-    validate_cod_reconciliation_rows, CodReconciliationRowInput, CreatePaymentInput,
-    CreateRefundInput, GetFeeConfigFilter, ImportCodReconciliationInput,
-    ListReconciliationRunsFilter, ListRefundsFilter, ListSellerLedgerFilter,
-    PaymentFeeConfigRecord, PaymentMethod as DomainMethod, PaymentWithAllocations,
+    validate_cod_reconciliation_rows, validate_user_refund_idempotency_key,
+    CodReconciliationRowInput, CreatePaymentInput, CreateRefundInput, DecideRefundApprovalInput,
+    GetFeeConfigFilter, ImportCodReconciliationInput, ListReconciliationRunsFilter,
+    ListRefundsFilter, ListSellerLedgerFilter, PaymentFeeConfigRecord,
+    PaymentMethod as DomainMethod, PaymentMethodConfigRecord, PaymentWithAllocations,
     ReconciliationActionKind, ReconciliationItemRecord, ReconciliationQueueItem as DomainQueueItem,
     ReconciliationRunRecord, RefundRecord, ResolveReconciliationInput, SellerLedgerEntryRecord,
     SetFeeConfigInput, SettleRefundInput, ShopAllocationInput, SubmitRefundBankAccountInput,
+    UpdatePaymentMethodConfigInput,
 };
 use crate::service::PaymentService;
 use crate::telemetry::{attach_parent_context, extract_context_from_grpc};
@@ -32,20 +37,22 @@ pub mod pb {
 use pb::payment_service_server::PaymentService as PaymentServiceTrait;
 use pb::{
     AccountBalance, CancelPaymentRequest, CancelPaymentResponse, CreatePaymentRequest,
-    CreatePaymentResponse, CreateRefundRequest, CreateRefundResponse, GetFeeConfigRequest,
-    GetFeeConfigResponse, GetLedgerSummaryRequest, GetLedgerSummaryResponse, GetPaymentRequest,
-    GetPaymentResponse, GetSellerBalanceRequest, GetSellerBalanceResponse,
-    ImportCodReconciliationRequest, ImportCodReconciliationResponse,
-    ListReconciliationQueueRequest, ListReconciliationQueueResponse, ListReconciliationRunsRequest,
-    ListReconciliationRunsResponse, ListRefundsRequest, ListRefundsResponse,
-    ListSellerLedgerRequest, ListSellerLedgerResponse, Payment, PaymentFeeConfigItem,
-    PaymentMethod, PaymentStatus, ReconciliationAction, ReconciliationItem,
-    ReconciliationQueueItem, ReconciliationRunSummary, ReconciliationStatus, Refund, RefundStatus,
-    ReleaseEscrowRequest, ReleaseEscrowResponse, ResolveReconciliationItemRequest,
-    ResolveReconciliationItemResponse, RunReconciliationRequest, RunReconciliationResponse,
-    SellerLedgerEntry, SetFeeConfigRequest, SetFeeConfigResponse, SettleRefundRequest,
-    SettleRefundResponse, ShopAllocation, SubmitRefundBankAccountRequest,
-    SubmitRefundBankAccountResponse,
+    CreatePaymentResponse, CreateRefundRequest, CreateRefundResponse, DecideRefundApprovalRequest,
+    DecideRefundApprovalResponse, GetFeeConfigRequest, GetFeeConfigResponse,
+    GetLedgerSummaryRequest, GetLedgerSummaryResponse, GetPaymentMethodConfigsRequest,
+    GetPaymentMethodConfigsResponse, GetPaymentRequest, GetPaymentResponse,
+    GetSellerBalanceRequest, GetSellerBalanceResponse, ImportCodReconciliationRequest,
+    ImportCodReconciliationResponse, ListReconciliationQueueRequest,
+    ListReconciliationQueueResponse, ListReconciliationRunsRequest, ListReconciliationRunsResponse,
+    ListRefundsRequest, ListRefundsResponse, ListSellerLedgerRequest, ListSellerLedgerResponse,
+    Payment, PaymentFeeConfigItem, PaymentMethod, PaymentMethodConfig, PaymentStatus,
+    ReconciliationAction, ReconciliationItem, ReconciliationQueueItem, ReconciliationRunSummary,
+    ReconciliationStatus, Refund, RefundStatus, ReleaseEscrowRequest, ReleaseEscrowResponse,
+    ResolveReconciliationItemRequest, ResolveReconciliationItemResponse, RunReconciliationRequest,
+    RunReconciliationResponse, SellerLedgerEntry, SetFeeConfigRequest, SetFeeConfigResponse,
+    SettleRefundRequest, SettleRefundResponse, ShopAllocation, SubmitRefundBankAccountRequest,
+    SubmitRefundBankAccountResponse, UpdatePaymentMethodConfigRequest,
+    UpdatePaymentMethodConfigResponse,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -65,29 +72,25 @@ impl CallerAuth {
         Ok(Self { caller })
     }
 
-    fn is_admin(&self) -> bool {
-        self.caller.is_admin()
-    }
-
-    fn is_admin_or_service(&self) -> bool {
-        self.caller.is_admin_or_service()
+    fn has_capability(&self, capability: &str) -> bool {
+        self.caller.has_capability(capability)
     }
 
     #[allow(clippy::result_large_err)]
-    fn require_admin(&self, op: &str) -> Result<(), Status> {
-        if !self.is_admin() {
+    fn require_capability(&self, capability: &str, op: &str) -> Result<(), Status> {
+        if !self.has_capability(capability) {
             return Err(Status::permission_denied(format!(
-                "forbidden: {op} requires admin role"
+                "forbidden: {op} requires capability '{capability}'"
             )));
         }
         Ok(())
     }
 
     #[allow(clippy::result_large_err)]
-    fn require_admin_or_service(&self, op: &str) -> Result<(), Status> {
-        if !self.is_admin_or_service() {
+    fn require_capability_or_service(&self, capability: &str, op: &str) -> Result<(), Status> {
+        if !self.caller.is_service && !self.has_capability(capability) {
             return Err(Status::permission_denied(format!(
-                "forbidden: {op} requires admin or service identity"
+                "forbidden: {op} requires capability '{capability}' or service identity"
             )));
         }
         Ok(())
@@ -98,9 +101,13 @@ impl CallerAuth {
         require_payment_read_access(&self.caller, pwa).map_err(|e| e.to_tonic_status())
     }
 
+    /// Payment lifecycle ownership guard for non-§4.11 RPCs (`CreatePayment`, `CancelPayment`):
+    /// strictly allows owner, verified service token (`order-service`), or `admin`/`super_admin`
+    /// (denies narrower staff roles `cskh`/`accountant`/`ops`/`moderator` on another user's payment) — p4 Item L.
     #[allow(clippy::result_large_err)]
     fn require_payment_owner(&self, owner_user_id: &str, op: &str) -> Result<(), Status> {
-        if self.is_admin_or_service()
+        if self.caller.is_service
+            || self.caller.is_admin_role()
             || (!self.caller.user_id.is_empty() && owner_user_id == self.caller.user_id)
         {
             return Ok(());
@@ -112,7 +119,7 @@ impl CallerAuth {
 
     #[allow(clippy::result_large_err)]
     fn require_seller_shop_access(&self, target_shop_id: &str) -> Result<(), Status> {
-        if self.is_admin() {
+        if self.has_capability(CAP_LEDGER_READ) {
             return Ok(());
         }
         if self.caller.role == "seller"
@@ -229,9 +236,10 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 match PaymentMethod::try_from(req.method).unwrap_or(PaymentMethod::Unspecified) {
                     PaymentMethod::Cod => DomainMethod::Cod,
                     PaymentMethod::Vietqr => DomainMethod::VietQr,
+                    PaymentMethod::Zalopay => DomainMethod::ZaloPay,
                     PaymentMethod::Unspecified => {
                         return Err(Status::invalid_argument(
-                            "method must be PAYMENT_METHOD_COD or PAYMENT_METHOD_VIETQR",
+                            "method must be PAYMENT_METHOD_COD, PAYMENT_METHOD_VIETQR, or PAYMENT_METHOD_ZALOPAY",
                         ));
                     }
                 };
@@ -338,7 +346,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 .map_err(|e| e.to_tonic_status())?;
             let order_group_id = non_empty(&req.order_group_id);
 
-            if !caller.is_admin_or_service() {
+            if !caller.caller.is_service && !caller.caller.is_admin_role() {
                 let existing = self
                     .service
                     .get_payment(payment_id, order_group_id, None)
@@ -375,7 +383,31 @@ impl PaymentServiceTrait for PaymentGrpcServer {
 
         let result = async {
             let caller = caller?;
-            caller.require_admin_or_service("CreateRefund")?;
+            caller.require_capability_or_service(CAP_REFUNDS_CREATE, "CreateRefund")?;
+
+            // F11 / p4 Item E: End-user callers cannot supply reserved internal idempotency prefixes.
+            if !caller.caller.is_service {
+                validate_user_refund_idempotency_key(&req.idempotency_key)
+                    .map_err(|e| e.to_tonic_status())?;
+            }
+
+            // F11: End-user JWT always applies large-refund approval policy with maker = JWT sub.
+            // Service token ONLY honors `requested_by` when `require_approval_if_large == true`;
+            // otherwise ignores `requested_by` and bypasses approval (automatic saga cancel).
+            let (require_approval_if_large, requested_by) = if caller.caller.is_service {
+                if req.require_approval_if_large {
+                    let maker = non_empty(&req.requested_by).ok_or_else(|| {
+                        Status::invalid_argument(
+                            "requested_by is required when require_approval_if_large is true",
+                        )
+                    })?;
+                    (true, Some(maker.to_string()))
+                } else {
+                    (false, None)
+                }
+            } else {
+                (true, Some(caller.caller.user_id.clone()))
+            };
 
             let payment_id = parse_optional_uuid(&req.payment_id, "payment_id")
                 .map_err(|e| e.to_tonic_status())?;
@@ -388,12 +420,17 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                     reason: req.reason,
                     idempotency_key: req.idempotency_key,
                     trace_id: trace_id.clone(),
+                    require_approval_if_large,
+                    requested_by,
+                    created_by_service: caller.caller.is_service,
                 })
                 .await
                 .map_err(|e| e.to_tonic_status())?;
 
+            let include_full_bank =
+                caller.caller.is_service || caller.has_capability(CAP_REFUNDS_READ);
             Ok(Response::new(CreateRefundResponse {
-                refund: Some(to_proto_refund(out.refund, caller.is_admin_or_service())),
+                refund: Some(to_proto_refund(out.refund, include_full_bank)),
                 already_existed: out.already_existed,
             }))
         }
@@ -414,7 +451,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
 
         let result = async {
             let caller = caller?;
-            caller.require_admin("GetLedgerSummary")?;
+            caller.require_capability(CAP_LEDGER_READ, "GetLedgerSummary")?;
 
             let summary = self
                 .service
@@ -492,7 +529,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
 
         let result = async {
             let caller = caller?;
-            caller.require_admin("ReleaseEscrow")?;
+            caller.require_capability(CAP_ESCROW_RELEASE, "ReleaseEscrow")?;
             let res = self
                 .service
                 .release_escrow(&req.order_id, non_empty(&req.shop_id))
@@ -523,7 +560,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
 
         let result = async {
             let caller = caller?;
-            caller.require_admin("RunReconciliation")?;
+            caller.require_capability(CAP_RECONCILIATION_WRITE, "RunReconciliation")?;
 
             let run_date = parse_and_validate_reconciliation_date(&req.date, Utc::now())
                 .map_err(|e| e.to_tonic_status())?;
@@ -573,9 +610,16 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                     RefundStatus::Pending => Some("pending".to_string()),
                     RefundStatus::Done => Some("completed".to_string()),
                     RefundStatus::Failed => Some("failed".to_string()),
+                    RefundStatus::PendingApproval => Some("pending_approval".to_string()),
+                    RefundStatus::Rejected => Some("rejected".to_string()),
+                    RefundStatus::ManualReview => Some("manual_review".to_string()),
                 };
 
-            let include_full_bank = caller.is_admin();
+            // Staff with `refunds.read` see all matching refunds + full bank details.
+            // All other authenticated users (buyer, seller, or staff without `refunds.read` such
+            // as `moderator`) are strictly owner-scoped to their own payments in `list_refunds`
+            // (`is_admin = false`, masked bank details, 403 on another user's `order_id`).
+            let include_full_bank = caller.has_capability(CAP_REFUNDS_READ);
             let out = self
                 .service
                 .list_refunds(ListRefundsFilter {
@@ -656,7 +700,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
 
         let result = async {
             let caller = caller?;
-            caller.require_admin("SettleRefund")?;
+            caller.require_capability(CAP_REFUNDS_SETTLE, "SettleRefund")?;
 
             let refund_id = parse_required_uuid(&req.refund_id, "refund_id")
                 .map_err(|e| e.to_tonic_status())?;
@@ -696,7 +740,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
 
         let result = async {
             let caller = caller?;
-            caller.require_admin("ListReconciliationQueue")?;
+            caller.require_capability(CAP_LEDGER_READ, "ListReconciliationQueue")?;
 
             let out = self
                 .service
@@ -733,7 +777,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
 
         let result = async {
             let caller = caller?;
-            caller.require_admin("ResolveReconciliationItem")?;
+            caller.require_capability(CAP_RECONCILIATION_WRITE, "ResolveReconciliationItem")?;
 
             let item_id =
                 parse_required_uuid(&req.item_id, "item_id").map_err(|e| e.to_tonic_status())?;
@@ -795,15 +839,16 @@ impl PaymentServiceTrait for PaymentGrpcServer {
 
         let result = async {
             let caller = caller?;
-            caller.require_admin_or_service("GetFeeConfig")?;
+            caller.require_capability_or_service(CAP_FEES_PAYMENT_READ, "GetFeeConfig")?;
 
             let method = match PaymentMethod::try_from(req.payment_method) {
                 Ok(PaymentMethod::Unspecified) => None,
                 Ok(PaymentMethod::Cod) => Some(DomainMethod::Cod),
                 Ok(PaymentMethod::Vietqr) => Some(DomainMethod::VietQr),
+                Ok(PaymentMethod::Zalopay) => Some(DomainMethod::ZaloPay),
                 Err(_) => {
                     return Err(Status::invalid_argument(
-                        "invalid payment_method; expected UNSPECIFIED, COD, or VIETQR",
+                        "invalid payment_method; expected UNSPECIFIED, COD, VIETQR, or ZALOPAY",
                     ));
                 }
             };
@@ -852,14 +897,15 @@ impl PaymentServiceTrait for PaymentGrpcServer {
 
         let result = async {
             let caller = caller?;
-            caller.require_admin("SetFeeConfig")?;
+            caller.require_capability(CAP_FEES_PAYMENT_WRITE, "SetFeeConfig")?;
 
             let method = match PaymentMethod::try_from(req.payment_method) {
                 Ok(PaymentMethod::Cod) => DomainMethod::Cod,
                 Ok(PaymentMethod::Vietqr) => DomainMethod::VietQr,
+                Ok(PaymentMethod::Zalopay) => DomainMethod::ZaloPay,
                 Ok(PaymentMethod::Unspecified) | Err(_) => {
                     return Err(Status::invalid_argument(
-                        "payment_method must be PAYMENT_METHOD_COD or PAYMENT_METHOD_VIETQR",
+                        "payment_method must be PAYMENT_METHOD_COD, PAYMENT_METHOD_VIETQR, or PAYMENT_METHOD_ZALOPAY",
                     ));
                 }
             };
@@ -904,7 +950,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
             let caller = caller?;
             let req_shop_id = non_empty(&req.shop_id);
 
-            let target_shop_id = if caller.is_admin() {
+            let target_shop_id = if caller.has_capability(CAP_LEDGER_READ) {
                 req_shop_id.map(ToString::to_string)
             } else if caller.caller.role == "seller" && !caller.caller.shop_id.is_empty() {
                 if let Some(requested) = req_shop_id {
@@ -917,7 +963,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 Some(caller.caller.shop_id.clone())
             } else {
                 return Err(Status::permission_denied(
-                    "forbidden: ListSellerLedger requires seller or admin role",
+                    "forbidden: ListSellerLedger requires seller or ledger.read capability",
                 ));
             };
 
@@ -964,7 +1010,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
 
         let result = async {
             let caller = caller?;
-            caller.require_admin("ImportCodReconciliation")?;
+            caller.require_capability(CAP_RECONCILIATION_WRITE, "ImportCodReconciliation")?;
 
             let carrier_code =
                 normalize_cod_carrier_code(&req.carrier_code).map_err(|e| e.to_tonic_status())?;
@@ -1023,7 +1069,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
 
         let result = async {
             let caller = caller?;
-            caller.require_admin("ListReconciliationRuns")?;
+            caller.require_capability(CAP_LEDGER_READ, "ListReconciliationRuns")?;
 
             let run_type = parse_reconciliation_run_type_filter(&req.run_type)
                 .map_err(|e| e.to_tonic_status())?;
@@ -1051,6 +1097,151 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         .await;
 
         self.finish_rpc(&span, "ListReconciliationRuns", start, &trace_id, &result);
+        result
+    }
+
+    async fn get_payment_method_configs(
+        &self,
+        request: Request<GetPaymentMethodConfigsRequest>,
+    ) -> Result<Response<GetPaymentMethodConfigsResponse>, Status> {
+        let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("GetPaymentMethodConfigs", &request);
+        let caller = self
+            .auth
+            .authenticate_optional(request.metadata(), "GetPaymentMethodConfigs");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            let include_admin_fields = caller
+                .as_ref()
+                .is_some_and(|c| c.has_capability(CAP_PAYMENT_METHODS_READ));
+
+            let method_filter = match PaymentMethod::try_from(req.method) {
+                Ok(PaymentMethod::Unspecified) => None,
+                Ok(PaymentMethod::Cod) => Some(DomainMethod::Cod),
+                Ok(PaymentMethod::Vietqr) => Some(DomainMethod::VietQr),
+                Ok(PaymentMethod::Zalopay) => Some(DomainMethod::ZaloPay),
+                Err(_) => {
+                    return Err(Status::invalid_argument(
+                        "invalid method; expected UNSPECIFIED, COD, VIETQR, or ZALOPAY",
+                    ));
+                }
+            };
+
+            let rows = self
+                .service
+                .get_payment_method_configs(method_filter)
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            let configs = rows
+                .into_iter()
+                .map(|rec| to_proto_method_config(&self.service, rec, include_admin_fields))
+                .collect();
+
+            Ok(Response::new(GetPaymentMethodConfigsResponse { configs }))
+        }
+        .instrument(span.clone())
+        .await;
+
+        self.finish_rpc(&span, "GetPaymentMethodConfigs", start, &trace_id, &result);
+        result
+    }
+
+    async fn update_payment_method_config(
+        &self,
+        request: Request<UpdatePaymentMethodConfigRequest>,
+    ) -> Result<Response<UpdatePaymentMethodConfigResponse>, Status> {
+        let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("UpdatePaymentMethodConfig", &request);
+        let caller = CallerAuth::from_request(&self.auth, &request, "UpdatePaymentMethodConfig");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            caller.require_capability(CAP_PAYMENT_METHODS_WRITE, "UpdatePaymentMethodConfig")?;
+
+            let method = match PaymentMethod::try_from(req.method) {
+                Ok(PaymentMethod::Cod) => DomainMethod::Cod,
+                Ok(PaymentMethod::Vietqr) => DomainMethod::VietQr,
+                Ok(PaymentMethod::Zalopay) => DomainMethod::ZaloPay,
+                Ok(PaymentMethod::Unspecified) | Err(_) => {
+                    return Err(Status::invalid_argument(
+                        "method must be PAYMENT_METHOD_COD, PAYMENT_METHOD_VIETQR, or PAYMENT_METHOD_ZALOPAY",
+                    ));
+                }
+            };
+
+            let updated = self
+                .service
+                .update_payment_method_config(UpdatePaymentMethodConfigInput {
+                    method,
+                    enabled: req.enabled,
+                    min_order_vnd: req.min_order_vnd,
+                    max_order_vnd: req.max_order_vnd,
+                    expiry_minutes: req.expiry_minutes,
+                    note: req.note,
+                    expected_version: req.expected_version,
+                    updated_by: caller.caller.user_id,
+                })
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            Ok(Response::new(UpdatePaymentMethodConfigResponse {
+                config: Some(to_proto_method_config(&self.service, updated, true)),
+            }))
+        }
+        .instrument(span.clone())
+        .await;
+
+        self.finish_rpc(
+            &span,
+            "UpdatePaymentMethodConfig",
+            start,
+            &trace_id,
+            &result,
+        );
+        result
+    }
+
+    async fn decide_refund_approval(
+        &self,
+        request: Request<DecideRefundApprovalRequest>,
+    ) -> Result<Response<DecideRefundApprovalResponse>, Status> {
+        let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("DecideRefundApproval", &request);
+        let caller = CallerAuth::from_request(&self.auth, &request, "DecideRefundApproval");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            // F11: Re-check checker's `refunds.approve` capability at decision time.
+            caller.require_capability(CAP_REFUNDS_APPROVE, "DecideRefundApproval")?;
+
+            let refund_id = parse_required_uuid(&req.refund_id, "refund_id")
+                .map_err(|e| e.to_tonic_status())?;
+
+            let decided = self
+                .service
+                .decide_refund_approval(DecideRefundApprovalInput {
+                    refund_id,
+                    approve: req.approve,
+                    note: req.note,
+                    checker_user_id: caller.caller.user_id,
+                    trace_id: trace_id.clone(),
+                })
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            Ok(Response::new(DecideRefundApprovalResponse {
+                refund: Some(to_proto_refund(decided, true)),
+            }))
+        }
+        .instrument(span.clone())
+        .await;
+
+        self.finish_rpc(&span, "DecideRefundApproval", start, &trace_id, &result);
         result
     }
 }
@@ -1165,10 +1356,56 @@ fn parse_optional_proto_timestamp(
     }
 }
 
+fn to_proto_method_config(
+    service: &PaymentService,
+    rec: PaymentMethodConfigRecord,
+    include_admin_fields: bool,
+) -> PaymentMethodConfig {
+    let method = match rec.method.as_str() {
+        "COD" => PaymentMethod::Cod as i32,
+        "VIETQR" => PaymentMethod::Vietqr as i32,
+        "ZALOPAY" => PaymentMethod::Zalopay as i32,
+        _ => PaymentMethod::Unspecified as i32,
+    };
+    if include_admin_fields {
+        let (credentials_configured, credential_preview) =
+            service.method_credentials_info(&rec.method);
+        PaymentMethodConfig {
+            method,
+            enabled: rec.enabled,
+            min_order_vnd: rec.min_order_vnd,
+            max_order_vnd: rec.max_order_vnd,
+            expiry_minutes: rec.expiry_minutes,
+            credentials_configured,
+            credential_preview,
+            updated_by: rec.updated_by,
+            updated_at: Some(chrono_to_proto(rec.updated_at)),
+            note: rec.note,
+            version: rec.version,
+        }
+    } else {
+        // Public / service projection: strip admin/credential metadata per F6/F8.
+        PaymentMethodConfig {
+            method,
+            enabled: rec.enabled,
+            min_order_vnd: rec.min_order_vnd,
+            max_order_vnd: rec.max_order_vnd,
+            expiry_minutes: rec.expiry_minutes,
+            credentials_configured: false,
+            credential_preview: String::new(),
+            updated_by: String::new(),
+            updated_at: None,
+            note: String::new(),
+            version: rec.version,
+        }
+    }
+}
+
 fn to_proto_fee_config_item(rec: PaymentFeeConfigRecord) -> PaymentFeeConfigItem {
     let payment_method = match rec.payment_method.as_str() {
         "COD" => PaymentMethod::Cod as i32,
         "VIETQR" => PaymentMethod::Vietqr as i32,
+        "ZALOPAY" => PaymentMethod::Zalopay as i32,
         _ => PaymentMethod::Unspecified as i32,
     };
     PaymentFeeConfigItem {
@@ -1198,17 +1435,17 @@ fn to_proto_seller_ledger_entry(rec: SellerLedgerEntryRecord) -> SellerLedgerEnt
 }
 
 fn to_proto_payment_for_caller(pwa: PaymentWithAllocations, caller: &Caller) -> Payment {
-    let scope = if caller.is_admin_or_service() {
-        Some(PaymentViewScope::Full)
-    } else if !caller.user_id.is_empty() && pwa.payment.user_id == caller.user_id {
-        Some(PaymentViewScope::BuyerOwner)
-    } else if caller.role == "seller" && !caller.shop_id.is_empty() {
-        Some(PaymentViewScope::SellerAllocation {
-            shop_id: caller.shop_id.clone(),
-        })
-    } else {
-        None
-    };
+    let scope = resolve_payment_read_scope(caller, &pwa).ok().or_else(|| {
+        if !caller.user_id.is_empty() && pwa.payment.user_id == caller.user_id {
+            Some(PaymentViewScope::BuyerOwner)
+        } else if caller.role == "seller" && !caller.shop_id.is_empty() {
+            Some(PaymentViewScope::SellerAllocation {
+                shop_id: caller.shop_id.clone(),
+            })
+        } else {
+            None
+        }
+    });
 
     let seller_amount = match &scope {
         Some(PaymentViewScope::SellerAllocation { shop_id }) => {
@@ -1227,6 +1464,7 @@ fn to_proto_payment_for_caller(pwa: PaymentWithAllocations, caller: &Caller) -> 
     let method = match p.method.as_str() {
         "COD" => PaymentMethod::Cod as i32,
         "VIETQR" => PaymentMethod::Vietqr as i32,
+        "ZALOPAY" => PaymentMethod::Zalopay as i32,
         _ => PaymentMethod::Unspecified as i32,
     };
     let status = match p.status.as_str() {
@@ -1243,83 +1481,88 @@ fn to_proto_payment_for_caller(pwa: PaymentWithAllocations, caller: &Caller) -> 
         .clone()
         .unwrap_or_else(|| p.provider_order_code.clone());
 
-    let (amount_vnd, order_id, qr_url, qr_code, provider_ref, shop_allocations) = match scope {
-        Some(PaymentViewScope::Full) => {
-            let allocs = pwa
-                .allocations
-                .into_iter()
-                .map(|a| ShopAllocation {
-                    order_id: a.order_id,
-                    shop_id: a.shop_id,
-                    subtotal_vnd: a.subtotal_vnd,
-                    commission_vnd: a.commission_vnd,
-                    shipping_fee_vnd: a.shipping_fee_vnd,
-                    platform_discount_vnd: a.platform_discount_vnd,
-                })
-                .collect();
-            (
-                p.amount_vnd,
-                p.order_id,
-                p.qr_url.unwrap_or_default(),
-                p.qr_code.unwrap_or_default(),
-                full_provider_ref,
-                allocs,
-            )
-        }
-        Some(PaymentViewScope::BuyerOwner) => {
-            let allocs = pwa
-                .allocations
-                .into_iter()
-                .map(|a| ShopAllocation {
-                    order_id: a.order_id,
-                    shop_id: a.shop_id,
-                    subtotal_vnd: a.subtotal_vnd,
-                    commission_vnd: 0,
-                    shipping_fee_vnd: a.shipping_fee_vnd,
-                    platform_discount_vnd: a.platform_discount_vnd,
-                })
-                .collect();
-            (
-                p.amount_vnd,
-                p.order_id,
-                p.qr_url.unwrap_or_default(),
-                p.qr_code.unwrap_or_default(),
-                full_provider_ref,
-                allocs,
-            )
-        }
-        Some(PaymentViewScope::SellerAllocation { shop_id }) => {
-            let allocs = pwa
-                .allocations
-                .into_iter()
-                .filter(|a| a.shop_id == shop_id)
-                .map(|a| ShopAllocation {
-                    order_id: a.order_id,
-                    shop_id: a.shop_id,
-                    subtotal_vnd: a.subtotal_vnd,
-                    commission_vnd: a.commission_vnd,
-                    shipping_fee_vnd: a.shipping_fee_vnd,
-                    platform_discount_vnd: a.platform_discount_vnd,
-                })
-                .collect();
-            (
-                seller_amount.unwrap_or(0),
-                seller_order_id.unwrap_or_default(),
+    let (amount_vnd, order_id, qr_url, qr_code, pay_url, provider_ref, shop_allocations) =
+        match scope {
+            Some(PaymentViewScope::Full) => {
+                let allocs = pwa
+                    .allocations
+                    .into_iter()
+                    .map(|a| ShopAllocation {
+                        order_id: a.order_id,
+                        shop_id: a.shop_id,
+                        subtotal_vnd: a.subtotal_vnd,
+                        commission_vnd: a.commission_vnd,
+                        shipping_fee_vnd: a.shipping_fee_vnd,
+                        platform_discount_vnd: a.platform_discount_vnd,
+                    })
+                    .collect();
+                (
+                    p.amount_vnd,
+                    p.order_id,
+                    p.qr_url.unwrap_or_default(),
+                    p.qr_code.unwrap_or_default(),
+                    p.pay_url.unwrap_or_default(),
+                    full_provider_ref,
+                    allocs,
+                )
+            }
+            Some(PaymentViewScope::BuyerOwner) => {
+                let allocs = pwa
+                    .allocations
+                    .into_iter()
+                    .map(|a| ShopAllocation {
+                        order_id: a.order_id,
+                        shop_id: a.shop_id,
+                        subtotal_vnd: a.subtotal_vnd,
+                        commission_vnd: 0,
+                        shipping_fee_vnd: a.shipping_fee_vnd,
+                        platform_discount_vnd: a.platform_discount_vnd,
+                    })
+                    .collect();
+                (
+                    p.amount_vnd,
+                    p.order_id,
+                    p.qr_url.unwrap_or_default(),
+                    p.qr_code.unwrap_or_default(),
+                    p.pay_url.unwrap_or_default(),
+                    full_provider_ref,
+                    allocs,
+                )
+            }
+            Some(PaymentViewScope::SellerAllocation { shop_id }) => {
+                let allocs = pwa
+                    .allocations
+                    .into_iter()
+                    .filter(|a| a.shop_id == shop_id)
+                    .map(|a| ShopAllocation {
+                        order_id: a.order_id,
+                        shop_id: a.shop_id,
+                        subtotal_vnd: a.subtotal_vnd,
+                        commission_vnd: a.commission_vnd,
+                        shipping_fee_vnd: a.shipping_fee_vnd,
+                        platform_discount_vnd: a.platform_discount_vnd,
+                    })
+                    .collect();
+                (
+                    seller_amount.unwrap_or(0),
+                    seller_order_id.unwrap_or_default(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    allocs,
+                )
+            }
+            None => (
+                0,
                 String::new(),
                 String::new(),
                 String::new(),
-                allocs,
-            )
-        }
-        None => (
-            0,
-            String::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            Vec::new(),
-        ),
-    };
+                String::new(),
+                String::new(),
+                Vec::new(),
+            ),
+        };
 
     Payment {
         payment_id: p.id.to_string(),
@@ -1337,6 +1580,7 @@ fn to_proto_payment_for_caller(pwa: PaymentWithAllocations, caller: &Caller) -> 
         expires_at: p.expires_at.map(chrono_to_proto),
         created_at: Some(chrono_to_proto(p.created_at)),
         updated_at: Some(chrono_to_proto(p.updated_at)),
+        pay_url,
     }
 }
 
@@ -1345,6 +1589,9 @@ fn to_proto_refund(r: RefundRecord, include_bank_account_number: bool) -> Refund
         "pending" => RefundStatus::Pending as i32,
         "completed" | "done" => RefundStatus::Done as i32,
         "failed" => RefundStatus::Failed as i32,
+        "pending_approval" => RefundStatus::PendingApproval as i32,
+        "rejected" => RefundStatus::Rejected as i32,
+        "manual_review" => RefundStatus::ManualReview as i32,
         _ => RefundStatus::Pending as i32,
     };
 
@@ -1369,6 +1616,12 @@ fn to_proto_refund(r: RefundRecord, include_bank_account_number: bool) -> Refund
         is_late_payment: r.is_late_payment,
         settled_at: r.settled_at.map(chrono_to_proto),
         settlement_note: r.settlement_note.unwrap_or_default(),
+        requested_by: r.requested_by.unwrap_or_default(),
+        approved_by: r.approved_by.unwrap_or_default(),
+        approved_at: r.approved_at.map(chrono_to_proto),
+        approval_note: r.approval_note.unwrap_or_default(),
+        provider_m_refund_id: r.provider_m_refund_id.unwrap_or_default(),
+        provider_status: r.provider_status.unwrap_or_default(),
     }
 }
 
@@ -1588,6 +1841,8 @@ mod tests {
                     amount_vnd: 50_000,
                     reason: "test".into(),
                     idempotency_key: "k1".into(),
+                    require_approval_if_large: false,
+                    requested_by: String::new(),
                 },
                 "seller",
                 "u-2",
@@ -1883,6 +2138,16 @@ mod tests {
             status: "pending".into(),
             idempotency_key: "rf-1".into(),
             provider_refund_id: None,
+            provider_m_refund_id: None,
+            provider_status: None,
+            provider_lease_token: None,
+            provider_lease_until: None,
+            provider_dispatch_attempted: false,
+            created_by_service: false,
+            requested_by: None,
+            approved_by: None,
+            approved_at: None,
+            approval_note: None,
             is_late_payment: false,
             bank_code: Some("VCB".into()),
             bank_account_number: Some("19034567890123".into()),
@@ -2441,6 +2706,7 @@ mod tests {
                 provider_order_code: "NM-ORDER-999".into(),
                 qr_code: Some("000201010212-QR-PAYLOAD".into()),
                 qr_url: Some("https://qr.example/secret-1".into()),
+                pay_url: Some("https://sbgateway.zalopay.vn/openinapp?order=secret".into()),
                 idempotency_key: Some("idem-1".into()),
                 expires_at: None,
                 paid_at: Some(now),
@@ -3044,5 +3310,428 @@ mod tests {
         let prom = metrics.render_prometheus();
         assert!(prom.contains("method=\"ImportCodReconciliation\""));
         assert!(prom.contains("method=\"ListReconciliationRuns\""));
+    }
+
+    #[tokio::test]
+    async fn test_w3b2_f9_all_admin_rpcs_enforce_capability_matrix_across_all_6_staff_roles() {
+        let (server, _) = test_grpc_server();
+        let all_staff = [
+            "super_admin",
+            "admin",
+            "moderator",
+            "cskh",
+            "accountant",
+            "ops",
+        ];
+
+        fn with_svc<T>(payload: T) -> Request<T> {
+            let tok = crate::auth::sign_hs256(
+                "grpc-test-service-key",
+                serde_json::json!({
+                    "sub": "order-service",
+                    "role": "super_admin",
+                    "service": "order-service",
+                    "exp": Utc::now().timestamp() + 60,
+                }),
+            );
+            let mut req = Request::new(payload);
+            req.metadata_mut().insert(
+                "authorization",
+                MetadataValue::try_from(format!("Bearer {tok}")).unwrap(),
+            );
+            req
+        }
+
+        let assert_rbac = |op: &str, role: &str, allowed: bool, status: Status| {
+            if allowed {
+                assert_ne!(
+                    status.code(),
+                    tonic::Code::Unauthenticated,
+                    "{op} role={role} must pass auth"
+                );
+                assert_ne!(
+                    status.code(),
+                    tonic::Code::PermissionDenied,
+                    "{op} role={role} must be ALLOWED"
+                );
+            } else {
+                assert_eq!(
+                    status.code(),
+                    tonic::Code::PermissionDenied,
+                    "{op} role={role} must be DENIED, got {status:?}"
+                );
+            }
+        };
+
+        for role in all_staff
+            .iter()
+            .copied()
+            .chain(["buyer", "seller"].into_iter())
+        {
+            let uid = format!("u-{role}");
+            let sid = if role == "seller" { "shop-1" } else { "" };
+
+            // 1. GetLedgerSummary -> ledger.read (super_admin, admin, accountant, ops)
+            let allowed = matches!(role, "super_admin" | "admin" | "accountant" | "ops");
+            let err = server
+                .get_ledger_summary(with_auth(GetLedgerSummaryRequest {}, role, &uid, sid))
+                .await
+                .unwrap_err();
+            assert_rbac("GetLedgerSummary", role, allowed, err);
+
+            // 2. ReleaseEscrow -> escrow.release (super_admin, admin, accountant)
+            let allowed = matches!(role, "super_admin" | "admin" | "accountant");
+            let err = server
+                .release_escrow(with_auth(
+                    ReleaseEscrowRequest {
+                        order_id: "ord-1".into(),
+                        shop_id: String::new(),
+                    },
+                    role,
+                    &uid,
+                    sid,
+                ))
+                .await
+                .unwrap_err();
+            assert_rbac("ReleaseEscrow", role, allowed, err);
+
+            // 3. RunReconciliation -> reconciliation.write (super_admin, admin, accountant)
+            let allowed = matches!(role, "super_admin" | "admin" | "accountant");
+            let err = server
+                .run_reconciliation(with_auth(
+                    RunReconciliationRequest {
+                        date: "bad-date".into(),
+                    },
+                    role,
+                    &uid,
+                    sid,
+                ))
+                .await
+                .unwrap_err();
+            assert_rbac("RunReconciliation", role, allowed, err);
+
+            // 4. ListReconciliationQueue -> ledger.read (super_admin, admin, accountant, ops)
+            let allowed = matches!(role, "super_admin" | "admin" | "accountant" | "ops");
+            let err = server
+                .list_reconciliation_queue(with_auth(
+                    ListReconciliationQueueRequest {
+                        status: String::new(),
+                        page: 1,
+                        page_size: 10,
+                    },
+                    role,
+                    &uid,
+                    sid,
+                ))
+                .await
+                .unwrap_err();
+            assert_rbac("ListReconciliationQueue", role, allowed, err);
+
+            // 5. ResolveReconciliationItem -> reconciliation.write (super_admin, admin, accountant)
+            let allowed = matches!(role, "super_admin" | "admin" | "accountant");
+            let err = server
+                .resolve_reconciliation_item(with_auth(
+                    ResolveReconciliationItemRequest {
+                        item_id: "not-a-uuid".into(),
+                        action: ReconciliationAction::Suspend as i32,
+                        payment_id: String::new(),
+                        note: String::new(),
+                        idempotency_key: "k1".into(),
+                    },
+                    role,
+                    &uid,
+                    sid,
+                ))
+                .await
+                .unwrap_err();
+            assert_rbac("ResolveReconciliationItem", role, allowed, err);
+
+            // 6. GetFeeConfig -> fees.payment.read (super_admin, admin, accountant, ops)
+            let allowed = matches!(role, "super_admin" | "admin" | "accountant" | "ops");
+            let err = server
+                .get_fee_config(with_auth(
+                    GetFeeConfigRequest {
+                        payment_method: PaymentMethod::Zalopay as i32,
+                        include_history: false,
+                        at_time: None,
+                    },
+                    role,
+                    &uid,
+                    sid,
+                ))
+                .await
+                .unwrap_err();
+            assert_rbac("GetFeeConfig", role, allowed, err);
+
+            // 7. SetFeeConfig -> fees.payment.write (super_admin, admin, accountant)
+            let allowed = matches!(role, "super_admin" | "admin" | "accountant");
+            let err = server
+                .set_fee_config(with_auth(
+                    SetFeeConfigRequest {
+                        payment_method: PaymentMethod::Unspecified as i32,
+                        fee_bps: 100,
+                        effective_from: None,
+                        note: String::new(),
+                    },
+                    role,
+                    &uid,
+                    sid,
+                ))
+                .await
+                .unwrap_err();
+            assert_rbac("SetFeeConfig", role, allowed, err);
+
+            // 8. CreateRefund -> refunds.create (super_admin, admin, cskh, accountant)
+            let allowed = matches!(role, "super_admin" | "admin" | "cskh" | "accountant");
+            let err = server
+                .create_refund(with_auth(
+                    CreateRefundRequest {
+                        payment_id: "bad-uuid".into(),
+                        order_id: "ord-1".into(),
+                        amount_vnd: 100_000,
+                        reason: "manual".into(),
+                        idempotency_key: "k1".into(),
+                        require_approval_if_large: false,
+                        requested_by: String::new(),
+                    },
+                    role,
+                    &uid,
+                    sid,
+                ))
+                .await
+                .unwrap_err();
+            assert_rbac("CreateRefund", role, allowed, err);
+
+            // 9. DecideRefundApproval -> refunds.approve (super_admin, admin, accountant)
+            let allowed = matches!(role, "super_admin" | "admin" | "accountant");
+            let err = server
+                .decide_refund_approval(with_auth(
+                    DecideRefundApprovalRequest {
+                        refund_id: "bad-uuid".into(),
+                        approve: true,
+                        note: "ok".into(),
+                    },
+                    role,
+                    &uid,
+                    sid,
+                ))
+                .await
+                .unwrap_err();
+            assert_rbac("DecideRefundApproval", role, allowed, err);
+
+            // 10. SettleRefund -> refunds.settle (super_admin, admin, accountant)
+            let allowed = matches!(role, "super_admin" | "admin" | "accountant");
+            let err = server
+                .settle_refund(with_auth(
+                    SettleRefundRequest {
+                        refund_id: "bad-uuid".into(),
+                        provider_refund_id: "FT1".into(),
+                        note: "ok".into(),
+                        idempotency_key: "sk1".into(),
+                    },
+                    role,
+                    &uid,
+                    sid,
+                ))
+                .await
+                .unwrap_err();
+            assert_rbac("SettleRefund", role, allowed, err);
+
+            // 11. ListRefunds -> staff without `refunds.read` (`moderator`) must NOT be blocked
+            //     up-front so they can view their OWN refunds (`is_admin=false, caller_user_id=sub`);
+            //     access to another user's order_id is blocked with PermissionDenied inside service.
+            if role == "moderator" {
+                let err = server
+                    .list_refunds(with_auth(
+                        ListRefundsRequest {
+                            status: 0,
+                            order_id: String::new(),
+                            page: 1,
+                            page_size: 10,
+                        },
+                        role,
+                        &uid,
+                        sid,
+                    ))
+                    .await
+                    .unwrap_err();
+                assert_ne!(
+                    err.code(),
+                    tonic::Code::PermissionDenied,
+                    "moderator listing own refunds must pass gRPC gate to owner-scoped DB query"
+                );
+            }
+
+            // 12. UpdatePaymentMethodConfig -> payment_methods.write (super_admin, admin, ops)
+            let allowed = matches!(role, "super_admin" | "admin" | "ops");
+            let err = server
+                .update_payment_method_config(with_auth(
+                    UpdatePaymentMethodConfigRequest {
+                        method: PaymentMethod::Unspecified as i32,
+                        enabled: true,
+                        min_order_vnd: 0,
+                        max_order_vnd: 0,
+                        expiry_minutes: 15,
+                        note: String::new(),
+                        expected_version: 1,
+                    },
+                    role,
+                    &uid,
+                    sid,
+                ))
+                .await
+                .unwrap_err();
+            assert_rbac("UpdatePaymentMethodConfig", role, allowed, err);
+        }
+
+        // Service token MUST be denied on UpdatePaymentMethodConfig & DecideRefundApproval.
+        assert_eq!(
+            server
+                .update_payment_method_config(with_svc(UpdatePaymentMethodConfigRequest {
+                    method: PaymentMethod::Zalopay as i32,
+                    enabled: true,
+                    min_order_vnd: 0,
+                    max_order_vnd: 0,
+                    expiry_minutes: 15,
+                    note: String::new(),
+                    expected_version: 1,
+                }))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            server
+                .decide_refund_approval(with_svc(DecideRefundApprovalRequest {
+                    refund_id: Uuid::new_v4().to_string(),
+                    approve: true,
+                    note: "svc".into(),
+                }))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+
+        // Service token on CreateRefund with require_approval_if_large=true and empty requested_by -> InvalidArgument!
+        let err_missing_maker = server
+            .create_refund(with_svc(CreateRefundRequest {
+                payment_id: String::new(),
+                order_id: "ord-1".into(),
+                amount_vnd: 6_000_000,
+                reason: "return".into(),
+                idempotency_key: "k-ret-1".into(),
+                require_approval_if_large: true,
+                requested_by: "   ".into(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err_missing_maker.code(), tonic::Code::InvalidArgument);
+
+        // Method config projection strips admin fields for public/service, keeps masked credentials for admin.
+        let rec = PaymentMethodConfigRecord {
+            method: "ZALOPAY".into(),
+            enabled: true,
+            min_order_vnd: 0,
+            max_order_vnd: 0,
+            expiry_minutes: 15,
+            version: 3,
+            note: "secret-admin-note".into(),
+            updated_by: "ops-1".into(),
+            updated_at: Utc::now(),
+        };
+        let pub_pb = to_proto_method_config(&server.service, rec.clone(), false);
+        assert_eq!(pub_pb.method, PaymentMethod::Zalopay as i32);
+        assert!(pub_pb.enabled);
+        assert_eq!(pub_pb.version, 3);
+        assert!(!pub_pb.credentials_configured);
+        assert!(pub_pb.credential_preview.is_empty());
+        assert!(pub_pb.updated_by.is_empty());
+        assert!(pub_pb.updated_at.is_none());
+        assert!(pub_pb.note.is_empty());
+
+        let adm_pb = to_proto_method_config(&server.service, rec, true);
+        assert!(adm_pb.credentials_configured);
+        assert!(adm_pb.credential_preview.contains("[REDACTED]"));
+        assert!(!adm_pb
+            .credential_preview
+            .contains(crate::config::DEV_ONLY_ZALOPAY_MOCK_KEY1));
+        assert!(!adm_pb
+            .credential_preview
+            .contains(crate::config::DEV_ONLY_ZALOPAY_MOCK_KEY2));
+        assert_eq!(adm_pb.updated_by, "ops-1");
+        assert_eq!(adm_pb.note, "secret-admin-note");
+        assert_eq!(adm_pb.version, 3);
+    }
+
+    #[tokio::test]
+    async fn test_p4_item_l_and_e_owner_rbac_and_reserved_idempotency_prefixes() {
+        let (server, _) = test_grpc_server();
+
+        // Item L: cskh, accountant, ops, moderator MUST NOT pass `require_payment_owner` for another user.
+        for role in ["cskh", "accountant", "ops", "moderator"] {
+            let err = server
+                .create_payment(with_auth(
+                    CreatePaymentRequest {
+                        order_group_id: "grp-victim".into(),
+                        order_id: "ord-victim".into(),
+                        user_id: "buyer-victim".into(),
+                        amount_vnd: 100_000,
+                        method: PaymentMethod::Vietqr as i32,
+                        shop_allocations: vec![],
+                        expires_at: None,
+                        idempotency_key: "idem-staff-attack".into(),
+                        supersede_previous: false,
+                    },
+                    role,
+                    &format!("staff-{role}"),
+                    "",
+                ))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.code(),
+                tonic::Code::PermissionDenied,
+                "Item L: role={role} must be denied CreatePayment for another user"
+            );
+        }
+
+        // Item E: End-user CreateRefund MUST reject all 7 reserved internal prefixes (trimmed, case-insensitive).
+        for bad_key in [
+            "order-cancel-refund:ord-1",
+            "  ORDER-CANCEL-REFUND:ord-1  ",
+            "order-return-refund:ord-1",
+            "Order-Return-Refund:ord-1:r1",
+            "superseded-late-refund:p1:ord-1",
+            "late-webhook:2611240001",
+            "  LATE-WEBHOOK:2611240001",
+            "recon-refund:tx-1",
+            "recon-overpay:tx-1",
+            "refund-settle:r-1",
+        ] {
+            let err = server
+                .create_refund(with_auth(
+                    CreateRefundRequest {
+                        payment_id: String::new(),
+                        order_id: "ord-1".into(),
+                        amount_vnd: 1_000,
+                        reason: "spoof".into(),
+                        idempotency_key: bad_key.into(),
+                        require_approval_if_large: false,
+                        requested_by: String::new(),
+                    },
+                    "cskh",
+                    "cskh-1",
+                    "",
+                ))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.code(),
+                tonic::Code::InvalidArgument,
+                "Item E: user CreateRefund must reject reserved key={bad_key:?}"
+            );
+        }
     }
 }

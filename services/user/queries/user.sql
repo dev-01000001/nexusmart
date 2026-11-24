@@ -102,13 +102,6 @@ SET role = CASE WHEN role = 'buyer' THEN 'seller' ELSE role END,
 WHERE id = $1
 RETURNING *;
 
--- name: ListActiveAdminIDsForUpdate :many
-SELECT id FROM users
-WHERE role IN ('admin', 'super_admin')
-  AND status = 'ACTIVE'
-ORDER BY id
-FOR UPDATE;
-
 -- name: ListUsers :many
 SELECT * FROM users
 WHERE (
@@ -262,6 +255,9 @@ SELECT
     s.created_at,
     s.updated_at,
     s.slug,
+    s.suspended_at,
+    s.suspended_reason,
+    s.status_version,
     EXISTS (
         SELECT 1 FROM shop_bank_accounts sba
         WHERE sba.shop_id = s.id
@@ -303,6 +299,7 @@ SET name = $2,
     status = 'PENDING',
     rejection_reason = '',
     verified_owner_name = '',
+    status_version = CASE WHEN status <> 'PENDING' THEN status_version + 1 ELSE status_version END,
     updated_at = NOW()
 WHERE id = $1
   AND (status = 'REJECTED' OR (status = 'PENDING' AND btrim(rejection_reason) <> ''))
@@ -313,9 +310,32 @@ UPDATE shops
 SET status = $2,
     rejection_reason = $3,
     verified_owner_name = CASE WHEN $2 = 'ACTIVE' THEN $4 ELSE verified_owner_name END,
+    status_version = CASE WHEN status <> $2 THEN status_version + 1 ELSE status_version END,
     updated_at = NOW()
 WHERE id = $1
   AND status = 'PENDING'
+RETURNING *;
+
+-- name: SuspendShop :one
+UPDATE shops
+SET status = 'SUSPENDED',
+    suspended_at = $2,
+    suspended_reason = $3,
+    status_version = status_version + 1,
+    updated_at = $4
+WHERE id = $1
+  AND status = 'ACTIVE'
+RETURNING *;
+
+-- name: UnsuspendShop :one
+UPDATE shops
+SET status = 'ACTIVE',
+    suspended_at = NULL,
+    suspended_reason = '',
+    status_version = status_version + 1,
+    updated_at = $2
+WHERE id = $1
+  AND status = 'SUSPENDED'
 RETURNING *;
 
 -- name: ExistsPendingBankReviewByShopID :one
@@ -329,7 +349,7 @@ SELECT EXISTS (
 SELECT EXISTS (
     SELECT 1 FROM shops
     WHERE pickup_address_id = $1
-      AND status = 'ACTIVE'
+      AND status IN ('ACTIVE', 'SUSPENDED', 'PENDING')
 )::boolean AS used;
 
 -- name: CreateAddress :one
@@ -574,3 +594,180 @@ WHERE created_at >= sqlc.arg(start_time)::timestamptz
   AND created_at < sqlc.arg(end_time)::timestamptz
 GROUP BY 1
 ORDER BY 1 ASC;
+
+-- name: CreateShopSuspensionApproval :one
+INSERT INTO shop_suspension_approvals (
+    id, shop_id, status, reason, requested_by, requested_role, created_at
+) VALUES (
+    $1, $2, 'PENDING', $3, $4, $5, $6
+)
+RETURNING *;
+
+-- name: GetShopSuspensionApprovalByID :one
+SELECT * FROM shop_suspension_approvals
+WHERE id = $1
+LIMIT 1;
+
+-- name: GetShopSuspensionApprovalByIDForUpdate :one
+SELECT * FROM shop_suspension_approvals
+WHERE id = $1
+LIMIT 1
+FOR UPDATE;
+
+-- name: GetPendingShopSuspensionApprovalByShopID :one
+SELECT * FROM shop_suspension_approvals
+WHERE shop_id = $1
+  AND status = 'PENDING'
+LIMIT 1;
+
+-- name: DecideShopSuspensionApproval :one
+UPDATE shop_suspension_approvals
+SET status = $2,
+    decided_by = $3,
+    decided_role = $4,
+    decided_note = $5,
+    decided_at = $6
+WHERE id = $1
+  AND status = 'PENDING'
+RETURNING *;
+
+-- name: ListShopSuspensionApprovals :many
+SELECT
+    a.id,
+    a.shop_id,
+    a.status,
+    a.reason,
+    a.requested_by,
+    a.requested_role,
+    a.decided_by,
+    a.decided_role,
+    a.decided_note,
+    a.created_at,
+    a.decided_at,
+    s.name AS shop_name
+FROM shop_suspension_approvals a
+JOIN shops s ON s.id = a.shop_id
+WHERE (sqlc.arg(status)::text = '' OR a.status = sqlc.arg(status)::text)
+  AND (sqlc.narg(shop_id)::uuid IS NULL OR a.shop_id = sqlc.narg(shop_id)::uuid)
+ORDER BY a.created_at DESC, a.id DESC
+LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
+
+-- name: CountShopSuspensionApprovals :one
+SELECT COUNT(*)::bigint FROM shop_suspension_approvals
+WHERE (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text)
+  AND (sqlc.narg(shop_id)::uuid IS NULL OR shop_id = sqlc.narg(shop_id)::uuid);
+
+-- name: InsertUserActivityLog :one
+INSERT INTO user_activity_logs (
+    id, user_id, event_type, category, ip_address, metadata_json, created_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7
+)
+RETURNING *;
+
+-- name: ListUserActivityLogs :many
+SELECT * FROM user_activity_logs
+WHERE user_id = sqlc.arg(user_id)::uuid
+  AND (sqlc.arg(category)::text = '' OR category = sqlc.arg(category)::text)
+  AND (sqlc.narg(from_time)::timestamptz IS NULL OR created_at >= sqlc.narg(from_time)::timestamptz)
+  AND (sqlc.narg(to_time)::timestamptz IS NULL OR created_at <= sqlc.narg(to_time)::timestamptz)
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
+
+-- name: CountUserActivityLogs :one
+SELECT COUNT(*)::bigint FROM user_activity_logs
+WHERE user_id = sqlc.arg(user_id)::uuid
+  AND (sqlc.arg(category)::text = '' OR category = sqlc.arg(category)::text)
+  AND (sqlc.narg(from_time)::timestamptz IS NULL OR created_at >= sqlc.narg(from_time)::timestamptz)
+  AND (sqlc.narg(to_time)::timestamptz IS NULL OR created_at <= sqlc.narg(to_time)::timestamptz);
+
+-- name: DeleteExpiredUserActivityLogs :execrows
+DELETE FROM user_activity_logs
+WHERE id IN (
+    SELECT id FROM user_activity_logs
+    WHERE created_at < sqlc.arg(cutoff)::timestamptz
+      AND created_at < NOW() - INTERVAL '180 days'
+    ORDER BY created_at ASC
+    LIMIT sqlc.arg(batch_limit)::int
+);
+
+-- name: InsertOutboxEvent :exec
+INSERT INTO outbox_events (
+    id, aggregate_id, event_type, trace_id, traceparent, payload_json
+) VALUES (
+    $1, $2, $3, $4, $5, $6
+);
+
+-- name: ClaimPendingOutboxEvents :many
+WITH locked AS (
+    SELECT e.id,
+           COALESCE(NULLIF(e.aggregate_id, ''), e.id) AS agg_id,
+           e.seq
+    FROM outbox_events e
+    WHERE e.published_at IS NULL
+      AND (e.claimed_until IS NULL OR e.claimed_until <= NOW())
+      AND NOT EXISTS (
+          SELECT 1
+          FROM outbox_events prev
+          WHERE prev.published_at IS NULL
+            AND COALESCE(NULLIF(prev.aggregate_id, ''), prev.id) = COALESCE(NULLIF(e.aggregate_id, ''), e.id)
+            AND prev.seq < e.seq
+            AND prev.claimed_until IS NOT NULL
+            AND prev.claimed_until > NOW()
+      )
+    ORDER BY e.seq ASC
+    LIMIT sqlc.arg(batch_limit)::int
+    FOR UPDATE OF e SKIP LOCKED
+),
+eligible AS (
+    SELECT l.id
+    FROM locked l
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM outbox_events prev
+        WHERE prev.published_at IS NULL
+          AND COALESCE(NULLIF(prev.aggregate_id, ''), prev.id) = l.agg_id
+          AND prev.seq < l.seq
+          AND NOT EXISTS (SELECT 1 FROM locked l2 WHERE l2.id = prev.id)
+    )
+)
+UPDATE outbox_events o
+SET claimed_until = NOW() + (sqlc.arg(lease_ms)::bigint * INTERVAL '1 millisecond'),
+    claim_token = sqlc.arg(claim_token)::text
+FROM eligible
+WHERE o.id = eligible.id
+RETURNING o.*;
+
+-- name: MarkOutboxEventPublished :execrows
+UPDATE outbox_events
+SET published_at = NOW(),
+    attempts = attempts + 1,
+    last_error = '',
+    claimed_until = NULL,
+    claim_token = ''
+WHERE id = $1
+  AND published_at IS NULL
+  AND claim_token = $2;
+
+-- name: MarkOutboxEventAttemptFailed :one
+UPDATE outbox_events
+SET attempts = attempts + 1,
+    last_error = $2,
+    claimed_until = CASE
+        WHEN sqlc.arg(apply_backoff)::boolean THEN
+            NOW() + (LEAST(POWER(2, LEAST(attempts + 1, 6)), 60)::bigint * INTERVAL '1 second')
+        ELSE NULL
+    END,
+    claim_token = ''
+WHERE id = $1
+  AND published_at IS NULL
+  AND claim_token = $3
+RETURNING attempts;
+
+-- name: ReleaseOutboxEventClaims :execrows
+UPDATE outbox_events
+SET claimed_until = NULL,
+    claim_token = ''
+WHERE id = ANY(sqlc.arg(ids)::text[])
+  AND published_at IS NULL
+  AND claim_token = sqlc.arg(claim_token)::text;

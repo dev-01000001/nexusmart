@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +12,11 @@ import (
 
 	"github.com/nexusmart/core/services/promotion/internal/domain"
 )
+
+type shopSuspensionEntry struct {
+	suspended bool
+	version   int64
+}
 
 // MemoryStore is a concurrency-safe in-memory implementation of Store for unit and race testing.
 type MemoryStore struct {
@@ -29,6 +35,7 @@ type MemoryStore struct {
 	reservations      map[string]domain.PromotionReservation
 	userUsage         map[string]int32 // key: kind + "|" + targetID + "|" + userID
 	processedEvents   map[string]bool
+	shopSuspensions   map[string]shopSuspensionEntry
 }
 
 // NewMemoryStore initializes an empty MemoryStore.
@@ -47,6 +54,7 @@ func NewMemoryStore() *MemoryStore {
 		reservations:      make(map[string]domain.PromotionReservation),
 		userUsage:         make(map[string]int32),
 		processedEvents:   make(map[string]bool),
+		shopSuspensions:   make(map[string]shopSuspensionEntry),
 	}
 }
 
@@ -456,6 +464,9 @@ func (m *MemoryStore) ProcessExpiringSavedVouchers(
 			if v.PerUserLimit > 0 && m.userUsage[memUsageKey(domain.UsageKindVoucher, vid, userID)] >= v.PerUserLimit {
 				continue
 			}
+			if v.Scope == domain.VoucherScopeShop && m.isShopSuspendedLocked(v.ShopID) {
+				continue
+			}
 			if !v.EndsAt.After(now.UTC()) || v.EndsAt.After(cutoff) {
 				continue
 			}
@@ -707,7 +718,7 @@ func (m *MemoryStore) ListFlashSales(_ context.Context, now time.Time, includeUp
 				continue
 			}
 		}
-		cp := m.attachApprovedFlashItemsLocked(fs)
+		cp := m.attachApprovedFlashItemsLocked(fs, true)
 		out = append(out, cp)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -744,7 +755,7 @@ func (m *MemoryStore) ListAllFlashSales(_ context.Context, now time.Time, status
 				continue
 			}
 		}
-		filtered = append(filtered, m.attachApprovedFlashItemsLocked(fs))
+		filtered = append(filtered, m.attachApprovedFlashItemsLocked(fs, false))
 	}
 	sort.Slice(filtered, func(i, j int) bool {
 		if !filtered[i].StartsAt.Equal(filtered[j].StartsAt) {
@@ -765,12 +776,15 @@ func (m *MemoryStore) ListAllFlashSales(_ context.Context, now time.Time, status
 	return filtered[start:end], total, nil
 }
 
-func (m *MemoryStore) attachApprovedFlashItemsLocked(fs domain.FlashSale) domain.FlashSale {
+func (m *MemoryStore) attachApprovedFlashItemsLocked(fs domain.FlashSale, excludeSuspended bool) domain.FlashSale {
 	cp := fs
 	cp.CategoryIDs = append([]string(nil), fs.CategoryIDs...)
 	cp.Items = nil
 	for _, item := range m.flashItems {
 		if item.FlashSaleID == fs.ID && item.Status == domain.FlashStatusApproved {
+			if excludeSuspended && m.isShopSuspendedLocked(item.ShopID) {
+				continue
+			}
 			item.StartsAt = fs.StartsAt
 			item.EndsAt = fs.EndsAt
 			cp.Items = append(cp.Items, item)
@@ -1123,6 +1137,9 @@ func (m *MemoryStore) ListActiveShopDiscounts(_ context.Context, skuIDs []string
 		if p.EffectiveStatus(now) != domain.ShopProgramStatusActive {
 			continue
 		}
+		if m.isShopSuspendedLocked(p.ShopID) {
+			continue
+		}
 		if shopID != "" && p.ShopID != shopID {
 			continue
 		}
@@ -1240,6 +1257,64 @@ func (m *MemoryStore) ProcessOrderCompletedEvent(_ context.Context, eventID, _, 
 		m.creditCoinsLocked(buyerID, coinsReward, "order_completed_reward", refID)
 	}
 	return false, nil
+}
+
+func (m *MemoryStore) isShopSuspendedLocked(shopID string) bool {
+	if shopID == "" {
+		return false
+	}
+	return m.shopSuspensions[shopID].suspended
+}
+
+func (m *MemoryStore) ProcessShopStatusChangedEvent(
+	_ context.Context,
+	eventID, _, shopID string,
+	suspended bool,
+	version int64,
+) (bool, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.processedEvents[eventID] {
+		return true, false, nil
+	}
+	m.processedEvents[eventID] = true
+
+	cur, ok := m.shopSuspensions[shopID]
+	if ok && version <= cur.version {
+		return false, true, nil
+	}
+	m.shopSuspensions[shopID] = shopSuspensionEntry{
+		suspended: suspended,
+		version:   version,
+	}
+	return false, false, nil
+}
+
+func (m *MemoryStore) IsShopSuspended(_ context.Context, shopID string) (bool, error) {
+	shopID = strings.TrimSpace(shopID)
+	if shopID == "" {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.isShopSuspendedLocked(shopID), nil
+}
+
+func (m *MemoryStore) GetSuspendedShopIDs(_ context.Context, shopIDs []string) (map[string]bool, error) {
+	out := make(map[string]bool)
+	if len(shopIDs) == 0 {
+		return out, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, id := range shopIDs {
+		id = strings.TrimSpace(id)
+		if id != "" && m.isShopSuspendedLocked(id) {
+			out[id] = true
+		}
+	}
+	return out, nil
 }
 
 func (m *MemoryStore) GetReservation(_ context.Context, orderID string) (*domain.PromotionReservation, error) {
