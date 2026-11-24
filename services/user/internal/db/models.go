@@ -102,6 +102,7 @@ type ShopBankAccount struct {
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 	OTPPublishFailed    bool       `json:"otp_publish_failed"`
+	AccountNumberEnc    []byte     `json:"account_number_enc"`
 }
 
 type User struct {

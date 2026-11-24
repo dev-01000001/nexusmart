@@ -129,7 +129,6 @@ export interface ShopEditorial {
   returnPolicy: string;
   warehouseAddress: string;
   accentDot: string;
-  commissionRate: number;
   freeShipThreshold?: number;
   fastDeliveryEnabled?: boolean;
   fastDeliveryFee?: number;
@@ -258,7 +257,6 @@ const SHOP_EDITORIAL_BY_SLUG = new Map<string, ShopEditorial>(
       returnPolicy: s.returnPolicy,
       warehouseAddress: s.warehouseAddress,
       accentDot: s.accentDot,
-      commissionRate: s.commissionRate,
       freeShipThreshold: s.freeShipThreshold,
       fastDeliveryEnabled: s.fastDeliveryEnabled,
       fastDeliveryFee: s.fastDeliveryFee,

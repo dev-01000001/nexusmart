@@ -47,7 +47,7 @@ export function AdminCategoriesPanel() {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const res = await api<{ categories: GatewayCategory[] }>("categories");
+      const res = await api<{ categories: GatewayCategory[] }>("admin/categories");
       setCategories(res.categories ?? []);
     } catch (err) {
       setErrorMsg(getErrorMessage(err, "Không thể tải danh sách danh mục ngành hàng."));
@@ -100,7 +100,7 @@ export function AdminCategoriesPanel() {
     setEditName(cat.name);
     setEditSlug(cat.slug);
     setEditParentId(cat.parent_id || "");
-    setEditBps(String(cat.commission_rate_bps));
+    setEditBps(String(cat.commission_rate_bps ?? 0));
     setEditSortOrder(String(cat.sort_order));
   };
 
@@ -238,7 +238,7 @@ export function AdminCategoriesPanel() {
               type="number"
               min={0}
               max={5000}
-              step={50}
+              step={1}
               className={shared.textInput}
               value={newBps}
               onChange={(e) => setNewBps(e.target.value)}
@@ -323,7 +323,7 @@ export function AdminCategoriesPanel() {
                           type="number"
                           min={0}
                           max={5000}
-                          step={50}
+                          step={1}
                           className={shared.textInput}
                           style={{ width: 92, height: 34, textAlign: "right" }}
                           value={editBps}
@@ -332,8 +332,8 @@ export function AdminCategoriesPanel() {
                         />
                       ) : (
                         <span>
-                          {formatCommissionBps(cat.commission_rate_bps)} ({cat.commission_rate_bps}{" "}
-                          bps)
+                          {formatCommissionBps(cat.commission_rate_bps ?? 0)} (
+                          {cat.commission_rate_bps ?? 0} bps)
                         </span>
                       )}
                     </td>
@@ -462,7 +462,7 @@ export function AdminCategoriesPanel() {
                         type="number"
                         min={0}
                         max={5000}
-                        step={50}
+                        step={1}
                         className={shared.textInput}
                         value={editBps}
                         onChange={(e) => setEditBps(e.target.value)}
@@ -505,12 +505,12 @@ export function AdminCategoriesPanel() {
                     <div className={shared.mobileLine1}>
                       <span className={shared.mobileIdentity}>{cat.name}</span>
                       <span className={shared.mobileMetric}>
-                        {formatCommissionBps(cat.commission_rate_bps)}
+                        {formatCommissionBps(cat.commission_rate_bps ?? 0)}
                       </span>
                     </div>
                     <div className={shared.mobileLine2}>
                       <span className={shared.mobileMetaText}>
-                        /{cat.slug} · {cat.commission_rate_bps} bps · Thứ tự{" "}
+                        /{cat.slug} · {cat.commission_rate_bps ?? 0} bps · Thứ tự{" "}
                         {formatInt(cat.sort_order)}
                       </span>
                     </div>

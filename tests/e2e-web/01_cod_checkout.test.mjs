@@ -3,6 +3,8 @@ import crypto from "node:crypto";
 import { test } from "node:test";
 import {
   ACCESS_COOKIE,
+  COD_SAFE_SUBTOTAL_CAP_VND,
+  COD_SAFE_TOTAL_CAP_VND,
   REFRESH_COOKIE,
   WebClient,
   calculateShippingQuote,
@@ -61,15 +63,17 @@ test("01. Buyer flow via BFF: register -> OTP -> login -> 2-shop cart -> NEXUS10
     (v) =>
       String(v.scope).toUpperCase() === "PLATFORM" &&
       v.is_active !== false &&
-      (v.remaining_quota ?? 1) > 0
+      (v.remaining_quota ?? 1) > 0 &&
+      (v.min_order_vnd ?? 0) <= COD_SAFE_SUBTOTAL_CAP_VND
   );
   assert.ok(platformVouchers.length > 0, `no active PLATFORM voucher found: ${vouchersRes.text}`);
   const voucher =
     platformVouchers.find((v) => String(v.code).toUpperCase() === "NEXUS10") ?? platformVouchers[0];
 
-  // 3. Pick 2 SKUs from 2 different shops whose subtotal meets voucher min_order_vnd.
+  // 3. Pick 2 SKUs from 2 different shops meeting voucher min_order_vnd while staying well below COD cap (< 2M VND incl. shipping).
   const [item1, item2] = await pickTwoShopSkus(client, {
     minTotalVnd: voucher.min_order_vnd ?? 0,
+    maxTotalVnd: COD_SAFE_SUBTOTAL_CAP_VND,
     minStock: 2,
   });
   assert.notEqual(
@@ -122,6 +126,10 @@ test("01. Buyer flow via BFF: register -> OTP -> login -> 2-shop cart -> NEXUS10
     weightGrams: (item2.sku.weight_grams || 300) * item2.quantity,
     codAmountVnd: sub2,
   });
+  assert.ok(
+    sub1 + sub2 + quote1.fee_vnd + quote2.fee_vnd < COD_SAFE_TOTAL_CAP_VND,
+    `COD order total including shipping (${sub1 + sub2 + quote1.fee_vnd + quote2.fee_vnd}) must stay below ${COD_SAFE_TOTAL_CAP_VND} VND`
+  );
 
   // 5. Save and preview platform voucher through BFF.
   const saveVoucherRes = await client.json(

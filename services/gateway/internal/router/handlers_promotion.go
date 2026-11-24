@@ -11,6 +11,8 @@ import (
 	promotionv1 "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/gateway/internal/httpx"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type voucherDTO struct {
@@ -998,29 +1000,18 @@ func (h *handler) handleAdminListFlashSaleItems(w http.ResponseWriter, r *http.R
 	h.handleListFlashSaleItemsCommon(w, r, strings.TrimSpace(r.URL.Query().Get("shop_id")))
 }
 
-const maxActiveShopDiscountSKUs = 200
-
 func (h *handler) handleListActiveShopDiscounts(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	var skuIDs []string
-	seen := make(map[string]struct{})
-	rawSKUCount := 0
 	for _, raw := range q["sku_ids"] {
-		for _, part := range strings.Split(raw, ",") {
-			id := strings.TrimSpace(part)
-			if id == "" {
-				continue
-			}
-			rawSKUCount++
-			if rawSKUCount > maxActiveShopDiscountSKUs {
-				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "sku_ids exceeds maximum limit of 200")
+		if strings.TrimSpace(raw) != "" {
+			var skuErr string
+			skuIDs, skuErr = parseSKUIDsQuery(q)
+			if skuErr != "" {
+				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", skuErr)
 				return
 			}
-			if _, ok := seen[id]; ok {
-				continue
-			}
-			seen[id] = struct{}{}
-			skuIDs = append(skuIDs, id)
+			break
 		}
 	}
 	shopID := strings.TrimSpace(q.Get("shop_id"))
@@ -1440,7 +1431,8 @@ func (h *handler) handlePreviewDiscounts(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
-	// 1. Resolve authoritative SKU prices, shop ownership, and categories from ProductService (never trust client).
+	// 1. Resolve authoritative SKU shop ownership and active status from ProductService
+	// (SKU price and category are resolved authoritatively in PromotionService under D4).
 	skuResp, err := h.clients.Product.GetSKUsBatch(ctx, &productv1.GetSKUsBatchRequest{SkuIds: skuIDs})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -1451,8 +1443,11 @@ func (h *handler) handlePreviewDiscounts(w http.ResponseWriter, r *http.Request)
 		skuByID[sk.GetId()] = sk
 	}
 
-	// 2. Build server-authoritative ShopDiscountInput entries grouped by verified SKU shop_id.
-	// Active shop discount programs are resolved inside PromotionService.PreviewDiscounts (single source of truth matching checkout).
+	// 2. Validate SKU ownership/active status (uniform 400 to prevent SKU existence/ownership oracle;
+	// explicit 409 SKU_INACTIVE when matching shop_id has an inactive SKU) and group by authoritative shop_id.
+	// Price, subtotal, category, and active shop discount programs are resolved authoritatively inside
+	// PromotionService.PreviewDiscounts (D4).
+	const invalidPreviewSKUMsg = "one or more SKUs are invalid for this shop"
 	shopOrder := make([]string, 0, len(body.ShopItems))
 	shopInputByID := make(map[string]*promotionv1.ShopDiscountInput, len(body.ShopItems))
 	for _, s := range body.ShopItems {
@@ -1461,20 +1456,21 @@ func (h *handler) handlePreviewDiscounts(w http.ResponseWriter, r *http.Request)
 		for _, it := range s.Items {
 			skuID := strings.TrimSpace(it.SKUID)
 			sk, ok := skuByID[skuID]
-			if !ok {
-				httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "sku "+skuID+" not found")
+			if !ok || sk == nil {
+				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", invalidPreviewSKUMsg)
 				return
 			}
 			authShopID := strings.TrimSpace(sk.GetShopId())
-			if authShopID == "" {
-				authShopID = claimedShop
-			}
-			if authShopID == "" {
-				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "sku "+skuID+" has no associated shop")
+			if authShopID == "" || (claimedShop != "" && claimedShop != authShopID) {
+				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", invalidPreviewSKUMsg)
 				return
 			}
-			if claimedShop != "" && claimedShop != authShopID {
-				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "sku "+skuID+" does not belong to shop "+claimedShop)
+			if !sk.GetIsActive() {
+				if claimedShop == "" {
+					httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", invalidPreviewSKUMsg)
+					return
+				}
+				httpx.WriteError(w, r, http.StatusConflict, "SKU_INACTIVE", "sku "+skuID+" is not active")
 				return
 			}
 			grp, exists := shopInputByID[authShopID]
@@ -1493,28 +1489,10 @@ func (h *handler) handlePreviewDiscounts(w http.ResponseWriter, r *http.Request)
 				grp.ShippingFeeVnd += s.ShippingFeeVND
 				shippingAssigned = true
 			}
-			unitPrice := sk.GetPriceVnd()
-			if unitPrice < 0 {
-				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "sku "+skuID+" has invalid price")
-				return
-			}
-			qty := int64(it.Quantity)
-			if unitPrice > 0 && qty > math.MaxInt64/unitPrice {
-				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "line subtotal overflow for sku "+skuID)
-				return
-			}
-			lineTotal := unitPrice * qty
-			if grp.SubtotalVnd > math.MaxInt64-lineTotal {
-				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "shop subtotal overflow")
-				return
-			}
-			grp.SubtotalVnd += lineTotal
 			grp.Items = append(grp.Items, &promotionv1.DiscountLineItem{
 				SkuId:           skuID,
 				Quantity:        it.Quantity,
-				UnitPriceVnd:    unitPrice,
 				FlashSaleItemId: strings.TrimSpace(it.FlashSaleItemID),
-				CategoryId:      sk.GetCategoryId(),
 			})
 		}
 	}
@@ -1546,6 +1524,10 @@ func (h *handler) handlePreviewDiscounts(w http.ResponseWriter, r *http.Request)
 		CoinsToUse:        body.CoinsToUse,
 	})
 	if err != nil {
+		if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition && strings.Contains(st.Message(), "SKU_INACTIVE") {
+			httpx.WriteError(w, r, http.StatusConflict, "SKU_INACTIVE", st.Message())
+			return
+		}
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}

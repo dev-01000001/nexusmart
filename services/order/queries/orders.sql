@@ -6,12 +6,22 @@ INSERT INTO checkout_groups (
 )
 RETURNING *;
 
--- name: GetActiveCheckoutGroupByIdempotencyKey :one
-SELECT *
-FROM checkout_groups
-WHERE buyer_id = $1
-  AND idempotency_key = $2
-  AND status <> 'FAILED'
+-- name: GetCheckoutGroupForIdempotency :one
+SELECT g.*,
+       EXISTS (SELECT 1 FROM orders o WHERE o.checkout_group_id = g.id) AS has_orders
+FROM checkout_groups g
+WHERE g.buyer_id = $1
+  AND g.idempotency_key = $2
+  AND (
+      g.status <> 'FAILED'
+      OR g.needs_cleanup = TRUE
+      OR EXISTS (SELECT 1 FROM orders o WHERE o.checkout_group_id = g.id)
+  )
+ORDER BY (g.status <> 'FAILED') DESC,
+         EXISTS (SELECT 1 FROM orders o WHERE o.checkout_group_id = g.id) DESC,
+         g.needs_cleanup DESC,
+         g.created_at DESC,
+         g.id DESC
 LIMIT 1;
 
 -- name: GetCheckoutGroupByID :one
@@ -36,7 +46,7 @@ LIMIT 1;
 -- name: CompleteCheckoutGroup :one
 UPDATE checkout_groups
 SET status = CASE
-        WHEN status = 'IN_PROGRESS' THEN 'COMPLETED'
+        WHEN status = 'IN_PROGRESS' THEN sqlc.arg(target_status)::text
         ELSE status
     END,
     payment_id = CASE
@@ -61,8 +71,13 @@ SET status = CASE
     END,
     total_payable_vnd = $7,
     response_snapshot_json = CASE
+        WHEN sqlc.arg(target_status)::text = 'FAILED' THEN NULL
         WHEN sqlc.narg(response_snapshot_json)::jsonb IS NOT NULL THEN sqlc.narg(response_snapshot_json)::jsonb
         ELSE response_snapshot_json
+    END,
+    pending_stock_confirm = CASE
+        WHEN sqlc.arg(target_status)::text = 'FAILED' THEN FALSE
+        ELSE pending_stock_confirm
     END,
     needs_cleanup = FALSE,
     updated_at = NOW()
@@ -80,7 +95,7 @@ WHERE id = $1
 -- name: FailCheckoutGroup :exec
 UPDATE checkout_groups
 SET status = 'FAILED',
-    payment_status = $2,
+    payment_status = CASE WHEN payment_status IN ('', 'PENDING') THEN $2 ELSE payment_status END,
     needs_cleanup = FALSE,
     updated_at = NOW()
 WHERE checkout_groups.id = $1
@@ -399,6 +414,7 @@ WHERE id = $1;
 -- name: UpdateOrderRefunded :exec
 UPDATE orders
 SET refunded_vnd = $2,
+    settlement_refunded_vnd = $3,
     payment_status = CASE WHEN sqlc.arg(payment_status)::text <> '' THEN sqlc.arg(payment_status)::text ELSE payment_status END,
     updated_at = NOW()
 WHERE id = $1;
@@ -436,12 +452,6 @@ FOR UPDATE;
 SELECT *
 FROM return_requests
 WHERE order_id = $1;
-
--- name: GetReturnRequestByOrderIDForUpdate :one
-SELECT *
-FROM return_requests
-WHERE order_id = $1
-FOR UPDATE;
 
 -- name: HasReturnRequestForOrder :one
 SELECT EXISTS (
@@ -544,26 +554,79 @@ INSERT INTO outbox_events (
     $1, $2, $3, $4, $5
 );
 
--- name: LockPendingOutboxEvents :many
-SELECT *
-FROM outbox_events
-WHERE published_at IS NULL
-ORDER BY created_at ASC
-LIMIT $1
-FOR UPDATE SKIP LOCKED;
+-- name: ClaimPendingOutboxEvents :many
+WITH locked AS (
+    SELECT e.id,
+           COALESCE(NULLIF(e.payload_json->>'order_id', ''), e.id) AS agg_id,
+           e.seq
+    FROM outbox_events e
+    WHERE e.published_at IS NULL
+      AND (e.claimed_until IS NULL OR e.claimed_until <= NOW())
+      AND NOT EXISTS (
+          SELECT 1
+          FROM outbox_events prev
+          WHERE prev.published_at IS NULL
+            AND COALESCE(NULLIF(prev.payload_json->>'order_id', ''), prev.id) = COALESCE(NULLIF(e.payload_json->>'order_id', ''), e.id)
+            AND prev.seq < e.seq
+            AND prev.claimed_until IS NOT NULL
+            AND prev.claimed_until > NOW()
+      )
+    ORDER BY e.seq ASC
+    LIMIT sqlc.arg(batch_limit)::int
+    FOR UPDATE OF e SKIP LOCKED
+),
+eligible AS (
+    SELECT l.id
+    FROM locked l
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM outbox_events prev
+        WHERE prev.published_at IS NULL
+          AND COALESCE(NULLIF(prev.payload_json->>'order_id', ''), prev.id) = l.agg_id
+          AND prev.seq < l.seq
+          AND NOT EXISTS (SELECT 1 FROM locked l2 WHERE l2.id = prev.id)
+    )
+)
+UPDATE outbox_events o
+SET claimed_until = NOW() + (sqlc.arg(lease_ms)::bigint * INTERVAL '1 millisecond'),
+    claim_token = sqlc.arg(claim_token)::text
+FROM eligible
+WHERE o.id = eligible.id
+RETURNING o.*;
 
--- name: MarkOutboxEventPublished :exec
+-- name: MarkOutboxEventPublished :execrows
 UPDATE outbox_events
 SET published_at = NOW(),
     attempts = attempts + 1,
-    last_error = ''
-WHERE id = $1;
+    last_error = '',
+    claimed_until = NULL,
+    claim_token = ''
+WHERE id = $1
+  AND published_at IS NULL
+  AND claim_token = $2;
 
--- name: MarkOutboxEventAttemptFailed :exec
+-- name: MarkOutboxEventAttemptFailed :one
 UPDATE outbox_events
 SET attempts = attempts + 1,
-    last_error = $2
-WHERE id = $1;
+    last_error = $2,
+    claimed_until = CASE
+        WHEN sqlc.arg(apply_backoff)::boolean THEN
+            NOW() + (LEAST(POWER(2, LEAST(attempts + 1, 6)), 60)::bigint * INTERVAL '1 second')
+        ELSE NULL
+    END,
+    claim_token = ''
+WHERE id = $1
+  AND published_at IS NULL
+  AND claim_token = $3
+RETURNING attempts;
+
+-- name: ReleaseOutboxEventClaims :execrows
+UPDATE outbox_events
+SET claimed_until = NULL,
+    claim_token = ''
+WHERE id = ANY(sqlc.arg(ids)::text[])
+  AND published_at IS NULL
+  AND claim_token = sqlc.arg(claim_token)::text;
 
 -- name: TryMarkEventProcessed :execrows
 INSERT INTO processed_events (event_id, event_type)

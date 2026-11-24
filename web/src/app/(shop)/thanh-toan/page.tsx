@@ -102,25 +102,38 @@ export default async function CheckoutPage({
   // Server-generated Idempotency-Key per checkout render; reused across retries on network errors.
   const idempotencyKey = `nm-checkout-${randomUUID()}`;
 
-  const [addrRes, coinsRes, vouchersRes, shopsRes, cartRes, productsRes, flashSalesRes] =
-    await Promise.allSettled([
-      gatewayFetch<{ addresses: GatewayAddress[] }>("/users/me/addresses", { cache: "no-store" }),
-      gatewayFetch<GatewayCoinBalance>("/coins/balance", { cache: "no-store" }),
-      gatewayFetch<GatewayVouchersResponse>("/vouchers", { cache: "no-store" }),
-      gatewayFetch<PaginatedResponse<GatewayPublicShop>>("/shops?page_size=50", {
-        cache: "no-store",
-      }),
-      skuParam
-        ? Promise.resolve(null)
-        : gatewayFetch<{ cart: GatewayCart }>("/cart", { cache: "no-store" }),
-      gatewayFetch<PaginatedResponse<GatewayProduct>>(
-        skuParam ? "/products?page_size=100" : "/products?page_size=8",
-        { cache: "no-store" }
-      ),
-      gatewayFetch<GatewayFlashSalesResponse>("/flash-sales?include_upcoming=true", {
-        cache: "no-store",
-      }),
-    ]);
+  const [
+    addrRes,
+    coinsRes,
+    vouchersRes,
+    shopsRes,
+    cartRes,
+    productsRes,
+    buyNowProductRes,
+    flashSalesRes,
+  ] = await Promise.allSettled([
+    gatewayFetch<{ addresses: GatewayAddress[] }>("/users/me/addresses", { cache: "no-store" }),
+    gatewayFetch<GatewayCoinBalance>("/coins/balance", { cache: "no-store" }),
+    gatewayFetch<GatewayVouchersResponse>("/vouchers", { cache: "no-store" }),
+    gatewayFetch<PaginatedResponse<GatewayPublicShop>>("/shops?page_size=50", {
+      cache: "no-store",
+    }),
+    skuParam
+      ? Promise.resolve(null)
+      : gatewayFetch<{ cart: GatewayCart }>("/cart", { cache: "no-store" }),
+    gatewayFetch<PaginatedResponse<GatewayProduct>>("/products?page_size=8", {
+      cache: "no-store",
+    }),
+    skuParam
+      ? gatewayFetch<PaginatedResponse<GatewayProduct>>(
+          `/products?sku_ids=${encodeURIComponent(skuParam)}&page_size=10`,
+          { cache: "no-store" }
+        )
+      : Promise.resolve(null),
+    gatewayFetch<GatewayFlashSalesResponse>("/flash-sales?include_upcoming=true", {
+      cache: "no-store",
+    }),
+  ]);
 
   const initialFlashSales: GatewayFlashSale[] =
     flashSalesRes.status === "fulfilled" && Array.isArray(flashSalesRes.value?.flash_sales)
@@ -194,10 +207,14 @@ export default async function CheckoutPage({
   if (skuParam) {
     const parsedQty = Math.max(1, Math.min(99, Number.parseInt(qtyParam || "1", 10) || 1));
 
-    if (productsRes.status === "rejected") {
+    const buyNowLookupFailedHard =
+      buyNowProductRes.status === "rejected" &&
+      !(buyNowProductRes.reason instanceof GatewayError && buyNowProductRes.reason.status === 400);
+
+    if (buyNowLookupFailedHard) {
       buyNowError =
-        productsRes.reason instanceof GatewayError
-          ? productsRes.reason.message
+        buyNowProductRes.reason instanceof GatewayError
+          ? buyNowProductRes.reason.message
           : "Chưa thể tải thông tin sản phẩm mua ngay lúc này.";
     } else if (
       flashParam &&
@@ -207,26 +224,10 @@ export default async function CheckoutPage({
     ) {
       buyNowError = flashSalesRes.reason.message;
     } else {
-      let matched = findSkuInProducts(allProducts, skuParam);
-      if (!matched) {
-        const total = productsRes.value?.total ?? allProducts.length;
-        const pageSize = 100;
-        const maxPages = Math.min(Math.ceil(total / pageSize), 10);
-        for (let page = 2; page <= maxPages; page += 1) {
-          try {
-            const nextPage = await gatewayFetch<PaginatedResponse<GatewayProduct>>(
-              `/products?page=${page}&page_size=${pageSize}`,
-              { cache: "no-store" }
-            );
-            const items = nextPage?.items ?? [];
-            if (items.length === 0) break;
-            matched = findSkuInProducts(items, skuParam);
-            if (matched) break;
-          } catch {
-            break;
-          }
-        }
-      }
+      const targetedProducts =
+        buyNowProductRes.status === "fulfilled" ? (buyNowProductRes.value?.items ?? []) : [];
+      const matched =
+        findSkuInProducts(targetedProducts, skuParam) ?? findSkuInProducts(allProducts, skuParam);
       const foundProduct = matched?.product ?? null;
       const foundSku = matched?.sku ?? null;
 

@@ -3,8 +3,6 @@ export * from "./products";
 export * from "./vouchers";
 export * from "./flash-sale";
 export * from "./orders";
-export * from "./seller";
-export * from "./admin";
 export * from "./chat";
 export * from "./content";
 export * from "./membership";

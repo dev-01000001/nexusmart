@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/logger"
 	"github.com/nexusmart/core/pkg/common/metrics"
+	"github.com/nexusmart/core/pkg/common/secretbox"
 	"github.com/nexusmart/core/pkg/common/telemetry"
 	"github.com/nexusmart/core/services/shipping/internal/cache"
 	"github.com/nexusmart/core/services/shipping/internal/carrier"
@@ -81,6 +83,7 @@ func run() error {
 	defer lockPool.Close()
 
 	pgStore := store.NewPGStoreWithLockPool(pool, lockPool)
+	pgStore.SetLogger(log)
 	if err := pgStore.MigrateAndSeed(ctx); err != nil {
 		log.Error("failed to migrate and seed shipping_db", slog.String("error", err.Error()))
 		return err
@@ -125,7 +128,7 @@ func run() error {
 		carrier.NewResilientCarrier(mockExp, resCfg),
 	}
 
-	tokenCipher, err := service.NewTokenCipherFromBase64(cfg.ConfigKey)
+	tokenCipher, err := secretbox.NewFromBase64(cfg.ConfigKey, "SHIPPING_CONFIG_KEY")
 	if err != nil {
 		log.Error("failed to init shipping token cipher (SHIPPING_CONFIG_KEY)", slog.String("error", err.Error()))
 		return err
@@ -166,9 +169,8 @@ func run() error {
 		log.Warn("user service client unavailable; shop pickup lookup disabled", slog.String("error", ucErr.Error()))
 	}
 
-	// Start background workers: outbox relay, order.cancelled consumer, fallback status poller.
-	go outboxRelay.Run(ctx)
-
+	// Start NATS consumer before background workers so LIFO defers stop & wait for relay/poller
+	// before closing consumer, NATS, Redis, and PostgreSQL pools.
 	consumer := events.NewConsumer(js, pgStore, svc, cfg.NATSStream, cfg.ConsumerMaxTries, log)
 	if err := consumer.Start(ctx); err != nil {
 		log.Error("failed to start NATS consumer", slog.String("error", err.Error()))
@@ -177,7 +179,20 @@ func run() error {
 	defer func() { _ = consumer.Close() }()
 
 	statusPoller := poller.New(svc, cfg.PollInterval, log)
-	go statusPoller.Run(ctx)
+	var bgWG sync.WaitGroup
+	defer func() {
+		stop()
+		bgWG.Wait()
+	}()
+	bgWG.Add(2)
+	go func() {
+		defer bgWG.Done()
+		outboxRelay.Run(ctx)
+	}()
+	go func() {
+		defer bgWG.Done()
+		statusPoller.Run(ctx)
+	}()
 
 	// Start gRPC server on :50057.
 	grpcSrv := grpc.NewServer(

@@ -138,6 +138,17 @@ func RateLimitWebhook(limiter RateLimiter, limitPerMin int, log *slog.Logger, tp
 	})
 }
 
+// RateLimitBankOTP enforces a dedicated per-user rate limit on seller bank-account OTP endpoints
+// (disabled when limitPerMin <= 0).
+func RateLimitBankOTP(limiter RateLimiter, limitPerMin int, log *slog.Logger) func(http.Handler) http.Handler {
+	return rateLimitMiddleware(limiter, limitPerMin, time.Minute, log, func(r *http.Request) string {
+		if uid := auth.UserIDFromContext(r.Context()); uid != "" {
+			return "rl:bank_otp:user:" + uid
+		}
+		return ""
+	})
+}
+
 func rateLimitMiddleware(
 	limiter RateLimiter,
 	limit int,

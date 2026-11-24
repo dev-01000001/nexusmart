@@ -17,6 +17,7 @@ type Config struct {
 	RateLimitUserPerMin    int
 	RateLimitFlashPerMin   int
 	RateLimitAuthPerMin    int
+	RateLimitBankOTPPerMin int
 	RateLimitWebhookPerMin int
 	TrustedProxies         string
 	UserGRPCAddr           string
@@ -47,6 +48,7 @@ func Load() Config {
 		RateLimitUserPerMin:    env.EnvInt("RATE_LIMIT_USER_PER_MIN", 180),
 		RateLimitFlashPerMin:   env.EnvInt("RATE_LIMIT_FLASH_SALE_PER_MIN", 60),
 		RateLimitAuthPerMin:    env.EnvInt("RATE_LIMIT_AUTH_PER_MIN", 10),
+		RateLimitBankOTPPerMin: env.EnvInt("RATE_LIMIT_BANK_OTP_PER_MIN", 5),
 		RateLimitWebhookPerMin: env.EnvInt("RATE_LIMIT_WEBHOOK_PER_MIN", 600),
 		TrustedProxies:         env.EnvString("TRUSTED_PROXIES", ""),
 		UserGRPCAddr:           env.EnvString("USER_GRPC_ADDR", "localhost:50051"),

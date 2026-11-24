@@ -828,7 +828,6 @@ func TestReviewA_P2_10_LegacyCODPending_CancelledOnCancelAndShippingReturned(t *
 			CheckoutGroupID: "grp-legacy-cod-2",
 			PaymentID:       "pay-legacy-2",
 			PaymentStatus:   "COD_PENDING",
-			TotalPayableVND: 200000,
 		}); err != nil {
 			t.Fatalf("CompleteCheckoutWithPayment: %v", err)
 		}

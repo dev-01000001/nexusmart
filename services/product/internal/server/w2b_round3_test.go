@@ -181,6 +181,12 @@ func TestW2B_Round3_CategoryFeeSchedule_TieBreakBySeqNotCreatedAt(t *testing.T) 
 	}
 	prodID := prodResp.GetProduct().GetId()
 	skuID := prodResp.GetProduct().GetSkus()[0].GetId()
+	if _, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+		ProductId: prodID,
+		Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
+	}); err != nil {
+		t.Fatalf("AdminReviewProduct approve: %v", err)
+	}
 
 	effAt := base.Add(48 * time.Hour)
 

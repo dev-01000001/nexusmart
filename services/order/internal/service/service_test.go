@@ -81,6 +81,17 @@ func newMockUserClient() *mockUserClient {
 				WardName:       "Phuc Xa",
 				StreetAddress:  "10 Ba Dinh",
 			},
+			"addr-shop-2": {
+				Id:             "addr-shop-2",
+				UserId:         "seller-2",
+				RecipientName:  "Shop Beta Warehouse",
+				RecipientPhone: "0922222222",
+				ProvinceCode:   "48",
+				ProvinceName:   "Da Nang",
+				WardCode:       "20194",
+				WardName:       "Hai Chau",
+				StreetAddress:  "25 Bach Dang",
+			},
 			"addr-other": {
 				Id:             "addr-other",
 				UserId:         "buyer-2",
@@ -93,7 +104,7 @@ func newMockUserClient() *mockUserClient {
 		},
 		shops: map[string]*userv1.Shop{
 			"shop-1": {Id: "shop-1", OwnerUserId: "seller-1", Name: "Shop Alpha", PickupAddressId: "addr-shop-1", ContactPhone: "0911111111"},
-			"shop-2": {Id: "shop-2", OwnerUserId: "seller-2", Name: "Shop Beta", ContactPhone: "0922222222"},
+			"shop-2": {Id: "shop-2", OwnerUserId: "seller-2", Name: "Shop Beta", PickupAddressId: "addr-shop-2", ContactPhone: "0922222222"},
 		},
 	}
 }
@@ -371,6 +382,7 @@ type mockPromotionClient struct {
 	listShopDiscountsAuth []authCallSnapshot
 	reserveCalls          []string
 	reserveReqs           []*promotionv1.ReservePromotionRequest
+	reserveAuth           []authCallSnapshot
 	releaseCalls          []string
 	releaseShopCalls      []*promotionv1.ReleasePromotionShopRequest
 	releaseShopAuth       []authCallSnapshot
@@ -424,11 +436,20 @@ func (m *mockPromotionClient) PreviewDiscounts(_ context.Context, _ *promotionv1
 	return &promotionv1.PreviewDiscountsResponse{Breakdown: m.breakdown}, nil
 }
 
-func (m *mockPromotionClient) ReservePromotion(_ context.Context, req *promotionv1.ReservePromotionRequest, _ ...grpc.CallOption) (*promotionv1.ReservePromotionResponse, error) {
+func (m *mockPromotionClient) ReservePromotion(ctx context.Context, req *promotionv1.ReservePromotionRequest, _ ...grpc.CallOption) (*promotionv1.ReservePromotionResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.reserveCalls = append(m.reserveCalls, req.GetOrderId())
 	m.reserveReqs = append(m.reserveReqs, req)
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.reserveAuth = append(m.reserveAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
 	if m.reserveErr != nil {
 		return nil, m.reserveErr
 	}

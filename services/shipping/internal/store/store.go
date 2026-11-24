@@ -2,18 +2,22 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"io/fs"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexusmart/core/pkg/common/jetstream"
 	"github.com/nexusmart/core/services/shipping/internal/address"
 	"github.com/nexusmart/core/services/shipping/migrations"
 )
@@ -156,13 +160,52 @@ type FallbackRate struct {
 
 // OutboxEvent represents an event queued for NATS JetStream publication.
 type OutboxEvent struct {
-	ID          string
-	EventID     string
-	Subject     string
-	Payload     []byte
-	Traceparent string
-	TraceID     string
-	CreatedAt   time.Time
+	ID           string
+	EventID      string
+	Subject      string
+	AggregateID  string
+	Payload      []byte
+	Traceparent  string
+	TraceID      string
+	PublishedAt  *time.Time
+	Attempts     int32
+	LastError    string
+	CreatedAt    time.Time
+	Seq          int64
+	ClaimedUntil *time.Time
+	ClaimToken   string
+}
+
+// OutboxAggregateKey returns the per-aggregate ordering key for an outbox event
+// (explicit AggregateID, falling back to payload.shipment_id then payload.order_id).
+func OutboxAggregateKey(ev OutboxEvent) string {
+	if id := strings.TrimSpace(ev.AggregateID); id != "" {
+		return id
+	}
+	if len(ev.Payload) == 0 {
+		return ""
+	}
+	var p struct {
+		ShipmentID string `json:"shipment_id"`
+		OrderID    string `json:"order_id"`
+	}
+	if err := json.Unmarshal(ev.Payload, &p); err == nil {
+		if id := strings.TrimSpace(p.ShipmentID); id != "" {
+			return id
+		}
+		if id := strings.TrimSpace(p.OrderID); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+// OutboxEventBefore defines strict deterministic creation order by monotonic seq.
+func OutboxEventBefore(a, b OutboxEvent) bool {
+	if a.Seq != b.Seq {
+		return a.Seq < b.Seq
+	}
+	return a.ID < b.ID
 }
 
 // WebhookUpdateParams carries normalized carrier webhook data to apply atomically.
@@ -221,9 +264,6 @@ type Repository interface {
 	SeedCarrierTokenIfEmpty(ctx context.Context, carrierCode string, encryptedToken []byte) error
 	ListFallbackRates(ctx context.Context, carrierCode string) ([]FallbackRate, error)
 
-	FetchPendingOutbox(ctx context.Context, limit int) ([]OutboxEvent, error)
-	MarkOutboxPublished(ctx context.Context, id string) error
-
 	IsEventProcessed(ctx context.Context, eventID string) (bool, error)
 	MarkEventProcessed(ctx context.Context, eventID, subject string) (bool, error)
 	InsertDeadLetter(ctx context.Context, eventID, subject string, payload []byte, errMsg string, attempts int) error
@@ -231,24 +271,106 @@ type Repository interface {
 
 // PGStore implements Repository backed by PostgreSQL via pgx/v5.
 type PGStore struct {
-	pool     *pgxpool.Pool
-	lockPool *pgxpool.Pool
+	pool                 *pgxpool.Pool
+	lockPool             *pgxpool.Pool
+	outboxLease          atomic.Int64 // nanoseconds; defaults to jetstream.DefaultOutboxLease
+	outboxPublishTimeout atomic.Int64 // nanoseconds; defaults to jetstream.DefaultOutboxPublishTimeout
+	outboxClockMu        sync.RWMutex
+	outboxNowFn          func() time.Time
+	logger               atomic.Pointer[slog.Logger]
 }
 
 // NewPGStore wraps an existing pgxpool.Pool.
 func NewPGStore(pool *pgxpool.Pool) *PGStore {
-	return &PGStore{pool: pool}
+	st := &PGStore{pool: pool}
+	st.outboxLease.Store(int64(jetstream.DefaultOutboxLease))
+	st.outboxPublishTimeout.Store(int64(jetstream.DefaultOutboxPublishTimeout))
+	return st
 }
 
 // NewPGStoreWithLockPool wraps a query pool and a dedicated advisory-lock pool so
 // session locks held across external carrier calls never starve regular DB queries.
 func NewPGStoreWithLockPool(pool, lockPool *pgxpool.Pool) *PGStore {
-	return &PGStore{pool: pool, lockPool: lockPool}
+	st := &PGStore{pool: pool, lockPool: lockPool}
+	st.outboxLease.Store(int64(jetstream.DefaultOutboxLease))
+	st.outboxPublishTimeout.Store(int64(jetstream.DefaultOutboxPublishTimeout))
+	return st
 }
 
-// Fixed advisory lock key ("SHIPMIGR") serializing concurrent startup migrations across replicas.
+// SetLogger attaches a structured logger used for outbox poison-event ERROR alerts.
+func (s *PGStore) SetLogger(l *slog.Logger) {
+	s.logger.Store(l)
+}
+
+func (s *PGStore) outboxLogger() *slog.Logger {
+	if l := s.logger.Load(); l != nil {
+		return l
+	}
+	return slog.Default()
+}
+
+// SetOutboxLease overrides the outbox claim lease duration (defaults to jetstream.DefaultOutboxLease).
+func (s *PGStore) SetOutboxLease(d time.Duration) {
+	if d <= 0 {
+		d = jetstream.DefaultOutboxLease
+	}
+	s.outboxLease.Store(int64(d))
+}
+
+// SetOutboxPublishTimeout overrides the max per-event publish timeout budget (defaults to jetstream.DefaultOutboxPublishTimeout).
+func (s *PGStore) SetOutboxPublishTimeout(d time.Duration) {
+	if d <= 0 {
+		d = jetstream.DefaultOutboxPublishTimeout
+	}
+	s.outboxPublishTimeout.Store(int64(d))
+}
+
+// SetOutboxClock overrides the Go clock used for lease-budget checks (defaults to time.Now with monotonic clock).
+func (s *PGStore) SetOutboxClock(fn func() time.Time) {
+	s.outboxClockMu.Lock()
+	defer s.outboxClockMu.Unlock()
+	s.outboxNowFn = fn
+}
+
+func (s *PGStore) outboxNow() time.Time {
+	s.outboxClockMu.RLock()
+	fn := s.outboxNowFn
+	s.outboxClockMu.RUnlock()
+	if fn == nil {
+		return time.Now()
+	}
+	return fn()
+}
+
+func (s *PGStore) outboxLeaseDuration() time.Duration {
+	d := time.Duration(s.outboxLease.Load())
+	if d <= 0 {
+		return jetstream.DefaultOutboxLease
+	}
+	return d
+}
+
+func (s *PGStore) outboxPublishTimeoutDuration() time.Duration {
+	d := time.Duration(s.outboxPublishTimeout.Load())
+	if d <= 0 {
+		return jetstream.DefaultOutboxPublishTimeout
+	}
+	return d
+}
+
+func (s *PGStore) outboxLeaseMs() int64 {
+	ms := s.outboxLeaseDuration().Milliseconds()
+	if ms <= 0 {
+		return 1
+	}
+	return ms
+}
+
+// Fixed advisory lock keys serializing concurrent startup migrations ("SHIPMIGR")
+// and short outbox claim transactions ("SHIPOUTB") across replicas.
 const (
 	migrateAdvisoryLockKey     int64 = 0x534849504D494752
+	outboxClaimAdvisoryLockKey int64 = 0x534849504F555442
 	defaultLockPoolMaxConns    int32 = 16
 	defaultAdvisoryLockTimeout       = 5 * time.Second
 )
@@ -1079,10 +1201,13 @@ func (s *PGStore) ApplyWebhookEvent(ctx context.Context, params WebhookUpdatePar
 		if buildErr != nil {
 			return nil, "", fmt.Errorf("build outbox payload: %w", buildErr)
 		}
+		// aggregate_id matches the shipments(id) row locked FOR UPDATE above so concurrent
+		// writers on the same aggregate serialize strictly in seq order before COMMIT.
+		aggID := strings.TrimSpace(updated.ID)
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO outbox_events (id, event_id, subject, payload, traceparent, trace_id)
-			VALUES ($1, $2, $3, $4::jsonb, $5, $6)
-		`, uuid.NewString(), params.OutboxEventID, params.OutboxSubject, string(outboxPayload), params.Traceparent, params.TraceID); err != nil {
+			INSERT INTO outbox_events (id, event_id, subject, aggregate_id, payload, traceparent, trace_id)
+			VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+		`, uuid.NewString(), params.OutboxEventID, params.OutboxSubject, aggID, string(outboxPayload), params.Traceparent, params.TraceID); err != nil {
 			return nil, "", fmt.Errorf("insert outbox_event: %w", err)
 		}
 	}
@@ -1361,36 +1486,295 @@ func (s *PGStore) ListFallbackRates(ctx context.Context, carrierCode string) ([]
 	return out, rows.Err()
 }
 
-func (s *PGStore) FetchPendingOutbox(ctx context.Context, limit int) ([]OutboxEvent, error) {
+// ClaimPendingOutbox claims a batch of unpublished outbox rows inside a short transaction
+// using claimed_until lease + FOR UPDATE SKIP LOCKED + claim_token, commits before returning,
+// and restores strict seq order so publishing runs completely outside any TX.
+func (s *PGStore) ClaimPendingOutbox(ctx context.Context, limit int) ([]OutboxEvent, string, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, event_id, subject, payload, traceparent, trace_id, created_at
-		FROM outbox_events
-		WHERE published_at IS NULL
-		ORDER BY created_at ASC
-		LIMIT $1
-	`, limit)
+	claimToken := uuid.NewString()
+
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("fetch pending outbox: %w", err)
+		return nil, "", fmt.Errorf("begin outbox claim tx: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, outboxClaimAdvisoryLockKey); err != nil {
+		return nil, "", fmt.Errorf("lock outbox claim: %w", err)
+	}
+
+	// ponytail: LIMIT applies on locked before eligible; if an aggregate's head row is briefly row-locked
+	// (e.g. concurrent MarkPublished) with >=50 queued rows behind it, one 250ms poll may claim 0 rows and
+	// recover on the next tick once the short update commits (accepted D9-bis ceiling).
+	rows, err := tx.Query(ctx, `
+		WITH locked AS (
+			SELECT o.id, o.aggregate_id, o.seq
+			FROM outbox_events o
+			WHERE o.published_at IS NULL
+			  AND (o.claimed_until IS NULL OR o.claimed_until <= NOW())
+			  AND (
+				o.aggregate_id = ''
+				OR NOT EXISTS (
+					SELECT 1
+					FROM outbox_events earlier
+					WHERE earlier.aggregate_id = o.aggregate_id
+					  AND earlier.published_at IS NULL
+					  AND earlier.claimed_until > NOW()
+					  AND earlier.seq < o.seq
+				)
+			  )
+			ORDER BY o.seq ASC
+			LIMIT $1
+			FOR UPDATE OF o SKIP LOCKED
+		),
+		eligible AS (
+			SELECT l.id
+			FROM locked l
+			WHERE l.aggregate_id = ''
+			   OR NOT EXISTS (
+				SELECT 1
+				FROM outbox_events earlier
+				WHERE earlier.aggregate_id = l.aggregate_id
+				  AND earlier.published_at IS NULL
+				  AND earlier.seq < l.seq
+				  AND NOT EXISTS (SELECT 1 FROM locked l2 WHERE l2.id = earlier.id)
+			   )
+		)
+		UPDATE outbox_events o
+		SET claimed_until = NOW() + ($2::bigint * INTERVAL '1 millisecond'),
+		    claim_token = $3::text
+		FROM eligible e
+		WHERE o.id = e.id
+		RETURNING o.id, o.event_id, o.subject, o.aggregate_id, o.payload, o.traceparent, o.trace_id,
+		          o.published_at, o.attempts, o.last_error, o.created_at, o.seq, o.claimed_until, o.claim_token
+	`, limit, s.outboxLeaseMs(), claimToken)
+	if err != nil {
+		return nil, "", fmt.Errorf("claim pending outbox: %w", err)
+	}
 
 	var out []OutboxEvent
 	for rows.Next() {
 		var ev OutboxEvent
-		if err := rows.Scan(&ev.ID, &ev.EventID, &ev.Subject, &ev.Payload, &ev.Traceparent, &ev.TraceID, &ev.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan outbox event: %w", err)
+		if scanErr := rows.Scan(
+			&ev.ID,
+			&ev.EventID,
+			&ev.Subject,
+			&ev.AggregateID,
+			&ev.Payload,
+			&ev.Traceparent,
+			&ev.TraceID,
+			&ev.PublishedAt,
+			&ev.Attempts,
+			&ev.LastError,
+			&ev.CreatedAt,
+			&ev.Seq,
+			&ev.ClaimedUntil,
+			&ev.ClaimToken,
+		); scanErr != nil {
+			rows.Close()
+			return nil, "", fmt.Errorf("scan claimed outbox event: %w", scanErr)
 		}
 		out = append(out, ev)
 	}
-	return out, rows.Err()
+	if rowsErr := rows.Err(); rowsErr != nil {
+		rows.Close()
+		return nil, "", fmt.Errorf("iterate claimed outbox events: %w", rowsErr)
+	}
+	rows.Close()
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, "", fmt.Errorf("commit outbox claim tx: %w", err)
+	}
+
+	// PostgreSQL UPDATE ... FROM ... RETURNING does not guarantee output order; restore seq order.
+	sort.Slice(out, func(i, j int) bool {
+		return OutboxEventBefore(out[i], out[j])
+	})
+	return out, claimToken, nil
 }
 
-func (s *PGStore) MarkOutboxPublished(ctx context.Context, id string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE outbox_events SET published_at = NOW() WHERE id = $1`, id)
-	return err
+// MarkOutboxPublished marks an outbox event published in a standalone query guarded by claim_token.
+func (s *PGStore) MarkOutboxPublished(ctx context.Context, id, claimToken string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE outbox_events
+		SET published_at = NOW(),
+		    attempts = attempts + 1,
+		    last_error = '',
+		    claimed_until = NULL,
+		    claim_token = ''
+		WHERE id = $1
+		  AND claim_token = $2
+		  AND published_at IS NULL
+	`, id, claimToken)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// MarkOutboxAttemptFailed records a publish failure guarded by claim_token.
+// When backoff > 0 (non-infra failure), claimed_until is set to NOW() + backoff;
+// otherwise claimed_until is cleared so the relay can retry after broker recovery.
+func (s *PGStore) MarkOutboxAttemptFailed(ctx context.Context, id, claimToken, errMsg string, backoff time.Duration) (int32, bool, error) {
+	var backoffMs int64
+	if backoff > 0 {
+		backoffMs = backoff.Milliseconds()
+		if backoffMs <= 0 {
+			backoffMs = 1
+		}
+	}
+	var attempts int32
+	err := s.pool.QueryRow(ctx, `
+		UPDATE outbox_events
+		SET attempts = attempts + 1,
+		    last_error = $3,
+		    claimed_until = CASE
+		        WHEN $4::bigint > 0 THEN NOW() + ($4::bigint * INTERVAL '1 millisecond')
+		        ELSE NULL
+		    END,
+		    claim_token = ''
+		WHERE id = $1
+		  AND claim_token = $2
+		  AND published_at IS NULL
+		RETURNING attempts
+	`, id, claimToken, errMsg, backoffMs).Scan(&attempts)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return attempts, true, nil
+}
+
+func (s *PGStore) releaseRemainingOutboxClaims(ctx context.Context, remaining []OutboxEvent, claimToken string) {
+	if len(remaining) == 0 {
+		return
+	}
+	ids := make([]string, len(remaining))
+	for i, rem := range remaining {
+		ids[i] = rem.ID
+	}
+	relCtx, relCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer relCancel()
+	_, _ = s.pool.Exec(relCtx, `
+		UPDATE outbox_events
+		SET claimed_until = NULL,
+		    claim_token = ''
+		WHERE id = ANY($1::uuid[])
+		  AND claim_token = $2
+		  AND published_at IS NULL
+	`, ids, claimToken)
+}
+
+// ProcessPendingOutbox implements D9 / D9-bis transactional outbox relay:
+//  1. Claims a batch in a short transaction (claimed_until + two-tier CTE + FOR UPDATE SKIP LOCKED + claim_token) and commits.
+//  2. Publishes every claimed event OUTSIDE any DB transaction in strict seq order.
+//  3. Checks remaining lease budget before each publish (must have >= max PubAck timeout remaining); if exhausted,
+//     releases remaining claimed rows in one batch UPDATE and stops without publishing past lease expiry.
+//  4. On broker/transport infrastructure errors, records failure (without row backoff), releases remaining claimed rows,
+//     and aborts the batch immediately so the relay loop backs off. On non-infra errors, applies exponential per-row
+//     backoff min(2^attempts, 60)s, logs ERROR from attempts >= 10 without payload, blocks later events of the same
+//     aggregate in the batch, and continues publishing other aggregates.
+//  5. Marks published events in a separate query guarded by claim_token; on DB error or lost lease (!marked),
+//     releases remaining claimed rows in one batch UPDATE and aborts.
+func (s *PGStore) ProcessPendingOutbox(ctx context.Context, limit int, publishFn func(ctx context.Context, ev OutboxEvent) error) (int, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	lease := s.outboxLeaseDuration()
+	pubTimeout := s.outboxPublishTimeoutDuration()
+	// Capture lease deadline BEFORE claiming so leaseDeadline <= DB claimed_until.
+	leaseDeadline := s.outboxNow().Add(lease)
+
+	claimed, claimToken, err := s.ClaimPendingOutbox(ctx, limit)
+	if err != nil {
+		return 0, err
+	}
+	if len(claimed) == 0 {
+		return 0, nil
+	}
+
+	var toRelease []OutboxEvent
+	defer func() {
+		if len(toRelease) > 0 {
+			s.releaseRemainingOutboxClaims(ctx, toRelease, claimToken)
+		}
+	}()
+
+	published := 0
+	failedAggs := make(map[string]bool)
+	for i, ev := range claimed {
+		if ctx.Err() != nil {
+			toRelease = append(toRelease, claimed[i:]...)
+			return published, ctx.Err()
+		}
+		if leaseDeadline.Sub(s.outboxNow()) < pubTimeout {
+			toRelease = append(toRelease, claimed[i:]...)
+			return published, nil
+		}
+
+		aggKey := OutboxAggregateKey(ev)
+		if aggKey != "" && failedAggs[aggKey] {
+			toRelease = append(toRelease, ev)
+			continue
+		}
+
+		pubCtx, pubCancel := context.WithTimeout(ctx, pubTimeout)
+		pubErr := publishFn(pubCtx, ev)
+		pubCancel()
+		if pubErr != nil {
+			infraErr := jetstream.IsInfraError(pubErr)
+			var backoff time.Duration
+			if !infraErr {
+				backoff = jetstream.OutboxRetryBackoff(ev.Attempts + 1)
+			}
+			failCtx, failCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			newAttempts, updated, failErr := s.MarkOutboxAttemptFailed(failCtx, ev.ID, claimToken, pubErr.Error(), backoff)
+			failCancel()
+			if infraErr {
+				toRelease = append(toRelease, claimed[i+1:]...)
+				return published, pubErr
+			}
+			if failErr != nil {
+				toRelease = append(toRelease, claimed[i+1:]...)
+				return published, fmt.Errorf("mark outbox event failed: %w", failErr)
+			}
+			if !updated {
+				toRelease = append(toRelease, claimed[i+1:]...)
+				return published, nil
+			}
+			if newAttempts >= jetstream.OutboxPoisonLogAttempt {
+				s.outboxLogger().ErrorContext(ctx, "outbox event repeatedly failed",
+					slog.String("event_id", ev.EventID),
+					slog.String("event_type", ev.Subject),
+					slog.String("aggregate_id", aggKey),
+					slog.Int("attempts", int(newAttempts)),
+					slog.String("error", pubErr.Error()),
+				)
+			}
+			if aggKey != "" {
+				failedAggs[aggKey] = true
+			}
+			continue
+		}
+
+		ackCtx, ackCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		marked, markErr := s.MarkOutboxPublished(ackCtx, ev.ID, claimToken)
+		ackCancel()
+		if markErr != nil {
+			toRelease = append(toRelease, claimed[i+1:]...)
+			return published, fmt.Errorf("mark outbox event published: %w", markErr)
+		}
+		if !marked {
+			toRelease = append(toRelease, claimed[i+1:]...)
+			return published, nil
+		}
+		published++
+	}
+	return published, nil
 }
 
 func (s *PGStore) IsEventProcessed(ctx context.Context, eventID string) (bool, error) {

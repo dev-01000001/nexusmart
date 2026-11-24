@@ -126,10 +126,14 @@ func main() {
 		log,
 	)
 	var bgWG sync.WaitGroup
-	bgWG.Add(1)
+	bgWG.Add(2)
 	go func() {
 		defer bgWG.Done()
 		expiryJob.Start(ctx, cfg.VoucherExpiryScanInterval)
+	}()
+	go func() {
+		defer bgWG.Done()
+		promoSvc.StartRedisReconciler(ctx, cfg.RedisReconcileInterval)
 	}()
 
 	red := metrics.NewRED(cfg.ServiceName, prometheus.DefaultRegisterer)
@@ -249,13 +253,15 @@ func connectPostgres(ctx context.Context, dsn string, log *slog.Logger) (*pgxpoo
 
 func connectRedis(ctx context.Context, addr, password string, log *slog.Logger) (*redis.Client, error) {
 	rdb := redis.NewClient(&redis.Options{
-		Addr:         addr,
-		Password:     password,
-		PoolSize:     100,
-		MinIdleConns: 10,
-		DialTimeout:  3 * time.Second,
-		ReadTimeout:  3 * time.Second,
-		WriteTimeout: 3 * time.Second,
+		Addr:            addr,
+		Password:        password,
+		PoolSize:        100,
+		MinIdleConns:    10,
+		DialTimeout:     3 * time.Second,
+		ReadTimeout:     3 * time.Second,
+		WriteTimeout:    3 * time.Second,
+		MaxRetries:      1,
+		MaxRetryBackoff: 100 * time.Millisecond,
 	})
 
 	var lastErr error

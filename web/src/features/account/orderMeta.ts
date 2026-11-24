@@ -326,8 +326,11 @@ export function localizeTimelineNote(rawNote: string): string {
   if (lower.includes("payment succeeded")) {
     return "Hệ thống đã xác nhận thanh toán thành công.";
   }
-  if (lower.includes("payment expired")) {
-    return "Đơn hàng tự động hủy do quá thời hạn thanh toán.";
+  if (lower.includes("payment_timeout_expired") || lower.includes("payment expired")) {
+    return "Đơn hàng tự động hủy do quá hạn thanh toán.";
+  }
+  if (trimmed === "FAILED") {
+    return "Đơn hàng bị hủy do thanh toán không thành công.";
   }
   if (lower.includes("payment failed")) {
     return "Giao dịch thanh toán chưa thành công.";

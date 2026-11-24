@@ -10,7 +10,6 @@ export interface CatalogSku extends ProductSku {
   id: string;
   skuName: string;
   colorName: string;
-  reservedStock: number;
   version: number;
   weightGrams: number;
   imageUrl: string;

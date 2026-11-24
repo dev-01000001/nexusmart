@@ -177,7 +177,7 @@ function ProductFormInner({ mode, productId, shop }: ProductFormViewProps & { sh
     setLoadError(null);
     setNotFound(false);
     try {
-      const catRes = await api<{ categories: GatewayCategory[] }>("categories");
+      const catRes = await api<{ categories: GatewayCategory[] }>("seller/categories");
       const cats = catRes.categories ?? [];
       setCategories(cats);
 
@@ -504,7 +504,7 @@ function ProductFormInner({ mode, productId, shop }: ProductFormViewProps & { sh
   const currentStatusMeta = loadedProduct ? getProductStatusMeta(loadedProduct.status) : null;
 
   return (
-    <form className={common.page} onSubmit={(e) => void handleSubmit(e)}>
+    <form className={common.page} onSubmit={(e) => void handleSubmit(e)} noValidate>
       <div className={common.pageHeader}>
         <div className={common.headerText}>
           <Link href="/seller/san-pham" className={styles.backLink}>
@@ -653,7 +653,10 @@ function ProductFormInner({ mode, productId, shop }: ProductFormViewProps & { sh
                 >
                   {categories.map((cat) => (
                     <option key={cat.id} value={cat.id}>
-                      {cat.name} (Hoa hồng {(cat.commission_rate_bps / 100).toFixed(1)}%)
+                      {typeof cat.commission_rate_bps === "number" &&
+                      Number.isFinite(cat.commission_rate_bps)
+                        ? `${cat.name} (Hoa hồng ${(cat.commission_rate_bps / 100).toFixed(1)}%)`
+                        : cat.name}
                     </option>
                   ))}
                 </select>
@@ -939,7 +942,7 @@ function ProductFormInner({ mode, productId, shop }: ProductFormViewProps & { sh
                     <input
                       type="number"
                       min={1000}
-                      step={1000}
+                      step={1}
                       className={styles.numCellInput}
                       value={row.priceStr}
                       onChange={(e) => updateSkuRow(row.localKey, { priceStr: e.target.value })}
@@ -963,8 +966,8 @@ function ProductFormInner({ mode, productId, shop }: ProductFormViewProps & { sh
                   <td className={common.numCol}>
                     <input
                       type="number"
-                      min={10}
-                      step={10}
+                      min={1}
+                      step={1}
                       className={styles.stockCellInput}
                       value={row.weightStr}
                       onChange={(e) => updateSkuRow(row.localKey, { weightStr: e.target.value })}
@@ -1025,7 +1028,7 @@ function ProductFormInner({ mode, productId, shop }: ProductFormViewProps & { sh
                   <input
                     type="number"
                     min={1000}
-                    step={1000}
+                    step={1}
                     className={styles.numCellInput}
                     value={row.priceStr}
                     onChange={(e) => updateSkuRow(row.localKey, { priceStr: e.target.value })}
@@ -1055,8 +1058,8 @@ function ProductFormInner({ mode, productId, shop }: ProductFormViewProps & { sh
                   <label className={common.fieldHint}>Khối lượng (g)</label>
                   <input
                     type="number"
-                    min={10}
-                    step={10}
+                    min={1}
+                    step={1}
                     className={styles.stockCellInput}
                     value={row.weightStr}
                     onChange={(e) => updateSkuRow(row.localKey, { weightStr: e.target.value })}

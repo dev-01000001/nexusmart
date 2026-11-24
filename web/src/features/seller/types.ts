@@ -421,16 +421,22 @@ export function translateShopDiscountWarning(
 export const PAYMENT_NOT_INITIALIZED_SHIP_MESSAGE =
   "Đơn đang khởi tạo thanh toán, vui lòng thử lại sau ít phút.";
 
+export const SHOP_PICKUP_ADDRESS_REQUIRED_SELLER_MESSAGE =
+  "Gian hàng chưa cấu hình địa chỉ lấy hàng hợp lệ. Vui lòng cập nhật địa chỉ lấy hàng trong Hồ sơ gian hàng trước khi tạo vận đơn.";
+
 /**
  * Maps seller order ship errors into natural Vietnamese, explicitly handling
- * order service PAYMENT_NOT_INITIALIZED (409 FAILED_PRECONDITION) while an order group
- * is still finishing payment initialization.
+ * PAYMENT_NOT_INITIALIZED and SHOP_PICKUP_ADDRESS_REQUIRED (409 FAILED_PRECONDITION).
  */
 export function translateSellerShipError(err: unknown): string {
   if (err && typeof err === "object") {
     const e = err as { code?: unknown; message?: unknown };
-    if (typeof e.code === "string" && e.code.toUpperCase() === "PAYMENT_NOT_INITIALIZED") {
+    const code = typeof e.code === "string" ? e.code.trim().toUpperCase() : "";
+    if (code === "PAYMENT_NOT_INITIALIZED") {
       return PAYMENT_NOT_INITIALIZED_SHIP_MESSAGE;
+    }
+    if (code === "SHOP_PICKUP_ADDRESS_REQUIRED") {
+      return SHOP_PICKUP_ADDRESS_REQUIRED_SELLER_MESSAGE;
     }
     if (typeof e.message === "string" && e.message.trim().length > 0) {
       return e.message.trim();

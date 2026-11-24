@@ -12,25 +12,21 @@ import React, {
   useState,
 } from "react";
 import {
-  ADMIN_DISPUTES,
   COMPLAINT_SLA,
   EDU_DISCOUNT_CONFIG,
   GIFT_CARD_POLICY,
   INITIAL_CHAT_THREADS,
   INITIAL_MEMBERSHIP_STATE,
-  INITIAL_PLATFORM_CONFIG,
   SAMPLE_QAS,
   SAMPLE_REVIEWS,
   getTierBySpend,
 } from "@/data";
 import type {
-  AdminDispute,
   ChatThread,
   FitFeedback,
   GiftCardItem,
   MembershipProfileState,
   MembershipTier,
-  PlatformConfigState,
   ProductQA,
   ProductReview,
   SizeCode,
@@ -178,12 +174,6 @@ export interface MockStoreContextValue {
   chatThreads: ChatThread[];
   sendChatMessage: (threadId: string, sender: "buyer" | "seller", text: string) => void;
 
-  // Admin mock-only queues (no backend RPC yet)
-  disputes: AdminDispute[];
-  updateDisputeStatus: (id: string, status: AdminDispute["status"], note?: string) => void;
-  platformConfig: PlatformConfigState;
-  updatePlatformConfig: (next: PlatformConfigState) => void;
-
   // Lightweight toast notification
   toastMessage: string | null;
   showToast: (message: string) => void;
@@ -230,10 +220,6 @@ export function MockStoreProvider({ children }: { children: React.ReactNode }) {
   const [chatShopId, setChatShopId] = useState<string | null>("shop-bach-dang");
   const [aiOpen, setAiOpen] = useState(false);
   const [chatThreads, setChatThreads] = useState<ChatThread[]>(INITIAL_CHAT_THREADS);
-
-  const [disputes, setDisputes] = useState<AdminDispute[]>(ADMIN_DISPUTES);
-  const [platformConfig, setPlatformConfig] =
-    useState<PlatformConfigState>(INITIAL_PLATFORM_CONFIG);
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -655,24 +641,6 @@ export function MockStoreProvider({ children }: { children: React.ReactNode }) {
     [sessionUser?.full_name]
   );
 
-  const updateDisputeStatus = useCallback(
-    (id: string, status: AdminDispute["status"], note?: string) => {
-      setDisputes((prev) =>
-        prev.map((d) => (d.id === id ? { ...d, status, evidenceNote: note ?? d.evidenceNote } : d))
-      );
-      showToast("Đã cập nhật tiến độ xử lý khiếu nại.");
-    },
-    [showToast]
-  );
-
-  const updatePlatformConfig = useCallback(
-    (next: PlatformConfigState) => {
-      setPlatformConfig(next);
-      showToast("Đã lưu cấu hình vận hành sàn.");
-    },
-    [showToast]
-  );
-
   const value: MockStoreContextValue = {
     bodyProfile,
     updateBodyProfile,
@@ -712,10 +680,6 @@ export function MockStoreProvider({ children }: { children: React.ReactNode }) {
     closeAi,
     chatThreads,
     sendChatMessage,
-    disputes,
-    updateDisputeStatus,
-    platformConfig,
-    updatePlatformConfig,
     toastMessage,
     showToast,
     dismissToast,

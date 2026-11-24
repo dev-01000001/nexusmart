@@ -89,6 +89,9 @@ func (s *Server) AddItem(ctx context.Context, req *cartv1.AddItemRequest) (*cart
 	if !sku.GetIsActive() {
 		return nil, status.Errorf(codes.FailedPrecondition, "SKU_NOT_ACTIVE: sku %s is not active", skuID)
 	}
+	if sku.GetPriceVnd() <= 0 {
+		return nil, status.Errorf(codes.FailedPrecondition, "INVALID_PRICE: sku %s has invalid price", skuID)
+	}
 	if sku.GetAvailableStock() <= 0 {
 		return nil, status.Errorf(codes.FailedPrecondition, "OUT_OF_STOCK: sku %s has 0 available stock", skuID)
 	}
@@ -169,6 +172,9 @@ func (s *Server) UpdateItemQty(ctx context.Context, req *cartv1.UpdateItemQtyReq
 	}
 	if !sku.GetIsActive() {
 		return nil, status.Errorf(codes.FailedPrecondition, "SKU_NOT_ACTIVE: sku %s is not active", skuID)
+	}
+	if sku.GetPriceVnd() <= 0 {
+		return nil, status.Errorf(codes.FailedPrecondition, "INVALID_PRICE: sku %s has invalid price", skuID)
 	}
 	if sku.GetAvailableStock() <= 0 {
 		return nil, status.Errorf(codes.FailedPrecondition, "OUT_OF_STOCK: sku %s has 0 available stock", skuID)
@@ -369,7 +375,7 @@ func (s *Server) buildCart(ctx context.Context, userID string) (*cartv1.Cart, er
 	for _, skuID := range skuIDs {
 		stItem := storedItems[skuID]
 		sku, ok := skuMap[skuID]
-		if !ok || !sku.GetIsActive() {
+		if !ok || !sku.GetIsActive() || sku.GetPriceVnd() <= 0 {
 			continue
 		}
 

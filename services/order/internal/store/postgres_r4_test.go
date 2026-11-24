@@ -202,7 +202,6 @@ func TestPostgresR4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 			QRURL:            "https://qr.example/1",
 			QRCode:           "QR1",
 			PaymentExpiresAt: &exp,
-			TotalPayableVND:  130000,
 			BuildSnapshot: func(grp db.CheckoutGroup, aggs []OrderAggregate) ([]byte, error) {
 				return json.Marshal(map[string]any{
 					"group_payment_status": grp.PaymentStatus,
@@ -239,6 +238,9 @@ func TestPostgresR4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 	})
 
 	t.Run("CancelledOrderUntouchedAndSnapshotReflectsCancelled", func(t *testing.T) {
+		// Case 1 (D11 extended / P1-1): When ALL orders in group are CANCELLED, CompleteCheckoutWithPayment
+		// leaves the cancelled order untouched and closes the group FAILED with no COMPLETED snapshot and
+		// pending_stock_confirm = FALSE.
 		groupID := uuid.NewString()
 		ordID := uuid.NewString()
 		exp := now.Add(15 * time.Minute)
@@ -268,13 +270,14 @@ func TestPostgresR4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 			t.Fatalf("TransitionOrderStatus cancel: %v", err)
 		}
 
+		var observedGrp db.CheckoutGroup
 		if err := st.CompleteCheckoutWithPayment(ctx, UpdateCheckoutPaymentParams{
 			CheckoutGroupID:  groupID,
 			PaymentID:        "pay-pg-can",
 			PaymentStatus:    "PENDING",
 			PaymentExpiresAt: &exp,
-			TotalPayableVND:  130000,
 			BuildSnapshot: func(grp db.CheckoutGroup, aggs []OrderAggregate) ([]byte, error) {
+				observedGrp = grp
 				return json.Marshal(map[string]string{
 					"group_payment_status": grp.PaymentStatus,
 					"order_status":         aggs[0].Order.Status,
@@ -290,13 +293,73 @@ func TestPostgresR4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 			t.Fatalf("cancelled order was mutated: status=%s payStatus=%s payID=%q", agg.Order.Status, agg.Order.PaymentStatus, agg.Order.PaymentID)
 		}
 		grp, _ := st.GetCheckoutGroupByID(ctx, groupID)
-		if grp.PaymentStatus != "CANCELLED" {
-			t.Fatalf("group payment_status = %q, want CANCELLED", grp.PaymentStatus)
+		if grp.Status != "FAILED" || observedGrp.Status != "FAILED" || grp.PaymentStatus != "CANCELLED" || grp.PendingStockConfirm || len(grp.ResponseSnapshotJSON) != 0 {
+			t.Fatalf("D11 extended violation: want FAILED/CANCELLED/pending_stock=false/empty snapshot, got status=%q obs=%q pay=%q pendStock=%v snap=%q",
+				grp.Status, observedGrp.Status, grp.PaymentStatus, grp.PendingStockConfirm, string(grp.ResponseSnapshotJSON))
 		}
-		var snap map[string]string
-		_ = json.Unmarshal(grp.ResponseSnapshotJSON, &snap)
-		if snap["order_status"] != "CANCELLED" || snap["order_payment_status"] != "CANCELLED" {
-			t.Fatalf("snapshot did not reflect CANCELLED: %+v", snap)
+
+		// Case 2 (partial cancel in multi-order group): 1 cancelled + 1 pending still closes COMPLETED
+		// with a fresh snapshot reflecting CANCELLED on order 1 and PENDING on order 2.
+		group2 := uuid.NewString()
+		ordA := uuid.NewString()
+		ordB := uuid.NewString()
+		_, _ = st.CreateCheckoutGroup(ctx, db.CreateCheckoutGroupParams{
+			ID: group2, BuyerID: "buyer-pg-2", IdempotencyKey: "idem-pg-partial-cancel",
+			RequestHash: "h-partial", Status: "IN_PROGRESS", PaymentMethod: "VIETQR", TotalPayableVND: 260000,
+		})
+		if _, err := st.PersistCheckoutBatch(ctx, CheckoutBatch{
+			CheckoutGroupID: group2,
+			Orders: []NewOrderRecord{
+				{
+					Order: db.InsertOrderParams{
+						ID: ordA, OrderCode: "NM-PG-PC-A", CheckoutGroupID: group2, BuyerID: "buyer-pg-2", ShopID: "shop-pg-1",
+						Status: "PENDING", PaymentMethod: "VIETQR", PaymentStatus: "PENDING",
+						SubtotalVND: 100000, ShippingFeeVND: 30000, TotalPayableVND: 130000, PaymentExpiresAt: &exp,
+						ShippingAddressJSON: []byte(`{"province_code":"79"}`),
+					},
+					Items: []db.InsertOrderItemParams{{ID: uuid.NewString(), OrderID: ordA, SKUID: "sku-a", ProductID: "p-a", ProductName: "A", SKUName: "Std", UnitPriceVND: 100000, EffectiveUnitPriceVND: 100000, Quantity: 1, LineTotalVND: 100000}},
+				},
+				{
+					Order: db.InsertOrderParams{
+						ID: ordB, OrderCode: "NM-PG-PC-B", CheckoutGroupID: group2, BuyerID: "buyer-pg-2", ShopID: "shop-pg-2",
+						Status: "PENDING", PaymentMethod: "VIETQR", PaymentStatus: "PENDING",
+						SubtotalVND: 100000, ShippingFeeVND: 30000, TotalPayableVND: 130000, PaymentExpiresAt: &exp,
+						ShippingAddressJSON: []byte(`{"province_code":"79"}`),
+					},
+					Items: []db.InsertOrderItemParams{{ID: uuid.NewString(), OrderID: ordB, SKUID: "sku-b", ProductID: "p-b", ProductName: "B", SKUName: "Std", UnitPriceVND: 100000, EffectiveUnitPriceVND: 100000, Quantity: 1, LineTotalVND: 100000}},
+				},
+			},
+		}); err != nil {
+			t.Fatalf("PersistCheckoutBatch(partial): %v", err)
+		}
+		if _, err := st.TransitionOrderStatus(ctx, SingleOrderTransitionParams{
+			OrderID: ordA, TargetStatus: orderv1.OrderStatus_ORDER_STATUS_CANCELLED,
+			CancelReason: "partial cancel", PaymentStatus: "CANCELLED",
+			ActorID: "buyer-pg-2", ActorRole: "buyer", Note: "cancelled", Now: now,
+		}); err != nil {
+			t.Fatalf("TransitionOrderStatus cancel ordA: %v", err)
+		}
+		if err := st.CompleteCheckoutWithPayment(ctx, UpdateCheckoutPaymentParams{
+			CheckoutGroupID: group2, PaymentID: "pay-pg-partial", PaymentStatus: "PENDING",
+			PaymentExpiresAt: &exp,
+			BuildSnapshot: func(_ db.CheckoutGroup, aggs []OrderAggregate) ([]byte, error) {
+				statuses := map[string]string{}
+				for _, a := range aggs {
+					statuses[a.Order.ID] = a.Order.Status
+				}
+				return json.Marshal(statuses)
+			},
+		}); err != nil {
+			t.Fatalf("CompleteCheckoutWithPayment(partial): %v", err)
+		}
+		grp2, _ := st.GetCheckoutGroupByID(ctx, group2)
+		if grp2.Status != "COMPLETED" {
+			t.Fatalf("partial cancel must stay COMPLETED, got %q", grp2.Status)
+		}
+		var snap2 map[string]string
+		_ = json.Unmarshal(grp2.ResponseSnapshotJSON, &snap2)
+		if snap2[ordA] != "CANCELLED" || snap2[ordB] != "PENDING" {
+			t.Fatalf("partial cancel snapshot mismatch: %+v", snap2)
 		}
 	})
 
@@ -372,7 +435,6 @@ func TestPostgresR4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 					PaymentID:        payID,
 					PaymentStatus:    "PENDING",
 					PaymentExpiresAt: &exp,
-					TotalPayableVND:  360000,
 					BuildSnapshot: func(grp db.CheckoutGroup, aggs []OrderAggregate) ([]byte, error) {
 						return json.Marshal(map[string]string{"status": grp.PaymentStatus})
 					},
@@ -1001,7 +1063,7 @@ func TestPostgresR5_LocksSQLAndMigrations(t *testing.T) {
 		// First completion attaches P1, then RetryPayment supersedes with P2 (exp2, snapshot=NULL).
 		if err := st.CompleteCheckoutWithPayment(ctx, UpdateCheckoutPaymentParams{
 			CheckoutGroupID: grpID, PaymentID: "pay-p1", PaymentStatus: "PENDING",
-			PaymentExpiresAt: &exp1, TotalPayableVND: 120000, ResponseSnapshotJSON: []byte(`{"p":"p1"}`),
+			PaymentExpiresAt: &exp1, ResponseSnapshotJSON: []byte(`{"p":"p1"}`),
 		}); err != nil {
 			t.Fatalf("CompleteCheckoutWithPayment(P1): %v", err)
 		}
@@ -1016,7 +1078,7 @@ func TestPostgresR5_LocksSQLAndMigrations(t *testing.T) {
 		var seenGrp db.CheckoutGroup
 		if err := st.CompleteCheckoutWithPayment(ctx, UpdateCheckoutPaymentParams{
 			CheckoutGroupID: grpID, PaymentID: "pay-p1", PaymentStatus: "PENDING",
-			PaymentExpiresAt: &exp1, TotalPayableVND: 120000,
+			PaymentExpiresAt: &exp1,
 			BuildSnapshot: func(grp db.CheckoutGroup, aggs []OrderAggregate) ([]byte, error) {
 				seenGrp = grp
 				return []byte(`{"stale":"p1"}`), nil
@@ -1103,7 +1165,7 @@ func TestPostgresR5_LocksSQLAndMigrations(t *testing.T) {
 			t.Fatalf("PersistCheckoutBatch: %v", err)
 		}
 		if err := st.CompleteCheckoutWithPayment(ctx, UpdateCheckoutPaymentParams{
-			CheckoutGroupID: grpID, PaymentID: "pay-n8-pg", PaymentStatus: "PENDING", TotalPayableVND: 200000,
+			CheckoutGroupID: grpID, PaymentID: "pay-n8-pg", PaymentStatus: "PENDING",
 		}); err != nil {
 			t.Fatalf("CompleteCheckoutWithPayment: %v", err)
 		}
@@ -1288,7 +1350,7 @@ func TestPostgresR6_M3_M4_Races(t *testing.T) {
 		}, now)
 		if err := st.CompleteCheckoutWithPayment(ctx, UpdateCheckoutPaymentParams{
 			CheckoutGroupID: grpID, PaymentID: "pay-m4-pg", PaymentStatus: "PENDING",
-			PaymentExpiresAt: &exp, TotalPayableVND: 100000,
+			PaymentExpiresAt: &exp,
 		}); err != nil {
 			t.Fatalf("CompleteCheckoutWithPayment: %v", err)
 		}
@@ -1322,7 +1384,7 @@ func TestPostgresR6_M3_M4_Races(t *testing.T) {
 			SubtotalVND: 100000, TotalPayableVND: 100000,
 		}, now)
 		if err := st.CompleteCheckoutWithPayment(ctx, UpdateCheckoutPaymentParams{
-			CheckoutGroupID: codGrpID, PaymentID: "pay-m4-cod", PaymentStatus: "PENDING", TotalPayableVND: 100000,
+			CheckoutGroupID: codGrpID, PaymentID: "pay-m4-cod", PaymentStatus: "PENDING",
 		}); err != nil {
 			t.Fatalf("CompleteCheckoutWithPayment(COD): %v", err)
 		}

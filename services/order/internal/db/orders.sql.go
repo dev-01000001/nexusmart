@@ -81,6 +81,86 @@ func (q *Queries) ClaimCheckoutGroupForCleanup(ctx context.Context, arg ClaimChe
 	return err
 }
 
+const claimPendingOutboxEvents = `-- name: ClaimPendingOutboxEvents :many
+WITH locked AS (
+    SELECT e.id,
+           COALESCE(NULLIF(e.payload_json->>'order_id', ''), e.id) AS agg_id,
+           e.seq
+    FROM outbox_events e
+    WHERE e.published_at IS NULL
+      AND (e.claimed_until IS NULL OR e.claimed_until <= NOW())
+      AND NOT EXISTS (
+          SELECT 1
+          FROM outbox_events prev
+          WHERE prev.published_at IS NULL
+            AND COALESCE(NULLIF(prev.payload_json->>'order_id', ''), prev.id) = COALESCE(NULLIF(e.payload_json->>'order_id', ''), e.id)
+            AND prev.seq < e.seq
+            AND prev.claimed_until IS NOT NULL
+            AND prev.claimed_until > NOW()
+      )
+    ORDER BY e.seq ASC
+    LIMIT $3::int
+    FOR UPDATE OF e SKIP LOCKED
+),
+eligible AS (
+    SELECT l.id
+    FROM locked l
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM outbox_events prev
+        WHERE prev.published_at IS NULL
+          AND COALESCE(NULLIF(prev.payload_json->>'order_id', ''), prev.id) = l.agg_id
+          AND prev.seq < l.seq
+          AND NOT EXISTS (SELECT 1 FROM locked l2 WHERE l2.id = prev.id)
+    )
+)
+UPDATE outbox_events o
+SET claimed_until = NOW() + ($1::bigint * INTERVAL '1 millisecond'),
+    claim_token = $2::text
+FROM eligible
+WHERE o.id = eligible.id
+RETURNING o.id, o.event_type, o.trace_id, o.traceparent, o.payload_json, o.published_at, o.attempts, o.last_error, o.created_at, o.seq, o.claimed_until, o.claim_token
+`
+
+type ClaimPendingOutboxEventsParams struct {
+	LeaseMs    int64  `json:"lease_ms"`
+	ClaimToken string `json:"claim_token"`
+	BatchLimit int32  `json:"batch_limit"`
+}
+
+func (q *Queries) ClaimPendingOutboxEvents(ctx context.Context, arg ClaimPendingOutboxEventsParams) ([]OutboxEvent, error) {
+	rows, err := q.db.Query(ctx, claimPendingOutboxEvents, arg.LeaseMs, arg.ClaimToken, arg.BatchLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OutboxEvent{}
+	for rows.Next() {
+		var i OutboxEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventType,
+			&i.TraceID,
+			&i.Traceparent,
+			&i.PayloadJSON,
+			&i.PublishedAt,
+			&i.Attempts,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.Seq,
+			&i.ClaimedUntil,
+			&i.ClaimToken,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const clearCheckoutGroupNeedsCleanup = `-- name: ClearCheckoutGroupNeedsCleanup :exec
 UPDATE checkout_groups
 SET needs_cleanup = FALSE,
@@ -206,7 +286,7 @@ func (q *Queries) ClearStaleOrderPendingShipmentCancel(ctx context.Context, arg 
 const completeCheckoutGroup = `-- name: CompleteCheckoutGroup :one
 UPDATE checkout_groups
 SET status = CASE
-        WHEN status = 'IN_PROGRESS' THEN 'COMPLETED'
+        WHEN status = 'IN_PROGRESS' THEN $8::text
         ELSE status
     END,
     payment_id = CASE
@@ -231,8 +311,13 @@ SET status = CASE
     END,
     total_payable_vnd = $7,
     response_snapshot_json = CASE
-        WHEN $8::jsonb IS NOT NULL THEN $8::jsonb
+        WHEN $8::text = 'FAILED' THEN NULL
+        WHEN $9::jsonb IS NOT NULL THEN $9::jsonb
         ELSE response_snapshot_json
+    END,
+    pending_stock_confirm = CASE
+        WHEN $8::text = 'FAILED' THEN FALSE
+        ELSE pending_stock_confirm
     END,
     needs_cleanup = FALSE,
     updated_at = NOW()
@@ -249,6 +334,7 @@ type CompleteCheckoutGroupParams struct {
 	QRCode               string     `json:"qr_code"`
 	PaymentExpiresAt     *time.Time `json:"payment_expires_at"`
 	TotalPayableVND      int64      `json:"total_payable_vnd"`
+	TargetStatus         string     `json:"target_status"`
 	ResponseSnapshotJSON []byte     `json:"response_snapshot_json"`
 }
 
@@ -261,6 +347,7 @@ func (q *Queries) CompleteCheckoutGroup(ctx context.Context, arg CompleteCheckou
 		arg.QRCode,
 		arg.PaymentExpiresAt,
 		arg.TotalPayableVND,
+		arg.TargetStatus,
 		arg.ResponseSnapshotJSON,
 	)
 	var i CheckoutGroup
@@ -454,7 +541,7 @@ func (q *Queries) ExtendReturnRequestDeadline(ctx context.Context, arg ExtendRet
 const failCheckoutGroup = `-- name: FailCheckoutGroup :exec
 UPDATE checkout_groups
 SET status = 'FAILED',
-    payment_status = $2,
+    payment_status = CASE WHEN payment_status IN ('', 'PENDING') THEN $2 ELSE payment_status END,
     needs_cleanup = FALSE,
     updated_at = NOW()
 WHERE checkout_groups.id = $1
@@ -920,48 +1007,6 @@ func (q *Queries) FindStaleInProgressCheckoutGroups(ctx context.Context, arg Fin
 	return items, nil
 }
 
-const getActiveCheckoutGroupByIdempotencyKey = `-- name: GetActiveCheckoutGroupByIdempotencyKey :one
-SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json
-FROM checkout_groups
-WHERE buyer_id = $1
-  AND idempotency_key = $2
-  AND status <> 'FAILED'
-LIMIT 1
-`
-
-type GetActiveCheckoutGroupByIdempotencyKeyParams struct {
-	BuyerID        string `json:"buyer_id"`
-	IdempotencyKey string `json:"idempotency_key"`
-}
-
-func (q *Queries) GetActiveCheckoutGroupByIdempotencyKey(ctx context.Context, arg GetActiveCheckoutGroupByIdempotencyKeyParams) (CheckoutGroup, error) {
-	row := q.db.QueryRow(ctx, getActiveCheckoutGroupByIdempotencyKey, arg.BuyerID, arg.IdempotencyKey)
-	var i CheckoutGroup
-	err := row.Scan(
-		&i.ID,
-		&i.BuyerID,
-		&i.IdempotencyKey,
-		&i.Status,
-		&i.PaymentMethod,
-		&i.PaymentID,
-		&i.PaymentStatus,
-		&i.QRURL,
-		&i.QRCode,
-		&i.PaymentExpiresAt,
-		&i.TotalPayableVND,
-		&i.ResponseSnapshotJSON,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.RequestHash,
-		&i.RetryIdempotencyKey,
-		&i.RetryFromPaymentID,
-		&i.PendingStockConfirm,
-		&i.NeedsCleanup,
-		&i.WarningsJSON,
-	)
-	return i, err
-}
-
 const getCheckoutGroupByID = `-- name: GetCheckoutGroupByID :one
 SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json
 FROM checkout_groups
@@ -1064,6 +1109,83 @@ func (q *Queries) GetCheckoutGroupByPaymentID(ctx context.Context, paymentID str
 		&i.PendingStockConfirm,
 		&i.NeedsCleanup,
 		&i.WarningsJSON,
+	)
+	return i, err
+}
+
+const getCheckoutGroupForIdempotency = `-- name: GetCheckoutGroupForIdempotency :one
+SELECT g.id, g.buyer_id, g.idempotency_key, g.status, g.payment_method, g.payment_id, g.payment_status, g.qr_url, g.qr_code, g.payment_expires_at, g.total_payable_vnd, g.response_snapshot_json, g.created_at, g.updated_at, g.request_hash, g.retry_idempotency_key, g.retry_from_payment_id, g.pending_stock_confirm, g.needs_cleanup, g.warnings_json,
+       EXISTS (SELECT 1 FROM orders o WHERE o.checkout_group_id = g.id) AS has_orders
+FROM checkout_groups g
+WHERE g.buyer_id = $1
+  AND g.idempotency_key = $2
+  AND (
+      g.status <> 'FAILED'
+      OR g.needs_cleanup = TRUE
+      OR EXISTS (SELECT 1 FROM orders o WHERE o.checkout_group_id = g.id)
+  )
+ORDER BY (g.status <> 'FAILED') DESC,
+         EXISTS (SELECT 1 FROM orders o WHERE o.checkout_group_id = g.id) DESC,
+         g.needs_cleanup DESC,
+         g.created_at DESC,
+         g.id DESC
+LIMIT 1
+`
+
+type GetCheckoutGroupForIdempotencyParams struct {
+	BuyerID        string `json:"buyer_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+type GetCheckoutGroupForIdempotencyRow struct {
+	ID                   string     `json:"id"`
+	BuyerID              string     `json:"buyer_id"`
+	IdempotencyKey       string     `json:"idempotency_key"`
+	Status               string     `json:"status"`
+	PaymentMethod        string     `json:"payment_method"`
+	PaymentID            string     `json:"payment_id"`
+	PaymentStatus        string     `json:"payment_status"`
+	QRURL                string     `json:"qr_url"`
+	QRCode               string     `json:"qr_code"`
+	PaymentExpiresAt     *time.Time `json:"payment_expires_at"`
+	TotalPayableVND      int64      `json:"total_payable_vnd"`
+	ResponseSnapshotJSON []byte     `json:"response_snapshot_json"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+	RequestHash          string     `json:"request_hash"`
+	RetryIdempotencyKey  string     `json:"retry_idempotency_key"`
+	RetryFromPaymentID   string     `json:"retry_from_payment_id"`
+	PendingStockConfirm  bool       `json:"pending_stock_confirm"`
+	NeedsCleanup         bool       `json:"needs_cleanup"`
+	WarningsJSON         []byte     `json:"warnings_json"`
+	HasOrders            bool       `json:"has_orders"`
+}
+
+func (q *Queries) GetCheckoutGroupForIdempotency(ctx context.Context, arg GetCheckoutGroupForIdempotencyParams) (GetCheckoutGroupForIdempotencyRow, error) {
+	row := q.db.QueryRow(ctx, getCheckoutGroupForIdempotency, arg.BuyerID, arg.IdempotencyKey)
+	var i GetCheckoutGroupForIdempotencyRow
+	err := row.Scan(
+		&i.ID,
+		&i.BuyerID,
+		&i.IdempotencyKey,
+		&i.Status,
+		&i.PaymentMethod,
+		&i.PaymentID,
+		&i.PaymentStatus,
+		&i.QRURL,
+		&i.QRCode,
+		&i.PaymentExpiresAt,
+		&i.TotalPayableVND,
+		&i.ResponseSnapshotJSON,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RequestHash,
+		&i.RetryIdempotencyKey,
+		&i.RetryFromPaymentID,
+		&i.PendingStockConfirm,
+		&i.NeedsCleanup,
+		&i.WarningsJSON,
+		&i.HasOrders,
 	)
 	return i, err
 }
@@ -1278,51 +1400,6 @@ WHERE order_id = $1
 
 func (q *Queries) GetReturnRequestByOrderID(ctx context.Context, orderID string) (ReturnRequest, error) {
 	row := q.db.QueryRow(ctx, getReturnRequestByOrderID, orderID)
-	var i ReturnRequest
-	err := row.Scan(
-		&i.ID,
-		&i.OrderID,
-		&i.BuyerID,
-		&i.Reason,
-		&i.EvidenceURLsJSON,
-		&i.Status,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.OrderCode,
-		&i.ShopID,
-		&i.SellerResponse,
-		&i.SellerEvidenceURLsJSON,
-		&i.DisputeReason,
-		&i.AdminNote,
-		&i.RefundAmountVND,
-		&i.ReturnTrackingCode,
-		&i.ReturnLabelURL,
-		&i.ReturnFeeVND,
-		&i.ReturnFeeBearer,
-		&i.GoodsReceived,
-		&i.ShouldRestock,
-		&i.RefundDone,
-		&i.PromoReleased,
-		&i.RestockDone,
-		&i.DeadlineAt,
-		&i.ReturnShipmentTerminal,
-		&i.PreviousReturnTrackingsJSON,
-		&i.DeadlineExtensionCount,
-		&i.EscalatedFromTransitTimeout,
-		&i.EscalatedFromCancelFailure,
-	)
-	return i, err
-}
-
-const getReturnRequestByOrderIDForUpdate = `-- name: GetReturnRequestByOrderIDForUpdate :one
-SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure
-FROM return_requests
-WHERE order_id = $1
-FOR UPDATE
-`
-
-func (q *Queries) GetReturnRequestByOrderIDForUpdate(ctx context.Context, orderID string) (ReturnRequest, error) {
-	row := q.db.QueryRow(ctx, getReturnRequestByOrderIDForUpdate, orderID)
 	var i ReturnRequest
 	err := row.Scan(
 		&i.ID,
@@ -2349,45 +2426,6 @@ func (q *Queries) ListReturnSummariesByOrderIDs(ctx context.Context, orderIds []
 	return items, nil
 }
 
-const lockPendingOutboxEvents = `-- name: LockPendingOutboxEvents :many
-SELECT id, event_type, trace_id, traceparent, payload_json, published_at, attempts, last_error, created_at
-FROM outbox_events
-WHERE published_at IS NULL
-ORDER BY created_at ASC
-LIMIT $1
-FOR UPDATE SKIP LOCKED
-`
-
-func (q *Queries) LockPendingOutboxEvents(ctx context.Context, limit int32) ([]OutboxEvent, error) {
-	rows, err := q.db.Query(ctx, lockPendingOutboxEvents, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []OutboxEvent{}
-	for rows.Next() {
-		var i OutboxEvent
-		if err := rows.Scan(
-			&i.ID,
-			&i.EventType,
-			&i.TraceID,
-			&i.Traceparent,
-			&i.PayloadJSON,
-			&i.PublishedAt,
-			&i.Attempts,
-			&i.LastError,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const markCheckoutGroupNeedsCleanup = `-- name: MarkCheckoutGroupNeedsCleanup :exec
 UPDATE checkout_groups
 SET needs_cleanup = TRUE,
@@ -2422,34 +2460,86 @@ func (q *Queries) MarkOrderOrphanShipmentManualReview(ctx context.Context, id st
 	return err
 }
 
-const markOutboxEventAttemptFailed = `-- name: MarkOutboxEventAttemptFailed :exec
+const markOutboxEventAttemptFailed = `-- name: MarkOutboxEventAttemptFailed :one
 UPDATE outbox_events
 SET attempts = attempts + 1,
-    last_error = $2
+    last_error = $2,
+    claimed_until = CASE
+        WHEN $4::boolean THEN
+            NOW() + (LEAST(POWER(2, LEAST(attempts + 1, 6)), 60)::bigint * INTERVAL '1 second')
+        ELSE NULL
+    END,
+    claim_token = ''
 WHERE id = $1
+  AND published_at IS NULL
+  AND claim_token = $3
+RETURNING attempts
 `
 
 type MarkOutboxEventAttemptFailedParams struct {
-	ID        string `json:"id"`
-	LastError string `json:"last_error"`
+	ID           string `json:"id"`
+	LastError    string `json:"last_error"`
+	ClaimToken   string `json:"claim_token"`
+	ApplyBackoff bool   `json:"apply_backoff"`
 }
 
-func (q *Queries) MarkOutboxEventAttemptFailed(ctx context.Context, arg MarkOutboxEventAttemptFailedParams) error {
-	_, err := q.db.Exec(ctx, markOutboxEventAttemptFailed, arg.ID, arg.LastError)
-	return err
+func (q *Queries) MarkOutboxEventAttemptFailed(ctx context.Context, arg MarkOutboxEventAttemptFailedParams) (int32, error) {
+	row := q.db.QueryRow(ctx, markOutboxEventAttemptFailed,
+		arg.ID,
+		arg.LastError,
+		arg.ClaimToken,
+		arg.ApplyBackoff,
+	)
+	var attempts int32
+	err := row.Scan(&attempts)
+	return attempts, err
 }
 
-const markOutboxEventPublished = `-- name: MarkOutboxEventPublished :exec
+const markOutboxEventPublished = `-- name: MarkOutboxEventPublished :execrows
 UPDATE outbox_events
 SET published_at = NOW(),
     attempts = attempts + 1,
-    last_error = ''
+    last_error = '',
+    claimed_until = NULL,
+    claim_token = ''
 WHERE id = $1
+  AND published_at IS NULL
+  AND claim_token = $2
 `
 
-func (q *Queries) MarkOutboxEventPublished(ctx context.Context, id string) error {
-	_, err := q.db.Exec(ctx, markOutboxEventPublished, id)
-	return err
+type MarkOutboxEventPublishedParams struct {
+	ID         string `json:"id"`
+	ClaimToken string `json:"claim_token"`
+}
+
+func (q *Queries) MarkOutboxEventPublished(ctx context.Context, arg MarkOutboxEventPublishedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markOutboxEventPublished, arg.ID, arg.ClaimToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const releaseOutboxEventClaims = `-- name: ReleaseOutboxEventClaims :execrows
+UPDATE outbox_events
+SET claimed_until = NULL,
+    claim_token = ''
+WHERE id = ANY($1::text[])
+  AND published_at IS NULL
+  AND claim_token = $2::text
+`
+
+type ReleaseOutboxEventClaimsParams struct {
+	Ids        []string `json:"ids"`
+	ClaimToken string   `json:"claim_token"`
+}
+
+func (q *Queries) ReleaseOutboxEventClaims(ctx context.Context, arg ReleaseOutboxEventClaimsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseOutboxEventClaims, arg.Ids, arg.ClaimToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const reportPlatformCompletedDaily = `-- name: ReportPlatformCompletedDaily :many
@@ -3363,19 +3453,26 @@ func (q *Queries) UpdateOrderPreparingWithShipment(ctx context.Context, arg Upda
 const updateOrderRefunded = `-- name: UpdateOrderRefunded :exec
 UPDATE orders
 SET refunded_vnd = $2,
-    payment_status = CASE WHEN $3::text <> '' THEN $3::text ELSE payment_status END,
+    settlement_refunded_vnd = $3,
+    payment_status = CASE WHEN $4::text <> '' THEN $4::text ELSE payment_status END,
     updated_at = NOW()
 WHERE id = $1
 `
 
 type UpdateOrderRefundedParams struct {
-	ID            string `json:"id"`
-	RefundedVND   int64  `json:"refunded_vnd"`
-	PaymentStatus string `json:"payment_status"`
+	ID                    string `json:"id"`
+	RefundedVND           int64  `json:"refunded_vnd"`
+	SettlementRefundedVND int64  `json:"settlement_refunded_vnd"`
+	PaymentStatus         string `json:"payment_status"`
 }
 
 func (q *Queries) UpdateOrderRefunded(ctx context.Context, arg UpdateOrderRefundedParams) error {
-	_, err := q.db.Exec(ctx, updateOrderRefunded, arg.ID, arg.RefundedVND, arg.PaymentStatus)
+	_, err := q.db.Exec(ctx, updateOrderRefunded,
+		arg.ID,
+		arg.RefundedVND,
+		arg.SettlementRefundedVND,
+		arg.PaymentStatus,
+	)
 	return err
 }
 

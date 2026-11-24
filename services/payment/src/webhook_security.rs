@@ -149,7 +149,7 @@ impl IncomingWebhookPayload {
     /// Normalizes `provider_tx_id` (trim + reject empty) and validates amount invariants once at ingress.
     pub fn normalize_and_validate(&mut self) -> Result<()> {
         self.provider_tx_id = normalize_provider_tx_id(&self.provider_tx_id)?;
-        if !self.is_failed_event() && self.amount_vnd <= 0 {
+        if self.is_succeeded_event() && self.amount_vnd <= 0 {
             return Err(PaymentError::Validation(
                 "amount_vnd must be positive integer VND".to_string(),
             ));
@@ -203,17 +203,37 @@ impl IncomingWebhookPayload {
         None
     }
 
-    pub fn is_failed_event(&self) -> bool {
-        matches!(
-            self.status.trim().to_ascii_lowercase().as_str(),
-            "failed" | "cancelled" | "canceled" | "expired"
-        )
+    pub fn classify_status(&self) -> WebhookEventStatus {
+        match self.status.trim().to_ascii_lowercase().as_str() {
+            "succeeded" | "success" | "paid" | "completed" => WebhookEventStatus::Succeeded,
+            "failed" | "cancelled" | "canceled" | "expired" => WebhookEventStatus::Failed,
+            "pending" | "processing" => WebhookEventStatus::NonFinal,
+            _ => WebhookEventStatus::Unexpected,
+        }
     }
+
+    pub fn is_succeeded_event(&self) -> bool {
+        self.classify_status() == WebhookEventStatus::Succeeded
+    }
+
+    pub fn is_failed_event(&self) -> bool {
+        self.classify_status() == WebhookEventStatus::Failed
+    }
+}
+
+/// Allowlist classification for incoming webhook `status` strings (P1-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebhookEventStatus {
+    Succeeded,
+    Failed,
+    NonFinal,
+    Unexpected,
 }
 
 /// Pure decision engine for webhook reconciliation rules so every edge case is unit-testable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebhookDecision {
+    IgnoreNonFinal,
     QueueReconciliation { reason: &'static str },
     MarkFailed,
     ConfirmPayment,
@@ -224,17 +244,27 @@ pub fn decide_webhook_action(
     payment_status: Option<&str>,
     expected_amount_vnd: Option<i64>,
     paid_amount_vnd: i64,
-    is_failed_webhook: bool,
+    webhook_status: WebhookEventStatus,
     order_already_has_succeeded_payment: bool,
     payment_has_cancelled_allocation: bool,
 ) -> WebhookDecision {
+    match webhook_status {
+        WebhookEventStatus::NonFinal => return WebhookDecision::IgnoreNonFinal,
+        WebhookEventStatus::Unexpected => {
+            return WebhookDecision::QueueReconciliation {
+                reason: "unexpected_webhook_status",
+            };
+        }
+        WebhookEventStatus::Succeeded | WebhookEventStatus::Failed => {}
+    }
+
     let (Some(status), Some(expected)) = (payment_status, expected_amount_vnd) else {
         return WebhookDecision::QueueReconciliation {
             reason: "order_not_found",
         };
     };
 
-    if is_failed_webhook {
+    if webhook_status == WebhookEventStatus::Failed {
         return WebhookDecision::MarkFailed;
     }
 
@@ -374,7 +404,7 @@ mod tests {
                     Some("pending"),
                     Some(250_000),
                     250_000,
-                    false,
+                    WebhookEventStatus::Succeeded,
                     false,
                     false,
                 );
@@ -388,25 +418,53 @@ mod tests {
     #[test]
     fn test_webhook_amount_mismatch_and_late_payment_decisions() {
         assert_eq!(
-            decide_webhook_action(Some("pending"), Some(100_000), 99_000, false, false, false),
+            decide_webhook_action(
+                Some("pending"),
+                Some(100_000),
+                99_000,
+                WebhookEventStatus::Succeeded,
+                false,
+                false,
+            ),
             WebhookDecision::QueueReconciliation {
                 reason: "amount_mismatch"
             }
         );
         assert_eq!(
-            decide_webhook_action(Some("pending"), Some(100_000), 150_000, false, false, false),
+            decide_webhook_action(
+                Some("pending"),
+                Some(100_000),
+                150_000,
+                WebhookEventStatus::Succeeded,
+                false,
+                false,
+            ),
             WebhookDecision::QueueReconciliation {
                 reason: "amount_mismatch"
             }
         );
         assert_eq!(
-            decide_webhook_action(None, None, 100_000, false, false, false),
+            decide_webhook_action(
+                None,
+                None,
+                100_000,
+                WebhookEventStatus::Succeeded,
+                false,
+                false
+            ),
             WebhookDecision::QueueReconciliation {
                 reason: "order_not_found"
             }
         );
         assert_eq!(
-            decide_webhook_action(Some("expired"), Some(100_000), 100_000, false, false, false),
+            decide_webhook_action(
+                Some("expired"),
+                Some(100_000),
+                100_000,
+                WebhookEventStatus::Succeeded,
+                false,
+                false,
+            ),
             WebhookDecision::LatePaymentRefund {
                 reason: "late_payment_after_expired_or_cancelled"
             }
@@ -416,7 +474,7 @@ mod tests {
                 Some("superseded"),
                 Some(100_000),
                 100_000,
-                false,
+                WebhookEventStatus::Succeeded,
                 true,
                 false
             ),
@@ -426,22 +484,110 @@ mod tests {
         );
         // Another intent already succeeded for same order -> automatic refund
         assert_eq!(
-            decide_webhook_action(Some("pending"), Some(100_000), 100_000, false, true, false),
+            decide_webhook_action(
+                Some("pending"),
+                Some(100_000),
+                100_000,
+                WebhookEventStatus::Succeeded,
+                true,
+                false,
+            ),
             WebhookDecision::LatePaymentRefund {
                 reason: "order_already_has_succeeded_payment"
             }
         );
         // Failed webhook (even with amount_vnd=0) marks payment failed for saga compensation
         assert_eq!(
-            decide_webhook_action(Some("pending"), Some(100_000), 0, true, false, false),
+            decide_webhook_action(
+                Some("pending"),
+                Some(100_000),
+                0,
+                WebhookEventStatus::Failed,
+                false,
+                false,
+            ),
             WebhookDecision::MarkFailed
         );
     }
 
     #[test]
+    fn test_p1_1_webhook_status_allowlist_non_final_and_unexpected() {
+        for raw in ["SUCCEEDED", "success", "Paid", " COMPLETED "] {
+            let p: IncomingWebhookPayload = serde_json::from_value(serde_json::json!({
+                "provider_tx_id": "TX-OK",
+                "amount_vnd": 100_000,
+                "status": raw
+            }))
+            .unwrap();
+            assert_eq!(p.classify_status(), WebhookEventStatus::Succeeded, "{raw}");
+            assert!(p.is_succeeded_event());
+        }
+        // Omitted status defaults to SUCCEEDED (SePay compatibility).
+        let omitted: IncomingWebhookPayload = serde_json::from_value(serde_json::json!({
+            "provider_tx_id": "TX-SEPAY",
+            "transferAmount": 100_000
+        }))
+        .unwrap();
+        assert_eq!(omitted.classify_status(), WebhookEventStatus::Succeeded);
+
+        for raw in ["PENDING", "processing", " Pending "] {
+            let mut p: IncomingWebhookPayload = serde_json::from_value(serde_json::json!({
+                "provider_tx_id": "TX-PEND",
+                "amount_vnd": 0,
+                "status": raw
+            }))
+            .unwrap();
+            assert_eq!(p.classify_status(), WebhookEventStatus::NonFinal, "{raw}");
+            assert!(p.normalize_and_validate().is_ok());
+            assert_eq!(
+                decide_webhook_action(
+                    Some("pending"),
+                    Some(100_000),
+                    100_000,
+                    p.classify_status(),
+                    false,
+                    false
+                ),
+                WebhookDecision::IgnoreNonFinal
+            );
+        }
+
+        for raw in ["REVERSED", "chargeback", "refunded", "unknown", ""] {
+            let mut p: IncomingWebhookPayload = serde_json::from_value(serde_json::json!({
+                "provider_tx_id": "TX-ODD",
+                "amount_vnd": 100_000,
+                "status": raw
+            }))
+            .unwrap();
+            assert_eq!(p.classify_status(), WebhookEventStatus::Unexpected, "{raw}");
+            assert!(p.normalize_and_validate().is_ok());
+            assert_eq!(
+                decide_webhook_action(
+                    Some("pending"),
+                    Some(100_000),
+                    100_000,
+                    p.classify_status(),
+                    false,
+                    false
+                ),
+                WebhookDecision::QueueReconciliation {
+                    reason: "unexpected_webhook_status"
+                }
+            );
+        }
+    }
+
+    #[test]
     fn test_p0_3_pending_payment_with_cancelled_allocation_triggers_late_refund() {
         assert_eq!(
-            decide_webhook_action(Some("pending"), Some(500_000), 500_000, false, false, true),
+            decide_webhook_action(
+                Some("pending"),
+                Some(500_000),
+                500_000,
+                WebhookEventStatus::Succeeded,
+                false,
+                true,
+            ),
             WebhookDecision::LatePaymentRefund {
                 reason: "payment_has_cancelled_allocation"
             }
@@ -471,7 +617,14 @@ mod tests {
     #[test]
     fn test_failed_payment_late_success_webhook_queues_refund() {
         assert!(matches!(
-            decide_webhook_action(Some("failed"), Some(255_000), 255_000, false, false, false),
+            decide_webhook_action(
+                Some("failed"),
+                Some(255_000),
+                255_000,
+                WebhookEventStatus::Succeeded,
+                false,
+                false,
+            ),
             WebhookDecision::LatePaymentRefund { .. }
         ));
     }

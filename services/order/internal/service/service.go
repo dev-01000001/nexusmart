@@ -27,13 +27,16 @@ import (
 
 // OrderService implements all Order domain workflows, checkout saga, RBAC, and async handlers.
 type OrderService struct {
-	cfg           config.Config
-	store         store.Store
-	clients       *clients.Bundle
-	logger        *slog.Logger
-	outboxTrigger chan struct{}
-	idemLocks     *keyedLocker
-	nowFn         func() time.Time
+	cfg                   config.Config
+	store                 store.Store
+	clients               *clients.Bundle
+	logger                *slog.Logger
+	outboxTrigger         chan struct{}
+	idemLocks             *keyedLocker
+	nowFn                 func() time.Time
+	acquireMaxWait        time.Duration
+	acquireInitialBackoff time.Duration
+	acquireMaxBackoff     time.Duration
 }
 
 // NewOrderService constructs an OrderService.
@@ -92,27 +95,6 @@ func canViewOrderFees(caller callerIdentity, shopID string) bool {
 		return true
 	}
 	return caller.Role == "seller" && caller.ShopID != "" && caller.ShopID == shopID
-}
-
-// maskProtoOrderForCaller applies caller-scoped visibility rules (seller fee fields and admin
-// needs_manual_review flag) to a deserialized Order proto (e.g. legacy response_snapshot_json replay, N6).
-func maskProtoOrderForCaller(ord *orderv1.Order, caller callerIdentity) {
-	if ord == nil {
-		return
-	}
-	if !caller.IsPrivileged {
-		ord.NeedsManualReview = false
-	}
-	if !canViewOrderFees(caller, ord.GetShopId()) {
-		ord.CommissionVnd = 0
-		ord.PaymentFeeVnd = 0
-		ord.PaymentFeeBps = 0
-		for _, it := range ord.GetItems() {
-			if it != nil {
-				it.CommissionBps = 0
-			}
-		}
-	}
 }
 
 func isAdminRole(role string) bool {

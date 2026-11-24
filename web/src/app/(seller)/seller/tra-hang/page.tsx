@@ -9,7 +9,7 @@ import type {
   PaginatedResponse,
   ReturnSellerDecision,
 } from "@/lib/gateway-types";
-import { api, getErrorMessage } from "@/lib/api";
+import { ApiError, api, getErrorMessage } from "@/lib/api";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconSearch, StateView } from "@/components";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
@@ -26,6 +26,7 @@ import {
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
 import { EMPTY_DASH, parseUiState } from "@/features/seller/sellerStore";
+import { SHOP_PICKUP_ADDRESS_REQUIRED_SELLER_MESSAGE } from "@/features/seller/types";
 import common from "@/features/seller/SellerCommon.module.css";
 import styles from "./page.module.css";
 
@@ -181,7 +182,11 @@ function SellerReturnsInner({ shop }: { shop: GatewayShop }) {
             : "Đã gửi phản hồi từ chối yêu cầu trả hàng.";
       showToast(actionMsg);
     } catch (err) {
-      setFormError(getErrorMessage(err, "Không thể gửi phản hồi lúc này."));
+      if (err instanceof ApiError && err.code === "SHOP_PICKUP_ADDRESS_REQUIRED") {
+        setFormError(SHOP_PICKUP_ADDRESS_REQUIRED_SELLER_MESSAGE);
+      } else {
+        setFormError(getErrorMessage(err, "Không thể gửi phản hồi lúc này."));
+      }
     } finally {
       setBusy(false);
     }

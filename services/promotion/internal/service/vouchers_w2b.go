@@ -30,17 +30,7 @@ func (s *PromotionService) UpdateVoucher(ctx context.Context, req *promotionv1.U
 		return nil, status.Error(codes.InvalidArgument, "voucher_id is required")
 	}
 
-	// Snapshot live Redis usage before entering Postgres row lock to catch any concurrent usage.
-	var liveUsed int32
-	if pre, getErr := s.store.GetVoucherByID(ctx, voucherID); getErr == nil {
-		if remQuota, _, _, cErr := s.readVoucherLiveCounters(ctx, pre, ""); cErr == nil {
-			if u := pre.Quota - remQuota; u > 0 {
-				liveUsed = u
-			}
-		}
-	}
-
-	before, after, err := s.store.UpdateVoucher(ctx, voucherID, func(cur *domain.Voucher) error {
+	after, err := s.store.UpdateVoucher(ctx, voucherID, func(cur *domain.Voucher, hasActiveReservation bool) error {
 		if err := checkVoucherManagePermission(claims, cur); err != nil {
 			return err
 		}
@@ -48,7 +38,24 @@ func (s *PromotionService) UpdateVoucher(ctx context.Context, req *promotionv1.U
 			return status.Error(codes.FailedPrecondition, "cannot update a deleted voucher")
 		}
 
-		hasUsed := cur.UsedCount > 0 || liveUsed > 0
+		// Snapshot live Redis usage INSIDE the Postgres row lock to prevent TOCTOU with ReservePromotion.
+		// Only trust Redis liveUsed when redis_synced_version == redis_sync_version (a prior failed sync
+		// can leave Redis remaining below the new PG quota even on an unused voucher).
+		// Bounded to lockedRedisTimeout (<= 500ms) so Redis stalls never hold row locks or drain pgxpool.
+		var liveUsed int32
+		redisCheckFailed := false
+		if cur.RedisSyncedVersion == cur.RedisSyncVersion {
+			rCtx, rCancel := s.lockedRedisCtx(ctx)
+			remQuota, _, _, cErr := s.readVoucherLiveCounters(rCtx, cur, "")
+			rCancel()
+			if cErr != nil {
+				redisCheckFailed = true
+			} else if u := cur.Quota - remQuota; u > 0 {
+				liveUsed = u
+			}
+		}
+
+		hasUsed := cur.UsedCount > 0 || hasActiveReservation || liveUsed > 0 || redisCheckFailed
 
 		newName := cur.Name
 		if req.Name != nil {
@@ -202,6 +209,26 @@ func (s *PromotionService) UpdateVoucher(ctx context.Context, req *promotionv1.U
 			return status.Error(codes.InvalidArgument, "ends_at must be after starts_at")
 		}
 
+		ruleChanged := newDiscType != cur.DiscountType ||
+			newValueVND != cur.ValueVND ||
+			newDiscPct != cur.DiscountPercent ||
+			newMaxDisc != cur.MaxDiscountVND ||
+			newMinOrder != cur.MinOrderVND ||
+			newPerUser != cur.PerUserLimit ||
+			!newStartsAt.Equal(cur.StartsAt.UTC()) ||
+			(catRequested && !equalStringSets(cur.CategoryIDs, newCatIDs)) ||
+			newQuota < cur.Quota ||
+			(cur.BudgetVND == 0 && newBudget != 0) ||
+			(cur.BudgetVND > 0 && newBudget < cur.BudgetVND) ||
+			newEndsAt.Before(cur.EndsAt.UTC())
+
+		if ruleChanged {
+			if cur.RulesVersion <= 0 {
+				cur.RulesVersion = 1
+			}
+			cur.RulesVersion++
+		}
+
 		cur.Name = newName
 		cur.DiscountType = newDiscType
 		cur.ValueVND = newValueVND
@@ -226,25 +253,7 @@ func (s *PromotionService) UpdateVoucher(ctx context.Context, req *promotionv1.U
 		return nil, status.Errorf(codes.Internal, "update voucher: %v", err)
 	}
 
-	fallbackRemQuota := after.Quota - after.UsedCount
-	if fallbackRemQuota < 0 {
-		fallbackRemQuota = 0
-	}
-	fallbackRemBudget := after.BudgetVND - after.UsedBudgetVND
-	if fallbackRemBudget < 0 {
-		fallbackRemBudget = 0
-	}
-
-	if err := s.engine.AdjustVoucherKeys(
-		ctx,
-		after.ID,
-		after.EffectiveStatus(),
-		after.Quota-before.Quota,
-		fallbackRemQuota,
-		before.BudgetVND,
-		after.BudgetVND,
-		fallbackRemBudget,
-	); err != nil {
+	if _, err := s.syncVoucherRedis(ctx, after.ID, false); err != nil {
 		return nil, status.Errorf(codes.Internal, "sync voucher redis counters: %v", err)
 	}
 
@@ -298,15 +307,7 @@ func (s *PromotionService) SetVoucherStatus(ctx context.Context, req *promotionv
 		return nil, status.Errorf(codes.Internal, "set voucher status: %v", err)
 	}
 
-	remQuotaDB := after.Quota - after.UsedCount
-	if remQuotaDB < 0 {
-		remQuotaDB = 0
-	}
-	remBudgetDB := after.BudgetVND - after.UsedBudgetVND
-	if remBudgetDB < 0 {
-		remBudgetDB = 0
-	}
-	if err := s.engine.SyncVoucherKeysWithStatus(ctx, after.ID, after.EffectiveStatus(), remQuotaDB, after.BudgetVND, remBudgetDB); err != nil {
+	if _, err := s.syncVoucherRedis(ctx, after.ID, false); err != nil {
 		return nil, status.Errorf(codes.Internal, "sync voucher status to redis: %v", err)
 	}
 
@@ -331,10 +332,9 @@ func (s *PromotionService) DeleteVoucher(ctx context.Context, req *promotionv1.D
 		return nil, status.Error(codes.InvalidArgument, "voucher_id is required")
 	}
 
-	_, err = s.store.DeleteVoucher(ctx, voucherID, func(cur *domain.Voucher) error {
+	if _, err := s.store.DeleteVoucher(ctx, voucherID, func(cur *domain.Voucher) error {
 		return checkVoucherManagePermission(claims, cur)
-	})
-	if err != nil {
+	}); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, status.Error(codes.NotFound, "voucher not found")
 		}
@@ -344,7 +344,7 @@ func (s *PromotionService) DeleteVoucher(ctx context.Context, req *promotionv1.D
 		return nil, status.Errorf(codes.Internal, "delete voucher: %v", err)
 	}
 
-	if err := s.engine.SetVoucherStatusKey(ctx, voucherID, domain.VoucherStatusDeleted); err != nil {
+	if _, err := s.syncVoucherRedis(ctx, voucherID, false); err != nil {
 		return nil, status.Errorf(codes.Internal, "sync deleted voucher status to redis: %v", err)
 	}
 	return &promotionv1.DeleteVoucherResponse{Ok: true}, nil

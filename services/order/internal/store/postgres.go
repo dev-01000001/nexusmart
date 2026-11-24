@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
+	"github.com/nexusmart/core/pkg/common/jetstream"
 	"github.com/nexusmart/core/services/order/internal/db"
 	"github.com/nexusmart/core/services/order/internal/events"
 	"github.com/nexusmart/core/services/order/internal/statemachine"
@@ -20,24 +25,117 @@ import (
 
 // PostgresStore implements Store backed by PostgreSQL (pgx/v5 + sqlc).
 type PostgresStore struct {
-	pool    *pgxpool.Pool
-	queries *db.Queries
+	pool                 *pgxpool.Pool
+	queries              *db.Queries
+	outboxLease          atomic.Int64 // nanoseconds; defaults to jetstream.DefaultOutboxLease
+	outboxPublishTimeout atomic.Int64 // nanoseconds; defaults to jetstream.DefaultOutboxPublishTimeout
+	clockMu              sync.RWMutex
+	outboxNowFn          func() time.Time
+	logger               *slog.Logger
 }
 
 // NewPostgresStore creates a PostgresStore over pool.
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
-	return &PostgresStore{
+	st := &PostgresStore{
 		pool:    pool,
 		queries: db.New(pool),
 	}
+	st.outboxLease.Store(int64(jetstream.DefaultOutboxLease))
+	st.outboxPublishTimeout.Store(int64(jetstream.DefaultOutboxPublishTimeout))
+	return st
+}
+
+// SetLogger configures the structured logger used for outbox poison-event alerts.
+func (s *PostgresStore) SetLogger(l *slog.Logger) {
+	s.clockMu.Lock()
+	defer s.clockMu.Unlock()
+	s.logger = l
+}
+
+func (s *PostgresStore) outboxLogger() *slog.Logger {
+	s.clockMu.RLock()
+	l := s.logger
+	s.clockMu.RUnlock()
+	if l != nil {
+		return l
+	}
+	return slog.Default()
+}
+
+// SetOutboxLease overrides the outbox claim lease duration (defaults to jetstream.DefaultOutboxLease).
+func (s *PostgresStore) SetOutboxLease(d time.Duration) {
+	if d <= 0 {
+		d = jetstream.DefaultOutboxLease
+	}
+	s.outboxLease.Store(int64(d))
+}
+
+// SetOutboxPublishTimeout overrides the max per-event publish timeout budget (defaults to jetstream.DefaultOutboxPublishTimeout).
+func (s *PostgresStore) SetOutboxPublishTimeout(d time.Duration) {
+	if d <= 0 {
+		d = jetstream.DefaultOutboxPublishTimeout
+	}
+	s.outboxPublishTimeout.Store(int64(d))
+}
+
+// SetOutboxClock overrides the Go clock used for lease-budget checks (defaults to time.Now with monotonic clock).
+func (s *PostgresStore) SetOutboxClock(fn func() time.Time) {
+	s.clockMu.Lock()
+	defer s.clockMu.Unlock()
+	s.outboxNowFn = fn
+}
+
+func (s *PostgresStore) outboxNow() time.Time {
+	s.clockMu.RLock()
+	fn := s.outboxNowFn
+	s.clockMu.RUnlock()
+	if fn == nil {
+		return time.Now()
+	}
+	return fn()
+}
+
+func (s *PostgresStore) outboxTimings() (lease, pubTimeout time.Duration) {
+	return clampOutboxTimings(
+		time.Duration(s.outboxLease.Load()),
+		time.Duration(s.outboxPublishTimeout.Load()),
+	)
 }
 
 func (s *PostgresStore) Ping(ctx context.Context) error {
 	return s.pool.Ping(ctx)
 }
 
-func (s *PostgresStore) GetActiveCheckoutGroup(ctx context.Context, buyerID, idempotencyKey string) (*db.CheckoutGroup, error) {
-	row, err := s.queries.GetActiveCheckoutGroupByIdempotencyKey(ctx, db.GetActiveCheckoutGroupByIdempotencyKeyParams{
+func checkoutGroupLookupFromRow(row db.GetCheckoutGroupForIdempotencyRow) *CheckoutGroupLookup {
+	return &CheckoutGroupLookup{
+		Group: db.CheckoutGroup{
+			ID:                   row.ID,
+			BuyerID:              row.BuyerID,
+			IdempotencyKey:       row.IdempotencyKey,
+			Status:               row.Status,
+			PaymentMethod:        row.PaymentMethod,
+			PaymentID:            row.PaymentID,
+			PaymentStatus:        row.PaymentStatus,
+			QRURL:                row.QRURL,
+			QRCode:               row.QRCode,
+			PaymentExpiresAt:     row.PaymentExpiresAt,
+			TotalPayableVND:      row.TotalPayableVND,
+			ResponseSnapshotJSON: row.ResponseSnapshotJSON,
+			CreatedAt:            row.CreatedAt,
+			UpdatedAt:            row.UpdatedAt,
+			RequestHash:          row.RequestHash,
+			RetryIdempotencyKey:  row.RetryIdempotencyKey,
+			RetryFromPaymentID:   row.RetryFromPaymentID,
+			PendingStockConfirm:  row.PendingStockConfirm,
+			NeedsCleanup:         row.NeedsCleanup,
+			WarningsJSON:         row.WarningsJSON,
+		},
+		HasOrders: row.HasOrders,
+	}
+}
+
+func (s *PostgresStore) GetCheckoutGroupForIdempotency(ctx context.Context, buyerID, idempotencyKey string) (*CheckoutGroupLookup, error) {
+	row, err := s.queries.GetCheckoutGroupForIdempotency(ctx, db.GetCheckoutGroupForIdempotencyParams{
 		BuyerID:        buyerID,
 		IdempotencyKey: idempotencyKey,
 	})
@@ -47,7 +145,7 @@ func (s *PostgresStore) GetActiveCheckoutGroup(ctx context.Context, buyerID, ide
 		}
 		return nil, err
 	}
-	return &row, nil
+	return checkoutGroupLookupFromRow(row), nil
 }
 
 func (s *PostgresStore) GetCheckoutGroupByID(ctx context.Context, id string) (*db.CheckoutGroup, error) {
@@ -72,14 +170,52 @@ func (s *PostgresStore) GetCheckoutGroupByPaymentID(ctx context.Context, payment
 	return &row, nil
 }
 
+// CreateCheckoutGroup serializes creation per (buyer_id, idempotency_key) across replicas using a
+// transaction-scoped advisory lock, checks inside the same transaction whether a previous FAILED group
+// already persisted sub-orders (D11) or still requires cleanup, and inserts the new IN_PROGRESS row.
 func (s *PostgresStore) CreateCheckoutGroup(ctx context.Context, arg db.CreateCheckoutGroupParams) (*db.CheckoutGroup, error) {
-	row, err := s.queries.CreateCheckoutGroup(ctx, arg)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin create checkout group tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended('order_checkout_idem:' || $1 || ':' || $2, 0))", arg.BuyerID, arg.IdempotencyKey); err != nil {
+		return nil, fmt.Errorf("lock checkout idempotency key: %w", err)
+	}
+
+	q := s.queries.WithTx(tx)
+	existing, err := q.GetCheckoutGroupForIdempotency(ctx, db.GetCheckoutGroupForIdempotencyParams{
+		BuyerID:        arg.BuyerID,
+		IdempotencyKey: arg.IdempotencyKey,
+	})
+	if err == nil {
+		if existing.Status != "FAILED" {
+			return nil, ErrDuplicateIdempotencyKey
+		}
+		if existing.HasOrders {
+			return nil, &FailedCheckoutWithOrdersError{
+				GroupID: existing.ID,
+				Reason:  existing.PaymentStatus,
+			}
+		}
+		if existing.NeedsCleanup {
+			return nil, ErrDuplicateIdempotencyKey
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("check idempotency checkout group: %w", err)
+	}
+
+	row, err := q.CreateCheckoutGroup(ctx, arg)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return nil, ErrDuplicateIdempotencyKey
 		}
 		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit create checkout group tx: %w", err)
 	}
 	return &row, nil
 }
@@ -291,7 +427,26 @@ func (s *PostgresStore) CompleteCheckoutWithPayment(ctx context.Context, arg Upd
 	// P1 N4: If the group already left IN_PROGRESS (e.g. COMPLETED by another pod + RetryPayment P2, or FAILED),
 	// write NOTHING to orders or checkout_groups; still hand current locked state to BuildSnapshot so caller can
 	// render an accurate response without mutating DB.
+	// P0-1 / P1-2: When the group is already FAILED (NOT COMPLETED) and arg.PaymentID != "", re-emit a fresh
+	// order.cancelled outbox event for any CANCELLED sub-order with empty payment_id and non-REFUNDED status
+	// so payment handles cancellation/refund now that the payment exists.
 	if grp.Status != "IN_PROGRESS" {
+		emitted := false
+		if grp.Status == "FAILED" && strings.TrimSpace(arg.PaymentID) != "" {
+			for _, ord := range lockedOrders {
+				if !shouldReemitOrderCancelledForPayment(ord, arg.PaymentID) {
+					continue
+				}
+				ob, obErr := buildOrderCancelledOutbox(ord, ord.CancelReason, "", "")
+				if obErr != nil {
+					return fmt.Errorf("marshal re-emitted order.cancelled for %s: %w", ord.ID, obErr)
+				}
+				if err := q.InsertOutboxEvent(ctx, ob); err != nil {
+					return fmt.Errorf("insert re-emitted order.cancelled for %s: %w", ord.ID, err)
+				}
+				emitted = true
+			}
+		}
 		if arg.BuildSnapshot != nil {
 			curAggs := make([]OrderAggregate, 0, len(lockedOrders))
 			for _, ord := range lockedOrders {
@@ -302,6 +457,9 @@ func (s *PostgresStore) CompleteCheckoutWithPayment(ctx context.Context, arg Upd
 				curAggs = append(curAggs, *agg)
 			}
 			_, _ = arg.BuildSnapshot(grp, curAggs)
+		}
+		if emitted {
+			return tx.Commit(ctx)
 		}
 		return nil
 	}
@@ -315,15 +473,38 @@ func (s *PostgresStore) CompleteCheckoutWithPayment(ctx context.Context, arg Upd
 		return fmt.Errorf("attach order payment info: %w", err)
 	}
 
-	// Re-read post-update orders (already locked in this TX) to compute non-downgrading group status and fresh snapshot.
+	// Re-read post-update orders (already locked in this TX) to compute non-downgrading group status,
+	// live total_payable_vnd, re-emitted order.cancelled outbox events, and fresh snapshot.
 	postOrders, err := q.ListOrdersByCheckoutGroupForUpdate(ctx, arg.CheckoutGroupID)
 	if err != nil {
 		return fmt.Errorf("reload locked orders after attach: %w", err)
 	}
+	for _, ord := range postOrders {
+		if !shouldReemitOrderCancelledForPayment(ord, arg.PaymentID) {
+			continue
+		}
+		ob, obErr := buildOrderCancelledOutbox(ord, ord.CancelReason, "", "")
+		if obErr != nil {
+			return fmt.Errorf("marshal re-emitted order.cancelled for %s: %w", ord.ID, obErr)
+		}
+		if err := q.InsertOutboxEvent(ctx, ob); err != nil {
+			return fmt.Errorf("insert re-emitted order.cancelled for %s: %w", ord.ID, err)
+		}
+	}
+
+	allCancelled := allOrdersCancelledDB(postOrders)
+	targetStatus := "COMPLETED"
+	if allCancelled {
+		targetStatus = "FAILED"
+	}
 	resolvedPayStatus := resolveNonDowngradingGroupPaymentStatus(grp.PaymentStatus, arg.PaymentStatus, postOrders)
+	liveTotalPayableVND := sumLiveOrderPayableVND(postOrders)
 
 	effectiveGrp := grp
-	effectiveGrp.Status = "COMPLETED"
+	effectiveGrp.Status = targetStatus
+	if allCancelled {
+		effectiveGrp.PendingStockConfirm = false
+	}
 	if effectiveGrp.PaymentID == "" {
 		effectiveGrp.PaymentID = arg.PaymentID
 	}
@@ -339,7 +520,7 @@ func (s *PostgresStore) CompleteCheckoutWithPayment(ctx context.Context, arg Upd
 			effectiveGrp.PaymentExpiresAt = arg.PaymentExpiresAt
 		}
 	}
-	effectiveGrp.TotalPayableVND = arg.TotalPayableVND
+	effectiveGrp.TotalPayableVND = liveTotalPayableVND
 
 	snapshotBytes := arg.ResponseSnapshotJSON
 	if arg.BuildSnapshot != nil {
@@ -357,6 +538,11 @@ func (s *PostgresStore) CompleteCheckoutWithPayment(ctx context.Context, arg Upd
 		}
 		snapshotBytes = built
 	}
+	if allCancelled {
+		// D11 (P1-1): When every sub-order is already CANCELLED before completion, close FAILED
+		// without storing a COMPLETED response snapshot and with pending_stock_confirm cleared.
+		snapshotBytes = nil
+	}
 
 	if _, err := q.CompleteCheckoutGroup(ctx, db.CompleteCheckoutGroupParams{
 		ID:                   arg.CheckoutGroupID,
@@ -365,7 +551,8 @@ func (s *PostgresStore) CompleteCheckoutWithPayment(ctx context.Context, arg Upd
 		QRURL:                arg.QRURL,
 		QRCode:               arg.QRCode,
 		PaymentExpiresAt:     arg.PaymentExpiresAt,
-		TotalPayableVND:      arg.TotalPayableVND,
+		TotalPayableVND:      liveTotalPayableVND,
+		TargetStatus:         targetStatus,
 		ResponseSnapshotJSON: snapshotBytes,
 	}); err != nil {
 		return fmt.Errorf("complete checkout group: %w", err)
@@ -539,25 +726,12 @@ func (s *PostgresStore) CancelCheckoutGroupOrders(ctx context.Context, params Ca
 			return nil, err
 		}
 
-		payloadBytes, err := json.Marshal(events.OrderCancelledPayload{
-			OrderID:   updated.ID,
-			OrderCode: updated.OrderCode,
-			BuyerID:   updated.BuyerID,
-			ShopID:    updated.ShopID,
-			Reason:    params.Reason,
-			WasPaid:   false,
-		})
+		ob, err := buildOrderCancelledOutbox(updated, params.Reason, params.TraceID, params.Traceparent)
 		if err != nil {
 			return nil, err
 		}
 
-		if err := q.InsertOutboxEvent(ctx, db.InsertOutboxEventParams{
-			ID:          uuid.NewString(),
-			EventType:   events.SubjectOrderCancelled,
-			TraceID:     params.TraceID,
-			Traceparent: params.Traceparent,
-			PayloadJSON: payloadBytes,
-		}); err != nil {
+		if err := q.InsertOutboxEvent(ctx, ob); err != nil {
 			return nil, err
 		}
 
@@ -566,9 +740,14 @@ func (s *PostgresStore) CancelCheckoutGroupOrders(ctx context.Context, params Ca
 
 	// P0 N2: Only mark checkout_groups FAILED and clear pending_stock_confirm when NO live orders remain.
 	if !hasLiveOrders {
+		closeStatus := params.PaymentStatus
+		merged := mergeUpdatedOrders(orders, cancelled)
+		if derived := ResolveAllCancelledPaymentStatus(merged); derived == "EXPIRED" || derived == "REFUNDED" {
+			closeStatus = derived
+		}
 		if err := q.FailCheckoutGroup(ctx, db.FailCheckoutGroupParams{
 			ID:            params.CheckoutGroupID,
-			PaymentStatus: params.PaymentStatus,
+			PaymentStatus: closeStatus,
 		}); err != nil {
 			return nil, err
 		}
@@ -1191,10 +1370,14 @@ func (s *PostgresStore) TransitionOrderStatus(ctx context.Context, params Single
 				}
 			}
 		} else if shouldMarkGroupCancelled(mergedSiblings, "", "", "") {
-			if _, gErr := q.GetCheckoutGroupByIDForUpdate(ctx, ord.CheckoutGroupID); gErr == nil {
+			if g, gErr := q.GetCheckoutGroupByIDForUpdate(ctx, ord.CheckoutGroupID); gErr == nil {
+				closeStatus := ResolveAllCancelledPaymentStatus(mergedSiblings)
+				if strings.EqualFold(g.PaymentStatus, "EXPIRED") {
+					closeStatus = "EXPIRED"
+				}
 				if err := q.UpdateCheckoutGroupPaymentStatus(ctx, db.UpdateCheckoutGroupPaymentStatusParams{
 					ID:            ord.CheckoutGroupID,
-					PaymentStatus: "CANCELLED",
+					PaymentStatus: closeStatus,
 					PaymentID:     "",
 				}); err != nil {
 					return nil, err
@@ -2327,16 +2510,21 @@ func (s *PostgresStore) RecordPaymentRefunded(ctx context.Context, params Paymen
 				}
 			}
 			// PAY-B6: ignore refund events for a non-current payment_id.
+			// P2-2: clamp single-order refund delta to remaining payable so duplicate/oversized events never exceed TotalPayableVND.
 			if found && (params.PaymentID == "" || ord.PaymentID == "" || ord.PaymentID == params.PaymentID) {
-				newRefunded := ord.RefundedVND + params.AmountVND
+				avail := max64(0, ord.TotalPayableVND-ord.RefundedVND)
+				delta := min(max64(0, params.AmountVND), avail)
+				newRefunded := ord.RefundedVND + delta
+				newSettlementRefunded := nextSettlementRefundedVND(ord, delta, newRefunded, params.IsPostSettlement)
 				nextPayStatus := ""
 				if ord.TotalPayableVND > 0 && newRefunded >= ord.TotalPayableVND {
 					nextPayStatus = "REFUNDED"
 				}
 				if err := q.UpdateOrderRefunded(ctx, db.UpdateOrderRefundedParams{
-					ID:            ord.ID,
-					RefundedVND:   newRefunded,
-					PaymentStatus: nextPayStatus,
+					ID:                    ord.ID,
+					RefundedVND:           newRefunded,
+					SettlementRefundedVND: newSettlementRefunded,
+					PaymentStatus:         nextPayStatus,
 				}); err != nil {
 					return false, err
 				}
@@ -2392,10 +2580,13 @@ func (s *PostgresStore) RecordPaymentRefunded(ctx context.Context, params Paymen
 			remainingToRecord := params.AmountVND
 			for _, target := range matched {
 				if isFullGroupRefund {
+					delta := max64(0, target.TotalPayableVND-target.RefundedVND)
+					newSettlementRefunded := nextSettlementRefundedVND(target, delta, target.TotalPayableVND, params.IsPostSettlement)
 					if err := q.UpdateOrderRefunded(ctx, db.UpdateOrderRefundedParams{
-						ID:            target.ID,
-						RefundedVND:   target.TotalPayableVND,
-						PaymentStatus: "REFUNDED",
+						ID:                    target.ID,
+						RefundedVND:           target.TotalPayableVND,
+						SettlementRefundedVND: newSettlementRefunded,
+						PaymentStatus:         "REFUNDED",
 					}); err != nil {
 						return false, err
 					}
@@ -2407,14 +2598,16 @@ func (s *PostgresStore) RecordPaymentRefunded(ctx context.Context, params Paymen
 						add := min(remainingToRecord, avail)
 						remainingToRecord -= add
 						newRef := target.RefundedVND + add
+						newSettlementRefunded := nextSettlementRefundedVND(target, add, newRef, params.IsPostSettlement)
 						targetPayStatus := ""
 						if target.TotalPayableVND > 0 && newRef >= target.TotalPayableVND {
 							targetPayStatus = "REFUNDED"
 						}
 						if err := q.UpdateOrderRefunded(ctx, db.UpdateOrderRefundedParams{
-							ID:            target.ID,
-							RefundedVND:   newRef,
-							PaymentStatus: targetPayStatus,
+							ID:                    target.ID,
+							RefundedVND:           newRef,
+							SettlementRefundedVND: newSettlementRefunded,
+							PaymentStatus:         targetPayStatus,
 						}); err != nil {
 							return false, err
 						}
@@ -2465,39 +2658,158 @@ func (s *PostgresStore) InsertDeadLetterEvent(ctx context.Context, arg db.Insert
 	return s.queries.InsertDeadLetterEvent(ctx, arg)
 }
 
+func (s *PostgresStore) releaseOutboxClaimIDs(ctx context.Context, ids []string, claimToken string) {
+	if len(ids) == 0 {
+		return
+	}
+	relCtx, relCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer relCancel()
+	_, _ = s.queries.ReleaseOutboxEventClaims(relCtx, db.ReleaseOutboxEventClaimsParams{
+		Ids:        ids,
+		ClaimToken: claimToken,
+	})
+}
+
+// ProcessPendingOutbox implements D9 / D9-bis transactional outbox relay with strict lease-budget enforcement:
+//  1. Normalizes lease & pubTimeout (clamping pubTimeout < lease) and captures leaseDeadline BEFORE claiming.
+//  2. Claims a batch in a short TX using two-tier CTE (NOT EXISTS active lease/backoff before LIMIT + eligible),
+//     ordered strictly by monotonic seq ASC, then commits immediately.
+//  3. Before each publish outside TX, verifies remaining lease budget >= pubTimeout; if insufficient, releases
+//     remaining claims in a single UPDATE = ANY(...) query and returns.
+//  4. Wraps each publishFn call in context.WithTimeout(ctx, pubTimeout) (single source of truth).
+//     - Infra error (jetstream.IsInfraError): marks attempt without row backoff, releases remaining claims in one
+//     query, and returns pubErr so OutboxRelay backs off (250ms -> 5s, ignoring triggers).
+//     - Non-infra error: applies exponential row backoff min(2^attempts, 60)s, logs ERROR at attempts >= 10
+//     (event_id + event_type, no payload, never dead-lettered), and skips later events of that aggregate.
+//  5. On MarkOutboxEventPublished error or affected == 0 (lost lease), releases remaining claims in one query
+//     and immediately stops the batch.
 func (s *PostgresStore) ProcessPendingOutbox(ctx context.Context, limit int32, publishFn func(ctx context.Context, ev db.OutboxEvent) error) (int, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	lease, pubTimeout := s.outboxTimings()
+	// Measure lease budget with Go clock captured BEFORE claiming so leaseDeadline <= DB claimed_until.
+	leaseDeadline := s.outboxNow().Add(lease)
+
+	leaseMs := lease.Milliseconds()
+	if leaseMs <= 0 {
+		leaseMs = 1
+	}
+	claimToken := uuid.NewString()
+
+	// Phase 1: Short transaction to claim batch and commit immediately.
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("begin outbox tx: %w", err)
+		return 0, fmt.Errorf("begin outbox claim tx: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	q := s.queries.WithTx(tx)
-	rows, err := q.LockPendingOutboxEvents(ctx, limit)
+	rows, err := s.queries.WithTx(tx).ClaimPendingOutboxEvents(ctx, db.ClaimPendingOutboxEventsParams{
+		LeaseMs:    leaseMs,
+		ClaimToken: claimToken,
+		BatchLimit: limit,
+	})
 	if err != nil {
-		return 0, fmt.Errorf("lock pending outbox events: %w", err)
+		_ = tx.Rollback(ctx)
+		return 0, fmt.Errorf("claim pending outbox events: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit outbox claim tx: %w", err)
 	}
 	if len(rows) == 0 {
 		return 0, nil
 	}
 
+	// D9-bis §1: PostgreSQL UPDATE ... RETURNING does not guarantee output order; sort strictly by seq ASC.
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Seq != rows[j].Seq {
+			return rows[i].Seq < rows[j].Seq
+		}
+		return rows[i].ID < rows[j].ID
+	})
+
+	// Phase 2: Publish outside any DB transaction, enforcing lease budget and per-aggregate order.
 	published := 0
-	for _, ev := range rows {
-		if pubErr := publishFn(ctx, ev); pubErr != nil {
-			_ = q.MarkOutboxEventAttemptFailed(ctx, db.MarkOutboxEventAttemptFailedParams{
-				ID:        ev.ID,
-				LastError: pubErr.Error(),
-			})
+	failedAggs := make(map[string]struct{})
+	var skippedIDs []string
+	for i, ev := range rows {
+		if ctx.Err() != nil {
+			s.releaseOutboxClaimIDs(ctx, collectOutboxClaimIDs(skippedIDs, rows[i:]), claimToken)
+			return published, ctx.Err()
+		}
+		if leaseDeadline.Sub(s.outboxNow()) < pubTimeout {
+			s.releaseOutboxClaimIDs(ctx, collectOutboxClaimIDs(skippedIDs, rows[i:]), claimToken)
+			return published, nil
+		}
+
+		aggKey := outboxAggregateKey(ev)
+		if _, blocked := failedAggs[aggKey]; blocked {
+			skippedIDs = append(skippedIDs, ev.ID)
 			continue
 		}
-		if err := q.MarkOutboxEventPublished(ctx, ev.ID); err != nil {
-			return published, fmt.Errorf("mark outbox event published: %w", err)
+
+		pubCtx, pubCancel := context.WithTimeout(ctx, pubTimeout)
+		pubErr := publishFn(pubCtx, ev)
+		pubCancel()
+		if pubErr != nil {
+			isInfra := jetstream.IsInfraError(pubErr)
+			failCtx, failCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			newAttempts, failErr := s.queries.MarkOutboxEventAttemptFailed(failCtx, db.MarkOutboxEventAttemptFailedParams{
+				ID:           ev.ID,
+				LastError:    pubErr.Error(),
+				ClaimToken:   claimToken,
+				ApplyBackoff: !isInfra,
+			})
+			failCancel()
+			if isInfra {
+				releaseFrom := rows[i+1:]
+				if failErr != nil {
+					s.outboxLogger().WarnContext(ctx, "failed to record infra outbox failure; releasing current claim too",
+						"event_id", ev.ID, "error", failErr)
+					releaseFrom = rows[i:]
+				}
+				s.releaseOutboxClaimIDs(ctx, collectOutboxClaimIDs(skippedIDs, releaseFrom), claimToken)
+				return published, pubErr
+			}
+			if errors.Is(failErr, pgx.ErrNoRows) {
+				// Lost lease while publishing this event; release remaining claims and abort batch.
+				s.releaseOutboxClaimIDs(ctx, collectOutboxClaimIDs(skippedIDs, rows[i+1:]), claimToken)
+				return published, nil
+			}
+			if failErr != nil {
+				s.releaseOutboxClaimIDs(ctx, collectOutboxClaimIDs(skippedIDs, rows[i+1:]), claimToken)
+				return published, fmt.Errorf("mark outbox event attempt failed: %w", failErr)
+			}
+			if newAttempts >= jetstream.OutboxPoisonLogAttempt {
+				s.outboxLogger().ErrorContext(ctx, "outbox event repeatedly failing publish",
+					"event_id", ev.ID,
+					"event_type", ev.EventType,
+					"attempts", newAttempts,
+					"error", pubErr,
+				)
+			}
+			failedAggs[aggKey] = struct{}{}
+			continue
+		}
+
+		ackCtx, ackCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		affected, markErr := s.queries.MarkOutboxEventPublished(ackCtx, db.MarkOutboxEventPublishedParams{
+			ID:         ev.ID,
+			ClaimToken: claimToken,
+		})
+		ackCancel()
+		if markErr != nil {
+			s.releaseOutboxClaimIDs(ctx, collectOutboxClaimIDs(skippedIDs, rows[i+1:]), claimToken)
+			return published, fmt.Errorf("mark outbox event published: %w", markErr)
+		}
+		if affected == 0 {
+			// D9-bis §3: Lost lease on this event; immediately release remaining claims and stop batch.
+			s.releaseOutboxClaimIDs(ctx, collectOutboxClaimIDs(skippedIDs, rows[i+1:]), claimToken)
+			return published, nil
 		}
 		published++
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return published, fmt.Errorf("commit outbox tx: %w", err)
+	if len(skippedIDs) > 0 {
+		s.releaseOutboxClaimIDs(ctx, skippedIDs, claimToken)
 	}
 	return published, nil
 }

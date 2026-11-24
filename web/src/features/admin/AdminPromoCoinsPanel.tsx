@@ -117,9 +117,9 @@ export function AdminPromoCoinsPanel({ mode }: { mode: "promo" | "coins" }) {
           api<{ vouchers: GatewayVoucher[] }>("admin/vouchers?include_inactive=true").catch(() =>
             api<{ vouchers: GatewayVoucher[] }>("vouchers")
           ),
-          api<{ categories?: GatewayCategory[]; items?: GatewayCategory[] }>("categories").catch(
-            () => ({ categories: [] as GatewayCategory[], items: [] as GatewayCategory[] })
-          ),
+          api<{ categories: GatewayCategory[] }>("admin/categories").catch(() => ({
+            categories: [] as GatewayCategory[],
+          })),
           api<{ flash_sales?: GatewayFlashSale[]; items?: GatewayFlashSale[] }>(
             "admin/flash-sales?page=1&page_size=50"
           ).catch(() =>
@@ -130,7 +130,7 @@ export function AdminPromoCoinsPanel({ mode }: { mode: "promo" | "coins" }) {
           ).catch(() => ({ items: [] })),
         ]);
         setVouchers(vRes.vouchers ?? []);
-        setCategories(catsRes.categories ?? catsRes.items ?? []);
+        setCategories(catsRes.categories ?? []);
         const nextFs =
           ("flash_sales" in fsRes ? fsRes.flash_sales : undefined) ??
           ("items" in fsRes ? fsRes.items : undefined) ??
@@ -541,8 +541,8 @@ export function AdminPromoCoinsPanel({ mode }: { mode: "promo" | "coins" }) {
                 <input
                   id="coin-amount"
                   type="number"
-                  min={100}
-                  step={100}
+                  min={1}
+                  step={1}
                   className={shared.textInput}
                   value={coinAmount}
                   onChange={(e) => setCoinAmount(e.target.value)}

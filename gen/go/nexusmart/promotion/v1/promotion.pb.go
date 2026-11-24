@@ -1261,10 +1261,12 @@ type DiscountLineItem struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	SkuId                     string `protobuf:"bytes,1,opt,name=sku_id,json=skuId,proto3" json:"sku_id,omitempty"`
-	Quantity                  int32  `protobuf:"varint,2,opt,name=quantity,proto3" json:"quantity,omitempty"`
-	UnitPriceVnd              int64  `protobuf:"varint,3,opt,name=unit_price_vnd,json=unitPriceVnd,proto3" json:"unit_price_vnd,omitempty"`
-	FlashSaleItemId           string `protobuf:"bytes,4,opt,name=flash_sale_item_id,json=flashSaleItemId,proto3" json:"flash_sale_item_id,omitempty"`
+	SkuId    string `protobuf:"bytes,1,opt,name=sku_id,json=skuId,proto3" json:"sku_id,omitempty"`
+	Quantity int32  `protobuf:"varint,2,opt,name=quantity,proto3" json:"quantity,omitempty"`
+	// Ignored by PreviewDiscounts (D4): promotion resolves authoritative SKU price via ProductService.GetSKUsBatch.
+	UnitPriceVnd    int64  `protobuf:"varint,3,opt,name=unit_price_vnd,json=unitPriceVnd,proto3" json:"unit_price_vnd,omitempty"`
+	FlashSaleItemId string `protobuf:"bytes,4,opt,name=flash_sale_item_id,json=flashSaleItemId,proto3" json:"flash_sale_item_id,omitempty"`
+	// Ignored by PreviewDiscounts (D4): promotion resolves authoritative SKU category_id via ProductService.GetSKUsBatch.
 	CategoryId                string `protobuf:"bytes,5,opt,name=category_id,json=categoryId,proto3" json:"category_id,omitempty"`
 	ShopDiscountProgramItemId string `protobuf:"bytes,6,opt,name=shop_discount_program_item_id,json=shopDiscountProgramItemId,proto3" json:"shop_discount_program_item_id,omitempty"`
 }
@@ -1348,7 +1350,8 @@ type ShopDiscountInput struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	ShopId              string              `protobuf:"bytes,1,opt,name=shop_id,json=shopId,proto3" json:"shop_id,omitempty"`
+	ShopId string `protobuf:"bytes,1,opt,name=shop_id,json=shopId,proto3" json:"shop_id,omitempty"`
+	// Ignored by PreviewDiscounts (D4): promotion computes subtotal_vnd from authoritative SKU prices resolved via ProductService.GetSKUsBatch.
 	SubtotalVnd         int64               `protobuf:"varint,2,opt,name=subtotal_vnd,json=subtotalVnd,proto3" json:"subtotal_vnd,omitempty"`
 	ShippingFeeVnd      int64               `protobuf:"varint,3,opt,name=shipping_fee_vnd,json=shippingFeeVnd,proto3" json:"shipping_fee_vnd,omitempty"`
 	Items               []*DiscountLineItem `protobuf:"bytes,4,rep,name=items,proto3" json:"items,omitempty"`
@@ -4468,7 +4471,8 @@ type ReservePromotionRequest struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	OrderId                  string                                `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	OrderId string `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	// Required (D3): caller must authenticate with the order-service token (claims.Service == "order-service"); user_id comes from the request.
 	UserId                   string                                `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	ShopVoucherIds           map[string]string                     `protobuf:"bytes,3,rep,name=shop_voucher_ids,json=shopVoucherIds,proto3" json:"shop_voucher_ids,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
 	PlatformVoucherId        string                                `protobuf:"bytes,4,opt,name=platform_voucher_id,json=platformVoucherId,proto3" json:"platform_voucher_id,omitempty"`

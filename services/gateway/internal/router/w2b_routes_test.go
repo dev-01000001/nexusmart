@@ -1484,8 +1484,8 @@ func TestW2BPreviewDiscountsServerAuthoritativeIgnoresClientTampering(t *testing
 		t.Fatalf("GetShopShippingSettings forwarded unexpected token claims: err=%v claims=%+v", err, buyerClaims)
 	}
 
-	// Verify Promotion.PreviewDiscounts received 100% server-authoritative price, subtotal, category, and freeship,
-	// without calling ListActiveShopDiscounts or setting ShopDiscountProgramItemId (promotion resolves programs internally).
+	// Verify Promotion.PreviewDiscounts received authoritative shop_id and freeship while dropping
+	// client-tampered price/subtotal/category/program IDs (D4: promotion resolves prices/categories itself).
 	if promoMock.lastActiveDiscounts != nil {
 		t.Fatalf("handlePreviewDiscounts must NOT call ListActiveShopDiscounts; got %+v", promoMock.lastActiveDiscounts)
 	}
@@ -1494,8 +1494,8 @@ func TestW2BPreviewDiscountsServerAuthoritativeIgnoresClientTampering(t *testing
 		t.Fatalf("unexpected PreviewDiscountsRequest: %+v", got)
 	}
 	si := got.GetShopItems()[0]
-	if si.GetShopId() != "shop-a" || si.GetSubtotalVnd() != 500000 { // 2 * 250000, NOT client's 1!
-		t.Fatalf("expected authoritative shop_id=shop-a subtotal=500000, got shop=%q subtotal=%d", si.GetShopId(), si.GetSubtotalVnd())
+	if si.GetShopId() != "shop-a" || si.GetSubtotalVnd() != 0 {
+		t.Fatalf("expected authoritative shop_id=shop-a and omitted subtotal_vnd=0 (D4), got shop=%q subtotal=%d", si.GetShopId(), si.GetSubtotalVnd())
 	}
 	if !si.GetFreeShipEnabled() || si.GetFreeShipMinOrderVnd() != 300000 || si.GetFreeShipMaxVnd() != 15000 {
 		t.Fatalf("expected authoritative freeship (true, 300000, 15000), got (%v, %d, %d)", si.GetFreeShipEnabled(), si.GetFreeShipMinOrderVnd(), si.GetFreeShipMaxVnd())
@@ -1504,8 +1504,8 @@ func TestW2BPreviewDiscountsServerAuthoritativeIgnoresClientTampering(t *testing
 		t.Fatalf("expected 1 line item, got %d", len(si.GetItems()))
 	}
 	li := si.GetItems()[0]
-	if li.GetUnitPriceVnd() != 250000 || li.GetCategoryId() != "cat-real" || li.GetShopDiscountProgramItemId() != "" {
-		t.Fatalf("line item must have authoritative unit_price/category and empty shop_discount_program_item_id: unit=%d cat=%q prog=%q", li.GetUnitPriceVnd(), li.GetCategoryId(), li.GetShopDiscountProgramItemId())
+	if li.GetSkuId() != "sku-a1" || li.GetQuantity() != 2 || li.GetUnitPriceVnd() != 0 || li.GetCategoryId() != "" || li.GetShopDiscountProgramItemId() != "" {
+		t.Fatalf("line item must drop tampered unit_price/category/program_id under D4: %+v", li)
 	}
 
 	// Verify response JSON includes new breakdown fields (including applied_shop_program_item_ids and warnings).
@@ -1548,15 +1548,15 @@ func TestW2BPreviewDiscountsServerAuthoritativeIgnoresClientTampering(t *testing
 		t.Fatalf("cross-shop SKU spoof in preview: want 400, got %d (%s)", recSpoof.Code, recSpoof.Body.String())
 	}
 
-	// Unknown SKU -> 404.
+	// Unknown SKU -> uniform 400 INVALID_ARGUMENT (indistinguishable from cross-shop SKU; P2-3).
 	missingSKUReq := httptest.NewRequest(http.MethodPost, "/api/v1/promotions/preview", strings.NewReader(`{
 		"shop_items": [{"shop_id":"shop-a","shipping_fee_vnd":20000,"items":[{"sku_id":"sku-nonexistent","quantity":1}]}]
 	}`))
 	missingSKUReq.Header.Set("Authorization", "Bearer "+buyerTok)
 	recMissing := httptest.NewRecorder()
 	h.ServeHTTP(recMissing, missingSKUReq)
-	if recMissing.Code != http.StatusNotFound {
-		t.Fatalf("unknown SKU in preview: want 404, got %d (%s)", recMissing.Code, recMissing.Body.String())
+	if recMissing.Code != http.StatusBadRequest {
+		t.Fatalf("unknown SKU in preview: want 400, got %d (%s)", recMissing.Code, recMissing.Body.String())
 	}
 }
 
@@ -1703,7 +1703,7 @@ func TestW2BReportsCSVExportBOMInjectionGuardHeadersAndSizeLimit(t *testing.T) {
 }
 
 func TestW2BRound4ReviewFixes(t *testing.T) {
-	h, authMgr, _, prodMock, promoMock, orderMock, _, shippingMock := newW2BTestHarness(t)
+	h, authMgr, _, _, promoMock, orderMock, _, shippingMock := newW2BTestHarness(t)
 	buyerTok, _, _, _ := authMgr.SignAccessToken("buyer-1", "buyer", "")
 	otherBuyerTok, _, _, _ := authMgr.SignAccessToken("buyer-2", "buyer", "")
 	sellerATok, _, _, _ := authMgr.SignAccessToken("seller-a", "seller", "shop-a")
@@ -1994,14 +1994,11 @@ func TestW2BRound4ReviewFixes(t *testing.T) {
 			t.Fatalf("preview with 201 items: want 400, got %d (%s)", recCap.Code, recCap.Body.String())
 		}
 
-		// int64 overflow on unit_price * quantity -> 400 (never silently wrap!).
-		prodMock.mu.Lock()
-		prodMock.skus["sku-huge"] = &productv1.SKU{Id: "sku-huge", ShopId: "shop-a", CategoryId: "cat-real", PriceVnd: 1 << 60, IsActive: true}
-		prodMock.mu.Unlock()
+		// int64 overflow when merging shipping_fee_vnd across duplicate shop entries -> 400 (never silently wrap!).
 		recOvf := do(http.MethodPost, "/api/v1/promotions/preview", buyerTok,
-			`{"shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":0,"items":[{"sku_id":"sku-huge","quantity":16}]}]}`, nil)
+			`{"shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":9223372036854775800,"items":[{"sku_id":"sku-a1","quantity":1}]},{"shop_id":"shop-a","shipping_fee_vnd":100,"items":[{"sku_id":"sku-a1","quantity":1}]}]}`, nil)
 		if recOvf.Code != http.StatusBadRequest {
-			t.Fatalf("preview int64 subtotal overflow: want 400, got %d (%s)", recOvf.Code, recOvf.Body.String())
+			t.Fatalf("preview int64 shipping_fee_vnd overflow: want 400, got %d (%s)", recOvf.Code, recOvf.Body.String())
 		}
 
 		// Dead NotFound branch removed: if Shipping.GetShopShippingSettings returns NotFound, propagate 404 (do not swallow).
@@ -2128,8 +2125,8 @@ func TestW2BRound5ReviewFixes(t *testing.T) {
 		if li.GetShopDiscountProgramItemId() != "" {
 			t.Fatalf("PreviewDiscountsRequest line item must leave ShopDiscountProgramItemId empty, got %q", li.GetShopDiscountProgramItemId())
 		}
-		if li.GetUnitPriceVnd() != 250000 || li.GetCategoryId() != "cat-real" || !promoMock.lastPreview.GetShopItems()[0].GetFreeShipEnabled() {
-			t.Fatalf("expected authoritative SKU/category/freeship preserved, got req=%+v", promoMock.lastPreview.GetShopItems()[0])
+		if li.GetUnitPriceVnd() != 0 || li.GetCategoryId() != "" || !promoMock.lastPreview.GetShopItems()[0].GetFreeShipEnabled() {
+			t.Fatalf("expected D4 omitted price/category and authoritative freeship preserved, got req=%+v", promoMock.lastPreview.GetShopItems()[0])
 		}
 	})
 

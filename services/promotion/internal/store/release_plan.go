@@ -10,6 +10,23 @@ import (
 	"github.com/nexusmart/core/services/promotion/internal/domain"
 )
 
+// UserUsageKey identifies one (kind, target_id) counter in promotion_user_usage.
+type UserUsageKey struct {
+	Kind     string
+	TargetID string
+}
+
+// FullReleaseResult captures the outcome of releasing all remaining portions of a reservation,
+// including all promotion targets so callers can always converge Redis idempotently on retries.
+type FullReleaseResult struct {
+	AlreadyReleased bool
+	UserID          string
+	CoinsReturned   int64
+	Vouchers        []domain.ReservedVoucher
+	FlashSaleItems  []domain.ReservedFlashItem
+	ShopPrograms    []domain.ReservedShopProgramItem
+}
+
 // ShopReleaseResult captures the outcome of releasing a single shop's share of a reservation,
 // including Redis sync targets so callers can keep Redis idempotently in sync on retries.
 type ShopReleaseResult struct {
@@ -85,16 +102,25 @@ func remainingCoinsAfterReleased(
 	bd *promotionv1.DiscountBreakdown,
 	releasedSet map[string]bool,
 ) int64 {
+	if res.CoinsUsed <= 0 {
+		return 0
+	}
 	var alreadyReturned int64
 	for _, sb := range bd.GetShops() {
 		if releasedSet[strings.TrimSpace(sb.GetShopId())] {
-			alreadyReturned += sb.GetCoinsDiscountVnd()
+			if c := sb.GetCoinsDiscountVnd(); c > 0 {
+				alreadyReturned += c
+			}
 		}
 	}
-	if rem := res.CoinsUsed - alreadyReturned; rem > 0 {
-		return rem
+	rem := res.CoinsUsed - alreadyReturned
+	if rem < 0 {
+		return 0
 	}
-	return 0
+	if rem > res.CoinsUsed {
+		return res.CoinsUsed
+	}
+	return rem
 }
 
 func resolveReservationShops(
@@ -245,7 +271,7 @@ func planShopRelease(
 		}
 	}
 
-	if allReleased && len(bd.GetShops()) == 0 {
+	if allReleased {
 		shopCoins = remainingCoins
 	}
 	if shopCoins > remainingCoins {

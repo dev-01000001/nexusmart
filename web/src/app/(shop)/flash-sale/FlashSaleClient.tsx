@@ -5,10 +5,10 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { CatalogFlashSaleItem, CatalogFlashSaleSlot, CatalogShop } from "@/lib/catalog-types";
+import { pickPreferredFlashSlot } from "@/lib/catalog-mapper";
 import { formatDiscountPercent } from "@/lib/format";
 import { useSession } from "@/context/SessionContext";
 import { useMockStore } from "@/mock/MockStoreContext";
-import { FLASH_SALE_RULES } from "@/mock/productEditorial";
 import { Button, Price, StateView } from "@/components";
 import { useRevealObserver } from "@/features/catalog/useRevealObserver";
 import styles from "./page.module.css";
@@ -52,7 +52,7 @@ export function FlashSaleClient({ flashSlots, shops, serverNowMs, error }: Flash
       const matched = flashSlots.find((s) => s.id === slotQuery);
       if (matched) return matched;
     }
-    return flashSlots.find((s) => s.status === "live") ?? flashSlots[0];
+    return pickPreferredFlashSlot(flashSlots);
   }, [flashSlots, slotQuery]);
 
   const [activeSlotId, setActiveSlotId] = useState<string>(defaultSlot?.id ?? "");
@@ -435,9 +435,8 @@ export function FlashSaleClient({ flashSlots, shops, serverNowMs, error }: Flash
         </h2>
         <div className={styles.rulesList}>
           <p>
-            Mỗi đơn hàng Flash sale được chọn tối đa {FLASH_SALE_RULES.maxItemsPerOrder} sản phẩm ưu
-            đãi theo giới hạn từng mẫu. Suất giảm giá được giữ ngay khi bạn đặt hàng thành công để
-            đảm bảo công bằng trong suốt khung giờ mở bán.
+            Áp dụng theo giới hạn suất của từng sản phẩm trong khung giờ mở bán. Suất giảm giá được
+            giữ ngay khi bạn đặt hàng thành công để đảm bảo công bằng cho người mua.
           </p>
         </div>
       </section>

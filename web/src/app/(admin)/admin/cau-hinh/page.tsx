@@ -1,7 +1,7 @@
 "use client";
 
 import React, { Suspense, useMemo, useState } from "react";
-import type { CategoryCommissionSetting } from "@/data";
+import type { CategoryCommissionSetting } from "@/data/admin";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button } from "@/components";
 import { formatInt, formatPercent, formatVnd } from "@/lib/format";
@@ -9,8 +9,10 @@ import { formatNowHHMM } from "@/features/admin/adminMeta";
 import {
   updateAdminExtendedConfig,
   updateAdminExtraConfig,
+  updateAdminPlatformConfig,
   useAdminExtendedConfig,
   useAdminExtraConfig,
+  useAdminPlatformConfig,
 } from "@/features/admin/auditStore";
 import { AdminCarriersPanel } from "@/features/admin/AdminCarriersPanel";
 import { AdminCategoriesPanel } from "@/features/admin/AdminCategoriesPanel";
@@ -50,7 +52,12 @@ function renderNotificationPreview(template: string): string {
 }
 
 function PlatformConfigContent() {
-  const { platformConfig, updatePlatformConfig, showToast } = useMockStore();
+  const { showToast } = useMockStore();
+  const platformConfig = useAdminPlatformConfig();
+  const updatePlatformConfig = (next: typeof platformConfig) => {
+    updateAdminPlatformConfig(next);
+    showToast("Đã lưu cấu hình vận hành sàn.");
+  };
   const extraConfig = useAdminExtraConfig();
   const extendedConfig = useAdminExtendedConfig();
 

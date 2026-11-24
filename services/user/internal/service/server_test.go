@@ -582,6 +582,7 @@ func (m *memStore) ListActiveAdminIDsForUpdate(_ context.Context) ([]string, err
 func (m *memStore) ListUsers(_ context.Context, arg db.ListUsersParams) ([]db.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	queryIsUUID := len(arg.Query) == 36 && arg.Query[8] == '-' && isValidUUID(arg.Query)
 	var res []db.User
 	for _, u := range m.users {
 		if arg.Role != "" && u.Role != arg.Role {
@@ -591,16 +592,39 @@ func (m *memStore) ListUsers(_ context.Context, arg db.ListUsersParams) ([]db.Us
 			continue
 		}
 		if arg.Query != "" {
-			q := strings.ToLower(arg.Query)
-			if !strings.Contains(strings.ToLower(u.FullName), q) &&
-				!strings.Contains(strings.ToLower(u.Email), q) &&
-				!strings.Contains(strings.ToLower(u.Phone), q) {
-				continue
+			if queryIsUUID {
+				if !strings.EqualFold(u.ID, arg.Query) {
+					continue
+				}
+			} else {
+				q := strings.ToLower(arg.Query)
+				if !strings.Contains(strings.ToLower(u.FullName), q) &&
+					!strings.Contains(strings.ToLower(u.Email), q) &&
+					!strings.Contains(strings.ToLower(u.Phone), q) {
+					continue
+				}
 			}
 		}
 		res = append(res, u)
 	}
-	return res, nil
+	sort.Slice(res, func(i, j int) bool {
+		if !res[i].CreatedAt.Equal(res[j].CreatedAt) {
+			return res[i].CreatedAt.After(res[j].CreatedAt)
+		}
+		return res[i].ID > res[j].ID
+	})
+	offset := int(arg.PageOffset)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(res) {
+		return []db.User{}, nil
+	}
+	end := len(res)
+	if arg.PageLimit > 0 && offset+int(arg.PageLimit) < end {
+		end = offset + int(arg.PageLimit)
+	}
+	return res[offset:end], nil
 }
 
 func (m *memStore) CountUsers(ctx context.Context, arg db.CountUsersParams) (int64, error) {
@@ -1122,12 +1146,14 @@ func (m *memStore) SupersedePendingAdminReviewShopBankAccounts(_ context.Context
 func (m *memStore) CreateShopBankAccount(_ context.Context, arg db.CreateShopBankAccountParams) (db.ShopBankAccount, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	encCopy := append([]byte(nil), arg.AccountNumberEnc...)
 	acc := db.ShopBankAccount{
 		ID:                  arg.ID,
 		ShopID:              arg.ShopID,
 		BankCode:            arg.BankCode,
 		BankName:            arg.BankName,
-		AccountNumber:       arg.AccountNumber,
+		AccountNumber:       "",
+		AccountNumberEnc:    encCopy,
 		AccountNumberMasked: arg.AccountNumberMasked,
 		AccountHolderName:   arg.AccountHolderName,
 		HolderNameMatched:   arg.HolderNameMatched,
@@ -1314,27 +1340,6 @@ func (m *memStore) GetShopBankAccountByIDForUpdate(_ context.Context, id string)
 		return db.ShopBankAccount{}, pgx.ErrNoRows
 	}
 	return acc, nil
-}
-
-func (m *memStore) GetPendingAdminReviewShopBankAccountByShopIDForUpdate(_ context.Context, shopID string) (db.ShopBankAccount, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var (
-		found bool
-		best  db.ShopBankAccount
-	)
-	for _, acc := range m.shopBankAccounts {
-		if acc.ShopID == shopID && acc.Status == "PENDING_ADMIN_REVIEW" {
-			if !found || acc.CreatedAt.After(best.CreatedAt) {
-				best = acc
-				found = true
-			}
-		}
-	}
-	if !found {
-		return db.ShopBankAccount{}, pgx.ErrNoRows
-	}
-	return best, nil
 }
 
 func (m *memStore) UpdateShopBankAccountAdminReview(_ context.Context, arg db.UpdateShopBankAccountAdminReviewParams) (db.ShopBankAccount, error) {

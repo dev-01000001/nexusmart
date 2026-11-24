@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import type { GatewayShop, GatewayShopShippingSettings } from "@/lib/gateway-types";
-import type { SellerSizeChartRow } from "@/data";
+import type { SellerSizeChartRow } from "@/data/seller";
 import { api, getErrorMessage } from "@/lib/api";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconCheck, IconPlus, StateView } from "@/components";
@@ -1076,9 +1076,9 @@ function SellerProfileOpsInner({
                         <input
                           id="ship-def-weight"
                           type="number"
-                          min={50}
+                          min={1}
                           max={50000}
-                          step={50}
+                          step={1}
                           className={common.textInput}
                           value={defaultWeightStr}
                           onChange={(e) => setDefaultWeightStr(e.target.value)}
@@ -1185,7 +1185,7 @@ function SellerProfileOpsInner({
                               id="ship-fs-min"
                               type="number"
                               min={0}
-                              step={10000}
+                              step={1}
                               className={common.textInput}
                               value={freeShipMinOrderStr}
                               onChange={(e) => setFreeShipMinOrderStr(e.target.value)}
@@ -1206,7 +1206,7 @@ function SellerProfileOpsInner({
                               id="ship-fs-max"
                               type="number"
                               min={1}
-                              step={1000}
+                              step={1}
                               className={common.textInput}
                               value={freeShipMaxStr}
                               onChange={(e) => setFreeShipMaxStr(e.target.value)}

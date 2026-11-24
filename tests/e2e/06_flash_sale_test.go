@@ -2,9 +2,14 @@ package e2e
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +22,36 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
+
+// promoMintServiceToken mints a short-lived internal service token matching pkg/common/auth.SignServiceToken
+// (ServiceRole = "admin", service = serviceName) for direct internal gRPC calls.
+func promoMintServiceToken(serviceName string) string {
+	secret := strings.TrimSpace(os.Getenv("SERVICE_JWT_SECRET"))
+	if secret == "" {
+		secret = "dev-only-nexusmart-service-hs256-secret-change-me"
+	}
+	enc := base64.RawURLEncoding
+	now := time.Now().Unix()
+	claims, _ := json.Marshal(map[string]any{
+		"sub":     serviceName,
+		"role":    "admin",
+		"service": serviceName,
+		"iss":     "nexusmart",
+		"jti":     uuid.NewString(),
+		"iat":     now,
+		"exp":     now + 300,
+	})
+	unsigned := enc.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`)) + "." + enc.EncodeToString(claims)
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(unsigned))
+	return unsigned + "." + enc.EncodeToString(mac.Sum(nil))
+}
+
+// promoOrderServiceToken mints a short-lived internal service token identifying order-service
+// for direct gRPC PromotionService.ReservePromotion calls (D3: restricted to order-service).
+func promoOrderServiceToken() string {
+	return promoMintServiceToken("order-service")
+}
 
 func TestE2E_FlashSale_1000Concurrent_100Slots(t *testing.T) {
 	env := getEnv()
@@ -93,6 +128,7 @@ func TestE2E_FlashSale_1000Concurrent_100Slots(t *testing.T) {
 		wg.Add(totalRequests)
 
 		runPrefix := uuid.NewString()[:8]
+		orderSvcTok := promoOrderServiceToken()
 		for i := 0; i < totalRequests; i++ {
 			go func(idx int) {
 				defer wg.Done()
@@ -100,10 +136,10 @@ func TestE2E_FlashSale_1000Concurrent_100Slots(t *testing.T) {
 
 				userID := fmt.Sprintf("e2e-fs-user-%s-%04d", runPrefix, idx)
 				orderID := fmt.Sprintf("e2e-fs-order-%s-%04d", runPrefix, idx)
-				// Services trust identity only from a signed JWT; plain x-user-* metadata is ignored.
+				// ReservePromotion is restricted to internal order-service service tokens (D3).
 				callCtx, cancel := context.WithTimeout(
 					metadata.NewOutgoingContext(context.Background(), metadata.Pairs(
-						"authorization", "Bearer "+MintAccessToken(env.cfg.JWTSecret, userID, "buyer"))),
+						"authorization", "Bearer "+orderSvcTok)),
 					20*time.Second,
 				)
 				defer cancel()

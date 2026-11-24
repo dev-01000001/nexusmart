@@ -31,8 +31,10 @@ const (
 )
 
 // internalRPCs are RPCs that must never run for an anonymous caller.
-// true = also accepts a service token (saga/job/consumer calls with no end user);
-// false = needs the forwarded end-user JWT. Every other RPC rejects service tokens.
+// true = accepts a service token (saga/job/consumer calls with no end user; handlers may
+// restrict further, e.g. service-token-only or a specific claims.Service such as "order-service");
+// false = needs the forwarded end-user JWT (service tokens are rejected with PermissionDenied).
+// Every other RPC (publicRPCs or unlisted) rejects service tokens with PermissionDenied.
 var internalRPCs = map[string]bool{
 	// UserService (public: Register, VerifyOTP, ResendOTP, ForgotPassword, ResetPassword, Login, RefreshToken, GetShop, ListPublicShops)
 	"/nexusmart.user.v1.UserService/GetAddress":                  true,
@@ -85,6 +87,7 @@ var internalRPCs = map[string]bool{
 	"/nexusmart.promotion.v1.PromotionService/ReleasePromotion":          true,
 	"/nexusmart.promotion.v1.PromotionService/ReleasePromotionShop":      true,
 	"/nexusmart.promotion.v1.PromotionService/CreditCoins":               true,
+	"/nexusmart.promotion.v1.PromotionService/ReservePromotion":          true, // D3: order-service token only (handler enforces claims.Service == "order-service")
 	"/nexusmart.promotion.v1.PromotionService/CreateVoucher":             false,
 	"/nexusmart.promotion.v1.PromotionService/UpdateVoucher":             false,
 	"/nexusmart.promotion.v1.PromotionService/SetVoucherStatus":          false,
@@ -101,7 +104,6 @@ var internalRPCs = map[string]bool{
 	"/nexusmart.promotion.v1.PromotionService/ListShopDiscountPrograms":  false,
 	"/nexusmart.promotion.v1.PromotionService/GetCoinBalance":            false,
 	"/nexusmart.promotion.v1.PromotionService/PreviewDiscounts":          false,
-	"/nexusmart.promotion.v1.PromotionService/ReservePromotion":          false,
 	// OrderService (all RPCs require authentication)
 	"/nexusmart.order.v1.OrderService/MarkPaymentResult":       true,
 	"/nexusmart.order.v1.OrderService/CreateCheckout":          false,

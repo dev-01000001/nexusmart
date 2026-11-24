@@ -13,7 +13,9 @@ import {
   canRetryPayment,
   getSseReconnectDelayMs,
   isPaymentDeadlinePassed,
+  isTerminalPaymentStatus,
   resolveStableReferenceKey,
+  shouldApplyPaymentFetchResult,
 } from "@/features/checkout/helpers";
 import styles from "./commerce.module.css";
 
@@ -60,6 +62,8 @@ export function RetryPaymentBox({
   const [sseDisconnected, setSseDisconnected] = useState<boolean>(false);
   const [nowMs, setNowMs] = useState<number | null>(null);
 
+  const activePaymentIdRef = useRef<string>(initialPayment?.payment_id || paymentId);
+  const fetchSeqRef = useRef<number>(0);
   const paidNotifiedRef = useRef<boolean>(
     (initialPayment?.status ?? "").toUpperCase() === "SUCCEEDED"
   );
@@ -68,7 +72,10 @@ export function RetryPaymentBox({
   onPaidRef.current = onPaid;
 
   useEffect(() => {
-    setActivePaymentId(initialPayment?.payment_id || paymentId);
+    const nextId = initialPayment?.payment_id || paymentId;
+    activePaymentIdRef.current = nextId;
+    fetchSeqRef.current += 1;
+    setActivePaymentId(nextId);
     if (initialPayment) {
       setPayment(initialPayment);
       setLoading(false);
@@ -89,23 +96,52 @@ export function RetryPaymentBox({
   const fetchPayment = useCallback(
     async (targetId: string, silent = false) => {
       if (!targetId) return;
+      const reqSeq = ++fetchSeqRef.current;
       if (!silent) {
         setLoading(true);
         setLoadError(null);
       }
       try {
         const res = await api<GatewayPaymentResponse>(`payments/${encodeURIComponent(targetId)}`);
+        if (
+          !shouldApplyPaymentFetchResult({
+            targetId,
+            activePaymentId: activePaymentIdRef.current,
+            requestSeq: reqSeq,
+            latestSeq: fetchSeqRef.current,
+          })
+        ) {
+          return;
+        }
         if (res?.payment) {
           applyPaymentUpdate(res.payment);
         } else if (!silent) {
           setLoadError("Không tìm thấy thông tin giao dịch thanh toán.");
         }
       } catch (err) {
+        if (
+          !shouldApplyPaymentFetchResult({
+            targetId,
+            activePaymentId: activePaymentIdRef.current,
+            requestSeq: reqSeq,
+            latestSeq: fetchSeqRef.current,
+          })
+        ) {
+          return;
+        }
         if (!silent) {
           setLoadError(getErrorMessage(err, "Không thể tải thông tin thanh toán lúc này."));
         }
       } finally {
-        if (!silent) {
+        if (
+          !silent &&
+          shouldApplyPaymentFetchResult({
+            targetId,
+            activePaymentId: activePaymentIdRef.current,
+            requestSeq: reqSeq,
+            latestSeq: fetchSeqRef.current,
+          })
+        ) {
           setLoading(false);
         }
       }
@@ -136,7 +172,8 @@ export function RetryPaymentBox({
   }, [tracksExpiry, payment?.expires_at]);
 
   // Live SSE subscription while PENDING (isolated from polling interval & sseDisconnected state).
-  // On error: close EventSource, refresh session at most once per disconnect, and reconnect with exponential backoff (5s..60s).
+  // On terminal status: close EventSource synchronously before EOF triggers onerror.
+  // On error: close EventSource, refresh session at most once per disconnect streak, and reconnect with exponential backoff (5s..60s).
   useEffect(() => {
     if (!isPending || !activePaymentId) return;
 
@@ -144,6 +181,7 @@ export function RetryPaymentBox({
     let source: EventSource | null = null;
     let reconnectTimer: number | null = null;
     let retryAttempt = 0;
+    let refreshedForThisDisconnect = false;
 
     const handleSsePayload = (rawData: string) => {
       if (closed) return;
@@ -151,6 +189,17 @@ export function RetryPaymentBox({
         const parsed = JSON.parse(rawData) as { status?: string };
         const evtStatus = (parsed.status ?? "").toUpperCase();
         if (evtStatus && evtStatus !== "PENDING" && evtStatus !== "UNKNOWN") {
+          if (isTerminalPaymentStatus(evtStatus)) {
+            closed = true;
+            if (reconnectTimer !== null) {
+              window.clearTimeout(reconnectTimer);
+              reconnectTimer = null;
+            }
+            if (source) {
+              source.close();
+              source = null;
+            }
+          }
           void fetchPayment(activePaymentId, true);
         }
       } catch {
@@ -180,7 +229,6 @@ export function RetryPaymentBox({
         return;
       }
 
-      let refreshedForThisDisconnect = false;
       try {
         const nextSource = new EventSource(
           `/api/gw/payments/${encodeURIComponent(activePaymentId)}/events`,
@@ -191,6 +239,7 @@ export function RetryPaymentBox({
         nextSource.onopen = () => {
           if (closed) return;
           retryAttempt = 0;
+          refreshedForThisDisconnect = false;
           setSseDisconnected(false);
         };
         for (const name of eventNames) {
@@ -312,6 +361,8 @@ export function RetryPaymentBox({
       if (res?.payment) {
         retryIdempotencyCacheRef.current = null;
         paidNotifiedRef.current = res.payment.status.toUpperCase() === "SUCCEEDED";
+        activePaymentIdRef.current = res.payment.payment_id;
+        fetchSeqRef.current += 1;
         setActivePaymentId(res.payment.payment_id);
         setPayment(res.payment);
         setRetryFeedback({

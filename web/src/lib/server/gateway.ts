@@ -28,7 +28,7 @@ export class GatewayError extends Error {
 
 export function gatewayErrorResponse(err: unknown): NextResponse {
   if (err instanceof GatewayError) {
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = { "Cache-Control": "no-store" };
     if (err.status === 429 && err.retryAfter) {
       headers["Retry-After"] = err.retryAfter;
     }
@@ -39,7 +39,7 @@ export function gatewayErrorResponse(err: unknown): NextResponse {
   }
   return NextResponse.json(
     { error: { code: "UNAVAILABLE", message: UNAVAILABLE_MESSAGE } },
-    { status: 503 }
+    { status: 503, headers: { "Cache-Control": "no-store" } }
   );
 }
 

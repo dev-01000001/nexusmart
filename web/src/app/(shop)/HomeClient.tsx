@@ -25,7 +25,7 @@ import { ProductCard, StateView } from "@/components";
 import { SizeFinder } from "@/features/catalog/SizeFinder";
 import { useRevealObserver } from "@/features/catalog/useRevealObserver";
 import { formatVnd } from "@/lib/format";
-import { getRootCategories } from "@/lib/catalog-mapper";
+import { getRootCategories, pickPreferredFlashSlot } from "@/lib/catalog-mapper";
 import styles from "./page.module.css";
 
 export interface HomeClientProps {
@@ -277,10 +277,7 @@ export function HomeClient({
   const pageRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  const liveSlot = useMemo(
-    () => flashSlots.find((s) => s.status === "live") ?? flashSlots[0],
-    [flashSlots]
-  );
+  const liveSlot = useMemo(() => pickPreferredFlashSlot(flashSlots), [flashSlots]);
 
   const [hoveredProductId, setHoveredProductId] = useState<string | null>(null);
   const [genderTab, setGenderTab] = useState<"all" | "nam" | "nu">("all");
@@ -500,9 +497,11 @@ export function HomeClient({
             <Link href="/danh-muc" className={styles.heroCtaPrimary}>
               Mua sắm ngay
             </Link>
-            <Link href="/flash-sale" className={styles.heroCtaSecondary}>
-              {liveSlot ? `Săn Flash sale ${liveSlot.label}` : "Săn Flash sale"}
-            </Link>
+            {liveSlot && liveSlot.items.length > 0 && (
+              <Link href="/flash-sale" className={styles.heroCtaSecondary}>
+                {`Săn Flash sale ${liveSlot.label}`}
+              </Link>
+            )}
           </div>
         </div>
       </section>
@@ -595,8 +594,9 @@ export function HomeClient({
                 Flash sale khung {liveSlot.label}
               </h2>
               <p className={styles.flashMeta}>
-                {liveSlot.statusLabel} từ {liveSlot.startTime} đến {liveSlot.endTime} · Tối đa 3 món
-                ưu đãi mỗi đơn
+                {liveSlot.statusLabel} từ {liveSlot.startTime} đến {liveSlot.endTime} ·{" "}
+                {liveSlot.items.length} sản phẩm ưu đãi · Áp dụng theo giới hạn suất của từng sản
+                phẩm
               </p>
             </div>
 

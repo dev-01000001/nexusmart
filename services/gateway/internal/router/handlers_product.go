@@ -2,6 +2,7 @@ package router
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -18,7 +19,7 @@ type categoryDTO struct {
 	Name              string `json:"name"`
 	Slug              string `json:"slug"`
 	ParentID          string `json:"parent_id"`
-	CommissionRateBps int32  `json:"commission_rate_bps"`
+	CommissionRateBps *int32 `json:"commission_rate_bps,omitempty"`
 	SortOrder         int32  `json:"sort_order"`
 	CreatedAt         string `json:"created_at,omitempty"`
 	UpdatedAt         string `json:"updated_at,omitempty"`
@@ -66,7 +67,7 @@ type skuDTO struct {
 	WeightGrams       int32             `json:"weight_grams"`
 	ImageURL          string            `json:"image_url"`
 	CategoryID        string            `json:"category_id"`
-	CommissionRateBps int32             `json:"commission_rate_bps"`
+	CommissionRateBps *int32            `json:"commission_rate_bps,omitempty"`
 	IsActive          bool              `json:"is_active"`
 }
 
@@ -98,6 +99,10 @@ type skuInputBody struct {
 	ImageURL    string            `json:"image_url"`
 }
 
+func int32Ptr(v int32) *int32 {
+	return &v
+}
+
 func mapCategory(c *productv1.Category) *categoryDTO {
 	if c == nil {
 		return nil
@@ -107,11 +112,19 @@ func mapCategory(c *productv1.Category) *categoryDTO {
 		Name:              c.GetName(),
 		Slug:              c.GetSlug(),
 		ParentID:          c.GetParentId(),
-		CommissionRateBps: c.GetCommissionRateBps(),
+		CommissionRateBps: int32Ptr(c.GetCommissionRateBps()),
 		SortOrder:         c.GetSortOrder(),
 		CreatedAt:         httpx.FormatTimestamp(c.GetCreatedAt()),
 		UpdatedAt:         httpx.FormatTimestamp(c.GetUpdatedAt()),
 	}
+}
+
+func mapPublicCategory(c *productv1.Category) *categoryDTO {
+	dto := mapCategory(c)
+	if dto != nil {
+		dto.CommissionRateBps = nil
+	}
+	return dto
 }
 
 func mapSKU(s *productv1.SKU) *skuDTO {
@@ -139,7 +152,7 @@ func mapSKU(s *productv1.SKU) *skuDTO {
 		WeightGrams:       s.GetWeightGrams(),
 		ImageURL:          s.GetImageUrl(),
 		CategoryID:        s.GetCategoryId(),
-		CommissionRateBps: s.GetCommissionRateBps(),
+		CommissionRateBps: int32Ptr(s.GetCommissionRateBps()),
 		IsActive:          s.GetIsActive(),
 	}
 }
@@ -172,6 +185,18 @@ func mapProduct(p *productv1.Product) *productDTO {
 		CreatedAt:       httpx.FormatTimestamp(p.GetCreatedAt()),
 		UpdatedAt:       httpx.FormatTimestamp(p.GetUpdatedAt()),
 	}
+}
+
+func mapPublicProduct(p *productv1.Product) *productDTO {
+	dto := mapProduct(p)
+	if dto != nil {
+		for _, sk := range dto.SKUs {
+			if sk != nil {
+				sk.CommissionRateBps = nil
+			}
+		}
+	}
+	return dto
 }
 
 func toProtoSKUInputs(in []skuInputBody) []*productv1.SKUInput {
@@ -237,6 +262,24 @@ func parseProductReviewDecision(s string) productv1.ProductReviewDecision {
 }
 
 func (h *handler) handleListCategories(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := h.clients.PublicOutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Product.ListCategories(ctx, &productv1.ListCategoriesRequest{
+		ParentId: r.URL.Query().Get("parent_id"),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	cats := make([]*categoryDTO, 0, len(resp.GetCategories()))
+	for _, c := range resp.GetCategories() {
+		cats = append(cats, mapPublicCategory(c))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"categories": cats})
+}
+
+func (h *handler) handleListCategoriesWithCommission(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
@@ -433,9 +476,68 @@ func isPublicProductStatus(st productv1.ProductStatus) bool {
 		st == productv1.ProductStatus_PRODUCT_STATUS_OUT_OF_STOCK
 }
 
+const (
+	maxSKUIDsQuery   = 200
+	maxSKUIDTokenLen = 128
+)
+
+func isValidSKUIDToken(id string) bool {
+	if id == "" || len(id) > maxSKUIDTokenLen {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '-' || c == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// parseSKUIDsQuery parses and validates comma-separated / repeated sku_ids query parameters
+// (max 200 raw entries, non-empty ASCII token elements, deduplicated preserving order).
+func parseSKUIDsQuery(q url.Values) ([]string, string) {
+	if !q.Has("sku_ids") {
+		return nil, ""
+	}
+	var (
+		skuIDs   []string
+		seen     = make(map[string]struct{})
+		rawCount int
+	)
+	for _, raw := range q["sku_ids"] {
+		for _, part := range strings.Split(raw, ",") {
+			id := strings.TrimSpace(part)
+			if id == "" {
+				return nil, "sku_ids must not contain empty elements"
+			}
+			rawCount++
+			if rawCount > maxSKUIDsQuery {
+				return nil, "sku_ids exceeds maximum limit of 200"
+			}
+			if !isValidSKUIDToken(id) {
+				return nil, "sku_ids contains an invalid SKU ID"
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			skuIDs = append(skuIDs, id)
+		}
+	}
+	return skuIDs, ""
+}
+
 func (h *handler) handleListProducts(w http.ResponseWriter, r *http.Request) {
 	page, pageSize := httpx.ParsePagination(r)
 	q := r.URL.Query()
+
+	skuIDs, skuErr := parseSKUIDsQuery(q)
+	if skuErr != "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", skuErr)
+		return
+	}
 
 	requestedStatus := parseProductStatus(q.Get("status"))
 	if requestedStatus != productv1.ProductStatus_PRODUCT_STATUS_UNSPECIFIED && !isPublicProductStatus(requestedStatus) {
@@ -502,6 +604,7 @@ func (h *handler) handleListProducts(w http.ResponseWriter, r *http.Request) {
 		SortBy:      normalizeProductSortQuery(q.Get("sort_by")),
 		Page:        page,
 		PageSize:    pageSize,
+		SkuIds:      skuIDs,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -514,7 +617,7 @@ func (h *handler) handleListProducts(w http.ResponseWriter, r *http.Request) {
 			filteredOut++
 			continue
 		}
-		items = append(items, mapProduct(p))
+		items = append(items, mapPublicProduct(p))
 	}
 	total := resp.GetTotal()
 	if filteredOut > 0 {
@@ -547,7 +650,7 @@ func (h *handler) handleGetProduct(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "product not found")
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"product": mapProduct(prod)})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"product": mapPublicProduct(prod)})
 }
 
 func (h *handler) handleGetProductBySlug(w http.ResponseWriter, r *http.Request) {
@@ -566,7 +669,7 @@ func (h *handler) handleGetProductBySlug(w http.ResponseWriter, r *http.Request)
 		httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "product not found")
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"product": mapProduct(prod)})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"product": mapPublicProduct(prod)})
 }
 
 func (h *handler) handleSellerListProducts(w http.ResponseWriter, r *http.Request) {

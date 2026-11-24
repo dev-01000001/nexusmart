@@ -1,6 +1,8 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { getProductsByShop } from "@/data";
+import type { ChatThread, Product } from "@/data";
 import {
   INITIAL_BIRTHDAY_COFUND,
   INITIAL_CAMPAIGN_REGISTRATIONS,
@@ -15,11 +17,8 @@ import {
   INITIAL_SELLER_TIER_RULES,
   INITIAL_SHOP_SIZE_CHARTS,
   getDefaultProductMeta,
-  getProductsByShop,
-} from "@/data";
+} from "@/data/seller";
 import type {
-  ChatThread,
-  Product,
   SellerAddonDeal,
   SellerBirthdayCofundConfig,
   SellerBundleCombo,
@@ -34,7 +33,7 @@ import type {
   SellerShopFaqItem,
   SellerShopSizeCharts,
   SellerTierDiscountRule,
-} from "@/data";
+} from "@/data/seller";
 
 export const EMPTY_DASH = "\u2014";
 const TRUE_MINUS = "\u2212";

@@ -39,6 +39,108 @@ func (q *Queries) CategoryHasAncestor(ctx context.Context, arg CategoryHasAncest
 	return has_ancestor, err
 }
 
+const claimPendingOutboxEvents = `-- name: ClaimPendingOutboxEvents :many
+WITH locked AS (
+    SELECT o.id, o.aggregate_id, o.seq
+    FROM outbox_events o
+    WHERE o.published_at IS NULL
+      AND (o.claimed_until IS NULL OR o.claimed_until <= NOW())
+      AND (
+          o.aggregate_id = ''
+          OR NOT EXISTS (
+              SELECT 1
+              FROM outbox_events earlier
+              WHERE earlier.aggregate_id = o.aggregate_id
+                AND earlier.published_at IS NULL
+                AND earlier.claimed_until > NOW()
+                AND earlier.seq < o.seq
+          )
+      )
+    ORDER BY o.seq ASC
+    LIMIT $3::int
+    FOR UPDATE OF o SKIP LOCKED
+),
+eligible AS (
+    SELECT l.id
+    FROM locked l
+    WHERE l.aggregate_id = ''
+       OR NOT EXISTS (
+           SELECT 1
+           FROM outbox_events earlier
+           WHERE earlier.aggregate_id = l.aggregate_id
+             AND earlier.published_at IS NULL
+             AND earlier.seq < l.seq
+             AND NOT EXISTS (SELECT 1 FROM locked l2 WHERE l2.id = earlier.id)
+       )
+)
+UPDATE outbox_events o
+SET claimed_until = NOW() + ($1::bigint * INTERVAL '1 millisecond'),
+    claim_token = $2::text
+FROM eligible e
+WHERE o.id = e.id
+RETURNING o.id, o.event_type, o.aggregate_id, o.trace_id, o.traceparent, o.payload_json,
+          o.published_at, o.attempts, o.last_error, o.created_at, o.seq, o.claimed_until, o.claim_token
+`
+
+type ClaimPendingOutboxEventsParams struct {
+	LeaseMs    int64
+	ClaimToken string
+	BatchLimit int32
+}
+
+type ClaimPendingOutboxEventsRow struct {
+	ID           string
+	EventType    string
+	AggregateID  string
+	TraceID      string
+	Traceparent  string
+	PayloadJson  []byte
+	PublishedAt  *time.Time
+	Attempts     int32
+	LastError    string
+	CreatedAt    time.Time
+	Seq          int64
+	ClaimedUntil *time.Time
+	ClaimToken   string
+}
+
+// ponytail: LIMIT applies on locked before eligible; if an aggregate's head row is briefly row-locked
+// (e.g. concurrent MarkPublished) with >=50 queued rows behind it, one 250ms poll may claim 0 rows and
+// recover on the next tick once the short update commits (accepted D9-bis ceiling).
+func (q *Queries) ClaimPendingOutboxEvents(ctx context.Context, arg ClaimPendingOutboxEventsParams) ([]ClaimPendingOutboxEventsRow, error) {
+	rows, err := q.db.Query(ctx, claimPendingOutboxEvents, arg.LeaseMs, arg.ClaimToken, arg.BatchLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClaimPendingOutboxEventsRow{}
+	for rows.Next() {
+		var i ClaimPendingOutboxEventsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventType,
+			&i.AggregateID,
+			&i.TraceID,
+			&i.Traceparent,
+			&i.PayloadJson,
+			&i.PublishedAt,
+			&i.Attempts,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.Seq,
+			&i.ClaimedUntil,
+			&i.ClaimToken,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const confirmSKUOptimistic = `-- name: ConfirmSKUOptimistic :one
 UPDATE skus
 SET stock = GREATEST(0, stock - $1),
@@ -118,6 +220,68 @@ WHERE parent_id = $1
 
 func (q *Queries) CountChildCategories(ctx context.Context, parentID pgtype.Text) (int64, error) {
 	row := q.db.QueryRow(ctx, countChildCategories, parentID)
+	var cnt int64
+	err := row.Scan(&cnt)
+	return cnt, err
+}
+
+const countProductsBySKUIDs = `-- name: CountProductsBySKUIDs :one
+WITH RECURSIVE cat_tree AS (
+    SELECT c.id
+    FROM categories c
+    WHERE $1::text <> '' AND c.id = $1::text
+    UNION
+    SELECT child.id
+    FROM categories child
+    JOIN cat_tree ct ON child.parent_id = ct.id
+),
+matched_products AS (
+    SELECT DISTINCT s.product_id
+    FROM skus s
+    WHERE s.id = ANY($7::text[])
+      AND s.status <> 'INACTIVE'
+)
+SELECT COUNT(*)::bigint AS cnt
+FROM matched_products mp
+JOIN products p ON p.id = mp.product_id
+WHERE p.deleted_at IS NULL
+  AND p.status IN ('APPROVED', 'OUT_OF_STOCK')
+  AND ($1::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
+  AND ($2::text = '' OR p.search_text LIKE '%' || $2::text || '%' ESCAPE '\')
+  AND ($3::text = '' OR p.shop_id = $3::text)
+  AND ($4::text = '' OR p.status = $4::text)
+  AND (
+    ($5::bigint <= 0 AND $6::bigint <= 0)
+    OR EXISTS (
+      SELECT 1 FROM skus s
+      WHERE s.product_id = p.id
+        AND s.status <> 'INACTIVE'
+        AND ($5::bigint <= 0 OR s.price_vnd >= $5::bigint)
+        AND ($6::bigint <= 0 OR s.price_vnd <= $6::bigint)
+    )
+  )
+`
+
+type CountProductsBySKUIDsParams struct {
+	CategoryID   string
+	Keyword      string
+	ShopID       string
+	StatusFilter string
+	MinPriceVnd  int64
+	MaxPriceVnd  int64
+	SkuIds       []string
+}
+
+func (q *Queries) CountProductsBySKUIDs(ctx context.Context, arg CountProductsBySKUIDsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countProductsBySKUIDs,
+		arg.CategoryID,
+		arg.Keyword,
+		arg.ShopID,
+		arg.StatusFilter,
+		arg.MinPriceVnd,
+		arg.MaxPriceVnd,
+		arg.SkuIds,
+	)
 	var cnt int64
 	err := row.Scan(&cnt)
 	return cnt, err
@@ -998,25 +1162,25 @@ func (q *Queries) InsertCategoryFeeSchedule(ctx context.Context, arg InsertCateg
 }
 
 const insertOutboxEvent = `-- name: InsertOutboxEvent :exec
-
-INSERT INTO outbox_events (id, event_type, trace_id, traceparent, payload_json, created_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO outbox_events (id, event_type, aggregate_id, trace_id, traceparent, payload_json, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type InsertOutboxEventParams struct {
 	ID          string
 	EventType   string
+	AggregateID string
 	TraceID     string
 	Traceparent string
 	PayloadJson []byte
 	CreatedAt   time.Time
 }
 
-// Outbox events
 func (q *Queries) InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventParams) error {
 	_, err := q.db.Exec(ctx, insertOutboxEvent,
 		arg.ID,
 		arg.EventType,
+		arg.AggregateID,
 		arg.TraceID,
 		arg.Traceparent,
 		arg.PayloadJson,
@@ -1388,6 +1552,113 @@ func (q *Queries) ListCategoryFeeSchedules(ctx context.Context, arg ListCategory
 	return items, nil
 }
 
+const listProductsBySKUIDs = `-- name: ListProductsBySKUIDs :many
+WITH RECURSIVE cat_tree AS (
+    SELECT c.id
+    FROM categories c
+    WHERE $1::text <> '' AND c.id = $1::text
+    UNION
+    SELECT child.id
+    FROM categories child
+    JOIN cat_tree ct ON child.parent_id = ct.id
+),
+matched_products AS (
+    SELECT DISTINCT s.product_id
+    FROM skus s
+    WHERE s.id = ANY($10::text[])
+      AND s.status <> 'INACTIVE'
+)
+SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
+       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug, p.search_text
+FROM matched_products mp
+JOIN products p ON p.id = mp.product_id
+WHERE p.deleted_at IS NULL
+  AND p.status IN ('APPROVED', 'OUT_OF_STOCK')
+  AND ($1::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
+  AND ($2::text = '' OR p.search_text LIKE '%' || $2::text || '%' ESCAPE '\')
+  AND ($3::text = '' OR p.shop_id = $3::text)
+  AND ($4::text = '' OR p.status = $4::text)
+  AND (
+    ($5::bigint <= 0 AND $6::bigint <= 0)
+    OR EXISTS (
+      SELECT 1 FROM skus s
+      WHERE s.product_id = p.id
+        AND s.status <> 'INACTIVE'
+        AND ($5::bigint <= 0 OR s.price_vnd >= $5::bigint)
+        AND ($6::bigint <= 0 OR s.price_vnd <= $6::bigint)
+    )
+  )
+ORDER BY
+  CASE WHEN $7::text = 'price_asc' THEN p.min_price_vnd END ASC,
+  CASE WHEN $7::text = 'price_desc' THEN p.max_price_vnd END DESC,
+  CASE WHEN $7::text = 'name_asc' THEN p.name END ASC,
+  CASE WHEN $7::text = 'oldest' THEN p.created_at END ASC,
+  p.created_at DESC,
+  p.id DESC
+LIMIT $9::int
+OFFSET $8::int
+`
+
+type ListProductsBySKUIDsParams struct {
+	CategoryID   string
+	Keyword      string
+	ShopID       string
+	StatusFilter string
+	MinPriceVnd  int64
+	MaxPriceVnd  int64
+	SortBy       string
+	OffsetVal    int32
+	LimitVal     int32
+	SkuIds       []string
+}
+
+func (q *Queries) ListProductsBySKUIDs(ctx context.Context, arg ListProductsBySKUIDsParams) ([]Product, error) {
+	rows, err := q.db.Query(ctx, listProductsBySKUIDs,
+		arg.CategoryID,
+		arg.Keyword,
+		arg.ShopID,
+		arg.StatusFilter,
+		arg.MinPriceVnd,
+		arg.MaxPriceVnd,
+		arg.SortBy,
+		arg.OffsetVal,
+		arg.LimitVal,
+		arg.SkuIds,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Product{}
+	for rows.Next() {
+		var i Product
+		if err := rows.Scan(
+			&i.ID,
+			&i.ShopID,
+			&i.CategoryID,
+			&i.Name,
+			&i.Description,
+			&i.Images,
+			&i.Status,
+			&i.RejectionReason,
+			&i.MinPriceVnd,
+			&i.MaxPriceVnd,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Slug,
+			&i.SearchText,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProductsFiltered = `-- name: ListProductsFiltered :many
 WITH RECURSIVE cat_tree AS (
     SELECT c.id
@@ -1746,43 +2017,15 @@ func (q *Queries) LockCategoryTree(ctx context.Context) error {
 	return err
 }
 
-const lockPendingOutboxEvents = `-- name: LockPendingOutboxEvents :many
-SELECT id, event_type, trace_id, traceparent, payload_json, published_at, attempts, last_error, created_at
-FROM outbox_events
-WHERE published_at IS NULL
-ORDER BY created_at ASC
-LIMIT $1
-FOR UPDATE SKIP LOCKED
+const lockOutboxClaim = `-- name: LockOutboxClaim :exec
+
+SELECT pg_advisory_xact_lock(7956455656534110829)
 `
 
-func (q *Queries) LockPendingOutboxEvents(ctx context.Context, limit int32) ([]OutboxEvent, error) {
-	rows, err := q.db.Query(ctx, lockPendingOutboxEvents, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []OutboxEvent{}
-	for rows.Next() {
-		var i OutboxEvent
-		if err := rows.Scan(
-			&i.ID,
-			&i.EventType,
-			&i.TraceID,
-			&i.Traceparent,
-			&i.PayloadJson,
-			&i.PublishedAt,
-			&i.Attempts,
-			&i.LastError,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+// Outbox events
+func (q *Queries) LockOutboxClaim(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, lockOutboxClaim)
+	return err
 }
 
 const lockStockOrder = `-- name: LockStockOrder :exec
@@ -1796,34 +2039,64 @@ func (q *Queries) LockStockOrder(ctx context.Context, hashtext string) error {
 	return err
 }
 
-const markOutboxEventAttemptFailed = `-- name: MarkOutboxEventAttemptFailed :exec
+const markOutboxEventAttemptFailed = `-- name: MarkOutboxEventAttemptFailed :one
 UPDATE outbox_events
 SET attempts = attempts + 1,
-    last_error = $2
-WHERE id = $1
+    last_error = $1::text,
+    claimed_until = CASE
+        WHEN $2::bigint > 0
+        THEN NOW() + ($2::bigint * INTERVAL '1 millisecond')
+        ELSE NULL
+    END,
+    claim_token = ''
+WHERE id = $3::text
+  AND claim_token = $4::text
+  AND published_at IS NULL
+RETURNING attempts
 `
 
 type MarkOutboxEventAttemptFailedParams struct {
-	ID        string
-	LastError string
+	LastError  string
+	BackoffMs  int64
+	ID         string
+	ClaimToken string
 }
 
-func (q *Queries) MarkOutboxEventAttemptFailed(ctx context.Context, arg MarkOutboxEventAttemptFailedParams) error {
-	_, err := q.db.Exec(ctx, markOutboxEventAttemptFailed, arg.ID, arg.LastError)
-	return err
+func (q *Queries) MarkOutboxEventAttemptFailed(ctx context.Context, arg MarkOutboxEventAttemptFailedParams) (int32, error) {
+	row := q.db.QueryRow(ctx, markOutboxEventAttemptFailed,
+		arg.LastError,
+		arg.BackoffMs,
+		arg.ID,
+		arg.ClaimToken,
+	)
+	var attempts int32
+	err := row.Scan(&attempts)
+	return attempts, err
 }
 
-const markOutboxEventPublished = `-- name: MarkOutboxEventPublished :exec
+const markOutboxEventPublished = `-- name: MarkOutboxEventPublished :execrows
 UPDATE outbox_events
 SET published_at = NOW(),
     attempts = attempts + 1,
-    last_error = ''
+    last_error = '',
+    claimed_until = NULL,
+    claim_token = ''
 WHERE id = $1
+  AND claim_token = $2
+  AND published_at IS NULL
 `
 
-func (q *Queries) MarkOutboxEventPublished(ctx context.Context, id string) error {
-	_, err := q.db.Exec(ctx, markOutboxEventPublished, id)
-	return err
+type MarkOutboxEventPublishedParams struct {
+	ID         string
+	ClaimToken string
+}
+
+func (q *Queries) MarkOutboxEventPublished(ctx context.Context, arg MarkOutboxEventPublishedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markOutboxEventPublished, arg.ID, arg.ClaimToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const reactivateSKUOptimistic = `-- name: ReactivateSKUOptimistic :one
@@ -1891,6 +2164,28 @@ func (q *Queries) ReactivateSKUOptimistic(ctx context.Context, arg ReactivateSKU
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const releaseOutboxEventClaims = `-- name: ReleaseOutboxEventClaims :execrows
+UPDATE outbox_events
+SET claimed_until = NULL,
+    claim_token = ''
+WHERE id = ANY($1::text[])
+  AND claim_token = $2::text
+  AND published_at IS NULL
+`
+
+type ReleaseOutboxEventClaimsParams struct {
+	Ids        []string
+	ClaimToken string
+}
+
+func (q *Queries) ReleaseOutboxEventClaims(ctx context.Context, arg ReleaseOutboxEventClaimsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseOutboxEventClaims, arg.Ids, arg.ClaimToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const releaseSKUOptimistic = `-- name: ReleaseSKUOptimistic :one

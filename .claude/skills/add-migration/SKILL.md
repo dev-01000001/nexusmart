@@ -22,7 +22,7 @@ Chỉ dùng migration đi tới (**forward-only**, không tạo file `down`). Ki
 | `product` | `services/product/migrations/00000N_<tên>.sql` | `services/product/migrations/embed.go` (`schema_migrations.filename`, có tx) | `sqlc` |
 | `notification` | `services/notification/migrations/00000N_<tên>.sql` | `services/notification/internal/db/migrate.go` (**chạy lại mọi file**, không có `schema_migrations`) | `sqlc` |
 | `shipping` | `services/shipping/migrations/00000N_<tên>.sql` | `MigrateAndSeed` ở `services/shipping/internal/store/store.go` (**chạy lại mọi file**, không có `schema_migrations`) | pgx viết tay |
-| `promotion` | `services/promotion/internal/store/migrations/00N_<tên>.sql` | `Migrate` ở `services/promotion/internal/store/store.go` (**chạy lại mọi file**, không có `schema_migrations`) | pgx viết tay |
+| `promotion` | `services/promotion/internal/store/migrations/00N_<tên>.sql` | `Migrate` ở `services/promotion/internal/store/store.go` (`promotion_schema_migrations`, có tx và advisory lock, bỏ qua file đã ghi) | pgx viết tay |
 
 `cart` chỉ dùng Redis, không có PostgreSQL migration.
 
@@ -37,7 +37,7 @@ Chỉ dùng migration đi tới (**forward-only**, không tạo file `down`). Ki
   - Thời điểm: `TIMESTAMPTZ` (UTC).
   - Định danh người bán: `shop_id` (không dùng `seller_id`).
 - [ ] **Index**: thêm `CREATE INDEX` cho các cột lọc, khóa ngoại, hoặc sắp xếp mới; ưu tiên partial index cho hàng đợi/trạng thái pending (mẫu `idx_outbox_events_unpublished` trong `services/order/migrations/0001_init.sql`).
-- [ ] **Idempotent bắt buộc cho `notification`, `shipping`, `promotion`**: vì runner của 3 service này chạy lại toàn bộ file `.sql` mỗi lần khởi động, mọi câu lệnh trong đó phải dùng `IF NOT EXISTS` (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`).
+- [ ] **Idempotent bắt buộc cho `notification` và `shipping`**: chỉ runner của 2 service này chạy lại toàn bộ file `.sql` mỗi lần khởi động (khớp `AGENTS.md` luật 9), nên mọi câu lệnh trong đó phải dùng `IF NOT EXISTS` (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, hoặc khối `DO $$ IF NOT EXISTS ... $$` cho backfill). `promotion` đã ghi `promotion_schema_migrations` và bỏ qua file đã chạy.
 - [ ] Không sửa file migration cũ đã merge: trên DB đang có, runner `schema_migrations` sẽ bỏ qua, còn `payment` (`sqlx::migrate!`) sẽ crash vì lệch checksum.
 
 ## 3. Cập nhật query và tầng store
@@ -52,7 +52,7 @@ Chỉ dùng migration đi tới (**forward-only**, không tạo file `down`). Ki
 ## 4. Test
 
 - [ ] Cập nhật hoặc thêm unit test ở tầng store/service phản ánh schema mới (lưu ý kiểm tra cả `memory_store.go` / stub repo trong test nếu thay đổi interface `Repository`/`Store`).
-- [ ] Kiểm tra migration áp dụng được sạch từ đầu và (với `notification`/`shipping`/`promotion`) chạy lặp lại lần 2 không lỗi.
+- [ ] Kiểm tra migration áp dụng được sạch từ đầu và (với `notification`/`shipping`) chạy lặp lại lần 2 không lỗi; với `promotion`, xác nhận lần chạy thứ 2 bỏ qua các file đã ghi trong `promotion_schema_migrations`.
 
 ## Gate
 

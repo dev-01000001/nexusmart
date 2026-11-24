@@ -680,88 +680,283 @@ export async function createBuyerAddress(client, buyer, overrides = {}) {
   return { address: res.data.address, province, ward };
 }
 
-export async function listCatalogProducts(client) {
-  const res = await client.json("GET", "/api/gw/products?page=1&page_size=50");
+export const COD_SAFE_TOTAL_CAP_VND = 2_000_000;
+const COD_SHIPPING_RESERVE_VND = 200_000;
+export const COD_SAFE_SUBTOTAL_CAP_VND = COD_SAFE_TOTAL_CAP_VND - COD_SHIPPING_RESERVE_VND;
+
+const FALLBACK_ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL || "admin@nexusmart.local";
+const FALLBACK_ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD || "AdminDevPassword123!";
+const FALLBACK_SELLER_PASSWORD = process.env.E2E_SELLER_PASSWORD || "SellerDevPassword123!";
+const FALLBACK_SELLER_EMAILS = Array.from(
+  new Set([
+    process.env.E2E_SELLER_EMAIL || "seller.bachdang@nexusmart.local",
+    "seller.saigon@nexusmart.local",
+    "seller.danang@nexusmart.local",
+    "seller.hanoi@nexusmart.local",
+  ])
+);
+
+async function loginFallbackAccount(email, password) {
+  const client = new WebClient();
+  const res = await client.json("POST", "/api/auth/login", {
+    body: { email, password },
+  });
+  assert.equal(res.status, 200, `fallback login ${email} expected 200, got ${res.status}: ${res.text}`);
+  return client;
+}
+
+/**
+ * Self-creates and approves an affordable in-stock product for a seller shop when the catalog
+ * lacks active SKUs within the COD total budget (e.g. after Go E2E left expensive test SKUs).
+ */
+export async function createApprovedCodProduct(
+  sellerClient,
+  { priceVnd = 250_000, stock = 20, tag = "cod", adminClient = null } = {}
+) {
+  const admin = adminClient ?? (await loginFallbackAccount(FALLBACK_ADMIN_EMAIL, FALLBACK_ADMIN_PASSWORD));
+  const catRes = await sellerClient.json("GET", "/api/gw/categories");
+  assert.equal(catRes.status, 200, `fallback categories expected 200, got ${catRes.status}: ${catRes.text}`);
+  const categoryId = (catRes.data?.categories ?? [])[0]?.id;
+  assert.ok(categoryId, `fallback category_id missing: ${catRes.text}`);
+
+  const suffix = crypto.randomBytes(4).toString("hex");
+  const cleanPrice = Math.max(50_000, Math.min(COD_SAFE_SUBTOTAL_CAP_VND - 100_000, Math.trunc(priceVnd)));
+  const cleanStock = Math.max(5, Math.trunc(stock));
+  const createRes = await sellerClient.json("POST", "/api/gw/seller/products", {
+    body: {
+      category_id: categoryId,
+      name: `E2E COD ${tag} ${suffix}`,
+      slug: `e2e-cod-${tag}-${suffix}`,
+      description: "Sản phẩm tạo tự động cho kiểm thử COD E2E Web.",
+      images: ["/products/ao-thun-cotton-trang.png"],
+      skus: [
+        {
+          sku_code: `COD-${suffix.toUpperCase()}-M`,
+          name: "Trắng / M",
+          attributes: { color: "Trắng", size: "M" },
+          price_vnd: cleanPrice,
+          stock: cleanStock,
+          weight_grams: 280,
+          image_url: "/products/ao-thun-cotton-trang.png",
+        },
+      ],
+    },
+  });
+  assert.ok(
+    createRes.status === 201 || createRes.status === 200,
+    `fallback create COD product expected 201/200, got ${createRes.status}: ${createRes.text}`
+  );
+  const created = createRes.data?.product;
+  assert.ok(created?.id && created?.skus?.[0]?.id, `fallback created product missing id/sku: ${createRes.text}`);
+
+  const reviewRes = await admin.json(
+    "POST",
+    `/api/gw/admin/products/${encodeURIComponent(created.id)}/review`,
+    { body: { decision: "APPROVE", reason: "E2E Web auto-approve COD fallback product" } }
+  );
+  assert.equal(reviewRes.status, 200, `fallback approve COD product expected 200, got ${reviewRes.status}: ${reviewRes.text}`);
+  const approved = reviewRes.data?.product ?? created;
+  const sku = approved.skus?.[0] ?? created.skus[0];
+  return {
+    product: approved,
+    sku: { ...sku, available_stock: sku.available_stock ?? sku.stock ?? cleanStock },
+  };
+}
+
+export async function listCatalogProducts(client, { page = 1, pageSize = 100 } = {}) {
+  const res = await client.json("GET", `/api/gw/products?page=${page}&page_size=${pageSize}`);
   assert.equal(
     res.status,
     200,
     `GET /api/gw/products expected 200, got ${res.status}: ${res.text}`
   );
   const items = res.data?.items ?? [];
-  assert.ok(items.length > 0, `expected seeded products, got empty list: ${res.text}`);
+  if (page === 1) {
+    assert.ok(items.length > 0, `expected seeded products, got empty list: ${res.text}`);
+  }
   return items;
 }
 
-export async function pickTwoShopSkus(client, options = {}) {
-  const minTotalVnd = options.minTotalVnd ?? 0;
-  const minStock = options.minStock ?? 2;
-  const products = await listCatalogProducts(client);
-
+function collectAffordableShopCandidates(products, { minStock, maxSkuPriceVnd }) {
   const byShop = new Map();
   for (const product of products) {
     if (!product?.shop_id || !Array.isArray(product.skus)) continue;
     for (const sku of product.skus) {
       if (!sku?.id || sku.is_active === false) continue;
-      if ((sku.available_stock ?? 0) < minStock || (sku.price_vnd ?? 0) <= 0) continue;
+      const stock = sku.available_stock ?? 0;
+      const price = sku.price_vnd ?? 0;
+      if (stock < minStock || price <= 0 || price > maxSkuPriceVnd) continue;
       const list = byShop.get(product.shop_id) ?? [];
       list.push({ product, sku });
       byShop.set(product.shop_id, list);
     }
   }
-
-  const bestPerShop = [];
   for (const candidates of byShop.values()) {
+    // Prefer well-stocked SKUs first, then lower affordable price so leftover expensive E2E SKUs are avoided.
     candidates.sort((a, b) => {
-      if (b.sku.available_stock !== a.sku.available_stock) {
-        return b.sku.available_stock - a.sku.available_stock;
-      }
-      return b.sku.price_vnd - a.sku.price_vnd;
+      const aWell = (a.sku.available_stock ?? 0) >= Math.max(minStock, 5) ? 1 : 0;
+      const bWell = (b.sku.available_stock ?? 0) >= Math.max(minStock, 5) ? 1 : 0;
+      if (bWell !== aWell) return bWell - aWell;
+      if (a.sku.price_vnd !== b.sku.price_vnd) return a.sku.price_vnd - b.sku.price_vnd;
+      return (b.sku.available_stock ?? 0) - (a.sku.available_stock ?? 0);
     });
-    // Prefer candidates with solid stock (>= 5) and higher price when meeting a voucher floor.
-    const wellStocked = candidates.filter((c) => c.sku.available_stock >= Math.max(minStock, 5));
-    const pool = wellStocked.length > 0 ? wellStocked : candidates;
-    if (minTotalVnd > 0) {
-      pool.sort((a, b) => b.sku.price_vnd - a.sku.price_vnd);
-    }
-    bestPerShop.push(pool[0]);
   }
+  return byShop;
+}
 
-  assert.ok(
-    bestPerShop.length >= 2,
-    `expected active in-stock SKUs from at least 2 shops, found ${bestPerShop.length}`
-  );
+function tryBuildTwoShopPair(candA, candB, { minTotalVnd, maxTotalVnd }) {
+  const first = { ...candA, quantity: 1 };
+  const second = { ...candB, quantity: 1 };
+  let total = first.sku.price_vnd + second.sku.price_vnd;
+  if (total > maxTotalVnd) return null;
 
-  if (minTotalVnd > 0) {
-    bestPerShop.sort((a, b) => b.sku.price_vnd - a.sku.price_vnd);
-  } else {
-    bestPerShop.sort((a, b) => b.sku.available_stock - a.sku.available_stock);
-  }
+  while (total < minTotalVnd) {
+    const firstHeadroom = (first.sku.available_stock ?? 0) - first.quantity;
+    const secondHeadroom = (second.sku.available_stock ?? 0) - second.quantity;
+    const canIncFirst = firstHeadroom > 0 && total + first.sku.price_vnd <= maxTotalVnd;
+    const canIncSecond = secondHeadroom > 0 && total + second.sku.price_vnd <= maxTotalVnd;
+    if (!canIncFirst && !canIncSecond) return null;
 
-  const first = { ...bestPerShop[0], quantity: 1 };
-  const second = { ...bestPerShop[1], quantity: 1 };
-
-  while (
-    first.sku.price_vnd * first.quantity + second.sku.price_vnd * second.quantity <
-    minTotalVnd
-  ) {
-    const firstHeadroom = first.sku.available_stock - first.quantity;
-    const secondHeadroom = second.sku.available_stock - second.quantity;
-    if (firstHeadroom <= 0 && secondHeadroom <= 0) {
-      break;
-    }
-    if (firstHeadroom >= secondHeadroom) {
+    if (
+      canIncFirst &&
+      (!canIncSecond ||
+        firstHeadroom > secondHeadroom ||
+        (firstHeadroom === secondHeadroom && first.sku.price_vnd <= second.sku.price_vnd))
+    ) {
       first.quantity += 1;
+      total += first.sku.price_vnd;
     } else {
       second.quantity += 1;
+      total += second.sku.price_vnd;
     }
   }
 
-  return [first, second];
+  return total >= minTotalVnd && total <= maxTotalVnd ? [first, second] : null;
+}
+
+function findTwoShopPairFromMap(byShop, { minTotalVnd, maxTotalVnd }) {
+  const shopEntries = Array.from(byShop.entries());
+  for (let i = 0; i < shopEntries.length; i += 1) {
+    const [, listA] = shopEntries[i];
+    for (let j = i + 1; j < shopEntries.length; j += 1) {
+      const [, listB] = shopEntries[j];
+      const topA = listA.slice(0, 5);
+      const topB = listB.slice(0, 5);
+      for (const candA of topA) {
+        for (const candB of topB) {
+          const pair = tryBuildTwoShopPair(candA, candB, { minTotalVnd, maxTotalVnd });
+          if (pair) return pair;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+export async function pickTwoShopSkus(client, options = {}) {
+  const minTotalVnd = options.minTotalVnd ?? 0;
+  const maxTotalVnd = options.maxTotalVnd ?? COD_SAFE_SUBTOTAL_CAP_VND;
+  const minStock = options.minStock ?? 2;
+
+  const page1 = await listCatalogProducts(client, { page: 1, pageSize: 100 });
+  let byShop = collectAffordableShopCandidates(page1, {
+    minStock,
+    maxSkuPriceVnd: maxTotalVnd - 1,
+  });
+  let pair = findTwoShopPairFromMap(byShop, { minTotalVnd, maxTotalVnd });
+  if (pair) return pair;
+
+  // Try page 2 in case page 1 is saturated with expensive or single-shop E2E leftover products.
+  const page2 = await listCatalogProducts(client, { page: 2, pageSize: 100 });
+  if (page2.length > 0) {
+    byShop = collectAffordableShopCandidates([...page1, ...page2], {
+      minStock,
+      maxSkuPriceVnd: maxTotalVnd - 1,
+    });
+    pair = findTwoShopPairFromMap(byShop, { minTotalVnd, maxTotalVnd });
+    if (pair) return pair;
+  }
+
+  // Fallback: self-create affordable approved products on distinct seeded seller shops (never skip).
+  const adminClient = await loginFallbackAccount(FALLBACK_ADMIN_EMAIL, FALLBACK_ADMIN_PASSWORD);
+  const targetUnitPrice = Math.max(
+    180_000,
+    Math.min(350_000, Math.ceil(Math.max(minTotalVnd, 360_000) / 2))
+  );
+  for (const email of FALLBACK_SELLER_EMAILS) {
+    const sellerClient = await loginFallbackAccount(email, FALLBACK_SELLER_PASSWORD);
+    const shopMeRes = await sellerClient.json("GET", "/api/gw/shops/me");
+    const myShopId = shopMeRes.data?.shop?.id;
+    if (myShopId && (byShop.get(myShopId)?.length ?? 0) > 0) {
+      continue;
+    }
+    const created = await createApprovedCodProduct(sellerClient, {
+      priceVnd: targetUnitPrice,
+      stock: Math.max(20, minStock + 5),
+      tag: "2shop",
+      adminClient,
+    });
+    const list = byShop.get(created.product.shop_id) ?? [];
+    list.unshift(created);
+    byShop.set(created.product.shop_id, list);
+
+    pair = findTwoShopPairFromMap(byShop, { minTotalVnd, maxTotalVnd });
+    if (pair) return pair;
+  }
+
+  assert.fail(
+    `unable to resolve 2-shop SKUs within [${minTotalVnd}, ${maxTotalVnd}] VND (minStock=${minStock})`
+  );
 }
 
 export async function pickSingleShopSku(client, options = {}) {
-  const [first] = await pickTwoShopSkus(client, { minStock: options.minStock ?? 2 });
-  return first;
+  const minTotalVnd = options.minTotalVnd ?? 0;
+  const maxTotalVnd = options.maxTotalVnd ?? COD_SAFE_SUBTOTAL_CAP_VND;
+  const minStock = options.minStock ?? 2;
+
+  const tryPickFrom = (products) => {
+    const byShop = collectAffordableShopCandidates(products, {
+      minStock,
+      maxSkuPriceVnd: maxTotalVnd,
+    });
+    for (const candidates of byShop.values()) {
+      for (const cand of candidates) {
+        const qty =
+          minTotalVnd > 0 ? Math.max(1, Math.ceil(minTotalVnd / cand.sku.price_vnd)) : 1;
+        const total = cand.sku.price_vnd * qty;
+        if (qty <= (cand.sku.available_stock ?? 0) && total >= minTotalVnd && total <= maxTotalVnd) {
+          return { ...cand, quantity: qty };
+        }
+      }
+    }
+    return null;
+  };
+
+  const page1 = await listCatalogProducts(client, { page: 1, pageSize: 100 });
+  const fromPage1 = tryPickFrom(page1);
+  if (fromPage1) return fromPage1;
+
+  const page2 = await listCatalogProducts(client, { page: 2, pageSize: 100 });
+  const fromPage2 = tryPickFrom(page2);
+  if (fromPage2) return fromPage2;
+
+  // Fallback: self-create 1 affordable approved product on the primary seeded seller shop (never skip).
+  const sellerClient = await loginFallbackAccount(
+    FALLBACK_SELLER_EMAILS[0],
+    FALLBACK_SELLER_PASSWORD
+  );
+  const unitPrice = Math.max(200_000, Math.min(400_000, minTotalVnd || 250_000));
+  const created = await createApprovedCodProduct(sellerClient, {
+    priceVnd: unitPrice,
+    stock: Math.max(20, minStock + 5),
+    tag: "1shop",
+  });
+  const qty = minTotalVnd > 0 ? Math.max(1, Math.ceil(minTotalVnd / created.sku.price_vnd)) : 1;
+  assert.ok(
+    created.sku.price_vnd * qty <= maxTotalVnd,
+    `fallback single SKU total ${created.sku.price_vnd * qty} exceeds maxTotalVnd ${maxTotalVnd}`
+  );
+  return { ...created, quantity: qty };
 }
 
 export async function calculateShippingQuote(client, { shopId, province, ward, weightGrams, codAmountVnd }) {

@@ -109,6 +109,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 			return nil, err
 		}
 	} else if replay != nil {
+		s.clearOrderedCart(ctx, buyerID, req, s.orderedSKUIDsForReplay(ctx, replay))
 		return replay, nil
 	}
 
@@ -121,6 +122,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		return nil, err
 	}
 	if replay != nil {
+		s.clearOrderedCart(ctx, buyerID, req, s.orderedSKUIDsForReplay(ctx, replay))
 		return replay, nil
 	}
 
@@ -239,7 +241,11 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 
 	// Step C: Fetch shop shipping settings (default_weight_grams + shop freeship) and calculate shipping fee per shop.
 	if err := s.calculateShippingFees(ctx, plans, req.GetShippingChoices(), addrSnapshot, req.GetPaymentMethod()); err != nil {
-		failGroupBeforePersist("SHIPPING_FEE_FAILED")
+		failReason := "SHIPPING_FEE_FAILED"
+		if strings.Contains(err.Error(), "SHOP_PICKUP_ADDRESS_REQUIRED") {
+			failReason = "SHOP_PICKUP_ADDRESS_REQUIRED"
+		}
+		failGroupBeforePersist(failReason)
 		return nil, err
 	}
 
@@ -310,12 +316,13 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	}
 
 	// Saga Step 2: Reserve Promotions (vouchers, freeship, coins, flash sale slots, shop discount program limits).
+	// D3: Always call Promotion.ReservePromotion with order-service's internal service token (no buyer JWT forwarded).
 	promoReserved := false
 	var breakdown *promotionv1.DiscountBreakdown
 	var promoWarnings []string
 	if hasPromotions {
 		promoReq := buildReservePromotionRequest(checkoutGroupID, buyerID, req, plans, flashSaleItems, shopProgramItems)
-		promoResp, pErr := s.clients.Promotion.ReservePromotion(ctx, promoReq)
+		promoResp, pErr := s.clients.Promotion.ReservePromotion(clients.WithInternalAdminContext(ctx), promoReq)
 		if pErr != nil {
 			s.compensateBeforePersistAndFail(ctx, checkoutGroupID, true, isAmbiguousReserveError(pErr), "PROMOTION_RESERVE_FAILED")
 			return nil, pErr
@@ -565,6 +572,11 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		finalAggs     []store.OrderAggregate
 		builtSnapshot bool
 	)
+	resetFinalState := func() {
+		finalGroup = db.CheckoutGroup{}
+		finalAggs = nil
+		builtSnapshot = false
+	}
 	if err := s.completeCheckoutGroupWithRetry(ctx, store.UpdateCheckoutPaymentParams{
 		CheckoutGroupID:  checkoutGroupID,
 		PaymentID:        paymentID,
@@ -572,65 +584,36 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		QRURL:            qrURL,
 		QRCode:           qrCode,
 		PaymentExpiresAt: paymentExpiresAt,
-		TotalPayableVND:  grandTotalPayableVND,
 		BuildSnapshot:    s.makeBuyerCheckoutSnapshotBuilder(promoWarnings, &finalGroup, &finalAggs, &builtSnapshot),
-	}); err != nil {
+	}, resetFinalState); err != nil {
 		s.logger.ErrorContext(ctx, "failed to finalize checkout group payment info after retries; watchdog/retry will recover",
 			"checkout_group_id", checkoutGroupID, "error", err)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, mapStoreError(err)
+		}
+		return nil, status.Error(codes.Unavailable, "checkout finalization temporarily unavailable; please retry with the same idempotency_key")
 	}
 
-	// P1 N5: If all sub-orders were already CANCELLED before CompleteCheckoutWithPayment committed,
-	// proactively cancel the newly created payment P1 (with retry; falls back to pending_cancel_compensation watchdog).
-	if builtSnapshot && allOrdersCancelled(finalAggs) && paymentID != "" && grandTotalPayableVND > 0 {
-		s.cancelPaymentAfterAllCancelled(ctx, checkoutGroupID, paymentID, finalAggs)
+	if !builtSnapshot {
+		return nil, status.Error(codes.Unavailable, "checkout finalization incomplete; please retry with the same idempotency_key")
 	}
 
-	var resp *orderv1.CreateCheckoutResponse
-	if builtSnapshot {
-		effectiveWarnings := promoWarnings
-		if len(effectiveWarnings) == 0 {
-			effectiveWarnings = parseWarningsJSON(finalGroup.WarningsJSON)
-		}
-		resp = buildCheckoutResponseFromState(finalGroup, finalAggs, effectiveWarnings, caller)
-	} else {
-		protoOrders := make([]*orderv1.Order, 0, len(persistedAggs))
-		for i := range persistedAggs {
-			persistedAggs[i].Order.PaymentID = paymentID
-			persistedAggs[i].Order.PaymentStatus = paymentStatus
-			if paymentExpiresAt != nil {
-				persistedAggs[i].Order.PaymentExpiresAt = paymentExpiresAt
-			}
-			protoOrders = append(protoOrders, aggregateToProtoForCaller(persistedAggs[i], caller))
-		}
-		resp = &orderv1.CreateCheckoutResponse{
-			CheckoutGroupId:  checkoutGroupID,
-			Orders:           protoOrders,
-			PaymentId:        paymentID,
-			PaymentMethod:    req.GetPaymentMethod(),
-			PaymentStatus:    paymentStatus,
-			QrUrl:            qrURL,
-			QrCode:           qrCode,
-			TotalPayableVnd:  grandTotalPayableVND,
-			IdempotentReplay: false,
-			Warnings:         append([]string(nil), promoWarnings...),
-		}
-		if paymentExpiresAt != nil {
-			resp.PaymentExpiresAt = timestamppb.New(*paymentExpiresAt)
-		}
+	// Wave 3a: If the checkout group already transitioned to FAILED concurrently before completion,
+	// NEVER return 200 OK with CANCELLED orders / empty payment_id or clear the cart.
+	if finalGroup.Status == "FAILED" {
+		s.notifyOutbox()
+		return nil, checkoutFailedError(finalGroup.PaymentStatus)
 	}
 
-	// Saga Step 5: Best-effort ClearCart for ordered SKUs using a detached context that preserves
-	// buyer JWT metadata while insulating cart cleanup from client disconnect.
-	if s.clients.Cart != nil {
-		cartCtx, cartCancel := detachedCallerContext(ctx, s.cfg.GRPCCallTimeout)
-		defer cartCancel()
-		if _, cErr := s.clients.Cart.ClearItems(cartCtx, &cartv1.ClearItemsRequest{
-			UserId: buyerID,
-			SkuIds: skuIDs,
-		}); cErr != nil {
-			s.logger.WarnContext(ctx, "best-effort ClearItems failed after checkout", "buyer_id", buyerID, "error", cErr)
-		}
+	effectiveWarnings := promoWarnings
+	if len(effectiveWarnings) == 0 {
+		effectiveWarnings = parseWarningsJSON(finalGroup.WarningsJSON)
 	}
+	resp := buildCheckoutResponseFromState(finalGroup, finalAggs, effectiveWarnings, caller)
+
+	// Saga Step 5 (P1-3): Best-effort ClearCart for ordered SKUs ONLY when checking out from cart
+	// (never on Buy Now / from_cart=false or FAILED), with RetryIdempotent(3) on a detached context.
+	s.clearOrderedCart(ctx, buyerID, req, orderedSKUIDsFromAggs(finalAggs))
 
 	s.notifyOutbox()
 	return resp, nil
@@ -731,10 +714,35 @@ func computeCheckoutRequestHash(buyerID string, req *orderv1.CreateCheckoutReque
 	return hex.EncodeToString(sum[:])
 }
 
+func checkoutFailedError(reason string) error {
+	code := strings.ToUpper(strings.TrimSpace(reason))
+	if code == "" {
+		code = "FAILED"
+	}
+	return status.Errorf(
+		codes.FailedPrecondition,
+		"CHECKOUT_FAILED (%s): checkout attempt failed with reason %s; please retry with a new idempotency_key",
+		code, code,
+	)
+}
+
 func (s *OrderService) tryLoadIdempotentReplay(ctx context.Context, buyerID, idemKey, reqHash string, caller callerIdentity) (*orderv1.CreateCheckoutResponse, error) {
-	group, err := s.store.GetActiveCheckoutGroup(ctx, buyerID, idemKey)
+	lookup, err := s.store.GetCheckoutGroupForIdempotency(ctx, buyerID, idemKey)
 	if err != nil {
 		return nil, err
+	}
+	group := &lookup.Group
+	if !lookup.HasOrders && group.NeedsCleanup {
+		// P1-2 / D11: Pre-persist failure awaiting cleanup (IN_PROGRESS or FAILED, 0 orders)
+		// must bypass RequestHash check so acquireCheckoutGroup cleans up and retries (or returns Unavailable).
+		return nil, nil
+	}
+	if group.Status == "FAILED" {
+		if lookup.HasOrders {
+			return nil, checkoutFailedError(group.PaymentStatus)
+		}
+		// D11: Pre-persist FAILED group (0 orders) may be retried as a fresh checkout.
+		return nil, nil
 	}
 	if group.RequestHash != "" && group.RequestHash != reqHash {
 		return nil, status.Error(codes.FailedPrecondition, idempotencyConflictMsg)
@@ -745,51 +753,98 @@ func (s *OrderService) tryLoadIdempotentReplay(ctx context.Context, buyerID, ide
 	return s.buildReplayResponse(ctx, group, caller)
 }
 
-const inProgressRecoveryGrace = 2 * time.Second
+const (
+	inProgressRecoveryGrace       = 2 * time.Second
+	checkoutAcquireMaxWait        = 15 * time.Second
+	checkoutAcquireInitialBackoff = 50 * time.Millisecond
+	checkoutAcquireMaxBackoff     = 1 * time.Second
+)
+
+func (s *OrderService) checkoutAcquireTimings() (maxWait, initialBackoff, maxBackoff time.Duration) {
+	maxWait = s.acquireMaxWait
+	if maxWait <= 0 {
+		maxWait = checkoutAcquireMaxWait
+	}
+	initialBackoff = s.acquireInitialBackoff
+	if initialBackoff <= 0 {
+		initialBackoff = checkoutAcquireInitialBackoff
+	}
+	maxBackoff = s.acquireMaxBackoff
+	if maxBackoff <= 0 {
+		maxBackoff = checkoutAcquireMaxBackoff
+	}
+	if initialBackoff > maxBackoff {
+		initialBackoff = maxBackoff
+	}
+	return maxWait, initialBackoff, maxBackoff
+}
+
+func waitCheckoutAcquireBackoff(ctx context.Context, wait time.Duration, deadline time.Time) (waited bool, ctxErr error) {
+	rem := time.Until(deadline)
+	if rem <= 0 {
+		return false, nil
+	}
+	if wait > rem {
+		wait = rem
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false, status.FromContextError(ctx.Err()).Err()
+	case <-timer.C:
+		return true, nil
+	}
+}
 
 func (s *OrderService) acquireCheckoutGroup(ctx context.Context, buyerID, idemKey, reqHash string, method orderv1.OrderPaymentMethod, caller callerIdentity) (string, *orderv1.CreateCheckoutResponse, error) {
-	const maxWait = 15 * time.Second
+	maxWait, backoff, maxBackoff := s.checkoutAcquireTimings()
 	deadline := time.Now().Add(maxWait)
 
 	for {
-		existing, err := s.store.GetActiveCheckoutGroup(ctx, buyerID, idemKey)
-		if err == nil && existing != nil {
-			if existing.RequestHash != "" && existing.RequestHash != reqHash {
-				return "", nil, status.Error(codes.FailedPrecondition, idempotencyConflictMsg)
-			}
-			if existing.Status == "COMPLETED" {
-				replay, rErr := s.buildReplayResponse(ctx, existing, caller)
-				return "", replay, rErr
-			}
-			// P2 N9: If previous pre-persist failure left needs_cleanup=true with no persisted orders,
-			// clean it up immediately and retry creating a fresh group (or return Unavailable clearly if cleanup still fails).
-			if existing.NeedsCleanup {
-				aggs, lErr := s.store.ListOrdersByCheckoutGroup(ctx, existing.ID)
-				if lErr != nil {
-					return "", nil, status.Errorf(codes.Unavailable, "failed to inspect pending cleanup checkout group: %v", lErr)
+		if ctx.Err() != nil {
+			return "", nil, status.FromContextError(ctx.Err()).Err()
+		}
+		lookup, err := s.store.GetCheckoutGroupForIdempotency(ctx, buyerID, idemKey)
+		if err == nil && lookup != nil {
+			existing := &lookup.Group
+			// P1-2 / D11 + N9: Handle 0-order needs_cleanup BEFORE RequestHash check regardless of
+			// whether status is IN_PROGRESS (from MarkCheckoutGroupNeedsCleanup) or FAILED (from watchdog).
+			if !lookup.HasOrders && existing.NeedsCleanup {
+				if cErr := s.cleanupStaleCheckoutGroup(ctx, existing.ID); cErr != nil {
+					return "", nil, status.Errorf(codes.Unavailable, "previous checkout cleanup still pending; please retry shortly: %v", cErr)
 				}
-				if len(aggs) == 0 {
-					if cErr := s.cleanupStaleCheckoutGroup(ctx, existing.ID); cErr != nil {
-						return "", nil, status.Errorf(codes.Unavailable, "previous checkout cleanup still pending; please retry shortly: %v", cErr)
+				continue
+			}
+			if existing.Status == "FAILED" {
+				if lookup.HasOrders {
+					return "", nil, checkoutFailedError(existing.PaymentStatus)
+				}
+				// D11: Clean FAILED group with 0 persisted orders -> fall through to create a fresh group.
+			} else {
+				if existing.RequestHash != "" && existing.RequestHash != reqHash {
+					return "", nil, status.Error(codes.FailedPrecondition, idempotencyConflictMsg)
+				}
+				if existing.Status == "COMPLETED" {
+					replay, rErr := s.buildReplayResponse(ctx, existing, caller)
+					return "", replay, rErr
+				}
+				// P2 N7: Only trigger self-recovery after inProgressRecoveryGrace (2s) so a healthy sibling pod
+				// finishing CreatePayment -> CompleteCheckoutWithPayment is not prematurely raced.
+				if s.nowFn().Sub(existing.UpdatedAt) >= inProgressRecoveryGrace {
+					if recovered, _, recErr := s.tryFinalizeInProgressGroupFromPayment(ctx, existing.ID); recErr == nil && recovered {
+						continue
 					}
-					continue
 				}
-			}
-			// P2 N7: Only trigger self-recovery after inProgressRecoveryGrace (2s) so a healthy sibling pod
-			// finishing CreatePayment -> CompleteCheckoutWithPayment is not prematurely raced.
-			if !existing.NeedsCleanup && s.nowFn().Sub(existing.UpdatedAt) >= inProgressRecoveryGrace {
-				if recovered, _, recErr := s.tryFinalizeInProgressGroupFromPayment(ctx, existing.ID); recErr == nil && recovered {
-					continue
+				// Another pod is currently executing this idempotency key; wait with progressive backoff up to maxWait (15s).
+				waited, wErr := waitCheckoutAcquireBackoff(ctx, backoff, deadline)
+				if wErr != nil {
+					return "", nil, wErr
 				}
-			}
-			// Another pod is currently executing this idempotency key.
-			if time.Now().After(deadline) {
-				return "", nil, status.Error(codes.Aborted, "concurrent checkout with same idempotency_key is still in progress")
-			}
-			select {
-			case <-ctx.Done():
-				return "", nil, status.FromContextError(ctx.Err()).Err()
-			case <-time.After(50 * time.Millisecond):
+				if !waited {
+					return "", nil, status.Error(codes.Aborted, "concurrent checkout with same idempotency_key is still in progress")
+				}
+				backoff = min(backoff*2, maxBackoff)
 				continue
 			}
 		} else if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -809,58 +864,50 @@ func (s *OrderService) acquireCheckoutGroup(ctx context.Context, buyerID, idemKe
 		if err == nil {
 			return groupID, nil, nil
 		}
+		var failedWithOrders *store.FailedCheckoutWithOrdersError
+		if errors.As(err, &failedWithOrders) {
+			return "", nil, checkoutFailedError(failedWithOrders.Reason)
+		}
 		if errors.Is(err, store.ErrDuplicateIdempotencyKey) {
-			if time.Now().After(deadline) {
+			waited, wErr := waitCheckoutAcquireBackoff(ctx, backoff, deadline)
+			if wErr != nil {
+				return "", nil, wErr
+			}
+			if !waited {
 				return "", nil, status.Error(codes.Aborted, "concurrent checkout conflict")
 			}
-			select {
-			case <-ctx.Done():
-				return "", nil, status.FromContextError(ctx.Err()).Err()
-			case <-time.After(50 * time.Millisecond):
-				continue
-			}
+			backoff = min(backoff*2, maxBackoff)
+			continue
 		}
 		return "", nil, mapStoreError(err)
 	}
 }
 
 func (s *OrderService) buildReplayResponse(ctx context.Context, group *db.CheckoutGroup, caller callerIdentity) (*orderv1.CreateCheckoutResponse, error) {
+	aggs, err := s.store.ListOrdersByCheckoutGroup(ctx, group.ID)
+	if err != nil {
+		return nil, mapStoreError(err)
+	}
 	savedWarnings := parseWarningsJSON(group.WarningsJSON)
 	if len(group.ResponseSnapshotJSON) > 2 {
 		var resp orderv1.CreateCheckoutResponse
 		if err := protojson.Unmarshal(group.ResponseSnapshotJSON, &resp); err == nil && resp.CheckoutGroupId != "" {
 			resp.IdempotentReplay = true
+			if group.PaymentStatus != "" {
+				resp.PaymentStatus = group.PaymentStatus
+			}
 			if len(resp.Warnings) == 0 && len(savedWarnings) > 0 {
 				resp.Warnings = savedWarnings
 			}
-			// P2 N6: Never return raw unmasked snapshot fields. Privileged/seller callers reload
-			// authoritative rows (propagating store errors instead of silently returning masked zeros);
-			// buyer/non-owning callers always pass through maskProtoOrderForCaller (covers legacy pre-r4 snapshots).
-			if caller.IsPrivileged || (caller.Role == "seller" && caller.ShopID != "") {
-				aggs, lErr := s.store.ListOrdersByCheckoutGroup(ctx, group.ID)
-				if lErr != nil {
-					return nil, mapStoreError(lErr)
-				}
-				if len(aggs) > 0 {
-					orders := make([]*orderv1.Order, 0, len(aggs))
-					for _, agg := range aggs {
-						orders = append(orders, aggregateToProtoForCaller(agg, caller))
-					}
-					resp.Orders = orders
-					return &resp, nil
-				}
+			orders := make([]*orderv1.Order, 0, len(aggs))
+			for _, agg := range aggs {
+				orders = append(orders, aggregateToProtoForCaller(agg, caller))
 			}
-			for _, ord := range resp.Orders {
-				maskProtoOrderForCaller(ord, caller)
-			}
+			resp.Orders = orders
 			return &resp, nil
 		}
 	}
 
-	aggs, err := s.store.ListOrdersByCheckoutGroup(ctx, group.ID)
-	if err != nil {
-		return nil, mapStoreError(err)
-	}
 	resp := buildCheckoutResponseFromState(*group, aggs, savedWarnings, caller)
 	resp.IdempotentReplay = true
 	return resp, nil
@@ -877,49 +924,66 @@ func parseWarningsJSON(raw []byte) []string {
 	return out
 }
 
-func allOrdersCancelled(aggs []store.OrderAggregate) bool {
-	if len(aggs) == 0 {
-		return false
-	}
-	for _, agg := range aggs {
-		if statemachine.StringToStatus(agg.Order.Status) != orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
-			return false
-		}
-	}
-	return true
-}
-
-func (s *OrderService) cancelPaymentAfterAllCancelled(ctx context.Context, groupID, paymentID string, aggs []store.OrderAggregate) {
-	if s.clients.Payment == nil || (paymentID == "" && groupID == "") {
+func (s *OrderService) clearOrderedCart(ctx context.Context, buyerID string, req *orderv1.CreateCheckoutRequest, skuIDs []string) {
+	if !req.GetFromCart() || s.clients.Cart == nil || len(skuIDs) == 0 {
 		return
 	}
-	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
-	defer cancel()
-	if err := clients.RetryIdempotent(compCtx, 3, func(c context.Context) error {
-		_, cErr := s.clients.Payment.CancelPayment(c, &paymentv1.CancelPaymentRequest{
-			PaymentId:    paymentID,
-			OrderGroupId: groupID,
-			Reason:       "All sub-orders cancelled before checkout completion",
+	cartCtx, cartCancel := detachedCallerContext(ctx, s.cfg.GRPCCallTimeout)
+	defer cartCancel()
+	if err := clients.RetryIdempotent(cartCtx, 3, func(c context.Context) error {
+		_, cErr := s.clients.Cart.ClearItems(c, &cartv1.ClearItemsRequest{
+			UserId: buyerID,
+			SkuIds: skuIDs,
 		})
-		if code := status.Code(cErr); code == codes.NotFound || code == codes.AlreadyExists || code == codes.FailedPrecondition {
-			return nil
-		}
 		return cErr
 	}); err != nil {
-		s.logger.WarnContext(ctx, "post-commit CancelPayment for all-cancelled group failed; flagging pending_cancel_compensation for watchdog",
-			"checkout_group_id", groupID, "payment_id", paymentID, "error", err)
-		// P2 M7: Prefer flagging a sub-order with TotalPayableVND > 0 so watchdog compensation never skips CancelPayment.
-		if len(aggs) > 0 {
-			targetOrderID := aggs[0].Order.ID
-			for _, agg := range aggs {
-				if agg.Order.TotalPayableVND > 0 {
-					targetOrderID = agg.Order.ID
-					break
+		s.logger.WarnContext(ctx, "best-effort ClearItems failed after checkout", "buyer_id", buyerID, "error", err)
+	}
+}
+
+func orderedSKUIDsFromAggs(aggs []store.OrderAggregate) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, agg := range aggs {
+		for _, it := range agg.Items {
+			if id := strings.TrimSpace(it.SKUID); id != "" {
+				if _, ok := seen[id]; !ok {
+					seen[id] = struct{}{}
+					out = append(out, id)
 				}
 			}
-			_ = s.store.MarkOrderPendingCancelCompensation(compCtx, targetOrderID)
 		}
 	}
+	sort.Strings(out)
+	return out
+}
+
+func (s *OrderService) orderedSKUIDsForReplay(ctx context.Context, resp *orderv1.CreateCheckoutResponse) []string {
+	if resp == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, ord := range resp.GetOrders() {
+		for _, it := range ord.GetItems() {
+			if id := strings.TrimSpace(it.GetSkuId()); id != "" {
+				if _, ok := seen[id]; !ok {
+					seen[id] = struct{}{}
+					out = append(out, id)
+				}
+			}
+		}
+	}
+	if len(out) > 0 {
+		sort.Strings(out)
+		return out
+	}
+	if gid := strings.TrimSpace(resp.GetCheckoutGroupId()); gid != "" {
+		if aggs, err := s.store.ListOrdersByCheckoutGroup(ctx, gid); err == nil {
+			return orderedSKUIDsFromAggs(aggs)
+		}
+	}
+	return nil
 }
 
 // compensateCancelledCheckoutGroup runs full post-cancel cleanup after CancelCheckoutGroupOrders succeeds
@@ -1055,13 +1119,16 @@ func (s *OrderService) makeBuyerCheckoutSnapshotBuilder(
 	}
 }
 
-func (s *OrderService) completeCheckoutGroupWithRetry(ctx context.Context, params store.UpdateCheckoutPaymentParams) error {
+func (s *OrderService) completeCheckoutGroupWithRetry(ctx context.Context, params store.UpdateCheckoutPaymentParams, reset func()) error {
 	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 	defer cancel()
 
 	var lastErr error
 	backoff := 25 * time.Millisecond
 	for attempt := 0; attempt < 3; attempt++ {
+		if reset != nil {
+			reset()
+		}
 		if err := s.store.CompleteCheckoutWithPayment(compCtx, params); err != nil {
 			lastErr = err
 			if errors.Is(err, store.ErrNotFound) {
@@ -1381,10 +1448,10 @@ func (s *OrderService) calculateShippingFees(
 		}
 		plan.weightGrams = resolvedWeight
 
-		pickup := s.resolveShopPickupAddress(ctx, plan.shopID, &shippingv1.ShipmentAddress{
-			ProvinceCode: toAddr.GetProvinceCode(),
-			WardCode:     toAddr.GetWardCode(),
-		})
+		pickup, pErr := s.resolveShopPickupAddress(ctx, plan.shopID)
+		if pErr != nil {
+			return pErr
+		}
 		fromProvince, fromWard := pickup.GetProvinceCode(), pickup.GetWardCode()
 		var codEstimate int64
 		if paymentMethod == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {

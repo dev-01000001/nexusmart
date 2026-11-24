@@ -306,6 +306,88 @@ ORDER BY
 LIMIT sqlc.arg(limit_val)::int
 OFFSET sqlc.arg(offset_val)::int;
 
+-- name: CountProductsBySKUIDs :one
+WITH RECURSIVE cat_tree AS (
+    SELECT c.id
+    FROM categories c
+    WHERE sqlc.arg(category_id)::text <> '' AND c.id = sqlc.arg(category_id)::text
+    UNION
+    SELECT child.id
+    FROM categories child
+    JOIN cat_tree ct ON child.parent_id = ct.id
+),
+matched_products AS (
+    SELECT DISTINCT s.product_id
+    FROM skus s
+    WHERE s.id = ANY(sqlc.arg(sku_ids)::text[])
+      AND s.status <> 'INACTIVE'
+)
+SELECT COUNT(*)::bigint AS cnt
+FROM matched_products mp
+JOIN products p ON p.id = mp.product_id
+WHERE p.deleted_at IS NULL
+  AND p.status IN ('APPROVED', 'OUT_OF_STOCK')
+  AND (sqlc.arg(category_id)::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
+  AND (sqlc.arg(keyword)::text = '' OR p.search_text LIKE '%' || sqlc.arg(keyword)::text || '%' ESCAPE '\')
+  AND (sqlc.arg(shop_id)::text = '' OR p.shop_id = sqlc.arg(shop_id)::text)
+  AND (sqlc.arg(status_filter)::text = '' OR p.status = sqlc.arg(status_filter)::text)
+  AND (
+    (sqlc.arg(min_price_vnd)::bigint <= 0 AND sqlc.arg(max_price_vnd)::bigint <= 0)
+    OR EXISTS (
+      SELECT 1 FROM skus s
+      WHERE s.product_id = p.id
+        AND s.status <> 'INACTIVE'
+        AND (sqlc.arg(min_price_vnd)::bigint <= 0 OR s.price_vnd >= sqlc.arg(min_price_vnd)::bigint)
+        AND (sqlc.arg(max_price_vnd)::bigint <= 0 OR s.price_vnd <= sqlc.arg(max_price_vnd)::bigint)
+    )
+  );
+
+-- name: ListProductsBySKUIDs :many
+WITH RECURSIVE cat_tree AS (
+    SELECT c.id
+    FROM categories c
+    WHERE sqlc.arg(category_id)::text <> '' AND c.id = sqlc.arg(category_id)::text
+    UNION
+    SELECT child.id
+    FROM categories child
+    JOIN cat_tree ct ON child.parent_id = ct.id
+),
+matched_products AS (
+    SELECT DISTINCT s.product_id
+    FROM skus s
+    WHERE s.id = ANY(sqlc.arg(sku_ids)::text[])
+      AND s.status <> 'INACTIVE'
+)
+SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
+       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug, p.search_text
+FROM matched_products mp
+JOIN products p ON p.id = mp.product_id
+WHERE p.deleted_at IS NULL
+  AND p.status IN ('APPROVED', 'OUT_OF_STOCK')
+  AND (sqlc.arg(category_id)::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
+  AND (sqlc.arg(keyword)::text = '' OR p.search_text LIKE '%' || sqlc.arg(keyword)::text || '%' ESCAPE '\')
+  AND (sqlc.arg(shop_id)::text = '' OR p.shop_id = sqlc.arg(shop_id)::text)
+  AND (sqlc.arg(status_filter)::text = '' OR p.status = sqlc.arg(status_filter)::text)
+  AND (
+    (sqlc.arg(min_price_vnd)::bigint <= 0 AND sqlc.arg(max_price_vnd)::bigint <= 0)
+    OR EXISTS (
+      SELECT 1 FROM skus s
+      WHERE s.product_id = p.id
+        AND s.status <> 'INACTIVE'
+        AND (sqlc.arg(min_price_vnd)::bigint <= 0 OR s.price_vnd >= sqlc.arg(min_price_vnd)::bigint)
+        AND (sqlc.arg(max_price_vnd)::bigint <= 0 OR s.price_vnd <= sqlc.arg(max_price_vnd)::bigint)
+    )
+  )
+ORDER BY
+  CASE WHEN sqlc.arg(sort_by)::text = 'price_asc' THEN p.min_price_vnd END ASC,
+  CASE WHEN sqlc.arg(sort_by)::text = 'price_desc' THEN p.max_price_vnd END DESC,
+  CASE WHEN sqlc.arg(sort_by)::text = 'name_asc' THEN p.name END ASC,
+  CASE WHEN sqlc.arg(sort_by)::text = 'oldest' THEN p.created_at END ASC,
+  p.created_at DESC,
+  p.id DESC
+LIMIT sqlc.arg(limit_val)::int
+OFFSET sqlc.arg(offset_val)::int;
+
 -- SKUs
 
 -- name: CreateSKU :one
@@ -722,27 +804,88 @@ ON CONFLICT (order_id, sku_id) WHERE change_type = 'RESTOCK' DO NOTHING;
 
 -- Outbox events
 
+-- name: LockOutboxClaim :exec
+SELECT pg_advisory_xact_lock(7956455656534110829);
+
 -- name: InsertOutboxEvent :exec
-INSERT INTO outbox_events (id, event_type, trace_id, traceparent, payload_json, created_at)
-VALUES ($1, $2, $3, $4, $5, $6);
+INSERT INTO outbox_events (id, event_type, aggregate_id, trace_id, traceparent, payload_json, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7);
 
--- name: LockPendingOutboxEvents :many
-SELECT id, event_type, trace_id, traceparent, payload_json, published_at, attempts, last_error, created_at
-FROM outbox_events
-WHERE published_at IS NULL
-ORDER BY created_at ASC
-LIMIT $1
-FOR UPDATE SKIP LOCKED;
+-- ponytail: LIMIT applies on locked before eligible; if an aggregate's head row is briefly row-locked
+-- (e.g. concurrent MarkPublished) with >=50 queued rows behind it, one 250ms poll may claim 0 rows and
+-- recover on the next tick once the short update commits (accepted D9-bis ceiling).
+-- name: ClaimPendingOutboxEvents :many
+WITH locked AS (
+    SELECT o.id, o.aggregate_id, o.seq
+    FROM outbox_events o
+    WHERE o.published_at IS NULL
+      AND (o.claimed_until IS NULL OR o.claimed_until <= NOW())
+      AND (
+          o.aggregate_id = ''
+          OR NOT EXISTS (
+              SELECT 1
+              FROM outbox_events earlier
+              WHERE earlier.aggregate_id = o.aggregate_id
+                AND earlier.published_at IS NULL
+                AND earlier.claimed_until > NOW()
+                AND earlier.seq < o.seq
+          )
+      )
+    ORDER BY o.seq ASC
+    LIMIT sqlc.arg(batch_limit)::int
+    FOR UPDATE OF o SKIP LOCKED
+),
+eligible AS (
+    SELECT l.id
+    FROM locked l
+    WHERE l.aggregate_id = ''
+       OR NOT EXISTS (
+           SELECT 1
+           FROM outbox_events earlier
+           WHERE earlier.aggregate_id = l.aggregate_id
+             AND earlier.published_at IS NULL
+             AND earlier.seq < l.seq
+             AND NOT EXISTS (SELECT 1 FROM locked l2 WHERE l2.id = earlier.id)
+       )
+)
+UPDATE outbox_events o
+SET claimed_until = NOW() + (sqlc.arg(lease_ms)::bigint * INTERVAL '1 millisecond'),
+    claim_token = sqlc.arg(claim_token)::text
+FROM eligible e
+WHERE o.id = e.id
+RETURNING o.id, o.event_type, o.aggregate_id, o.trace_id, o.traceparent, o.payload_json,
+          o.published_at, o.attempts, o.last_error, o.created_at, o.seq, o.claimed_until, o.claim_token;
 
--- name: MarkOutboxEventPublished :exec
+-- name: MarkOutboxEventPublished :execrows
 UPDATE outbox_events
 SET published_at = NOW(),
     attempts = attempts + 1,
-    last_error = ''
-WHERE id = $1;
+    last_error = '',
+    claimed_until = NULL,
+    claim_token = ''
+WHERE id = $1
+  AND claim_token = $2
+  AND published_at IS NULL;
 
--- name: MarkOutboxEventAttemptFailed :exec
+-- name: MarkOutboxEventAttemptFailed :one
 UPDATE outbox_events
 SET attempts = attempts + 1,
-    last_error = $2
-WHERE id = $1;
+    last_error = sqlc.arg(last_error)::text,
+    claimed_until = CASE
+        WHEN sqlc.arg(backoff_ms)::bigint > 0
+        THEN NOW() + (sqlc.arg(backoff_ms)::bigint * INTERVAL '1 millisecond')
+        ELSE NULL
+    END,
+    claim_token = ''
+WHERE id = sqlc.arg(id)::text
+  AND claim_token = sqlc.arg(claim_token)::text
+  AND published_at IS NULL
+RETURNING attempts;
+
+-- name: ReleaseOutboxEventClaims :execrows
+UPDATE outbox_events
+SET claimed_until = NULL,
+    claim_token = ''
+WHERE id = ANY(sqlc.arg(ids)::text[])
+  AND claim_token = sqlc.arg(claim_token)::text
+  AND published_at IS NULL;

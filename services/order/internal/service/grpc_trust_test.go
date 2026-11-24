@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -220,9 +221,14 @@ func (s *trustDownstreamStub) RestockOrderItems(ctx context.Context, _ *productv
 
 // --- PromotionService ---
 
-func (s *trustDownstreamStub) ReservePromotion(ctx context.Context, _ *promotionv1.ReservePromotionRequest) (*promotionv1.ReservePromotionResponse, error) {
-	if c, ok := auth.ClaimsFromContext(ctx); !ok || c.Service != "" {
-		return nil, status.Error(codes.PermissionDenied, "end-user JWT required")
+func (s *trustDownstreamStub) ReservePromotion(ctx context.Context, req *promotionv1.ReservePromotionRequest) (*promotionv1.ReservePromotionResponse, error) {
+	// D3: ReservePromotion accepts ONLY order-service's internal service token (not buyer/admin JWT or other services)
+	// and requires non-empty user_id from request.
+	if err := s.requireServiceClaims(ctx, "Promotion.ReservePromotion"); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.GetUserId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id is required")
 	}
 	return &promotionv1.ReservePromotionResponse{Reserved: true}, nil
 }
@@ -442,6 +448,10 @@ func TestGRPCTrust_OrderJobsAndConsumersRealAuthInterceptor(t *testing.T) {
 				_, e := rawProd.RestockOrderItems(c, &productv1.RestockOrderItemsRequest{OrderId: "o1"})
 				return e
 			},
+			"Promotion.ReservePromotion": func(c context.Context) error {
+				_, e := rawPromo.ReservePromotion(c, &promotionv1.ReservePromotionRequest{OrderId: "g1", UserId: "buyer-1"})
+				return e
+			},
 			"Promotion.ReleasePromotion": func(c context.Context) error {
 				_, e := rawPromo.ReleasePromotion(c, &promotionv1.ReleasePromotionRequest{OrderId: "g1"})
 				return e
@@ -477,8 +487,23 @@ func TestGRPCTrust_OrderJobsAndConsumersRealAuthInterceptor(t *testing.T) {
 		if _, e := rawProd.ReserveStock(goodSvcCtx, &productv1.ReserveStockRequest{OrderId: "g1"}); status.Code(e) != codes.PermissionDenied {
 			t.Fatalf("Product.ReserveStock with service token: got %v, want PermissionDenied", e)
 		}
-		if _, e := rawPromo.ReservePromotion(goodSvcCtx, &promotionv1.ReservePromotionRequest{OrderId: "g1"}); status.Code(e) != codes.PermissionDenied {
-			t.Fatalf("Promotion.ReservePromotion with service token: got %v, want PermissionDenied", e)
+
+		// D3: Promotion.ReservePromotion MUST accept order-service token (with user_id),
+		// and reject buyer JWT, admin JWT, and other service tokens with PermissionDenied.
+		buyerTok, _, _, _ := users.SignAccessToken("buyer-1", "buyer", "")
+		adminTok, _, _, _ := users.SignAccessToken("admin-1", "admin", "")
+		otherSvcTok, _ := svcMgr.SignServiceToken("payment-service")
+		for label, ctx := range map[string]context.Context{
+			"buyer JWT":           auth.InjectOutgoingGRPC(context.Background(), buyerTok),
+			"admin JWT":           auth.InjectOutgoingGRPC(context.Background(), adminTok),
+			"other service token": auth.InjectOutgoingGRPC(context.Background(), otherSvcTok),
+		} {
+			if _, e := rawPromo.ReservePromotion(ctx, &promotionv1.ReservePromotionRequest{OrderId: "g1", UserId: "buyer-1"}); status.Code(e) != codes.PermissionDenied {
+				t.Fatalf("Promotion.ReservePromotion with %s: got %v, want PermissionDenied", label, e)
+			}
+		}
+		if _, e := rawPromo.ReservePromotion(goodSvcCtx, &promotionv1.ReservePromotionRequest{OrderId: "g1", UserId: "buyer-1"}); e != nil {
+			t.Fatalf("Promotion.ReservePromotion with order-service token: got %v, want nil", e)
 		}
 	})
 
@@ -617,6 +642,9 @@ func TestGRPCTrust_OrderJobsAndConsumersRealAuthInterceptor(t *testing.T) {
 		}
 		if stub.countService("Product.ConfirmStock") < 1 {
 			t.Fatalf("expected service-token Product.ConfirmStock from HandlePaymentSucceeded")
+		}
+		if stub.countService("Promotion.ReservePromotion") < 1 {
+			t.Fatalf("D3: expected service-token Promotion.ReservePromotion from CreateCheckout")
 		}
 		if stub.countService("Shipping.GetShopShippingSettings") < 1 {
 			t.Fatalf("expected service-token Shipping.GetShopShippingSettings from CreateCheckout")

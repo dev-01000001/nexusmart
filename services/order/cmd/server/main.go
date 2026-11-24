@@ -100,6 +100,7 @@ func run() error {
 	}
 
 	pgStore := store.NewPostgresStore(pool)
+	pgStore.SetLogger(log)
 	orderSvc := service.NewOrderService(cfg, pgStore, downstream, log)
 
 	// Start transactional outbox relay, idempotent NATS consumer, and payment expiry watchdog.
@@ -110,6 +111,13 @@ func run() error {
 	}
 
 	var bgWG sync.WaitGroup
+	defer func() {
+		stop()
+		if err := consumer.Stop(); err != nil {
+			log.Warn("error stopping nats consumer", "error", err)
+		}
+		bgWG.Wait()
+	}()
 	bgWG.Add(2)
 	go func() {
 		defer bgWG.Done()
@@ -179,19 +187,15 @@ func run() error {
 		}
 	}()
 
+	var srvErr error
 	select {
 	case <-ctx.Done():
 		log.Info("shutdown signal received")
-	case srvErr := <-errCh:
+	case srvErr = <-errCh:
 		stop()
-		return srvErr
 	}
 
 	// Graceful shutdown.
-	if err := consumer.Stop(); err != nil {
-		log.Warn("error stopping nats consumer", "error", err)
-	}
-
 	grpcSrv.GracefulStop()
 
 	httpShutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -200,7 +204,9 @@ func run() error {
 		log.Warn("error shutting down http server", "error", err)
 	}
 
-	bgWG.Wait()
+	if srvErr != nil {
+		return srvErr
+	}
 	log.Info("order service stopped cleanly")
 	return nil
 }

@@ -5,7 +5,7 @@ export PROTOC := $(HOME)/.local/bin/protoc
 GO_MODULES := pkg/common gen/go \
 	$(wildcard services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification)
 
-.PHONY: proto lint test coverage up down e2e seed e2e-web
+.PHONY: proto lint test test-db coverage up down e2e seed e2e-web
 
 proto:
 	buf lint
@@ -42,6 +42,9 @@ test:
 		echo "==> cargo test services/payment"; \
 		(cd services/payment && cargo test); \
 	fi
+
+test-db:
+	@bash scripts/test-db.sh
 
 coverage:
 	@bash scripts/coverage.sh
@@ -80,4 +83,4 @@ e2e-web:
 	export WEB_URL="$${_web_url:-http://localhost:$${WEB_PORT:-3000}}"; \
 	export MAILPIT_URL="$${_mp_url:-http://localhost:$${MAILPIT_UI_PORT:-8025}}"; \
 	export GATEWAY_URL="$${_gw_url:-http://localhost:$${GATEWAY_PORT:-8080}}"; \
-	node --test 'tests/e2e-web/*.test.mjs'
+	node --test --test-concurrency=1 'tests/e2e-web/*.test.mjs'

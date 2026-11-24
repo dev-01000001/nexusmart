@@ -6,7 +6,9 @@ use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::watch;
 use tonic::transport::Server as TonicServer;
-use tracing::{error, info};
+use tracing::{error, info, warn};
+
+const WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
 
 use nexusmart_payment::auth::GrpcAuth;
 use nexusmart_payment::config::Config;
@@ -34,29 +36,31 @@ async fn main() -> anyhow::Result<()> {
     sqlx::migrate!("./migrations").run(&pool).await?;
     info!("database migrations applied cleanly");
 
+    let pool_for_shutdown = pool.clone();
     let metrics = Metrics::new();
     let service = PaymentService::new(pool, config.clone(), metrics);
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    // Spawn background workers
-    let exp_handle = tokio::spawn(workers::run_expiration_scanner(
+    // Spawn background workers (NATS JetStream connections live inside `outbox_handle` and
+    // `consumer_handle`, so waiting for worker shutdown guarantees NATS drains before `pool.close()`).
+    let mut exp_handle = tokio::spawn(workers::run_expiration_scanner(
         service.clone(),
         shutdown_rx.clone(),
     ));
-    let outbox_handle = tokio::spawn(workers::run_outbox_relay(
+    let mut outbox_handle = tokio::spawn(workers::run_outbox_relay(
         service.clone(),
         shutdown_rx.clone(),
     ));
-    let recon_handle = tokio::spawn(workers::run_reconciliation_scheduler(
+    let mut recon_handle = tokio::spawn(workers::run_reconciliation_scheduler(
         service.clone(),
         shutdown_rx.clone(),
     ));
-    let consumer_handle = tokio::spawn(workers::run_nats_order_consumer(
+    let mut consumer_handle = tokio::spawn(workers::run_nats_order_consumer(
         service.clone(),
         shutdown_rx.clone(),
     ));
-    let hold_handle = tokio::spawn(workers::run_escrow_hold_releaser(
+    let mut hold_handle = tokio::spawn(workers::run_escrow_hold_releaser(
         service.clone(),
         shutdown_rx.clone(),
     ));
@@ -75,43 +79,68 @@ async fn main() -> anyhow::Result<()> {
     let http_listener = TcpListener::bind(http_addr).await?;
     let http_router = build_router(service.clone(), grpc_auth.clone());
     let mut http_shutdown = shutdown_rx.clone();
+    let http_fail_tx = shutdown_tx.clone();
 
     let http_future = async move {
         info!(addr = %http_addr, "HTTP server listening");
-        axum::serve(http_listener, http_router)
+        let res = axum::serve(http_listener, http_router)
             .with_graceful_shutdown(async move {
                 let _ = http_shutdown.changed().await;
             })
             .await
-            .map_err(anyhow::Error::from)
+            .map_err(anyhow::Error::from);
+        let _ = http_fail_tx.send(true);
+        res
     };
 
     // gRPC server on port 50056 (Tonic)
     let grpc_addr = SocketAddr::from(([0, 0, 0, 0], config.grpc_port));
     let grpc_service = PaymentGrpcServer::new(service, grpc_auth).into_service();
     let mut grpc_shutdown = shutdown_rx.clone();
+    let grpc_fail_tx = shutdown_tx.clone();
 
     let grpc_future = async move {
         info!(addr = %grpc_addr, "gRPC server listening");
-        TonicServer::builder()
+        let res = TonicServer::builder()
             .add_service(grpc_service)
             .serve_with_shutdown(grpc_addr, async move {
                 let _ = grpc_shutdown.changed().await;
             })
             .await
-            .map_err(anyhow::Error::from)
+            .map_err(anyhow::Error::from);
+        let _ = grpc_fail_tx.send(true);
+        res
     };
 
     let (http_res, grpc_res) = tokio::join!(http_future, grpc_future);
     let _ = shutdown_tx.send(true);
 
-    let _ = tokio::join!(
-        exp_handle,
-        outbox_handle,
-        recon_handle,
-        consumer_handle,
-        hold_handle
-    );
+    // D9-bis point 11: wait for outbox relay and all background workers to finish in-flight work
+    // (bounded by WORKER_SHUTDOWN_TIMEOUT) before closing DB pool / telemetry.
+    let workers_drained = tokio::time::timeout(WORKER_SHUTDOWN_TIMEOUT, async {
+        let _ = tokio::join!(
+            &mut exp_handle,
+            &mut outbox_handle,
+            &mut recon_handle,
+            &mut consumer_handle,
+            &mut hold_handle
+        );
+    })
+    .await;
+
+    if workers_drained.is_err() {
+        warn!(
+            timeout_secs = WORKER_SHUTDOWN_TIMEOUT.as_secs(),
+            "background workers did not exit within shutdown timeout; aborting remaining tasks"
+        );
+        exp_handle.abort();
+        outbox_handle.abort();
+        recon_handle.abort();
+        consumer_handle.abort();
+        hold_handle.abort();
+    }
+
+    pool_for_shutdown.close().await;
 
     if let Some(tp) = _tracer_provider {
         if let Err(e) = tp.shutdown() {

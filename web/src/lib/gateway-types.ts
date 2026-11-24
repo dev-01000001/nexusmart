@@ -166,7 +166,7 @@ export interface GatewayCategory {
   name: string;
   slug: string;
   parent_id: string;
-  commission_rate_bps: number;
+  commission_rate_bps?: number;
   sort_order: number;
   created_at?: string;
   updated_at?: string;
@@ -189,7 +189,7 @@ export interface GatewaySKU {
   weight_grams: number;
   image_url: string;
   category_id: string;
-  commission_rate_bps: number;
+  commission_rate_bps?: number;
   is_active: boolean;
 }
 

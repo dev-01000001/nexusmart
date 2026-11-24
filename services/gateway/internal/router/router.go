@@ -25,6 +25,7 @@ type Dependencies struct {
 	RateLimitUserPerMin    int
 	RateLimitFlashPerMin   int
 	RateLimitAuthPerMin    int
+	RateLimitBankOTPPerMin int
 	RateLimitWebhookPerMin int
 	TrustedProxies         *middleware.TrustedProxies
 	RED                    *metrics.RED
@@ -246,10 +247,14 @@ func New(deps Dependencies) http.Handler {
 					// Section 4.1 Seller Shop & Bank Account
 					seller.Get("/shop", h.handleSellerGetShop)
 					seller.Get("/bank-account", h.handleSellerGetBankAccount)
-					seller.Post("/bank-account", h.handleSellerAddBankAccount)
-					seller.Post("/bank-account/verify-otp", h.handleSellerVerifyBankAccountOTP)
+					seller.Group(func(bankOTP chi.Router) {
+						bankOTP.Use(middleware.RateLimitBankOTP(deps.RateLimiter, deps.RateLimitBankOTPPerMin, deps.Logger))
+						bankOTP.Post("/bank-account", h.handleSellerAddBankAccount)
+						bankOTP.Post("/bank-account/verify-otp", h.handleSellerVerifyBankAccountOTP)
+					})
 
-					// Section 4.2 Seller Products & Stock
+					// Section 4.2 Seller Categories, Products & Stock
+					seller.Get("/categories", h.handleListCategoriesWithCommission)
 					seller.Get("/products", h.handleSellerListProducts)
 					seller.Get("/products/{id}", h.handleSellerGetProduct)
 					seller.Post("/products", h.handleSellerCreateProduct)
@@ -316,6 +321,7 @@ func New(deps Dependencies) http.Handler {
 					admin.Get("/audit-logs", h.handleAdminListAuditLogs)
 
 					// Section 4.2 Admin Categories, Fee Schedules & Product Review
+					admin.Get("/categories", h.handleListCategoriesWithCommission)
 					admin.Post("/categories", h.handleCreateCategory)
 					admin.Put("/categories/{id}", h.handleUpdateCategory)
 					admin.Delete("/categories/{id}", h.handleDeleteCategory)

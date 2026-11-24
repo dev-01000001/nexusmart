@@ -30,8 +30,11 @@ func setupService(t *testing.T) (*service.PromotionService, *store.MemoryStore, 
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     mr.Addr(),
-		PoolSize: 200,
+		Addr:         mr.Addr(),
+		PoolSize:     200,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		PoolTimeout:  30 * time.Second,
 	})
 	t.Cleanup(func() { _ = rdb.Close() })
 
@@ -113,9 +116,17 @@ func TestService_1000Concurrent_FlashSale_100Slots_AndRelease(t *testing.T) {
 
 			orderID := fmt.Sprintf("flash-ord-%04d", idx)
 			buyerID := fmt.Sprintf("buyer-%04d", idx)
-			resp, rErr := svc.ReservePromotion(ctxWithRole(buyerID, "buyer", ""), &promotionv1.ReservePromotionRequest{
+			resp, rErr := svc.ReservePromotion(ctxWithService("order-service"), &promotionv1.ReservePromotionRequest{
 				OrderId: orderID,
 				UserId:  buyerID,
+				ShopItems: []*promotionv1.ShopDiscountInput{
+					{
+						ShopId: "shop-1",
+						Items: []*promotionv1.DiscountLineItem{
+							{SkuId: "sku-flash-1", Quantity: 1, UnitPriceVnd: 150000, FlashSaleItemId: itemID},
+						},
+					},
+				},
 				FlashSaleItems: []*promotionv1.FlashSaleReservationItem{
 					{FlashSaleItemId: itemID, SkuId: "sku-flash-1", Quantity: 1},
 				},
@@ -459,7 +470,8 @@ func TestService_FullCheckoutSagaReserveRelease_AndCoinLedgerInvariant(t *testin
 		},
 	}
 
-	res1, err := svc.ReservePromotion(buyerCtx, reserveReq)
+	svcCtx := ctxWithService("order-service")
+	res1, err := svc.ReservePromotion(svcCtx, reserveReq)
 	if err != nil {
 		t.Fatalf("ReservePromotion 1st: %v", err)
 	}
@@ -475,7 +487,7 @@ func TestService_FullCheckoutSagaReserveRelease_AndCoinLedgerInvariant(t *testin
 	}
 
 	// Idempotent retry of ReservePromotion with same order_id
-	res2, err := svc.ReservePromotion(buyerCtx, reserveReq)
+	res2, err := svc.ReservePromotion(svcCtx, reserveReq)
 	if err != nil || !res2.Reserved || !res2.AlreadyReserved {
 		t.Fatalf("idempotent ReservePromotion unexpected: %+v err=%v", res2, err)
 	}
@@ -501,7 +513,6 @@ func TestService_FullCheckoutSagaReserveRelease_AndCoinLedgerInvariant(t *testin
 	}
 
 	// 3. Saga compensation: ReleasePromotion (called twice to prove idempotency!)
-	svcCtx := ctxWithService("order-service")
 	rel1, err := svc.ReleasePromotion(svcCtx, &promotionv1.ReleasePromotionRequest{OrderId: "saga-order-1"})
 	if err != nil || !rel1.Released || rel1.AlreadyReleased {
 		t.Fatalf("1st ReleasePromotion unexpected: %+v err=%v", rel1, err)
@@ -560,7 +571,7 @@ func TestService_PostgresCoinFailureCompensatesRedis(t *testing.T) {
 	}
 
 	// ReservePromotion rejects insufficient coins (needs 8000 > 5000) and leaves Redis quota/budget intact!
-	_, err = svc.ReservePromotion(ctxWithRole("buyer-poor", "buyer", ""), &promotionv1.ReservePromotionRequest{
+	_, err = svc.ReservePromotion(ctxWithService("order-service"), &promotionv1.ReservePromotionRequest{
 		OrderId:        "order-coin-fail",
 		UserId:         "buyer-poor",
 		ShopVoucherIds: map[string]string{"shop-1": vResp.Voucher.Id},
@@ -626,7 +637,7 @@ func TestService_ConcurrentCoinsRace_CompensatesRedisAndPreservesInvariant(t *te
 		go func(idx int) {
 			defer wg.Done()
 			<-startCh
-			resp, rErr := svc.ReservePromotion(ctxWithRole("buyer-race", "buyer", ""), &promotionv1.ReservePromotionRequest{
+			resp, rErr := svc.ReservePromotion(ctxWithService("order-service"), &promotionv1.ReservePromotionRequest{
 				OrderId:        fmt.Sprintf("coin-race-ord-%02d", idx),
 				UserId:         "buyer-race",
 				ShopVoucherIds: map[string]string{"shop-1": vResp.Voucher.Id},
@@ -702,7 +713,7 @@ func TestService_ConcurrentDuplicateOrderID_Idempotent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-startCh
-			resp, rErr := svc.ReservePromotion(ctxWithRole("buyer-idem", "buyer", ""), &promotionv1.ReservePromotionRequest{
+			resp, rErr := svc.ReservePromotion(ctxWithService("order-service"), &promotionv1.ReservePromotionRequest{
 				OrderId:        "same-order-id-99",
 				UserId:         "buyer-idem",
 				ShopVoucherIds: map[string]string{"shop-1": vResp.Voucher.Id},
@@ -764,7 +775,7 @@ func TestService_ListAvailableVouchers_EligibilityReasons(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReservePromotion(ctxWithRole("other-buyer", "buyer", ""), &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(ctxWithService("order-service"), &promotionv1.ReservePromotionRequest{
 		OrderId:           "consume-quota-1",
 		UserId:            "other-buyer",
 		PlatformVoucherId: vOut.Voucher.Id,
@@ -867,7 +878,8 @@ func TestService_UnauthenticatedMutationsAndCrossUserReserveDenied(t *testing.T)
 		t.Fatalf("buyer-2 coins must remain untouched at 10000, got %d", mem.AccountBalance("buyer-2"))
 	}
 
-	// Authenticated buyer-1 calling ReservePromotion for own user_id succeeds.
+	// Authenticated buyer-1 CANNOT call ReservePromotion even for own user_id (D3: order-service only);
+	// order-service calling ReservePromotion for buyer-1 succeeds.
 	if _, err := svc.CreditCoins(adminCtx, &promotionv1.CreditCoinsRequest{
 		UserId:      "buyer-1",
 		Amount:      10000,
@@ -875,13 +887,22 @@ func TestService_UnauthenticatedMutationsAndCrossUserReserveDenied(t *testing.T)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	resp, err := svc.ReservePromotion(buyer1Ctx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(buyer1Ctx, &promotionv1.ReservePromotionRequest{
+		OrderId:    "own-user-buyer-denied",
+		UserId:     "buyer-1",
+		CoinsToUse: 3000,
+		ShopItems:  []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 100000}},
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for buyer own-user ReservePromotion under D3, got %v", err)
+	}
+	resp, err := svc.ReservePromotion(ctxWithService("order-service"), &promotionv1.ReservePromotionRequest{
 		OrderId:    "own-user-ord-1",
 		UserId:     "buyer-1",
 		CoinsToUse: 3000,
+		ShopItems:  []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 100000}},
 	})
 	if err != nil || !resp.Reserved {
-		t.Fatalf("expected own-user ReservePromotion to succeed, got resp=%+v err=%v", resp, err)
+		t.Fatalf("expected order-service ReservePromotion to succeed, got resp=%+v err=%v", resp, err)
 	}
 }
 
@@ -943,11 +964,11 @@ func TestService_ConcurrentDuplicateOrderID_CommitFailureNeverReturnsReserved(t 
 	)
 
 	// Caller A wins reserve_atomic.lua and pauses inside CommitReservation.
-	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
+	orderSvcCtx := ctxWithService("order-service")
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		resA, errA = svc.ReservePromotion(buyerCtx, req)
+		resA, errA = svc.ReservePromotion(orderSvcCtx, req)
 	}()
 
 	<-fStore.entered
@@ -956,7 +977,7 @@ func TestService_ConcurrentDuplicateOrderID_CommitFailureNeverReturnsReserved(t 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		resB, errB = svc.ReservePromotion(buyerCtx, req)
+		resB, errB = svc.ReservePromotion(orderSvcCtx, req)
 	}()
 
 	// Let B enter polling, then unblock A so A fails CommitReservation & runs compensateRedisRelease.
@@ -1017,9 +1038,17 @@ func TestService_FlashSaleReapprovalPreservesRemainingSlots(t *testing.T) {
 	}
 
 	// Reserve 3 slots -> 7 remaining in both Redis and Postgres
-	if _, err := svc.ReservePromotion(ctxWithRole("buyer-1", "buyer", ""), &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(ctxWithService("order-service"), &promotionv1.ReservePromotionRequest{
 		OrderId: "reapprove-ord-1",
 		UserId:  "buyer-1",
+		ShopItems: []*promotionv1.ShopDiscountInput{
+			{
+				ShopId: "shop-1",
+				Items: []*promotionv1.DiscountLineItem{
+					{SkuId: "sku-reapprove", Quantity: 3, UnitPriceVnd: 120000, FlashSaleItemId: itemID},
+				},
+			},
+		},
 		FlashSaleItems: []*promotionv1.FlashSaleReservationItem{
 			{FlashSaleItemId: itemID, SkuId: "sku-reapprove", Quantity: 3},
 		},

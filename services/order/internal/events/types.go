@@ -150,12 +150,13 @@ type PaymentFailedPayload struct {
 
 // PaymentRefundedPayload matches payment.refunded events.
 type PaymentRefundedPayload struct {
-	RefundID  string `json:"refund_id"`
-	PaymentID string `json:"payment_id"`
-	OrderID   string `json:"order_id"`
-	UserID    string `json:"user_id"`
-	AmountVND int64  `json:"amount_vnd"`
-	Reason    string `json:"reason"`
+	RefundID         string `json:"refund_id"`
+	PaymentID        string `json:"payment_id"`
+	OrderID          string `json:"order_id"`
+	UserID           string `json:"user_id"`
+	AmountVND        int64  `json:"amount_vnd"`
+	Reason           string `json:"reason"`
+	IsPostSettlement *bool  `json:"is_post_settlement,omitempty"`
 }
 
 // ShipmentUpdatedPayload matches shipment.updated events.

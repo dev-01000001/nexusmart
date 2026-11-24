@@ -164,14 +164,11 @@ func (s *PromotionService) ListFlashSaleItems(ctx context.Context, req *promotio
 	pbItems := make([]*promotionv1.FlashSaleItem, 0, len(items))
 	for i := range items {
 		it := &items[i]
-		rem := it.RemainingSlots
+		rem := min(max(it.RemainingSlots, 0), it.TotalSlots)
 		if it.Status == domain.FlashStatusApproved {
 			if live, ok := liveSlots[lua.FlashRemainingKey(it.ID)]; ok {
-				rem = int32(live)
+				rem = min(rem, max(int32(live), 0))
 			}
-		}
-		if rem < 0 {
-			rem = 0
 		}
 		pbItems = append(pbItems, flashSaleItemToProto(it, rem))
 	}

@@ -644,7 +644,9 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
                 <div className={styles.giftBox}>
                   <div className={styles.giftRow}>
                     <span className={styles.kvKey}>Lý do hủy đơn</span>
-                    <span className={styles.kvVal}>{order.cancel_reason}</span>
+                    <span className={styles.kvVal}>
+                      {localizeTimelineNote(order.cancel_reason)}
+                    </span>
                   </div>
                 </div>
               )}

@@ -44,7 +44,7 @@ func NewOutboxRelay(store OutboxStore, publisher Publisher, logger *slog.Logger,
 		logger = slog.Default()
 	}
 	if pollInterval <= 0 {
-		pollInterval = 250 * time.Millisecond
+		pollInterval = jetstream.DefaultOutboxPollInterval
 	}
 	return &OutboxRelay{
 		store:        store,
@@ -56,43 +56,42 @@ func NewOutboxRelay(store OutboxStore, publisher Publisher, logger *slog.Logger,
 	}
 }
 
-// Run polls and flushes outbox events until ctx is cancelled.
+// Run polls and flushes outbox events until ctx is cancelled, applying shared D9-bis exponential
+// backoff (250ms -> 5s, ignoring triggerCh during backoff) whenever a poll/publish fails.
 func (r *OutboxRelay) Run(ctx context.Context) {
-	ticker := time.NewTicker(r.pollInterval)
-	defer ticker.Stop()
-
-	for {
-		r.FlushOnce(ctx)
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-r.triggerCh:
-		case <-ticker.C:
-		}
-	}
+	jetstream.RunOutboxRelayLoop(ctx, r.pollInterval, r.triggerCh, func(c context.Context) error {
+		_, err := r.flushOnceErr(c)
+		return err
+	})
 }
 
 // FlushOnce publishes pending outbox events in batches until drained or error.
 func (r *OutboxRelay) FlushOnce(ctx context.Context) int {
+	n, _ := r.flushOnceErr(ctx)
+	return n
+}
+
+func (r *OutboxRelay) flushOnceErr(ctx context.Context) (int, error) {
 	totalPublished := 0
 	for {
 		if ctx.Err() != nil {
-			return totalPublished
+			return totalPublished, ctx.Err()
 		}
 		n, err := r.store.ProcessPendingOutbox(ctx, r.batchSize, r.publishOutboxEvent)
+		totalPublished += n
 		if err != nil {
 			r.logger.WarnContext(ctx, "outbox relay poll failed", "error", err)
-			return totalPublished
+			return totalPublished, err
 		}
-		totalPublished += n
 		if int32(n) < r.batchSize {
-			return totalPublished
+			return totalPublished, nil
 		}
 	}
 }
 
-func (r *OutboxRelay) publishOutboxEvent(_ context.Context, ev db.OutboxEvent) error {
+// publishOutboxEvent marshals the canonical envelope and publishes it to NATS JetStream.
+// Per-event publish timeout is enforced once by ProcessPendingOutbox on ctx (single source of truth).
+func (r *OutboxRelay) publishOutboxEvent(ctx context.Context, ev db.OutboxEvent) error {
 	env := Envelope{
 		EventID:    ev.ID,
 		EventType:  ev.EventType,
@@ -115,7 +114,7 @@ func (r *OutboxRelay) publishOutboxEvent(_ context.Context, ev db.OutboxEvent) e
 		msg.Header.Set("traceparent", ev.Traceparent)
 	}
 
-	if _, err := r.publisher.PublishMsg(msg); err != nil {
+	if _, err := r.publisher.PublishMsg(msg, nats.Context(ctx)); err != nil {
 		return fmt.Errorf("publish %s (%s): %w", ev.EventType, ev.ID, err)
 	}
 	return nil

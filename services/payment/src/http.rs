@@ -12,7 +12,7 @@ use axum::{Extension, Json, Router};
 use chrono::Utc;
 use futures_util::stream::{self, Stream, StreamExt};
 use serde_json::json;
-use tokio_stream::wrappers::BroadcastStream;
+use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, error, info, warn, Instrument};
 use uuid::Uuid;
 
@@ -273,21 +273,22 @@ async fn payment_events_sse(
         .auth
         .authenticate_header(auth_header, "PaymentEventsSse")?;
 
-    let parsed_uuid = Uuid::parse_str(&id).ok();
-    let pwa = if let Some(pid) = parsed_uuid {
-        state.service.get_payment(Some(pid), None, None).await?
-    } else {
-        state
-            .service
-            .get_payment(None, Some(&id), Some(&id))
-            .await?
-    };
+    let payment_id = Uuid::parse_str(id.trim())
+        .map_err(|_| PaymentError::Validation("invalid payment_id: expected UUID".to_string()))?;
+    // P3-8: Subscribe BEFORE reading the DB snapshot so a status transition committed between
+    // `get_payment` and stream setup cannot be missed.
+    let rx = state.service.subscribe_sse();
+    let pwa = state
+        .service
+        .get_payment(Some(payment_id), None, None)
+        .await?;
 
     let scope = resolve_payment_read_scope(&caller, &pwa)?;
     let sse_projection = SseEventProjection::from_scope(&scope, &pwa);
 
     let p = pwa.payment;
     let payment_id = p.id;
+    let initial_terminal = is_sse_terminal_status(&p.status);
     let initial_evt = sse_projection.project(PaymentSseEvent {
         payment_id: p.id,
         order_group_id: p.order_group_id,
@@ -301,30 +302,40 @@ async fn payment_events_sse(
     let initial_data = serde_json::to_string(&initial_evt).unwrap_or_default();
     let initial_event = Event::default().event(event_name).data(initial_data);
 
-    let rx = state.service.subscribe_sse();
-    let filter_id = id.clone();
+    let jwt_deadline = caller.exp.map(|exp| {
+        let remaining_secs = (exp - Utc::now().timestamp()).max(0) as u64;
+        tokio::time::Instant::now() + Duration::from_secs(remaining_secs)
+    });
 
-    let live_stream = BroadcastStream::new(rx).filter_map(move |msg| {
-        let filter_id = filter_id.clone();
+    let live_stream = stream::unfold((rx, initial_terminal), move |(mut rx, finished)| {
         let sse_projection = sse_projection.clone();
         async move {
-            match msg {
-                Ok(evt) => {
-                    let matches_payment = evt.payment_id == payment_id;
-                    let matches_order =
-                        evt.order_id == filter_id || evt.order_group_id == filter_id;
-                    if matches_payment || matches_order {
+            if finished {
+                return None;
+            }
+            loop {
+                let recv_res = if let Some(deadline) = jwt_deadline {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(deadline) => return None,
+                        res = rx.recv() => res,
+                    }
+                } else {
+                    rx.recv().await
+                };
+                match recv_res {
+                    Ok(evt) if evt.payment_id == payment_id => {
+                        let done_after = is_sse_terminal_status(&evt.status);
                         let projected = sse_projection.project(evt);
                         let event_name = status_to_sse_event_name(&projected.status);
                         let data = serde_json::to_string(&projected).unwrap_or_default();
-                        Some(Ok::<Event, Infallible>(
-                            Event::default().event(event_name).data(data),
-                        ))
-                    } else {
-                        None
+                        let frame =
+                            Ok::<Event, Infallible>(Event::default().event(event_name).data(data));
+                        return Some((frame, (rx, done_after)));
                     }
+                    Ok(_) => continue,
+                    // Close cleanly on channel close or lag so clients reconnect and refresh snapshot.
+                    Err(RecvError::Closed) | Err(RecvError::Lagged(_)) => return None,
                 }
-                Err(_) => None,
             }
         }
     });
@@ -381,6 +392,13 @@ fn project_sse_event_for_caller(
 ) -> PaymentSseEvent {
     let scope = resolve_payment_read_scope(caller, pwa).expect("caller must have read access");
     SseEventProjection::from_scope(&scope, pwa).project(evt)
+}
+
+fn is_sse_terminal_status(status: &str) -> bool {
+    matches!(
+        status,
+        "succeeded" | "expired" | "failed" | "cancelled" | "superseded" | "refunded"
+    )
 }
 
 fn status_to_sse_event_name(status: &str) -> &'static str {
@@ -1063,5 +1081,60 @@ mod tests {
         assert_eq!(out_seller.amount_vnd, 210_000);
         assert!(out_seller.provider_tx_id.is_none());
         assert_eq!(out_seller.order_id, "ord-shop-a");
+    }
+
+    #[tokio::test]
+    async fn test_w3a_sse_non_uuid_returns_400_without_db_query() {
+        let (app, _) = test_router();
+        let now = Utc::now().timestamp();
+        let buyer_tok = sign_hs256(
+            TEST_USER_JWT_SECRET,
+            json!({"sub": "buyer-1", "role": "buyer", "exp": now + 60}),
+        );
+        let admin_tok = sign_hs256(
+            TEST_USER_JWT_SECRET,
+            json!({"sub": "admin-1", "role": "admin", "exp": now + 60}),
+        );
+
+        // Missing auth still gets 401 even for non-UUID id
+        let unauth_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/payments/not-a-uuid/events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauth_resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Authenticated buyer & admin with non-UUID ids MUST get 400 (not 500 from lazy DB!)
+        for bad_id in ["not-a-uuid", "12345", "ord-sub-1", "zzzz-invalid"] {
+            for (role, tok) in [("buyer", &buyer_tok), ("admin", &admin_tok)] {
+                let resp = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("/payments/{bad_id}/events"))
+                            .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = resp.status();
+                let body = resp.into_body().collect().await.unwrap().to_bytes();
+                let body_str = String::from_utf8_lossy(&body);
+                assert_eq!(
+                    status,
+                    StatusCode::BAD_REQUEST,
+                    "role={role} bad_id={bad_id} body={body_str}"
+                );
+                let parsed: serde_json::Value =
+                    serde_json::from_slice(&body).expect("clean JSON 400 body");
+                assert_eq!(parsed["error"], "VALIDATION_ERROR");
+            }
+        }
     }
 }

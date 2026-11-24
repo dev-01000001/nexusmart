@@ -3,7 +3,7 @@
 import React, { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { SHOPS, getShopById } from "@/data";
-import type { FitFeedbackKind, LookbookStatus } from "@/data";
+import type { FitFeedbackKind, LookbookStatus } from "@/data/seller";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconPlus, StateView } from "@/components";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";

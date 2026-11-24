@@ -192,13 +192,14 @@ func (s *OrderService) HandlePaymentExpired(ctx context.Context, eventID string,
 // HandlePaymentRefunded records a payment.refunded event idempotently on the order timeline.
 func (s *OrderService) HandlePaymentRefunded(ctx context.Context, eventID string, payload events.PaymentRefundedPayload) error {
 	_, err := s.store.RecordPaymentRefunded(ctx, store.PaymentRefundedParams{
-		EventID:   eventID,
-		EventType: events.SubjectPaymentRefunded,
-		PaymentID: payload.PaymentID,
-		OrderID:   payload.OrderID,
-		RefundID:  payload.RefundID,
-		AmountVND: payload.AmountVND,
-		Reason:    payload.Reason,
+		EventID:          eventID,
+		EventType:        events.SubjectPaymentRefunded,
+		PaymentID:        payload.PaymentID,
+		OrderID:          payload.OrderID,
+		RefundID:         payload.RefundID,
+		AmountVND:        payload.AmountVND,
+		Reason:           payload.Reason,
+		IsPostSettlement: payload.IsPostSettlement,
 	})
 	return err
 }
@@ -668,9 +669,15 @@ func (s *OrderService) reconcileIncompleteCheckoutGroup(ctx context.Context, gro
 		}
 	}
 
-	// P0 N3 (no infinite loop): all sub-orders are already CANCELLED -> close group FAILED without re-releasing promo.
+	// P0 N3 (no infinite loop): all sub-orders are already CANCELLED -> close group FAILED without re-releasing promo,
+	// preserving terminal EXPIRED/REFUNDED payment_status instead of overwriting with CANCELLED.
 	if allCancelled {
-		if err := s.store.FailCheckoutGroup(compCtx, groupID, "CANCELLED"); err != nil {
+		cancelledOrders := make([]db.Order, 0, len(aggs))
+		for _, agg := range aggs {
+			cancelledOrders = append(cancelledOrders, agg.Order)
+		}
+		closeStatus := store.ResolveAllCancelledPaymentStatus(cancelledOrders)
+		if err := s.store.FailCheckoutGroup(compCtx, groupID, closeStatus); err != nil {
 			return fmt.Errorf("close already-cancelled checkout group %s: %w", groupID, err)
 		}
 		_ = s.store.ClearCheckoutGroupPendingStockConfirm(compCtx, groupID)
@@ -850,18 +857,14 @@ func (s *OrderService) finalizeRecoveredCheckoutGroup(ctx context.Context, group
 	qrURL := pay.GetQrUrl()
 	qrCode := pay.GetQrCode()
 
-	var liveTotalPayableVND int64
-	var allTotalPayableVND int64
 	var paymentExpiresAt *time.Time
 	hasPendingOrder := false
 	hasConfirmedOrder := false
 	for _, agg := range aggs {
-		allTotalPayableVND += agg.Order.TotalPayableVND
 		st := statemachine.StringToStatus(agg.Order.Status)
 		if st == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
 			continue
 		}
-		liveTotalPayableVND += agg.Order.TotalPayableVND
 		if agg.Order.PaymentExpiresAt != nil {
 			exp := *agg.Order.PaymentExpiresAt
 			if paymentExpiresAt == nil || exp.Before(*paymentExpiresAt) {
@@ -899,6 +902,11 @@ func (s *OrderService) finalizeRecoveredCheckoutGroup(ctx context.Context, group
 		finalAggs     []store.OrderAggregate
 		builtSnapshot bool
 	)
+	resetFinalState := func() {
+		finalGroup = db.CheckoutGroup{}
+		finalAggs = nil
+		builtSnapshot = false
+	}
 	if err := s.completeCheckoutGroupWithRetry(ctx, store.UpdateCheckoutPaymentParams{
 		CheckoutGroupID:  groupID,
 		PaymentID:        paymentID,
@@ -906,14 +914,9 @@ func (s *OrderService) finalizeRecoveredCheckoutGroup(ctx context.Context, group
 		QRURL:            qrURL,
 		QRCode:           qrCode,
 		PaymentExpiresAt: paymentExpiresAt,
-		TotalPayableVND:  liveTotalPayableVND,
 		BuildSnapshot:    s.makeBuyerCheckoutSnapshotBuilder(nil, &finalGroup, &finalAggs, &builtSnapshot),
-	}); err != nil {
+	}, resetFinalState); err != nil {
 		return fmt.Errorf("finalize incomplete checkout group %s: %w", groupID, err)
-	}
-
-	if builtSnapshot && allOrdersCancelled(finalAggs) && paymentID != "" && (pay.GetAmountVnd() > 0 || allTotalPayableVND > 0) {
-		s.cancelPaymentAfterAllCancelled(ctx, groupID, paymentID, finalAggs)
 	}
 
 	s.notifyOutbox()

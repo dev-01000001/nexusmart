@@ -7,7 +7,7 @@ import type {
   AdminQaModerationItem,
   AdminReviewModerationItem,
   ModerationStatus,
-} from "@/data";
+} from "@/data/admin";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconAlert, IconCheck, IconSearch } from "@/components";
 import { formatDateTimeVi, formatInt } from "@/lib/format";

@@ -10,6 +10,12 @@ export const DEFAULT_COD_MAX_REJECTED = 3;
 export const AMBIGUOUS_CHECKOUT_MESSAGE =
   "Đơn có thể đã được ghi nhận. Vui lòng xem Đơn hàng của tôi trước khi đặt lại.";
 
+export const CHECKOUT_FAILED_BUYER_MESSAGE =
+  "Lần đặt hàng trước không thành công (các đơn cũ đã bị hủy). Hệ thống đã tạo phiên đặt mới để bạn thử đặt lại, hoặc bạn có thể kiểm tra mục Đơn hàng của tôi.";
+
+export const SHOP_PICKUP_ADDRESS_REQUIRED_BUYER_MESSAGE =
+  "Gian hàng hiện chưa cấu hình đầy đủ địa chỉ lấy hàng nên chưa thể tạo đơn giao vận lúc này. Vui lòng liên hệ gian hàng hoặc chọn sản phẩm khác.";
+
 const AMBIGUOUS_CHECKOUT_ERROR_CODES = new Set<string>([
   "UNAVAILABLE",
   "DEADLINE_EXCEEDED",
@@ -77,7 +83,7 @@ export function translateVoucherReason(rawReason?: string): string {
   if (lower.includes("inactive")) {
     return "Mã ưu đãi hiện đang tạm ngưng.";
   }
-  if (lower.includes("category") || lower.includes("danh mục")) {
+  if (lower.includes("category") || lower.includes("categories") || lower.includes("danh mục")) {
     return "Mã ưu đãi không áp dụng cho danh mục sản phẩm đang chọn.";
   }
   if (
@@ -175,6 +181,14 @@ export function translateCheckoutError(err: unknown, ctx?: CheckoutErrorContext)
 
   if (err.code === "STOCK_VERSION_CONFLICT") {
     return "Tồn kho sản phẩm vừa thay đổi. Vui lòng thử đặt lại.";
+  }
+
+  if (err.code === "CHECKOUT_FAILED") {
+    return CHECKOUT_FAILED_BUYER_MESSAGE;
+  }
+
+  if (err.code === "SHOP_PICKUP_ADDRESS_REQUIRED") {
+    return SHOP_PICKUP_ADDRESS_REQUIRED_BUYER_MESSAGE;
   }
 
   if (err.code === "IDEMPOTENCY_KEY_CONFLICT") {

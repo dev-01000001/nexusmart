@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nexusmart/core/pkg/common/secretbox"
 	"github.com/nexusmart/core/pkg/common/telemetry"
 	"github.com/nexusmart/core/services/shipping/internal/address"
 	"github.com/nexusmart/core/services/shipping/internal/cache"
@@ -84,7 +85,7 @@ type ShippingService struct {
 	quoteCache    cache.QuoteCache
 	outboxWake    OutboxNotifier
 	shopPickup    ShopPickupResolver
-	tokenCipher   *TokenCipher
+	tokenCipher   *secretbox.Box
 	maxRedelivery int32
 	logger        *slog.Logger
 	nowFn         func() time.Time
@@ -102,7 +103,7 @@ func (s *ShippingService) SetShopPickupResolver(r ShopPickupResolver) {
 }
 
 // SetTokenCipher configures the AES-256-GCM cipher used to encrypt/decrypt carrier API tokens.
-func (s *ShippingService) SetTokenCipher(c *TokenCipher) {
+func (s *ShippingService) SetTokenCipher(c *secretbox.Box) {
 	s.tokenCipher = c
 }
 

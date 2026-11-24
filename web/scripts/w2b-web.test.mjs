@@ -888,9 +888,14 @@ describe("Wave 2b web features — unit tests", () => {
       cartSrc.includes("Mua giá thường"),
       "/gio-hang must render Mua giá thường opt-out button"
     );
+    const helpersSrc = readFileSync(resolve(WEB_SRC, "features/checkout/helpers.ts"), "utf8");
     assert.ok(
-      cartSrc.includes("isShopProgramItemApplied"),
-      "/gio-hang must check applied_shop_program_item_ids"
+      helpersSrc.includes("isShopProgramItemApplied"),
+      "checkout helpers must check applied_shop_program_item_ids via isShopProgramItemApplied"
+    );
+    assert.ok(
+      cartSrc.includes("isShopProgramItemApplied") || cartSrc.includes("resolveDisplayedLinePricing"),
+      "/gio-hang must check applied_shop_program_item_ids (directly or via resolveDisplayedLinePricing)"
     );
 
     const checkoutSrc = readFileSync(
@@ -902,8 +907,9 @@ describe("Wave 2b web features — unit tests", () => {
       "CheckoutClient must render Mua giá thường opt-out button"
     );
     assert.ok(
-      checkoutSrc.includes("isShopProgramItemApplied"),
-      "CheckoutClient must check applied_shop_program_item_ids"
+      checkoutSrc.includes("isShopProgramItemApplied") ||
+        checkoutSrc.includes("resolveDisplayedLinePricing"),
+      "CheckoutClient must check applied_shop_program_item_ids (directly or via resolveDisplayedLinePricing)"
     );
   });
 
@@ -1947,7 +1953,10 @@ describe("Wave 2b web features — unit tests", () => {
       resolve(WEB_SRC, "app/(shop)/thanh-toan/CheckoutClient.tsx"),
       "utf8"
     );
-    assert.ok(checkoutSrc.includes("Vẫn đặt đơn mới"));
+    assert.ok(
+      checkoutSrc.includes("Đặt đơn mới") || checkoutSrc.includes("Vẫn đặt đơn mới"),
+      "CheckoutClient must show explicit recovery button on key uncertainty / conflict"
+    );
     assert.equal(
       /IDEMPOTENCY_KEY_CONFLICT[\s\S]{0,120}rotateCheckoutIdempotencyKey/.test(checkoutSrc),
       false,

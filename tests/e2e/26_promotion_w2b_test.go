@@ -62,10 +62,14 @@ func prmW2bI64Ptr(v int64) *int64   { return &v }
 // -> resume -> works again -> soft-delete -> rejected everywhere & RBAC enforced.
 func TestE2E_PromotionW2B_VoucherLifecycle(t *testing.T) {
 	env := getEnv()
-	_, seller1, seller2 := env.ensureBaseMarketplace(t)
+	cat, seller1, seller2 := env.ensureBaseMarketplace(t)
 	buyer1 := env.registerVerifyAndLogin(t, "buyer-prm2b-vlife1")
 	buyer2 := env.registerVerifyAndLogin(t, "buyer-prm2b-vlife2")
 	client := prmW2bDialPromotion(t, env)
+
+	// Approved real SKU priced at 150,000 VND so PreviewDiscounts resolves authoritative price (D4)
+	// and preserves exact 150,000 subtotal / voucher expectations.
+	_, skuLife := env.createApprovedProduct(t, seller1, cat.ID, "W2B Voucher Lifecycle SKU", 150000, 20, 300)
 
 	s1Ctx, s1Cancel := prmW2bBearerCtx(seller1.AccessToken)
 	defer s1Cancel()
@@ -75,6 +79,8 @@ func TestE2E_PromotionW2B_VoucherLifecycle(t *testing.T) {
 	defer b1Cancel()
 	b2Ctx, b2Cancel := prmW2bBearerCtx(buyer2.AccessToken)
 	defer b2Cancel()
+	ordCtx, ordCancel := prmW2bBearerCtx(promoOrderServiceToken())
+	defer ordCancel()
 
 	now := time.Now().UTC()
 	code := env.uniqueCode("W2BLIFE")
@@ -107,19 +113,31 @@ func TestE2E_PromotionW2B_VoucherLifecycle(t *testing.T) {
 		t.Fatalf("SaveVoucher: %v", err)
 	}
 	use1OrderID := "e2e-w2b-vlife-use1-" + uuid.NewString()
-	use1, err := client.ReservePromotion(b1Ctx, &promotionv1.ReservePromotionRequest{
+	use1, err := client.ReservePromotion(ordCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:        use1OrderID,
+		UserId:         buyer1.UserID,
 		ShopVoucherIds: map[string]string{seller1.ShopID: vid},
-		ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: seller1.ShopID, SubtotalVnd: 150000, ShippingFeeVnd: 20000}},
+		ShopItems: []*promotionv1.ShopDiscountInput{{
+			ShopId:         seller1.ShopID,
+			SubtotalVnd:    150000,
+			ShippingFeeVnd: 20000,
+			Items:          []*promotionv1.DiscountLineItem{{SkuId: skuLife.ID, Quantity: 1, UnitPriceVnd: 150000}},
+		}},
 	})
 	if err != nil || !use1.GetReserved() || use1.GetBreakdown().GetTotalShopVoucherDiscountVnd() != 20000 {
 		t.Fatalf("ReservePromotion (use 1) unexpected: resp=%+v err=%v", use1, err)
 	}
-	// Cross-user ReservePromotion replay (same order_id as buyer2) and cross-user UserId spoofing -> PermissionDenied.
-	if _, err := client.ReservePromotion(b2Ctx, &promotionv1.ReservePromotionRequest{
+	// Cross-user ReservePromotion replay (same order_id as buyer2) and direct buyer ReservePromotion -> PermissionDenied.
+	if _, err := client.ReservePromotion(ordCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:        use1OrderID,
+		UserId:         buyer2.UserID,
 		ShopVoucherIds: map[string]string{seller1.ShopID: vid},
-		ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: seller1.ShopID, SubtotalVnd: 150000, ShippingFeeVnd: 20000}},
+		ShopItems: []*promotionv1.ShopDiscountInput{{
+			ShopId:         seller1.ShopID,
+			SubtotalVnd:    150000,
+			ShippingFeeVnd: 20000,
+			Items:          []*promotionv1.DiscountLineItem{{SkuId: skuLife.ID, Quantity: 1, UnitPriceVnd: 150000}},
+		}},
 	}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("cross-user ReservePromotion replay: want PermissionDenied, got %v", err)
 	}
@@ -169,15 +187,25 @@ func TestE2E_PromotionW2B_VoucherLifecycle(t *testing.T) {
 	}
 	prevPaused, err := client.PreviewDiscounts(b1Ctx, &promotionv1.PreviewDiscountsRequest{
 		ShopVoucherIds: map[string]string{seller1.ShopID: vid},
-		ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: seller1.ShopID, SubtotalVnd: 150000, ShippingFeeVnd: 20000}},
+		ShopItems: []*promotionv1.ShopDiscountInput{{
+			ShopId:         seller1.ShopID,
+			ShippingFeeVnd: 20000,
+			Items:          []*promotionv1.DiscountLineItem{{SkuId: skuLife.ID, Quantity: 1}},
+		}},
 	})
-	if err != nil || prevPaused.GetBreakdown().GetTotalShopVoucherDiscountVnd() != 0 {
-		t.Fatalf("PreviewDiscounts while PAUSED should give 0 discount, got %+v err=%v", prevPaused, err)
+	if err != nil || prevPaused.GetBreakdown().GetTotalSubtotalVnd() != 150000 || prevPaused.GetBreakdown().GetTotalShopVoucherDiscountVnd() != 0 {
+		t.Fatalf("PreviewDiscounts while PAUSED should give subtotal=150000 and 0 discount, got %+v err=%v", prevPaused, err)
 	}
-	if _, err := client.ReservePromotion(b1Ctx, &promotionv1.ReservePromotionRequest{
+	if _, err := client.ReservePromotion(ordCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:        "e2e-w2b-vlife-paused-" + uuid.NewString(),
+		UserId:         buyer1.UserID,
 		ShopVoucherIds: map[string]string{seller1.ShopID: vid},
-		ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: seller1.ShopID, SubtotalVnd: 150000, ShippingFeeVnd: 20000}},
+		ShopItems: []*promotionv1.ShopDiscountInput{{
+			ShopId:         seller1.ShopID,
+			SubtotalVnd:    150000,
+			ShippingFeeVnd: 20000,
+			Items:          []*promotionv1.DiscountLineItem{{SkuId: skuLife.ID, Quantity: 1, UnitPriceVnd: 150000}},
+		}},
 	}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("ReservePromotion while PAUSED: want FailedPrecondition, got %v", err)
 	}
@@ -206,10 +234,16 @@ func TestE2E_PromotionW2B_VoucherLifecycle(t *testing.T) {
 	if err != nil || resumed.GetVoucher().GetStatus() != promotionv1.VoucherStatus_VOUCHER_STATUS_ACTIVE {
 		t.Fatalf("SetVoucherStatus(ACTIVE): resp=%+v err=%v", resumed, err)
 	}
-	use2, err := client.ReservePromotion(b2Ctx, &promotionv1.ReservePromotionRequest{
+	use2, err := client.ReservePromotion(ordCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:        "e2e-w2b-vlife-use2-" + uuid.NewString(),
+		UserId:         buyer2.UserID,
 		ShopVoucherIds: map[string]string{seller1.ShopID: vid},
-		ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: seller1.ShopID, SubtotalVnd: 150000, ShippingFeeVnd: 20000}},
+		ShopItems: []*promotionv1.ShopDiscountInput{{
+			ShopId:         seller1.ShopID,
+			SubtotalVnd:    150000,
+			ShippingFeeVnd: 20000,
+			Items:          []*promotionv1.DiscountLineItem{{SkuId: skuLife.ID, Quantity: 1, UnitPriceVnd: 150000}},
+		}},
 	})
 	if err != nil || !use2.GetReserved() {
 		t.Fatalf("ReservePromotion after resume: resp=%+v err=%v", use2, err)
@@ -225,10 +259,16 @@ func TestE2E_PromotionW2B_VoucherLifecycle(t *testing.T) {
 	}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("reactivating DELETED voucher: want FailedPrecondition, got %v", err)
 	}
-	if _, err := client.ReservePromotion(b2Ctx, &promotionv1.ReservePromotionRequest{
+	if _, err := client.ReservePromotion(ordCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:        "e2e-w2b-vlife-del-" + uuid.NewString(),
+		UserId:         buyer2.UserID,
 		ShopVoucherIds: map[string]string{seller1.ShopID: vid},
-		ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: seller1.ShopID, SubtotalVnd: 150000, ShippingFeeVnd: 20000}},
+		ShopItems: []*promotionv1.ShopDiscountInput{{
+			ShopId:         seller1.ShopID,
+			SubtotalVnd:    150000,
+			ShippingFeeVnd: 20000,
+			Items:          []*promotionv1.DiscountLineItem{{SkuId: skuLife.ID, Quantity: 1, UnitPriceVnd: 150000}},
+		}},
 	}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("ReservePromotion on DELETED voucher: want FailedPrecondition, got %v", err)
 	}
@@ -306,8 +346,11 @@ func TestE2E_PromotionW2B_CategoryScopedPlatformVoucher(t *testing.T) {
 	}
 
 	// Reserve with ONLY unrelated-category item -> rejected!
-	if _, err := client.ReservePromotion(bCtx, &promotionv1.ReservePromotionRequest{
+	ordCtx, ordCancel := prmW2bBearerCtx(promoOrderServiceToken())
+	defer ordCancel()
+	if _, err := client.ReservePromotion(ordCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:           "e2e-w2b-cat-reject-" + uuid.NewString(),
+		UserId:            buyer.UserID,
 		PlatformVoucherId: vid,
 		ShopItems: []*promotionv1.ShopDiscountInput{
 			{
@@ -338,8 +381,8 @@ func TestE2E_PromotionW2B_FlashSaleValidationRejections(t *testing.T) {
 	defer s1Cancel()
 	s2Ctx, s2Cancel := prmW2bBearerCtx(seller2.AccessToken)
 	defer s2Cancel()
-	bCtx, bCancel := prmW2bBearerCtx(buyer.AccessToken)
-	defer bCancel()
+	ordCtx, ordCancel := prmW2bBearerCtx(promoOrderServiceToken())
+	defer ordCancel()
 
 	now := time.Now().UTC()
 	fs1, err := client.CreateFlashSale(aCtx, &promotionv1.CreateFlashSaleRequest{
@@ -419,10 +462,20 @@ func TestE2E_PromotionW2B_FlashSaleValidationRejections(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ApproveFlashSaleItem: %v", err)
 	}
-	if _, err := client.ReservePromotion(bCtx, &promotionv1.ReservePromotionRequest{
+	if _, err := client.ReservePromotion(ordCtx, &promotionv1.ReservePromotionRequest{
 		OrderId: "e2e-w2b-upc-flash-" + uuid.NewString(),
+		UserId:  buyer.UserID,
 		FlashSaleItems: []*promotionv1.FlashSaleReservationItem{
 			{FlashSaleItemId: reg.GetItem().GetId(), SkuId: sku1.ID, Quantity: 1, ShopId: seller1.ShopID},
+		},
+		ShopItems: []*promotionv1.ShopDiscountInput{
+			{
+				ShopId:      seller1.ShopID,
+				SubtotalVnd: 200000,
+				Items: []*promotionv1.DiscountLineItem{
+					{SkuId: sku1.ID, Quantity: 1, UnitPriceVnd: 200000, FlashSaleItemId: reg.GetItem().GetId()},
+				},
+			},
 		},
 	}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("ReservePromotion upcoming flash slot: want FailedPrecondition, got %v", err)
@@ -576,9 +629,12 @@ func TestE2E_PromotionW2B_ShopDiscountProgram_PreviewAndFlashWins(t *testing.T) 
 	}
 
 	// 4. Reserve & ReleasePromotionShop -> releases flash=1 and shop_program=1 cleanly
+	ordCtx, ordCancel := prmW2bBearerCtx(promoOrderServiceToken())
+	defer ordCancel()
 	groupID := "e2e-w2b-prog-res-" + uuid.NewString()
-	res, err := client.ReservePromotion(bCtx, &promotionv1.ReservePromotionRequest{
+	res, err := client.ReservePromotion(ordCtx, &promotionv1.ReservePromotionRequest{
 		OrderId: groupID,
+		UserId:  buyer.UserID,
 		ShopItems: []*promotionv1.ShopDiscountInput{
 			{
 				ShopId:         seller1.ShopID,
@@ -620,8 +676,9 @@ func TestE2E_PromotionW2B_ShopDiscountProgram_PreviewAndFlashWins(t *testing.T) 
 			},
 		},
 	}
-	resExhaust, err := client.ReservePromotion(bCtx, &promotionv1.ReservePromotionRequest{
+	resExhaust, err := client.ReservePromotion(ordCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:   exhaustOrderID,
+		UserId:    buyer.UserID,
 		ShopItems: exhaustShopItems,
 		ShopDiscountProgramItems: []*promotionv1.ShopDiscountProgramReservationItem{
 			{ShopDiscountProgramItemId: itemB.GetId(), SkuId: skuB.ID, Quantity: 2, ShopId: seller1.ShopID},
@@ -657,8 +714,9 @@ func TestE2E_PromotionW2B_ShopDiscountProgram_PreviewAndFlashWins(t *testing.T) 
 		t.Fatalf("PreviewDiscounts over limit unexpected: %+v", prevOver.GetBreakdown())
 	}
 	overOrderID := "e2e-w2b-prog-over-" + uuid.NewString()
-	resOver, err := client.ReservePromotion(bCtx, &promotionv1.ReservePromotionRequest{
+	resOver, err := client.ReservePromotion(ordCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:   overOrderID,
+		UserId:    buyer.UserID,
 		ShopItems: overLimitShopItems,
 		ShopDiscountProgramItems: []*promotionv1.ShopDiscountProgramReservationItem{
 			{ShopDiscountProgramItemId: itemB.GetId(), SkuId: skuB.ID, Quantity: 1, ShopId: seller1.ShopID},
@@ -682,8 +740,9 @@ func TestE2E_PromotionW2B_ShopDiscountProgram_PreviewAndFlashWins(t *testing.T) 
 	if err != nil || ended.GetProgram().GetStatus() != promotionv1.ShopDiscountProgramStatus_SHOP_DISCOUNT_PROGRAM_STATUS_ENDED {
 		t.Fatalf("EndShopDiscountProgram unexpected: resp=%+v err=%v", ended, err)
 	}
-	replayExhaust, err := client.ReservePromotion(bCtx, &promotionv1.ReservePromotionRequest{
+	replayExhaust, err := client.ReservePromotion(ordCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:   exhaustOrderID,
+		UserId:    buyer.UserID,
 		ShopItems: exhaustShopItems,
 	})
 	if err != nil || !replayExhaust.GetAlreadyReserved() ||

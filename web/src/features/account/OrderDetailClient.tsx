@@ -999,7 +999,11 @@ export function OrderDetailClient({
                     <p>
                       Trạng thái đơn hàng: <strong>{statusMeta.label}</strong>
                     </p>
-                    <p>{order.cancel_reason || statusMeta.description}</p>
+                    <p>
+                      {order.cancel_reason
+                        ? localizeTimelineNote(order.cancel_reason)
+                        : statusMeta.description}
+                    </p>
                   </div>
                 )}
 

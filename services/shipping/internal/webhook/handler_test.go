@@ -166,10 +166,6 @@ func (s *stubRepo) SeedCarrierTokenIfEmpty(_ context.Context, _ string, _ []byte
 func (s *stubRepo) ListFallbackRates(_ context.Context, _ string) ([]store.FallbackRate, error) {
 	return nil, nil
 }
-func (s *stubRepo) FetchPendingOutbox(_ context.Context, _ int) ([]store.OutboxEvent, error) {
-	return nil, nil
-}
-func (s *stubRepo) MarkOutboxPublished(_ context.Context, _ string) error { return nil }
 func (s *stubRepo) IsEventProcessed(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }

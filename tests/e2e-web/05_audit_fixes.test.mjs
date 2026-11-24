@@ -371,42 +371,102 @@ class HeadlessBrowser {
 }
 
 async function submitLoginFormInBrowser(browser, { email, password, query = "" }) {
-  await ensureRateBudget(15, { label: "5c-login" });
-  await browser.clearCookies();
-  await browser.goto(`/dang-nhap${query}`);
-  await browser.waitFor(`Boolean(document.querySelector('#login-email'))`);
+  const startMs = Date.now();
+  const perAttemptTimeoutMs = 15_000;
 
-  const searchAfterGoto = await browser.eval(`window.location.search`);
-  assert.equal(
-    searchAfterGoto,
-    query,
-    `login page location.search after goto must equal ${JSON.stringify(query)}, got ${JSON.stringify(searchAfterGoto)}`
-  );
+  while (true) {
+    await ensureRateBudget(15, { label: "5c-login" });
+    await browser.clearCookies();
+    await browser.goto(`/dang-nhap${query}`);
+    await browser.waitFor(`Boolean(document.querySelector('#login-email'))`);
 
-  const setOk = await browser.eval(`(() => {
-    const emailEl = document.querySelector('#login-email');
-    const passEl = document.querySelector('#login-password');
-    const btn = document.querySelector('form button[type="submit"]');
-    if (!emailEl || !passEl || !btn) return false;
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    setter.call(emailEl, ${JSON.stringify(email)});
-    emailEl.dispatchEvent(new Event('input', { bubbles: true }));
-    setter.call(passEl, ${JSON.stringify(password)});
-    passEl.dispatchEvent(new Event('input', { bubbles: true }));
-    return true;
-  })()`);
-  assert.equal(setOk, true, "login form inputs must be present");
+    const searchAfterGoto = await browser.eval(`window.location.search`);
+    assert.equal(
+      searchAfterGoto,
+      query,
+      `login page location.search after goto must equal ${JSON.stringify(query)}, got ${JSON.stringify(searchAfterGoto)}`
+    );
 
-  const searchBeforeSubmit = await browser.eval(`window.location.search`);
-  assert.equal(
-    searchBeforeSubmit,
-    query,
-    `login page location.search before submit must equal ${JSON.stringify(query)}, got ${JSON.stringify(searchBeforeSubmit)}`
-  );
+    const setOk = await browser.eval(`(() => {
+      const emailEl = document.querySelector('#login-email');
+      const passEl = document.querySelector('#login-password');
+      const btn = document.querySelector('form button[type="submit"]');
+      if (!emailEl || !passEl || !btn) return false;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(emailEl, ${JSON.stringify(email)});
+      emailEl.dispatchEvent(new Event('input', { bubbles: true }));
+      setter.call(passEl, ${JSON.stringify(password)});
+      passEl.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`);
+    assert.equal(setOk, true, "login form inputs must be present");
 
-  await browser.eval(`document.querySelector('form button[type="submit"]').click()`);
-  await browser.waitFor(`window.location.pathname !== "/dang-nhap"`, 15_000);
-  return browser.eval(`window.location.pathname + window.location.search`);
+    const searchBeforeSubmit = await browser.eval(`window.location.search`);
+    assert.equal(
+      searchBeforeSubmit,
+      query,
+      `login page location.search before submit must equal ${JSON.stringify(query)}, got ${JSON.stringify(searchBeforeSubmit)}`
+    );
+
+    browser.lastRateLimit = null;
+    await browser.eval(`document.querySelector('form button[type="submit"]').click()`);
+
+    const attemptDeadline = Date.now() + perAttemptTimeoutMs;
+    let rateLimited = false;
+    let checkedTextAt = 0;
+
+    while (Date.now() < attemptDeadline) {
+      const leftLogin = await browser.eval(`window.location.pathname !== "/dang-nhap"`);
+      if (leftLogin) {
+        return browser.eval(`window.location.pathname + window.location.search`);
+      }
+      if (browser.lastRateLimit) {
+        rateLimited = true;
+        break;
+      }
+      if (Date.now() - checkedTextAt >= 400) {
+        checkedTextAt = Date.now();
+        const hasText = await browser
+          .eval(`Boolean(document.body?.innerText?.includes(${JSON.stringify(BROWSER_RATE_LIMIT_TEXT)}))`)
+          .catch(() => false);
+        if (hasText) {
+          rateLimited = true;
+          break;
+        }
+      }
+      await new Promise((r) => setTimeout(r, 120));
+    }
+
+    if (!rateLimited) {
+      const hasText = await browser
+        .eval(`Boolean(document.body?.innerText?.includes(${JSON.stringify(BROWSER_RATE_LIMIT_TEXT)}))`)
+        .catch(() => false);
+      rateLimited = Boolean(browser.lastRateLimit) || hasText;
+    }
+
+    if (!rateLimited) {
+      const href = await browser.eval("window.location.href").catch(() => "unknown");
+      throw new Error(
+        `Timed out after ${Date.now() - startMs}ms waiting for (window.location.pathname !== "/dang-nhap") at ${href}`
+      );
+    }
+
+    const rateLimitHit = browser.lastRateLimit;
+    const waitMs = (rateLimitHit?.retryAfterMs ?? BROWSER_RATE_LIMIT_DEFAULT_WAIT_MS) + 250;
+    const elapsedMs = Date.now() - startMs;
+    if (elapsedMs + waitMs > BROWSER_RATE_LIMIT_MAX_TOTAL_MS) {
+      const href = await browser.eval("window.location.href").catch(() => "unknown");
+      throw new Error(
+        `Timed out after ${elapsedMs}ms waiting for /dang-nhap login retry (429 wait ${Math.ceil(waitMs / 1000)}s exceeds ceiling) at ${href}`
+      );
+    }
+
+    const reason = rateLimitHit ? "HTTP 429" : `text "${BROWSER_RATE_LIMIT_TEXT}"`;
+    console.log(
+      `[429] browser /dang-nhap login submit rate limited (${reason}); waiting ${Math.ceil(waitMs / 1000)}s before refilling and resubmitting (elapsed ${Math.ceil((elapsedMs + waitMs) / 1000)}s/${Math.ceil(BROWSER_RATE_LIMIT_MAX_TOTAL_MS / 1000)}s)`
+    );
+    await new Promise((r) => setTimeout(r, waitMs));
+  }
 }
 
 async function fetchPageWithRateLimitRetry(client, reqPath) {

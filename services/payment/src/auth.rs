@@ -33,6 +33,7 @@ pub struct Caller {
     pub user_id: String,
     pub shop_id: String,
     pub is_service: bool,
+    pub exp: Option<i64>,
 }
 
 impl Caller {
@@ -216,6 +217,7 @@ fn to_caller(c: Claims, is_service: bool) -> crate::error::Result<Caller> {
         user_id: c.sub.trim().to_string(),
         shop_id: c.shop_id.trim().to_string(),
         is_service,
+        exp: Some(c.exp),
     })
 }
 
@@ -305,9 +307,10 @@ mod tests {
 
     #[test]
     fn user_jwt_wins_over_metadata() {
+        let exp = exp_in(60);
         let tok = sign_hs256(
             USER_KEY,
-            json!({"sub":"seller-a","role":"seller","shop_id":"shop-a","exp":exp_in(60)}),
+            json!({"sub":"seller-a","role":"seller","shop_id":"shop-a","exp":exp}),
         );
         let m = md(&[
             bearer(tok),
@@ -322,6 +325,7 @@ mod tests {
                 user_id: "seller-a".into(),
                 shop_id: "shop-a".into(),
                 is_service: false,
+                exp: Some(exp),
             }
         );
     }

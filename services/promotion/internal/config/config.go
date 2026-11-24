@@ -21,6 +21,7 @@ type Config struct {
 	ProductGRPCAddr           string
 	VoucherExpiryNoticeHours  int
 	VoucherExpiryScanInterval time.Duration
+	RedisReconcileInterval    time.Duration
 	JWTSecret                 string
 	OTLPEndpoint              string
 	OTLPInsecure              bool
@@ -37,6 +38,10 @@ func Load() Config {
 	if scanInterval <= 0 {
 		scanInterval = time.Minute
 	}
+	reconcileInterval := env.EnvDuration("PROMOTION_REDIS_RECONCILE_INTERVAL", 5*time.Second)
+	if reconcileInterval <= 0 {
+		reconcileInterval = 5 * time.Second
+	}
 	return Config{
 		ServiceName:               env.EnvString("SERVICE_NAME", "promotion"),
 		GRPCPort:                  env.EnvString("GRPC_PORT", "50054"),
@@ -49,6 +54,7 @@ func Load() Config {
 		ProductGRPCAddr:           env.EnvString("PRODUCT_GRPC_ADDR", "localhost:50052"),
 		VoucherExpiryNoticeHours:  noticeHours,
 		VoucherExpiryScanInterval: scanInterval,
+		RedisReconcileInterval:    reconcileInterval,
 		JWTSecret:                 env.EnvString("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me"),
 		OTLPEndpoint:              env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		OTLPInsecure:              env.EnvBool("OTEL_EXPORTER_OTLP_INSECURE", true),

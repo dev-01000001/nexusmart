@@ -67,6 +67,9 @@ func newPGTestServer(t *testing.T, pool *pgxpool.Pool, opts Options) (*Server, *
 	if err != nil {
 		t.Fatalf("new auth manager: %v", err)
 	}
+	if opts.BankAccountBox == nil {
+		opts.BankAccountBox = newTestBankAccountBox(t)
+	}
 	log := logger.New("user-pg-test", logger.WithWriter(io.Discard))
 	srv := NewServer(pgStore, sec, hasher, authMgr, pub, log, opts)
 	return srv, pgStore, pub
@@ -77,17 +80,12 @@ func newPGTestServer(t *testing.T, pool *pgxpool.Pool, opts Options) (*Server, *
 // (admin vs seller + expired PENDING_OTP filtering), MarkShopBankAccountPublishFailed with cancelled ctx,
 // SupersedePendingAdminReviewShopBankAccounts, and partial unique indexes.
 func TestPGStore_ShopBankAccountSQLAndMigrations(t *testing.T) {
-	dsn := strings.TrimSpace(os.Getenv("TEST_USER_DB_URL"))
-	if dsn == "" {
+	if strings.TrimSpace(os.Getenv("TEST_USER_DB_URL")) == "" {
 		t.Skip("set TEST_USER_DB_URL to run real Postgres integration tests")
 	}
 
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
-	}
-	defer pool.Close()
+	pool, _ := openTempUserPGPool(t)
 
 	// 1. Seed pre-0005 data (after 0001..0004), then run 0005 and 0006 via db.RunMigrations.
 	t.Run("Migrations0005And0006OnPopulatedDB", func(t *testing.T) {

@@ -597,3 +597,245 @@ test("W2b seedDemoOrders: creates multi-state orders via API + signed webhooks a
   assert.equal(run2.existing, 6);
   assert.equal(ordersById.size, 6);
 });
+
+test("W3A D1: listAllAdminCategories queries /api/v1/admin/categories with admin JWT so seed stays idempotent when public /categories omits commission_rate_bps", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { resolve, dirname } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+
+  const seedSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "seed.mjs"), "utf8");
+  assert.equal(
+    /["'`]\/api\/v1\/categories["'`]/.test(seedSource),
+    false,
+    "seed.mjs must NOT fetch public /api/v1/categories (which omits commission_rate_bps under D1)"
+  );
+
+  const requestedPaths = [];
+  const server = http.createServer((req, res) => {
+    const parsed = new URL(req.url, "http://127.0.0.1");
+    requestedPaths.push(parsed.pathname);
+
+    if (parsed.pathname === "/api/v1/categories") {
+      // D1: public /categories omits commission_rate_bps completely.
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          categories: [{ id: "cat-1", name: "Áo thun", slug: "ao-thun", parent_id: "", sort_order: 1 }],
+        })
+      );
+      return;
+    }
+
+    if (parsed.pathname === "/api/v1/admin/categories") {
+      if (req.headers.authorization !== "Bearer admin-jwt-d1") {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { code: "UNAUTHENTICATED" } }));
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          categories: [
+            { id: "cat-1", name: "Áo thun", slug: "ao-thun", parent_id: "", commission_rate_bps: 500, sort_order: 1 },
+            { id: "cat-2", name: "Áo polo", slug: "ao-polo", parent_id: "", commission_rate_bps: 550, sort_order: 2 },
+          ],
+        })
+      );
+      return;
+    }
+
+    res.writeHead(404);
+    res.end();
+  });
+
+  await new Promise((resolvePromise, reject) => {
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", resolvePromise);
+  });
+
+  try {
+    const { port } = server.address();
+    process.env.SEED_GATEWAY_URL = `http://127.0.0.1:${port}`;
+    const { listAllAdminCategories, buildCategoryUpdatePatch } = await import(`./seed.mjs?d1=${Date.now()}`);
+    assert.equal(typeof listAllAdminCategories, "function");
+
+    const cats = await listAllAdminCategories("admin-jwt-d1");
+    assert.deepEqual(requestedPaths, ["/api/v1/admin/categories"]);
+    assert.equal(cats.length, 2);
+    assert.equal(cats[0].commission_rate_bps, 500);
+    assert.equal(cats[1].commission_rate_bps, 550);
+
+    // Matching commission_rate_bps must yield null patch -> zero spurious PUTs on re-seed!
+    assert.equal(buildCategoryUpdatePatch(cats[0], { commission_rate_bps: 500 }), null);
+    assert.equal(buildCategoryUpdatePatch(cats[1], { commission_rate_bps: 550 }), null);
+  } finally {
+    delete process.env.SEED_GATEWAY_URL;
+    await new Promise((resolvePromise) => server.close(resolvePromise));
+  }
+});
+
+test("W3A Round2 P1-1: buildCategorySeedPlan rejects unknown shops without 0.05 fallback and seedCategories re-run issues zero PUTs", async () => {
+  const { buildCategorySeedPlan, seedCategories } = await import(`./seed.mjs?p11=${Date.now()}`);
+  const { CATEGORIES, PRODUCTS } = await import("../../web/src/data/products.ts");
+  const { SHOPS } = await import("../../web/src/data/shops.ts");
+
+  assert.equal(typeof seedCategories, "function");
+
+  // Unknown shop must throw explicitly — NEVER silently fall back to 0.05 (500 bps).
+  assert.throws(
+    () =>
+      buildCategorySeedPlan(
+        CATEGORIES,
+        PRODUCTS,
+        [...SHOPS, { id: "shop-unknown-x", name: "Unknown Shop" }]
+      ),
+    /shop-unknown-x/,
+    "buildCategorySeedPlan must throw a clear error when a shop is missing from SEED_SHOP_COMMISSION_RATE"
+  );
+
+  // Also reject a product pointing at a shop missing from the shop list/table.
+  assert.throws(
+    () =>
+      buildCategorySeedPlan(
+        [{ slug: "ao-thun", name: "Áo thun", subCategories: [] }],
+        [{ id: "prod-x", categorySlug: "ao-thun", shopId: "shop-ghost" }],
+        SHOPS
+      ),
+    /shop-ghost/,
+    "buildCategorySeedPlan must throw a clear error when a product references an unknown shop"
+  );
+
+  // Full 2-pass idempotency check against mock admin category API:
+  // Run 1 creates 6 roots + 15 children (including 550 bps for shop-da-nang categories),
+  // Run 2 reads /api/v1/admin/categories and issues ZERO POSTs and ZERO PUTs.
+  const stored = [];
+  let putCalls = 0;
+  let postCalls = 0;
+  let getAdminCalls = 0;
+
+  const mockApi = async (method, path, { token, body } = {}) => {
+    assert.equal(token, "admin-jwt-p11");
+    if (method === "GET" && path === "/api/v1/admin/categories") {
+      getAdminCalls += 1;
+      return { status: 200, ok: true, data: { categories: stored.map((c) => ({ ...c })) } };
+    }
+    if (method === "POST" && path === "/api/v1/admin/categories") {
+      postCalls += 1;
+      const created = {
+        id: `cat-${stored.length + 1}`,
+        name: body.name,
+        slug: body.slug,
+        parent_id: body.parent_id || "",
+        commission_rate_bps: body.commission_rate_bps,
+        sort_order: body.sort_order,
+      };
+      stored.push(created);
+      return { status: 201, ok: true, data: { category: { ...created } } };
+    }
+    if (method === "PUT" && path.startsWith("/api/v1/admin/categories/")) {
+      putCalls += 1;
+      const id = path.split("/").pop();
+      const target = stored.find((c) => c.id === id);
+      assert.ok(target, `PUT target category ${id} not found`);
+      Object.assign(target, body);
+      return { status: 200, ok: true, data: { category: { ...target } } };
+    }
+    throw new Error(`unexpected API call: ${method} ${path}`);
+  };
+
+  const run1 = await seedCategories({
+    adminToken: "admin-jwt-p11",
+    categories: CATEGORIES,
+    products: PRODUCTS,
+    shops: SHOPS,
+    apiFn: mockApi,
+  });
+  assert.equal(run1.categories.created, 6);
+  assert.equal(run1.childCategories.created, 15);
+  assert.equal(run1.categories.updated, 0);
+  assert.equal(run1.childCategories.updated, 0);
+  assert.equal(putCalls, 0);
+  assert.equal(postCalls, 21);
+
+  const bySlug = new Map(stored.map((c) => [c.slug, c]));
+  assert.equal(bySlug.get("ao-polo")?.commission_rate_bps, 550);
+  assert.equal(bySlug.get("quan-short")?.commission_rate_bps, 550);
+  assert.equal(bySlug.get("do-lot")?.commission_rate_bps, 550);
+  assert.equal(bySlug.get("polo-pique")?.commission_rate_bps, 550);
+  assert.equal(bySlug.get("short-linen")?.commission_rate_bps, 550);
+  assert.equal(bySlug.get("brief-tre")?.commission_rate_bps, 550);
+  assert.equal(bySlug.get("ao-thun")?.commission_rate_bps, 500);
+
+  // Run 2 on already-seeded DB: ZERO POSTs, ZERO PUTs.
+  postCalls = 0;
+  putCalls = 0;
+  const run2 = await seedCategories({
+    adminToken: "admin-jwt-p11",
+    categories: CATEGORIES,
+    products: PRODUCTS,
+    shops: SHOPS,
+    apiFn: mockApi,
+  });
+  assert.ok(getAdminCalls >= 2);
+  assert.equal(run2.categories.created, 0);
+  assert.equal(run2.categories.existing, 6);
+  assert.equal(run2.categories.updated, 0);
+  assert.equal(run2.childCategories.created, 0);
+  assert.equal(run2.childCategories.existing, 15);
+  assert.equal(run2.childCategories.updated, 0);
+  assert.equal(postCalls, 0, "re-running seed on seeded DB must issue zero POSTs");
+  assert.equal(putCalls, 0, "re-running seed on seeded DB must issue zero PUTs");
+
+  // Round 4 [P3]: non-number commissionRate ("" / false) on unknown shop must throw, not coerce to 0 bps.
+  for (const badVal of ["", false]) {
+    assert.throws(
+      () =>
+        buildCategorySeedPlan(
+          CATEGORIES,
+          PRODUCTS,
+          [...SHOPS, { id: "shop-bad-rate", commissionRate: badVal }]
+        ),
+      /shop-bad-rate/,
+      `commissionRate=${JSON.stringify(badVal)} must not coerce to 0 bps`
+    );
+  }
+
+  // Round 4 [P3]: 409 conflict on POST /admin/categories must run buildCategoryUpdatePatch + PUT on refetched row.
+  const raceStored = [
+    { id: "cat-root-1", name: "Áo polo", slug: "ao-polo", parent_id: "", commission_rate_bps: 400, sort_order: 1 },
+    { id: "cat-child-1", name: "Polo Pique", slug: "polo-pique", parent_id: "", commission_rate_bps: 400, sort_order: 101 },
+  ];
+  let getCount = 0;
+  const racePuts = [];
+  const raceApi = async (method, path, { body } = {}) => {
+    if (method === "GET" && path === "/api/v1/admin/categories") {
+      getCount += 1;
+      // Initial list returns empty (simulating concurrent seed), subsequent refetches return drifted rows.
+      return { status: 200, ok: true, data: { categories: getCount === 1 ? [] : raceStored.map((c) => ({ ...c })) } };
+    }
+    if (method === "POST" && path === "/api/v1/admin/categories") {
+      return { status: 409, ok: false, data: { error: { code: "ALREADY_EXISTS" } } };
+    }
+    if (method === "PUT" && path.startsWith("/api/v1/admin/categories/")) {
+      const id = path.split("/").pop();
+      racePuts.push({ id, body });
+      const target = raceStored.find((c) => c.id === id);
+      Object.assign(target, body);
+      return { status: 200, ok: true, data: { category: { ...target } } };
+    }
+    throw new Error(`unexpected race API call: ${method} ${path}`);
+  };
+  const raceRes = await seedCategories({
+    adminToken: "admin-jwt-race",
+    categories: [{ slug: "ao-polo", name: "Áo polo", subCategories: [{ slug: "polo-pique", name: "Polo Pique" }] }],
+    products: [{ id: "p1", categorySlug: "ao-polo", shopId: "shop-da-nang", material: "pique-cotton" }],
+    shops: SHOPS,
+    apiFn: raceApi,
+  });
+  assert.equal(raceRes.categories.updated, 1);
+  assert.equal(raceRes.childCategories.updated, 1);
+  assert.deepEqual(racePuts, [
+    { id: "cat-root-1", body: { commission_rate_bps: 550 } },
+    { id: "cat-child-1", body: { parent_id: "cat-root-1", commission_rate_bps: 550 } },
+  ]);
+});

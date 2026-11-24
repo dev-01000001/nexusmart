@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	promotionv1 "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/promotion/internal/domain"
@@ -34,7 +35,6 @@ func TestService_ReleasePromotionShop_SplitsByShop_AndReleasesPlatformOnLastShop
 	svcCtx := ctxWithService("order-service")
 	seller1Ctx := ctxWithRole("seller-1", "seller", "shop-1")
 	seller2Ctx := ctxWithRole("seller-2", "seller", "shop-2")
-	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
 
 	// Shop vouchers for shop-1 and shop-2
 	shop1V, err := svc.CreateVoucher(seller1Ctx, &promotionv1.CreateVoucherRequest{
@@ -146,7 +146,7 @@ func TestService_ReleasePromotionShop_SplitsByShop_AndReleasesPlatformOnLastShop
 
 	// Reserve promotions for a 2-shop checkout group
 	const groupID = "grp-split-01"
-	resResp, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+	resResp, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId: groupID,
 		UserId:  "buyer-1",
 		ShopVoucherIds: map[string]string{
@@ -344,7 +344,6 @@ func TestService_ReleasePromotion_AfterPartialShopRelease_DoesNotDoubleRelease(t
 	svcCtx := ctxWithService("order-service")
 	seller1Ctx := ctxWithRole("seller-1", "seller", "shop-1")
 	seller2Ctx := ctxWithRole("seller-2", "seller", "shop-2")
-	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
 
 	shop1V, _ := svc.CreateVoucher(seller1Ctx, &promotionv1.CreateVoucherRequest{
 		Code:         "PART_S1",
@@ -401,7 +400,7 @@ func TestService_ReleasePromotion_AfterPartialShopRelease_DoesNotDoubleRelease(t
 	})
 
 	const groupID = "grp-partial-then-full"
-	_, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+	_, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId: groupID,
 		UserId:  "buyer-1",
 		ShopVoucherIds: map[string]string{
@@ -594,10 +593,13 @@ func TestService_PRM_B4_AuthEnforcement(t *testing.T) {
 	}
 
 	// 4. PreviewDiscounts: requires end-user claims (rejects anon and service token)
+	pcAuth := newFakeProductClient()
+	pcAuth.setSKU(&productv1.SKU{Id: "sku-b4", ShopId: "shop-1", CategoryId: "cat-1", PriceVnd: 100000, MinPrice_30DVnd: 100000, AvailableStock: 10, IsActive: true})
+	svc.SetProductClient(pcAuth)
 	previewReq := &promotionv1.PreviewDiscountsRequest{
 		UserId: "buyer-1",
 		ShopItems: []*promotionv1.ShopDiscountInput{
-			{ShopId: "shop-1", SubtotalVnd: 100000, ShippingFeeVnd: 20000},
+			{ShopId: "shop-1", ShippingFeeVnd: 20000, Items: []*promotionv1.DiscountLineItem{{SkuId: "sku-b4", Quantity: 1}}},
 		},
 		PlatformVoucherId: vResp.Voucher.Id,
 	}
@@ -628,9 +630,13 @@ func TestService_PRM_B4_AuthEnforcement(t *testing.T) {
 
 func TestService_PRM_B8_ListAvailableVouchers_FiltersUnavailableAndMatchesPreview(t *testing.T) {
 	svc, _, _ := setupService(t)
+	pcB8 := newFakeProductClient()
+	pcB8.setSKU(&productv1.SKU{Id: "sku-b8", ShopId: "shop-1", CategoryId: "cat-1", PriceVnd: 200000, MinPrice_30DVnd: 200000, AvailableStock: 10, IsActive: true})
+	svc.SetProductClient(pcB8)
 	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
 	svc.SetClock(func() time.Time { return now })
 	adminCtx := ctxWithRole("admin-1", "admin", "")
+	orderSvcCtx := ctxWithService("order-service")
 	buyer1Ctx := ctxWithRole("buyer-1", "buyer", "")
 	buyer2Ctx := ctxWithRole("buyer-2", "buyer", "")
 
@@ -674,7 +680,7 @@ func TestService_PRM_B8_ListAvailableVouchers_FiltersUnavailableAndMatchesPrevie
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReservePromotion(buyer1Ctx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(orderSvcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:           "b8-quota-use",
 		UserId:            "buyer-1",
 		PlatformVoucherId: vQuota.Voucher.Id,
@@ -699,7 +705,7 @@ func TestService_PRM_B8_ListAvailableVouchers_FiltersUnavailableAndMatchesPrevie
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReservePromotion(buyer1Ctx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(orderSvcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:           "b8-budget-use",
 		UserId:            "buyer-1",
 		PlatformVoucherId: vBudget.Voucher.Id,
@@ -722,7 +728,7 @@ func TestService_PRM_B8_ListAvailableVouchers_FiltersUnavailableAndMatchesPrevie
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReservePromotion(buyer1Ctx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(orderSvcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:           "b8-peruser-use",
 		UserId:            "buyer-1",
 		PlatformVoucherId: vPerUser.Voucher.Id,
@@ -774,7 +780,11 @@ func TestService_PRM_B8_ListAvailableVouchers_FiltersUnavailableAndMatchesPrevie
 	prev200, err := svc.PreviewDiscounts(buyer2Ctx, &promotionv1.PreviewDiscountsRequest{
 		UserId:            "buyer-2",
 		PlatformVoucherId: vBudget.Voucher.Id,
-		ShopItems:         []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 200000, ShippingFeeVnd: 20000}},
+		ShopItems: []*promotionv1.ShopDiscountInput{{
+			ShopId:         "shop-1",
+			ShippingFeeVnd: 20000,
+			Items:          []*promotionv1.DiscountLineItem{{SkuId: "sku-b8", Quantity: 1}},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("PreviewDiscounts(200k): %v", err)
@@ -824,7 +834,6 @@ func TestService_ConcurrentReleasePromotionShop_TwoShops_ExactRestore(t *testing
 	svcCtx := ctxWithService("order-service")
 	seller1Ctx := ctxWithRole("seller-1", "seller", "shop-1")
 	seller2Ctx := ctxWithRole("seller-2", "seller", "shop-2")
-	buyerCtx := ctxWithRole("buyer-conc", "buyer", "")
 
 	s1V, err := svc.CreateVoucher(seller1Ctx, &promotionv1.CreateVoucherRequest{
 		Code: "CONC_S1", Scope: promotionv1.VoucherScope_VOUCHER_SCOPE_SHOP, ShopId: "shop-1",
@@ -860,7 +869,7 @@ func TestService_ConcurrentReleasePromotionShop_TwoShops_ExactRestore(t *testing
 	}
 
 	const groupID = "grp-conc-release"
-	if _, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId: groupID, UserId: "buyer-conc",
 		ShopVoucherIds:    map[string]string{"shop-1": s1V.Voucher.Id, "shop-2": s2V.Voucher.Id},
 		PlatformVoucherId: pV.Voucher.Id,
@@ -952,7 +961,8 @@ func TestService_ReviewA_P1_5_SellerManageViewIncludesAllOwnShopVouchers(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+	orderSvcCtx := ctxWithService("order-service")
+	if _, err := svc.ReservePromotion(orderSvcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId: "p15-use-quota", UserId: "buyer-1",
 		ShopVoucherIds: map[string]string{"shop-1": vQuota.Voucher.Id},
 		ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 100000}},
@@ -969,7 +979,7 @@ func TestService_ReviewA_P1_5_SellerManageViewIncludesAllOwnShopVouchers(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(orderSvcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId: "p15-use-bud", UserId: "buyer-1",
 		ShopVoucherIds: map[string]string{"shop-1": vBud.Voucher.Id},
 		ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 100000}},
@@ -1071,7 +1081,7 @@ func TestService_ReviewA_P1_6_ListAvailableVouchers_RejectsSpoofedUserID(t *test
 	if _, err := svc.SaveVoucher(buyer1Ctx, &promotionv1.SaveVoucherRequest{VoucherId: vSaved.Voucher.Id}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReservePromotion(buyer1Ctx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId: "p16-use-lim1", UserId: "buyer-1", PlatformVoucherId: vLimit1.Voucher.Id,
 		ShopItems: []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 100000}},
 	}); err != nil {
@@ -1133,9 +1143,12 @@ func TestService_ReviewA_P1_6_ListAvailableVouchers_RejectsSpoofedUserID(t *test
 
 func TestService_ReviewA_P2_11_FreeshipBudgetNotFalselyExhausted(t *testing.T) {
 	svc, _, _ := setupService(t)
+	pcFS := newFakeProductClient()
+	pcFS.setSKU(&productv1.SKU{Id: "sku-p211", ShopId: "shop-1", CategoryId: "cat-1", PriceVnd: 200000, MinPrice_30DVnd: 200000, AvailableStock: 10, IsActive: true})
+	svc.SetProductClient(pcFS)
 	now := time.Now().UTC()
 	adminCtx := ctxWithRole("admin-1", "admin", "")
-	buyer1Ctx := ctxWithRole("buyer-1", "buyer", "")
+	orderSvcCtx := ctxWithService("order-service")
 	buyer2Ctx := ctxWithRole("buyer-2", "buyer", "")
 
 	// 1. FREESHIP PERCENT 100%, max 30k, budget 50k -> use 30k -> remBudget = 20k (> 0, still valid for 15k shipping!)
@@ -1148,7 +1161,7 @@ func TestService_ReviewA_P2_11_FreeshipBudgetNotFalselyExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReservePromotion(buyer1Ctx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(orderSvcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId: "p211-use-pct", UserId: "buyer-1", FreeshipVoucherId: fsPct.Voucher.Id,
 		ShopItems: []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 200000, ShippingFeeVnd: 30000}},
 	}); err != nil {
@@ -1165,7 +1178,7 @@ func TestService_ReviewA_P2_11_FreeshipBudgetNotFalselyExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReservePromotion(buyer1Ctx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(orderSvcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId: "p211-use-fix", UserId: "buyer-1", FreeshipVoucherId: fsFixed.Voucher.Id,
 		ShopItems: []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 200000, ShippingFeeVnd: 30000}},
 	}); err != nil {
@@ -1182,7 +1195,7 @@ func TestService_ReviewA_P2_11_FreeshipBudgetNotFalselyExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReservePromotion(buyer1Ctx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(orderSvcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId: "p211-use-zero", UserId: "buyer-1", FreeshipVoucherId: fsZero.Voucher.Id,
 		ShopItems: []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 200000, ShippingFeeVnd: 30000}},
 	}); err != nil {
@@ -1214,7 +1227,11 @@ func TestService_ReviewA_P2_11_FreeshipBudgetNotFalselyExhausted(t *testing.T) {
 	// Verify PreviewDiscounts agrees that P211_FSPCT works for 15k shipping fee
 	prev, err := svc.PreviewDiscounts(buyer2Ctx, &promotionv1.PreviewDiscountsRequest{
 		FreeshipVoucherId: fsPct.Voucher.Id,
-		ShopItems:         []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 200000, ShippingFeeVnd: 15000}},
+		ShopItems: []*promotionv1.ShopDiscountInput{{
+			ShopId:         "shop-1",
+			ShippingFeeVnd: 15000,
+			Items:          []*promotionv1.DiscountLineItem{{SkuId: "sku-p211", Quantity: 1}},
+		}},
 	})
 	if err != nil || prev.Breakdown.TotalFreeshipDiscountVnd != 15000 {
 		t.Fatalf("expected PreviewDiscounts freeship 15000, got %+v err=%v", prev, err)

@@ -227,10 +227,10 @@ func TestE2E_PromotionService_DirectGRPC_PartialRelease_Auth_And_ListFilter(t *t
 		env.creditCoins(t, buyer.UserID, 20000, "e2e_direct_r5_init")
 
 		groupID := "e2e-direct-r5-" + uuid.NewString()
-		bCtx, bCancel := prmFixBearerCtx(context.Background(), buyer.AccessToken)
-		defer bCancel()
+		ordCtx, ordCancel := prmFixBearerCtx(context.Background(), promoOrderServiceToken())
+		defer ordCancel()
 
-		resResp, err := promoClient.ReservePromotion(bCtx, &promotionv1.ReservePromotionRequest{
+		resResp, err := promoClient.ReservePromotion(ordCtx, &promotionv1.ReservePromotionRequest{
 			OrderId: groupID,
 			UserId:  buyer.UserID,
 			ShopVoucherIds: map[string]string{
@@ -381,9 +381,9 @@ func TestE2E_PromotionService_DirectGRPC_PartialRelease_Auth_And_ListFilter(t *t
 
 		// Consume 15k of lowBudgetV's 20k budget -> remaining budget 5k < 15k needed for a 200k order
 		buyer1 := env.registerVerifyAndLogin(t, "buyer-b8-1")
-		b1Ctx, b1Cancel := prmFixBearerCtx(context.Background(), buyer1.AccessToken)
-		defer b1Cancel()
-		if _, err := promoClient.ReservePromotion(b1Ctx, &promotionv1.ReservePromotionRequest{
+		ordCtx, ordCancel := prmFixBearerCtx(context.Background(), promoOrderServiceToken())
+		defer ordCancel()
+		if _, err := promoClient.ReservePromotion(ordCtx, &promotionv1.ReservePromotionRequest{
 			OrderId:           "e2e-b8-bud-" + uuid.NewString(),
 			UserId:            buyer1.UserID,
 			PlatformVoucherId: lowBudgetV.ID,
@@ -500,9 +500,9 @@ func TestE2E_PromotionService_DirectGRPC_PartialRelease_Auth_And_ListFilter(t *t
 			t.Fatalf("decode freeship voucher: %v", err)
 		}
 		b1 := env.registerVerifyAndLogin(t, "buyer-p211-1")
-		b1Ctx, b1Cancel := prmFixBearerCtx(context.Background(), b1.AccessToken)
-		defer b1Cancel()
-		if _, err := promoClient.ReservePromotion(b1Ctx, &promotionv1.ReservePromotionRequest{
+		ordCtx, ordCancel := prmFixBearerCtx(context.Background(), promoOrderServiceToken())
+		defer ordCancel()
+		if _, err := promoClient.ReservePromotion(ordCtx, &promotionv1.ReservePromotionRequest{
 			OrderId:           "e2e-p211-" + uuid.NewString(),
 			UserId:            b1.UserID,
 			FreeshipVoucherId: fsV.Voucher.ID,

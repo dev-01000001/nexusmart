@@ -44,3 +44,21 @@
   gap: 8px;
   flex-shrink: 0;
 }
+
+.bankSection {
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bankSectionHeader {
+  padding-bottom: 8px;
+}
+
+.statusPillGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

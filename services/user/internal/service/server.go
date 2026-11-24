@@ -11,6 +11,7 @@ import (
 	shippingv1 "github.com/nexusmart/core/gen/go/nexusmart/shipping/v1"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
+	"github.com/nexusmart/core/pkg/common/secretbox"
 	"github.com/nexusmart/core/services/user/internal/db"
 	"github.com/nexusmart/core/services/user/internal/events"
 	"github.com/nexusmart/core/services/user/internal/password"
@@ -48,6 +49,7 @@ type Options struct {
 	BankOTPMaxAttempts      int
 	BankAddMaxPerHour       int
 	BankAddRateWindow       time.Duration
+	BankAccountBox          *secretbox.Box
 	AddressCatalog          AddressCatalog
 	Now                     func() time.Time
 }
@@ -107,6 +109,7 @@ type Server struct {
 	hasher   *password.Hasher
 	authMgr  *auth.Manager
 	pub      events.Publisher
+	bankBox  *secretbox.Box
 	shipping AddressCatalog
 	log      *slog.Logger
 	opts     Options
@@ -128,6 +131,7 @@ func NewServer(
 		hasher:   hasher,
 		authMgr:  authMgr,
 		pub:      pub,
+		bankBox:  opts.BankAccountBox,
 		shipping: opts.AddressCatalog,
 		log:      log,
 		opts:     opts.withDefaults(),
@@ -1448,6 +1452,8 @@ func (s *Server) AdminReviewShop(ctx context.Context, req *userv1.AdminReviewSho
 		return nil, status.Error(codes.FailedPrecondition, "only PENDING shops can be reviewed")
 	}
 
+	expectedOwnerName := strings.TrimSpace(req.GetExpectedOwnerName())
+
 	var (
 		updated           db.Shop
 		bankReviewPending bool
@@ -1466,6 +1472,9 @@ func (s *Server) AdminReviewShop(ctx context.Context, req *userv1.AdminReviewSho
 				return uErr
 			}
 			verifiedOwnerName = strings.TrimSpace(owner.FullName)
+			if expectedOwnerName != "" && verifiedOwnerName != expectedOwnerName {
+				return status.Error(codes.FailedPrecondition, "OWNER_NAME_CHANGED: shop owner full_name has changed since review started")
+			}
 		}
 		updated, txErr = q.UpdateShopReview(ctx, db.UpdateShopReviewParams{
 			ID:                existing.ID,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -545,5 +546,139 @@ func TestCartAddItemInt32OverflowAndNonPositiveStoredItems(t *testing.T) {
 	}
 	if len(emptyResp.Cart.ShopGroups) != 0 || emptyResp.Cart.TotalItems != 0 || emptyResp.Cart.TotalVnd != 0 {
 		t.Fatalf("expected empty cart when all stored items <= 0, got %+v", emptyResp.Cart)
+	}
+}
+
+func TestCartWithRedactedHiddenSKUs(t *testing.T) {
+	// Redacted SKU shape matches ProductService.GetSKUsBatch D2 output for non-owner/non-admin callers:
+	// only id, product_id, shop_id, product_name, name, image_url, is_active=false; all price/stock/weight fields are 0.
+	redactedSKU := func(id, prodID, shopID, prodName, name string) *productv1.SKU {
+		return &productv1.SKU{
+			Id:          id,
+			ProductId:   prodID,
+			ShopId:      shopID,
+			ProductName: prodName,
+			Name:        name,
+			ImageUrl:    "https://cdn.local/" + id + ".jpg",
+			IsActive:    false,
+		}
+	}
+
+	prod := &fakeProductClient{
+		skus: map[string]*productv1.SKU{
+			"sku-active-1": {
+				Id: "sku-active-1", ProductId: "p-1", ShopId: "shop-a",
+				ProductName: "Active Shirt", Name: "M", PriceVnd: 150000,
+				AvailableStock: 10, WeightGrams: 250, IsActive: true,
+			},
+			"sku-will-hide": {
+				Id: "sku-will-hide", ProductId: "p-2", ShopId: "shop-b",
+				ProductName: "Soon Hidden Jacket", Name: "L", PriceVnd: 400000,
+				AvailableStock: 5, WeightGrams: 500, IsActive: true,
+			},
+			"sku-redacted": redactedSKU("sku-redacted", "p-3", "shop-c", "Pending Item", "Default"),
+			"sku-zero-price": {
+				Id: "sku-zero-price", ProductId: "p-4", ShopId: "shop-d",
+				ProductName: "Corrupt Zero Price", Name: "Std", PriceVnd: 0,
+				AvailableStock: 5, WeightGrams: 200, IsActive: true,
+			},
+		},
+	}
+
+	srv, mr := newTestCartServer(t, prod, nil)
+	ctx := buyerCtx("buyer-d2")
+
+	// 1. AddItem on redacted hidden SKU -> FailedPrecondition with SKU_NOT_ACTIVE (NOT OUT_OF_STOCK) and not persisted.
+	_, err := srv.AddItem(ctx, &cartv1.AddItemRequest{SkuId: "sku-redacted", Quantity: 1})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "SKU_NOT_ACTIVE") {
+		t.Fatalf("AddItem redacted SKU: want FailedPrecondition SKU_NOT_ACTIVE, got %v", err)
+	}
+	if mr.HGet("cart:buyer-d2", "sku-redacted") != "" {
+		t.Fatalf("redacted SKU must not be stored in Redis cart")
+	}
+
+	// 2. Add two active SKUs from different shops, then redact sku-will-hide (simulating product hidden/deleted/deactivated).
+	if _, err := srv.AddItem(ctx, &cartv1.AddItemRequest{SkuId: "sku-active-1", Quantity: 2}); err != nil {
+		t.Fatalf("AddItem sku-active-1: %v", err)
+	}
+	if _, err := srv.AddItem(ctx, &cartv1.AddItemRequest{SkuId: "sku-will-hide", Quantity: 1}); err != nil {
+		t.Fatalf("AddItem sku-will-hide: %v", err)
+	}
+
+	prod.mu.Lock()
+	prod.skus["sku-will-hide"] = redactedSKU("sku-will-hide", "p-2", "shop-b", "Soon Hidden Jacket", "L")
+	prod.mu.Unlock()
+
+	// 3. UpdateItemQty > 0 on now-redacted SKU -> FailedPrecondition SKU_NOT_ACTIVE (NOT OUT_OF_STOCK).
+	_, err = srv.UpdateItemQty(ctx, &cartv1.UpdateItemQtyRequest{SkuId: "sku-will-hide", Quantity: 3})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "SKU_NOT_ACTIVE") {
+		t.Fatalf("UpdateItemQty redacted SKU: want FailedPrecondition SKU_NOT_ACTIVE, got %v", err)
+	}
+
+	// 4. GetCart / buildCart skips redacted SKU without error, omits its empty shop group, and never shows price 0.
+	gotCart, err := srv.GetCart(ctx, &cartv1.GetCartRequest{})
+	if err != nil {
+		t.Fatalf("GetCart with redacted SKU failed: %v", err)
+	}
+	if len(gotCart.Cart.ShopGroups) != 1 || gotCart.Cart.ShopGroups[0].ShopId != "shop-a" ||
+		gotCart.Cart.TotalItems != 2 || gotCart.Cart.TotalVnd != 300000 {
+		t.Fatalf("unexpected cart with redacted SKU: %+v", gotCart.Cart)
+	}
+	for _, g := range gotCart.Cart.ShopGroups {
+		for _, it := range g.Items {
+			if it.PriceVnd <= 0 {
+				t.Fatalf("cart item leaked non-positive price: %+v", it)
+			}
+		}
+	}
+
+	// 5. Adding another unit of active SKU while redacted SKU is still in Redis succeeds cleanly without 0-price items.
+	addAgain, err := srv.AddItem(ctx, &cartv1.AddItemRequest{SkuId: "sku-active-1", Quantity: 1})
+	if err != nil {
+		t.Fatalf("AddItem active while redacted SKU in cart: %v", err)
+	}
+	if addAgain.Cart.TotalItems != 3 || addAgain.Cart.TotalVnd != 450000 || len(addAgain.Cart.ShopGroups) != 1 {
+		t.Fatalf("unexpected cart after AddItem alongside redacted SKU: %+v", addAgain.Cart)
+	}
+
+	// 6. UpdateItemQty(0) and RemoveItem on redacted SKU succeed cleanly.
+	if _, err := srv.UpdateItemQty(ctx, &cartv1.UpdateItemQtyRequest{SkuId: "sku-will-hide", Quantity: 0}); err != nil {
+		t.Fatalf("UpdateItemQty(0) on redacted SKU failed: %v", err)
+	}
+	if mr.HGet("cart:buyer-d2", "sku-will-hide") != "" {
+		t.Fatalf("expected sku-will-hide removed from Redis on qty=0")
+	}
+
+	// 7. When ALL items in cart become redacted, GetCart returns empty cart (so from_cart checkout never sees price 0).
+	prod.mu.Lock()
+	prod.skus["sku-active-1"] = redactedSKU("sku-active-1", "p-1", "shop-a", "Active Shirt", "M")
+	prod.mu.Unlock()
+	allRedacted, err := srv.GetCart(ctx, &cartv1.GetCartRequest{})
+	if err != nil {
+		t.Fatalf("GetCart when all SKUs redacted failed: %v", err)
+	}
+	if len(allRedacted.Cart.ShopGroups) != 0 || allRedacted.Cart.TotalItems != 0 || allRedacted.Cart.TotalVnd != 0 {
+		t.Fatalf("expected empty cart when all SKUs redacted, got %+v", allRedacted.Cart)
+	}
+	// RemoveItem on redacted SKU also works cleanly.
+	if _, err := srv.RemoveItem(ctx, &cartv1.RemoveItemRequest{SkuId: "sku-active-1"}); err != nil {
+		t.Fatalf("RemoveItem redacted SKU failed: %v", err)
+	}
+
+	// 8. Defensive price<=0 guard: even if upstream returns is_active=true with price_vnd=0,
+	// AddItem and UpdateItemQty reject it and buildCart never emits a 0-price item.
+	if _, err := srv.AddItem(ctx, &cartv1.AddItemRequest{SkuId: "sku-zero-price", Quantity: 1}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("AddItem price=0 SKU: want FailedPrecondition, got %v", err)
+	}
+	if _, err := srv.UpdateItemQty(ctx, &cartv1.UpdateItemQtyRequest{SkuId: "sku-zero-price", Quantity: 2}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("UpdateItemQty price=0 SKU: want FailedPrecondition, got %v", err)
+	}
+	mr.HSet("cart:buyer-d2", "sku-zero-price", `{"quantity":2,"added_price_vnd":10000,"selected":true}`)
+	zeroCart, err := srv.GetCart(ctx, &cartv1.GetCartRequest{})
+	if err != nil {
+		t.Fatalf("GetCart with zero-price SKU failed: %v", err)
+	}
+	if len(zeroCart.Cart.ShopGroups) != 0 || zeroCart.Cart.TotalItems != 0 || zeroCart.Cart.TotalVnd != 0 {
+		t.Fatalf("zero-price SKU must never appear in cart, got %+v", zeroCart.Cart)
 	}
 }

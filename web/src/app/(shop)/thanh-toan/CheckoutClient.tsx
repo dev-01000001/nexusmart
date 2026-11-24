@@ -21,7 +21,7 @@ import type {
   GatewayVoucher,
   GatewayVouchersResponse,
 } from "@/lib/gateway-types";
-import { api, getErrorMessage } from "@/lib/api";
+import { ApiError, api, getErrorMessage } from "@/lib/api";
 import { formatInt, formatSignedVnd, formatVnd, formatVoucherBenefit } from "@/lib/format";
 import { useCart } from "@/context/CartContext";
 import { Button, IconShield, IconTruck, StateView } from "@/components";
@@ -32,6 +32,7 @@ import { CheckoutSuggestionStrip } from "@/features/checkout/CheckoutSuggestionS
 import {
   DEFAULT_COD_MAX_REJECTED,
   DEFAULT_COD_MAX_VND,
+  SHOP_PICKUP_ADDRESS_REQUIRED_BUYER_MESSAGE,
   formatCarrierDisplay,
   formatServiceDisplay,
   formatVoucherCondition,
@@ -39,17 +40,32 @@ import {
   translateVoucherReason,
 } from "@/features/checkout/messages";
 import {
+  type CheckoutSubmitEvent,
+  type CheckoutSubmitGuardState,
+  INITIAL_CHECKOUT_SUBMIT_GUARD_STATE,
   buildCalculateFeePayload,
+  buildCheckoutIdempotencySignature,
+  buildCheckoutRequestPayload,
+  canMutateCheckoutFlashSelection,
   classifyCheckoutSubmitError,
   clearCheckoutWarnings,
+  clearPendingCheckoutKey,
   computeBuyNowSlicePricing,
+  createManualVoucherPreviewFn,
   evaluateShopFlashLines,
+  getCheckoutPreviewBlockReason,
   inspectFlashSaleStatusForSku,
   isCodAllowedForCheckout,
-  isShopProgramItemApplied,
+  isTerminalCancelledCheckoutResponse,
+  readPendingCheckoutKey,
+  reduceCheckoutSubmitState,
+  resolveDisplayedLinePricing,
   resolveLiveFlashSaleForSku,
+  resolveManualVoucherCode,
+  resolvePostCheckoutCartAction,
   resolveSkuEffectivePromotion,
   saveCheckoutWarnings,
+  savePendingCheckoutKey,
   translatePromotionWarnings,
 } from "@/features/checkout/helpers";
 import shared from "@/features/commerce/commerce.module.css";
@@ -125,11 +141,11 @@ export function CheckoutClient({
   const viewState = usePageStateParam();
   const {
     selectedShopGroups,
-    isFullCartSelected,
     cartLoading,
     cartInitialized,
     cartError,
     refreshCart,
+    clearCart,
     selectedShopVouchers,
     platformVoucherCode,
     freeshipVoucherCode,
@@ -147,9 +163,10 @@ export function CheckoutClient({
   const isBuyNowMode = Boolean(buyNowItem || buyNowError);
   const [buyNowOptedOutFlash, setBuyNowOptedOutFlash] = useState<boolean>(false);
   const [checkoutIdempotencyKey, setCheckoutIdempotencyKey] = useState<string>(idempotencyKey);
-  const [flashCheckoutBlocked, setFlashCheckoutBlocked] = useState<boolean>(false);
-  const [idempotencyConflict, setIdempotencyConflict] = useState<boolean>(false);
-  const [ambiguousSubmit, setAmbiguousSubmit] = useState<boolean>(false);
+  const [submitGuard, setSubmitGuard] = useState<CheckoutSubmitGuardState>(
+    INITIAL_CHECKOUT_SUBMIT_GUARD_STATE
+  );
+  const submitGuardRef = useRef<CheckoutSubmitGuardState>(INITIAL_CHECKOUT_SUBMIT_GUARD_STATE);
 
   const [addresses, setAddresses] = useState<GatewayAddress[]>(initialAddresses);
   const [selectedAddressId, setSelectedAddressId] = useState<string>(() => {
@@ -180,12 +197,17 @@ export function CheckoutClient({
   // Live preview from POST /promotions/preview
   const [preview, setPreview] = useState<GatewayDiscountBreakdown | null>(null);
   const [previewLoading, setPreviewLoading] = useState<boolean>(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewErrorStatus, setPreviewErrorStatus] = useState<number | null>(null);
+  const [previewRetryNonce, setPreviewRetryNonce] = useState<number>(0);
 
   // Checkout submission state (strictly single-use after success, same idempotencyKey on retry)
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const submittingRef = useRef<boolean>(false);
   const completedRef = useRef<boolean>(false);
   const previewSeqRef = useRef<number>(0);
+  const manualPromoSeqRef = useRef<number>(0);
   const shippingSeqRef = useRef<number>(0);
 
   const shopNameById = useMemo(() => {
@@ -237,10 +259,11 @@ export function CheckoutClient({
         hasLiveFlashAvailable: Boolean(liveFlash),
         hasActiveShopDiscount,
         flashOptedOut,
-        shopProgramItemId: promo.shopProgramItemId,
-        shopDiscountedPriceVnd:
-          promo.kind === "shop_discount" ? promo.effectiveUnitPriceVnd : undefined,
-        shopProgramName: promo.programName,
+        shopProgramItemId: hasActiveShopDiscount ? activeShopDiscount?.item_id : undefined,
+        shopDiscountedPriceVnd: hasActiveShopDiscount
+          ? activeShopDiscount?.discounted_price_vnd
+          : undefined,
+        shopProgramName: hasActiveShopDiscount ? activeShopDiscount?.program_name : undefined,
       };
     },
     [initialFlashSales, shopDiscountBySkuId, optedOutFlashSkuIds]
@@ -276,7 +299,6 @@ export function CheckoutClient({
         buyNowItem.shopDiscountedPriceVnd > 0 &&
         buyNowItem.shopDiscountedPriceVnd < buyNowItem.unitPriceVnd
       );
-      const useShopDisc = !useFlash && hasShopDisc;
       const line: CheckoutLineItem = {
         skuId: buyNowItem.skuId,
         productId: buyNowItem.productId,
@@ -290,9 +312,9 @@ export function CheckoutClient({
         hasLiveFlashAvailable: Boolean(buyNowItem.flashSaleItemId),
         hasActiveShopDiscount: hasShopDisc,
         flashOptedOut: buyNowOptedOutFlash,
-        shopProgramItemId: useShopDisc ? buyNowItem.shopProgramItemId : undefined,
-        shopDiscountedPriceVnd: useShopDisc ? buyNowItem.shopDiscountedPriceVnd : undefined,
-        shopProgramName: useShopDisc ? buyNowItem.shopProgramName : undefined,
+        shopProgramItemId: hasShopDisc ? buyNowItem.shopProgramItemId : undefined,
+        shopDiscountedPriceVnd: hasShopDisc ? buyNowItem.shopDiscountedPriceVnd : undefined,
+        shopProgramName: hasShopDisc ? buyNowItem.shopProgramName : undefined,
         quantity: buyNowItem.quantity,
         weightGrams: buyNowItem.weightGrams,
       };
@@ -370,6 +392,25 @@ export function CheckoutClient({
     shopNameById,
     enrichCartLine,
   ]);
+
+  const checkoutSignature = buildCheckoutIdempotencySignature({
+    userId: user.id,
+    buyNowSkuId: buyNowItem?.skuId ?? null,
+  });
+
+  useEffect(() => {
+    const restoredKey = readPendingCheckoutKey(checkoutSignature);
+    if (!restoredKey) return;
+    setCheckoutIdempotencyKey(restoredKey);
+    const next = reduceCheckoutSubmitState(submitGuardRef.current, {
+      type: "hydrated_pending_key",
+    });
+    submitGuardRef.current = next.state;
+    setSubmitGuard(next.state);
+    setFormError(
+      "Lần đặt hàng trước trong tab này chưa kịp xác nhận phản hồi trước khi tải lại trang. Vui lòng kiểm tra Đơn hàng của tôi trước khi thử lại, hoặc bấm Đặt đơn mới."
+    );
+  }, [checkoutSignature]);
 
   const hasFlashSaleItem = useMemo(
     () => activeSlices.some((slice) => slice.items.some((it) => Boolean(it.flashSaleItemId))),
@@ -547,7 +588,9 @@ export function CheckoutClient({
     } catch (err) {
       if (shippingSeqRef.current !== seq) return;
       setShippingError(
-        getErrorMessage(err, "Chưa thể tính phí vận chuyển lúc này. Vui lòng thử lại.")
+        err instanceof ApiError && err.code === "SHOP_PICKUP_ADDRESS_REQUIRED"
+          ? SHOP_PICKUP_ADDRESS_REQUIRED_BUYER_MESSAGE
+          : getErrorMessage(err, "Chưa thể tính phí vận chuyển lúc này. Vui lòng thử lại.")
       );
     } finally {
       if (shippingSeqRef.current === seq) {
@@ -606,12 +649,16 @@ export function CheckoutClient({
   useEffect(() => {
     if (activeSlices.length === 0) {
       setPreview(null);
+      setPreviewError(null);
+      setPreviewErrorStatus(null);
       setPreviewLoading(false);
       return;
     }
 
     const seq = ++previewSeqRef.current;
     setPreviewLoading(true);
+    setPreviewError(null);
+    setPreviewErrorStatus(null);
 
     const timer = window.setTimeout(() => {
       const runPreview = async () => {
@@ -628,9 +675,18 @@ export function CheckoutClient({
           });
           if (previewSeqRef.current !== seq) return;
           setPreview(res?.breakdown ?? null);
-        } catch {
+          setPreviewError(null);
+          setPreviewErrorStatus(null);
+        } catch (err) {
           if (previewSeqRef.current !== seq) return;
           setPreview(null);
+          setPreviewErrorStatus(err instanceof ApiError ? err.status : null);
+          setPreviewError(
+            getErrorMessage(
+              err,
+              "Chưa thể tính ưu đãi và số Xu áp dụng lúc này. Vui lòng bấm Thử lại."
+            )
+          );
         } finally {
           if (previewSeqRef.current === seq) {
             setPreviewLoading(false);
@@ -649,6 +705,19 @@ export function CheckoutClient({
     freeshipVoucherCode,
     useCoins,
     coinBalance,
+    previewRetryNonce,
+  ]);
+
+  // P2-2: Invalidate in-flight manual voucher probes whenever order inputs change.
+  useEffect(() => {
+    manualPromoSeqRef.current += 1;
+    setApplyingPromo(false);
+  }, [
+    activeSlices,
+    activeShopVoucherMap,
+    platformVoucherCode,
+    freeshipVoucherCode,
+    chosenQuoteByShop,
   ]);
 
   const platformVouchers = useMemo(
@@ -700,6 +769,7 @@ export function CheckoutClient({
   }, [activeSlices, preview]);
 
   const rotateCheckoutIdempotencyKey = useCallback(() => {
+    clearPendingCheckoutKey();
     const nextUuid =
       typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()
@@ -707,16 +777,68 @@ export function CheckoutClient({
     setCheckoutIdempotencyKey(`nm-checkout-${nextUuid}`);
   }, []);
 
+  const applySubmitGuardEvent = useCallback(
+    (event: CheckoutSubmitEvent) => {
+      const transition = reduceCheckoutSubmitState(submitGuardRef.current, event);
+      submitGuardRef.current = transition.state;
+      setSubmitGuard(transition.state);
+      if (transition.rotateKey) {
+        rotateCheckoutIdempotencyKey();
+      } else if (transition.clearStoredKey) {
+        clearPendingCheckoutKey();
+      }
+      return transition;
+    },
+    [rotateCheckoutIdempotencyKey]
+  );
+
+  const keyMayHaveCreatedOrder = submitGuard.keyUncertainty !== "none";
+  const flashCheckoutBlocked = submitGuard.flashBlocked;
+  const checkoutFailedPrior = submitGuard.checkoutFailedPrior;
+  const cancelledReplayPrior = submitGuard.cancelledReplayPrior;
+  const canToggleFlash = canMutateCheckoutFlashSelection({
+    keyUncertainty: submitGuard.keyUncertainty,
+  });
+
+  const hasActiveVouchers = Boolean(
+    platformVoucherCode || freeshipVoucherCode || Object.keys(activeShopVoucherMap).length > 0
+  );
+
+  const hasShopDiscountItem = useMemo(
+    () => activeSlices.some((s) => s.items.some((it) => Boolean(it.hasActiveShopDiscount))),
+    [activeSlices]
+  );
+
+  const previewBlockReason = getCheckoutPreviewBlockReason({
+    preview,
+    previewError,
+    previewErrorStatus,
+    hasActiveVouchers,
+    hasFlashSaleItem,
+    hasShopDiscountItem,
+    useCoins,
+    coinBalance,
+  });
+
+  const handleStartNewOrder = useCallback(() => {
+    applySubmitGuardEvent({ type: "explicit_new_order" });
+    setFormError(null);
+  }, [applySubmitGuardEvent]);
+
   const handleOptOutFlashSku = useCallback(
     (skuId: string) => {
+      if (
+        !canMutateCheckoutFlashSelection({ keyUncertainty: submitGuardRef.current.keyUncertainty })
+      )
+        return;
       if (buyNowItem && buyNowItem.skuId === skuId) {
         setBuyNowOptedOutFlash(true);
       } else {
         optOutFlashForSku(skuId);
       }
       setFormError(null);
-      setFlashCheckoutBlocked(false);
-      setAmbiguousSubmit(false);
+      submitGuardRef.current = { ...INITIAL_CHECKOUT_SUBMIT_GUARD_STATE };
+      setSubmitGuard(INITIAL_CHECKOUT_SUBMIT_GUARD_STATE);
       rotateCheckoutIdempotencyKey();
     },
     [buyNowItem, optOutFlashForSku, rotateCheckoutIdempotencyKey]
@@ -724,20 +846,26 @@ export function CheckoutClient({
 
   const handleRestoreFlashSku = useCallback(
     (skuId: string) => {
+      if (
+        !canMutateCheckoutFlashSelection({ keyUncertainty: submitGuardRef.current.keyUncertainty })
+      )
+        return;
       if (buyNowItem && buyNowItem.skuId === skuId) {
         setBuyNowOptedOutFlash(false);
       } else {
         restoreFlashForSku(skuId);
       }
       setFormError(null);
-      setFlashCheckoutBlocked(false);
-      setAmbiguousSubmit(false);
+      submitGuardRef.current = { ...INITIAL_CHECKOUT_SUBMIT_GUARD_STATE };
+      setSubmitGuard(INITIAL_CHECKOUT_SUBMIT_GUARD_STATE);
       rotateCheckoutIdempotencyKey();
     },
     [buyNowItem, restoreFlashForSku, rotateCheckoutIdempotencyKey]
   );
 
   const handleOptOutAllActiveFlash = useCallback(() => {
+    if (!canMutateCheckoutFlashSelection({ keyUncertainty: submitGuardRef.current.keyUncertainty }))
+      return;
     if (buyNowItem) {
       setBuyNowOptedOutFlash(true);
     } else {
@@ -750,8 +878,8 @@ export function CheckoutClient({
       }
     }
     setFormError(null);
-    setFlashCheckoutBlocked(false);
-    setAmbiguousSubmit(false);
+    submitGuardRef.current = { ...INITIAL_CHECKOUT_SUBMIT_GUARD_STATE };
+    setSubmitGuard(INITIAL_CHECKOUT_SUBMIT_GUARD_STATE);
     rotateCheckoutIdempotencyKey();
   }, [buyNowItem, activeSlices, optOutFlashForSku, rotateCheckoutIdempotencyKey]);
 
@@ -791,102 +919,79 @@ export function CheckoutClient({
       return;
     }
 
-    const matched = vouchers.find((v) => v.code.toUpperCase() === clean);
-    if (matched) {
-      const scope = matched.scope.toUpperCase();
-      if (scope === "SHOP") {
-        const targetSlice = activeSlices.find((s) => s.shopId === matched.shop_id);
-        if (!targetSlice) {
-          setPromoFeedback({
-            ok: false,
-            message: "Đơn hàng hiện không có sản phẩm thuộc gian hàng áp dụng mã này.",
-          });
-          return;
-        }
-        if (targetSlice.subtotalVnd < matched.min_order_vnd) {
-          setPromoFeedback({
-            ok: false,
-            message: `Chưa đạt giá trị đơn tối thiểu ${formatVnd(matched.min_order_vnd)} của gian hàng.`,
-          });
-          return;
-        }
-        if (!matched.eligible && matched.ineligible_reason) {
-          setPromoFeedback({
-            ok: false,
-            message: translateVoucherReason(matched.ineligible_reason),
-          });
-          return;
-        }
-        setShopVoucher(matched.shop_id, matched.code);
-        setPromoFeedback({ ok: true, message: `Đã áp dụng mã gian hàng ${matched.code}.` });
-        setPromoCodeInput("");
-        return;
-      }
-
-      if (!matched.eligible && matched.ineligible_reason) {
-        setPromoFeedback({ ok: false, message: translateVoucherReason(matched.ineligible_reason) });
-        return;
-      }
-
-      if (scope === "FREESHIP") {
-        setFreeshipVoucher(matched.code);
-        setPromoFeedback({ ok: true, message: `Đã áp dụng mã vận chuyển ${matched.code}.` });
-      } else {
-        setPlatformVoucher(matched.code);
-        setPromoFeedback({ ok: true, message: `Đã áp dụng mã toàn sàn ${matched.code}.` });
-      }
-      setPromoCodeInput("");
-      return;
-    }
-
+    const seq = ++manualPromoSeqRef.current;
     setApplyingPromo(true);
     setPromoFeedback(null);
     try {
-      const res = await api<GatewayPreviewDiscountsResponse>("promotions/preview", {
-        method: "POST",
-        json: {
-          shop_items: buildShopDiscountInputs(),
-          shop_voucher_ids: activeShopVoucherMap,
-          platform_voucher_id: clean,
-          freeship_voucher_id: freeshipVoucherCode ?? "",
-          coins_to_use: useCoins ? coinBalance : 0,
-        },
+      const result = await resolveManualVoucherCode({
+        rawCode: clean,
+        knownVouchers: vouchers,
+        shops: activeSlices.map((s) => ({
+          shopId: s.shopId,
+          shopName: s.shopName,
+          subtotalVnd: s.subtotalVnd,
+          shippingFeeVnd: chosenQuoteByShop[s.shopId]?.fee_vnd ?? 0,
+        })),
+        hasShippingEstimate: Boolean(selectedAddress && totalShippingFeeVnd > 0),
+        previewFn: createManualVoucherPreviewFn({
+          getShopItems: buildShopDiscountInputs,
+          shopVoucherIds: activeShopVoucherMap,
+          platformVoucherCode,
+          freeshipVoucherCode,
+          postPreview: (json) =>
+            api<GatewayPreviewDiscountsResponse>("promotions/preview", {
+              method: "POST",
+              json,
+            }),
+        }),
       });
-      const bd = res?.breakdown;
-      if (bd && bd.total_platform_voucher_discount_vnd > 0) {
-        setPlatformVoucher(clean);
-        setPromoFeedback({
-          ok: true,
-          message: `Đã áp dụng mã ${clean} (giảm ${formatVnd(bd.total_platform_voucher_discount_vnd)}).`,
-        });
+      if (manualPromoSeqRef.current !== seq) return;
+      if (result.ok) {
+        if (result.scope === "SHOP" && result.shopId) {
+          setShopVoucher(result.shopId, result.code);
+        } else if (result.scope === "FREESHIP") {
+          setFreeshipVoucher(result.code);
+        } else {
+          setPlatformVoucher(result.code);
+        }
+        setPromoFeedback({ ok: true, message: result.message });
         setPromoCodeInput("");
       } else {
-        const warn = bd?.warnings?.[0];
-        setPromoFeedback({
-          ok: false,
-          message: warn
-            ? translateVoucherReason(warn)
-            : `Mã ${clean} không tồn tại hoặc chưa đủ điều kiện áp dụng.`,
-        });
+        setPromoFeedback({ ok: false, message: result.message });
       }
     } catch (err) {
+      if (manualPromoSeqRef.current !== seq) return;
       setPromoFeedback({
         ok: false,
         message: getErrorMessage(err, `Chưa thể kiểm tra mã ${clean} lúc này.`),
       });
     } finally {
-      setApplyingPromo(false);
+      if (manualPromoSeqRef.current === seq) {
+        setApplyingPromo(false);
+      }
     }
   };
 
   const handlePlaceOrder = async () => {
-    if (isSubmitting || completedRef.current || shippingLoading || previewLoading) return;
+    if (
+      submittingRef.current ||
+      isSubmitting ||
+      completedRef.current ||
+      shippingLoading ||
+      previewLoading
+    ) {
+      return;
+    }
     if (activeSlices.length === 0) {
       setFormError("Chưa có sản phẩm nào để đặt hàng.");
       return;
     }
     if (!selectedAddress) {
       setFormError("Vui lòng chọn hoặc thêm địa chỉ nhận hàng trước khi đặt đơn.");
+      return;
+    }
+    if (previewBlockReason) {
+      setFormError(previewBlockReason);
       return;
     }
 
@@ -913,39 +1018,27 @@ export function CheckoutClient({
       return;
     }
 
-    const fromCart = !buyNowItem && isFullCartSelected;
-    const allItemsInput = activeSlices.flatMap((slice) =>
-      slice.items.map((it) => ({
-        sku_id: it.skuId,
-        quantity: it.quantity,
-        ...(it.flashSaleItemId ? { flash_sale_item_id: it.flashSaleItemId } : {}),
-      }))
-    );
-    const hasPromoOverrides = allItemsInput.some((it) => Boolean(it.flash_sale_item_id));
-    const explicitItems = !fromCart || hasPromoOverrides ? allItemsInput : undefined;
-
+    const orderedItems = activeSlices.flatMap((slice) => slice.items);
     const effectiveCoins = useCoins
       ? Math.min(coinBalance, preview ? preview.total_coins_discount_vnd : 0)
       : 0;
 
-    const payload: GatewayCheckoutRequest = {
-      address_id: selectedAddress.id,
-      from_cart: fromCart,
-      ...(explicitItems ? { items: explicitItems } : {}),
-      ...(Object.keys(activeShopVoucherMap).length > 0
-        ? { shop_voucher_ids: activeShopVoucherMap }
-        : {}),
-      ...(platformVoucherCode ? { platform_voucher_id: platformVoucherCode } : {}),
-      ...(freeshipVoucherCode ? { freeship_voucher_id: freeshipVoucherCode } : {}),
-      coins_to_use: Math.max(0, Math.trunc(effectiveCoins)),
-      payment_method: paymentMethod,
-      shipping_choices: shippingChoices,
-    };
+    const payload: GatewayCheckoutRequest = buildCheckoutRequestPayload({
+      addressId: selectedAddress.id,
+      items: orderedItems,
+      shopVoucherIds: activeShopVoucherMap,
+      platformVoucherCode,
+      freeshipVoucherCode,
+      coinsToUse: effectiveCoins,
+      paymentMethod,
+      shippingChoices,
+    });
 
+    submittingRef.current = true;
     setFormError(null);
-    setFlashCheckoutBlocked(false);
-    setIdempotencyConflict(false);
-    setAmbiguousSubmit(false);
+    // P1-1: Never clear keyUncertainty before knowing the retry outcome; P1-4: persist {key, sig} in sessionStorage before sending.
+    applySubmitGuardEvent({ type: "submit_start" });
+    savePendingCheckoutKey({ key: checkoutIdempotencyKey, sig: checkoutSignature });
     setIsSubmitting(true);
 
     try {
@@ -957,7 +1050,18 @@ export function CheckoutClient({
         json: payload,
       });
 
+      if (isTerminalCancelledCheckoutResponse(res)) {
+        submittingRef.current = false;
+        applySubmitGuardEvent({ type: "submit_success", terminalCancelled: true });
+        setFormError(
+          "Đơn hàng của lần đặt trước đã bị hủy hoặc hết hạn thanh toán. Bạn có thể xem lại trong Đơn hàng của tôi hoặc bấm Đặt đơn mới."
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
       completedRef.current = true;
+      applySubmitGuardEvent({ type: "submit_success", terminalCancelled: false });
 
       if (Array.isArray(res.warnings) && res.warnings.length > 0) {
         saveCheckoutWarnings({
@@ -970,9 +1074,13 @@ export function CheckoutClient({
         clearCheckoutWarnings();
       }
 
-      if (!buyNowItem) {
+      const cartAction = resolvePostCheckoutCartAction({
+        isBuyNow: Boolean(buyNowItem),
+        orderedSkuIds: orderedItems.map((it) => it.skuId),
+      });
+      if (cartAction.kind === "clear_skus") {
         resetPromotions();
-        void refreshCart();
+        void Promise.resolve(clearCart(cartAction.skuIds)).catch(() => {});
       }
 
       if (res.payment_method === "VIETQR" && res.payment_id && res.total_payable_vnd > 0) {
@@ -987,10 +1095,12 @@ export function CheckoutClient({
 
       router.push("/don-hang");
     } catch (err) {
+      submittingRef.current = false;
       const errKind = classifyCheckoutSubmitError(err, {
         hasFlashSaleItem,
         paymentMethod,
       });
+      applySubmitGuardEvent({ type: "submit_error", kind: errKind });
       if (errKind === "unauthenticated") {
         const nextPath =
           typeof window !== "undefined"
@@ -1000,25 +1110,12 @@ export function CheckoutClient({
         return;
       }
 
-      const hasVouchers = Boolean(
-        platformVoucherCode || freeshipVoucherCode || Object.keys(activeShopVoucherMap).length > 0
-      );
-      if (errKind === "idempotency_conflict") {
-        // NEVER auto-rotate idempotency key: the previous attempt may have already created an order.
-        setIdempotencyConflict(true);
-      } else if (errKind === "ambiguous_created") {
-        // Forward-recovery rule (503/504/ABORTED/CANCELED/network reject): keep the SAME Idempotency-Key,
-        // do NOT auto-retry, do NOT rotate key, and do NOT offer the key-rotating flash opt-out button.
-        setAmbiguousSubmit(true);
-      } else if (errKind === "flash_blocked") {
-        setFlashCheckoutBlocked(true);
-      }
       setFormError(
         translateCheckoutError(err, {
           paymentMethod,
           totalPayableVnd: grandTotalVnd,
           codRejectedCount: user.cod_rejected_count,
-          hasVouchers,
+          hasVouchers: hasActiveVouchers,
           isFlashSale: hasFlashSaleItem,
         })
       );
@@ -1474,31 +1571,34 @@ export function CheckoutClient({
                           const flashEval = flashEvalBySkuId[it.skuId];
                           const isFlashLine = itemPricing.flashDiscountVnd > 0;
                           const flashShortfall = Boolean(flashEval?.previewShortfall);
-                          const shopProgramApplied = Boolean(
-                            (!isFlashLine || flashShortfall) &&
-                            it.shopProgramItemId &&
-                            isShopProgramItemApplied({
-                              shopProgramItemId: it.shopProgramItemId,
-                              shopBreakdown: shopBreakdown ?? null,
-                            })
-                          );
-                          const shopProgramExceeded = Boolean(
-                            !isFlashLine &&
-                            it.shopProgramItemId &&
-                            shopBreakdown &&
-                            !shopProgramApplied
-                          );
-                          const effectiveUnit =
-                            isFlashLine && !flashShortfall
-                              ? itemPricing.effectiveUnitPriceVnd
-                              : shopProgramApplied &&
-                                  it.shopDiscountedPriceVnd &&
-                                  it.shopDiscountedPriceVnd < it.unitPriceVnd
-                                ? it.shopDiscountedPriceVnd
-                                : it.unitPriceVnd;
-                          const effectiveLine = effectiveUnit * it.quantity;
+                          const activeShopDisc =
+                            shopDiscountBySkuId[it.skuId] ??
+                            (it.shopProgramItemId && it.shopDiscountedPriceVnd
+                              ? {
+                                  item_id: it.shopProgramItemId,
+                                  discounted_price_vnd: it.shopDiscountedPriceVnd,
+                                  original_price_vnd: it.unitPriceVnd,
+                                  program_name: it.shopProgramName,
+                                }
+                              : null);
+                          const linePricing = resolveDisplayedLinePricing({
+                            regularUnitPriceVnd: it.unitPriceVnd,
+                            quantity: it.quantity,
+                            isFlashLine,
+                            flashUnitPriceVnd: it.flashPriceVnd,
+                            flashShortfall,
+                            activeShopDiscount: activeShopDisc,
+                            shopBreakdown: shopBreakdown ?? null,
+                            isInPreview: true,
+                          });
+                          const shopProgramApplied = linePricing.shopProgramApplied;
+                          const shopProgramExceeded =
+                            !isFlashLine && linePricing.shopProgramLimitExceeded;
+                          const effectiveUnit = linePricing.effectiveUnitPriceVnd;
+                          const effectiveLine = linePricing.lineTotalVnd;
                           const showFlashOptOut = Boolean(
                             isFlashLine &&
+                            canToggleFlash &&
                             (flashEval?.needsRegularPriceChoice || flashCheckoutBlocked)
                           );
                           return (
@@ -1532,6 +1632,7 @@ export function CheckoutClient({
                                     <button
                                       type="button"
                                       className={styles.regularPriceActionBtn}
+                                      disabled={!canToggleFlash}
                                       onClick={() => handleOptOutFlashSku(it.skuId)}
                                     >
                                       {it.hasActiveShopDiscount
@@ -1547,13 +1648,16 @@ export function CheckoutClient({
                                         ? "Đang áp dụng giá chương trình gian hàng (đã bỏ suất Flash sale)"
                                         : "Đang mua giá thường (đã bỏ suất Flash sale)"}
                                     </span>
-                                    <button
-                                      type="button"
-                                      className={styles.regularPriceActionBtn}
-                                      onClick={() => handleRestoreFlashSku(it.skuId)}
-                                    >
-                                      Dùng lại giá Flash
-                                    </button>
+                                    {canToggleFlash && (
+                                      <button
+                                        type="button"
+                                        className={styles.regularPriceActionBtn}
+                                        disabled={!canToggleFlash}
+                                        onClick={() => handleRestoreFlashSku(it.skuId)}
+                                      >
+                                        Dùng lại giá Flash
+                                      </button>
+                                    )}
                                   </div>
                                 )}
                                 {shopProgramExceeded && (
@@ -1762,6 +1866,21 @@ export function CheckoutClient({
                   </span>
                 </label>
 
+                {previewError && (
+                  <div className={`${shared.feedbackBox} ${shared.feedbackError}`} role="alert">
+                    <p>{previewError}</p>
+                    <div className={styles.errorActions}>
+                      <button
+                        type="button"
+                        className={styles.regularPriceLightBtn}
+                        onClick={() => setPreviewRetryNonce((n) => n + 1)}
+                      >
+                        Thử lại
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {translatedWarnings.length > 0 && (
                   <div className={styles.warningList} role="status">
                     {translatedWarnings.map((w) => (
@@ -1860,50 +1979,75 @@ export function CheckoutClient({
                 </span>
               </div>
 
-              {formError && (
+              {(formError || keyMayHaveCreatedOrder) && (
                 <div className={`${shared.feedbackBox} ${shared.feedbackError}`} role="alert">
-                  <p>{formError}</p>
-                  {ambiguousSubmit && !idempotencyConflict && (
+                  <p>
+                    {formError ||
+                      "Lần đặt hàng trước có thể đã được hệ thống ghi nhận. Vui lòng kiểm tra Đơn hàng của tôi trước khi đặt lại hoặc chọn Đặt đơn mới."}
+                  </p>
+                  {checkoutFailedPrior && !keyMayHaveCreatedOrder && (
                     <div className={`${shared.formActions} ${styles.errorActions}`}>
                       <Button variant="secondary" size="sm" href="/don-hang">
                         Xem Đơn hàng của tôi
                       </Button>
                     </div>
                   )}
-                  {idempotencyConflict && (
+                  {cancelledReplayPrior && !keyMayHaveCreatedOrder && (
                     <div className={`${shared.formActions} ${styles.errorActions}`}>
                       <Button variant="secondary" size="sm" href="/don-hang">
-                        Kiểm tra Đơn hàng của tôi
+                        Xem Đơn hàng của tôi
                       </Button>
                       <button
                         type="button"
                         className={styles.regularPriceLightBtn}
-                        onClick={() => {
-                          rotateCheckoutIdempotencyKey();
-                          setIdempotencyConflict(false);
-                          setFormError(null);
-                        }}
+                        onClick={handleStartNewOrder}
                       >
-                        Vẫn đặt đơn mới
+                        Đặt đơn mới
                       </button>
                     </div>
                   )}
-                  {flashCheckoutBlocked &&
-                    hasFlashSaleItem &&
-                    !ambiguousSubmit &&
-                    !idempotencyConflict && (
-                      <div className={styles.errorActions}>
-                        <button
-                          type="button"
-                          className={styles.regularPriceLightBtn}
-                          onClick={handleOptOutAllActiveFlash}
-                        >
-                          {hasFlashFallbackShopDiscount
-                            ? "Bỏ suất Flash sale (dùng giá chương trình gian hàng / giá thường)"
-                            : "Mua giá thường (bỏ suất Flash sale)"}
-                        </button>
-                      </div>
-                    )}
+                  {keyMayHaveCreatedOrder && (
+                    <div className={`${shared.formActions} ${styles.errorActions}`}>
+                      <Button variant="secondary" size="sm" href="/don-hang">
+                        Xem Đơn hàng của tôi
+                      </Button>
+                      <button
+                        type="button"
+                        className={styles.regularPriceLightBtn}
+                        onClick={handleStartNewOrder}
+                      >
+                        Đặt đơn mới
+                      </button>
+                    </div>
+                  )}
+                  {flashCheckoutBlocked && hasFlashSaleItem && !keyMayHaveCreatedOrder && (
+                    <div className={styles.errorActions}>
+                      <button
+                        type="button"
+                        className={styles.regularPriceLightBtn}
+                        onClick={handleOptOutAllActiveFlash}
+                      >
+                        {hasFlashFallbackShopDiscount
+                          ? "Bỏ suất Flash sale (dùng giá chương trình gian hàng / giá thường)"
+                          : "Mua giá thường (bỏ suất Flash sale)"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {previewBlockReason && !formError && (
+                <div className={`${shared.feedbackBox} ${shared.feedbackWarn}`} role="alert">
+                  <p>{previewBlockReason}</p>
+                  <div className={styles.errorActions}>
+                    <button
+                      type="button"
+                      className={styles.regularPriceLightBtn}
+                      onClick={() => setPreviewRetryNonce((n) => n + 1)}
+                    >
+                      Thử lại
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -1912,7 +2056,13 @@ export function CheckoutClient({
                 size="lg"
                 fullWidth
                 className={shared.wrapBtn}
-                disabled={isSubmitting || completedRef.current || shippingLoading || previewLoading}
+                disabled={
+                  isSubmitting ||
+                  completedRef.current ||
+                  shippingLoading ||
+                  previewLoading ||
+                  Boolean(previewBlockReason)
+                }
                 onClick={() => void handlePlaceOrder()}
               >
                 {previewLoading ? "Đang cập nhật giá & ưu đãi..." : ctaLabel}
@@ -1939,7 +2089,13 @@ export function CheckoutClient({
         <Button
           variant="primary"
           size="md"
-          disabled={isSubmitting || completedRef.current || shippingLoading || previewLoading}
+          disabled={
+            isSubmitting ||
+            completedRef.current ||
+            shippingLoading ||
+            previewLoading ||
+            Boolean(previewBlockReason)
+          }
           onClick={() => void handlePlaceOrder()}
         >
           {isSubmitting

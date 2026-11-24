@@ -7,10 +7,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/nexusmart/core/services/promotion/internal/domain"
 	"github.com/nexusmart/core/services/promotion/internal/lua"
 )
 
@@ -18,8 +20,11 @@ func newTestEngine(t *testing.T) (*miniredis.Miniredis, *lua.Engine) {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     mr.Addr(),
-		PoolSize: 200,
+		Addr:         mr.Addr(),
+		PoolSize:     200,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		PoolTimeout:  30 * time.Second,
 	})
 	t.Cleanup(func() { _ = rdb.Close() })
 	return mr, lua.NewEngine(rdb)
@@ -137,10 +142,10 @@ func TestReserveAtomic_AllOrNothingRollback(t *testing.T) {
 	if err := engine.InitFlashItemSlots(ctx, "fi-1", 10, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.InitVoucherKeys(ctx, "v-ok", 5, 100000); err != nil {
+	if err := engine.ReconcileVoucherKeys(ctx, "v-ok", domain.VoucherStatusActive, 5, 0, 100000, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.InitVoucherKeys(ctx, "v-empty", 0, 100000); err != nil {
+	if err := engine.ReconcileVoucherKeys(ctx, "v-empty", domain.VoucherStatusActive, 0, 0, 100000, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -177,7 +182,7 @@ func TestReserveAtomic_IdempotentAndVoucherLimits(t *testing.T) {
 	ctx := context.Background()
 	_, engine := newTestEngine(t)
 
-	if err := engine.InitVoucherKeys(ctx, "v-budget", 10, 50000); err != nil {
+	if err := engine.ReconcileVoucherKeys(ctx, "v-budget", domain.VoucherStatusActive, 10, 0, 50000, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -277,13 +282,13 @@ func TestReleasePartial_IdempotentAndLeavesRemainderForFullRelease(t *testing.T)
 	if err := engine.InitFlashItemSlots(ctx, "fi-2", 10, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.InitVoucherKeys(ctx, "v-s1", 5, 50000); err != nil {
+	if err := engine.ReconcileVoucherKeys(ctx, "v-s1", domain.VoucherStatusActive, 5, 0, 50000, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.InitVoucherKeys(ctx, "v-s2", 5, 50000); err != nil {
+	if err := engine.ReconcileVoucherKeys(ctx, "v-s2", domain.VoucherStatusActive, 5, 0, 50000, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.InitVoucherKeys(ctx, "v-plat", 5, 100000); err != nil {
+	if err := engine.ReconcileVoucherKeys(ctx, "v-plat", domain.VoucherStatusActive, 5, 0, 100000, 0); err != nil {
 		t.Fatal(err)
 	}
 

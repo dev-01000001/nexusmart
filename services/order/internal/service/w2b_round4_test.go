@@ -142,9 +142,13 @@ func TestW2B_R4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 	})
 
 	t.Run("RaceWithCancelOrder_CancelledOrderUntouchedAndFreshSnapshot", func(t *testing.T) {
+		// Case 1 (D11 extended / P1-1): Single-order checkout cancelled mid-flight -> CompleteCheckoutWithPayment
+		// closes group FAILED (no COMPLETED snapshot), CreateCheckout & retry return CHECKOUT_FAILED (CANCELLED),
+		// and the cancelled order stays untouched (CANCELLED/CANCELLED).
 		h := newTestHarness()
 		buyerCtx := ctxWithUser("buyer-1", "buyer", "")
 		adminCtx := ctxWithUser("admin-1", "admin", "")
+		var cancelledOrderID string
 
 		h.payment.afterCreatePay = func(pay *paymentv1.Payment) {
 			aggs, err := h.store.ListOrdersByCheckoutGroup(context.Background(), pay.GetOrderGroupId())
@@ -152,6 +156,7 @@ func TestW2B_R4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 				t.Errorf("list orders in cancel race: err=%v len=%d", err, len(aggs))
 				return
 			}
+			cancelledOrderID = aggs[0].Order.ID
 			if _, err := h.svc.CancelOrder(buyerCtx, &orderv1.CancelOrderRequest{
 				OrderId: aggs[0].Order.ID,
 				Reason:  "buyer cancelled during checkout",
@@ -166,11 +171,11 @@ func TestW2B_R4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 			Items:          []*orderv1.CheckoutItemInput{{SkuId: "sku-1", Quantity: 1}},
 			PaymentMethod:  orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR,
 		})
-		if err != nil {
-			t.Fatalf("CreateCheckout failed: %v", err)
+		if err == nil || resp != nil || status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "CHECKOUT_FAILED") || !strings.Contains(err.Error(), "CANCELLED") {
+			t.Fatalf("expected FailedPrecondition CHECKOUT_FAILED (CANCELLED) when all orders cancelled, got resp=%+v err=%v", resp, err)
 		}
 
-		got, err := h.svc.GetOrder(adminCtx, &orderv1.GetOrderRequest{OrderId: resp.Orders[0].Id})
+		got, err := h.svc.GetOrder(adminCtx, &orderv1.GetOrderRequest{OrderId: cancelledOrderID})
 		if err != nil {
 			t.Fatalf("GetOrder: %v", err)
 		}
@@ -178,17 +183,74 @@ func TestW2B_R4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 			t.Fatalf("cancelled order was mutated: status=%v payment_status=%q, want CANCELLED/CANCELLED", got.Order.Status, got.Order.PaymentStatus)
 		}
 
-		replay, err := h.svc.CreateCheckout(buyerCtx, &orderv1.CreateCheckoutRequest{
+		if replay, rErr := h.svc.CreateCheckout(buyerCtx, &orderv1.CreateCheckoutRequest{
 			IdempotencyKey: "r4-p01-race-cancel",
 			AddressId:      "addr-buyer-1",
 			Items:          []*orderv1.CheckoutItemInput{{SkuId: "sku-1", Quantity: 1}},
 			PaymentMethod:  orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR,
-		})
-		if err != nil {
-			t.Fatalf("idempotent replay after cancel failed: %v", err)
+		}); rErr == nil || replay != nil || status.Code(rErr) != codes.FailedPrecondition || !strings.Contains(rErr.Error(), "CHECKOUT_FAILED") {
+			t.Fatalf("retry on all-cancelled FAILED group must return CHECKOUT_FAILED, got replay=%+v err=%v", replay, rErr)
 		}
-		if replay.Orders[0].Status != orderv1.OrderStatus_ORDER_STATUS_CANCELLED || replay.Orders[0].PaymentStatus != "CANCELLED" {
-			t.Fatalf("snapshot must reflect CANCELLED, got status=%v pay=%q", replay.Orders[0].Status, replay.Orders[0].PaymentStatus)
+
+		// Case 2 (partial cancel in 2-shop COD checkout): cancelling only 1 of 2 CONFIRMED orders still closes COMPLETED
+		// with a fresh snapshot reflecting CANCELLED on shop-1 and CONFIRMED on shop-2.
+		h2 := newTestHarness()
+		var cancelledShop1ID string
+		h2.payment.afterCreatePay = func(pay *paymentv1.Payment) {
+			aggs, err := h2.store.ListOrdersByCheckoutGroup(context.Background(), pay.GetOrderGroupId())
+			if err != nil || len(aggs) != 2 {
+				t.Errorf("list 2-shop orders in partial cancel race: err=%v len=%d", err, len(aggs))
+				return
+			}
+			for _, a := range aggs {
+				if a.Order.ShopID == "shop-1" {
+					cancelledShop1ID = a.Order.ID
+					if _, err := h2.svc.CancelOrder(buyerCtx, &orderv1.CancelOrderRequest{
+						OrderId: a.Order.ID,
+						Reason:  "cancel only shop-1 during checkout",
+					}); err != nil {
+						t.Errorf("racing partial CancelOrder failed: %v", err)
+					}
+				}
+			}
+		}
+		partialResp, err := h2.svc.CreateCheckout(buyerCtx, &orderv1.CreateCheckoutRequest{
+			IdempotencyKey: "r4-p01-race-partial-cancel",
+			AddressId:      "addr-buyer-1",
+			Items: []*orderv1.CheckoutItemInput{
+				{SkuId: "sku-1", Quantity: 1},
+				{SkuId: "sku-2", Quantity: 1},
+			},
+			PaymentMethod: orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD,
+		})
+		if err != nil || len(partialResp.Orders) != 2 {
+			t.Fatalf("partial cancel CreateCheckout failed: resp=%+v err=%v", partialResp, err)
+		}
+		partialReplay, err := h2.svc.CreateCheckout(buyerCtx, &orderv1.CreateCheckoutRequest{
+			IdempotencyKey: "r4-p01-race-partial-cancel",
+			AddressId:      "addr-buyer-1",
+			Items: []*orderv1.CheckoutItemInput{
+				{SkuId: "sku-1", Quantity: 1},
+				{SkuId: "sku-2", Quantity: 1},
+			},
+			PaymentMethod: orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD,
+		})
+		if err != nil || !partialReplay.IdempotentReplay || len(partialReplay.Orders) != 2 {
+			t.Fatalf("partial cancel replay failed: resp=%+v err=%v", partialReplay, err)
+		}
+		var sawCancelled, sawConfirmed bool
+		for _, o := range partialReplay.Orders {
+			if o.Id == cancelledShop1ID {
+				if o.Status != orderv1.OrderStatus_ORDER_STATUS_CANCELLED || o.PaymentStatus != "CANCELLED" {
+					t.Fatalf("partial replay cancelled order mismatch: status=%v pay=%q", o.Status, o.PaymentStatus)
+				}
+				sawCancelled = true
+			} else if o.Status == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
+				sawConfirmed = true
+			}
+		}
+		if !sawCancelled || !sawConfirmed {
+			t.Fatalf("partial replay expected 1 CANCELLED + 1 CONFIRMED, got %+v", partialReplay.Orders)
 		}
 	})
 
@@ -204,6 +266,13 @@ func TestW2B_R4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 		h.payment.afterCreatePay = func(_ *paymentv1.Payment) {
 			cancelClient()
 		}
+		h.cart.cart = &cartv1.Cart{
+			UserId: "buyer-1",
+			ShopGroups: []*cartv1.CartShopGroup{{
+				ShopId: "shop-1",
+				Items:  []*cartv1.CartItem{{SkuId: "sku-1", Quantity: 1, Selected: true}},
+			}},
+		}
 		var cartCtxErr error
 		h.cart.onClearItems = func(ctx context.Context) error {
 			cartCtxErr = ctx.Err()
@@ -213,7 +282,7 @@ func TestW2B_R4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 		resp, err := h.svc.CreateCheckout(reqCtx, &orderv1.CreateCheckoutRequest{
 			IdempotencyKey: "r4-p01-disconnect",
 			AddressId:      "addr-buyer-1",
-			Items:          []*orderv1.CheckoutItemInput{{SkuId: "sku-1", Quantity: 1}},
+			FromCart:       true,
 			PaymentMethod:  orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD,
 		})
 		if err != nil {
@@ -221,6 +290,9 @@ func TestW2B_R4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 		}
 		if wrapped.lastCtxErr != nil {
 			t.Fatalf("CompleteCheckoutWithPayment received canceled client ctx: %v", wrapped.lastCtxErr)
+		}
+		if len(h.cart.clearCalls) != 1 {
+			t.Fatalf("expected Cart.ClearItems to be called once for FromCart=true checkout, got %d calls", len(h.cart.clearCalls))
 		}
 		if cartCtxErr != nil {
 			t.Fatalf("Cart.ClearItems received canceled client ctx: %v", cartCtxErr)
@@ -236,6 +308,8 @@ func TestW2B_R4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 
 	t.Run("CompleteCheckoutFailsAllRetries_IdempotentRetryRecoversImmediatelyWithoutHanging", func(t *testing.T) {
 		h := newTestHarness()
+		var createdPay1 *paymentv1.Payment
+		h.payment.afterCreatePay = func(p *paymentv1.Payment) { createdPay1 = p }
 		wrapped := &failingCompleteStore{
 			Store:         h.store,
 			failRemaining: 5, // fail initial call + all retries
@@ -250,16 +324,26 @@ func TestW2B_R4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 			Items:          []*orderv1.CheckoutItemInput{{SkuId: "sku-1", Quantity: 1}},
 			PaymentMethod:  orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR,
 		})
-		if err != nil {
-			t.Fatalf("CreateCheckout 1 failed: %v", err)
+		if err == nil || resp1 != nil || status.Code(err) != codes.Unavailable {
+			t.Fatalf("P1-1: expected Unavailable (not 200 OK) when CompleteCheckoutWithPayment fails all retries, got resp=%+v err=%v", resp1, err)
+		}
+		if len(h.cart.clearCalls) != 0 {
+			t.Fatalf("P1-1: Cart.ClearItems must not run when finalization failed, got %d calls", len(h.cart.clearCalls))
 		}
 		if wrapped.completeCalls < 2 {
 			t.Fatalf("expected CompleteCheckoutWithPayment to retry on transient error, got %d calls", wrapped.completeCalls)
 		}
 
+		lookup1, lErr := h.store.GetCheckoutGroupForIdempotency(context.Background(), "buyer-1", "r4-p01-retry-recover")
+		if lErr != nil || !lookup1.HasOrders {
+			t.Fatalf("expected persisted IN_PROGRESS group in store, got lookup=%+v err=%v", lookup1, lErr)
+		}
+		groupID1 := lookup1.Group.ID
+		payID1 := createdPay1.GetPaymentId()
+
 		// Group is still IN_PROGRESS with persisted orders and payment_id='' in DB, while PaymentService has the payment.
 		// Backdate past grace period (N7) so retry triggers immediate forward recovery instead of waiting 15s -> Aborted.
-		h.store.SetCheckoutGroupUpdatedAt(resp1.CheckoutGroupId, time.Now().UTC().Add(-5*time.Second))
+		h.store.SetCheckoutGroupUpdatedAt(groupID1, time.Now().UTC().Add(-5*time.Second))
 		wrapped.mu.Lock()
 		wrapped.failRemaining = 0
 		wrapped.mu.Unlock()
@@ -276,9 +360,9 @@ func TestW2B_R4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatalf("idempotent retry should self-recover from PaymentService instead of hanging/Aborting: %v", err)
 		}
-		if resp2.CheckoutGroupId != resp1.CheckoutGroupId || resp2.PaymentId != resp1.PaymentId || !resp2.IdempotentReplay {
+		if resp2.CheckoutGroupId != groupID1 || resp2.PaymentId != payID1 || !resp2.IdempotentReplay {
 			t.Fatalf("unexpected recovered replay: got group=%s pay=%s replay=%v want %s/%s/true",
-				resp2.CheckoutGroupId, resp2.PaymentId, resp2.IdempotentReplay, resp1.CheckoutGroupId, resp1.PaymentId)
+				resp2.CheckoutGroupId, resp2.PaymentId, resp2.IdempotentReplay, groupID1, payID1)
 		}
 	})
 
@@ -289,6 +373,8 @@ func TestW2B_R4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 		adminCtx := ctxWithUser("admin-1", "admin", "")
 
 		// Case 1: Payment exists in PaymentService (and already SUCCEEDED), but CompleteCheckoutWithPayment failed.
+		var wdPay *paymentv1.Payment
+		h.payment.afterCreatePay = func(p *paymentv1.Payment) { wdPay = p }
 		wrapped := &failingCompleteStore{Store: h.store, failRemaining: 10, failErr: errors.New("db down")}
 		h.svc.store = wrapped
 
@@ -298,17 +384,21 @@ func TestW2B_R4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 			Items:          []*orderv1.CheckoutItemInput{{SkuId: "sku-1", Quantity: 1}},
 			PaymentMethod:  orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR,
 		})
-		if err != nil {
-			t.Fatalf("CreateCheckout 1: %v", err)
+		if err == nil || resp1 != nil || status.Code(err) != codes.Unavailable {
+			t.Fatalf("P1-1: CreateCheckout 1 expected Unavailable when finalization fails, got resp=%+v err=%v", resp1, err)
 		}
+		lookupWD, _ := h.store.GetCheckoutGroupForIdempotency(context.Background(), "buyer-1", "r4-p01-watchdog-found")
+		wdGroupID := lookupWD.Group.ID
+		wdAggs, _ := h.store.ListOrdersByCheckoutGroup(context.Background(), wdGroupID)
+		wdOrderID := wdAggs[0].Order.ID
 		h.payment.onGetPayment = func(req *paymentv1.GetPaymentRequest) (*paymentv1.GetPaymentResponse, error) {
-			if req.GetOrderGroupId() == resp1.CheckoutGroupId {
+			if req.GetOrderGroupId() == wdGroupID {
 				return &paymentv1.GetPaymentResponse{
 					Payment: &paymentv1.Payment{
-						PaymentId:    resp1.PaymentId,
-						OrderGroupId: resp1.CheckoutGroupId,
+						PaymentId:    wdPay.GetPaymentId(),
+						OrderGroupId: wdGroupID,
 						Status:       paymentv1.PaymentStatus_PAYMENT_STATUS_SUCCEEDED,
-						AmountVnd:    resp1.TotalPayableVnd,
+						AmountVnd:    wdPay.GetAmountVnd(),
 					},
 				}, nil
 			}
@@ -348,9 +438,9 @@ func TestW2B_R4_A_CompleteCheckoutRaceAndRecovery(t *testing.T) {
 		}
 
 		// Case 1 recovered: group COMPLETED/SUCCEEDED and order CONFIRMED/SUCCEEDED with payment_id attached.
-		g1, _ := h.store.GetCheckoutGroupByID(context.Background(), resp1.CheckoutGroupId)
-		o1, _ := h.svc.GetOrder(adminCtx, &orderv1.GetOrderRequest{OrderId: resp1.Orders[0].Id})
-		if g1.Status != "COMPLETED" || g1.PaymentStatus != "SUCCEEDED" || o1.Order.Status != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED || o1.Order.PaymentId != resp1.PaymentId {
+		g1, _ := h.store.GetCheckoutGroupByID(context.Background(), wdGroupID)
+		o1, _ := h.svc.GetOrder(adminCtx, &orderv1.GetOrderRequest{OrderId: wdOrderID})
+		if g1.Status != "COMPLETED" || g1.PaymentStatus != "SUCCEEDED" || o1.Order.Status != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED || o1.Order.PaymentId != wdPay.GetPaymentId() {
 			t.Fatalf("case 1 recovery mismatch: grp=%s/%s ord=%v payID=%q", g1.Status, g1.PaymentStatus, o1.Order.Status, o1.Order.PaymentId)
 		}
 
@@ -477,10 +567,12 @@ func TestW2B_R4_B_ProcessExpiredGroupCancelPaymentSafety(t *testing.T) {
 			Items:          []*orderv1.CheckoutItemInput{{SkuId: "sku-1", Quantity: 1}},
 			PaymentMethod:  orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR,
 		})
-		if err != nil {
-			t.Fatalf("CreateCheckout: %v", err)
+		if err == nil || resp != nil || status.Code(err) != codes.Unavailable {
+			t.Fatalf("P1-1: CreateCheckout expected Unavailable when finalization fails, got resp=%+v err=%v", resp, err)
 		}
-		ordID := resp.Orders[0].Id
+		lookup, _ := h.store.GetCheckoutGroupForIdempotency(context.Background(), "buyer-1", "r4-p02-empty-payid")
+		aggs, _ := h.store.ListOrdersByCheckoutGroup(context.Background(), lookup.Group.ID)
+		ordID := aggs[0].Order.ID
 		h.store.SetOrderPaymentExpiresAt(ordID, time.Now().UTC().Add(-time.Minute))
 
 		h.payment.onGetPayment = func(req *paymentv1.GetPaymentRequest) (*paymentv1.GetPaymentResponse, error) {
@@ -569,10 +661,11 @@ func TestW2B_R4_C_AmbiguousReserveErrorsAndWatchdogCleanup(t *testing.T) {
 		}
 
 		// Group MUST still be active (IN_PROGRESS, not FAILED) so ScanStaleCheckoutGroups can clean it up!
-		grp, gErr := h.store.GetActiveCheckoutGroup(context.Background(), "buyer-1", "r4-c-comp-fails")
+		lookup, gErr := h.store.GetCheckoutGroupForIdempotency(context.Background(), "buyer-1", "r4-c-comp-fails")
 		if gErr != nil {
 			t.Fatalf("group must remain IN_PROGRESS when compensation failed so watchdog can recover it, got err=%v", gErr)
 		}
+		grp := &lookup.Group
 		if grp.Status != "IN_PROGRESS" {
 			t.Fatalf("group status = %q, want IN_PROGRESS", grp.Status)
 		}

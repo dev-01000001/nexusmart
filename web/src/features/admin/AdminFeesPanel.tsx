@@ -66,7 +66,7 @@ export function AdminFeesPanel() {
       if (catFilterId) catQs.set("category_id", catFilterId);
 
       const [catsRes, catFeesRes, payFeesRes] = await Promise.all([
-        api<{ categories: GatewayCategory[] }>("categories").catch(() => ({
+        api<{ categories: GatewayCategory[] }>("admin/categories").catch(() => ({
           categories: [] as GatewayCategory[],
         })),
         api<PaginatedResponse<GatewayCategoryFeeSchedule>>(
@@ -269,7 +269,7 @@ export function AdminFeesPanel() {
               >
                 {categories.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.name} (hiện tại {formatBpsPercent(c.commission_rate_bps)})
+                    {c.name} (hiện tại {formatBpsPercent(c.commission_rate_bps ?? 0)})
                   </option>
                 ))}
               </select>
@@ -283,7 +283,7 @@ export function AdminFeesPanel() {
                 type="number"
                 min={0}
                 max={5000}
-                step={25}
+                step={1}
                 className={shared.textInput}
                 value={catBpsStr}
                 onChange={(e) => setCatBpsStr(e.target.value)}
@@ -458,7 +458,7 @@ export function AdminFeesPanel() {
                 type="number"
                 min={0}
                 max={2000}
-                step={10}
+                step={1}
                 className={shared.textInput}
                 value={payBpsStr}
                 onChange={(e) => setPayBpsStr(e.target.value)}

@@ -1,11 +1,16 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/url"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"google.golang.org/grpc/codes"
@@ -20,6 +26,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
+	"github.com/nexusmart/core/pkg/common/jetstream"
 	"github.com/nexusmart/core/services/product/internal/events"
 	"github.com/nexusmart/core/services/product/internal/store"
 	"github.com/nexusmart/core/services/product/migrations"
@@ -44,7 +51,7 @@ func (p *pgTestPublisher) PublishMsg(m *nats.Msg, _ ...nats.PubOpt) (*nats.PubAc
 }
 
 // TestPGStore_W2BIntegration runs real PostgreSQL integration and concurrency tests
-// when TEST_PRODUCT_DB_URL is set (same convention as shipping's TEST_SHIPPING_DB_URL).
+// when TEST_PRODUCT_DB_URL is set.
 func TestPGStore_W2BIntegration(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_PRODUCT_DB_URL"))
 	if dsn == "" {
@@ -234,6 +241,12 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 		}
 		prodID := prod.GetProduct().GetId()
 		skuID := prod.GetProduct().GetSkus()[0].GetId()
+		if _, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+			ProductId: prodID,
+			Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
+		}); err != nil {
+			t.Fatalf("AdminReviewProduct approve: %v", err)
+		}
 
 		assertMin := func(label string, want int64) {
 			t.Helper()
@@ -302,6 +315,12 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("CreateProduct: %v", err)
+		}
+		if _, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+			ProductId: prod.GetProduct().GetId(),
+			Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
+		}); err != nil {
+			t.Fatalf("AdminReviewProduct approve: %v", err)
 		}
 		skuID := prod.GetProduct().GetSkus()[0].GetId()
 
@@ -610,4 +629,1073 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 			t.Fatalf("concurrent ReserveStock/ReleaseStock on Postgres leaked reserved_stock=%d (want 0)", skFinal.ReservedStock)
 		}
 	})
+
+	// 6. W3A D2: GetSKUsBatch hidden SKU redaction on real Postgres.
+	t.Run("W3A_D2_GetSKUsBatch_Redaction_RealPG", func(t *testing.T) {
+		srv := New(pgStore, nil)
+		buyerCtx := ctxWithRole("pg-d2-buyer", "buyer", "")
+		otherSellerCtx := ctxWithRole("pg-d2-other", "seller", "pg-shop-other")
+
+		cat, err := srv.CreateCategory(adminCtx, &productv1.CreateCategoryRequest{
+			Name: "PG D2 Cat " + runPrefix, Slug: runPrefix + "-d2", CommissionRateBps: 650,
+		})
+		if err != nil {
+			t.Fatalf("CreateCategory: %v", err)
+		}
+		catID := cat.GetCategory().GetId()
+
+		approvedProd, err := srv.CreateProduct(sellerCtx, &productv1.CreateProductRequest{
+			CategoryId: catID,
+			Name:       "PG D2 Active " + runPrefix,
+			Skus: []*productv1.SKUInput{
+				{SkuCode: runPrefix + "-D2-ACT", Name: "Active", Attributes: map[string]string{"k": "v"}, PriceVnd: 199000, Stock: 10, WeightGrams: 250, ImageUrl: "https://cdn.local/act.jpg"},
+				{SkuCode: runPrefix + "-D2-OFF", Name: "Off", Attributes: map[string]string{"k": "v"}, PriceVnd: 210000, Stock: 5, WeightGrams: 260, ImageUrl: "https://cdn.local/off.jpg"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateProduct active: %v", err)
+		}
+		if _, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+			ProductId: approvedProd.GetProduct().GetId(),
+			Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
+		}); err != nil {
+			t.Fatalf("Approve: %v", err)
+		}
+		skuAct := findSKUByCode(t, approvedProd.GetProduct().GetSkus(), runPrefix+"-D2-ACT")
+		skuOff := findSKUByCode(t, approvedProd.GetProduct().GetSkus(), runPrefix+"-D2-OFF")
+		if _, err := srv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
+			Id:   approvedProd.GetProduct().GetId(),
+			Skus: []*productv1.SKUInput{{Id: skuAct.GetId(), SkuCode: runPrefix + "-D2-ACT", Name: "Active", Attributes: map[string]string{"k": "v"}, PriceVnd: 199000, Stock: 10, WeightGrams: 250, ImageUrl: "https://cdn.local/act.jpg"}},
+		}); err != nil {
+			t.Fatalf("deactivate skuOff: %v", err)
+		}
+
+		pendingProd, err := srv.CreateProduct(sellerCtx, &productv1.CreateProductRequest{
+			CategoryId: catID,
+			Name:       "PG D2 Pending " + runPrefix,
+			Skus:       []*productv1.SKUInput{{SkuCode: runPrefix + "-D2-PEND", Name: "Pend", PriceVnd: 220000, Stock: 4, WeightGrams: 200, ImageUrl: "https://cdn.local/pend.jpg"}},
+		})
+		if err != nil {
+			t.Fatalf("CreateProduct pending: %v", err)
+		}
+		skuPend := pendingProd.GetProduct().GetSkus()[0]
+
+		ids := []string{skuAct.GetId(), skuOff.GetId(), skuPend.GetId()}
+		for label, caller := range map[string]context.Context{
+			"anon":         ctx,
+			"buyer":        buyerCtx,
+			"other_seller": otherSellerCtx,
+		} {
+			resp, bErr := srv.GetSKUsBatch(caller, &productv1.GetSKUsBatchRequest{SkuIds: ids})
+			if bErr != nil || len(resp.GetSkus()) != 3 {
+				t.Fatalf("%s GetSKUsBatch: len=%d err=%v", label, len(resp.GetSkus()), bErr)
+			}
+			for _, sk := range resp.GetSkus() {
+				if sk.GetId() == skuAct.GetId() {
+					if !sk.GetIsActive() || sk.GetPriceVnd() != 199000 || sk.GetCommissionRateBps() != 650 {
+						t.Fatalf("%s active SKU altered: %+v", label, sk)
+					}
+					continue
+				}
+				if sk.GetIsActive() || sk.GetPriceVnd() != 0 || sk.GetStock() != 0 || sk.GetSkuCode() != "" ||
+					sk.GetCommissionRateBps() != 0 || sk.GetCategoryId() != "" || sk.GetMinPrice_30DVnd() != 0 ||
+					sk.GetShopId() != "pg-shop-1" || sk.GetProductName() == "" {
+					t.Fatalf("%s hidden SKU redaction failed: %+v", label, sk)
+				}
+			}
+		}
+
+		for label, caller := range map[string]context.Context{
+			"owner_seller": sellerCtx,
+			"admin":        adminCtx,
+		} {
+			resp, bErr := srv.GetSKUsBatch(caller, &productv1.GetSKUsBatchRequest{SkuIds: ids})
+			if bErr != nil || len(resp.GetSkus()) != 3 {
+				t.Fatalf("%s GetSKUsBatch: len=%d err=%v", label, len(resp.GetSkus()), bErr)
+			}
+			for _, sk := range resp.GetSkus() {
+				if sk.GetPriceVnd() <= 0 || sk.GetCommissionRateBps() != 650 || sk.GetSkuCode() == "" {
+					t.Fatalf("%s must see full hidden SKU fields: %+v", label, sk)
+				}
+			}
+		}
+	})
+
+	// 7. W3A D8: ListProducts.sku_ids filtering, pagination, and real Postgres index plan (no Seq Scan on products).
+	t.Run("W3A_D8_ListProducts_SKUIDs_And_IndexPlan_RealPG", func(t *testing.T) {
+		srv := New(pgStore, nil)
+		cat, err := srv.CreateCategory(adminCtx, &productv1.CreateCategoryRequest{
+			Name: "PG D8 Cat " + runPrefix, Slug: runPrefix + "-d8", CommissionRateBps: 500,
+		})
+		if err != nil {
+			t.Fatalf("CreateCategory: %v", err)
+		}
+		catID := cat.GetCategory().GetId()
+
+		// Bulk-seed 2,000 products & SKUs so Postgres planner prefers index scan over seq scan.
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO products (id, shop_id, category_id, name, description, images, status, min_price_vnd, max_price_vnd, slug, search_text)
+			SELECT $1 || '-p-' || g, 'pg-shop-bulk', $2, 'Bulk Product ' || g, '', '[]'::jsonb, 'APPROVED',
+			       100000 + g * 100, 100000 + g * 100, $1 || '-bulk-' || g, 'bulk product ' || g
+			FROM generate_series(1, 2000) AS g
+		`, runPrefix, catID); err != nil {
+			t.Fatalf("bulk insert products: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO skus (id, product_id, sku_code, name, attributes, price_vnd, stock, reserved_stock, version, weight_grams, image_url, status)
+			SELECT $1 || '-s-' || g, $1 || '-p-' || g, 'BLK-' || g, 'Std', '{}'::jsonb, 100000 + g * 100, 10, 0, 1, 200, '', 'ACTIVE'
+			FROM generate_series(1, 2000) AS g
+		`, runPrefix); err != nil {
+			t.Fatalf("bulk insert skus: %v", err)
+		}
+		// Add a PENDING product and a soft-deleted product to ensure sku_ids excludes them.
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO products (id, shop_id, category_id, name, description, images, status, min_price_vnd, max_price_vnd, slug, search_text, deleted_at)
+			VALUES
+				($1 || '-p-pend', 'pg-shop-1', $2, 'Pending Bulk', '', '[]'::jsonb, 'PENDING', 150000, 150000, $1 || '-pend', 'pending bulk', NULL),
+				($1 || '-p-del',  'pg-shop-1', $2, 'Deleted Bulk', '', '[]'::jsonb, 'APPROVED', 150000, 150000, $1 || '-del', 'deleted bulk', NOW())
+		`, runPrefix, catID); err != nil {
+			t.Fatalf("insert edge-case products: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO skus (id, product_id, sku_code, name, attributes, price_vnd, stock, reserved_stock, version, weight_grams, image_url, status)
+			VALUES
+				($1 || '-s-pend',  $1 || '-p-pend', 'PEND-1', 'Std',  '{}'::jsonb, 150000, 5, 0, 1, 200, '', 'ACTIVE'),
+				($1 || '-s-del',   $1 || '-p-del',  'DEL-1',  'Std',  '{}'::jsonb, 150000, 5, 0, 1, 200, '', 'ACTIVE'),
+				($1 || '-s-dup1',  $1 || '-p-1',    'DUP-1',  'Var2', '{}'::jsonb, 100200, 5, 0, 1, 200, '', 'ACTIVE'),
+				($1 || '-s-inact', $1 || '-p-5',    'OFF-5',  'Off',  '{}'::jsonb, 100500, 5, 0, 1, 200, '', 'INACTIVE')
+		`, runPrefix); err != nil {
+			t.Fatalf("insert edge-case skus: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `ANALYZE products; ANALYZE skus;`); err != nil {
+			t.Fatalf("ANALYZE: %v", err)
+		}
+
+		// Query with 3 valid public SKUs (2 on same product p-1), plus pending, deleted, and deactivated SKU.
+		querySKUs := []string{
+			runPrefix + "-s-1",
+			runPrefix + "-s-dup1", // same product p-1
+			runPrefix + "-s-2",
+			runPrefix + "-s-3",
+			runPrefix + "-s-pend",
+			runPrefix + "-s-del",
+			runPrefix + "-s-inact",
+		}
+		p1, err := srv.ListProducts(adminCtx, &productv1.ListProductsRequest{
+			SkuIds:   querySKUs,
+			SortBy:   "price_asc",
+			Page:     1,
+			PageSize: 2,
+		})
+		if err != nil {
+			t.Fatalf("ListProducts(sku_ids) page 1: %v", err)
+		}
+		if p1.GetTotal() != 3 || len(p1.GetProducts()) != 2 ||
+			p1.GetProducts()[0].GetId() != runPrefix+"-p-1" ||
+			p1.GetProducts()[1].GetId() != runPrefix+"-p-2" {
+			t.Fatalf("ListProducts(sku_ids) page 1: want total=3 [p-1,p-2], got total=%d len=%d", p1.GetTotal(), len(p1.GetProducts()))
+		}
+		p2, err := srv.ListProducts(ctx, &productv1.ListProductsRequest{
+			SkuIds:   querySKUs,
+			SortBy:   "price_asc",
+			Page:     2,
+			PageSize: 2,
+		})
+		if err != nil || p2.GetTotal() != 3 || len(p2.GetProducts()) != 1 || p2.GetProducts()[0].GetId() != runPrefix+"-p-3" {
+			t.Fatalf("ListProducts(sku_ids) page 2: want total=3 [p-3], got total=%d products=%+v err=%v", p2.GetTotal(), p2.GetProducts(), err)
+		}
+
+		// Verify EXPLAIN plan uses index scans on skus & products (no Seq Scan on products).
+		planRows, err := pool.Query(ctx, `
+			EXPLAIN (ANALYZE, FORMAT TEXT)
+			WITH matched_products AS (
+				SELECT DISTINCT s.product_id
+				FROM skus s
+				WHERE s.id = ANY($1::text[])
+				  AND s.status <> 'INACTIVE'
+			)
+			SELECT p.id
+			FROM matched_products mp
+			JOIN products p ON p.id = mp.product_id
+			WHERE p.deleted_at IS NULL
+			  AND p.status IN ('APPROVED', 'OUT_OF_STOCK')
+			ORDER BY p.min_price_vnd ASC, p.created_at DESC, p.id DESC
+			LIMIT 20 OFFSET 0
+		`, querySKUs)
+		if err != nil {
+			t.Fatalf("EXPLAIN ListProductsBySKUIDs: %v", err)
+		}
+		defer planRows.Close()
+		var planLines []string
+		for planRows.Next() {
+			var line string
+			if err := planRows.Scan(&line); err != nil {
+				t.Fatalf("scan plan line: %v", err)
+			}
+			planLines = append(planLines, line)
+		}
+		planText := strings.Join(planLines, "\n")
+		t.Logf("ListProductsBySKUIDs EXPLAIN plan:\n%s", planText)
+		if strings.Contains(planText, "Seq Scan on products") {
+			t.Fatalf("expected index scan on products, got Seq Scan:\n%s", planText)
+		}
+		if strings.Contains(planText, "Seq Scan on skus") {
+			t.Fatalf("expected index scan on skus, got Seq Scan:\n%s", planText)
+		}
+		if !strings.Contains(planText, "Index") {
+			t.Fatalf("expected Index Scan / Index Only Scan in plan:\n%s", planText)
+		}
+	})
+
+	// 8. W3A D9: Outbox claim-lease outside DB tx, concurrent workers, crash recovery, stale token, aggregate ordering.
+	t.Run("W3A_D9_OutboxLease_OutsideTx_CrashRecovery_And_AggregateOrder_RealPG", func(t *testing.T) {
+		subPrefix := runPrefix + "-d9-lease-"
+		t.Cleanup(func() {
+			_, _ = pool.Exec(context.Background(), `DELETE FROM outbox_events WHERE id LIKE $1`, subPrefix+"%")
+		})
+
+		// Drain any unpublished outbox events from earlier subtests first.
+		drainRelay := events.NewOutboxRelay(pgStore, &pgTestPublisher{}, nil, 50*time.Millisecond, nil)
+		drainRelay.FlushOnce(ctx)
+
+		baseTime := time.Now().UTC().Add(-10 * time.Minute)
+		insertEv := func(id, aggID string, at time.Time) {
+			t.Helper()
+			payloadBytes, _ := json.Marshal(events.ProductReviewedPayload{
+				ProductID: aggID, ProductName: "Prod " + aggID, ShopID: "pg-shop-1", Decision: "APPROVE", OccurredAt: at.Format(time.RFC3339),
+			})
+			if err := pgStore.InsertOutboxEvent(ctx, store.OutboxEvent{
+				ID: id, EventType: events.SubjectProductReviewed, AggregateID: aggID, PayloadJSON: payloadBytes, CreatedAt: at,
+			}); err != nil {
+				t.Fatalf("InsertOutboxEvent %s: %v", id, err)
+			}
+		}
+
+		// 8a. Prove publishFn runs OUTSIDE any DB transaction (zero RowExclusiveLock on outbox_events during publish).
+		evTxProof := subPrefix + "outtx"
+		insertEv(evTxProof, runPrefix+"-agg-tx", baseTime)
+		var sawLocksDuringPublish int64
+		var sawClaimTokenSet bool
+		publishedCount, err := pgStore.ProcessPendingOutbox(ctx, 10, func(pCtx context.Context, ev store.OutboxEvent) error {
+			if ev.ID != evTxProof {
+				return nil
+			}
+			// Check from a separate pool connection that NO row-level/table-level write lock is held on outbox_events,
+			// and that claimed_until + claim_token are ALREADY committed and visible!
+			var lockCnt int64
+			if qErr := pool.QueryRow(pCtx, `
+				SELECT COUNT(*)
+				FROM pg_locks l
+				JOIN pg_class c ON c.oid = l.relation
+				WHERE c.relname = 'outbox_events'
+				  AND l.mode IN ('RowExclusiveLock', 'ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock')
+				  AND l.granted = true
+			`).Scan(&lockCnt); qErr != nil {
+				return qErr
+			}
+			sawLocksDuringPublish = lockCnt
+
+			var token string
+			var until *time.Time
+			if qErr := pool.QueryRow(pCtx, `SELECT claim_token, claimed_until FROM outbox_events WHERE id = $1`, ev.ID).Scan(&token, &until); qErr != nil {
+				return qErr
+			}
+			sawClaimTokenSet = token != "" && until != nil && until.After(time.Now().UTC().Add(-time.Second))
+			return nil
+		})
+		if err != nil || publishedCount != 1 {
+			t.Fatalf("out-of-tx proof publish: count=%d err=%v", publishedCount, err)
+		}
+		if sawLocksDuringPublish != 0 {
+			t.Fatalf("outbox publish held %d write locks on outbox_events during publishFn (must publish outside tx!)", sawLocksDuringPublish)
+		}
+		if !sawClaimTokenSet {
+			t.Fatalf("expected committed claim_token and claimed_until visible to other connections during publishFn")
+		}
+
+		// 8b. Crash recovery + stale token + cross-worker per-aggregate blocking on real Postgres.
+		aggCrash := runPrefix + "-agg-crash"
+		aggFree := runPrefix + "-agg-free"
+		evC1 := subPrefix + "c1"
+		evC2 := subPrefix + "c2"
+		evFree := subPrefix + "free"
+		insertEv(evC1, aggCrash, baseTime.Add(time.Second))
+		insertEv(evC2, aggCrash, baseTime.Add(2*time.Second))
+		insertEv(evFree, aggFree, baseTime.Add(3*time.Second))
+
+		// Worker 1 claims only evC1 and "crashes" (never marks published).
+		claimed1, staleToken, err := pgStore.ClaimPendingOutbox(ctx, 1)
+		if err != nil || len(claimed1) != 1 || claimed1[0].ID != evC1 {
+			t.Fatalf("worker 1 claim: got=%+v err=%v", claimed1, err)
+		}
+
+		// Worker 2 runs while evC1 is leased: MUST NOT claim evC1 OR evC2 (same aggregate), ONLY evFree!
+		var w2Published []string
+		n2, err := pgStore.ProcessPendingOutbox(ctx, 10, func(_ context.Context, ev store.OutboxEvent) error {
+			w2Published = append(w2Published, ev.ID)
+			return nil
+		})
+		if err != nil || n2 != 1 || len(w2Published) != 1 || w2Published[0] != evFree {
+			t.Fatalf("worker 2 while evC1 leased: want [%s], got n=%d ids=%v err=%v", evFree, n2, w2Published, err)
+		}
+
+		// Simulate lease expiry in Postgres -> Worker 2 re-claims and publishes [evC1, evC2] in strict order!
+		if _, err := pool.Exec(ctx, `UPDATE outbox_events SET claimed_until = NOW() - INTERVAL '1 second' WHERE id = $1`, evC1); err != nil {
+			t.Fatalf("expire lease: %v", err)
+		}
+		var recovered []string
+		nRec, err := pgStore.ProcessPendingOutbox(ctx, 10, func(_ context.Context, ev store.OutboxEvent) error {
+			recovered = append(recovered, ev.ID)
+			return nil
+		})
+		if err != nil || nRec != 2 || len(recovered) != 2 || recovered[0] != evC1 || recovered[1] != evC2 {
+			t.Fatalf("recovery after lease expiry: want [%s %s], got n=%d ids=%v err=%v", evC1, evC2, nRec, recovered, err)
+		}
+
+		// Zombie Worker 1 trying to mark published with staleToken MUST affect 0 rows (marked=false).
+		zombieMarked, err := pgStore.MarkOutboxPublished(ctx, evC1, staleToken)
+		if err != nil || zombieMarked {
+			t.Fatalf("zombie MarkOutboxPublished: want marked=false err=nil, got marked=%v err=%v", zombieMarked, err)
+		}
+
+		// 8c. Failure on evF1 blocks evF2 (same aggregate) in batch while evOther publishes, then retry drains [evF1, evF2] in order.
+		aggFail := runPrefix + "-agg-fail"
+		aggOK := runPrefix + "-agg-ok"
+		evF1 := subPrefix + "f1"
+		evOK := subPrefix + "ok"
+		evF2 := subPrefix + "f2"
+		insertEv(evF1, aggFail, baseTime.Add(4*time.Second))
+		insertEv(evOK, aggOK, baseTime.Add(5*time.Second))
+		insertEv(evF2, aggFail, baseTime.Add(6*time.Second))
+
+		var attempt1IDs []string
+		nFailBatch, err := pgStore.ProcessPendingOutbox(ctx, 10, func(_ context.Context, ev store.OutboxEvent) error {
+			attempt1IDs = append(attempt1IDs, ev.ID)
+			if ev.ID == evF1 {
+				return errors.New("simulated nats outage for evF1")
+			}
+			return nil
+		})
+		if err != nil || nFailBatch != 1 || len(attempt1IDs) != 2 || attempt1IDs[0] != evF1 || attempt1IDs[1] != evOK {
+			t.Fatalf("aggregate failure batch: want published=1 tried=[%s %s] (evF2 skipped), got n=%d tried=%v err=%v",
+				evF1, evOK, nFailBatch, attempt1IDs, err)
+		}
+		var evF2Attempts int32
+		if err := pool.QueryRow(ctx, `SELECT attempts FROM outbox_events WHERE id = $1`, evF2).Scan(&evF2Attempts); err != nil {
+			t.Fatalf("check evF2 attempts: %v", err)
+		}
+		if evF2Attempts != 0 {
+			t.Fatalf("skipped evF2 should have attempts=0, got %d", evF2Attempts)
+		}
+		// Non-infra failure puts evF1 into backoff (claimed_until > NOW()), so expire backoff before testing retry order.
+		var evF1Until *time.Time
+		if err := pool.QueryRow(ctx, `SELECT claimed_until FROM outbox_events WHERE id = $1`, evF1).Scan(&evF1Until); err != nil {
+			t.Fatalf("check evF1 backoff: %v", err)
+		}
+		if evF1Until == nil || !evF1Until.After(time.Now().UTC()) {
+			t.Fatalf("expected evF1 in future backoff after non-infra failure, got claimed_until=%v", evF1Until)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE outbox_events SET claimed_until = NOW() - INTERVAL '1 second' WHERE id = $1`, evF1); err != nil {
+			t.Fatalf("expire evF1 backoff: %v", err)
+		}
+
+		var attempt2IDs []string
+		nRetry, err := pgStore.ProcessPendingOutbox(ctx, 10, func(_ context.Context, ev store.OutboxEvent) error {
+			attempt2IDs = append(attempt2IDs, ev.ID)
+			return nil
+		})
+		if err != nil || nRetry != 2 || len(attempt2IDs) != 2 || attempt2IDs[0] != evF1 || attempt2IDs[1] != evF2 {
+			t.Fatalf("retry after aggregate failure: want [%s %s], got n=%d ids=%v err=%v", evF1, evF2, nRetry, attempt2IDs, err)
+		}
+	})
+
+	// 9. W3A D9 follow-up: slow publisher stops before lease expiry, 2 concurrent workers keep strict order,
+	//    and NATS infra error aborts batch after 1 attempt releasing remaining events immediately.
+	t.Run("W3A_D9_LeaseBudgetAndInfraError_RealPG", func(t *testing.T) {
+		subPrefix := runPrefix + "-d9-budget-"
+		t.Cleanup(func() {
+			_, _ = pool.Exec(context.Background(), `DELETE FROM outbox_events WHERE id LIKE $1`, subPrefix+"%")
+		})
+
+		// Use a dedicated PgStore instance with custom lease/timeout so we don't mutate pgStore.
+		slowStore := store.NewPgStore(pool)
+		defer slowStore.SetOutboxLease(jetstream.DefaultOutboxLease)
+
+		// Drain any leftover unpublished events.
+		_, _ = slowStore.ProcessPendingOutbox(ctx, 100, func(_ context.Context, _ store.OutboxEvent) error { return nil })
+
+		// 9a. NATS ErrTimeout aborts batch after 1 attempt and releases remaining events immediately.
+		base := time.Now().UTC().Add(-5 * time.Minute)
+		infraIDs := make([]string, 4)
+		for i := 0; i < 4; i++ {
+			id := fmt.Sprintf("%sinfra-%d", subPrefix, i)
+			infraIDs[i] = id
+			agg := fmt.Sprintf("%s-agg-infra-%d", runPrefix, i)
+			raw, _ := json.Marshal(events.ProductReviewedPayload{
+				ProductID: agg, ProductName: agg, ShopID: "pg-shop-1", Decision: "APPROVE",
+				OccurredAt: base.Add(time.Duration(i) * time.Second).Format(time.RFC3339),
+			})
+			if err := slowStore.InsertOutboxEvent(ctx, store.OutboxEvent{
+				ID: id, EventType: events.SubjectProductReviewed, AggregateID: agg, PayloadJSON: raw, CreatedAt: base.Add(time.Duration(i) * time.Second),
+			}); err != nil {
+				t.Fatalf("insert infra %d: %v", i, err)
+			}
+		}
+
+		infraAttempts := 0
+		nInfra, infraErr := slowStore.ProcessPendingOutbox(ctx, 10, func(_ context.Context, _ store.OutboxEvent) error {
+			infraAttempts++
+			return fmt.Errorf("nats down: %w", nats.ErrTimeout)
+		})
+		if infraErr == nil || !errors.Is(infraErr, nats.ErrTimeout) {
+			t.Fatalf("expected nats.ErrTimeout returned, got n=%d err=%v", nInfra, infraErr)
+		}
+		if infraAttempts != 1 {
+			t.Fatalf("expected only 1 publish attempt on nats.ErrTimeout, got %d", infraAttempts)
+		}
+		for i, id := range infraIDs {
+			var attempts int32
+			var token string
+			var until *time.Time
+			if err := pool.QueryRow(ctx, `SELECT attempts, claim_token, claimed_until FROM outbox_events WHERE id = $1`, id).Scan(&attempts, &token, &until); err != nil {
+				t.Fatalf("query infra row %s: %v", id, err)
+			}
+			if token != "" || until != nil {
+				t.Fatalf("row %s still leased after infra error: token=%q until=%v", id, token, until)
+			}
+			if i == 0 && attempts != 1 {
+				t.Fatalf("first row attempts=%d, want 1", attempts)
+			}
+			if i > 0 && attempts != 0 {
+				t.Fatalf("remaining row %s attempts=%d, want 0", id, attempts)
+			}
+		}
+		// Drain the 4 infra rows now that NATS is healthy.
+		nDrained, err := slowStore.ProcessPendingOutbox(ctx, 10, func(_ context.Context, _ store.OutboxEvent) error { return nil })
+		if err != nil || nDrained != 4 {
+			t.Fatalf("drain after infra error: want 4, got %d err=%v", nDrained, err)
+		}
+
+		// 9b. Slow publisher with 30s lease (simulated via Go clock advancing 4s/event) stops at 7 events (< 30s),
+		//     releases remaining events immediately, and never publishes past lease deadline.
+		var clkMu sync.Mutex
+		fakeNow := time.Now().UTC()
+		getFakeNow := func() time.Time {
+			clkMu.Lock()
+			defer clkMu.Unlock()
+			return fakeNow
+		}
+		advFakeNow := func(d time.Duration) time.Time {
+			clkMu.Lock()
+			defer clkMu.Unlock()
+			fakeNow = fakeNow.Add(d)
+			return fakeNow
+		}
+		slowStore.SetOutboxLease(30 * time.Second)
+		slowStore.SetOutboxClock(getFakeNow)
+
+		const slowTotal = 10
+		slowAgg := runPrefix + "-agg-slow"
+		slowIDs := make([]string, slowTotal)
+		for i := 0; i < slowTotal; i++ {
+			id := fmt.Sprintf("%sslow-%02d", subPrefix, i)
+			slowIDs[i] = id
+			raw, _ := json.Marshal(events.ProductReviewedPayload{
+				ProductID: slowAgg, ProductName: "Slow", ShopID: "pg-shop-1", Decision: "APPROVE",
+				OccurredAt: base.Add(time.Duration(10+i) * time.Second).Format(time.RFC3339),
+			})
+			if err := slowStore.InsertOutboxEvent(ctx, store.OutboxEvent{
+				ID: id, EventType: events.SubjectProductReviewed, AggregateID: slowAgg, PayloadJSON: raw, CreatedAt: base.Add(time.Duration(10+i) * time.Second),
+			}); err != nil {
+				t.Fatalf("insert slow %d: %v", i, err)
+			}
+		}
+
+		deadline1 := getFakeNow().Add(30 * time.Second)
+		var publishedSeq []string
+		var overranLease bool
+		nSlow1, err := slowStore.ProcessPendingOutbox(ctx, 50, func(_ context.Context, ev store.OutboxEvent) error {
+			if advFakeNow(4 * time.Second).After(deadline1) {
+				overranLease = true
+			}
+			publishedSeq = append(publishedSeq, ev.ID)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("slow batch 1: %v", err)
+		}
+		if overranLease {
+			t.Fatalf("slow batch 1 published after lease deadline (published=%d)", nSlow1)
+		}
+		if nSlow1 != 7 {
+			t.Fatalf("slow batch 1 (30s lease, 5s max publish, 4s/event): want 7 published, got %d", nSlow1)
+		}
+		// Remaining 3 rows must have lease cleared and attempts=0 in Postgres right away.
+		for _, id := range slowIDs[7:] {
+			var attempts int32
+			var token string
+			var until *time.Time
+			if err := pool.QueryRow(ctx, `SELECT attempts, claim_token, claimed_until FROM outbox_events WHERE id = $1`, id).Scan(&attempts, &token, &until); err != nil {
+				t.Fatalf("query released slow row %s: %v", id, err)
+			}
+			if token != "" || until != nil || attempts != 0 {
+				t.Fatalf("remaining slow row %s should be released with attempts=0, got token=%q until=%v attempts=%d", id, token, until, attempts)
+			}
+		}
+		// Second batch drains remaining 3 in exact order.
+		nSlow2, err := slowStore.ProcessPendingOutbox(ctx, 50, func(_ context.Context, ev store.OutboxEvent) error {
+			advFakeNow(4 * time.Second)
+			publishedSeq = append(publishedSeq, ev.ID)
+			return nil
+		})
+		if err != nil || nSlow2 != 3 {
+			t.Fatalf("slow batch 2: want 3, got %d err=%v", nSlow2, err)
+		}
+		for i, wantID := range slowIDs {
+			if publishedSeq[i] != wantID {
+				t.Fatalf("slow publishedSeq[%d]=%q, want %q", i, publishedSeq[i], wantID)
+			}
+		}
+
+		// 9c. Two concurrent real-Postgres workers with second-scale lease (3s), publish timeout (1s),
+		//     and slow publisher (350ms/event <= 400ms) on 10 events of ONE aggregate (10*350ms = 3.5s > 3s):
+		//     every event published once in strict seq order, resilient under high CPU load.
+		concStore := store.NewPgStore(pool)
+		concStore.SetOutboxLease(3 * time.Second)
+		concStore.SetOutboxPublishTimeout(1 * time.Second)
+
+		concAgg := runPrefix + "-agg-conc"
+		const concTotal = 10
+		concIDs := make([]string, concTotal)
+		for i := 0; i < concTotal; i++ {
+			id := fmt.Sprintf("%sconc-%02d", subPrefix, i)
+			concIDs[i] = id
+			raw, _ := json.Marshal(events.ProductReviewedPayload{
+				ProductID: concAgg, ProductName: "Conc", ShopID: "pg-shop-1", Decision: "APPROVE",
+				OccurredAt: base.Add(time.Duration(30+i) * time.Second).Format(time.RFC3339),
+			})
+			if err := concStore.InsertOutboxEvent(ctx, store.OutboxEvent{
+				ID: id, EventType: events.SubjectProductReviewed, AggregateID: concAgg, PayloadJSON: raw, CreatedAt: base.Add(time.Duration(30+i) * time.Second),
+			}); err != nil {
+				t.Fatalf("insert conc %d: %v", i, err)
+			}
+		}
+
+		var orderMu sync.Mutex
+		var concFirstSeen []string
+		seenMsgID := make(map[string]string, concTotal)
+		var dupMismatch bool
+		pubFn := func(_ context.Context, ev store.OutboxEvent) error {
+			time.Sleep(350 * time.Millisecond)
+
+			orderMu.Lock()
+			if prev, ok := seenMsgID[ev.ID]; !ok {
+				seenMsgID[ev.ID] = ev.ID
+				concFirstSeen = append(concFirstSeen, ev.ID)
+			} else if prev != ev.ID {
+				dupMismatch = true
+			}
+			orderMu.Unlock()
+			return nil
+		}
+
+		workCtx, workCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer workCancel()
+		var wg sync.WaitGroup
+		worker := func() {
+			defer wg.Done()
+			for workCtx.Err() == nil {
+				_, _ = concStore.ProcessPendingOutbox(workCtx, 50, pubFn)
+				var left int64
+				if err := pool.QueryRow(workCtx, `SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = $1 AND published_at IS NULL`, concAgg).Scan(&left); err == nil && left == 0 {
+					return
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+		wg.Add(2)
+		go worker()
+		go worker()
+		wg.Wait()
+
+		// Per D9-bis #7: duplicates after lease expiry under heavy host load are valid with identical Nats-Msg-Id (ev.ID);
+		// verify every event is delivered and FIRST delivery order within the aggregate is strictly preserved.
+		if dupMismatch {
+			t.Fatalf("D9 violation: duplicate delivery carried mismatched event ID")
+		}
+		if len(concFirstSeen) != concTotal {
+			t.Fatalf("concFirstSeen len=%d, want %d (ids=%v)", len(concFirstSeen), concTotal, concFirstSeen)
+		}
+		for i, wantID := range concIDs {
+			if concFirstSeen[i] != wantID {
+				t.Fatalf("concFirstSeen[%d]=%q, want %q (all=%v)", i, concFirstSeen[i], wantID, concFirstSeen)
+			}
+		}
+	})
+
+	// 10. W3A D9-bis missing tests on real Postgres:
+	//     (a) lost lease mid-batch releases remaining & aborts;
+	//     (b) row-locked E1 with expired claimed_until blocks worker 2 from claiming E2;
+	//     (c) inverted created_at vs seq still publishes strictly by seq;
+	//     (d) 1 poison + 49 same-aggregate events AND 50 distinct-aggregate poisons never starve healthy aggregates;
+	//     (e) NATS down -> relay backoff caps claim attempts even under rapid triggers.
+	t.Run("W3A_D9bis_RealPG", func(t *testing.T) {
+		bisPrefix := runPrefix + "-d9bis-"
+		t.Cleanup(func() {
+			_, _ = pool.Exec(context.Background(), `DELETE FROM outbox_events WHERE id LIKE $1`, bisPrefix+"%")
+		})
+		cleanByPrefix := func(t *testing.T, prefix string) {
+			t.Helper()
+			t.Cleanup(func() {
+				_, _ = pool.Exec(context.Background(), `DELETE FROM outbox_events WHERE id LIKE $1`, prefix+"%")
+			})
+		}
+		insertEv := func(t *testing.T, id, aggID string, createdAt time.Time) {
+			t.Helper()
+			raw, _ := json.Marshal(events.ProductReviewedPayload{
+				ProductID: aggID, ProductName: "Prod " + aggID, ShopID: "pg-shop-1", Decision: "APPROVE",
+				OccurredAt: createdAt.Format(time.RFC3339Nano),
+			})
+			if err := pgStore.InsertOutboxEvent(ctx, store.OutboxEvent{
+				ID: id, EventType: events.SubjectProductReviewed, AggregateID: aggID, PayloadJSON: raw, CreatedAt: createdAt,
+			}); err != nil {
+				t.Fatalf("InsertOutboxEvent %s: %v", id, err)
+			}
+		}
+
+		t.Run("a_LostLeaseMidBatch_ReleasesRemainingAndAborts", func(t *testing.T) {
+			pfx := bisPrefix + "a-"
+			cleanByPrefix(t, pfx)
+			t0 := time.Now().UTC().Add(-2 * time.Minute)
+			e1 := pfx + "1"
+			e2 := pfx + "2"
+			e3 := pfx + "3"
+			insertEv(t, e1, runPrefix+"-agg-a1", t0)
+			insertEv(t, e2, runPrefix+"-agg-a2", t0.Add(time.Second))
+			insertEv(t, e3, runPrefix+"-agg-a3", t0.Add(2*time.Second))
+
+			var attempted []string
+			n, err := pgStore.ProcessPendingOutbox(ctx, 10, func(_ context.Context, ev store.OutboxEvent) error {
+				attempted = append(attempted, ev.ID)
+				if ev.ID == e1 {
+					// Simulate another worker stealing/replacing the lease while e1 is publishing.
+					if _, uErr := pool.Exec(ctx, `UPDATE outbox_events SET claim_token = 'stolen-token' WHERE id = $1`, e1); uErr != nil {
+						return uErr
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("ProcessPendingOutbox unexpected err: %v", err)
+			}
+			if n != 0 {
+				t.Fatalf("expected 0 marked published after losing lease on e1, got %d", n)
+			}
+			if len(attempted) != 1 || attempted[0] != e1 {
+				t.Fatalf("expected batch to abort immediately after lost lease on %s, got attempted=%v", e1, attempted)
+			}
+			for _, remID := range []string{e2, e3} {
+				var tok string
+				var until *time.Time
+				if qErr := pool.QueryRow(ctx, `SELECT claim_token, claimed_until FROM outbox_events WHERE id = $1`, remID).Scan(&tok, &until); qErr != nil {
+					t.Fatalf("query %s: %v", remID, qErr)
+				}
+				if tok != "" || until != nil {
+					t.Fatalf("remaining event %s still holds lease after mid-batch lease loss: token=%q until=%v", remID, tok, until)
+				}
+			}
+		})
+
+		t.Run("b_LockedExpiredRow_BlocksLaterSameAggregateEvent", func(t *testing.T) {
+			pfx := bisPrefix + "b-"
+			cleanByPrefix(t, pfx)
+			t0 := time.Now().UTC().Add(-2 * time.Minute)
+			e1 := pfx + "1"
+			e2 := pfx + "2"
+			eOther := pfx + "other"
+			aggLock := runPrefix + "-agg-lock"
+			insertEv(t, e1, aggLock, t0)
+			insertEv(t, e2, aggLock, t0.Add(time.Second))
+			insertEv(t, eOther, runPrefix+"-agg-free-b", t0.Add(2*time.Second))
+
+			// E1 has an EXPIRED claimed_until, and tx1 holds FOR UPDATE lock on E1.
+			if _, err := pool.Exec(ctx, `UPDATE outbox_events SET claimed_until = NOW() - INTERVAL '1 second', claim_token = 'expired-tok' WHERE id = $1`, e1); err != nil {
+				t.Fatalf("set expired lease on e1: %v", err)
+			}
+			lockTx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin lockTx: %v", err)
+			}
+			defer func() { _ = lockTx.Rollback(ctx) }()
+			var lockedID string
+			if err := lockTx.QueryRow(ctx, `SELECT id FROM outbox_events WHERE id = $1 FOR UPDATE`, e1).Scan(&lockedID); err != nil {
+				t.Fatalf("lock e1 FOR UPDATE: %v", err)
+			}
+
+			// Worker 2 MUST NOT claim E2 while E1 (earlier, unpublished, row-locked) is skipped by SKIP LOCKED!
+			var w2IDs []string
+			n, err := pgStore.ProcessPendingOutbox(ctx, 10, func(_ context.Context, ev store.OutboxEvent) error {
+				w2IDs = append(w2IDs, ev.ID)
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("worker 2 ProcessPendingOutbox: %v", err)
+			}
+			if n != 1 || len(w2IDs) != 1 || w2IDs[0] != eOther {
+				t.Fatalf("worker 2 while E1 row-locked with expired lease: want ONLY [%s], got n=%d ids=%v", eOther, n, w2IDs)
+			}
+
+			// Release lock on E1 -> now [E1, E2] claim and publish in strict order.
+			if err := lockTx.Rollback(ctx); err != nil {
+				t.Fatalf("rollback lockTx: %v", err)
+			}
+			var afterIDs []string
+			nAfter, err := pgStore.ProcessPendingOutbox(ctx, 10, func(_ context.Context, ev store.OutboxEvent) error {
+				afterIDs = append(afterIDs, ev.ID)
+				return nil
+			})
+			if err != nil || nAfter != 2 || len(afterIDs) != 2 || afterIDs[0] != e1 || afterIDs[1] != e2 {
+				t.Fatalf("after unlocking E1: want [%s %s], got n=%d ids=%v err=%v", e1, e2, nAfter, afterIDs, err)
+			}
+		})
+
+		t.Run("c_CreatedAtInvertedVsSeq_OrdersBySeqOnly", func(t *testing.T) {
+			pfx := bisPrefix + "c-"
+			cleanByPrefix(t, pfx)
+			tBase := time.Now().UTC().Add(-2 * time.Minute)
+			aggSeq := runPrefix + "-agg-seq"
+			e1 := pfx + "seq1"
+			e2 := pfx + "seq2"
+			// Insert E1 first (smaller seq) with LATER created_at, then E2 (larger seq) with EARLIER created_at.
+			insertEv(t, e1, aggSeq, tBase.Add(10*time.Second))
+			insertEv(t, e2, aggSeq, tBase)
+
+			var got []string
+			n, err := pgStore.ProcessPendingOutbox(ctx, 10, func(_ context.Context, ev store.OutboxEvent) error {
+				got = append(got, ev.ID)
+				return nil
+			})
+			if err != nil || n != 2 {
+				t.Fatalf("ProcessPendingOutbox inverted created_at: n=%d err=%v got=%v", n, err, got)
+			}
+			if len(got) != 2 || got[0] != e1 || got[1] != e2 {
+				t.Fatalf("expected strict seq order [%s %s], got %v (created_at leaked into ordering!)", e1, e2, got)
+			}
+		})
+
+		t.Run("d_PoisonBackoff_DoesNotStarveHealthyAggregate", func(t *testing.T) {
+			// d1: 1 poison + 49 events on SAME aggregate + 1 healthy aggregate (seq after all 50).
+			pfx1 := bisPrefix + "d1-"
+			pfx2 := bisPrefix + "d2-"
+			cleanByPrefix(t, pfx1)
+			cleanByPrefix(t, pfx2)
+			t0 := time.Now().UTC().Add(-2 * time.Minute)
+			poisonAgg := runPrefix + "-agg-poison-same"
+			healthyAgg1 := runPrefix + "-agg-healthy-1"
+			p0 := pfx1 + "p00"
+			for i := 0; i < 50; i++ {
+				insertEv(t, fmt.Sprintf("%sp%02d", pfx1, i), poisonAgg, t0.Add(time.Duration(i)*time.Millisecond))
+			}
+			h1 := pfx1 + "h1"
+			insertEv(t, h1, healthyAgg1, t0.Add(time.Second))
+
+			n1, err := pgStore.ProcessPendingOutbox(ctx, 50, func(_ context.Context, ev store.OutboxEvent) error {
+				if ev.ID == p0 {
+					return errors.New("poison non-infra error")
+				}
+				return nil
+			})
+			if err != nil || n1 != 0 {
+				t.Fatalf("d1 pass 1: want (0, nil), got (%d, %v)", n1, err)
+			}
+			var p0Until *time.Time
+			var p0Tok string
+			if err := pool.QueryRow(ctx, `SELECT claimed_until, claim_token FROM outbox_events WHERE id = $1`, p0).Scan(&p0Until, &p0Tok); err != nil {
+				t.Fatalf("query p0 backoff: %v", err)
+			}
+			if p0Until == nil || !p0Until.After(time.Now().UTC()) || p0Tok != "" {
+				t.Fatalf("d1 p0 must be in future backoff with empty token, got until=%v tok=%q", p0Until, p0Tok)
+			}
+
+			// Immediately run pass 2 (limit=50): P0..P49 must NOT occupy LIMIT 50; H1 MUST publish!
+			var d1Pass2 []string
+			n2, err := pgStore.ProcessPendingOutbox(ctx, 50, func(_ context.Context, ev store.OutboxEvent) error {
+				d1Pass2 = append(d1Pass2, ev.ID)
+				return nil
+			})
+			if err != nil || n2 != 1 || len(d1Pass2) != 1 || d1Pass2[0] != h1 {
+				t.Fatalf("d1 pass 2 starved healthy aggregate! want [%s], got n=%d ids=%v err=%v", h1, n2, d1Pass2, err)
+			}
+			// Clean d1 rows before starting d2 so d2's LIMIT 50 sees strictly d2's own rows.
+			if _, err := pool.Exec(ctx, `DELETE FROM outbox_events WHERE id LIKE $1`, pfx1+"%"); err != nil {
+				t.Fatalf("clean d1 rows: %v", err)
+			}
+
+			// d2: 50 poisons on 50 DISTINCT aggregates + 1 healthy aggregate (seq after all 50).
+			for i := 0; i < 50; i++ {
+				agg := fmt.Sprintf("%s-agg-poison-dist-%02d", runPrefix, i)
+				insertEv(t, fmt.Sprintf("%sx%02d", pfx2, i), agg, t0.Add(time.Duration(i)*time.Millisecond))
+			}
+			h2 := pfx2 + "h2"
+			insertEv(t, h2, runPrefix+"-agg-healthy-2", t0.Add(time.Second))
+
+			nx1, err := pgStore.ProcessPendingOutbox(ctx, 50, func(_ context.Context, ev store.OutboxEvent) error {
+				if strings.HasPrefix(ev.ID, pfx2+"x") {
+					return errors.New("poison distinct agg")
+				}
+				return nil
+			})
+			if err != nil || nx1 != 0 {
+				t.Fatalf("d2 pass 1: want (0, nil), got (%d, %v)", nx1, err)
+			}
+
+			// Immediately run pass 2 (limit=50): all 50 poisons are in backoff -> H2 MUST publish!
+			var d2Pass2 []string
+			nx2, err := pgStore.ProcessPendingOutbox(ctx, 50, func(_ context.Context, ev store.OutboxEvent) error {
+				d2Pass2 = append(d2Pass2, ev.ID)
+				return nil
+			})
+			if err != nil || nx2 != 1 || len(d2Pass2) != 1 || d2Pass2[0] != h2 {
+				t.Fatalf("d2 pass 2 starved healthy aggregate! want [%s], got n=%d ids=%v err=%v", h2, nx2, d2Pass2, err)
+			}
+		})
+
+		t.Run("e_NATSDown_RelayBackoffCapsClaimRate", func(t *testing.T) {
+			pfx := bisPrefix + "e-"
+			cleanByPrefix(t, pfx)
+			insertEv(t, pfx+"natsdown", runPrefix+"-agg-natsdown", time.Now().UTC().Add(-time.Minute))
+
+			var pubAttempts atomic.Int32
+			downPub := &pgErrPublisher{
+				err:      nats.ErrDisconnected,
+				attempts: &pubAttempts,
+			}
+			trig := make(chan struct{}, 1)
+			relay := events.NewOutboxRelay(pgStore, downPub, nil, 25*time.Millisecond, trig)
+
+			runCtx, runCancel := context.WithTimeout(ctx, 1200*time.Millisecond)
+			defer runCancel()
+
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				relay.Run(runCtx)
+			}()
+			go func() {
+				defer wg.Done()
+				tk := time.NewTicker(20 * time.Millisecond)
+				defer tk.Stop()
+				for {
+					select {
+					case <-runCtx.Done():
+						return
+					case <-tk.C:
+						select {
+						case trig <- struct{}{}:
+						default:
+						}
+					}
+				}
+			}()
+			wg.Wait()
+
+			gotAttempts := pubAttempts.Load()
+			// With 250ms -> 500ms -> 1s backoff ignoring triggers, 1.2s allows at most ~3-4 attempts (vs 40+ without backoff).
+			if gotAttempts < 1 || gotAttempts > 6 {
+				t.Fatalf("NATS down for 1.2s with 20ms triggers: expected 1..6 backed-off attempts, got %d", gotAttempts)
+			}
+		})
+
+		t.Run("f_NonInfraError_ErrorLogAtAttempts10WithoutPayload", func(t *testing.T) {
+			pfx := bisPrefix + "f-"
+			cleanByPrefix(t, pfx)
+			logStore := store.NewPgStore(pool)
+			var logBuf bytes.Buffer
+			logStore.SetLogger(slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
+			const secretSentinel = "SECRET-PAYLOAD-NEVER-LOG-PG-10"
+			evID := pfx + "poison10"
+			raw, _ := json.Marshal(events.ProductReviewedPayload{
+				ProductID: runPrefix + "-agg-p10", ProductName: secretSentinel, ShopID: "pg-shop-1", Decision: "APPROVE",
+				OccurredAt: time.Now().UTC().Format(time.RFC3339),
+			})
+			if err := logStore.InsertOutboxEvent(ctx, store.OutboxEvent{
+				ID: evID, EventType: events.SubjectProductReviewed, AggregateID: runPrefix + "-agg-p10", PayloadJSON: raw, CreatedAt: time.Now().UTC(),
+			}); err != nil {
+				t.Fatalf("insert poison10: %v", err)
+			}
+
+			// Attempt 9 (set attempts=8 -> fails -> attempts=9): MUST NOT log ERROR yet.
+			if _, err := pool.Exec(ctx, `UPDATE outbox_events SET attempts = 8 WHERE id = $1`, evID); err != nil {
+				t.Fatalf("seed attempts=8: %v", err)
+			}
+			_, err := logStore.ProcessPendingOutbox(ctx, 10, func(_ context.Context, _ store.OutboxEvent) error {
+				return errors.New("bad payload schema")
+			})
+			if err != nil {
+				t.Fatalf("attempt 9 process err: %v", err)
+			}
+			if strings.Contains(logBuf.String(), `"level":"ERROR"`) {
+				t.Fatalf("attempt 9 should not emit ERROR log, got: %s", logBuf.String())
+			}
+
+			// Expire backoff so attempt 10 executes immediately -> MUST emit ERROR with event_id & event_type, NO payload!
+			if _, err := pool.Exec(ctx, `UPDATE outbox_events SET claimed_until = NOW() - INTERVAL '1 second' WHERE id = $1`, evID); err != nil {
+				t.Fatalf("expire backoff for attempt 10: %v", err)
+			}
+			logBuf.Reset()
+			_, err = logStore.ProcessPendingOutbox(ctx, 10, func(_ context.Context, _ store.OutboxEvent) error {
+				return errors.New("bad payload schema")
+			})
+			if err != nil {
+				t.Fatalf("attempt 10 process err: %v", err)
+			}
+			logged := logBuf.String()
+			if !strings.Contains(logged, `"level":"ERROR"`) || !strings.Contains(logged, evID) || !strings.Contains(logged, events.SubjectProductReviewed) {
+				t.Fatalf("attempt 10 missing expected ERROR log fields: %s", logged)
+			}
+			if strings.Contains(logged, secretSentinel) {
+				t.Fatalf("attempt 10 ERROR log leaked payload secret: %s", logged)
+			}
+		})
+
+		t.Run("g_Migration000007_ReassignsSeqByCreatedAt_AfterMVCCUpdate_AndDropsOldIndex", func(t *testing.T) {
+			// Spin up an isolated temporary database on the same Postgres server and apply 000001..000006 ONLY.
+			u, err := url.Parse(dsn)
+			if err != nil {
+				t.Fatalf("parse TEST_PRODUCT_DB_URL: %v", err)
+			}
+			adminURL := *u
+			adminURL.Path = "/postgres"
+			adminConn, err := pgx.Connect(ctx, adminURL.String())
+			if err != nil {
+				t.Fatalf("connect admin postgres: %v", err)
+			}
+			dbName := "prod_mig07_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+			if _, err := adminConn.Exec(ctx, "CREATE DATABASE "+dbName); err != nil {
+				_ = adminConn.Close(ctx)
+				t.Fatalf("create db %s: %v", dbName, err)
+			}
+			_ = adminConn.Close(ctx)
+
+			testURL := *u
+			testURL.Path = "/" + dbName
+			migPool, err := pgxpool.New(ctx, testURL.String())
+			if err != nil {
+				t.Fatalf("pgxpool.New(%s): %v", dbName, err)
+			}
+			t.Cleanup(func() {
+				migPool.Close()
+				dropCtx, dropCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer dropCancel()
+				if dc, dErr := pgx.Connect(dropCtx, adminURL.String()); dErr == nil {
+					_, _ = dc.Exec(dropCtx, "DROP DATABASE IF EXISTS "+dbName+" WITH (FORCE)")
+					_ = dc.Close(dropCtx)
+				}
+			})
+
+			// Apply 000001..000006 manually and record them in schema_migrations so migrations.Apply runs ONLY 000007.
+			if _, err := migPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`); err != nil {
+				t.Fatalf("create schema_migrations: %v", err)
+			}
+			migDir := filepath.Join("..", "..", "migrations")
+			entries, err := os.ReadDir(migDir)
+			if err != nil {
+				t.Fatalf("ReadDir migrations: %v", err)
+			}
+			var preFiles []string
+			for _, e := range entries {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") && !strings.HasPrefix(e.Name(), "000007_") {
+					preFiles = append(preFiles, e.Name())
+				}
+			}
+			sort.Strings(preFiles)
+			for _, fname := range preFiles {
+				raw, rErr := os.ReadFile(filepath.Join(migDir, fname))
+				if rErr != nil {
+					t.Fatalf("read %s: %v", fname, rErr)
+				}
+				if _, eErr := migPool.Exec(ctx, string(raw)); eErr != nil {
+					t.Fatalf("apply %s: %v", fname, eErr)
+				}
+				if _, iErr := migPool.Exec(ctx, `INSERT INTO schema_migrations (filename) VALUES ($1)`, fname); iErr != nil {
+					t.Fatalf("record %s: %v", fname, iErr)
+				}
+			}
+
+			t0 := time.Date(2026, 11, 24, 17, 0, 0, 0, time.UTC)
+			p1, _ := json.Marshal(events.ProductReviewedPayload{ProductID: "prod-mig-1", ProductName: "P1", ShopID: "s1", Decision: "REJECT", OccurredAt: t0.Format(time.RFC3339)})
+			p2, _ := json.Marshal(events.ProductReviewedPayload{ProductID: "prod-mig-1", ProductName: "P1", ShopID: "s1", Decision: "APPROVE", OccurredAt: t0.Add(5 * time.Second).Format(time.RFC3339)})
+			pWS, _ := json.Marshal(events.ProductReviewedPayload{ProductID: "   ", ProductName: "WS", ShopID: "s1", Decision: "APPROVE", OccurredAt: t0.Add(10 * time.Second).Format(time.RFC3339)})
+			if _, err := migPool.Exec(ctx, `
+				INSERT INTO outbox_events (id, event_type, payload_json, created_at)
+				VALUES ('ev-mig-1', 'product.reviewed', $1::jsonb, $2),
+				       ('ev-mig-2', 'product.reviewed', $3::jsonb, $4),
+				       ('ev-mig-ws', 'product.reviewed', $5::jsonb, $6)
+			`, string(p1), t0, string(p2), t0.Add(5*time.Second), string(pWS), t0.Add(10*time.Second)); err != nil {
+				t.Fatalf("insert pre-000007 outbox rows: %v", err)
+			}
+
+			// Simulate pre-3a failed publish attempt on older E1 -> MVCC moves E1 physical ctid AFTER E2!
+			if _, err := migPool.Exec(ctx, `UPDATE outbox_events SET attempts = attempts + 1, last_error = 'pre-3a transient' WHERE id = 'ev-mig-1'`); err != nil {
+				t.Fatalf("update E1 to move ctid: %v", err)
+			}
+			var ctid1, ctid2 string
+			_ = migPool.QueryRow(ctx, `SELECT ctid::text FROM outbox_events WHERE id = 'ev-mig-1'`).Scan(&ctid1)
+			_ = migPool.QueryRow(ctx, `SELECT ctid::text FROM outbox_events WHERE id = 'ev-mig-2'`).Scan(&ctid2)
+			if ctid1 <= ctid2 {
+				t.Fatalf("expected MVCC update to place E1 ctid (%s) after E2 ctid (%s)", ctid1, ctid2)
+			}
+
+			// Apply 000007 migration via migrations.Apply.
+			if err := migrations.Apply(ctx, migPool); err != nil {
+				t.Fatalf("migrations.Apply(000007): %v", err)
+			}
+
+			// Verify E1 publishes BEFORE E2 despite physical ctid(E1) > ctid(E2)!
+			migStore := store.NewPgStore(migPool)
+			var got []string
+			n, err := migStore.ProcessPendingOutbox(ctx, 10, func(_ context.Context, ev store.OutboxEvent) error {
+				got = append(got, ev.ID)
+				return nil
+			})
+			if err != nil || n != 3 {
+				t.Fatalf("ProcessPendingOutbox post-000007 = (%d, %v), got=%v", n, err, got)
+			}
+			if fmt.Sprint(got) != "[ev-mig-1 ev-mig-2 ev-mig-ws]" {
+				t.Fatalf("post-000007 publish order = %v, want [ev-mig-1 ev-mig-2 ev-mig-ws] (MVCC ctid inverted seq!)", got)
+			}
+
+			// Old created_at partial index from 000005 MUST be dropped (P2-8).
+			var oldIdxCount int
+			if err := migPool.QueryRow(ctx, `SELECT COUNT(*) FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'idx_product_outbox_events_unpublished'`).Scan(&oldIdxCount); err != nil {
+				t.Fatalf("check old index dropped: %v", err)
+			}
+			if oldIdxCount != 0 {
+				t.Fatalf("expected legacy idx_product_outbox_events_unpublished to be dropped, found %d", oldIdxCount)
+			}
+
+			// Whitespace product_id must backfill to empty string '' (P3-11).
+			var wsAgg string
+			if err := migPool.QueryRow(ctx, `SELECT aggregate_id FROM outbox_events WHERE id = 'ev-mig-ws'`).Scan(&wsAgg); err != nil {
+				t.Fatalf("query ev-mig-ws aggregate_id: %v", err)
+			}
+			if wsAgg != "" {
+				t.Fatalf("whitespace product_id backfilled to %q, want empty string", wsAgg)
+			}
+		})
+	})
+}
+
+type pgErrPublisher struct {
+	err      error
+	attempts *atomic.Int32
+}
+
+func (p *pgErrPublisher) PublishMsg(_ *nats.Msg, _ ...nats.PubOpt) (*nats.PubAck, error) {
+	if p.attempts != nil {
+		p.attempts.Add(1)
+	}
+	return nil, p.err
 }

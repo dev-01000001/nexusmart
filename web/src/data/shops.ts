@@ -54,7 +54,6 @@ export interface Shop {
   warehouseAddress: string;
   story: string;
   accentDot: string;
-  commissionRate: number; // e.g. 0.05 = 5%
   // Wave 2 extensions (optional for 100% backward compatibility)
   freeShipThreshold?: number; // integer VND
   fastDeliveryEnabled?: boolean;
@@ -86,7 +85,6 @@ export const SHOPS: Shop[] = [
     story:
       "Chủ động khâu dệt kim tròn và xử lý chống co rút trước khi cắt rập. Tập trung vào đồ mặc hằng ngày bền form sau nhiều lần giặt máy.",
     accentDot: "#0d7480",
-    commissionRate: 0.05,
     freeShipThreshold: 199000,
     fastDeliveryEnabled: false,
     fastDeliveryFee: 35000,
@@ -249,7 +247,6 @@ export const SHOPS: Shop[] = [
     story:
       "Thiết kế cho khí hậu nóng ẩm phía Nam với sợi microfiber thoát mồ hôi nhanh, trọng lượng vải nhẹ và đường may phẳng giảm ma sát khi vận động.",
     accentDot: "#3e6b78",
-    commissionRate: 0.05,
     freeShipThreshold: 199000,
     fastDeliveryEnabled: true,
     fastDeliveryFee: 39000,
@@ -409,7 +406,6 @@ export const SHOPS: Shop[] = [
     story:
       "Ưu tiên chất liệu sợi thực vật thoáng khí như lanh pha bông và sợi tre thiên nhiên, nhuộm tông trung tính dễ phối từ công sở đến cuối tuần.",
     accentDot: "#5a7668",
-    commissionRate: 0.055,
     freeShipThreshold: 229000,
     fastDeliveryEnabled: true,
     fastDeliveryFee: 35000,
@@ -569,7 +565,6 @@ export const SHOPS: Shop[] = [
     story:
       "Kế thừa tay nghề dệt kim truyền thống miền Bắc, chú trọng độ đứng dáng của cổ áo polo, bo gấu jogger dày dặn và dòng tất cotton chải kỹ.",
     accentDot: "#4a5d68",
-    commissionRate: 0.05,
     freeShipThreshold: 199000,
     fastDeliveryEnabled: true,
     fastDeliveryFee: 39000,

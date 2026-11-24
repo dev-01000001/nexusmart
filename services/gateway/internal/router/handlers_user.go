@@ -8,6 +8,8 @@ import (
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/gateway/internal/httpx"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type userDTO struct {
@@ -992,8 +994,9 @@ func (h *handler) handleAdminListShops(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) handleAdminReviewShop(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Decision string `json:"decision"`
-		Reason   string `json:"reason"`
+		Decision          string `json:"decision"`
+		Reason            string `json:"reason"`
+		ExpectedOwnerName string `json:"expected_owner_name"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteDecodeError(w, r, err)
@@ -1003,12 +1006,17 @@ func (h *handler) handleAdminReviewShop(w http.ResponseWriter, r *http.Request) 
 	defer cancel()
 
 	resp, err := h.clients.User.AdminReviewShop(ctx, &userv1.AdminReviewShopRequest{
-		AdminId:  auth.UserIDFromContext(r.Context()),
-		ShopId:   chi.URLParam(r, "id"),
-		Decision: parseReviewDecision(body.Decision),
-		Reason:   body.Reason,
+		AdminId:           auth.UserIDFromContext(r.Context()),
+		ShopId:            chi.URLParam(r, "id"),
+		Decision:          parseReviewDecision(body.Decision),
+		Reason:            body.Reason,
+		ExpectedOwnerName: body.ExpectedOwnerName,
 	})
 	if err != nil {
+		if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition && strings.Contains(st.Message(), "OWNER_NAME_CHANGED") {
+			httpx.WriteError(w, r, http.StatusConflict, "OWNER_NAME_CHANGED", st.Message())
+			return
+		}
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
@@ -1155,6 +1163,11 @@ func (h *handler) handleAdminReviewShopBankAccount(w http.ResponseWriter, r *htt
 		httpx.WriteDecodeError(w, r, err)
 		return
 	}
+	bankAccountID := strings.TrimSpace(body.BankAccountID)
+	if bankAccountID == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "bank_account_id is required")
+		return
+	}
 	decision := parseReviewDecision(body.Decision)
 	if decision != userv1.ReviewDecision_REVIEW_DECISION_APPROVE && decision != userv1.ReviewDecision_REVIEW_DECISION_REJECT {
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "decision must be APPROVE or REJECT")
@@ -1165,7 +1178,7 @@ func (h *handler) handleAdminReviewShopBankAccount(w http.ResponseWriter, r *htt
 
 	resp, err := h.clients.User.AdminReviewShopBankAccount(ctx, &userv1.AdminReviewShopBankAccountRequest{
 		ShopId:        chi.URLParam(r, "id"),
-		BankAccountId: body.BankAccountID,
+		BankAccountId: bankAccountID,
 		Decision:      decision,
 		Reason:        body.Reason,
 	})

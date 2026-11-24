@@ -179,8 +179,9 @@ func TestE2E_GatewayW2B(t *testing.T) {
 			t.Fatalf("unexpected shipping-settings freeship response: %s", string(putResp.Body))
 		}
 
-		// Cross-shop SKU spoof in preview must be rejected with 400.
-		env.mustDoJSON(t, http.MethodPost, "/api/v1/promotions/preview", buyer.AccessToken, nil, map[string]any{
+		// Cross-shop SKU spoof and unknown SKU in preview must both return identical 400 INVALID_ARGUMENT
+		// code and message (P2-3: prevent SKU existence / shop-ownership oracle).
+		crossShopResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/promotions/preview", buyer.AccessToken, nil, map[string]any{
 			"shop_items": []map[string]any{
 				{
 					"shop_id":          seller2.ShopID,
@@ -189,9 +190,13 @@ func TestE2E_GatewayW2B(t *testing.T) {
 				},
 			},
 		}, http.StatusBadRequest)
+		var crossShopErr gwW2BErrorEnvelope
+		if err := DecodeJSON(crossShopResp, &crossShopErr); err != nil || crossShopErr.Error.Code != "INVALID_ARGUMENT" {
+			t.Fatalf("cross-shop preview error envelope want INVALID_ARGUMENT, got err=%v body=%s", err, string(crossShopResp.Body))
+		}
 
-		// Unknown SKU in preview must be rejected with 404.
-		env.mustDoJSON(t, http.MethodPost, "/api/v1/promotions/preview", buyer.AccessToken, nil, map[string]any{
+		// Unknown SKU in preview must return 400 INVALID_ARGUMENT with the exact same code and message as cross-shop SKU.
+		unknownSKUResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/promotions/preview", buyer.AccessToken, nil, map[string]any{
 			"shop_items": []map[string]any{
 				{
 					"shop_id":          seller1.ShopID,
@@ -199,7 +204,16 @@ func TestE2E_GatewayW2B(t *testing.T) {
 					"items":            []map[string]any{{"sku_id": "00000000-0000-0000-0000-000000000999", "quantity": 1}},
 				},
 			},
-		}, http.StatusNotFound)
+		}, http.StatusBadRequest)
+		var unknownSKUErr gwW2BErrorEnvelope
+		if err := DecodeJSON(unknownSKUResp, &unknownSKUErr); err != nil || unknownSKUErr.Error.Code != "INVALID_ARGUMENT" {
+			t.Fatalf("unknown SKU preview error envelope want INVALID_ARGUMENT, got err=%v body=%s", err, string(unknownSKUResp.Body))
+		}
+		if unknownSKUErr.Error.Code != crossShopErr.Error.Code || unknownSKUErr.Error.Message != crossShopErr.Error.Message {
+			t.Fatalf("unknown SKU preview error (%q: %q) must match cross-shop SKU error (%q: %q) to avoid existence oracle",
+				unknownSKUErr.Error.Code, unknownSKUErr.Error.Message,
+				crossShopErr.Error.Code, crossShopErr.Error.Message)
+		}
 
 		// Tampered client price (1 VND) and tampered freeship (999999 VND) must be overridden by server values.
 		prevResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/promotions/preview", buyer.AccessToken, nil, map[string]any{

@@ -46,7 +46,39 @@ use crate::telemetry::mask_bank_account;
 use crate::vietqr::{
     extract_occurred_at_from_json, parse_provider_timestamp, ProviderTransaction, VietQrAdapter,
 };
-use crate::webhook_security::{decide_webhook_action, IncomingWebhookPayload, WebhookDecision};
+use crate::webhook_security::{
+    decide_webhook_action, IncomingWebhookPayload, WebhookDecision, WebhookEventStatus,
+};
+
+pub const FEE_CONFIG_ACTIVE_BY_METHOD_SQL: &str = r#"
+SELECT id, seq, payment_method, fee_bps, effective_from, created_by, note, created_at
+FROM payment_fee_configs
+WHERE payment_method = $1
+  AND effective_from <= $2
+ORDER BY payment_method ASC, effective_from DESC, seq DESC
+LIMIT 1
+"#;
+
+pub const FEE_CONFIG_ACTIVE_ALL_SQL: &str = r#"
+SELECT DISTINCT ON (payment_method)
+    id, seq, payment_method, fee_bps, effective_from, created_by, note, created_at
+FROM payment_fee_configs
+WHERE effective_from <= $1
+ORDER BY payment_method ASC, effective_from DESC, seq DESC
+"#;
+
+pub const FEE_CONFIG_HISTORY_BY_METHOD_SQL: &str = r#"
+SELECT id, seq, payment_method, fee_bps, effective_from, created_by, note, created_at
+FROM payment_fee_configs
+WHERE payment_method = $1
+ORDER BY payment_method ASC, effective_from DESC, seq DESC
+"#;
+
+pub const FEE_CONFIG_HISTORY_ALL_SQL: &str = r#"
+SELECT id, seq, payment_method, fee_bps, effective_from, created_by, note, created_at
+FROM payment_fee_configs
+ORDER BY effective_from DESC, seq DESC
+"#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookProcessResult {
@@ -528,10 +560,21 @@ impl PaymentService {
         let mut tx = self.pool.begin().await?;
 
         let payment = if let Some(pid) = payment_id {
-            sqlx::query_as::<_, PaymentRecord>("SELECT * FROM payments WHERE id = $1 FOR UPDATE")
-                .bind(pid)
-                .fetch_optional(&mut *tx)
-                .await?
+            // D9-bis point 9: lock the entire checkout payment group in ascending id order before
+            // emitting `payment.failed` with `aggregate_id = order_group_id` so concurrent actions
+            // on sibling attempts (e.g., retry VietQR P1 vs P2) never invert outbox `seq`.
+            let (pay_order_id, pay_group_id): (String, String) =
+                sqlx::query_as("SELECT order_id, order_group_id FROM payments WHERE id = $1")
+                    .bind(pid)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or_else(|| {
+                        PaymentError::NotFound("pending payment not found".to_string())
+                    })?;
+            let group = lock_payment_group_tx(&mut tx, &pay_order_id, &pay_group_id).await?;
+            group
+                .into_iter()
+                .find(|p| p.id == pid)
                 .ok_or_else(|| PaymentError::NotFound("pending payment not found".to_string()))?
         } else if let Some(gid) = order_group_id.filter(|s| !s.trim().is_empty()) {
             // review2-P P1-3: lock group in ascending id order and retry once on an all-superseded
@@ -667,6 +710,27 @@ impl PaymentService {
     ) -> Result<WebhookProcessResult> {
         payload.normalize_and_validate()?;
 
+        let webhook_status = payload.classify_status();
+        if webhook_status == WebhookEventStatus::NonFinal {
+            // P1-1: Non-final statuses (PENDING/PROCESSING) must NOT insert into webhook_events
+            // or claim provider_tx_id, so a subsequent SUCCEEDED webhook with the same tx ID
+            // processes normally instead of being treated as duplicate.
+            self.metrics.record_webhook("ignored");
+            info!(
+                trace_id = %trace_id,
+                provider_tx_id = %payload.provider_tx_id,
+                webhook_status = %payload.status,
+                "non-final webhook status ignored without recording provider_tx_id"
+            );
+            let payment_id = payload.parsed_payment_id();
+            return Ok(WebhookProcessResult {
+                status: "ignored".to_string(),
+                provider_tx_id: payload.provider_tx_id,
+                payment_id,
+                duplicate: false,
+            });
+        }
+
         let provider = payload
             .provider
             .clone()
@@ -754,7 +818,7 @@ impl PaymentService {
 
         // P0-1: If this provider_tx_id was already accounted for by reconciliation/expiry/queue
         // (on payments, finalized reconciliation_queue, or tx-scoped refunds), skip double debit.
-        if !payload.is_failed_event() {
+        if webhook_status == WebhookEventStatus::Succeeded {
             let acct = check_provider_tx_accounting_tx(&mut tx, &payload.provider_tx_id).await?;
             if acct.is_accounted() {
                 sqlx::query(
@@ -785,7 +849,11 @@ impl PaymentService {
             }
         }
 
-        let decision = if payment.as_ref().is_some_and(|p| p.method == "COD") {
+        let decision = if webhook_status == WebhookEventStatus::Unexpected {
+            WebhookDecision::QueueReconciliation {
+                reason: "unexpected_webhook_status",
+            }
+        } else if payment.as_ref().is_some_and(|p| p.method == "COD") {
             WebhookDecision::QueueReconciliation {
                 reason: "unexpected_cod_webhook",
             }
@@ -794,13 +862,16 @@ impl PaymentService {
                 payment.as_ref().map(|p| p.status.as_str()),
                 payment.as_ref().map(|p| p.amount_vnd),
                 payload.amount_vnd,
-                payload.is_failed_event(),
+                webhook_status,
                 order_already_succeeded,
                 has_cancelled_alloc,
             )
         };
 
         match decision {
+            WebhookDecision::IgnoreNonFinal => {
+                unreachable!("non-final webhook returns before DB transaction")
+            }
             WebhookDecision::QueueReconciliation { reason } => {
                 // P1-1: Deduplicate via advisory lock + WHERE NOT EXISTS + ON CONFLICT DO NOTHING
                 // (never aborts tx with 25P02, works with or without unique index on provider_tx_id).
@@ -1052,16 +1123,18 @@ impl PaymentService {
             });
         }
 
-        // Locate & lock payment either by explicit payment_id or by order_id / allocation order_id
-        let payment = if let Some(pid) = input.payment_id {
-            sqlx::query_as::<_, PaymentRecord>("SELECT * FROM payments WHERE id = $1 FOR UPDATE")
+        // D9-bis point 9: locate target payment read-only first, then lock the entire checkout
+        // payment group in ascending id order (`lock_payment_group_tx`) BEFORE locking allocations
+        // and inserting `payment.refunded` with `aggregate_id = payment.order_group_id`.
+        let target_meta: Option<(Uuid, String, String)> = if let Some(pid) = input.payment_id {
+            sqlx::query_as("SELECT id, order_id, order_group_id FROM payments WHERE id = $1")
                 .bind(pid)
                 .fetch_optional(&mut *tx)
                 .await?
         } else if !input.order_id.trim().is_empty() {
-            sqlx::query_as::<_, PaymentRecord>(
+            sqlx::query_as(
                 r#"
-                SELECT p.*
+                SELECT p.id, p.order_id, p.order_group_id
                 FROM payments p
                 LEFT JOIN payment_shop_allocations a ON a.payment_id = p.id
                 WHERE (p.order_id = $1 OR p.order_group_id = $1 OR a.order_id = $1)
@@ -1074,7 +1147,6 @@ impl PaymentService {
                     END,
                     p.created_at DESC
                 LIMIT 1
-                FOR UPDATE OF p
                 "#,
             )
             .bind(input.order_id.trim())
@@ -1084,8 +1156,19 @@ impl PaymentService {
             return Err(PaymentError::Validation(
                 "payment_id or order_id is required for refund".to_string(),
             ));
-        }
-        .ok_or_else(|| PaymentError::NotFound("payment not found for refund".to_string()))?;
+        };
+
+        let Some((target_payment_id, pay_order_id, pay_group_id)) = target_meta else {
+            return Err(PaymentError::NotFound(
+                "payment not found for refund".to_string(),
+            ));
+        };
+
+        let group = lock_payment_group_tx(&mut tx, &pay_order_id, &pay_group_id).await?;
+        let payment = group
+            .into_iter()
+            .find(|p| p.id == target_payment_id)
+            .ok_or_else(|| PaymentError::NotFound("payment not found for refund".to_string()))?;
 
         let allocations = sqlx::query_as::<_, ShopAllocationRecord>(
             r#"
@@ -1250,6 +1333,10 @@ impl PaymentService {
             Err(err) => return Err(PaymentError::Database(err)),
         };
 
+        // D10 (N11): Determine `is_post_settlement` inside the SAME transaction where `allocations`
+        // are locked `FOR UPDATE`, matching the exact ledger path posted below.
+        let is_post_settlement = post_settlement_clawback.is_some();
+
         let draft = if let Some((shop_id, from_pending, from_available)) = post_settlement_clawback
         {
             build_post_settlement_refund_tx(
@@ -1297,32 +1384,30 @@ impl PaymentService {
         .fetch_one(&mut *tx)
         .await?;
 
-        if remaining_after == 0 && remaining_active_allocs == 0 {
-            sqlx::query(
-                "UPDATE payments SET status = 'refunded', updated_at = NOW() WHERE id = $1",
+        let sse_updated = if remaining_after == 0 && remaining_active_allocs == 0 {
+            sqlx::query_as::<_, PaymentRecord>(
+                "UPDATE payments SET status = 'refunded', updated_at = NOW() WHERE id = $1 RETURNING *",
             )
             .bind(payment.id)
-            .execute(&mut *tx)
-            .await?;
-        }
+            .fetch_optional(&mut *tx)
+            .await?
+        } else {
+            None
+        };
 
         insert_outbox_event(
             &mut tx,
             "payment.refunded",
-            &order_id,
+            &payment.order_group_id,
             &input.trace_id,
-            json!({
-                "refund_id": refund.id.to_string(),
-                "payment_id": payment.id.to_string(),
-                "order_id": order_id,
-                "user_id": payment.user_id,
-                "amount_vnd": refund.amount_vnd,
-                "reason": refund.reason,
-            }),
+            build_payment_refunded_payload(&refund, &payment, &order_id, is_post_settlement),
         )
         .await?;
 
         tx.commit().await?;
+        if let Some(ref updated) = sse_updated {
+            self.emit_sse(updated);
+        }
         info!(
             trace_id = %input.trace_id,
             refund_id = %refund.id,
@@ -1581,6 +1666,25 @@ impl PaymentService {
             });
         }
 
+        // D9-bis point 9: lock the parent payment's checkout group (`payments ORDER BY id ASC`)
+        // BEFORE locking the refund row so `payment.refund_settled` is strictly serialized with
+        // `payment.refunded` / `payment.succeeded` on the same `order_group_id` without AB-BA deadlock.
+        let refund_payment_meta: (Uuid, String, String, String) = sqlx::query_as(
+            r#"
+            SELECT p.id, p.order_id, p.order_group_id, p.user_id
+            FROM refunds r
+            JOIN payments p ON p.id = r.payment_id
+            WHERE r.id = $1
+            "#,
+        )
+        .bind(input.refund_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| PaymentError::NotFound("refund not found".to_string()))?;
+
+        let (_, pay_order_id, pay_group_id, payment_user_id) = refund_payment_meta;
+        let _locked_group = lock_payment_group_tx(&mut tx, &pay_order_id, &pay_group_id).await?;
+
         let refund =
             sqlx::query_as::<_, RefundRecord>("SELECT * FROM refunds WHERE id = $1 FOR UPDATE")
                 .bind(input.refund_id)
@@ -1677,16 +1781,10 @@ impl PaymentService {
             self.metrics.record_ledger_tx("refund_settle");
         }
 
-        let payment_user_id: String =
-            sqlx::query_scalar("SELECT user_id FROM payments WHERE id = $1")
-                .bind(updated.payment_id)
-                .fetch_one(&mut *tx)
-                .await?;
-
         insert_outbox_event(
             &mut tx,
             "payment.refund_settled",
-            &updated.order_id,
+            &pay_group_id,
             &input.trace_id,
             json!({
                 "refund_id": updated.id.to_string(),
@@ -1737,6 +1835,29 @@ impl PaymentService {
         let shop_filter = shop_id_filter.map(str::trim).filter(|s| !s.is_empty());
 
         let mut tx = self.pool.begin().await?;
+
+        // P2-7: Lock the checkout payment group (`payments ORDER BY id ASC`) BEFORE locking
+        // `payment_shop_allocations` so `release_escrow` matches the global lock order
+        // (`payments -> payment_shop_allocations -> ledger_accounts`) and cannot AB-BA deadlock
+        // with multi-row `UPDATE payment_shop_allocations` in confirm/cancel/expire paths.
+        let group_keys: Option<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT p.order_id, p.order_group_id
+            FROM payments p
+            LEFT JOIN payment_shop_allocations a ON a.payment_id = p.id
+            WHERE (a.order_id = $1 OR p.order_id = $1 OR p.order_group_id = $1)
+              AND p.status NOT IN ('cancelled', 'expired', 'failed', 'superseded')
+            ORDER BY p.id ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(order_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some((pay_order_id, pay_group_id)) = group_keys {
+            let _locked_group =
+                lock_payment_group_tx(&mut tx, &pay_order_id, &pay_group_id).await?;
+        }
 
         let active_allocs = sqlx::query_as::<_, ShopAllocationRecord>(
             r#"
@@ -2002,33 +2123,30 @@ impl PaymentService {
         let at_time = filter.at_time.unwrap_or_else(Utc::now);
         let method_str: Option<&str> = filter.method.map(PaymentMethod::as_str);
 
-        let active_configs = sqlx::query_as::<_, PaymentFeeConfigRecord>(
-            r#"
-            SELECT DISTINCT ON (payment_method)
-                id, seq, payment_method, fee_bps, effective_from, created_by, note, created_at
-            FROM payment_fee_configs
-            WHERE effective_from <= $1
-              AND ($2::TEXT IS NULL OR payment_method = $2)
-            ORDER BY payment_method ASC, effective_from DESC, seq DESC
-            "#,
-        )
-        .bind(at_time)
-        .bind(method_str)
-        .fetch_all(&self.pool)
-        .await?;
+        let active_configs = if let Some(method) = method_str {
+            sqlx::query_as::<_, PaymentFeeConfigRecord>(FEE_CONFIG_ACTIVE_BY_METHOD_SQL)
+                .bind(method)
+                .bind(at_time)
+                .fetch_all(&self.pool)
+                .await?
+        } else {
+            sqlx::query_as::<_, PaymentFeeConfigRecord>(FEE_CONFIG_ACTIVE_ALL_SQL)
+                .bind(at_time)
+                .fetch_all(&self.pool)
+                .await?
+        };
 
         let history = if filter.include_history {
-            sqlx::query_as::<_, PaymentFeeConfigRecord>(
-                r#"
-                SELECT id, seq, payment_method, fee_bps, effective_from, created_by, note, created_at
-                FROM payment_fee_configs
-                WHERE ($1::TEXT IS NULL OR payment_method = $1)
-                ORDER BY effective_from DESC, seq DESC
-                "#,
-            )
-            .bind(method_str)
-            .fetch_all(&self.pool)
-            .await?
+            if let Some(method) = method_str {
+                sqlx::query_as::<_, PaymentFeeConfigRecord>(FEE_CONFIG_HISTORY_BY_METHOD_SQL)
+                    .bind(method)
+                    .fetch_all(&self.pool)
+                    .await?
+            } else {
+                sqlx::query_as::<_, PaymentFeeConfigRecord>(FEE_CONFIG_HISTORY_ALL_SQL)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
         } else {
             Vec::new()
         };
@@ -3631,9 +3749,9 @@ impl PaymentService {
             return Ok(false);
         }
 
-        let payment_opt = sqlx::query_as::<_, PaymentRecord>(
+        let target_meta: Option<(Uuid, String, String)> = sqlx::query_as(
             r#"
-            SELECT p.*
+            SELECT p.id, p.order_id, p.order_group_id
             FROM payments p
             LEFT JOIN payment_shop_allocations a ON a.payment_id = p.id
             WHERE (a.order_id = $1 OR p.order_id = $1)
@@ -3646,14 +3764,22 @@ impl PaymentService {
                 END,
                 p.created_at DESC
             LIMIT 1
-            FOR UPDATE OF p
             "#,
         )
         .bind(order_id)
         .fetch_optional(&mut *tx)
         .await?;
 
-        let Some(payment) = payment_opt else {
+        let Some((target_pid, pay_order_id, pay_group_id)) = target_meta else {
+            tx.commit().await?;
+            return Ok(true);
+        };
+
+        let group = lock_payment_group_tx(&mut tx, &pay_order_id, &pay_group_id).await?;
+        let Some(payment) = group
+            .into_iter()
+            .find(|p| p.id == target_pid && matches!(p.status.as_str(), "pending" | "succeeded"))
+        else {
             tx.commit().await?;
             return Ok(true);
         };
@@ -3946,40 +4072,36 @@ impl PaymentService {
                 .fetch_one(&mut *tx)
                 .await?;
 
-                let total_alloc_count: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*)::BIGINT FROM payment_shop_allocations WHERE payment_id = $1",
-                )
-                .bind(payment.id)
-                .fetch_one(&mut *tx)
-                .await?;
-
-                let suborder_held_count: i64 = sqlx::query_scalar(
+                // D10 (N11): Lock allocations FOR UPDATE inside the same transaction so settlement
+                // status cannot race with `order.completed` while deciding pre-settlement auto-refund.
+                let locked_allocs = sqlx::query_as::<_, ShopAllocationRecord>(
                     r#"
-                    SELECT COUNT(*)::BIGINT
+                    SELECT *
                     FROM payment_shop_allocations
                     WHERE payment_id = $1
-                      AND order_id = $2
-                      AND escrow_status = 'held'
+                    ORDER BY id ASC
+                    FOR UPDATE
                     "#,
                 )
                 .bind(payment.id)
-                .bind(order_id)
-                .fetch_one(&mut *tx)
+                .fetch_all(&mut *tx)
                 .await?;
 
-                let suborder_alloc_total: i64 = sqlx::query_scalar(
-                    r#"
-                    SELECT COALESCE(SUM(subtotal_vnd + shipping_fee_vnd - platform_discount_vnd), 0)::BIGINT
-                    FROM payment_shop_allocations
-                    WHERE payment_id = $1
-                      AND order_id = $2
-                      AND escrow_status = 'held'
-                    "#,
-                )
-                .bind(payment.id)
-                .bind(order_id)
-                .fetch_one(&mut *tx)
-                .await?;
+                let total_alloc_count = locked_allocs.len() as i64;
+                let mut suborder_held_count: i64 = 0;
+                let mut suborder_alloc_total: i64 = 0;
+                for alloc in &locked_allocs {
+                    if alloc.order_id == order_id && alloc.escrow_status == "held" {
+                        suborder_held_count += 1;
+                        let payable = allocation_buyer_payable_vnd(alloc)?;
+                        suborder_alloc_total =
+                            suborder_alloc_total.checked_add(payable).ok_or_else(|| {
+                                PaymentError::LedgerInvariant(
+                                    "suborder allocation total overflow".to_string(),
+                                )
+                            })?;
+                    }
+                }
 
                 let suborder_already_refunded = sum_suborder_refunded_tx(
                     &mut tx,
@@ -4079,27 +4201,22 @@ impl PaymentService {
                             .saturating_sub(already_refunded.saturating_add(refund.amount_vnd));
 
                         if remaining_after == 0 && remaining_active_allocs == 0 {
-                            sqlx::query(
-                                "UPDATE payments SET status = 'refunded', updated_at = NOW() WHERE id = $1",
+                            sse_updated = sqlx::query_as::<_, PaymentRecord>(
+                                "UPDATE payments SET status = 'refunded', updated_at = NOW() WHERE id = $1 RETURNING *",
                             )
                             .bind(payment.id)
-                            .execute(&mut *tx)
+                            .fetch_optional(&mut *tx)
                             .await?;
                         }
 
+                        // Auto-cancel refund only touches `held` (pre-settlement) escrow or legacy
+                        // unsettled payments, verified under `FOR UPDATE` above -> `is_post_settlement = false`.
                         insert_outbox_event(
                             &mut tx,
                             "payment.refunded",
-                            order_id,
+                            &payment.order_group_id,
                             trace_id,
-                            json!({
-                                "refund_id": refund.id.to_string(),
-                                "payment_id": payment.id.to_string(),
-                                "order_id": order_id,
-                                "user_id": payment.user_id,
-                                "amount_vnd": refund.amount_vnd,
-                                "reason": refund.reason,
-                            }),
+                            build_payment_refunded_payload(&refund, &payment, order_id, false),
                         )
                         .await?;
                     }
@@ -4383,9 +4500,9 @@ async fn collect_cod_order_allocations_tx(
     trace_id: &str,
     metrics: &Metrics,
 ) -> Result<Option<PaymentRecord>> {
-    let payment_opt = sqlx::query_as::<_, PaymentRecord>(
+    let target_meta: Option<(Uuid, String, String)> = sqlx::query_as(
         r#"
-        SELECT p.*
+        SELECT p.id, p.order_id, p.order_group_id
         FROM payments p
         LEFT JOIN payment_shop_allocations a ON a.payment_id = p.id
         WHERE (a.order_id = $1 OR p.order_id = $1 OR p.order_group_id = $1)
@@ -4393,14 +4510,23 @@ async fn collect_cod_order_allocations_tx(
           AND p.status IN ('pending', 'succeeded')
         ORDER BY p.created_at DESC
         LIMIT 1
-        FOR UPDATE OF p
         "#,
     )
     .bind(order_id)
     .fetch_optional(&mut **tx)
     .await?;
 
-    let Some(payment) = payment_opt else {
+    let Some((target_pid, pay_order_id, pay_group_id)) = target_meta else {
+        return Ok(None);
+    };
+
+    // D9-bis point 9: lock entire checkout payment group before inserting `payment.succeeded`.
+    let group = lock_payment_group_tx(tx, &pay_order_id, &pay_group_id).await?;
+    let Some(payment) = group.into_iter().find(|p| {
+        p.id == target_pid
+            && p.method == "COD"
+            && matches!(p.status.as_str(), "pending" | "succeeded")
+    }) else {
         return Ok(None);
     };
 
@@ -5256,6 +5382,23 @@ async fn settle_order_to_pending_tx(
     }
 
     Ok(settled)
+}
+
+fn build_payment_refunded_payload(
+    refund: &RefundRecord,
+    payment: &PaymentRecord,
+    order_id: &str,
+    is_post_settlement: bool,
+) -> serde_json::Value {
+    json!({
+        "refund_id": refund.id.to_string(),
+        "payment_id": payment.id.to_string(),
+        "order_id": order_id,
+        "user_id": payment.user_id,
+        "amount_vnd": refund.amount_vnd,
+        "reason": refund.reason,
+        "is_post_settlement": is_post_settlement,
+    })
 }
 
 async fn insert_outbox_event(

@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexusmart/core/pkg/common/secretbox"
 	"github.com/nexusmart/core/services/shipping/internal/address"
 	"github.com/nexusmart/core/services/shipping/internal/carrier"
 	"github.com/nexusmart/core/services/shipping/internal/events"
@@ -462,10 +466,15 @@ func (m *memRepo) ApplyWebhookEvent(_ context.Context, params store.WebhookUpdat
 		if err != nil {
 			return nil, "", err
 		}
+		aggID := strings.TrimSpace(sh.OrderID)
+		if aggID == "" {
+			aggID = strings.TrimSpace(sh.ID)
+		}
 		m.outbox = append(m.outbox, store.OutboxEvent{
 			ID:          uuid.NewString(),
 			EventID:     params.OutboxEventID,
 			Subject:     params.OutboxSubject,
+			AggregateID: aggID,
 			Payload:     payload,
 			Traceparent: params.Traceparent,
 			TraceID:     params.TraceID,
@@ -591,10 +600,6 @@ func (m *memRepo) ListFallbackRates(_ context.Context, carrierCode string) ([]st
 	}
 	return append([]store.FallbackRate(nil), m.fallback[strings.ToLower(carrierCode)]...), nil
 }
-func (m *memRepo) FetchPendingOutbox(_ context.Context, _ int) ([]store.OutboxEvent, error) {
-	return nil, nil
-}
-func (m *memRepo) MarkOutboxPublished(_ context.Context, _ string) error { return nil }
 func (m *memRepo) IsEventProcessed(_ context.Context, eventID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1466,9 +1471,9 @@ func TestW2A_ReturnShipmentIdempotentAndIsolatedFromForward(t *testing.T) {
 }
 
 func TestW2A_TokenCipherAES256GCM(t *testing.T) {
-	cipher, err := NewTokenCipherFromBase64("ZGV2LW9ubHktc2hpcHBpbmctY29uZmlnLWtleS0zMmI=")
+	cipher, err := secretbox.NewFromBase64("ZGV2LW9ubHktc2hpcHBpbmctY29uZmlnLWtleS0zMmI=", "SHIPPING_CONFIG_KEY")
 	if err != nil {
-		t.Fatalf("NewTokenCipherFromBase64: %v", err)
+		t.Fatalf("secretbox.NewFromBase64: %v", err)
 	}
 	const secret = "ghn-live-secret-token-987654"
 	ct1, err := cipher.Encrypt(secret)
@@ -1499,12 +1504,12 @@ func TestW2A_TokenCipherAES256GCM(t *testing.T) {
 
 	// Wrong key fails to decrypt.
 	otherKey := make([]byte, 32)
-	otherCipher, _ := NewTokenCipher(otherKey)
+	otherCipher, _ := secretbox.New(otherKey, "SHIPPING_CONFIG_KEY")
 	if _, err := otherCipher.Decrypt(ct1); err == nil {
 		t.Fatalf("expected decrypt failure with wrong key")
 	}
 	// Invalid key lengths rejected.
-	if _, err := NewTokenCipher([]byte("too-short")); err == nil {
+	if _, err := secretbox.New([]byte("too-short"), "SHIPPING_CONFIG_KEY"); err == nil {
 		t.Fatalf("expected error for short AES key")
 	}
 }
@@ -1525,7 +1530,7 @@ func TestW2A_ShopSettingsCarrierFilterDefaultWeightAndAdminControls(t *testing.T
 	mockExp := carrier.NewMockExpressAdapter()
 	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)), ghnHook, mockExp)
 	qc := newRecordingQuoteCache()
-	cipher, _ := NewTokenCipherFromBase64("ZGV2LW9ubHktc2hpcHBpbmctY29uZmlnLWtleS0zMmI=")
+	cipher, _ := secretbox.NewFromBase64("ZGV2LW9ubHktc2hpcHBpbmctY29uZmlnLWtleS0zMmI=", "SHIPPING_CONFIG_KEY")
 
 	svc := NewShippingService(repo, agg, qc, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	svc.SetTokenCipher(cipher)
@@ -1727,7 +1732,7 @@ func TestReview_DisabledCarrierAllowsForwardAndRedeliveryNeedsNewFailedEvent(t *
 	ghn := carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock", Token: "sandbox-ghn-token"})
 	mockExp := carrier.NewMockExpressAdapter()
 	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)), ghn, mockExp)
-	cipher, _ := NewTokenCipherFromBase64("ZGV2LW9ubHktc2hpcHBpbmctY29uZmlnLWtleS0zMmI=")
+	cipher, _ := secretbox.NewFromBase64("ZGV2LW9ubHktc2hpcHBpbmctY29uZmlnLWtleS0zMmI=", "SHIPPING_CONFIG_KEY")
 	svc := NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	svc.SetTokenCipher(cipher)
 	_ = svc.InitCarrierConfigs(context.Background(), map[string]string{carrier.CodeGHN: "sandbox-ghn-token"})
@@ -2015,9 +2020,9 @@ func TestReview_CreateErrorClassificationAndReturnCarrierAutoPick(t *testing.T) 
 
 func TestReview_MultiInstanceTokenRefreshOnCacheTTL(t *testing.T) {
 	repo := newMemRepo()
-	cipher, err := NewTokenCipherFromBase64("ZGV2LW9ubHktc2hpcHBpbmctY29uZmlnLWtleS0zMmI=")
+	cipher, err := secretbox.NewFromBase64("ZGV2LW9ubHktc2hpcHBpbmctY29uZmlnLWtleS0zMmI=", "SHIPPING_CONFIG_KEY")
 	if err != nil {
-		t.Fatalf("NewTokenCipherFromBase64: %v", err)
+		t.Fatalf("secretbox.NewFromBase64: %v", err)
 	}
 	ghnRec := &reviewRecordingCarrier{
 		Carrier: carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock", Token: "initial-ghn-token"}),
@@ -2928,5 +2933,139 @@ func TestW2B_UpdateShopShippingSettingsPreservesExistingDimensionsAndSingleRead(
 	}
 	if got := repo.getCalls.Load(); got != 1 {
 		t.Fatalf("expected exactly 1 GetShopShippingSettings read on partial update, got %d", got)
+	}
+}
+
+type tokenSpyCarrier struct {
+	carrier.Carrier
+	mu            sync.Mutex
+	setTokens     []string
+	testedTokens  []string
+	expectedToken string
+}
+
+func (c *tokenSpyCarrier) SetToken(token string) {
+	c.mu.Lock()
+	c.setTokens = append(c.setTokens, token)
+	c.mu.Unlock()
+	c.Carrier.SetToken(token)
+}
+
+func (c *tokenSpyCarrier) TestConnection(_ context.Context, token string) error {
+	c.mu.Lock()
+	c.testedTokens = append(c.testedTokens, token)
+	want := c.expectedToken
+	c.mu.Unlock()
+	if token != want {
+		return carrier.ErrInvalidCarrierToken
+	}
+	return nil
+}
+
+// TestW3A_LegacyEncryptedCarrierTokenReadableViaSecretbox verifies that carrier API tokens
+// encrypted with shipping's former services/shipping/internal/service/cipher.go (AES-256-GCM,
+// 12-byte nonce || ciphertext+tag, nil AAD) remain fully readable after migrating to pkg/common/secretbox
+// across InitCarrierConfigs, AdminTestCarrier, AdminUpdateCarrier, and AdminListCarriers.
+func TestW3A_LegacyEncryptedCarrierTokenReadableViaSecretbox(t *testing.T) {
+	const (
+		devKeyB64 = "ZGV2LW9ubHktc2hpcHBpbmctY29uZmlnLWtleS0zMmI="
+		// Known ciphertext fixture produced with old cipher.go (nonce 0x00112233445566778899aabb).
+		legacyFixtureB64   = "ABEiM0RVZneImaq7TlU5RzSvZ/GeBsb3kSirRjZIrzDkiA1BqE6j9wNu7BAGAiM61ibmd30N9wRX"
+		legacyFixturePlain = "ghn-legacy-carrier-token-2026"
+	)
+
+	box, err := secretbox.NewFromBase64(devKeyB64, "SHIPPING_CONFIG_KEY")
+	if err != nil {
+		t.Fatalf("secretbox.NewFromBase64: %v", err)
+	}
+
+	legacyFixtureBlob, err := base64.StdEncoding.DecodeString(legacyFixtureB64)
+	if err != nil {
+		t.Fatalf("decode legacy fixture base64: %v", err)
+	}
+
+	// Also build an independent ciphertext using raw stdlib AES-256-GCM matching old cipher.go directly.
+	rawKey, err := base64.StdEncoding.DecodeString(devKeyB64)
+	if err != nil {
+		t.Fatalf("decode devKeyB64: %v", err)
+	}
+	blk, err := aes.NewCipher(rawKey)
+	if err != nil {
+		t.Fatalf("aes.NewCipher: %v", err)
+	}
+	gcm, err := cipher.NewGCM(blk)
+	if err != nil {
+		t.Fatalf("cipher.NewGCM: %v", err)
+	}
+	fixedNonce := []byte{0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab}
+	const secondLegacyPlain = "ghn-pre-w3a-prod-token-998877"
+	secondLegacyBlob := gcm.Seal(append([]byte(nil), fixedNonce...), fixedNonce, []byte(secondLegacyPlain), nil)
+
+	for _, tc := range []struct {
+		name  string
+		blob  []byte
+		plain string
+	}{
+		{"hardcoded_legacy_cipher_fixture", legacyFixtureBlob, legacyFixturePlain},
+		{"stdlib_aes256gcm_wire_fixture", secondLegacyBlob, secondLegacyPlain},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			repo := newMemRepo()
+			// Seed DB row as if persisted prior to Wave 3a migration to pkg/common/secretbox.
+			repo.carriers[carrier.CodeGHN] = &store.CarrierConfig{
+				CarrierCode:    carrier.CodeGHN,
+				Name:           "Giao Hang Nhanh (GHN)",
+				Enabled:        true,
+				EncryptedToken: append([]byte(nil), tc.blob...),
+				UpdatedAt:      time.Date(2026, 11, 20, 8, 0, 0, 0, time.UTC),
+			}
+
+			spy := &tokenSpyCarrier{
+				Carrier:       carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock"}),
+				expectedToken: tc.plain,
+			}
+			agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)), spy)
+			svc := NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			svc.SetTokenCipher(box)
+
+			// 1. InitCarrierConfigs must NOT overwrite the existing legacy ciphertext with env token,
+			//    must decrypt the legacy ciphertext via secretbox, and must apply the exact legacy plaintext.
+			if err := svc.InitCarrierConfigs(ctx, map[string]string{
+				carrier.CodeGHN: "different-env-default-token",
+			}); err != nil {
+				t.Fatalf("InitCarrierConfigs: %v", err)
+			}
+			if len(spy.setTokens) != 1 || spy.setTokens[0] != tc.plain {
+				t.Fatalf("InitCarrierConfigs applied tokens %v, want [%q]", spy.setTokens, tc.plain)
+			}
+
+			// 2. AdminTestCarrier must decrypt the legacy stored bytes and pass the exact legacy plaintext.
+			ok, msg, err := svc.AdminTestCarrier(ctx, carrier.CodeGHN)
+			if err != nil || !ok {
+				t.Fatalf("AdminTestCarrier with legacy encrypted token: ok=%v msg=%q err=%v", ok, msg, err)
+			}
+			if len(spy.testedTokens) != 1 || spy.testedTokens[0] != tc.plain {
+				t.Fatalf("AdminTestCarrier tested tokens %v, want [%q]", spy.testedTokens, tc.plain)
+			}
+
+			// 3. AdminUpdateCarrier without a new APIToken must preserve & decrypt the legacy token when enabled=true.
+			view, err := svc.AdminUpdateCarrier(ctx, AdminUpdateCarrierInput{
+				CarrierCode: carrier.CodeGHN,
+				Enabled:     true,
+			})
+			if err != nil || !view.Enabled || !view.TokenConfigured {
+				t.Fatalf("AdminUpdateCarrier keeping legacy token: view=%+v err=%v", view, err)
+			}
+			if len(spy.testedTokens) != 2 || spy.testedTokens[1] != tc.plain {
+				t.Fatalf("AdminUpdateCarrier connection check tokens %v, want second=%q", spy.testedTokens, tc.plain)
+			}
+
+			// 4. AdminListCarriers reports token_configured=true and never leaks plaintext or ciphertext.
+			views, err := svc.AdminListCarriers(ctx)
+			if err != nil || len(views) != 1 || !views[0].TokenConfigured {
+				t.Fatalf("AdminListCarriers: views=%+v err=%v", views, err)
+			}
+		})
 	}
 }

@@ -6,14 +6,16 @@ import {
   INITIAL_ADMIN_LOYALTY,
   INITIAL_ADMIN_MODERATION,
   INITIAL_EXTENDED_PLATFORM_CONFIG,
-} from "@/data";
+  INITIAL_PLATFORM_CONFIG,
+} from "@/data/admin";
 import type {
   AdminContentState,
   AdminExtendedPlatformConfig,
   AdminLoyaltyState,
   AdminModerationState,
+  PlatformConfigState,
   VulnerablePriorityGroup,
-} from "@/data";
+} from "@/data/admin";
 
 export interface ExtraOpsConfig {
   reconAlertThresholdVnd: number;
@@ -176,5 +178,22 @@ export function useAdminLoyaltyState(): AdminLoyaltyState {
     subscribeLoyalty,
     () => loyaltyState,
     () => INITIAL_ADMIN_LOYALTY
+  );
+}
+
+let platformConfigState: PlatformConfigState = INITIAL_PLATFORM_CONFIG;
+const platformConfigListeners = new Set<() => void>();
+const subscribePlatformConfig = makeSubscriber(platformConfigListeners);
+
+export function updateAdminPlatformConfig(next: PlatformConfigState): void {
+  platformConfigState = { ...next };
+  emit(platformConfigListeners);
+}
+
+export function useAdminPlatformConfig(): PlatformConfigState {
+  return useSyncExternalStore(
+    subscribePlatformConfig,
+    () => platformConfigState,
+    () => INITIAL_PLATFORM_CONFIG
   );
 }

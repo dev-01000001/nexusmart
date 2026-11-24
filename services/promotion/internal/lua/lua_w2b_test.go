@@ -34,12 +34,12 @@ func TestLua_W2B_VoucherPausedAndDeletedBlockedAtomically(t *testing.T) {
 	ctx := context.Background()
 	_, engine := newTestEngine(t)
 
-	if err := engine.InitVoucherKeys(ctx, "v-life", 10, 100000); err != nil {
+	if err := engine.ReconcileVoucherKeys(ctx, "v-life", domain.VoucherStatusActive, 10, 0, 100000, 0); err != nil {
 		t.Fatal(err)
 	}
 
 	// Pause voucher in Redis -> Reserve MUST fail atomically with VOUCHER_INACTIVE without mutating counters
-	if err := engine.SetVoucherStatusKey(ctx, "v-life", domain.VoucherStatusPaused); err != nil {
+	if err := engine.ReconcileVoucherKeys(ctx, "v-life", domain.VoucherStatusPaused, 10, 0, 100000, 0); err != nil {
 		t.Fatal(err)
 	}
 	_, err := engine.Reserve(ctx, lua.ReserveInput{
@@ -58,7 +58,7 @@ func TestLua_W2B_VoucherPausedAndDeletedBlockedAtomically(t *testing.T) {
 	}
 
 	// Resume ACTIVE -> succeeds
-	if err := engine.SetVoucherStatusKey(ctx, "v-life", domain.VoucherStatusActive); err != nil {
+	if err := engine.ReconcileVoucherKeys(ctx, "v-life", domain.VoucherStatusActive, 10, 0, 100000, 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := engine.Reserve(ctx, lua.ReserveInput{
@@ -72,7 +72,7 @@ func TestLua_W2B_VoucherPausedAndDeletedBlockedAtomically(t *testing.T) {
 	}
 
 	// Delete -> blocked atomically
-	if err := engine.SetVoucherStatusKey(ctx, "v-life", domain.VoucherStatusDeleted); err != nil {
+	if err := engine.ReconcileVoucherKeys(ctx, "v-life", domain.VoucherStatusDeleted, 10, 1, 100000, 10000); err != nil {
 		t.Fatal(err)
 	}
 	_, err = engine.Reserve(ctx, lua.ReserveInput{
@@ -87,11 +87,11 @@ func TestLua_W2B_VoucherPausedAndDeletedBlockedAtomically(t *testing.T) {
 	}
 }
 
-func TestLua_W2B_AdjustVoucherKeys_DeltaSync(t *testing.T) {
+func TestLua_W2B_ReconcileVoucherKeys_AbsoluteSync(t *testing.T) {
 	ctx := context.Background()
 	_, engine := newTestEngine(t)
 
-	if err := engine.InitVoucherKeys(ctx, "v-adj", 10, 100000); err != nil {
+	if err := engine.ReconcileVoucherKeys(ctx, "v-adj", domain.VoucherStatusActive, 10, 0, 100000, 0); err != nil {
 		t.Fatal(err)
 	}
 	// Reserve 1 (rem quota 9, rem budget 80000)
@@ -103,15 +103,15 @@ func TestLua_W2B_AdjustVoucherKeys_DeltaSync(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Increase quota by +5 (10->15) and budget by +50000 (100k->150k)
-	if err := engine.AdjustVoucherKeys(ctx, "v-adj", domain.VoucherStatusActive, 5, 14, 100000, 150000, 130000); err != nil {
-		t.Fatalf("AdjustVoucherKeys: %v", err)
+	// Reconcile to quota=15 (used=1 -> rem=14) and budget=150000 (used=20000 -> rem=130000)
+	if err := engine.ReconcileVoucherKeys(ctx, "v-adj", domain.VoucherStatusActive, 15, 1, 150000, 20000); err != nil {
+		t.Fatalf("ReconcileVoucherKeys: %v", err)
 	}
 
 	remQ, _, _ := engine.GetInt64(ctx, lua.VoucherRemainingKey("v-adj"))
 	remB, _, _ := engine.GetInt64(ctx, lua.VoucherBudgetRemainingKey("v-adj"))
 	if remQ != 14 || remB != 130000 {
-		t.Fatalf("expected remQ=14 remB=130000 after delta adjust, got remQ=%d remB=%d", remQ, remB)
+		t.Fatalf("expected remQ=14 remB=130000 after reconcile, got remQ=%d remB=%d", remQ, remB)
 	}
 }
 
@@ -215,12 +215,12 @@ func TestLua_W2B_HelperSyncMGetAndDelete(t *testing.T) {
 	ctx := context.Background()
 	_, engine := newTestEngine(t)
 
-	// SyncVoucherKeysWithStatus initializes counters once and overwrites status without clobbering live counters
-	if err := engine.SyncVoucherKeysWithStatus(ctx, "v-sync", domain.VoucherStatusActive, 10, 50000, 40000); err != nil {
-		t.Fatalf("SyncVoucherKeysWithStatus(ACTIVE): %v", err)
+	// ReconcileVoucherKeys sets exact remaining counters and status atomically
+	if err := engine.ReconcileVoucherKeys(ctx, "v-sync", domain.VoucherStatusActive, 10, 0, 50000, 10000); err != nil {
+		t.Fatalf("ReconcileVoucherKeys(ACTIVE): %v", err)
 	}
-	if err := engine.SyncVoucherKeysWithStatus(ctx, "v-sync", domain.VoucherStatusPaused, 99, 50000, 99999); err != nil {
-		t.Fatalf("SyncVoucherKeysWithStatus(PAUSED): %v", err)
+	if err := engine.ReconcileVoucherKeys(ctx, "v-sync", domain.VoucherStatusPaused, 10, 0, 50000, 10000); err != nil {
+		t.Fatalf("ReconcileVoucherKeys(PAUSED): %v", err)
 	}
 	vals, err := engine.MGetInt64(ctx, []string{
 		lua.VoucherRemainingKey("v-sync"),
@@ -231,7 +231,7 @@ func TestLua_W2B_HelperSyncMGetAndDelete(t *testing.T) {
 		t.Fatalf("MGetInt64: %v", err)
 	}
 	if vals[lua.VoucherRemainingKey("v-sync")] != 10 || vals[lua.VoucherBudgetRemainingKey("v-sync")] != 40000 {
-		t.Fatalf("SyncVoucherKeysWithStatus should preserve live counters while overwriting status, got %+v", vals)
+		t.Fatalf("ReconcileVoucherKeys counters unexpected, got %+v", vals)
 	}
 	if _, ok := vals[lua.VoucherRemainingKey("v-missing")]; ok {
 		t.Fatalf("missing key should not be present in MGetInt64 result")
@@ -253,9 +253,9 @@ func TestLua_W2B_HelperSyncMGetAndDelete(t *testing.T) {
 		t.Fatalf("expected flash slot key deleted")
 	}
 
-	// IsReservationReleased: absent key -> true; active reservation -> false; after Release -> true
-	if !engine.IsReservationReleased(ctx, "ord-never") {
-		t.Fatalf("absent reservation key should report IsReservationReleased=true")
+	// IsReservationReleased: absent key -> false; active reservation -> false; after Release -> true
+	if engine.IsReservationReleased(ctx, "ord-never") {
+		t.Fatalf("absent reservation key should report IsReservationReleased=false")
 	}
 	if err := engine.InitFlashItemSlots(ctx, "fi-live", 3, true); err != nil {
 		t.Fatalf("InitFlashItemSlots(fi-live): %v", err)
@@ -282,68 +282,25 @@ func TestLua_W2B_HelperSyncMGetAndDelete(t *testing.T) {
 	}
 }
 
-func TestLua_R3_AdjustVoucherNoNegativeClamp_AndLongReservationTTL(t *testing.T) {
+func TestLua_R3_LongReservationTTL(t *testing.T) {
 	ctx := context.Background()
 	mr, engine := newTestEngine(t)
 
-	// 1. Item B: AdjustVoucherKeys MUST NOT clamp negative remaining quota/budget to 0!
-	// Voucher starts with quota=10, budget=100000. 5 concurrent orders reserve (rem=5, bud=50000).
-	if err := engine.InitVoucherKeys(ctx, "v-noclamp", 10, 100000); err != nil {
+	if err := engine.ReconcileVoucherKeys(ctx, "v-ttl", domain.VoucherStatusActive, 5, 0, 50000, 0); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 5; i++ {
-		if _, err := engine.Reserve(ctx, lua.ReserveInput{
-			OrderID: fmt.Sprintf("ord-nc-%d", i),
-			UserID:  fmt.Sprintf("u-nc-%d", i),
-			Vouchers: []lua.VoucherReserveSpec{
-				{VoucherID: "v-noclamp", PerUserLimit: 1, DiscountVND: 10000, HasBudget: true},
-			},
-		}); err != nil {
-			t.Fatalf("reserve %d: %v", i, err)
-		}
-	}
-
-	// Lower quota from 10 -> 3 (delta -7 => 5 - 7 = -2) and budget 100k -> 30k (delta -70k => 50k - 70k = -20k)
-	if err := engine.AdjustVoucherKeys(ctx, "v-noclamp", domain.VoucherStatusActive, -7, 3, 100000, 30000, 30000); err != nil {
-		t.Fatalf("AdjustVoucherKeys: %v", err)
-	}
-	rem, _, _ := engine.GetInt64(ctx, lua.VoucherRemainingKey("v-noclamp"))
-	bud, _, _ := engine.GetInt64(ctx, lua.VoucherBudgetRemainingKey("v-noclamp"))
-	if rem != -2 || bud != -20000 {
-		t.Fatalf("adjust_voucher.lua must NOT clamp negative deficit: want rem=-2 bud=-20000, got rem=%d bud=%d", rem, bud)
-	}
-
-	// Release 1 of the 5 orders -> rem becomes -1, bud becomes -10000 -> next order MUST STILL be rejected!
-	if _, err := engine.Release(ctx, "ord-nc-0"); err != nil {
-		t.Fatal(err)
-	}
-	_, err := engine.Reserve(ctx, lua.ReserveInput{
-		OrderID: "ord-nc-over",
-		UserID:  "u-nc-over",
-		Vouchers: []lua.VoucherReserveSpec{
-			{VoucherID: "v-noclamp", PerUserLimit: 1, DiscountVND: 10000, HasBudget: true},
-		},
-	})
-	var resErr *lua.ReservationError
-	if !errors.As(err, &resErr) || resErr.Code != lua.ErrCodeVoucherOutOfQuota {
-		t.Fatalf("release 1 should leave deficit (-1) and reject new reserve, got %v", err)
-	}
-
-	// Release 2 more orders -> rem becomes +1, bud becomes +10000 -> now 2 active < quota 3, so next reserve succeeds!
-	_, _ = engine.Release(ctx, "ord-nc-1")
-	_, _ = engine.Release(ctx, "ord-nc-2")
 	if _, err := engine.Reserve(ctx, lua.ReserveInput{
-		OrderID: "ord-nc-ok",
-		UserID:  "u-nc-ok",
+		OrderID: "ord-ttl-ok",
+		UserID:  "u-ttl-ok",
 		Vouchers: []lua.VoucherReserveSpec{
-			{VoucherID: "v-noclamp", PerUserLimit: 1, DiscountVND: 10000, HasBudget: true},
+			{VoucherID: "v-ttl", PerUserLimit: 1, DiscountVND: 10000, HasBudget: true},
 		},
 	}); err != nil {
-		t.Fatalf("after repaying deficit, reserve should succeed: %v", err)
+		t.Fatalf("reserve: %v", err)
 	}
 
-	// 2. Item C: Reservation key TTL must be either no-TTL (0) or >= 365 days (not 30 days)
-	ttl := mr.TTL(lua.ReservationKey("ord-nc-ok"))
+	// Reservation key TTL must be either no-TTL (0) or >= 365 days (not 30 days)
+	ttl := mr.TTL(lua.ReservationKey("ord-ttl-ok"))
 	if ttl != 0 && ttl < 365*24*time.Hour {
 		t.Fatalf("promo:res key TTL too short (%v); must be >= 365d or no TTL", ttl)
 	}
@@ -356,7 +313,7 @@ func TestLua_R4_ReleaseMissingWritesTombstoneAndBlocksLateReserve(t *testing.T) 
 	if err := engine.InitFlashItemSlots(ctx, "fi-r4-tomb", 5, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.InitVoucherKeys(ctx, "v-r4-tomb", 5, 50000); err != nil {
+	if err := engine.ReconcileVoucherKeys(ctx, "v-r4-tomb", domain.VoucherStatusActive, 5, 0, 50000, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -410,4 +367,223 @@ func TestLua_R4_ReleaseMissingWritesTombstoneAndBlocksLateReserve(t *testing.T) 
 	if pu, _, _ := engine.GetInt64(ctx, lua.ShopProgramUserKey("sp-r4-tomb", "u-r4")); pu != 0 {
 		t.Fatalf("shop program user counter mutated: got %d want 0", pu)
 	}
+}
+
+func TestLua_W3A_ReconcileVoucherAndUserUsageKeys_AndNoZombieBudget(t *testing.T) {
+	ctx := context.Background()
+	mr, engine := newTestEngine(t)
+
+	// 1. ReconcileVoucherKeys clamps remaining strictly to [0, quota] and [0, budget], overwrites stale Redis drift,
+	// and deletes budget_remaining when budgetVND == 0.
+	_ = mr.Set(lua.VoucherRemainingKey("v-rec"), "999")
+	_ = mr.Set(lua.VoucherBudgetRemainingKey("v-rec"), "9999999")
+	_ = mr.Set(lua.VoucherStatusKey("v-rec"), domain.VoucherStatusActive)
+
+	if err := engine.ReconcileVoucherKeys(ctx, "v-rec", domain.VoucherStatusPaused, 10, 3, 100000, 30000); err != nil {
+		t.Fatalf("ReconcileVoucherKeys: %v", err)
+	}
+	if rem, _, _ := engine.GetInt64(ctx, lua.VoucherRemainingKey("v-rec")); rem != 7 {
+		t.Fatalf("ReconcileVoucherKeys rem: got %d want 7", rem)
+	}
+	if bud, _, _ := engine.GetInt64(ctx, lua.VoucherBudgetRemainingKey("v-rec")); bud != 70000 {
+		t.Fatalf("ReconcileVoucherKeys budget: got %d want 70000", bud)
+	}
+	if st, err := mr.Get(lua.VoucherStatusKey("v-rec")); err != nil || st != domain.VoucherStatusPaused {
+		t.Fatalf("ReconcileVoucherKeys status: got %q err=%v", st, err)
+	}
+
+	// Clamping negative used_count or used_count > quota never exceeds quota or goes negative.
+	if err := engine.ReconcileVoucherKeys(ctx, "v-rec", domain.VoucherStatusActive, 10, -5, 0, 0); err != nil {
+		t.Fatalf("ReconcileVoucherKeys clamp upper + del budget: %v", err)
+	}
+	if rem, _, _ := engine.GetInt64(ctx, lua.VoucherRemainingKey("v-rec")); rem != 10 {
+		t.Fatalf("ReconcileVoucherKeys upper clamp: got %d want 10 (never > quota)", rem)
+	}
+	if _, exists, _ := engine.GetInt64(ctx, lua.VoucherBudgetRemainingKey("v-rec")); exists {
+		t.Fatalf("ReconcileVoucherKeys with budgetVND=0 must delete budget_remaining key")
+	}
+
+	// 2. release_atomic.lua & release_partial_atomic.lua MUST NOT create a zombie budget key if budget was disabled.
+	if err := engine.ReconcileVoucherKeys(ctx, "v-zombie", domain.VoucherStatusActive, 5, 0, 50000, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Reserve(ctx, lua.ReserveInput{
+		OrderID:  "ord-zombie-1",
+		UserID:   "u-z1",
+		Vouchers: []lua.VoucherReserveSpec{{VoucherID: "v-zombie", PerUserLimit: 2, DiscountVND: 10000, HasBudget: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mr.Del(lua.VoucherBudgetRemainingKey("v-zombie"))
+	if _, err := engine.Release(ctx, "ord-zombie-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists, _ := engine.GetInt64(ctx, lua.VoucherBudgetRemainingKey("v-zombie")); exists {
+		t.Fatalf("release_atomic.lua resurrected deleted budget_remaining key (zombie key)")
+	}
+
+	// 3. ReconcileUserUsageKeys & SetUserUsageKey restore positive and DELETE zero per-user counters for all 3 kinds.
+	if err := engine.ReconcileUserUsageKeys(ctx, []domain.UserUsage{
+		{Kind: domain.UsageKindVoucher, TargetID: "v-rec", UserID: "u-1", UsedQty: 2},
+		{Kind: domain.UsageKindFlash, TargetID: "f-rec", UserID: "u-1", UsedQty: 3},
+		{Kind: domain.UsageKindShopProgram, TargetID: "p-rec", UserID: "u-1", UsedQty: 4},
+	}); err != nil {
+		t.Fatalf("ReconcileUserUsageKeys: %v", err)
+	}
+	if v, _, _ := engine.GetInt64(ctx, lua.VoucherUserKey("v-rec", "u-1")); v != 2 {
+		t.Fatalf("voucher user usage: got %d want 2", v)
+	}
+	if v, _, _ := engine.GetInt64(ctx, lua.FlashUserKey("f-rec", "u-1")); v != 3 {
+		t.Fatalf("flash user usage: got %d want 3", v)
+	}
+	if v, _, _ := engine.GetInt64(ctx, lua.ShopProgramUserKey("p-rec", "u-1")); v != 4 {
+		t.Fatalf("shop prog user usage: got %d want 4", v)
+	}
+	if err := engine.ReconcileUserUsageKeys(ctx, []domain.UserUsage{
+		{Kind: domain.UsageKindVoucher, TargetID: "v-rec", UserID: "u-1", UsedQty: 0},
+		{Kind: domain.UsageKindFlash, TargetID: "f-rec", UserID: "u-1", UsedQty: 0},
+		{Kind: domain.UsageKindShopProgram, TargetID: "p-rec", UserID: "u-1", UsedQty: 0},
+	}); err != nil {
+		t.Fatalf("ReconcileUserUsageKeys(0): %v", err)
+	}
+	for _, key := range []string{
+		lua.VoucherUserKey("v-rec", "u-1"),
+		lua.FlashUserKey("f-rec", "u-1"),
+		lua.ShopProgramUserKey("p-rec", "u-1"),
+	} {
+		if _, exists, _ := engine.GetInt64(ctx, key); exists {
+			t.Fatalf("ReconcileUserUsageKeys(0) must delete stale key %s", key)
+		}
+	}
+	// 4. UndoReserve reverts counters AND deletes promo:res key (NO tombstone), allowing immediate retry on same order_id,
+	// while never deleting an already-written RELEASED tombstone.
+	if err := engine.ReconcileVoucherKeys(ctx, "v-undo", domain.VoucherStatusActive, 5, 0, 50000, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Reserve(ctx, lua.ReserveInput{
+		OrderID:          "ord-undo-1",
+		UserID:           "u-undo",
+		Vouchers:         []lua.VoucherReserveSpec{{VoucherID: "v-undo", PerUserLimit: 2, DiscountVND: 10000, HasBudget: true}},
+		ShopProgramItems: []lua.ShopProgramReserveSpec{{ItemID: "sp-undo", Quantity: 1, PerUserLimit: 1}},
+	}); err != nil {
+		t.Fatalf("Reserve(ord-undo-1): %v", err)
+	}
+	if uOut, err := engine.UndoReserve(ctx, "ord-undo-1"); err != nil || !uOut.Released || uOut.AlreadyReleased {
+		t.Fatalf("UndoReserve(ord-undo-1): out=%+v err=%v", uOut, err)
+	}
+	if mr.Exists(lua.ReservationKey("ord-undo-1")) {
+		t.Fatalf("UndoReserve must delete promo:res key without writing RELEASED tombstone")
+	}
+	if rem, _, _ := engine.GetInt64(ctx, lua.VoucherRemainingKey("v-undo")); rem != 5 {
+		t.Fatalf("UndoReserve voucher rem: got %d want 5", rem)
+	}
+	if _, exists, _ := engine.GetInt64(ctx, lua.ShopProgramUserKey("sp-undo", "u-undo")); exists {
+		t.Fatalf("UndoReserve must restore shop program :user: key")
+	}
+	// Immediate re-reserve with same order_id succeeds!
+	if r2, err := engine.Reserve(ctx, lua.ReserveInput{
+		OrderID:  "ord-undo-1",
+		UserID:   "u-undo",
+		Vouchers: []lua.VoucherReserveSpec{{VoucherID: "v-undo", PerUserLimit: 2, DiscountVND: 10000, HasBudget: true}},
+	}); err != nil || !r2.Reserved || r2.AlreadyReserved {
+		t.Fatalf("retry Reserve after UndoReserve failed: out=%+v err=%v", r2, err)
+	}
+	// Existing RELEASED tombstone is preserved by UndoReserve.
+	if _, err := engine.Release(ctx, "ord-undo-1"); err != nil {
+		t.Fatal(err)
+	}
+	if u2, err := engine.UndoReserve(ctx, "ord-undo-1"); err != nil || !u2.AlreadyReleased {
+		t.Fatalf("UndoReserve on RELEASED tombstone: out=%+v err=%v", u2, err)
+	}
+	if val, err := mr.Get(lua.ReservationKey("ord-undo-1")); err != nil || val != "RELEASED" {
+		t.Fatalf("UndoReserve corrupted existing RELEASED tombstone: val=%q err=%v", val, err)
+	}
+}
+
+// TestLua_W3A_R8_P2_1_ReleaseDoesNotCreateMissingRemainingKeys verifies Review 4 P2-1:
+// release_atomic.lua (Release & UndoReserve) and release_partial_atomic.lua MUST NOT INCR/INCRBY
+// a missing :remaining key into a bogus 1/qty that blocks *_NOT_INITIALIZED self-rehydration.
+func TestLua_W3A_R8_P2_1_ReleaseDoesNotCreateMissingRemainingKeys(t *testing.T) {
+	ctx := context.Background()
+
+	runCase := func(t *testing.T, mode string) {
+		mr := miniredis.RunT(t)
+		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		t.Cleanup(func() { _ = rdb.Close() })
+		eng := lua.NewEngine(rdb)
+
+		const (
+			vid = "v-p21"
+			fid = "f-p21"
+			uid = "u-p21"
+			oid = "ord-p21"
+		)
+		if err := eng.ReconcileVoucherKeys(ctx, vid, domain.VoucherStatusActive, 10, 0, 100000, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := eng.InitFlashItemSlots(ctx, fid, 10, true); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := eng.Reserve(ctx, lua.ReserveInput{
+			OrderID:    oid,
+			UserID:     uid,
+			Vouchers:   []lua.VoucherReserveSpec{{VoucherID: vid, PerUserLimit: 5, DiscountVND: 10000, HasBudget: true}},
+			FlashItems: []lua.FlashReserveSpec{{ItemID: fid, Quantity: 2, PerUserLimit: 5}},
+		}); err != nil {
+			t.Fatalf("Reserve: %v", err)
+		}
+
+		// Simulate eviction/loss of :remaining and :budget_remaining keys before release.
+		mr.Del(lua.VoucherRemainingKey(vid))
+		mr.Del(lua.VoucherBudgetRemainingKey(vid))
+		mr.Del(lua.FlashRemainingKey(fid))
+
+		switch mode {
+		case "Release":
+			if _, err := eng.Release(ctx, oid); err != nil {
+				t.Fatalf("Release: %v", err)
+			}
+		case "UndoReserve":
+			if _, err := eng.UndoReserve(ctx, oid); err != nil {
+				t.Fatalf("UndoReserve: %v", err)
+			}
+		case "ReleasePartial":
+			if _, err := eng.ReleasePartial(ctx, oid, []string{
+				lua.VoucherRemainingKey(vid),
+				lua.FlashRemainingKey(fid),
+			}); err != nil {
+				t.Fatalf("ReleasePartial: %v", err)
+			}
+		}
+
+		if val, exists, _ := eng.GetInt64(ctx, lua.VoucherRemainingKey(vid)); exists {
+			t.Fatalf("P2-1 bug (%s): recreated missing voucher :remaining key with bogus val=%d", mode, val)
+		}
+		if val, exists, _ := eng.GetInt64(ctx, lua.FlashRemainingKey(fid)); exists {
+			t.Fatalf("P2-1 bug (%s): recreated missing flash :remaining key with bogus val=%d", mode, val)
+		}
+
+		// Subsequent Reserve MUST hit *_NOT_INITIALIZED so the service rehydrates true PG counts!
+		_, vErr := eng.Reserve(ctx, lua.ReserveInput{
+			OrderID:  "ord-p21-next-v",
+			UserID:   "u-p21-2",
+			Vouchers: []lua.VoucherReserveSpec{{VoucherID: vid, PerUserLimit: 5, DiscountVND: 10000, HasBudget: true}},
+		})
+		var resErr *lua.ReservationError
+		if !errors.As(vErr, &resErr) || resErr.Code != lua.ErrCodeVoucherNotInitialized {
+			t.Fatalf("P2-1 (%s): expected VOUCHER_NOT_INITIALIZED after release on missing key, got %v", mode, vErr)
+		}
+		_, fErr := eng.Reserve(ctx, lua.ReserveInput{
+			OrderID:    "ord-p21-next-f",
+			UserID:     "u-p21-2",
+			FlashItems: []lua.FlashReserveSpec{{ItemID: fid, Quantity: 1, PerUserLimit: 5}},
+		})
+		if !errors.As(fErr, &resErr) || resErr.Code != lua.ErrCodeFlashNotInitialized {
+			t.Fatalf("P2-1 (%s): expected FLASH_NOT_INITIALIZED after release on missing key, got %v", mode, fErr)
+		}
+	}
+
+	t.Run("Release", func(t *testing.T) { runCase(t, "Release") })
+	t.Run("UndoReserve", func(t *testing.T) { runCase(t, "UndoReserve") })
+	t.Run("ReleasePartial", func(t *testing.T) { runCase(t, "ReleasePartial") })
 }

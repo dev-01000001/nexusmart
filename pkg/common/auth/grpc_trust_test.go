@@ -131,6 +131,7 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.promotion.v1.PromotionService/ReleasePromotion",
 		"/nexusmart.promotion.v1.PromotionService/ReleasePromotionShop",
 		"/nexusmart.promotion.v1.PromotionService/CreditCoins",
+		"/nexusmart.promotion.v1.PromotionService/ReservePromotion",
 		"/nexusmart.order.v1.OrderService/MarkPaymentResult",
 		"/nexusmart.shipping.v1.ShippingService/GetShipment",
 		"/nexusmart.shipping.v1.ShippingService/CancelShipment",
@@ -193,7 +194,6 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.promotion.v1.PromotionService/ListShopDiscountPrograms",
 		"/nexusmart.promotion.v1.PromotionService/GetCoinBalance",
 		"/nexusmart.promotion.v1.PromotionService/PreviewDiscounts",
-		"/nexusmart.promotion.v1.PromotionService/ReservePromotion",
 		// OrderService
 		"/nexusmart.order.v1.OrderService/CreateCheckout",
 		"/nexusmart.order.v1.OrderService/GetOrder",
@@ -344,6 +344,66 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		if _, err := callInterceptor(t, users, svc, m, MDAuthorization, "Bearer "+svcTok); status.Code(err) != codes.PermissionDenied {
 			t.Fatalf("service token on public RPC %s: want PermissionDenied, got %v", m, err)
 		}
+	}
+}
+
+// TestGRPCInterceptorServiceTokenPolicyD3 verifies D3: ReservePromotion accepts a service token
+// without forwarding a raw token downstream, while every internalRPCs entry set to false rejects
+// service tokens with PermissionDenied without invoking the handler.
+func TestGRPCInterceptorServiceTokenPolicyD3(t *testing.T) {
+	users, _ := NewManager("user-key", 15*time.Minute)
+	svc, _ := NewManager("service-key", ServiceTokenTTL)
+	orderTok, err := svc.SignServiceToken("order-service")
+	if err != nil {
+		t.Fatalf("SignServiceToken: %v", err)
+	}
+
+	const reserveMethod = "/nexusmart.promotion.v1.PromotionService/ReservePromotion"
+	if !internalRPCs[reserveMethod] {
+		t.Fatalf("expected internalRPCs[%q] == true (D3)", reserveMethod)
+	}
+	inCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(MDAuthorization, "Bearer "+orderTok))
+	var gotClaims *Claims
+	var gotRaw string
+	_, err = GRPCUnaryServerInterceptor(users, svc)(inCtx, nil, &grpc.UnaryServerInfo{FullMethod: reserveMethod},
+		func(ctx context.Context, _ any) (any, error) {
+			gotClaims, _ = ClaimsFromContext(ctx)
+			gotRaw = RawTokenFromContext(ctx)
+			return "ok", nil
+		})
+	if err != nil {
+		t.Fatalf("ReservePromotion with order-service token: got err=%v, want nil", err)
+	}
+	if gotClaims == nil || gotClaims.Service != "order-service" || gotClaims.Role != ServiceRole {
+		t.Fatalf("ReservePromotion claims: got %+v, want Service=order-service Role=%s", gotClaims, ServiceRole)
+	}
+	if gotRaw != "" {
+		t.Fatalf("service token must never populate RawTokenFromContext, got non-empty token")
+	}
+
+	// Every internalRPCs entry marked false must reject service tokens with PermissionDenied
+	// and never invoke the underlying handler.
+	falseCount := 0
+	for method, allowService := range internalRPCs {
+		if allowService {
+			continue
+		}
+		falseCount++
+		handlerCalled := false
+		_, err := GRPCUnaryServerInterceptor(users, svc)(inCtx, nil, &grpc.UnaryServerInfo{FullMethod: method},
+			func(_ context.Context, _ any) (any, error) {
+				handlerCalled = true
+				return "ok", nil
+			})
+		if status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("service token on false RPC %s: got %v, want PermissionDenied", method, err)
+		}
+		if handlerCalled {
+			t.Fatalf("handler must not be invoked when service token is rejected on %s", method)
+		}
+	}
+	if falseCount == 0 {
+		t.Fatalf("expected user-only (false) entries in internalRPCs")
 	}
 }
 

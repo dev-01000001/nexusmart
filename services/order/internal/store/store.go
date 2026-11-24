@@ -8,8 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
+	"github.com/nexusmart/core/pkg/common/jetstream"
 	"github.com/nexusmart/core/services/order/internal/db"
+	"github.com/nexusmart/core/services/order/internal/events"
 	"github.com/nexusmart/core/services/order/internal/statemachine"
 )
 
@@ -240,19 +243,41 @@ func isPreviousReturnTracking(rawJSON []byte, tracking string) bool {
 }
 
 var (
-	ErrNotFound                   = errors.New("record not found")
-	ErrDuplicateIdempotencyKey    = errors.New("duplicate active idempotency key")
-	ErrCheckoutGroupNotInProgress = errors.New("checkout group is not in progress")
-	ErrDuplicateReturnRequest     = errors.New("return request already exists for order")
-	ErrAlreadyProcessed           = errors.New("event already processed")
-	ErrRetryPrecondition          = errors.New("order group is not eligible for payment retry")
-	ErrReturnDeadlineNotReached   = errors.New("return deadline has not expired")
-	ErrOrderHasTracking           = errors.New("order already has tracking code")
-	ErrOrphanShipmentNeedsCancel  = fmt.Errorf("%w: order was cancelled while creating shipment", statemachine.ErrInvalidTransition)
-	ErrStaleShipmentAttempt       = fmt.Errorf("%w: shipment creation attempt expired or superseded", statemachine.ErrInvalidTransition)
-	ErrReturnTrackingPending      = errors.New("return shipment tracking code not yet persisted; retry event")
-	ErrOrderNotNeedingReview      = errors.New("order does not require manual review")
+	ErrNotFound                      = errors.New("record not found")
+	ErrDuplicateIdempotencyKey       = errors.New("duplicate active idempotency key")
+	ErrCheckoutGroupNotInProgress    = errors.New("checkout group is not in progress")
+	ErrCheckoutGroupFailedWithOrders = errors.New("checkout group already failed after persisting orders")
+	ErrDuplicateReturnRequest        = errors.New("return request already exists for order")
+	ErrAlreadyProcessed              = errors.New("event already processed")
+	ErrRetryPrecondition             = errors.New("order group is not eligible for payment retry")
+	ErrReturnDeadlineNotReached      = errors.New("return deadline has not expired")
+	ErrOrderHasTracking              = errors.New("order already has tracking code")
+	ErrOrphanShipmentNeedsCancel     = fmt.Errorf("%w: order was cancelled while creating shipment", statemachine.ErrInvalidTransition)
+	ErrStaleShipmentAttempt          = fmt.Errorf("%w: shipment creation attempt expired or superseded", statemachine.ErrInvalidTransition)
+	ErrReturnTrackingPending         = errors.New("return shipment tracking code not yet persisted; retry event")
+	ErrOrderNotNeedingReview         = errors.New("order does not require manual review")
 )
+
+// FailedCheckoutWithOrdersError is returned by CreateCheckoutGroup when a previous FAILED checkout
+// group for the same (buyer_id, idempotency_key) already persisted sub-orders (D11).
+type FailedCheckoutWithOrdersError struct {
+	GroupID string
+	Reason  string
+}
+
+func (e *FailedCheckoutWithOrdersError) Error() string {
+	return fmt.Sprintf("%s: group %s failed (%s)", ErrCheckoutGroupFailedWithOrders.Error(), e.GroupID, e.Reason)
+}
+
+func (e *FailedCheckoutWithOrdersError) Unwrap() error {
+	return ErrCheckoutGroupFailedWithOrders
+}
+
+// CheckoutGroupLookup pairs a checkout_group row with whether it already has persisted sub-orders.
+type CheckoutGroupLookup struct {
+	Group     db.CheckoutGroup
+	HasOrders bool
+}
 
 // OrderReportParams configures a seller (ShopID != "") or platform (ShopID == "") report query.
 // StartTS (inclusive) and EndTS (exclusive) represent Asia/Ho_Chi_Minh calendar day bounds in UTC.
@@ -339,16 +364,155 @@ type UpdateCheckoutPaymentParams struct {
 	QRURL                string
 	QRCode               string
 	PaymentExpiresAt     *time.Time
-	TotalPayableVND      int64
 	ResponseSnapshotJSON []byte
 	// BuildSnapshot, when non-nil, is invoked inside the transaction after locking orders and
 	// applying non-downgrading payment updates so response_snapshot_json reflects real current state.
 	BuildSnapshot func(grp db.CheckoutGroup, aggs []OrderAggregate) ([]byte, error)
 }
 
+func buildOrderCancelledOutbox(ord db.Order, reason, traceID, traceparent string) (db.InsertOutboxEventParams, error) {
+	if strings.TrimSpace(reason) == "" {
+		reason = "Order cancelled before payment creation"
+	}
+	payloadBytes, err := json.Marshal(events.OrderCancelledPayload{
+		OrderID:   ord.ID,
+		OrderCode: ord.OrderCode,
+		BuyerID:   ord.BuyerID,
+		ShopID:    ord.ShopID,
+		Reason:    reason,
+		WasPaid:   false,
+	})
+	if err != nil {
+		return db.InsertOutboxEventParams{}, err
+	}
+	return db.InsertOutboxEventParams{
+		ID:          uuid.NewString(),
+		EventType:   events.SubjectOrderCancelled,
+		TraceID:     traceID,
+		Traceparent: traceparent,
+		PayloadJSON: payloadBytes,
+	}, nil
+}
+
+// shouldReemitOrderCancelledForPayment reports whether a sub-order was already CANCELLED before
+// payment existed (empty payment_id, not yet REFUNDED) and therefore needs a fresh order.cancelled
+// outbox event once paymentID exists so payment cancels/refunds it idempotently (P0-1 / P1-2).
+func shouldReemitOrderCancelledForPayment(ord db.Order, paymentID string) bool {
+	return strings.TrimSpace(paymentID) != "" &&
+		statemachine.StringToStatus(ord.Status) == orderv1.OrderStatus_ORDER_STATUS_CANCELLED &&
+		strings.TrimSpace(ord.PaymentID) == "" &&
+		!strings.EqualFold(strings.TrimSpace(ord.PaymentStatus), "REFUNDED")
+}
+
+func sumLiveOrderPayableVND(orders []db.Order) int64 {
+	var total int64
+	for _, o := range orders {
+		if statemachine.StringToStatus(o.Status) == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+			continue
+		}
+		total += o.TotalPayableVND
+	}
+	return total
+}
+
 func isPendingOrEmptyPaymentStatus(st string) bool {
 	s := strings.ToUpper(strings.TrimSpace(st))
 	return s == "" || s == "PENDING"
+}
+
+// ResolveAllCancelledPaymentStatus chooses the closing payment_status for an all-cancelled group,
+// preserving terminal expiry/refund/failure reasons (EXPIRED > REFUNDED > FAILED > other > CANCELLED).
+func ResolveAllCancelledPaymentStatus(orders []db.Order) string {
+	var fallback string
+	for _, o := range orders {
+		st := strings.ToUpper(strings.TrimSpace(o.PaymentStatus))
+		if isPendingOrEmptyPaymentStatus(st) {
+			continue
+		}
+		if st == "EXPIRED" {
+			return "EXPIRED"
+		}
+		if st == "REFUNDED" && fallback != "REFUNDED" {
+			fallback = "REFUNDED"
+		} else if st == "FAILED" && fallback != "REFUNDED" && fallback != "FAILED" {
+			fallback = "FAILED"
+		} else if fallback == "" {
+			fallback = st
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return "CANCELLED"
+}
+
+func outboxAggregateKey(ev db.OutboxEvent) string {
+	if len(ev.PayloadJSON) > 0 {
+		var p struct {
+			OrderID string `json:"order_id"`
+		}
+		if err := json.Unmarshal(ev.PayloadJSON, &p); err == nil && strings.TrimSpace(p.OrderID) != "" {
+			return strings.TrimSpace(p.OrderID)
+		}
+	}
+	return ev.ID
+}
+
+// clampOutboxTimings normalizes lease and per-event publish timeout using shared jetstream defaults
+// and guarantees pubTimeout < lease (P3-8) so the first event in a claimed batch is never starved.
+func clampOutboxTimings(lease, pubTimeout time.Duration) (time.Duration, time.Duration) {
+	if lease <= 0 {
+		lease = jetstream.DefaultOutboxLease
+	}
+	if lease < 2*time.Millisecond {
+		lease = 2 * time.Millisecond
+	}
+	if pubTimeout <= 0 {
+		pubTimeout = jetstream.DefaultOutboxPublishTimeout
+	}
+	if pubTimeout >= lease {
+		pubTimeout = lease / 2
+	}
+	return lease, pubTimeout
+}
+
+func collectOutboxClaimIDs(skipped []string, remaining []db.OutboxEvent) []string {
+	total := len(skipped) + len(remaining)
+	if total == 0 {
+		return nil
+	}
+	ids := make([]string, 0, total)
+	ids = append(ids, skipped...)
+	for _, ev := range remaining {
+		ids = append(ids, ev.ID)
+	}
+	return ids
+}
+
+func allOrdersCancelledDB(orders []db.Order) bool {
+	if len(orders) == 0 {
+		return false
+	}
+	for _, ord := range orders {
+		if statemachine.StringToStatus(ord.Status) != orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+			return false
+		}
+	}
+	return true
+}
+
+func nextSettlementRefundedVND(ord db.Order, delta, newRefunded int64, isPostSettlement *bool) int64 {
+	next := ord.SettlementRefundedVND
+	if ord.Status == "COMPLETED" && isPostSettlement != nil && !*isPostSettlement && delta > 0 {
+		next += delta
+	}
+	if next > newRefunded {
+		next = newRefunded
+	}
+	if next < 0 {
+		next = 0
+	}
+	return next
 }
 
 // resolveNonDowngradingGroupPaymentStatus chooses the checkout_group payment_status without ever
@@ -367,13 +531,9 @@ func resolveNonDowngradingGroupPaymentStatus(curGroupStatus, requestedStatus str
 	allCancelled := true
 	allActivePaid := true
 	hasActive := false
-	cancelledPayStatus := ""
 	for _, o := range orders {
 		st := statemachine.StringToStatus(o.Status)
 		if st == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
-			if !isPendingOrEmptyPaymentStatus(o.PaymentStatus) && cancelledPayStatus == "" {
-				cancelledPayStatus = o.PaymentStatus
-			}
 			continue
 		}
 		allCancelled = false
@@ -386,10 +546,7 @@ func resolveNonDowngradingGroupPaymentStatus(curGroupStatus, requestedStatus str
 		}
 	}
 	if allCancelled {
-		if cancelledPayStatus != "" {
-			return cancelledPayStatus
-		}
-		return "CANCELLED"
+		return ResolveAllCancelledPaymentStatus(orders)
 	}
 	if hasActive && allActivePaid {
 		return "SUCCEEDED"
@@ -667,13 +824,14 @@ type ShipmentUpdateOutcome struct {
 
 // PaymentRefundedParams drives idempotent payment.refunded event consumption.
 type PaymentRefundedParams struct {
-	EventID   string
-	EventType string
-	PaymentID string
-	OrderID   string
-	RefundID  string
-	AmountVND int64
-	Reason    string
+	EventID          string
+	EventType        string
+	PaymentID        string
+	OrderID          string
+	RefundID         string
+	AmountVND        int64
+	Reason           string
+	IsPostSettlement *bool
 }
 
 // ExpiredGroupCandidate identifies an expired PENDING VietQR checkout group.
@@ -684,7 +842,7 @@ type ExpiredGroupCandidate struct {
 
 // Store defines the persistence contract for OrderService (Postgres in prod, Memory in unit tests).
 type Store interface {
-	GetActiveCheckoutGroup(ctx context.Context, buyerID, idempotencyKey string) (*db.CheckoutGroup, error)
+	GetCheckoutGroupForIdempotency(ctx context.Context, buyerID, idempotencyKey string) (*CheckoutGroupLookup, error)
 	GetCheckoutGroupByID(ctx context.Context, id string) (*db.CheckoutGroup, error)
 	GetCheckoutGroupByPaymentID(ctx context.Context, paymentID string) (*db.CheckoutGroup, error)
 	CreateCheckoutGroup(ctx context.Context, arg db.CreateCheckoutGroupParams) (*db.CheckoutGroup, error)

@@ -7,10 +7,21 @@ import { usePathname, useRouter } from "next/navigation";
 import { ANNOUNCEMENT_BAR, CATEGORIES, MEGA_MENU_GROUPS, TRENDING_KEYWORDS } from "@/data";
 import { api } from "@/lib/api";
 import type {
+  GatewayActiveShopDiscount,
+  GatewayActiveShopDiscountsResponse,
+  GatewayFlashSale,
+  GatewayFlashSaleItem,
+  GatewayFlashSalesResponse,
   GatewayNotificationsResponse,
   GatewayProduct,
   PaginatedResponse,
 } from "@/lib/gateway-types";
+import {
+  buildActiveShopDiscountsMap,
+  buildLiveFlashItemsBySkuId,
+  computeProductDisplayPricing,
+} from "@/lib/catalog-mapper";
+import { fetchActiveShopDiscountsWithFetcher } from "@/features/checkout/helpers";
 import { normalizeVietnamese, suggestSpelling } from "@/lib/search";
 import { formatVnd } from "@/lib/format";
 import { useSession } from "@/context/SessionContext";
@@ -145,7 +156,14 @@ export function ShopHeader() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [mobileSearchFocus, setMobileSearchFocus] = useState(false);
   const [searchResults, setSearchResults] = useState<GatewayProduct[]>([]);
+  const [searchLiveFlashBySkuId, setSearchLiveFlashBySkuId] = useState<
+    Map<string, GatewayFlashSaleItem>
+  >(() => new Map());
+  const [searchShopDiscountsBySkuId, setSearchShopDiscountsBySkuId] = useState<
+    Map<string, GatewayActiveShopDiscount>
+  >(() => new Map());
   const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
 
   const headerRef = useRef<HTMLElement>(null);
@@ -153,6 +171,7 @@ export function ShopHeader() {
   const mobileSearchRef = useRef<HTMLInputElement>(null);
   const megaCloseTimerRef = useRef<number | null>(null);
   const searchReqSeq = useRef(0);
+  const flashCacheRef = useRef<{ fetchedAt: number; sales: GatewayFlashSale[] } | null>(null);
 
   const isHome = pathname === "/";
   const wishlistCount = wishlist.length;
@@ -191,29 +210,90 @@ export function ShopHeader() {
     };
   }, [isAuthenticated, pathname]);
 
-  // Debounced real catalog search via GET /api/gw/products?keyword=...
+  // Debounced real catalog search via GET /api/gw/products?keyword=... enriched with live flash & active shop discounts (P3-1)
   useEffect(() => {
     if (!searchOpen && !(drawerOpen && searchQuery.trim())) return;
     const trimmed = searchQuery.trim();
     const seq = ++searchReqSeq.current;
     setSearchLoading(true);
+    setSearchError(null);
     const timer = window.setTimeout(() => {
-      const qs = new URLSearchParams({ page: "1", page_size: "6" });
-      if (trimmed) qs.set("keyword", trimmed);
-      void api<PaginatedResponse<GatewayProduct>>(`/products?${qs.toString()}`)
-        .then((res) => {
+      const runSearch = async () => {
+        try {
+          const qs = new URLSearchParams({ page: "1", page_size: "6" });
+          if (trimmed) qs.set("keyword", trimmed);
+          const res = await api<PaginatedResponse<GatewayProduct>>(`/products?${qs.toString()}`);
           if (searchReqSeq.current !== seq) return;
-          setSearchResults(Array.isArray(res?.items) ? res.items : []);
-        })
-        .catch(() => {
+          const items = Array.isArray(res?.items) ? res.items : [];
+
+          const skuIds = Array.from(
+            new Set(
+              items
+                .flatMap((p) => (p.skus ?? []).map((s) => s.id))
+                .filter((id): id is string => Boolean(id))
+            )
+          );
+          if (skuIds.length === 0) {
+            setSearchResults(items);
+            setSearchLiveFlashBySkuId(new Map());
+            setSearchShopDiscountsBySkuId(new Map());
+            setSearchError(null);
+            return;
+          }
+
+          const nowMs = Date.now();
+          const cachedFlash = flashCacheRef.current;
+          const flashPromise =
+            cachedFlash && nowMs - cachedFlash.fetchedAt < 30_000
+              ? Promise.resolve(cachedFlash.sales)
+              : api<GatewayFlashSalesResponse>("/flash-sales?include_upcoming=false")
+                  .then((fsRes) => {
+                    const sales = Array.isArray(fsRes?.flash_sales) ? fsRes.flash_sales : [];
+                    flashCacheRef.current = { fetchedAt: Date.now(), sales };
+                    return sales;
+                  })
+                  .catch(() => [] as GatewayFlashSale[]);
+
+          const shopDiscPromise = fetchActiveShopDiscountsWithFetcher({ skuIds }, async (batch) => {
+            const dqs = new URLSearchParams();
+            if (batch.skuIds && batch.skuIds.length > 0) {
+              dqs.set("sku_ids", batch.skuIds.join(","));
+            }
+            const discRes = await api<GatewayActiveShopDiscountsResponse>(
+              `/shop-discounts/active?${dqs.toString()}`
+            );
+            return Array.isArray(discRes?.discounts) ? discRes.discounts : [];
+          }).catch(() => [] as GatewayActiveShopDiscount[]);
+
+          const [rawFlashSales, activeDiscounts] = await Promise.all([
+            flashPromise,
+            shopDiscPromise,
+          ]);
+          if (searchReqSeq.current !== seq) return;
+
+          const nextFlashMap = buildLiveFlashItemsBySkuId(rawFlashSales, Date.now());
+          const nextDiscMap = buildActiveShopDiscountsMap(activeDiscounts);
+
+          // Commit results and live pricing maps together so base prices never flash before discounts
+          setSearchResults(items);
+          setSearchLiveFlashBySkuId(nextFlashMap);
+          setSearchShopDiscountsBySkuId(nextDiscMap);
+          setSearchError(null);
+        } catch {
           if (searchReqSeq.current !== seq) return;
           setSearchResults([]);
-        })
-        .finally(() => {
+          setSearchLiveFlashBySkuId(new Map());
+          setSearchShopDiscountsBySkuId(new Map());
+          setSearchError(
+            "Không thể tải gợi ý tìm kiếm lúc này. Vui lòng thử lại hoặc nhấn Enter để tìm."
+          );
+        } finally {
           if (searchReqSeq.current === seq) {
             setSearchLoading(false);
           }
-        });
+        }
+      };
+      void runSearch();
     }, 220);
     return () => window.clearTimeout(timer);
   }, [searchQuery, searchOpen, drawerOpen]);
@@ -509,6 +589,10 @@ export function ShopHeader() {
                       <div className={styles.emptySearchBox}>
                         <p className={styles.emptySearchText}>Đang tìm kiếm sản phẩm...</p>
                       </div>
+                    ) : searchError ? (
+                      <div className={styles.emptySearchBox} role="alert">
+                        <p className={styles.emptySearchText}>{searchError}</p>
+                      </div>
                     ) : searchResults.length === 0 ? (
                       <div className={styles.emptySearchBox}>
                         <p className={styles.emptySearchText}>
@@ -532,8 +616,17 @@ export function ShopHeader() {
                             prod.skus?.[0]?.image_url ||
                             "/products/ao-thun-cotton-trang.png";
                           const prodSlug = prod.slug || prod.id;
-                          const minP = Math.max(0, Math.trunc(prod.min_price_vnd || 0));
-                          const maxP = Math.max(minP, Math.trunc(prod.max_price_vnd || 0));
+                          const pricing = computeProductDisplayPricing(
+                            prod,
+                            searchLiveFlashBySkuId,
+                            searchShopDiscountsBySkuId
+                          );
+                          const promoLabel =
+                            pricing.promoKind === "flash"
+                              ? "Flash sale"
+                              : pricing.promoKind === "shop_discount"
+                                ? "Giảm giá gian hàng"
+                                : "";
                           return (
                             <li key={prod.id}>
                               <Link
@@ -554,14 +647,22 @@ export function ShopHeader() {
                                     {prod.skus?.length
                                       ? `${prod.skus.length} phân loại`
                                       : "NexusMart"}
+                                    {promoLabel ? ` · ${promoLabel}` : ""}
                                   </span>
                                 </div>
                                 <div className={styles.resultPriceCol}>
                                   <span className={`${styles.resultPrice} num`}>
-                                    {maxP > minP
-                                      ? `${formatVnd(minP)} – ${formatVnd(maxP)}`
-                                      : formatVnd(minP)}
+                                    {pricing.maxPriceVnd > pricing.minPriceVnd
+                                      ? `${formatVnd(pricing.minPriceVnd)} – ${formatVnd(pricing.maxPriceVnd)}`
+                                      : formatVnd(pricing.minPriceVnd)}
                                   </span>
+                                  {pricing.originalPriceVnd &&
+                                    pricing.originalPriceVnd >
+                                      Math.max(pricing.minPriceVnd, pricing.maxPriceVnd) && (
+                                      <span className={`${styles.resultOldPrice} num`}>
+                                        {formatVnd(pricing.originalPriceVnd)}
+                                      </span>
+                                    )}
                                 </div>
                               </Link>
                             </li>
@@ -962,6 +1063,12 @@ export function ShopHeader() {
               ))}
             </div>
 
+            {searchQuery.trim() && searchError && (
+              <div className={styles.drawerSection} role="alert">
+                <p className={styles.emptySearchText}>{searchError}</p>
+              </div>
+            )}
+
             {searchQuery.trim() && searchResults.length > 0 && (
               <div className={styles.drawerSection}>
                 <p className={styles.dropdownHeading}>Kết quả nhanh</p>
@@ -972,6 +1079,17 @@ export function ShopHeader() {
                       prod.skus?.[0]?.image_url ||
                       "/products/ao-thun-cotton-trang.png";
                     const prodSlug = prod.slug || prod.id;
+                    const pricing = computeProductDisplayPricing(
+                      prod,
+                      searchLiveFlashBySkuId,
+                      searchShopDiscountsBySkuId
+                    );
+                    const promoLabel =
+                      pricing.promoKind === "flash"
+                        ? "Flash sale"
+                        : pricing.promoKind === "shop_discount"
+                          ? "Giảm giá gian hàng"
+                          : "";
                     return (
                       <li key={prod.id}>
                         <Link
@@ -990,11 +1108,23 @@ export function ShopHeader() {
                             <span className={styles.resultName}>{prod.name}</span>
                             <span className={styles.resultSub}>
                               {prod.skus?.length ? `${prod.skus.length} phân loại` : "NexusMart"}
+                              {promoLabel ? ` · ${promoLabel}` : ""}
                             </span>
                           </div>
-                          <span className={`${styles.resultPrice} num`}>
-                            {formatVnd(prod.min_price_vnd || 0)}
-                          </span>
+                          <div className={styles.resultPriceCol}>
+                            <span className={`${styles.resultPrice} num`}>
+                              {pricing.maxPriceVnd > pricing.minPriceVnd
+                                ? `${formatVnd(pricing.minPriceVnd)} – ${formatVnd(pricing.maxPriceVnd)}`
+                                : formatVnd(pricing.minPriceVnd)}
+                            </span>
+                            {pricing.originalPriceVnd &&
+                              pricing.originalPriceVnd >
+                                Math.max(pricing.minPriceVnd, pricing.maxPriceVnd) && (
+                                <span className={`${styles.resultOldPrice} num`}>
+                                  {formatVnd(pricing.originalPriceVnd)}
+                                </span>
+                              )}
+                          </div>
                         </Link>
                       </li>
                     );

@@ -1,3 +1,4 @@
+import type { PaymentMethod } from "@/data";
 import type {
   BadgeApprovalStatus,
   DisputeStatus,
@@ -6,13 +7,12 @@ import type {
   FlashProposalStatus,
   GiftCardStatus,
   ModerationStatus,
-  PaymentMethod,
   PaymentReconciliationRow,
   PlatformBadgeKind,
   ReconciliationStatus,
   ShopApprovalStatus,
   VulnerablePriorityGroup,
-} from "@/data";
+} from "@/data/admin";
 
 import { formatShortTimeDateVi, formatTimeHmVn } from "@/lib/format";
 

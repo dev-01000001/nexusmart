@@ -118,7 +118,7 @@ func shopBankAccountStatusToProto(st string) userv1.ShopBankAccountStatus {
 	}
 }
 
-func toProtoShopBankAccount(acc db.ShopBankAccount, includeRawNumber bool) *userv1.ShopBankAccount {
+func toProtoShopBankAccount(acc db.ShopBankAccount, decryptedAccountNumber string) *userv1.ShopBankAccount {
 	out := &userv1.ShopBankAccount{
 		Id:                  acc.ID,
 		ShopId:              acc.ShopID,
@@ -132,8 +132,8 @@ func toProtoShopBankAccount(acc db.ShopBankAccount, includeRawNumber bool) *user
 		CreatedAt:           timestamppb.New(acc.CreatedAt),
 		UpdatedAt:           timestamppb.New(acc.UpdatedAt),
 	}
-	if includeRawNumber {
-		out.AccountNumber = acc.AccountNumber
+	if decryptedAccountNumber != "" {
+		out.AccountNumber = decryptedAccountNumber
 	}
 	if acc.PayoutLockedUntil != nil {
 		out.PayoutLockedUntil = timestamppb.New(*acc.PayoutLockedUntil)
@@ -144,8 +144,8 @@ func toProtoShopBankAccount(acc db.ShopBankAccount, includeRawNumber bool) *user
 	return out
 }
 
-// auditShopBankAccountSnapshot omits raw account_number, otp, and otp_hash so sensitive fields
-// never enter audit_logs.
+// auditShopBankAccountSnapshot omits raw account_number, account_number_enc, otp, and otp_hash
+// so sensitive fields and ciphertexts never enter audit_logs.
 func auditShopBankAccountSnapshot(acc db.ShopBankAccount) map[string]any {
 	snap := map[string]any{
 		"id":                    acc.ID,
@@ -212,6 +212,21 @@ func (s *Server) AddShopBankAccount(ctx context.Context, req *userv1.AddShopBank
 		return nil, status.Error(codes.InvalidArgument, "valid account_holder_name is required")
 	}
 
+	if s.bankBox == nil {
+		s.log.ErrorContext(ctx, "bank account encryption key is not configured",
+			slog.String("shop_id", shopID),
+		)
+		return nil, status.Error(codes.Internal, "failed to create shop bank account")
+	}
+	accountNumberEnc, encErr := s.bankBox.Encrypt(accountNumber)
+	if encErr != nil {
+		s.log.ErrorContext(ctx, "failed to encrypt shop bank account number",
+			slog.String("shop_id", shopID),
+			slog.String("error", encErr.Error()),
+		)
+		return nil, status.Error(codes.Internal, "failed to create shop bank account")
+	}
+
 	masked := maskBankAccountNumber(accountNumber)
 	otpCode, err := generateOTP()
 	if err != nil {
@@ -272,14 +287,12 @@ func (s *Server) AddShopBankAccount(ctx context.Context, req *userv1.AddShopBank
 		}
 
 		holderMatched := namesMatchVietnamese(accountHolderName, shop.VerifiedOwnerName)
-		// ponytail: account_number is stored plaintext in user_db because no KMS/envelope key
-		// is configured for user yet; upgrade path: envelope encryption with KMS-managed DEK.
 		created, txErr = q.CreateShopBankAccount(ctx, db.CreateShopBankAccountParams{
 			ID:                  accountID,
 			ShopID:              shop.ID,
 			BankCode:            bankCode,
 			BankName:            bankName,
-			AccountNumber:       accountNumber,
+			AccountNumberEnc:    accountNumberEnc,
 			AccountNumberMasked: masked,
 			AccountHolderName:   accountHolderName,
 			HolderNameMatched:   holderMatched,
@@ -357,7 +370,7 @@ func (s *Server) AddShopBankAccount(ctx context.Context, req *userv1.AddShopBank
 	)
 
 	return &userv1.AddShopBankAccountResponse{
-		BankAccount: toProtoShopBankAccount(created, false),
+		BankAccount: toProtoShopBankAccount(created, ""),
 		OtpSent:     true,
 	}, nil
 }
@@ -548,7 +561,7 @@ func (s *Server) VerifyShopBankAccountOTP(ctx context.Context, req *userv1.Verif
 	)
 
 	return &userv1.VerifyShopBankAccountOTPResponse{
-		BankAccount: toProtoShopBankAccount(updated, false),
+		BankAccount: toProtoShopBankAccount(updated, ""),
 	}, nil
 }
 
@@ -606,7 +619,7 @@ func (s *Server) GetShopBankAccount(ctx context.Context, req *userv1.GetShopBank
 	}
 
 	return &userv1.GetShopBankAccountResponse{
-		BankAccount: toProtoShopBankAccount(acc, false),
+		BankAccount: toProtoShopBankAccount(acc, ""),
 	}, nil
 }
 
@@ -628,7 +641,10 @@ func (s *Server) AdminReviewShopBankAccount(ctx context.Context, req *userv1.Adm
 	}
 
 	bankAccountID := strings.TrimSpace(req.GetBankAccountId())
-	if bankAccountID != "" && !isValidUUID(bankAccountID) {
+	if bankAccountID == "" {
+		return nil, status.Error(codes.InvalidArgument, "bank_account_id is required")
+	}
+	if !isValidUUID(bankAccountID) {
 		return nil, status.Error(codes.NotFound, "shop bank account not found")
 	}
 
@@ -657,12 +673,7 @@ func (s *Server) AdminReviewShopBankAccount(ctx context.Context, req *userv1.Adm
 			return txErr
 		}
 
-		var acc db.ShopBankAccount
-		if bankAccountID != "" {
-			acc, txErr = q.GetShopBankAccountByIDForUpdate(ctx, bankAccountID)
-		} else {
-			acc, txErr = q.GetPendingAdminReviewShopBankAccountByShopIDForUpdate(ctx, shop.ID)
-		}
+		acc, txErr := q.GetShopBankAccountByIDForUpdate(ctx, bankAccountID)
 		if txErr != nil {
 			if isNotFoundErr(txErr) {
 				return status.Error(codes.NotFound, "shop bank account not found")
@@ -748,7 +759,7 @@ func (s *Server) AdminReviewShopBankAccount(ctx context.Context, req *userv1.Adm
 	)
 
 	return &userv1.AdminReviewShopBankAccountResponse{
-		BankAccount: toProtoShopBankAccount(updated, false),
+		BankAccount: toProtoShopBankAccount(updated, ""),
 	}, nil
 }
 
@@ -777,6 +788,32 @@ func (s *Server) GetShopBankAccountForPayout(ctx context.Context, req *userv1.Ge
 		return nil, status.Error(codes.Internal, "failed to load verified shop bank account")
 	}
 
+	if s.bankBox == nil || len(acc.AccountNumberEnc) == 0 {
+		s.log.ErrorContext(ctx, "shop bank account ciphertext unavailable for payout",
+			slog.String("shop_id", acc.ShopID),
+			slog.String("bank_account_id", acc.ID),
+			slog.Bool("cipher_configured", s.bankBox != nil),
+			slog.Bool("has_ciphertext", len(acc.AccountNumberEnc) > 0),
+		)
+		return nil, status.Error(codes.Internal, "failed to load verified shop bank account")
+	}
+	plainAccountNumber, decErr := s.bankBox.Decrypt(acc.AccountNumberEnc)
+	if decErr != nil {
+		s.log.ErrorContext(ctx, "failed to decrypt shop bank account for payout",
+			slog.String("shop_id", acc.ShopID),
+			slog.String("bank_account_id", acc.ID),
+			slog.String("error", decErr.Error()),
+		)
+		return nil, status.Error(codes.Internal, "failed to load verified shop bank account")
+	}
+	if strings.TrimSpace(plainAccountNumber) == "" {
+		s.log.ErrorContext(ctx, "decrypted shop bank account number is empty",
+			slog.String("shop_id", acc.ShopID),
+			slog.String("bank_account_id", acc.ID),
+		)
+		return nil, status.Error(codes.Internal, "failed to load verified shop bank account")
+	}
+
 	s.log.InfoContext(ctx, "shop bank account fetched for payout",
 		slog.String("shop_id", acc.ShopID),
 		slog.String("bank_account_id", acc.ID),
@@ -785,6 +822,6 @@ func (s *Server) GetShopBankAccountForPayout(ctx context.Context, req *userv1.Ge
 	)
 
 	return &userv1.GetShopBankAccountForPayoutResponse{
-		BankAccount: toProtoShopBankAccount(acc, true),
+		BankAccount: toProtoShopBankAccount(acc, plainAccountNumber),
 	}, nil
 }

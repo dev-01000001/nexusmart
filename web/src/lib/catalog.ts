@@ -2,7 +2,6 @@ import type {
   GatewayActiveShopDiscount,
   GatewayCategory,
   GatewayFlashSale,
-  GatewayFlashSaleItem,
   GatewayProduct,
   GatewayProvince,
   GatewayPublicShop,
@@ -11,6 +10,10 @@ import type {
 } from "@/lib/gateway-types";
 import { GatewayError, gatewayFetch } from "@/lib/server/gateway";
 import {
+  buildActiveShopDiscountsMap,
+  buildLiveFlashItemsBySkuId,
+  collectProductDetailDiscountSkuIds,
+  fetchProductsForFlashSalesWithFetcher,
   mapGatewayCategory,
   mapGatewayFlashSales,
   mapGatewayProduct,
@@ -70,6 +73,7 @@ export interface ProductQueryParams {
   minPriceVnd?: number;
   maxPriceVnd?: number;
   sortBy?: string;
+  skuIds?: string[];
   page?: number;
   pageSize?: number;
 }
@@ -134,6 +138,12 @@ export async function fetchRawProducts(
     qs.set("max_price_vnd", String(Math.trunc(params.maxPriceVnd)));
   }
   if (params.sortBy) qs.set("sort_by", params.sortBy);
+  if (params.skuIds && params.skuIds.length > 0) {
+    const cleanSkuIds = Array.from(new Set(params.skuIds.map((id) => id.trim()).filter(Boolean)));
+    if (cleanSkuIds.length > 0) {
+      qs.set("sku_ids", cleanSkuIds.join(","));
+    }
+  }
   qs.set("page", String(params.page ?? 1));
   qs.set("page_size", String(params.pageSize ?? 100));
 
@@ -229,39 +239,6 @@ export async function fetchShippingProvinces(): Promise<GatewayProvince[]> {
   }
 }
 
-function buildLiveFlashItemsBySkuId(
-  rawSales: GatewayFlashSale[],
-  nowMs: number
-): Map<string, GatewayFlashSaleItem> {
-  const map = new Map<string, GatewayFlashSaleItem>();
-  for (const sale of rawSales) {
-    const startMs = sale.starts_at ? Date.parse(sale.starts_at) : 0;
-    const endMs = sale.ends_at ? Date.parse(sale.ends_at) : 0;
-    if (nowMs >= startMs && nowMs < endMs) {
-      for (const item of sale.items ?? []) {
-        if ((!item.status || item.status === "APPROVED") && item.remaining_slots > 0) {
-          if (!map.has(item.sku_id)) {
-            map.set(item.sku_id, item);
-          }
-        }
-      }
-    }
-  }
-  return map;
-}
-
-function buildActiveShopDiscountsMap(
-  discounts: GatewayActiveShopDiscount[]
-): Map<string, GatewayActiveShopDiscount> {
-  const map = new Map<string, GatewayActiveShopDiscount>();
-  for (const d of discounts) {
-    if (d.sku_id && d.discounted_price_vnd > 0 && !map.has(d.sku_id)) {
-      map.set(d.sku_id, d);
-    }
-  }
-  return map;
-}
-
 function buildLiveFlashSkuSet(rawSales: GatewayFlashSale[], nowMs: number): Set<string> {
   return new Set(buildLiveFlashItemsBySkuId(rawSales, nowMs).keys());
 }
@@ -284,7 +261,25 @@ export async function loadHomeCatalogData(): Promise<HomeCatalogData> {
       fetchRawProducts({ page: 1, pageSize: 100 }),
       fetchRawFlashSales(true).catch(() => [] as GatewayFlashSale[]),
     ]);
-    const homeSkuIds = collectProductSkuIds(productPage.items);
+    const mergedRawProducts = await fetchProductsForFlashSalesWithFetcher(
+      rawFlashSales,
+      productPage.items,
+      async (batchSkuIds) => {
+        const res = await fetchRawProducts({
+          skuIds: batchSkuIds,
+          page: 1,
+          pageSize: 100,
+        });
+        return res.items;
+      }
+    ).catch(() => {
+      console.warn(
+        "[catalog] home flash-sale extra product lookup failed; falling back to top-100"
+      );
+      return productPage.items;
+    });
+
+    const homeSkuIds = collectProductSkuIds(mergedRawProducts);
     const activeShopDiscounts =
       homeSkuIds.length > 0
         ? await fetchActiveShopDiscounts({ skuIds: homeSkuIds }).catch(
@@ -298,7 +293,7 @@ export async function loadHomeCatalogData(): Promise<HomeCatalogData> {
     const liveFlashSkuIds = new Set(liveFlashItemsBySkuId.keys());
     const activeShopDiscountsBySkuId = buildActiveShopDiscountsMap(activeShopDiscounts);
 
-    const products = productPage.items.map((p) =>
+    const products = mergedRawProducts.map((p) =>
       mapGatewayProduct(p, {
         categoriesById,
         shopsById,
@@ -538,7 +533,6 @@ export async function loadProductDetailData(slug: string): Promise<ProductDetail
       sameShopPage,
       allProductsPage,
       rawFlashSales,
-      activeShopDiscounts,
       provinces,
     ] = await Promise.all([
       fetchShopById(rawProduct.shop_id),
@@ -561,11 +555,25 @@ export async function loadProductDetailData(slug: string): Promise<ProductDetail
         total: 0,
       })),
       fetchRawFlashSales(true).catch(() => [] as GatewayFlashSale[]),
-      fetchActiveShopDiscounts({ shopId: rawProduct.shop_id }).catch(
-        () => [] as GatewayActiveShopDiscount[]
-      ),
       fetchShippingProvinces(),
     ]);
+
+    // P3-2: Same-shop cards only display the first 4 non-self items (price-independent), whereas
+    // `allProductsPage.items` must keep active shop discounts for all candidates because:
+    // (1) `similarProducts` scoring compares effective prices (`Math.abs(candidate.price - product.price) <= 90_000`), and
+    // (2) `PdpRecommendationsSection` renders client-side `recentlyViewed` cards directly from `allProducts`.
+    const sameShopCandidates = sameShopPage.items.filter((p) => p.id !== rawProduct.id).slice(0, 4);
+    const pdpDiscountSkuIds = collectProductDetailDiscountSkuIds(
+      rawProduct,
+      sameShopCandidates,
+      allProductsPage.items
+    );
+    const activeShopDiscounts =
+      pdpDiscountSkuIds.length > 0
+        ? await fetchActiveShopDiscounts({ skuIds: pdpDiscountSkuIds }).catch(
+            () => [] as GatewayActiveShopDiscount[]
+          )
+        : [];
 
     const categoriesById = new Map(categories.map((c) => [c.id, c]));
     const shopsById = new Map(publicShops.map((s) => [s.id, s]));
@@ -602,10 +610,7 @@ export async function loadProductDetailData(slug: string): Promise<ProductDetail
     const productBySlug = new Map(allProducts.map((p) => [p.slug, p]));
     productBySlug.set(product.slug, product);
 
-    const sameShopProducts = sameShopPage.items
-      .filter((p) => p.id !== product.id)
-      .slice(0, 4)
-      .map((p) => mapGatewayProduct(p, mapCtx));
+    const sameShopProducts = sameShopCandidates.map((p) => mapGatewayProduct(p, mapCtx));
 
     const similarProducts = allProducts
       .filter((p) => p.id !== product.id && p.shopId !== product.shopId)
@@ -803,13 +808,28 @@ export async function loadFlashSalePageData(): Promise<FlashSalePageData> {
       fetchCategories(),
       fetchPublicShops(),
     ]);
+    const mergedRawProducts = await fetchProductsForFlashSalesWithFetcher(
+      rawFlashSales,
+      productPage.items,
+      async (batchSkuIds) => {
+        const res = await fetchRawProducts({
+          skuIds: batchSkuIds,
+          page: 1,
+          pageSize: 100,
+        });
+        return res.items;
+      }
+    ).catch(() => {
+      console.warn("[catalog] flash-sale extra product lookup failed; falling back to top-100");
+      return productPage.items;
+    });
 
     const categoriesById = new Map(categories.map((c) => [c.id, c]));
     const shopsById = new Map(shops.map((s) => [s.id, s]));
     const liveFlashItemsBySkuId = buildLiveFlashItemsBySkuId(rawFlashSales, serverNowMs);
     const liveFlashSkuIds = buildLiveFlashSkuSet(rawFlashSales, serverNowMs);
 
-    const products = productPage.items.map((p) =>
+    const products = mergedRawProducts.map((p) =>
       mapGatewayProduct(p, {
         categoriesById,
         shopsById,

@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     }
     return NextResponse.json(
       { error: { code: "INVALID_JSON", message: "Dữ liệu gửi lại mã không hợp lệ." } },
-      { status: 400 }
+      { status: 400, headers: { "Cache-Control": "no-store" } }
     );
   }
   const body = parsed.data;
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
         email: typeof body.email === "string" ? body.email.trim() : "",
       },
     });
-    return NextResponse.json(data, { status: 200 });
+    return NextResponse.json(data, { status: 200, headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     return gatewayErrorResponse(err);
   }

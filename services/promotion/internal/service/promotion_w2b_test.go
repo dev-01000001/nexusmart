@@ -111,12 +111,16 @@ func dtPtr(v promotionv1.DiscountType) *promotionv1.DiscountType { return &v }
 
 func TestService_W2B_VoucherLifecycle_UpdatePauseDeleteAndWallet(t *testing.T) {
 	svc, _, eng := setupService(t)
+	pcLife := newFakeProductClient()
+	pcLife.setSKU(&productv1.SKU{Id: "sku-life", ShopId: "shop-1", CategoryId: "cat-1", PriceVnd: 150000, MinPrice_30DVnd: 150000, AvailableStock: 20, IsActive: true})
+	svc.SetProductClient(pcLife)
 	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
 	svc.SetClock(func() time.Time { return now })
 
 	seller1Ctx := ctxWithRole("seller-1", "seller", "shop-1")
 	seller2Ctx := ctxWithRole("seller-2", "seller", "shop-2")
 	adminCtx := ctxWithRole("admin-1", "admin", "")
+	orderSvcCtx := ctxWithService("order-service")
 	buyer1Ctx := ctxWithRole("buyer-1", "buyer", "")
 	buyer2Ctx := ctxWithRole("buyer-2", "buyer", "")
 
@@ -163,7 +167,7 @@ func TestService_W2B_VoucherLifecycle_UpdatePauseDeleteAndWallet(t *testing.T) {
 	if _, err := svc.SaveVoucher(buyer1Ctx, &promotionv1.SaveVoucherRequest{VoucherId: vid}); err != nil {
 		t.Fatalf("SaveVoucher: %v", err)
 	}
-	if _, err := svc.ReservePromotion(buyer1Ctx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(orderSvcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:        "w2b-life-use-1",
 		UserId:         "buyer-1",
 		ShopVoucherIds: map[string]string{"shop-1": vid},
@@ -242,13 +246,18 @@ func TestService_W2B_VoucherLifecycle_UpdatePauseDeleteAndWallet(t *testing.T) {
 	}
 	prevPaused, err := svc.PreviewDiscounts(buyer1Ctx, &promotionv1.PreviewDiscountsRequest{
 		ShopVoucherIds: map[string]string{"shop-1": vid},
-		ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 150000, ShippingFeeVnd: 20000}},
+		ShopItems: []*promotionv1.ShopDiscountInput{{
+			ShopId:         "shop-1",
+			ShippingFeeVnd: 20000,
+			Items:          []*promotionv1.DiscountLineItem{{SkuId: "sku-life", Quantity: 1}},
+		}},
 	})
 	if err != nil || prevPaused.Breakdown.TotalShopVoucherDiscountVnd != 0 || len(prevPaused.Breakdown.Warnings) == 0 {
 		t.Fatalf("PreviewDiscounts on PAUSED should give 0 discount with warning, got %+v err=%v", prevPaused, err)
 	}
-	if _, err := svc.ReservePromotion(buyer1Ctx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(orderSvcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:        "w2b-life-paused-try",
+		UserId:         "buyer-1",
 		ShopVoucherIds: map[string]string{"shop-1": vid},
 		ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 150000, ShippingFeeVnd: 20000}},
 	}); status.Code(err) != codes.FailedPrecondition {
@@ -273,8 +282,9 @@ func TestService_W2B_VoucherLifecycle_UpdatePauseDeleteAndWallet(t *testing.T) {
 	if err != nil || resumed.Voucher.Status != promotionv1.VoucherStatus_VOUCHER_STATUS_ACTIVE || !resumed.Voucher.IsActive {
 		t.Fatalf("SetVoucherStatus(ACTIVE) failed: resp=%+v err=%v", resumed, err)
 	}
-	if _, err := svc.ReservePromotion(buyer2Ctx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(orderSvcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:        "w2b-life-resumed-use",
+		UserId:         "buyer-2",
 		ShopVoucherIds: map[string]string{"shop-1": vid},
 		ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 150000, ShippingFeeVnd: 20000}},
 	}); err != nil {
@@ -296,8 +306,9 @@ func TestService_W2B_VoucherLifecycle_UpdatePauseDeleteAndWallet(t *testing.T) {
 	}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("updating DELETED voucher: want FailedPrecondition, got %v", err)
 	}
-	if _, err := svc.ReservePromotion(buyer2Ctx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(orderSvcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:        "w2b-life-del-try",
+		UserId:         "buyer-2",
 		ShopVoucherIds: map[string]string{"shop-1": vid},
 		ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 150000, ShippingFeeVnd: 20000}},
 	}); status.Code(err) != codes.FailedPrecondition {
@@ -374,8 +385,9 @@ func TestService_W2B_VoucherCategoryScope_Descendants(t *testing.T) {
 	}
 
 	// Order with ONLY electronics -> Reserve rejected with FailedPrecondition!
-	if _, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(ctxWithService("order-service"), &promotionv1.ReservePromotionRequest{
 		OrderId:           "cat-mismatch-ord",
+		UserId:            "buyer-1",
 		PlatformVoucherId: vResp.Voucher.Id,
 		ShopItems: []*promotionv1.ShopDiscountInput{
 			{ShopId: "shop-2", ShippingFeeVnd: 20000, Items: []*promotionv1.DiscountLineItem{{SkuId: "sku-phone", Quantity: 1, UnitPriceVnd: 500000}}},
@@ -509,8 +521,12 @@ func TestService_W2B_FlashSaleValidation_ListsAndActiveWindow(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
-		OrderId:        "ord-upc-flash",
+	if _, err := svc.ReservePromotion(ctxWithService("order-service"), &promotionv1.ReservePromotionRequest{
+		OrderId: "ord-upc-flash",
+		UserId:  "buyer-1",
+		ShopItems: []*promotionv1.ShopDiscountInput{
+			{ShopId: "shop-2", Items: []*promotionv1.DiscountLineItem{{SkuId: "sku-s2", Quantity: 1, UnitPriceVnd: 200000, FlashSaleItemId: regUpc.Item.Id}}},
+		},
 		FlashSaleItems: []*promotionv1.FlashSaleReservationItem{{FlashSaleItemId: regUpc.Item.Id, SkuId: "sku-s2", Quantity: 1}},
 	}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("ReservePromotion upcoming flash: want FailedPrecondition, got %v", err)
@@ -691,8 +707,9 @@ func TestService_W2B_ShopDiscountPrograms_FullLifecycle_FlashWins_Concurrency_An
 	}
 
 	const groupID = "w2b-grp-prog-1"
-	res, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+	res, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId: groupID,
+		UserId:  "buyer-1",
 		ShopItems: []*promotionv1.ShopDiscountInput{
 			{
 				ShopId:         "shop-1",
@@ -766,15 +783,15 @@ func TestService_W2B_ShopDiscountPrograms_FullLifecycle_FlashWins_Concurrency_An
 		discounted  atomic.Int64
 		regularFall atomic.Int64
 		unexpected  atomic.Int64
-		concBuyer   = ctxWithRole("buyer-conc-prog", "buyer", "")
 	)
 	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			<-startCh
-			rResp, rErr := svc.ReservePromotion(concBuyer, &promotionv1.ReservePromotionRequest{
+			rResp, rErr := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 				OrderId: fmt.Sprintf("conc-prog-ord-%04d", idx),
+				UserId:  "buyer-conc-prog",
 				ShopItems: []*promotionv1.ShopDiscountInput{
 					{
 						ShopId: "shop-1",
@@ -986,8 +1003,8 @@ func TestService_W2B_ShopDiscountProgram_UpdateListAndSyncRedis(t *testing.T) {
 	if rem, ok, _ := eng.GetInt64(context.Background(), lua.FlashRemainingKey(fi.Item.Id)); !ok || rem != 5 {
 		t.Fatalf("expected SyncRedisFromStore to rehydrate flash slots=5, got %d ok=%v", rem, ok)
 	}
-	if _, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
-		OrderId: "sync-paused-check", PlatformVoucherId: vPaused.Voucher.Id,
+	if _, err := svc.ReservePromotion(ctxWithService("order-service"), &promotionv1.ReservePromotionRequest{
+		OrderId: "sync-paused-check", UserId: "buyer-1", PlatformVoucherId: vPaused.Voucher.Id,
 		ShopItems: []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 100000}},
 	}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("paused voucher after SyncRedisFromStore should stay rejected, got %v", err)
@@ -1230,8 +1247,9 @@ func TestService_W2B_ShopProgramPerUserLimit_PreviewEqualsReserve_MultiLine_Race
 			},
 		},
 	}
-	res1, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+	res1, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:   "ord-limit-1",
+		UserId:    "buyer-limit",
 		ShopItems: ord1ShopItems,
 		ShopDiscountProgramItems: []*promotionv1.ShopDiscountProgramReservationItem{
 			{ShopDiscountProgramItemId: itemA.Id, SkuId: "sku-a", Quantity: 2, ShopId: "shop-1"},
@@ -1261,8 +1279,9 @@ func TestService_W2B_ShopProgramPerUserLimit_PreviewEqualsReserve_MultiLine_Race
 	if err != nil {
 		t.Fatalf("PreviewDiscounts ord-limit-2: %v", err)
 	}
-	res2, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+	res2, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:   "ord-limit-2",
+		UserId:    "buyer-limit",
 		ShopItems: ord2ShopItems,
 		// Pass explicit itemA too (as order service does) -> MUST NOT be reserved because calculator excluded it!
 		ShopDiscountProgramItems: []*promotionv1.ShopDiscountProgramReservationItem{
@@ -1308,8 +1327,9 @@ func TestService_W2B_ShopProgramPerUserLimit_PreviewEqualsReserve_MultiLine_Race
 	if err != nil {
 		t.Fatalf("PreviewDiscounts multi: %v", err)
 	}
-	resMulti, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+	resMulti, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:   "ord-limit-multi",
+		UserId:    "buyer-limit",
 		ShopItems: multiShopItems,
 		ShopDiscountProgramItems: []*promotionv1.ShopDiscountProgramReservationItem{
 			{ShopDiscountProgramItemId: itemA.Id, SkuId: "sku-a", Quantity: 1, ShopId: "shop-1"},
@@ -1346,7 +1366,6 @@ func TestService_W2B_ShopProgramPerUserLimit_PreviewEqualsReserve_MultiLine_Race
 
 	// 4. Concurrent race of 2 orders for fresh buyer at exact per_user_limit=2 (each qty=2):
 	// BOTH succeed; exactly 1 gets discount + applied ID, 1 gets regular price + warning; Redis counter == 2!
-	raceBuyerCtx := ctxWithRole("buyer-race-exact", "buyer", "")
 	var (
 		wg          sync.WaitGroup
 		startCh     = make(chan struct{})
@@ -1360,8 +1379,9 @@ func TestService_W2B_ShopProgramPerUserLimit_PreviewEqualsReserve_MultiLine_Race
 		go func(idx int) {
 			defer wg.Done()
 			<-startCh
-			raceResps[idx], raceErrs[idx] = svc.ReservePromotion(raceBuyerCtx, &promotionv1.ReservePromotionRequest{
+			raceResps[idx], raceErrs[idx] = svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 				OrderId: fmt.Sprintf("ord-race-exact-%d", idx),
+				UserId:  "buyer-race-exact",
 				ShopItems: []*promotionv1.ShopDiscountInput{
 					{
 						ShopId:         "shop-1",
@@ -1441,11 +1461,16 @@ func TestService_W2B_ShopProgramPerUserLimit_PreviewEqualsReserve_MultiLine_Race
 		hooked.calls.Store(0)
 		hooked.onGetCoinBalance = func(call int) {
 			if call == 1 {
+				_, _, _ = baseMem.CommitReservation(context.Background(), domain.PromotionReservation{
+					OrderID: "ord-hook-comp-1", UserID: "buyer-hook-1",
+					ShopProgramItems: []domain.ReservedShopProgramItem{{ShopDiscountProgramItemID: rItemA, SKUID: "sku-a", Quantity: 2, ShopID: "shop-1"}},
+				}, now)
 				_ = rdb.Set(context.Background(), lua.ShopProgramUserKey(rItemA, "buyer-hook-1"), 2, 0).Err()
 			}
 		}
-		retryResp, err := rSvc.ReservePromotion(ctxWithRole("buyer-hook-1", "buyer", ""), &promotionv1.ReservePromotionRequest{
+		retryResp, err := rSvc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId:    "ord-hook-retry-ok",
+			UserId:     "buyer-hook-1",
 			CoinsToUse: 500,
 			ShopItems: []*promotionv1.ShopDiscountInput{
 				{
@@ -1475,13 +1500,22 @@ func TestService_W2B_ShopProgramPerUserLimit_PreviewEqualsReserve_MultiLine_Race
 		hooked.calls.Store(0)
 		hooked.onGetCoinBalance = func(call int) {
 			if call == 1 {
+				_, _, _ = baseMem.CommitReservation(context.Background(), domain.PromotionReservation{
+					OrderID: "ord-hook-comp-2a", UserID: "buyer-hook-2",
+					ShopProgramItems: []domain.ReservedShopProgramItem{{ShopDiscountProgramItemID: rItemA, SKUID: "sku-a", Quantity: 2, ShopID: "shop-1"}},
+				}, now)
 				_ = rdb.Set(context.Background(), lua.ShopProgramUserKey(rItemA, "buyer-hook-2"), 2, 0).Err()
 			} else if call == 2 {
+				_, _, _ = baseMem.CommitReservation(context.Background(), domain.PromotionReservation{
+					OrderID: "ord-hook-comp-2b", UserID: "buyer-hook-2",
+					ShopProgramItems: []domain.ReservedShopProgramItem{{ShopDiscountProgramItemID: rItemB, SKUID: "sku-b", Quantity: 2, ShopID: "shop-1"}},
+				}, now)
 				_ = rdb.Set(context.Background(), lua.ShopProgramUserKey(rItemB, "buyer-hook-2"), 2, 0).Err()
 			}
 		}
-		convResp, err := rSvc.ReservePromotion(ctxWithRole("buyer-hook-2", "buyer", ""), &promotionv1.ReservePromotionRequest{
+		convResp, err := rSvc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId:    "ord-hook-retry-converge",
+			UserId:     "buyer-hook-2",
 			CoinsToUse: 500,
 			ShopItems: []*promotionv1.ShopDiscountInput{
 				{
@@ -1502,8 +1536,9 @@ func TestService_W2B_ShopProgramPerUserLimit_PreviewEqualsReserve_MultiLine_Race
 	})
 
 	// 6. Strict error on invalid shop program item (non-existent / ended / wrong SKU) STILL fails!
-	if _, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+	if _, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId: "ord-invalid-prog-missing",
+		UserId:  "buyer-limit",
 		ShopItems: []*promotionv1.ShopDiscountInput{
 			{
 				ShopId: "shop-1", ShippingFeeVnd: 20000,
@@ -1520,8 +1555,9 @@ func TestService_W2B_ShopProgramPerUserLimit_PreviewEqualsReserve_MultiLine_Race
 	if _, err := svc.EndShopDiscountProgram(sellerCtx, &promotionv1.EndShopDiscountProgramRequest{ProgramId: progResp.Program.Id}); err != nil {
 		t.Fatalf("EndShopDiscountProgram: %v", err)
 	}
-	replay1, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+	replay1, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:   "ord-limit-1",
+		UserId:    "buyer-limit",
 		ShopItems: ord1ShopItems,
 	})
 	if err != nil || !replay1.Reserved || !replay1.AlreadyReserved || replay1.Breakdown.TotalShopProgramDiscountVnd != 80000 {
@@ -1530,8 +1566,9 @@ func TestService_W2B_ShopProgramPerUserLimit_PreviewEqualsReserve_MultiLine_Race
 	if ids := replay1.Breakdown.Shops[0].GetAppliedShopProgramItemIds(); len(ids) != 1 || ids[0] != itemA.Id {
 		t.Fatalf("replay ord-limit-1 lost applied_shop_program_item_ids: got %v want [%s]", ids, itemA.Id)
 	}
-	replay2, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+	replay2, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 		OrderId:   "ord-limit-2",
+		UserId:    "buyer-limit",
 		ShopItems: ord2ShopItems,
 	})
 	if err != nil || !replay2.Reserved || !replay2.AlreadyReserved ||
@@ -1656,8 +1693,9 @@ func TestService_R3_AuditFixes_A_D_E_F_G_H_I_J_K_L(t *testing.T) {
 		hook.onBeforeCommit = func(res domain.PromotionReservation) {
 			_, _ = mem.ReleaseReservation(context.Background(), res.OrderID)
 		}
-		_, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+		_, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId:        "r3-a-tomb",
+			UserId:         "buyer-r3",
 			ShopVoucherIds: map[string]string{"shop-1": vResp.Voucher.Id},
 			ShopItems: []*promotionv1.ShopDiscountInput{
 				{ShopId: "shop-1", ShippingFeeVnd: 20000, Items: []*promotionv1.DiscountLineItem{{SkuId: "sku-a", Quantity: 1, UnitPriceVnd: 200000, ShopDiscountProgramItemId: progItemID}}},
@@ -1677,8 +1715,9 @@ func TestService_R3_AuditFixes_A_D_E_F_G_H_I_J_K_L(t *testing.T) {
 		hook.onBeforeCommit = func(_ domain.PromotionReservation) {
 			_, _ = mem.SetVoucherStatus(context.Background(), vResp.Voucher.Id, domain.VoucherStatusPaused, nil)
 		}
-		_, err = svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+		_, err = svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId:        "r3-a-paused",
+			UserId:         "buyer-r3",
 			ShopVoucherIds: map[string]string{"shop-1": vResp.Voucher.Id},
 			ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 200000, ShippingFeeVnd: 20000}},
 		})
@@ -1693,8 +1732,9 @@ func TestService_R3_AuditFixes_A_D_E_F_G_H_I_J_K_L(t *testing.T) {
 		hook.onBeforeCommit = func(_ domain.PromotionReservation) {
 			_, _ = mem.EndShopDiscountProgram(context.Background(), progResp.Program.Id, now, nil)
 		}
-		_, err = svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+		_, err = svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId: "r3-a-ended-prog",
+			UserId:  "buyer-r3",
 			ShopItems: []*promotionv1.ShopDiscountInput{
 				{ShopId: "shop-1", ShippingFeeVnd: 20000, Items: []*promotionv1.DiscountLineItem{{SkuId: "sku-a", Quantity: 1, UnitPriceVnd: 200000, ShopDiscountProgramItemId: progItemID}}},
 			},
@@ -1727,8 +1767,9 @@ func TestService_R3_AuditFixes_A_D_E_F_G_H_I_J_K_L(t *testing.T) {
 		_, _ = svc.ApproveFlashSaleItem(adminCtx, &promotionv1.ApproveFlashSaleItemRequest{ItemId: fi.Item.Id, Approve: true})
 
 		// Attack: FlashSaleItems claims qty=1 while ShopItems has qty=5 -> MUST fail InvalidArgument & deduct 0 slots!
-		_, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+		_, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId:        "r3-d-mismatch",
+			UserId:         "buyer-r3",
 			FlashSaleItems: []*promotionv1.FlashSaleReservationItem{{FlashSaleItemId: fi.Item.Id, SkuId: "sku-f", Quantity: 1, ShopId: "shop-1"}},
 			ShopItems: []*promotionv1.ShopDiscountInput{
 				{ShopId: "shop-1", ShippingFeeVnd: 20000, Items: []*promotionv1.DiscountLineItem{{SkuId: "sku-f", Quantity: 5, UnitPriceVnd: 200000, FlashSaleItemId: fi.Item.Id}}},
@@ -1742,8 +1783,9 @@ func TestService_R3_AuditFixes_A_D_E_F_G_H_I_J_K_L(t *testing.T) {
 		}
 
 		// Valid: ShopItems alone (qty=3, no explicit FlashSaleItems) -> deducts 3 slots!
-		if _, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+		if _, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId: "r3-d-shop-only",
+			UserId:  "buyer-r3",
 			ShopItems: []*promotionv1.ShopDiscountInput{
 				{ShopId: "shop-1", ShippingFeeVnd: 20000, Items: []*promotionv1.DiscountLineItem{{SkuId: "sku-f", Quantity: 3, UnitPriceVnd: 200000, FlashSaleItemId: fi.Item.Id}}},
 			},
@@ -1781,8 +1823,9 @@ func TestService_R3_AuditFixes_A_D_E_F_G_H_I_J_K_L(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Reserve 3 slots (7 remaining) AND drop SKU stock below total_slots (simulate sales)
-		if _, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+		if _, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId: "r3-e-res",
+			UserId:  "buyer-r3",
 			ShopItems: []*promotionv1.ShopDiscountInput{
 				{ShopId: "shop-1", Items: []*promotionv1.DiscountLineItem{{SkuId: "sku-e1", Quantity: 3, UnitPriceVnd: 200000, FlashSaleItemId: fi1.Item.Id}}},
 			},
@@ -1835,8 +1878,9 @@ func TestService_R3_AuditFixes_A_D_E_F_G_H_I_J_K_L(t *testing.T) {
 		_, _ = svc.ApproveFlashSaleItem(adminCtx, &promotionv1.ApproveFlashSaleItemRequest{ItemId: fi.Item.Id, Approve: true})
 
 		// Exhaust the single slot
-		if _, err := svc.ReservePromotion(ctxWithRole("other-buyer", "buyer", ""), &promotionv1.ReservePromotionRequest{
+		if _, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId: "r3-f-take",
+			UserId:  "other-buyer",
 			ShopItems: []*promotionv1.ShopDiscountInput{
 				{ShopId: "shop-1", Items: []*promotionv1.DiscountLineItem{{SkuId: "sku-f", Quantity: 1, UnitPriceVnd: 200000, FlashSaleItemId: fi.Item.Id}}},
 			},
@@ -1886,8 +1930,9 @@ func TestService_R3_AuditFixes_A_D_E_F_G_H_I_J_K_L(t *testing.T) {
 		id1 := prog.Program.Items[0].Id
 
 		// Buyer uses 1/1 limit
-		if _, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+		if _, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId: "r3-g-use1",
+			UserId:  "buyer-r3",
 			ShopItems: []*promotionv1.ShopDiscountInput{
 				{ShopId: "shop-1", Items: []*promotionv1.DiscountLineItem{{SkuId: "sku-g1", Quantity: 1, UnitPriceVnd: 200000, ShopDiscountProgramItemId: id1}}},
 			},
@@ -1915,8 +1960,9 @@ func TestService_R3_AuditFixes_A_D_E_F_G_H_I_J_K_L(t *testing.T) {
 		}
 
 		// Buyer MUST STILL be over per_user_limit=1 -> regular price, 0 discount!
-		res2, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+		res2, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId: "r3-g-use2",
+			UserId:  "buyer-r3",
 			ShopItems: []*promotionv1.ShopDiscountInput{
 				{ShopId: "shop-1", Items: []*promotionv1.DiscountLineItem{{SkuId: "sku-g1", Quantity: 1, UnitPriceVnd: 200000, ShopDiscountProgramItemId: id2}}},
 			},
@@ -1961,11 +2007,21 @@ func TestService_R3_AuditFixes_A_D_E_F_G_H_I_J_K_L(t *testing.T) {
 		// Inject 3 sequential races (call 1 hits shop-1, call 2 hits shop-2, call 3 hits shop-3) -> attempt 4 converges!
 		hooked.onGetCoinBalance = func(call int) {
 			if call >= 1 && call <= 3 {
+				_, _, _ = mem.CommitReservation(context.Background(), domain.PromotionReservation{
+					OrderID: fmt.Sprintf("r3-h-comp-%d", call), UserID: "buyer-h",
+					ShopProgramItems: []domain.ReservedShopProgramItem{{
+						ShopDiscountProgramItemID: ids[call-1],
+						SKUID:                     fmt.Sprintf("sku-h%d", call),
+						Quantity:                  1,
+						ShopID:                    fmt.Sprintf("shop-%d", call),
+					}},
+				}, now)
 				_ = rdb.Set(context.Background(), lua.ShopProgramUserKey(ids[call-1], "buyer-h"), 1, 0).Err()
 			}
 		}
-		resp, err := svc.ReservePromotion(ctxWithRole("buyer-h", "buyer", ""), &promotionv1.ReservePromotionRequest{
+		resp, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId:    "r3-h-conv",
+			UserId:     "buyer-h",
 			CoinsToUse: 500,
 			ShopItems: []*promotionv1.ShopDiscountInput{
 				{ShopId: "shop-1", Items: []*promotionv1.DiscountLineItem{{SkuId: "sku-h1", Quantity: 1, UnitPriceVnd: 200000, ShopDiscountProgramItemId: ids[0]}}},
@@ -2006,8 +2062,9 @@ func TestService_R3_AuditFixes_A_D_E_F_G_H_I_J_K_L(t *testing.T) {
 			DiscountType: promotionv1.DiscountType_DISCOUNT_TYPE_FIXED, ValueVnd: 20000,
 			Quota: 5, PerUserLimit: 5, StartsAt: timestamppb.New(now.Add(-time.Hour)), EndsAt: timestamppb.New(now.Add(2 * time.Hour)),
 		})
-		if _, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+		if _, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId:           "r3-i-zero",
+			UserId:            "buyer-r3",
 			ShopVoucherIds:    map[string]string{"shop-1": vShopFull.Voucher.Id},
 			PlatformVoucherId: vPlatZero.Voucher.Id,
 			ShopItems:         []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 100000}},
@@ -2021,7 +2078,7 @@ func TestService_R3_AuditFixes_A_D_E_F_G_H_I_J_K_L(t *testing.T) {
 			t.Fatalf("0 VND platform voucher incremented DB used_count! got %d want 0", gotV.UsedCount)
 		}
 
-		// J: Client-spoofed category_id with empty/unknown SKU is IGNORED!
+		// J: Client-spoofed category_id is IGNORED (real SKU in cat-other); unknown/empty SKUs fail strictly under D4!
 		vCat, _ := svc.CreateVoucher(adminCtx, &promotionv1.CreateVoucherRequest{
 			Code: "R3CAT", Name: "Cat", Scope: promotionv1.VoucherScope_VOUCHER_SCOPE_PLATFORM,
 			DiscountType: promotionv1.DiscountType_DISCOUNT_TYPE_FIXED, ValueVnd: 10000,
@@ -2032,13 +2089,32 @@ func TestService_R3_AuditFixes_A_D_E_F_G_H_I_J_K_L(t *testing.T) {
 			PlatformVoucherId: vCat.Voucher.Id,
 			ShopItems: []*promotionv1.ShopDiscountInput{
 				{ShopId: "shop-1", Items: []*promotionv1.DiscountLineItem{
-					{SkuId: "sku-nonexistent", Quantity: 1, UnitPriceVnd: 100000, CategoryId: "cat-fashion"},
-					{SkuId: "", Quantity: 1, UnitPriceVnd: 100000, CategoryId: "cat-fashion"},
+					{SkuId: "sku-act", Quantity: 1, UnitPriceVnd: 100000, CategoryId: "cat-fashion"},
 				}},
 			},
 		})
 		if err != nil || prevSpoof.Breakdown.TotalPlatformVoucherDiscountVnd != 0 {
 			t.Fatalf("spoofed client category_id must NOT match voucher: resp=%+v err=%v", prevSpoof, err)
+		}
+		if _, err := svc.PreviewDiscounts(buyerCtx, &promotionv1.PreviewDiscountsRequest{
+			PlatformVoucherId: vCat.Voucher.Id,
+			ShopItems: []*promotionv1.ShopDiscountInput{
+				{ShopId: "shop-1", Items: []*promotionv1.DiscountLineItem{
+					{SkuId: "sku-nonexistent", Quantity: 1, UnitPriceVnd: 100000, CategoryId: "cat-fashion"},
+				}},
+			},
+		}); status.Code(err) != codes.NotFound {
+			t.Fatalf("unknown SKU in PreviewDiscounts: want NotFound, got %v", err)
+		}
+		if _, err := svc.PreviewDiscounts(buyerCtx, &promotionv1.PreviewDiscountsRequest{
+			PlatformVoucherId: vCat.Voucher.Id,
+			ShopItems: []*promotionv1.ShopDiscountInput{
+				{ShopId: "shop-1", Items: []*promotionv1.DiscountLineItem{
+					{SkuId: "", Quantity: 1, UnitPriceVnd: 100000, CategoryId: "cat-fashion"},
+				}},
+			},
+		}); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("empty sku_id in PreviewDiscounts: want InvalidArgument, got %v", err)
 		}
 
 		// K#13: Inactive SKU rejected in CreateShopDiscountProgram
@@ -2103,21 +2179,22 @@ func TestService_R3_AuditFixes_A_D_E_F_G_H_I_J_K_L(t *testing.T) {
 		}
 
 		// L: Bare voucher / bare shop program reservation without shop_items rejected with InvalidArgument
-		if _, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+		if _, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId:           "r3-l-bare-v",
+			UserId:            "buyer-r3",
 			PlatformVoucherId: vPlatZero.Voucher.Id,
 		}); status.Code(err) != codes.InvalidArgument {
 			t.Fatalf("bare voucher ReservePromotion without shop_items: want InvalidArgument, got %v", err)
 		}
-		if _, err := svc.ReservePromotion(buyerCtx, &promotionv1.ReservePromotionRequest{
+		if _, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId: "r3-l-bare-sp",
+			UserId:  "buyer-r3",
 			ShopDiscountProgramItems: []*promotionv1.ShopDiscountProgramReservationItem{
 				{ShopDiscountProgramItemId: progInf.Program.Items[0].Id, SkuId: "sku-act", Quantity: 1, ShopId: "shop-1"},
 			},
 		}); status.Code(err) != codes.InvalidArgument {
 			t.Fatalf("bare shop program ReservePromotion without shop_items: want InvalidArgument, got %v", err)
 		}
-		_ = svcCtx
 	})
 }
 
@@ -2143,7 +2220,6 @@ func TestService_R4_ReviewFixes(t *testing.T) {
 	seller1Ctx := ctxWithRole("seller-1", "seller", "shop-1")
 	adminCtx := ctxWithRole("admin-1", "admin", "")
 	buyerACtx := ctxWithRole("buyer-r4-a", "buyer", "")
-	buyerBCtx := ctxWithRole("buyer-r4-b", "buyer", "")
 	svcCtx := ctxWithService("order-service")
 
 	// 1. ApproveFlashSaleItem idempotent APPROVED retry heals missing Redis key without overwriting live counter or re-checking SKU stock.
@@ -2200,8 +2276,9 @@ func TestService_R4_ReviewFixes(t *testing.T) {
 		}
 
 		// Decrement 1 slot via real ReservePromotion (Redis becomes 4), then retry ApproveFlashSaleItem -> MUST NOT overwrite 4 back to 5!
-		if _, err := svc.ReservePromotion(buyerACtx, &promotionv1.ReservePromotionRequest{
+		if _, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId: "r4-heal-res-1",
+			UserId:  "buyer-r4-a",
 			ShopItems: []*promotionv1.ShopDiscountInput{
 				{ShopId: "shop-1", ShippingFeeVnd: 20000, Items: []*promotionv1.DiscountLineItem{{SkuId: "sku-r4-fl", Quantity: 1, UnitPriceVnd: 200000, FlashSaleItemId: fi.Item.Id}}},
 			},
@@ -2320,8 +2397,9 @@ func TestService_R4_ReviewFixes(t *testing.T) {
 		}
 
 		// (d) ReservePromotion (strict) with sold-out flash still rejects strictly!
-		if _, err := svc.ReservePromotion(buyerACtx, &promotionv1.ReservePromotionRequest{
+		if _, err := svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId: "r4-strict-soldout",
+			UserId:  "buyer-r4-a",
 			ShopItems: []*promotionv1.ShopDiscountInput{
 				{ShopId: "shop-1", ShippingFeeVnd: 20000, Items: []*promotionv1.DiscountLineItem{{SkuId: "sku-r4-both", Quantity: 1, UnitPriceVnd: 200000, FlashSaleItemId: fi.Item.Id}}},
 			},
@@ -2365,8 +2443,9 @@ func TestService_R4_ReviewFixes(t *testing.T) {
 			}
 			return nil, nil, false
 		}
-		_, err = svc.ReservePromotion(buyerACtx, &promotionv1.ReservePromotionRequest{
+		_, err = svc.ReservePromotion(svcCtx, &promotionv1.ReservePromotionRequest{
 			OrderId:        orderID,
+			UserId:         "buyer-r4-a",
 			ShopVoucherIds: map[string]string{"shop-1": vResp.Voucher.Id},
 			ShopItems:      []*promotionv1.ShopDiscountInput{{ShopId: "shop-1", SubtotalVnd: 200000, ShippingFeeVnd: 20000}},
 		})
@@ -2404,9 +2483,10 @@ func TestService_R4_ReviewFixes(t *testing.T) {
 		}
 		progItemID := prog.Program.Items[0].Id
 
-		makeReq := func(orderID string) *promotionv1.ReservePromotionRequest {
+		makeReq := func(orderID, userID string) *promotionv1.ReservePromotionRequest {
 			return &promotionv1.ReservePromotionRequest{
 				OrderId: orderID,
+				UserId:  userID,
 				ShopItems: []*promotionv1.ShopDiscountInput{
 					{ShopId: "shop-1", ShippingFeeVnd: 20000, Items: []*promotionv1.DiscountLineItem{{SkuId: "sku-r4-idor", Quantity: 1, UnitPriceVnd: 200000, ShopDiscountProgramItemId: progItemID}}},
 				},
@@ -2415,17 +2495,17 @@ func TestService_R4_ReviewFixes(t *testing.T) {
 
 		// Seed buyer-A's reservation
 		const ordID = "r4-idor-ord-1"
-		resA, err := svc.ReservePromotion(buyerACtx, makeReq(ordID))
+		resA, err := svc.ReservePromotion(svcCtx, makeReq(ordID, "buyer-r4-a"))
 		if err != nil || !resA.Reserved || resA.Breakdown.TotalShopProgramDiscountVnd != 40000 {
 			t.Fatalf("buyerA initial ReservePromotion: resp=%+v err=%v", resA, err)
 		}
 
 		// Branch 1: Fast Postgres GetReservation replay by buyer-B -> PermissionDenied (no breakdown)
-		if respB, err := svc.ReservePromotion(buyerBCtx, makeReq(ordID)); status.Code(err) != codes.PermissionDenied || respB != nil {
+		if respB, err := svc.ReservePromotion(svcCtx, makeReq(ordID, "buyer-r4-b")); status.Code(err) != codes.PermissionDenied || respB != nil {
 			t.Fatalf("Branch 1 IDOR (PG fast-path): want PermissionDenied & nil resp, got resp=%+v err=%v", respB, err)
 		}
 		// Legitimate replay by buyer-A still succeeds
-		if replayA, err := svc.ReservePromotion(buyerACtx, makeReq(ordID)); err != nil || !replayA.AlreadyReserved || replayA.Breakdown.TotalShopProgramDiscountVnd != 40000 {
+		if replayA, err := svc.ReservePromotion(svcCtx, makeReq(ordID, "buyer-r4-a")); err != nil || !replayA.AlreadyReserved || replayA.Breakdown.TotalShopProgramDiscountVnd != 40000 {
 			t.Fatalf("Branch 1 buyerA own replay failed: resp=%+v err=%v", replayA, err)
 		}
 
@@ -2440,7 +2520,7 @@ func TestService_R4_ReviewFixes(t *testing.T) {
 			}
 			return nil, nil, false
 		}
-		if respB2, err := svc.ReservePromotion(buyerBCtx, makeReq(ordID)); status.Code(err) != codes.PermissionDenied || respB2 != nil {
+		if respB2, err := svc.ReservePromotion(svcCtx, makeReq(ordID, "buyer-r4-b")); status.Code(err) != codes.PermissionDenied || respB2 != nil {
 			t.Fatalf("Branch 2 IDOR (lua AlreadyReserved): want PermissionDenied & nil resp, got resp=%+v err=%v", respB2, err)
 		}
 
@@ -2452,7 +2532,7 @@ func TestService_R4_ReviewFixes(t *testing.T) {
 			}
 			return nil, nil, false
 		}
-		if respB3, err := svc.ReservePromotion(buyerBCtx, makeReq(ordID)); status.Code(err) != codes.PermissionDenied || respB3 != nil {
+		if respB3, err := svc.ReservePromotion(svcCtx, makeReq(ordID, "buyer-r4-b")); status.Code(err) != codes.PermissionDenied || respB3 != nil {
 			t.Fatalf("Branch 3 IDOR (CommitReservation alreadyCommitted): want PermissionDenied & nil resp, got resp=%+v err=%v", respB3, err)
 		}
 		// Ensure buyer-B did NOT leak shop program per-user counter in Redis on Branch 3 rejection

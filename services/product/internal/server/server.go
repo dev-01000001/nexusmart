@@ -25,10 +25,11 @@ import (
 )
 
 const (
-	defaultPageSize      = 20
-	maxPageSize          = 100
-	maxOptimisticRetries = 8
-	retryBaseDelay       = 5 * time.Millisecond
+	defaultPageSize       = 20
+	maxPageSize           = 100
+	maxListProductsSKUIDs = 200
+	maxOptimisticRetries  = 8
+	retryBaseDelay        = 5 * time.Millisecond
 )
 
 // Server implements productv1.ProductServiceServer.
@@ -1130,6 +1131,7 @@ func (s *Server) AdminReviewProduct(ctx context.Context, req *productv1.AdminRev
 			if obErr := q.InsertOutboxEvent(ctx, store.OutboxEvent{
 				ID:          uuid.NewString(),
 				EventType:   events.SubjectProductReviewed,
+				AggregateID: p.ID,
 				TraceID:     traceID,
 				Traceparent: traceparent,
 				PayloadJSON: payloadBytes,
@@ -1177,6 +1179,7 @@ func (s *Server) AdminReviewProduct(ctx context.Context, req *productv1.AdminRev
 		if obErr := q.InsertOutboxEvent(ctx, store.OutboxEvent{
 			ID:          uuid.NewString(),
 			EventType:   events.SubjectProductReviewed,
+			AggregateID: p.ID,
 			TraceID:     traceID,
 			Traceparent: traceparent,
 			PayloadJSON: payloadBytes,
@@ -1261,15 +1264,37 @@ func (s *Server) ListProducts(ctx context.Context, req *productv1.ListProductsRe
 		pageSize = maxPageSize
 	}
 
+	rawSKUIDs := req.GetSkuIds()
+	if len(rawSKUIDs) > maxListProductsSKUIDs {
+		return nil, status.Errorf(codes.InvalidArgument, "sku_ids exceeds maximum limit of %d", maxListProductsSKUIDs)
+	}
+	var skuIDs []string
+	if len(rawSKUIDs) > 0 {
+		seen := make(map[string]struct{}, len(rawSKUIDs))
+		skuIDs = make([]string, 0, len(rawSKUIDs))
+		for _, raw := range rawSKUIDs {
+			id := strings.TrimSpace(raw)
+			if id == "" {
+				return nil, status.Error(codes.InvalidArgument, "sku_ids must not contain empty values")
+			}
+			if _, exists := seen[id]; !exists {
+				seen[id] = struct{}{}
+				skuIDs = append(skuIDs, id)
+			}
+		}
+	}
+
 	statusFilter := fromProtoProductStatus(req.GetStatus())
 	shopID := strings.TrimSpace(req.GetShopId())
 
 	publicOnly := true
-	if claims, ok := auth.ClaimsFromContext(ctx); ok {
-		if auth.HasRole(claims, "admin", "super_admin") {
-			publicOnly = false
-		} else if auth.HasRole(claims, "seller") && shopID != "" && claims.ShopID == shopID {
-			publicOnly = false
+	if len(skuIDs) == 0 {
+		if claims, ok := auth.ClaimsFromContext(ctx); ok {
+			if auth.HasRole(claims, "admin", "super_admin") {
+				publicOnly = false
+			} else if auth.HasRole(claims, "seller") && shopID != "" && claims.ShopID == shopID {
+				publicOnly = false
+			}
 		}
 	}
 
@@ -1281,6 +1306,7 @@ func (s *Server) ListProducts(ctx context.Context, req *productv1.ListProductsRe
 		PublicOnly:  publicOnly,
 		MinPriceVND: req.GetMinPriceVnd(),
 		MaxPriceVND: req.GetMaxPriceVnd(),
+		SKUIDs:      skuIDs,
 		SortBy:      normalizeSortBy(req.GetSortBy()),
 		Limit:       pageSize,
 		Offset:      (page - 1) * pageSize,
@@ -1350,7 +1376,11 @@ func (s *Server) GetSKUsBatch(ctx context.Context, req *productv1.GetSKUsBatchRe
 
 	out := make([]*productv1.SKU, 0, len(skus))
 	for _, sk := range skus {
-		out = append(out, toProtoSKU(sk))
+		if sk.IsActive() || canViewHiddenSKU(ctx, sk) {
+			out = append(out, toProtoSKU(sk))
+		} else {
+			out = append(out, toRedactedProtoSKU(sk))
+		}
 	}
 	return &productv1.GetSKUsBatchResponse{Skus: out}, nil
 }
@@ -1949,6 +1979,20 @@ func canViewProduct(ctx context.Context, prod store.Product) bool {
 	return false
 }
 
+func canViewHiddenSKU(ctx context.Context, sk store.SKU) bool {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return false
+	}
+	if auth.HasRole(claims, "admin", "super_admin") {
+		return true
+	}
+	if auth.HasRole(claims, "seller") && strings.TrimSpace(claims.ShopID) != "" && claims.ShopID == sk.ShopID {
+		return true
+	}
+	return false
+}
+
 func resolveSellerOrAdminShop(ctx context.Context, reqShopID string) (string, *auth.Claims, bool, error) {
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
@@ -2235,6 +2279,18 @@ func toProtoCategoryFeeSchedule(sc store.CategoryFeeSchedule) *productv1.Categor
 		CreatedBy:         sc.CreatedBy,
 		Note:              sc.Note,
 		CreatedAt:         timestamppb.New(sc.CreatedAt),
+	}
+}
+
+func toRedactedProtoSKU(s store.SKU) *productv1.SKU {
+	return &productv1.SKU{
+		Id:          s.ID,
+		ProductId:   s.ProductID,
+		ShopId:      s.ShopID,
+		ProductName: s.ProductName,
+		Name:        s.Name,
+		ImageUrl:    s.ImageURL,
+		IsActive:    false,
 	}
 }
 

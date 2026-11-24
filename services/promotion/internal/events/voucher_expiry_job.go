@@ -50,7 +50,7 @@ func NewJetStreamPublisher(js nats.JetStreamContext) EventPublisher {
 	return &jetStreamEventPublisher{js: js}
 }
 
-func (p *jetStreamEventPublisher) Publish(_ context.Context, subject, msgID string, data []byte, headers map[string]string) error {
+func (p *jetStreamEventPublisher) Publish(ctx context.Context, subject, msgID string, data []byte, headers map[string]string) error {
 	msg := nats.NewMsg(subject)
 	msg.Data = data
 	for k, v := range headers {
@@ -59,7 +59,7 @@ func (p *jetStreamEventPublisher) Publish(_ context.Context, subject, msgID stri
 	if msgID != "" {
 		msg.Header.Set(nats.MsgIdHdr, msgID)
 	}
-	_, err := p.js.PublishMsg(msg)
+	_, err := p.js.PublishMsg(msg, nats.Context(ctx))
 	return err
 }
 

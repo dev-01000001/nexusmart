@@ -6,13 +6,15 @@
 -- KEYS[1] = promo:res:<order_id>
 -- KEYS[2..] = optional touched keys (for Redis Cluster compatibility)
 -- ARGV[1] = ttl_seconds for updated reservation payload (0 = no TTL)
--- ARGV[2..] = target keys to release:
+-- ARGV[2] = user_ttl_seconds for :user: keys (default 120)
+-- ARGV[3..] = target keys to release:
 --   promo:flash:<id>:remaining
 --   promo:voucher:<id>:remaining
 --   promo:shop_prog:<id>:user:<user_id>
 
 local resKey = KEYS[1]
 local ttlSeconds = tonumber(ARGV[1]) or 0
+local userTTLSeconds = tonumber(ARGV[2]) or 120
 
 local val = redis.call("GET", resKey)
 if not val or val == "RELEASED" then
@@ -21,7 +23,7 @@ end
 
 local targets = {}
 local targetCount = 0
-for i = 2, #ARGV do
+for i = 3, #ARGV do
   targets[ARGV[i]] = true
   targetCount = targetCount + 1
 end
@@ -51,10 +53,14 @@ for line in string.gmatch(val, "[^\n]+") do
       local userKey = parts[3]
       local qty = tonumber(parts[4]) or 0
       if qty > 0 then
-        redis.call("INCRBY", remKey, qty)
+        if redis.call("EXISTS", remKey) == 1 then
+          redis.call("INCRBY", remKey, qty)
+        end
         local newUsed = redis.call("DECRBY", userKey, qty)
         if newUsed <= 0 then
           redis.call("DEL", userKey)
+        elseif userTTLSeconds > 0 then
+          redis.call("EXPIRE", userKey, userTTLSeconds)
         end
         releasedAny = true
       end
@@ -65,12 +71,16 @@ for line in string.gmatch(val, "[^\n]+") do
       local discountVND = tonumber(parts[5]) or 0
       local hasBudget = tonumber(parts[6]) or 0
 
-      redis.call("INCR", remKey)
+      if redis.call("EXISTS", remKey) == 1 then
+        redis.call("INCR", remKey)
+      end
       local newUsed = redis.call("DECR", userKey)
       if newUsed <= 0 then
         redis.call("DEL", userKey)
+      elseif userTTLSeconds > 0 then
+        redis.call("EXPIRE", userKey, userTTLSeconds)
       end
-      if hasBudget == 1 and discountVND > 0 then
+      if hasBudget == 1 and discountVND > 0 and redis.call("EXISTS", budgetKey) == 1 then
         redis.call("INCRBY", budgetKey, discountVND)
       end
       releasedAny = true
@@ -81,6 +91,8 @@ for line in string.gmatch(val, "[^\n]+") do
         local newUsed = redis.call("DECRBY", userKey, qty)
         if newUsed <= 0 then
           redis.call("DEL", userKey)
+        elseif userTTLSeconds > 0 then
+          redis.call("EXPIRE", userKey, userTTLSeconds)
         end
         releasedAny = true
       end

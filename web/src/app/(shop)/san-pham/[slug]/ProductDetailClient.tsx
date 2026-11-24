@@ -312,15 +312,24 @@ export function ProductDetailClient({
     router.replace(`/san-pham/${product.slug}?${nextParams.toString()}`, { scroll: false });
   };
 
+  const clampQuantityForVariant = (colorCode: string, sz: SizeCode) => {
+    const nextSku = findProductSku(product, colorCode, sz);
+    if (nextSku && nextSku.stock > 0) {
+      const nextFlash = "id" in nextSku && nextSku.id ? liveFlashBySkuId[nextSku.id] : undefined;
+      const cap = computePdpQuantityCap({
+        skuStock: nextSku.stock,
+        productMaxPerOrder: product.maxPerOrder,
+        liveFlash: nextFlash,
+      });
+      setQuantity((q) => Math.max(1, Math.min(q, cap)));
+    }
+  };
+
   const handleSelectColor = (code: string) => {
     setSelectedColor(code);
     const col = product.colors.find((c) => c.code === code);
     if (col) setActiveImage(col.image);
-    const nextSku = findProductSku(product, code, effectiveSize);
-    if (nextSku && nextSku.stock > 0) {
-      const cap = Math.min(nextSku.stock, product.maxPerOrder ?? nextSku.stock);
-      setQuantity((q) => Math.max(1, Math.min(q, cap)));
-    }
+    clampQuantityForVariant(code, effectiveSize);
     syncColorUrl(code);
   };
 
@@ -329,17 +338,14 @@ export function ProductDetailClient({
     const matchedColor = product.colors.find((c) => c.image === imgSrc);
     if (matchedColor && matchedColor.code !== effectiveColor) {
       setSelectedColor(matchedColor.code);
+      clampQuantityForVariant(matchedColor.code, effectiveSize);
       syncColorUrl(matchedColor.code);
     }
   };
 
   const handleSelectSize = (sz: SizeCode) => {
     setSelectedSize(sz);
-    const nextSku = findProductSku(product, effectiveColor, sz);
-    if (nextSku && nextSku.stock > 0) {
-      const cap = Math.min(nextSku.stock, product.maxPerOrder ?? nextSku.stock);
-      setQuantity((q) => Math.max(1, Math.min(q, cap)));
-    }
+    clampQuantityForVariant(effectiveColor, sz);
   };
 
   const handleAddToCart = async () => {

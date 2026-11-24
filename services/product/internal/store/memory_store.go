@@ -2,27 +2,37 @@ package store
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/nexusmart/core/pkg/common/jetstream"
 )
 
 // MemoryStore is a concurrency-safe in-memory implementation of Store with real
 // optimistic locking and atomic commit/rollback semantics for unit tests.
 type MemoryStore struct {
-	mu                sync.Mutex
-	categories        map[string]Category
-	feeSchedules      []CategoryFeeSchedule
-	nextFeeSeq        int64
-	products          map[string]Product
-	skus              map[string]SKU
-	priceHistory      []SKUPriceHistoryEntry
-	nextPriceSeq      int64
-	reservations      map[string]StockReservation
-	releaseTombstones map[string]time.Time
-	history           []StockHistoryEntry
-	outbox            []OutboxEvent
+	mu                   sync.Mutex
+	categories           map[string]Category
+	feeSchedules         []CategoryFeeSchedule
+	nextFeeSeq           int64
+	products             map[string]Product
+	skus                 map[string]SKU
+	priceHistory         []SKUPriceHistoryEntry
+	nextPriceSeq         int64
+	reservations         map[string]StockReservation
+	releaseTombstones    map[string]time.Time
+	history              []StockHistoryEntry
+	outbox               []OutboxEvent
+	nextOutboxSeq        int64
+	outboxLease          time.Duration
+	outboxPublishTimeout time.Duration
+	outboxNowFn          func() time.Time
+	logger               atomic.Pointer[slog.Logger]
 
 	// BeforeReserveWrite is an optional test hook invoked right before an optimistic
 	// reserve check inside a transaction to deterministically simulate concurrent updates.
@@ -34,12 +44,84 @@ type MemoryStore struct {
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		categories:        make(map[string]Category),
-		products:          make(map[string]Product),
-		skus:              make(map[string]SKU),
-		reservations:      make(map[string]StockReservation),
-		releaseTombstones: make(map[string]time.Time),
+		categories:           make(map[string]Category),
+		products:             make(map[string]Product),
+		skus:                 make(map[string]SKU),
+		reservations:         make(map[string]StockReservation),
+		releaseTombstones:    make(map[string]time.Time),
+		outboxLease:          jetstream.DefaultOutboxLease,
+		outboxPublishTimeout: jetstream.DefaultOutboxPublishTimeout,
 	}
+}
+
+// SetLogger attaches a structured logger used for outbox poison-event ERROR alerts.
+func (m *MemoryStore) SetLogger(l *slog.Logger) {
+	m.logger.Store(l)
+}
+
+func (m *MemoryStore) outboxLogger() *slog.Logger {
+	if l := m.logger.Load(); l != nil {
+		return l
+	}
+	return slog.Default()
+}
+
+// SetOutboxLease overrides the outbox claim lease duration (useful in tests).
+func (m *MemoryStore) SetOutboxLease(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d <= 0 {
+		d = jetstream.DefaultOutboxLease
+	}
+	m.outboxLease = d
+}
+
+// SetOutboxPublishTimeout overrides the max per-event publish timeout budget (useful in tests).
+func (m *MemoryStore) SetOutboxPublishTimeout(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d <= 0 {
+		d = jetstream.DefaultOutboxPublishTimeout
+	}
+	m.outboxPublishTimeout = d
+}
+
+// SetOutboxClock overrides the clock used for outbox lease expiry checks (useful in tests).
+func (m *MemoryStore) SetOutboxClock(fn func() time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.outboxNowFn = fn
+}
+
+func (m *MemoryStore) outboxNowLocked() time.Time {
+	if m.outboxNowFn == nil {
+		return time.Now()
+	}
+	return m.outboxNowFn()
+}
+
+func (m *MemoryStore) outboxNow() time.Time {
+	m.mu.Lock()
+	fn := m.outboxNowFn
+	m.mu.Unlock()
+	if fn == nil {
+		return time.Now()
+	}
+	return fn()
+}
+
+func (m *MemoryStore) outboxTimings() (time.Duration, time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lease := m.outboxLease
+	if lease <= 0 {
+		lease = jetstream.DefaultOutboxLease
+	}
+	pubTimeout := m.outboxPublishTimeout
+	if pubTimeout <= 0 {
+		pubTimeout = jetstream.DefaultOutboxPublishTimeout
+	}
+	return lease, pubTimeout
 }
 
 func (m *MemoryStore) Ping(_ context.Context) error {
@@ -75,47 +157,233 @@ func (m *MemoryStore) OutboxEvents() []OutboxEvent {
 			ts := *ev.PublishedAt
 			ev.PublishedAt = &ts
 		}
+		if ev.ClaimedUntil != nil {
+			ts := *ev.ClaimedUntil
+			ev.ClaimedUntil = &ts
+		}
 		out[i] = ev
 	}
 	return out
 }
 
-func (m *MemoryStore) ProcessPendingOutbox(ctx context.Context, limit int32, publishFn func(ctx context.Context, ev OutboxEvent) error) (int, error) {
+func outboxEventBefore(a, b OutboxEvent) bool {
+	if a.Seq != b.Seq {
+		return a.Seq < b.Seq
+	}
+	return a.ID < b.ID
+}
+
+// ClaimPendingOutbox claims up to limit unpublished outbox events whose lease/backoff is unset or expired,
+// respecting strict per-aggregate seq order.
+func (m *MemoryStore) ClaimPendingOutbox(_ context.Context, limit int32) ([]OutboxEvent, string, error) {
 	m.mu.Lock()
-	pending := make([]OutboxEvent, 0)
-	for _, ev := range m.outbox {
+	defer m.mu.Unlock()
+
+	now := m.outboxNowLocked()
+	lease := m.outboxLease
+	if lease <= 0 {
+		lease = jetstream.DefaultOutboxLease
+	}
+	leaseUntil := now.Add(lease)
+	token := uuid.NewString()
+
+	// Sort indices strictly by seq order.
+	order := make([]int, len(m.outbox))
+	for i := range m.outbox {
+		order[i] = i
+	}
+	sort.Slice(order, func(i, j int) bool {
+		return outboxEventBefore(m.outbox[order[i]], m.outbox[order[j]])
+	})
+
+	// Track aggregates that already have an earlier in-flight leased or backed-off event.
+	activeLeasedAgg := make(map[string]bool)
+	claimed := make([]OutboxEvent, 0)
+	for _, idx := range order {
+		ev := &m.outbox[idx]
 		if ev.PublishedAt != nil {
 			continue
 		}
-		if limit > 0 && int32(len(pending)) >= limit {
+		aggKey := OutboxAggregateKey(*ev)
+		isLeased := ev.ClaimedUntil != nil && ev.ClaimedUntil.After(now)
+		if isLeased {
+			if aggKey != "" {
+				activeLeasedAgg[aggKey] = true
+			}
+			continue
+		}
+		if aggKey != "" && activeLeasedAgg[aggKey] {
+			continue
+		}
+		if limit > 0 && int32(len(claimed)) >= limit {
 			break
 		}
-		cp := ev
+		untilCopy := leaseUntil
+		ev.ClaimedUntil = &untilCopy
+		ev.ClaimToken = token
+
+		cp := *ev
 		cp.PayloadJSON = append([]byte(nil), ev.PayloadJSON...)
-		pending = append(pending, cp)
+		cpUntil := leaseUntil
+		cp.ClaimedUntil = &cpUntil
+		claimed = append(claimed, cp)
 	}
-	m.mu.Unlock()
+	return claimed, token, nil
+}
+
+// MarkOutboxPublished marks an event published only if claimToken still owns the lease.
+func (m *MemoryStore) MarkOutboxPublished(_ context.Context, id, claimToken string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.outboxNowLocked()
+	for i := range m.outbox {
+		if m.outbox[i].ID != id {
+			continue
+		}
+		if m.outbox[i].PublishedAt != nil || m.outbox[i].ClaimToken != claimToken {
+			return false, nil
+		}
+		ts := now
+		m.outbox[i].PublishedAt = &ts
+		m.outbox[i].Attempts++
+		m.outbox[i].LastError = ""
+		m.outbox[i].ClaimedUntil = nil
+		m.outbox[i].ClaimToken = ""
+		return true, nil
+	}
+	return false, nil
+}
+
+// StealOutboxClaimForTest overwrites the claim_token of an unpublished outbox row (used by unit tests
+// to deterministically simulate mid-batch lease loss).
+func (m *MemoryStore) StealOutboxClaimForTest(id, newToken string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.outbox {
+		if m.outbox[i].ID == id && m.outbox[i].PublishedAt == nil {
+			m.outbox[i].ClaimToken = newToken
+			return
+		}
+	}
+}
+
+func (m *MemoryStore) markOutboxAttemptFailed(id, claimToken, errMsg string, backoff time.Duration) (int32, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.outbox {
+		if m.outbox[i].ID != id {
+			continue
+		}
+		if m.outbox[i].PublishedAt != nil || m.outbox[i].ClaimToken != claimToken {
+			return 0, false
+		}
+		m.outbox[i].Attempts++
+		m.outbox[i].LastError = errMsg
+		if backoff > 0 {
+			until := m.outboxNowLocked().Add(backoff)
+			m.outbox[i].ClaimedUntil = &until
+		} else {
+			m.outbox[i].ClaimedUntil = nil
+		}
+		m.outbox[i].ClaimToken = ""
+		return m.outbox[i].Attempts, true
+	}
+	return 0, false
+}
+
+func (m *MemoryStore) releaseOutboxClaim(id, claimToken string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.outbox {
+		if m.outbox[i].ID != id {
+			continue
+		}
+		if m.outbox[i].PublishedAt != nil || m.outbox[i].ClaimToken != claimToken {
+			return
+		}
+		m.outbox[i].ClaimedUntil = nil
+		m.outbox[i].ClaimToken = ""
+		return
+	}
+}
+
+func (m *MemoryStore) ProcessPendingOutbox(ctx context.Context, limit int32, publishFn func(ctx context.Context, ev OutboxEvent) error) (int, error) {
+	lease, pubTimeout := m.outboxTimings()
+	leaseDeadline := m.outboxNow().Add(lease)
+
+	claimed, claimToken, err := m.ClaimPendingOutbox(ctx, limit)
+	if err != nil {
+		return 0, err
+	}
+	if len(claimed) == 0 {
+		return 0, nil
+	}
+
+	var toRelease []OutboxEvent
+	defer func() {
+		for _, r := range toRelease {
+			m.releaseOutboxClaim(r.ID, claimToken)
+		}
+	}()
 
 	published := 0
-	for _, ev := range pending {
-		pubErr := publishFn(ctx, ev)
-		now := time.Now().UTC()
-		m.mu.Lock()
-		for i := range m.outbox {
-			if m.outbox[i].ID != ev.ID {
-				continue
-			}
-			m.outbox[i].Attempts++
-			if pubErr != nil {
-				m.outbox[i].LastError = pubErr.Error()
-			} else {
-				m.outbox[i].PublishedAt = &now
-				m.outbox[i].LastError = ""
-				published++
-			}
-			break
+	failedAggs := make(map[string]bool)
+	for i, ev := range claimed {
+		if ctx.Err() != nil {
+			toRelease = append(toRelease, claimed[i:]...)
+			return published, ctx.Err()
 		}
-		m.mu.Unlock()
+		if leaseDeadline.Sub(m.outboxNow()) < pubTimeout {
+			toRelease = append(toRelease, claimed[i:]...)
+			return published, nil
+		}
+		aggKey := OutboxAggregateKey(ev)
+		if aggKey != "" && failedAggs[aggKey] {
+			toRelease = append(toRelease, ev)
+			continue
+		}
+		pubCtx, pubCancel := context.WithTimeout(ctx, pubTimeout)
+		pubErr := publishFn(pubCtx, ev)
+		pubCancel()
+		if pubErr != nil {
+			infraErr := jetstream.IsInfraError(pubErr)
+			var backoff time.Duration
+			if !infraErr {
+				backoff = jetstream.OutboxRetryBackoff(ev.Attempts + 1)
+			}
+			newAttempts, updated := m.markOutboxAttemptFailed(ev.ID, claimToken, pubErr.Error(), backoff)
+			if infraErr {
+				toRelease = append(toRelease, claimed[i+1:]...)
+				return published, pubErr
+			}
+			if !updated {
+				toRelease = append(toRelease, claimed[i+1:]...)
+				return published, nil
+			}
+			if newAttempts >= jetstream.OutboxPoisonLogAttempt {
+				m.outboxLogger().ErrorContext(ctx, "outbox event repeatedly failed",
+					slog.String("event_id", ev.ID),
+					slog.String("event_type", ev.EventType),
+					slog.String("aggregate_id", aggKey),
+					slog.Int("attempts", int(newAttempts)),
+					slog.String("error", pubErr.Error()),
+				)
+			}
+			if aggKey != "" {
+				failedAggs[aggKey] = true
+			}
+			continue
+		}
+		ok, markErr := m.MarkOutboxPublished(ctx, ev.ID, claimToken)
+		if markErr != nil {
+			toRelease = append(toRelease, claimed[i+1:]...)
+			return published, markErr
+		}
+		if !ok {
+			toRelease = append(toRelease, claimed[i+1:]...)
+			return published, nil
+		}
+		published++
 	}
 	return published, nil
 }
@@ -434,10 +702,34 @@ func (m *MemoryStore) filterProductsLocked(filter ListProductsFilter) []Product 
 			return []Product{}
 		}
 	}
+	var matchedBySKUs map[string]bool
+	if len(filter.SKUIDs) > 0 {
+		wantSKUs := make(map[string]bool, len(filter.SKUIDs))
+		for _, id := range filter.SKUIDs {
+			wantSKUs[id] = true
+		}
+		matchedBySKUs = make(map[string]bool)
+		for _, s := range m.skus {
+			if wantSKUs[s.ID] && s.Status != SKUStatusInactive {
+				matchedBySKUs[s.ProductID] = true
+			}
+		}
+		if len(matchedBySKUs) == 0 {
+			return []Product{}
+		}
+	}
 	matched := make([]Product, 0)
 	for _, p := range m.products {
 		if p.DeletedAt != nil {
 			continue
+		}
+		if matchedBySKUs != nil {
+			if !matchedBySKUs[p.ID] {
+				continue
+			}
+			if p.Status != ProductStatusApproved && p.Status != ProductStatusOutOfStock {
+				continue
+			}
 		}
 		if filter.CategoryID != "" && !allowedCats[p.CategoryID] {
 			continue
@@ -1268,6 +1560,9 @@ func (t *memTx) commit() error {
 	t.store.history = append(t.store.history, filteredHistory...)
 	for _, ev := range t.stagedOutbox {
 		ev.PayloadJSON = append([]byte(nil), ev.PayloadJSON...)
+		ev.AggregateID = OutboxAggregateKey(ev)
+		t.store.nextOutboxSeq++
+		ev.Seq = t.store.nextOutboxSeq
 		t.store.outbox = append(t.store.outbox, ev)
 	}
 	return nil

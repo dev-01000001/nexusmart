@@ -183,7 +183,6 @@ export function mapGatewayShop(raw: GatewayPublicShop): CatalogShop {
       warehouseAddress: editorial.warehouseAddress,
       story,
       accentDot: editorial.accentDot,
-      commissionRate: editorial.commissionRate,
       freeShipThreshold: editorial.freeShipThreshold,
       fastDeliveryEnabled: editorial.fastDeliveryEnabled,
       fastDeliveryFee: editorial.fastDeliveryFee,
@@ -219,7 +218,6 @@ export function mapGatewayShop(raw: GatewayPublicShop): CatalogShop {
     warehouseAddress: "Kho gian hàng trên hệ thống NexusMart",
     story,
     accentDot: "#0d7480",
-    commissionRate: 0.05,
     returnDays: 7,
     twoWayExchange: false,
     status: raw.status,
@@ -250,6 +248,293 @@ export function mapGatewayCategory(raw: GatewayCategory): CatalogCategory {
     benefitSummary: editorial?.benefitSummary,
     subCategories: editorial?.subCategories,
   };
+}
+
+export const FLASH_SKU_BATCH_SIZE = 100;
+
+/**
+ * Deduplicates and splits SKU IDs into gateway-safe batches (<= 100 SKUs per batch by default
+ * so each GET /products?sku_ids=...&page_size=100 returns every matching product in 1 page).
+ */
+export function chunkSkuIds(
+  skuIds: readonly string[],
+  chunkSize = FLASH_SKU_BATCH_SIZE
+): string[][] {
+  const unique = Array.from(new Set(skuIds.map((id) => id.trim()).filter(Boolean)));
+  if (unique.length === 0) return [];
+  const limit = Math.max(1, Math.min(FLASH_SKU_BATCH_SIZE, Math.trunc(chunkSize)));
+  const out: string[][] = [];
+  for (let i = 0; i < unique.length; i += limit) {
+    out.push(unique.slice(i, i + limit));
+  }
+  return out;
+}
+
+/**
+ * Collects unique SKU IDs from all approved flash sale items across every flash slot.
+ */
+export function collectFlashSaleSkuIds(rawSales: readonly GatewayFlashSale[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const sale of rawSales) {
+    for (const item of sale.items ?? []) {
+      if (item.status && item.status.toUpperCase() !== "APPROVED") {
+        continue;
+      }
+      const skuId = (item.sku_id ?? "").trim();
+      if (!skuId || seen.has(skuId)) continue;
+      seen.add(skuId);
+      out.push(skuId);
+    }
+  }
+  return out;
+}
+
+/**
+ * Merges two GatewayProduct arrays deduplicating by product ID while preserving primary order.
+ */
+export function mergeGatewayProductsById(
+  primary: readonly GatewayProduct[],
+  extra: readonly GatewayProduct[]
+): GatewayProduct[] {
+  const seen = new Set<string>();
+  const merged: GatewayProduct[] = [];
+  for (const p of primary) {
+    if (!p?.id || seen.has(p.id)) continue;
+    seen.add(p.id);
+    merged.push(p);
+  }
+  for (const p of extra) {
+    if (!p?.id || seen.has(p.id)) continue;
+    seen.add(p.id);
+    merged.push(p);
+  }
+  return merged;
+}
+
+/**
+ * Ensures products referenced by flash sale slots are loaded even when catalog size exceeds 100:
+ * finds flash SKU IDs missing from `baseProducts`, fetches them in <= 100-SKU batches via
+ * `GET /products?sku_ids=...`, and merges them with `baseProducts`.
+ */
+export async function fetchProductsForFlashSalesWithFetcher(
+  rawSales: readonly GatewayFlashSale[],
+  baseProducts: readonly GatewayProduct[],
+  fetchBySkuIds: (batchSkuIds: string[]) => Promise<GatewayProduct[]>,
+  chunkSize = FLASH_SKU_BATCH_SIZE
+): Promise<GatewayProduct[]> {
+  const flashSkuIds = collectFlashSaleSkuIds(rawSales);
+  if (flashSkuIds.length === 0) return [...baseProducts];
+
+  const existingSkuIds = new Set<string>();
+  for (const p of baseProducts) {
+    for (const s of p.skus ?? []) {
+      if (s.id) existingSkuIds.add(s.id);
+    }
+  }
+  const missingSkuIds = flashSkuIds.filter((id) => !existingSkuIds.has(id));
+  if (missingSkuIds.length === 0) return [...baseProducts];
+
+  const batches = chunkSkuIds(missingSkuIds, chunkSize);
+  const settled = await Promise.allSettled(batches.map((batch) => fetchBySkuIds(batch)));
+  const extraProducts: GatewayProduct[] = [];
+  for (let i = 0; i < settled.length; i += 1) {
+    const res = settled[i];
+    if (res.status === "fulfilled") {
+      if (Array.isArray(res.value)) {
+        extraProducts.push(...res.value);
+      }
+    } else {
+      console.warn(
+        `[catalog] flash-sale sku_ids batch ${i + 1}/${batches.length} failed (size=${batches[i].length})`
+      );
+    }
+  }
+  return mergeGatewayProductsById(baseProducts, extraProducts);
+}
+
+/**
+ * Builds a map of live approved flash sale items keyed by sku_id (only remaining_slots > 0).
+ * Shared by SSR catalog loaders and ShopHeader instant search.
+ */
+export function buildLiveFlashItemsBySkuId(
+  rawSales: readonly GatewayFlashSale[],
+  nowMs: number
+): Map<string, GatewayFlashSaleItem> {
+  const map = new Map<string, GatewayFlashSaleItem>();
+  for (const sale of rawSales) {
+    const startMs = sale.starts_at ? Date.parse(sale.starts_at) : 0;
+    const endMs = sale.ends_at ? Date.parse(sale.ends_at) : 0;
+    if (nowMs >= startMs && nowMs < endMs) {
+      for (const item of sale.items ?? []) {
+        if (
+          (!item.status || item.status.toUpperCase() === "APPROVED") &&
+          item.remaining_slots > 0 &&
+          !map.has(item.sku_id)
+        ) {
+          map.set(item.sku_id, item);
+        }
+      }
+    }
+  }
+  return map;
+}
+
+/**
+ * Builds a map of active shop discounts keyed by sku_id.
+ * Shared by SSR catalog loaders and ShopHeader instant search.
+ */
+export function buildActiveShopDiscountsMap(
+  discounts: readonly GatewayActiveShopDiscount[]
+): Map<string, GatewayActiveShopDiscount> {
+  const map = new Map<string, GatewayActiveShopDiscount>();
+  for (const d of discounts) {
+    if (d.sku_id && d.discounted_price_vnd > 0 && !map.has(d.sku_id)) {
+      map.set(d.sku_id, d);
+    }
+  }
+  return map;
+}
+
+/**
+ * Selects the best flash sale slot to show by default: prefers a live slot that actually has
+ * sellable items (skipping live slots whose SKUs were all hidden/inactive).
+ */
+export function pickPreferredFlashSlot<
+  T extends Pick<CatalogFlashSaleSlot, "status"> & { items: readonly unknown[] },
+>(slots: readonly T[]): T | undefined {
+  return (
+    slots.find((s) => s.status === "live" && s.items.length > 0) ??
+    slots.find((s) => s.status === "upcoming" && s.items.length > 0) ??
+    slots.find((s) => s.items.length > 0) ??
+    slots.find((s) => s.status === "live") ??
+    slots[0]
+  );
+}
+
+/**
+ * Collects unique SKU IDs across PDP main product, same-shop products, and all-shop candidate
+ * products (used for similarProducts & bundleProducts) so active shop discounts load for every shop.
+ */
+export function collectProductDetailDiscountSkuIds(
+  mainProduct: GatewayProduct,
+  sameShopProducts: readonly GatewayProduct[],
+  allCandidateProducts: readonly GatewayProduct[]
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of [mainProduct, ...sameShopProducts, ...allCandidateProducts]) {
+    for (const s of p?.skus ?? []) {
+      const id = (s.id ?? "").trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
+
+export interface ProductDisplayPricing {
+  minPriceVnd: number;
+  maxPriceVnd: number;
+  originalPriceVnd?: number;
+  promoKind: "flash" | "shop_discount" | "none";
+}
+
+/**
+ * Computes effective storefront display prices obeying the single-price rule:
+ * live flash sale > active shop discount program > regular SKU price.
+ * Shared by mapGatewayProduct and ShopHeader instant search suggestions.
+ */
+export function computeProductDisplayPricing(
+  raw: Pick<GatewayProduct, "min_price_vnd" | "max_price_vnd" | "skus">,
+  liveFlashItemsBySkuId?: Map<string, GatewayFlashSaleItem>,
+  activeShopDiscountsBySkuId?: Map<string, GatewayActiveShopDiscount>
+): ProductDisplayPricing {
+  const rawSkus = Array.isArray(raw.skus) ? raw.skus : [];
+  const activeSkus = rawSkus.filter((s) => s.is_active !== false);
+  const effectiveRawSkus = activeSkus.length > 0 ? activeSkus : rawSkus;
+
+  const entries = effectiveRawSkus
+    .filter((s) => Math.trunc(s.price_vnd ?? 0) > 0)
+    .map((s) => {
+      const regular = Math.trunc(s.price_vnd);
+      const liveFlash = liveFlashItemsBySkuId?.get(s.id);
+      if (
+        liveFlash &&
+        (liveFlash.remaining_slots ?? 0) > 0 &&
+        Math.trunc(liveFlash.flash_price_vnd) > 0 &&
+        Math.trunc(liveFlash.flash_price_vnd) < regular
+      ) {
+        const orig =
+          liveFlash.original_price_vnd &&
+          Math.trunc(liveFlash.original_price_vnd) > Math.trunc(liveFlash.flash_price_vnd)
+            ? Math.trunc(liveFlash.original_price_vnd)
+            : regular;
+        return {
+          effective: Math.trunc(liveFlash.flash_price_vnd),
+          original: orig,
+          promoKind: "flash" as const,
+        };
+      }
+      const shopDisc = activeShopDiscountsBySkuId?.get(s.id);
+      if (
+        shopDisc &&
+        Math.trunc(shopDisc.discounted_price_vnd) > 0 &&
+        Math.trunc(shopDisc.discounted_price_vnd) < regular
+      ) {
+        const orig =
+          shopDisc.original_price_vnd > Math.trunc(shopDisc.discounted_price_vnd)
+            ? Math.trunc(shopDisc.original_price_vnd)
+            : regular;
+        return {
+          effective: Math.trunc(shopDisc.discounted_price_vnd),
+          original: orig,
+          promoKind: "shop_discount" as const,
+        };
+      }
+      return {
+        effective: regular,
+        original: undefined as number | undefined,
+        promoKind: "none" as const,
+      };
+    });
+
+  const effectivePrices = entries.map((e) => e.effective);
+  const minPriceVnd =
+    effectivePrices.length > 0
+      ? Math.min(...effectivePrices)
+      : Math.max(0, Math.trunc(raw.min_price_vnd ?? 0));
+  const maxPriceVnd =
+    effectivePrices.length > 0
+      ? Math.max(...effectivePrices)
+      : Math.max(minPriceVnd, Math.trunc(raw.max_price_vnd ?? 0));
+
+  // When multiple SKUs tie at minPriceVnd, prefer the discounted entry with highest original price
+  // (flash > shop_discount > none) so strikethrough does not depend on SKU array ordering.
+  const promoRank = (kind: "flash" | "shop_discount" | "none"): number =>
+    kind === "flash" ? 2 : kind === "shop_discount" ? 1 : 0;
+  const tiedCheapest = entries.filter((e) => e.effective === minPriceVnd);
+  tiedCheapest.sort((a, b) => {
+    const aOrig = a.original && a.original > minPriceVnd ? a.original : 0;
+    const bOrig = b.original && b.original > minPriceVnd ? b.original : 0;
+    if (bOrig !== aOrig) return bOrig - aOrig;
+    return promoRank(b.promoKind) - promoRank(a.promoKind);
+  });
+  const cheapestEntry = tiedCheapest[0];
+  const originalPriceVnd =
+    cheapestEntry?.original && cheapestEntry.original > minPriceVnd
+      ? cheapestEntry.original
+      : undefined;
+  const promoKind = originalPriceVnd
+    ? cheapestEntry!.promoKind
+    : entries.some((e) => e.promoKind === "flash")
+      ? "flash"
+      : entries.some((e) => e.promoKind === "shop_discount")
+        ? "shop_discount"
+        : "none";
+
+  return { minPriceVnd, maxPriceVnd, originalPriceVnd, promoKind };
 }
 
 export function mapGatewayProduct(
@@ -300,7 +585,6 @@ export function mapGatewayProduct(
       colorName: edColor?.name ?? parsed.colorName,
       size: parsed.size,
       stock: availableStock,
-      reservedStock: Math.max(0, Math.trunc(sku.reserved_stock ?? 0)),
       price: regularPriceVnd,
       regularPriceVnd,
       activeFlashItemId: hasValidFlash ? liveFlash!.id : undefined,
@@ -368,54 +652,14 @@ export function mapGatewayProduct(
   // Integer VND min/max price & real strikethrough derived strictly from real SKUs + live flash / active shop discount.
   // Single-price rule: live flash sale > active shop discount program > regular SKU price.
   // NEVER use mock editorial.originalPrice for strikethrough pricing.
-  const effectiveEntries = mappedSkus
-    .filter((s) => s.price > 0)
-    .map((s) => {
-      const regular = s.price;
-      const liveFlash = context.liveFlashItemsBySkuId?.get(s.id);
-      if (
-        liveFlash &&
-        (liveFlash.remaining_slots ?? 0) > 0 &&
-        Math.trunc(liveFlash.flash_price_vnd) > 0 &&
-        Math.trunc(liveFlash.flash_price_vnd) < regular
-      ) {
-        const orig =
-          liveFlash.original_price_vnd &&
-          Math.trunc(liveFlash.original_price_vnd) > Math.trunc(liveFlash.flash_price_vnd)
-            ? Math.trunc(liveFlash.original_price_vnd)
-            : regular;
-        return { effective: Math.trunc(liveFlash.flash_price_vnd), original: orig };
-      }
-      const shopDisc = context.activeShopDiscountsBySkuId?.get(s.id);
-      if (
-        shopDisc &&
-        Math.trunc(shopDisc.discounted_price_vnd) > 0 &&
-        Math.trunc(shopDisc.discounted_price_vnd) < regular
-      ) {
-        const orig =
-          shopDisc.original_price_vnd > Math.trunc(shopDisc.discounted_price_vnd)
-            ? Math.trunc(shopDisc.original_price_vnd)
-            : regular;
-        return { effective: Math.trunc(shopDisc.discounted_price_vnd), original: orig };
-      }
-      return { effective: regular, original: undefined as number | undefined };
-    });
-
-  const effectivePrices = effectiveEntries.map((e) => e.effective);
-  const minPriceVnd =
-    effectivePrices.length > 0
-      ? Math.min(...effectivePrices)
-      : Math.max(0, Math.trunc(raw.min_price_vnd ?? 0));
-  const maxPriceVnd =
-    effectivePrices.length > 0
-      ? Math.max(...effectivePrices)
-      : Math.max(minPriceVnd, Math.trunc(raw.max_price_vnd ?? 0));
-
-  const cheapestEntry = effectiveEntries.find((e) => e.effective === minPriceVnd);
-  const originalPrice =
-    cheapestEntry?.original && cheapestEntry.original > minPriceVnd
-      ? cheapestEntry.original
-      : undefined;
+  const displayPricing = computeProductDisplayPricing(
+    raw,
+    context.liveFlashItemsBySkuId,
+    context.activeShopDiscountsBySkuId
+  );
+  const minPriceVnd = displayPricing.minPriceVnd;
+  const maxPriceVnd = displayPricing.maxPriceVnd;
+  const originalPrice = displayPricing.originalPriceVnd;
 
   const rawCategorySlug = category?.slug ?? "ao-thun";
   const categorySlug: CategorySlug = KNOWN_CATEGORY_SLUGS.has(rawCategorySlug as CategorySlug)
@@ -576,8 +820,12 @@ export function mapGatewayFlashSales(
 ): CatalogFlashSaleSlot[] {
   const skuIndex = new Map<string, { product: CatalogProduct; sku: CatalogSku }>();
   for (const product of products) {
+    const prodStatus = (product.status ?? "").trim().toUpperCase();
+    if (prodStatus && prodStatus !== "APPROVED" && prodStatus !== "OUT_OF_STOCK") {
+      continue;
+    }
     for (const sku of product.skus) {
-      if (sku.id) {
+      if (sku.id && sku.isActive !== false) {
         skuIndex.set(sku.id, { product, sku });
       }
     }

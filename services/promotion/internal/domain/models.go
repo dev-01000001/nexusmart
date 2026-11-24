@@ -24,34 +24,41 @@ const (
 
 	ReservationStatusReserved = "RESERVED"
 	ReservationStatusReleased = "RELEASED"
+
+	UsageKindVoucher     = "VOUCHER"
+	UsageKindFlash       = "FLASH"
+	UsageKindShopProgram = "SHOP_PROGRAM"
 )
 
 // Voucher represents a persisted promotion voucher.
 type Voucher struct {
-	ID              string
-	Code            string
-	Name            string
-	Scope           string
-	ShopID          string
-	DiscountType    string
-	ValueVND        int64
-	DiscountPercent int32
-	MaxDiscountVND  int64
-	MinOrderVND     int64
-	Quota           int32
-	UsedCount       int32
-	PerUserLimit    int32
-	BudgetVND       int64
-	UsedBudgetVND   int64
-	StartsAt        time.Time
-	EndsAt          time.Time
-	IsActive        bool
-	Status          string
-	CategoryIDs     []string
-	DeletedAt       *time.Time
-	CreatedBy       string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID                 string
+	Code               string
+	Name               string
+	Scope              string
+	ShopID             string
+	DiscountType       string
+	ValueVND           int64
+	DiscountPercent    int32
+	MaxDiscountVND     int64
+	MinOrderVND        int64
+	Quota              int32
+	UsedCount          int32
+	PerUserLimit       int32
+	BudgetVND          int64
+	UsedBudgetVND      int64
+	StartsAt           time.Time
+	EndsAt             time.Time
+	IsActive           bool
+	Status             string
+	CategoryIDs        []string
+	DeletedAt          *time.Time
+	RulesVersion       int32
+	RedisSyncVersion   int64
+	RedisSyncedVersion int64
+	CreatedBy          string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // EffectiveStatus normalizes legacy rows where Status may be empty.
@@ -178,11 +185,20 @@ type CoinTransaction struct {
 
 // ReservedVoucher records a voucher reserved for an order.
 type ReservedVoucher struct {
-	VoucherID   string `json:"voucher_id"`
-	Scope       string `json:"scope"`
-	ShopID      string `json:"shop_id,omitempty"`
-	DiscountVND int64  `json:"discount_vnd"`
-	HasBudget   bool   `json:"has_budget"`
+	VoucherID    string `json:"voucher_id"`
+	Scope        string `json:"scope"`
+	ShopID       string `json:"shop_id,omitempty"`
+	DiscountVND  int64  `json:"discount_vnd"`
+	HasBudget    bool   `json:"has_budget"`
+	RulesVersion int32  `json:"rules_version,omitempty"`
+}
+
+// UserUsage tracks authoritative per-user consumption persisted in PostgreSQL.
+type UserUsage struct {
+	Kind     string
+	TargetID string
+	UserID   string
+	UsedQty  int32
 }
 
 // ReservedFlashItem records a flash sale item reserved for an order.

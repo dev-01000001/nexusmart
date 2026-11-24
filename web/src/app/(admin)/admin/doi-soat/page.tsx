@@ -13,8 +13,12 @@ import type {
   GatewaySettleRefundResponse,
   PaginatedResponse,
 } from "@/lib/gateway-types";
-import type { PaymentMethod, PaymentReconciliationRow } from "@/data";
-import { ADMIN_RECONCILIATION, computeReconciliationSummary } from "@/data";
+import type { PaymentMethod } from "@/data";
+import {
+  ADMIN_RECONCILIATION,
+  computeReconciliationSummary,
+  type PaymentReconciliationRow,
+} from "@/data/admin";
 import { api, getErrorMessage } from "@/lib/api";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, StateView } from "@/components";
@@ -1574,8 +1578,8 @@ function ReconciliationContent() {
                     <input
                       id="rf-amount"
                       type="number"
-                      min={1000}
-                      step={1000}
+                      min={1}
+                      step={1}
                       className={shared.textInput}
                       value={refundAmountStr}
                       onChange={(e) => setRefundAmountStr(e.target.value)}

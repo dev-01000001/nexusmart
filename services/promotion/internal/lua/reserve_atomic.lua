@@ -23,16 +23,17 @@
 --   ARGV[2] = V (number of vouchers)
 --   ARGV[3] = ttl_seconds for reservation key (0 = no TTL)
 --   ARGV[4] = P (number of shop discount program items)
+--   ARGV[5] = user_ttl_seconds for :user: keys (default 120)
 --   For each flash item i in 1..F:
---     ARGV[4 + (i-1)*2 + 1] = qty
---     ARGV[4 + (i-1)*2 + 2] = per_user_limit
+--     ARGV[5 + (i-1)*2 + 1] = qty
+--     ARGV[5 + (i-1)*2 + 2] = per_user_limit
 --   For each voucher j in 1..V:
---     base = 4 + F*2 + (j-1)*3
+--     base = 5 + F*2 + (j-1)*3
 --     ARGV[base + 1] = per_user_limit
 --     ARGV[base + 2] = discount_vnd
 --     ARGV[base + 3] = has_budget (1 or 0)
 --   For each shop discount program item k in 1..P:
---     base = 4 + F*2 + V*3 + (k-1)*2
+--     base = 5 + F*2 + V*3 + (k-1)*2
 --     ARGV[base + 1] = qty
 --     ARGV[base + 2] = per_user_limit
 
@@ -41,6 +42,7 @@ local numFlash = tonumber(ARGV[1]) or 0
 local numVouchers = tonumber(ARGV[2]) or 0
 local ttlSeconds = tonumber(ARGV[3]) or 0
 local numShopProg = tonumber(ARGV[4]) or 0
+local userTTLSeconds = tonumber(ARGV[5]) or 120
 
 -- Idempotency check
 local existing = redis.call("GET", resKey)
@@ -56,7 +58,7 @@ end
 -- Phase 1: Validate ALL flash sale items BEFORE mutating any key
 for i = 1, numFlash do
   local keyBase = 1 + (i - 1) * 2
-  local argBase = 4 + (i - 1) * 2
+  local argBase = 5 + (i - 1) * 2
   local remKey = KEYS[keyBase + 1]
   local userKey = KEYS[keyBase + 2]
   local qty = tonumber(ARGV[argBase + 1])
@@ -85,7 +87,7 @@ end
 -- Phase 1: Validate ALL vouchers BEFORE mutating any key
 for j = 1, numVouchers do
   local keyBase = 1 + numFlash * 2 + (j - 1) * 4
-  local argBase = 4 + numFlash * 2 + (j - 1) * 3
+  local argBase = 5 + numFlash * 2 + (j - 1) * 3
   local remKey = KEYS[keyBase + 1]
   local userKey = KEYS[keyBase + 2]
   local budgetKey = KEYS[keyBase + 3]
@@ -129,7 +131,7 @@ end
 -- Phase 1: Validate ALL shop discount program items BEFORE mutating any key
 for k = 1, numShopProg do
   local keyBase = 1 + numFlash * 2 + numVouchers * 4 + (k - 1)
-  local argBase = 4 + numFlash * 2 + numVouchers * 3 + (k - 1) * 2
+  local argBase = 5 + numFlash * 2 + numVouchers * 3 + (k - 1) * 2
   local userKey = KEYS[keyBase + 1]
   local qty = tonumber(ARGV[argBase + 1])
   local userLimit = tonumber(ARGV[argBase + 2])
@@ -150,19 +152,22 @@ local lines = {"RESERVED"}
 
 for i = 1, numFlash do
   local keyBase = 1 + (i - 1) * 2
-  local argBase = 4 + (i - 1) * 2
+  local argBase = 5 + (i - 1) * 2
   local remKey = KEYS[keyBase + 1]
   local userKey = KEYS[keyBase + 2]
   local qty = tonumber(ARGV[argBase + 1])
 
   redis.call("DECRBY", remKey, qty)
   redis.call("INCRBY", userKey, qty)
+  if userTTLSeconds > 0 then
+    redis.call("EXPIRE", userKey, userTTLSeconds)
+  end
   table.insert(lines, "F|" .. remKey .. "|" .. userKey .. "|" .. tostring(qty))
 end
 
 for j = 1, numVouchers do
   local keyBase = 1 + numFlash * 2 + (j - 1) * 4
-  local argBase = 4 + numFlash * 2 + (j - 1) * 3
+  local argBase = 5 + numFlash * 2 + (j - 1) * 3
   local remKey = KEYS[keyBase + 1]
   local userKey = KEYS[keyBase + 2]
   local budgetKey = KEYS[keyBase + 3]
@@ -171,6 +176,9 @@ for j = 1, numVouchers do
 
   redis.call("DECR", remKey)
   redis.call("INCR", userKey)
+  if userTTLSeconds > 0 then
+    redis.call("EXPIRE", userKey, userTTLSeconds)
+  end
   if hasBudget == 1 and discountVND > 0 then
     redis.call("DECRBY", budgetKey, discountVND)
   end
@@ -179,11 +187,14 @@ end
 
 for k = 1, numShopProg do
   local keyBase = 1 + numFlash * 2 + numVouchers * 4 + (k - 1)
-  local argBase = 4 + numFlash * 2 + numVouchers * 3 + (k - 1) * 2
+  local argBase = 5 + numFlash * 2 + numVouchers * 3 + (k - 1) * 2
   local userKey = KEYS[keyBase + 1]
   local qty = tonumber(ARGV[argBase + 1])
 
   redis.call("INCRBY", userKey, qty)
+  if userTTLSeconds > 0 then
+    redis.call("EXPIRE", userKey, userTTLSeconds)
+  end
   table.insert(lines, "P|" .. userKey .. "|" .. tostring(qty))
 end
 

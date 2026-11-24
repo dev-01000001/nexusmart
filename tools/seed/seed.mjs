@@ -120,6 +120,14 @@ const SELLER_ACCOUNT_BY_SHOP_ID = {
   },
 };
 
+// Shop commission rates (removed from public web/src/data/shops.ts under D1; values match HEAD).
+const SEED_SHOP_COMMISSION_RATE = {
+  "shop-bach-dang": 0.05,
+  "shop-sai-gon": 0.05,
+  "shop-da-nang": 0.055,
+  "shop-ha-noi": 0.05,
+};
+
 // Maps web/src/data/products.ts subCategory slugs to product attribute predicates
 // so child category commission_rate_bps stays synced with owning shop rates in shops.ts (CAT-D3).
 const SUBCATEGORY_PRODUCT_MATCHERS = {
@@ -407,20 +415,35 @@ export function computeFlashSaleRegistration(product, item) {
 }
 
 /**
- * CAT-D3: Derive root + 15 child category plan with commission_rate_bps aligned to shops.ts.
+ * CAT-D3: Derive root + 15 child category plan with commission_rate_bps aligned to SEED_SHOP_COMMISSION_RATE.
+ * Throws explicitly if any shop is missing from SEED_SHOP_COMMISSION_RATE (never falls back to 0.05).
  */
 export function buildCategorySeedPlan(categories, products, shops) {
-  const shopBpsById = new Map(
-    (shops || []).map((s) => [s.id, Math.round((Number(s.commissionRate) || 0.05) * 10000)])
-  );
+  const shopBpsById = new Map();
+  for (const s of shops || []) {
+    const rawRate =
+      typeof s?.commissionRate === "number" ? s.commissionRate : SEED_SHOP_COMMISSION_RATE[s?.id];
+    if (!Number.isFinite(rawRate) || rawRate < 0) {
+      throw new Error(
+        `Missing seed commission rate for shop "${s?.id ?? ""}" in SEED_SHOP_COMMISSION_RATE`
+      );
+    }
+    shopBpsById.set(s.id, Math.round(rawRate * 10000));
+  }
 
   const maxBpsForProducts = (list, fallback) => {
-    let best = 0;
+    if (list.length === 0) return fallback;
+    let best = -1;
     for (const p of list) {
-      const bps = shopBpsById.get(p.shopId) || 500;
+      const bps = shopBpsById.get(p.shopId);
+      if (bps === undefined) {
+        throw new Error(
+          `Missing seed commission rate for shop "${p.shopId}" (product "${p.id}")`
+        );
+      }
       if (bps > best) best = bps;
     }
-    return best > 0 ? best : fallback;
+    return best >= 0 ? best : fallback;
   };
 
   const roots = [];
@@ -748,6 +771,144 @@ async function listAllAdminShops(adminToken) {
     page += 1;
   }
   return all;
+}
+
+export async function listAllAdminCategories(adminToken, apiFn = apiRequest) {
+  const res = await apiFn("GET", "/api/v1/admin/categories", {
+    token: adminToken,
+  });
+  return Array.isArray(res.data?.categories) ? res.data.categories : [];
+}
+
+/**
+ * Idempotently seed root + child categories using GET /api/v1/admin/categories so
+ * commission_rate_bps comparisons emit zero PUTs on already-seeded databases.
+ */
+export async function seedCategories({
+  adminToken,
+  categories,
+  products,
+  shops,
+  apiFn = apiRequest,
+}) {
+  const existingCategories = await listAllAdminCategories(adminToken, apiFn);
+  const categoryBySlug = new Map(existingCategories.map((c) => [c.slug, c]));
+  const categoryPlan = buildCategorySeedPlan(categories, products, shops);
+  const rootStats = { created: 0, existing: 0, updated: 0 };
+  const childStats = { created: 0, existing: 0, updated: 0 };
+
+  const syncExisting = async (slug, existing, desired, statBucket) => {
+    const patch = buildCategoryUpdatePatch(existing, desired);
+    if (patch) {
+      const updRes = await apiFn("PUT", `/api/v1/admin/categories/${existing.id}`, {
+        token: adminToken,
+        body: patch,
+      });
+      categoryBySlug.set(slug, updRes.data.category);
+      statBucket.updated += 1;
+    }
+    statBucket.existing += 1;
+  };
+
+  for (const root of categoryPlan.roots) {
+    const existing = categoryBySlug.get(root.slug);
+    if (existing) {
+      await syncExisting(
+        root.slug,
+        existing,
+        { commission_rate_bps: root.commission_rate_bps },
+        rootStats
+      );
+      continue;
+    }
+
+    const createRes = await apiFn("POST", "/api/v1/admin/categories", {
+      token: adminToken,
+      body: {
+        name: root.name,
+        slug: root.slug,
+        parent_id: "",
+        commission_rate_bps: root.commission_rate_bps,
+        sort_order: root.sort_order,
+      },
+      allowStatuses: [409],
+    });
+    if (createRes.status === 409) {
+      const refetched = await listAllAdminCategories(adminToken, apiFn);
+      for (const c of refetched) {
+        categoryBySlug.set(c.slug, c);
+      }
+      const conflicted = categoryBySlug.get(root.slug);
+      if (conflicted) {
+        await syncExisting(
+          root.slug,
+          conflicted,
+          { commission_rate_bps: root.commission_rate_bps },
+          rootStats
+        );
+      } else {
+        rootStats.existing += 1;
+      }
+    } else {
+      categoryBySlug.set(root.slug, createRes.data.category);
+      rootStats.created += 1;
+    }
+  }
+
+  for (const child of categoryPlan.children) {
+    const parent = categoryBySlug.get(child.parentSlug);
+    if (!parent) {
+      throw new Error(`Missing parent category ${child.parentSlug} for child ${child.slug}`);
+    }
+    const existing = categoryBySlug.get(child.slug);
+    if (existing) {
+      await syncExisting(
+        child.slug,
+        existing,
+        { parent_id: parent.id, commission_rate_bps: child.commission_rate_bps },
+        childStats
+      );
+      continue;
+    }
+
+    const createRes = await apiFn("POST", "/api/v1/admin/categories", {
+      token: adminToken,
+      body: {
+        name: child.name,
+        slug: child.slug,
+        parent_id: parent.id,
+        commission_rate_bps: child.commission_rate_bps,
+        sort_order: child.sort_order,
+      },
+      allowStatuses: [409],
+    });
+    if (createRes.status === 409) {
+      const refetched = await listAllAdminCategories(adminToken, apiFn);
+      for (const c of refetched) {
+        categoryBySlug.set(c.slug, c);
+      }
+      const conflicted = categoryBySlug.get(child.slug);
+      if (conflicted) {
+        await syncExisting(
+          child.slug,
+          conflicted,
+          { parent_id: parent.id, commission_rate_bps: child.commission_rate_bps },
+          childStats
+        );
+      } else {
+        childStats.existing += 1;
+      }
+    } else {
+      categoryBySlug.set(child.slug, createRes.data.category);
+      childStats.created += 1;
+    }
+  }
+
+  return {
+    categoryBySlug,
+    categories: rootStats,
+    childCategories: childStats,
+  };
 }
 
 export async function listAllAdminProducts(adminToken) {
@@ -1356,99 +1517,15 @@ async function main() {
   }
 
   // 3. Categories (CAT-D3: 6 roots with shop-aligned commission_rate_bps + 15 child categories).
-  const catListRes = await apiRequest("GET", "/api/v1/categories");
-  const existingCategories = Array.isArray(catListRes.data?.categories)
-    ? catListRes.data.categories
-    : [];
-  const categoryBySlug = new Map(existingCategories.map((c) => [c.slug, c]));
-  const categoryPlan = buildCategorySeedPlan(CATEGORIES, PRODUCTS, SHOPS);
-
-  for (const root of categoryPlan.roots) {
-    const existing = categoryBySlug.get(root.slug);
-    if (existing) {
-      const patch = buildCategoryUpdatePatch(existing, {
-        commission_rate_bps: root.commission_rate_bps,
-      });
-      if (patch) {
-        const updRes = await apiRequest("PUT", `/api/v1/admin/categories/${existing.id}`, {
-          token: adminToken,
-          body: patch,
-        });
-        categoryBySlug.set(root.slug, updRes.data.category);
-        stats.categories.updated += 1;
-      }
-      stats.categories.existing += 1;
-      continue;
-    }
-
-    const createRes = await apiRequest("POST", "/api/v1/admin/categories", {
-      token: adminToken,
-      body: {
-        name: root.name,
-        slug: root.slug,
-        parent_id: "",
-        commission_rate_bps: root.commission_rate_bps,
-        sort_order: root.sort_order,
-      },
-      allowStatuses: [409],
-    });
-    if (createRes.status === 409) {
-      const refetch = await apiRequest("GET", "/api/v1/categories");
-      for (const c of refetch.data?.categories || []) {
-        categoryBySlug.set(c.slug, c);
-      }
-      stats.categories.existing += 1;
-    } else {
-      categoryBySlug.set(root.slug, createRes.data.category);
-      stats.categories.created += 1;
-    }
-  }
-
-  for (const child of categoryPlan.children) {
-    const parent = categoryBySlug.get(child.parentSlug);
-    if (!parent) {
-      throw new Error(`Missing parent category ${child.parentSlug} for child ${child.slug}`);
-    }
-    const existing = categoryBySlug.get(child.slug);
-    if (existing) {
-      const patch = buildCategoryUpdatePatch(existing, {
-        parent_id: parent.id,
-        commission_rate_bps: child.commission_rate_bps,
-      });
-      if (patch) {
-        const updRes = await apiRequest("PUT", `/api/v1/admin/categories/${existing.id}`, {
-          token: adminToken,
-          body: patch,
-        });
-        categoryBySlug.set(child.slug, updRes.data.category);
-        stats.childCategories.updated += 1;
-      }
-      stats.childCategories.existing += 1;
-      continue;
-    }
-
-    const createRes = await apiRequest("POST", "/api/v1/admin/categories", {
-      token: adminToken,
-      body: {
-        name: child.name,
-        slug: child.slug,
-        parent_id: parent.id,
-        commission_rate_bps: child.commission_rate_bps,
-        sort_order: child.sort_order,
-      },
-      allowStatuses: [409],
-    });
-    if (createRes.status === 409) {
-      const refetch = await apiRequest("GET", "/api/v1/categories");
-      for (const c of refetch.data?.categories || []) {
-        categoryBySlug.set(c.slug, c);
-      }
-      stats.childCategories.existing += 1;
-    } else {
-      categoryBySlug.set(child.slug, createRes.data.category);
-      stats.childCategories.created += 1;
-    }
-  }
+  const categorySeedResult = await seedCategories({
+    adminToken,
+    categories: CATEGORIES,
+    products: PRODUCTS,
+    shops: SHOPS,
+  });
+  const { categoryBySlug } = categorySeedResult;
+  stats.categories = categorySeedResult.categories;
+  stats.childCategories = categorySeedResult.childCategories;
 
   // 4. Products (18 products with full SKUs, *_vnd prices, stock, weight_grams, relative images).
   const existingProducts = await listAllAdminProducts(adminToken);

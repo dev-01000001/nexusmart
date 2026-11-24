@@ -13,6 +13,7 @@ import (
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/logger"
+	"github.com/nexusmart/core/pkg/common/secretbox"
 	"github.com/nexusmart/core/services/user/internal/db"
 	"github.com/nexusmart/core/services/user/internal/password"
 	"google.golang.org/grpc/codes"
@@ -40,6 +41,17 @@ func (c *w2bClock) Advance(d time.Duration) {
 	c.cur = c.cur.Add(d)
 }
 
+const testBankAccountKeyB64 = "ZGV2LW9ubHktYmFuay1hY2NvdW50LWtleS0zMmJ5dGU="
+
+func newTestBankAccountBox(t *testing.T) *secretbox.Box {
+	t.Helper()
+	box, err := secretbox.NewFromBase64(testBankAccountKeyB64, "BANK_ACCOUNT_KEY")
+	if err != nil {
+		t.Fatalf("new test secretbox: %v", err)
+	}
+	return box
+}
+
 func newW2BHarness(t *testing.T, opts Options) (*Server, *memStore, *memSecurity, *memPublisher, *bytes.Buffer) {
 	t.Helper()
 	store := newMemStore()
@@ -49,6 +61,9 @@ func newW2BHarness(t *testing.T, opts Options) (*Server, *memStore, *memSecurity
 	authMgr, err := auth.NewManager("test-secret-key-hs256", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("new auth manager: %v", err)
+	}
+	if opts.BankAccountBox == nil {
+		opts.BankAccountBox = newTestBankAccountBox(t)
 	}
 	var logBuf bytes.Buffer
 	log := logger.New("user-w2b-test", logger.WithWriter(&logBuf))

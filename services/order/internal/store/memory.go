@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"sort"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
+	"github.com/nexusmart/core/pkg/common/jetstream"
 	"github.com/nexusmart/core/services/order/internal/db"
 	"github.com/nexusmart/core/services/order/internal/events"
 	"github.com/nexusmart/core/services/order/internal/statemachine"
@@ -24,32 +26,113 @@ type retryLockEntry struct {
 
 // MemoryStore is a thread-safe in-memory implementation of Store for unit tests.
 type MemoryStore struct {
-	mu              sync.Mutex
-	retryMu         sync.Mutex
-	retryLocks      map[string]*retryLockEntry
-	groups          map[string]db.CheckoutGroup
-	orders          map[string]db.Order
-	items           map[string][]db.OrderItem
-	timelines       map[string][]db.OrderTimelineEvent
-	returnRequests  map[string]db.ReturnRequest
-	returnEvents    map[string][]db.ReturnEvent
-	outbox          []db.OutboxEvent
-	processedEvents map[string]db.ProcessedEvent
-	deadLetters     []db.DeadLetterEvent
+	mu                   sync.Mutex
+	retryMu              sync.Mutex
+	retryLocks           map[string]*retryLockEntry
+	outboxLease          time.Duration
+	outboxPublishTimeout time.Duration
+	outboxNowFn          func() time.Time
+	logger               *slog.Logger
+	nextOutboxSeq        int64
+	groups               map[string]db.CheckoutGroup
+	orders               map[string]db.Order
+	items                map[string][]db.OrderItem
+	timelines            map[string][]db.OrderTimelineEvent
+	returnRequests       map[string]db.ReturnRequest
+	returnEvents         map[string][]db.ReturnEvent
+	outbox               []db.OutboxEvent
+	processedEvents      map[string]db.ProcessedEvent
+	deadLetters          []db.DeadLetterEvent
 }
 
 // NewMemoryStore initializes an empty MemoryStore.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		retryLocks:      make(map[string]*retryLockEntry),
-		groups:          make(map[string]db.CheckoutGroup),
-		orders:          make(map[string]db.Order),
-		items:           make(map[string][]db.OrderItem),
-		timelines:       make(map[string][]db.OrderTimelineEvent),
-		returnRequests:  make(map[string]db.ReturnRequest),
-		returnEvents:    make(map[string][]db.ReturnEvent),
-		processedEvents: make(map[string]db.ProcessedEvent),
+		retryLocks:           make(map[string]*retryLockEntry),
+		outboxLease:          jetstream.DefaultOutboxLease,
+		outboxPublishTimeout: jetstream.DefaultOutboxPublishTimeout,
+		groups:               make(map[string]db.CheckoutGroup),
+		orders:               make(map[string]db.Order),
+		items:                make(map[string][]db.OrderItem),
+		timelines:            make(map[string][]db.OrderTimelineEvent),
+		returnRequests:       make(map[string]db.ReturnRequest),
+		returnEvents:         make(map[string][]db.ReturnEvent),
+		processedEvents:      make(map[string]db.ProcessedEvent),
 	}
+}
+
+// SetLogger configures the structured logger used for outbox poison-event alerts.
+func (m *MemoryStore) SetLogger(l *slog.Logger) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.logger = l
+}
+
+func (m *MemoryStore) outboxLogger() *slog.Logger {
+	m.mu.Lock()
+	l := m.logger
+	m.mu.Unlock()
+	if l != nil {
+		return l
+	}
+	return slog.Default()
+}
+
+// SetOutboxLease overrides the outbox claim lease duration (defaults to jetstream.DefaultOutboxLease).
+func (m *MemoryStore) SetOutboxLease(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d <= 0 {
+		d = jetstream.DefaultOutboxLease
+	}
+	m.outboxLease = d
+}
+
+// SetOutboxPublishTimeout overrides the per-event publish timeout budget (defaults to jetstream.DefaultOutboxPublishTimeout).
+func (m *MemoryStore) SetOutboxPublishTimeout(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d <= 0 {
+		d = jetstream.DefaultOutboxPublishTimeout
+	}
+	m.outboxPublishTimeout = d
+}
+
+// SetOutboxClock overrides the clock used for outbox lease-budget checks (primarily for unit tests).
+func (m *MemoryStore) SetOutboxClock(fn func() time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.outboxNowFn = fn
+}
+
+func (m *MemoryStore) outboxNow() time.Time {
+	m.mu.Lock()
+	fn := m.outboxNowFn
+	m.mu.Unlock()
+	if fn == nil {
+		return time.Now()
+	}
+	return fn()
+}
+
+func (m *MemoryStore) appendOutboxLocked(ev db.OutboxEvent) {
+	if ev.CreatedAt.IsZero() {
+		ev.CreatedAt = time.Now().UTC()
+	}
+	if ev.Seq == 0 {
+		m.nextOutboxSeq++
+		ev.Seq = m.nextOutboxSeq
+	} else if ev.Seq > m.nextOutboxSeq {
+		m.nextOutboxSeq = ev.Seq
+	}
+	m.outbox = append(m.outbox, ev)
+}
+
+// InsertOutboxEvent appends an outbox event directly (helper for unit tests).
+func (m *MemoryStore) InsertOutboxEvent(ev db.OutboxEvent) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.appendOutboxLocked(ev)
 }
 
 // OutboxEvents returns a copy of all recorded outbox events (helper for unit tests).
@@ -93,16 +176,68 @@ func (m *MemoryStore) SetCheckoutGroupUpdatedAt(groupID string, t time.Time) {
 
 func (m *MemoryStore) Ping(_ context.Context) error { return nil }
 
-func (m *MemoryStore) GetActiveCheckoutGroup(_ context.Context, buyerID, idempotencyKey string) (*db.CheckoutGroup, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, g := range m.groups {
-		if g.BuyerID == buyerID && g.IdempotencyKey == idempotencyKey && g.Status != "FAILED" {
-			cp := g
-			return &cp, nil
+func (m *MemoryStore) groupHasOrdersLocked(groupID string) bool {
+	for _, ord := range m.orders {
+		if ord.CheckoutGroupID == groupID {
+			return true
 		}
 	}
-	return nil, ErrNotFound
+	return false
+}
+
+func (m *MemoryStore) findCheckoutGroupForIdempotencyLocked(buyerID, idempotencyKey string) (*CheckoutGroupLookup, bool) {
+	var best *CheckoutGroupLookup
+	for _, g := range m.groups {
+		if g.BuyerID != buyerID || g.IdempotencyKey != idempotencyKey {
+			continue
+		}
+		hasOrd := m.groupHasOrdersLocked(g.ID)
+		if g.Status == "FAILED" && !g.NeedsCleanup && !hasOrd {
+			continue
+		}
+		cand := &CheckoutGroupLookup{Group: g, HasOrders: hasOrd}
+		if best == nil {
+			best = cand
+			continue
+		}
+		gActive := g.Status != "FAILED"
+		bActive := best.Group.Status != "FAILED"
+		if gActive != bActive {
+			if gActive {
+				best = cand
+			}
+			continue
+		}
+		if cand.HasOrders != best.HasOrders {
+			if cand.HasOrders {
+				best = cand
+			}
+			continue
+		}
+		if g.NeedsCleanup != best.Group.NeedsCleanup {
+			if g.NeedsCleanup {
+				best = cand
+			}
+			continue
+		}
+		if g.CreatedAt.After(best.Group.CreatedAt) || (g.CreatedAt.Equal(best.Group.CreatedAt) && g.ID > best.Group.ID) {
+			best = cand
+		}
+	}
+	if best == nil {
+		return nil, false
+	}
+	return best, true
+}
+
+func (m *MemoryStore) GetCheckoutGroupForIdempotency(_ context.Context, buyerID, idempotencyKey string) (*CheckoutGroupLookup, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lookup, ok := m.findCheckoutGroupForIdempotencyLocked(buyerID, idempotencyKey)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return lookup, nil
 }
 
 func (m *MemoryStore) GetCheckoutGroupByID(_ context.Context, id string) (*db.CheckoutGroup, error) {
@@ -137,8 +272,17 @@ func (m *MemoryStore) GetCheckoutGroupByPaymentID(_ context.Context, paymentID s
 func (m *MemoryStore) CreateCheckoutGroup(_ context.Context, arg db.CreateCheckoutGroupParams) (*db.CheckoutGroup, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, g := range m.groups {
-		if g.BuyerID == arg.BuyerID && g.IdempotencyKey == arg.IdempotencyKey && g.Status != "FAILED" {
+	if existing, ok := m.findCheckoutGroupForIdempotencyLocked(arg.BuyerID, arg.IdempotencyKey); ok {
+		if existing.Group.Status != "FAILED" {
+			return nil, ErrDuplicateIdempotencyKey
+		}
+		if existing.HasOrders {
+			return nil, &FailedCheckoutWithOrdersError{
+				GroupID: existing.Group.ID,
+				Reason:  existing.Group.PaymentStatus,
+			}
+		}
+		if existing.Group.NeedsCleanup {
 			return nil, ErrDuplicateIdempotencyKey
 		}
 	}
@@ -169,7 +313,9 @@ func (m *MemoryStore) FailCheckoutGroup(_ context.Context, id, paymentStatus str
 	}
 	if g, ok := m.groups[id]; ok && g.Status == "IN_PROGRESS" {
 		g.Status = "FAILED"
-		g.PaymentStatus = paymentStatus
+		if isPendingOrEmptyPaymentStatus(g.PaymentStatus) {
+			g.PaymentStatus = paymentStatus
+		}
 		g.NeedsCleanup = false
 		g.UpdatedAt = time.Now().UTC()
 		m.groups[id] = g
@@ -293,7 +439,7 @@ func (m *MemoryStore) PersistCheckoutBatch(_ context.Context, batch CheckoutBatc
 		m.timelines[ord.ID] = tl
 
 		for _, ob := range rec.Outbox {
-			m.outbox = append(m.outbox, db.OutboxEvent{
+			m.appendOutboxLocked(db.OutboxEvent{
 				ID:          ob.ID,
 				EventType:   ob.EventType,
 				TraceID:     ob.TraceID,
@@ -355,23 +501,44 @@ func (m *MemoryStore) CompleteCheckoutWithPayment(_ context.Context, arg UpdateC
 	}
 
 	// P1 N4: Never write to orders or checkout_groups when group has already left IN_PROGRESS.
+	// P0-1 / P1-2: When already FAILED (NOT COMPLETED) and arg.PaymentID != "", re-emit fresh
+	// order.cancelled outbox events for CANCELLED sub-orders with empty payment_id and non-REFUNDED status.
 	if g.Status != "IN_PROGRESS" {
-		if arg.BuildSnapshot != nil {
-			var curOrders []db.Order
-			for _, ord := range m.orders {
-				if ord.CheckoutGroupID == arg.CheckoutGroupID {
-					curOrders = append(curOrders, ord)
-				}
+		var curOrders []db.Order
+		for _, ord := range m.orders {
+			if ord.CheckoutGroupID == arg.CheckoutGroupID {
+				curOrders = append(curOrders, ord)
 			}
-			sort.Slice(curOrders, func(i, j int) bool {
-				if curOrders[i].ShopID != curOrders[j].ShopID {
-					return curOrders[i].ShopID < curOrders[j].ShopID
+		}
+		sort.Slice(curOrders, func(i, j int) bool {
+			if curOrders[i].ShopID != curOrders[j].ShopID {
+				return curOrders[i].ShopID < curOrders[j].ShopID
+			}
+			if !curOrders[i].CreatedAt.Equal(curOrders[j].CreatedAt) {
+				return curOrders[i].CreatedAt.Before(curOrders[j].CreatedAt)
+			}
+			return curOrders[i].ID < curOrders[j].ID
+		})
+		if g.Status == "FAILED" && strings.TrimSpace(arg.PaymentID) != "" {
+			for _, ord := range curOrders {
+				if !shouldReemitOrderCancelledForPayment(ord, arg.PaymentID) {
+					continue
 				}
-				if !curOrders[i].CreatedAt.Equal(curOrders[j].CreatedAt) {
-					return curOrders[i].CreatedAt.Before(curOrders[j].CreatedAt)
+				ob, obErr := buildOrderCancelledOutbox(ord, ord.CancelReason, "", "")
+				if obErr != nil {
+					return obErr
 				}
-				return curOrders[i].ID < curOrders[j].ID
-			})
+				m.appendOutboxLocked(db.OutboxEvent{
+					ID:          ob.ID,
+					EventType:   ob.EventType,
+					TraceID:     ob.TraceID,
+					Traceparent: ob.Traceparent,
+					PayloadJSON: ob.PayloadJSON,
+					CreatedAt:   now,
+				})
+			}
+		}
+		if arg.BuildSnapshot != nil {
 			curAggs := make([]OrderAggregate, 0, len(curOrders))
 			for _, ord := range curOrders {
 				if agg, err := m.getOrderLocked(ord.ID); err == nil {
@@ -415,8 +582,33 @@ func (m *MemoryStore) CompleteCheckoutWithPayment(_ context.Context, arg UpdateC
 		return postOrders[i].ID < postOrders[j].ID
 	})
 
+	for _, ord := range postOrders {
+		if !shouldReemitOrderCancelledForPayment(ord, arg.PaymentID) {
+			continue
+		}
+		ob, obErr := buildOrderCancelledOutbox(ord, ord.CancelReason, "", "")
+		if obErr != nil {
+			return obErr
+		}
+		m.appendOutboxLocked(db.OutboxEvent{
+			ID:          ob.ID,
+			EventType:   ob.EventType,
+			TraceID:     ob.TraceID,
+			Traceparent: ob.Traceparent,
+			PayloadJSON: ob.PayloadJSON,
+			CreatedAt:   now,
+		})
+	}
+
+	allCancelled := allOrdersCancelledDB(postOrders)
 	resolvedPayStatus := resolveNonDowngradingGroupPaymentStatus(g.PaymentStatus, arg.PaymentStatus, postOrders)
-	g.Status = "COMPLETED"
+	liveTotalPayableVND := sumLiveOrderPayableVND(postOrders)
+	if allCancelled {
+		g.Status = "FAILED"
+		g.PendingStockConfirm = false
+	} else {
+		g.Status = "COMPLETED"
+	}
 	if g.PaymentID == "" {
 		g.PaymentID = arg.PaymentID
 	}
@@ -432,7 +624,7 @@ func (m *MemoryStore) CompleteCheckoutWithPayment(_ context.Context, arg UpdateC
 			g.PaymentExpiresAt = arg.PaymentExpiresAt
 		}
 	}
-	g.TotalPayableVND = arg.TotalPayableVND
+	g.TotalPayableVND = liveTotalPayableVND
 	g.NeedsCleanup = false
 	g.UpdatedAt = now
 
@@ -450,7 +642,10 @@ func (m *MemoryStore) CompleteCheckoutWithPayment(_ context.Context, arg UpdateC
 		}
 		snapshotBytes = built
 	}
-	if snapshotBytes != nil {
+	if allCancelled {
+		// D11 (P1-1): never persist a COMPLETED snapshot on an all-cancelled FAILED group.
+		g.ResponseSnapshotJSON = nil
+	} else if snapshotBytes != nil {
 		g.ResponseSnapshotJSON = snapshotBytes
 	}
 	m.groups[arg.CheckoutGroupID] = g
@@ -612,30 +807,38 @@ func (m *MemoryStore) CancelCheckoutGroupOrders(_ context.Context, params Cancel
 			CreatedAt:  now,
 		})
 
-		payloadBytes, _ := json.Marshal(events.OrderCancelledPayload{
-			OrderID:   ord.ID,
-			OrderCode: ord.OrderCode,
-			BuyerID:   ord.BuyerID,
-			ShopID:    ord.ShopID,
-			Reason:    params.Reason,
-			WasPaid:   false,
-		})
-		m.outbox = append(m.outbox, db.OutboxEvent{
-			ID:          uuid.NewString(),
-			EventType:   events.SubjectOrderCancelled,
-			TraceID:     params.TraceID,
-			Traceparent: params.Traceparent,
-			PayloadJSON: payloadBytes,
+		ob, err := buildOrderCancelledOutbox(ord, params.Reason, params.TraceID, params.Traceparent)
+		if err != nil {
+			return nil, err
+		}
+		m.appendOutboxLocked(db.OutboxEvent{
+			ID:          ob.ID,
+			EventType:   ob.EventType,
+			TraceID:     ob.TraceID,
+			Traceparent: ob.Traceparent,
+			PayloadJSON: ob.PayloadJSON,
 			CreatedAt:   now,
 		})
 		cancelled = append(cancelled, ord)
 	}
 
 	if !hasLiveOrders {
+		var groupOrders []db.Order
+		for _, ord := range m.orders {
+			if ord.CheckoutGroupID == params.CheckoutGroupID {
+				groupOrders = append(groupOrders, ord)
+			}
+		}
+		closeStatus := params.PaymentStatus
+		if derived := ResolveAllCancelledPaymentStatus(groupOrders); derived == "EXPIRED" || derived == "REFUNDED" {
+			closeStatus = derived
+		}
 		if g, ok := m.groups[params.CheckoutGroupID]; ok {
 			if g.Status == "IN_PROGRESS" {
 				g.Status = "FAILED"
-				g.PaymentStatus = params.PaymentStatus
+				if isPendingOrEmptyPaymentStatus(g.PaymentStatus) {
+					g.PaymentStatus = closeStatus
+				}
 				g.NeedsCleanup = false
 			}
 			g.PendingStockConfirm = false
@@ -915,7 +1118,7 @@ func (m *MemoryStore) TransitionOrdersPaymentResult(_ context.Context, params Pa
 				WasPaid:   false,
 			})
 		}
-		m.outbox = append(m.outbox, db.OutboxEvent{
+		m.appendOutboxLocked(db.OutboxEvent{
 			ID:          uuid.NewString(),
 			EventType:   eventType,
 			TraceID:     params.TraceID,
@@ -1084,7 +1287,7 @@ func (m *MemoryStore) TransitionOrderStatus(_ context.Context, params SingleOrde
 		})
 		if params.BuildOutboxFn != nil {
 			for _, ob := range params.BuildOutboxFn(target) {
-				m.outbox = append(m.outbox, db.OutboxEvent{
+				m.appendOutboxLocked(db.OutboxEvent{
 					ID:          ob.ID,
 					EventType:   ob.EventType,
 					TraceID:     ob.TraceID,
@@ -1107,7 +1310,11 @@ func (m *MemoryStore) TransitionOrderStatus(_ context.Context, params SingleOrde
 			}
 		} else if shouldMarkGroupCancelled(mergedSiblings, "", "", "") {
 			if g, ok := m.groups[ord.CheckoutGroupID]; ok {
-				g.PaymentStatus = "CANCELLED"
+				closeStatus := ResolveAllCancelledPaymentStatus(mergedSiblings)
+				if strings.EqualFold(g.PaymentStatus, "EXPIRED") {
+					closeStatus = "EXPIRED"
+				}
+				g.PaymentStatus = closeStatus
 				g.UpdatedAt = now
 				m.groups[ord.CheckoutGroupID] = g
 			}
@@ -1115,7 +1322,7 @@ func (m *MemoryStore) TransitionOrderStatus(_ context.Context, params SingleOrde
 	}
 
 	for _, ob := range params.OutboxEvents {
-		m.outbox = append(m.outbox, db.OutboxEvent{
+		m.appendOutboxLocked(db.OutboxEvent{
 			ID:          ob.ID,
 			EventType:   ob.EventType,
 			TraceID:     ob.TraceID,
@@ -1467,7 +1674,7 @@ func (m *MemoryStore) completeOrderLocked(ord db.Order, actorID, actorRole, note
 		CreatedAt:  now,
 	})
 	if outboxEvent.ID != "" {
-		m.outbox = append(m.outbox, db.OutboxEvent{
+		m.appendOutboxLocked(db.OutboxEvent{
 			ID:          outboxEvent.ID,
 			EventType:   outboxEvent.EventType,
 			TraceID:     outboxEvent.TraceID,
@@ -1584,7 +1791,7 @@ func (m *MemoryStore) TransitionOrderReturnRequested(_ context.Context, params R
 		CreatedAt:  now,
 	})
 	if params.OutboxEvent.ID != "" {
-		m.outbox = append(m.outbox, db.OutboxEvent{
+		m.appendOutboxLocked(db.OutboxEvent{
 			ID:          params.OutboxEvent.ID,
 			EventType:   params.OutboxEvent.EventType,
 			TraceID:     params.OutboxEvent.TraceID,
@@ -1624,7 +1831,7 @@ func (m *MemoryStore) transitionOrderToShippingLocked(ord db.Order, trackingCode
 		CarrierCode:  ord.CarrierCode,
 		TrackingCode: ord.TrackingCode,
 	})
-	m.outbox = append(m.outbox, db.OutboxEvent{
+	m.appendOutboxLocked(db.OutboxEvent{
 		ID:          uuid.NewString(),
 		EventType:   events.SubjectOrderShipped,
 		TraceID:     traceID,
@@ -1761,7 +1968,7 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 				ShopID:       ord.ShopID,
 				TrackingCode: ord.TrackingCode,
 			})
-			m.outbox = append(m.outbox, db.OutboxEvent{
+			m.appendOutboxLocked(db.OutboxEvent{
 				ID:          uuid.NewString(),
 				EventType:   events.SubjectOrderDelivered,
 				TraceID:     params.TraceID,
@@ -1834,7 +2041,7 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 				Reason:          note,
 				WasPaid:         wasPaid,
 			})
-			m.outbox = append(m.outbox, db.OutboxEvent{
+			m.appendOutboxLocked(db.OutboxEvent{
 				ID:          uuid.NewString(),
 				EventType:   events.SubjectOrderReturned,
 				TraceID:     params.TraceID,
@@ -1895,7 +2102,10 @@ func (m *MemoryStore) RecordPaymentRefunded(_ context.Context, params PaymentRef
 	note := fmt.Sprintf("Refund %s processed: %d VND (%s)", params.RefundID, params.AmountVND, params.Reason)
 	if ord, ok := m.orders[params.OrderID]; ok {
 		if params.PaymentID == "" || ord.PaymentID == "" || ord.PaymentID == params.PaymentID {
-			ord.RefundedVND += params.AmountVND
+			avail := max64(0, ord.TotalPayableVND-ord.RefundedVND)
+			delta := min(max64(0, params.AmountVND), avail)
+			ord.RefundedVND += delta
+			ord.SettlementRefundedVND = nextSettlementRefundedVND(ord, delta, ord.RefundedVND, params.IsPostSettlement)
 			if ord.TotalPayableVND > 0 && ord.RefundedVND >= ord.TotalPayableVND {
 				ord.PaymentStatus = "REFUNDED"
 			}
@@ -1963,7 +2173,9 @@ func (m *MemoryStore) RecordPaymentRefunded(_ context.Context, params PaymentRef
 	remainingToRecord := params.AmountVND
 	for _, ord := range matched {
 		if isFullGroupRefund {
+			delta := max64(0, ord.TotalPayableVND-ord.RefundedVND)
 			ord.RefundedVND = ord.TotalPayableVND
+			ord.SettlementRefundedVND = nextSettlementRefundedVND(ord, delta, ord.RefundedVND, params.IsPostSettlement)
 			ord.PaymentStatus = "REFUNDED"
 			ord.UpdatedAt = now
 			m.orders[ord.ID] = ord
@@ -1973,6 +2185,7 @@ func (m *MemoryStore) RecordPaymentRefunded(_ context.Context, params PaymentRef
 				add := min(remainingToRecord, avail)
 				remainingToRecord -= add
 				ord.RefundedVND += add
+				ord.SettlementRefundedVND = nextSettlementRefundedVND(ord, add, ord.RefundedVND, params.IsPostSettlement)
 				if ord.TotalPayableVND > 0 && ord.RefundedVND >= ord.TotalPayableVND {
 					ord.PaymentStatus = "REFUNDED"
 				}
@@ -2033,28 +2246,183 @@ func (m *MemoryStore) InsertDeadLetterEvent(_ context.Context, arg db.InsertDead
 }
 
 func (m *MemoryStore) ProcessPendingOutbox(ctx context.Context, limit int32, publishFn func(ctx context.Context, ev db.OutboxEvent) error) (int, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+
+	// Phase 1: Normalize timings (pubTimeout < lease), capture Go clock BEFORE claiming, and claim strictly by seq ASC.
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	published := 0
-	now := time.Now().UTC()
+	lease, pubTimeout := clampOutboxTimings(m.outboxLease, m.outboxPublishTimeout)
+	nowFn := m.outboxNowFn
+	now := time.Now()
+	if nowFn != nil {
+		now = nowFn()
+	}
+	leaseDeadline := now.Add(lease)
+	leaseUntil := leaseDeadline.UTC()
+	claimToken := uuid.NewString()
+
+	type candidate struct {
+		idx int
+		seq int64
+		ev  db.OutboxEvent
+	}
+	var allUnpublished []candidate
 	for i := range m.outbox {
-		if int32(published) >= limit {
-			break
-		}
 		if m.outbox[i].PublishedAt != nil {
 			continue
 		}
-		if err := publishFn(ctx, m.outbox[i]); err != nil {
-			m.outbox[i].Attempts++
-			m.outbox[i].LastError = err.Error()
+		if m.outbox[i].Seq == 0 {
+			m.nextOutboxSeq++
+			m.outbox[i].Seq = m.nextOutboxSeq
+		}
+		allUnpublished = append(allUnpublished, candidate{idx: i, seq: m.outbox[i].Seq, ev: m.outbox[i]})
+	}
+	// D9-bis §1: Order strictly by seq ASC (never created_at).
+	sort.Slice(allUnpublished, func(i, j int) bool {
+		if allUnpublished[i].seq != allUnpublished[j].seq {
+			return allUnpublished[i].seq < allUnpublished[j].seq
+		}
+		return allUnpublished[i].ev.ID < allUnpublished[j].ev.ID
+	})
+
+	nowUTC := now.UTC()
+	blockedAggs := make(map[string]struct{})
+	var claimed []db.OutboxEvent
+	for _, c := range allUnpublished {
+		aggKey := outboxAggregateKey(c.ev)
+		if c.ev.ClaimedUntil != nil && c.ev.ClaimedUntil.After(nowUTC) {
+			blockedAggs[aggKey] = struct{}{}
 			continue
 		}
-		m.outbox[i].Attempts++
-		m.outbox[i].PublishedAt = &now
-		m.outbox[i].LastError = ""
+		if _, blocked := blockedAggs[aggKey]; blocked {
+			continue
+		}
+		if int32(len(claimed)) >= limit {
+			break
+		}
+		ts := leaseUntil
+		m.outbox[c.idx].ClaimedUntil = &ts
+		m.outbox[c.idx].ClaimToken = claimToken
+		claimed = append(claimed, m.outbox[c.idx])
+	}
+	m.mu.Unlock()
+
+	if len(claimed) == 0 {
+		return 0, nil
+	}
+
+	// Phase 2: Publish OUTSIDE lock, enforcing lease budget, per-event publish timeout, backoff, and lost-lease abort.
+	published := 0
+	failedAggs := make(map[string]struct{})
+	var skippedIDs []string
+	for i, ev := range claimed {
+		if ctx.Err() != nil {
+			m.releaseOutboxClaims(collectOutboxClaimIDs(skippedIDs, claimed[i:]), claimToken)
+			return published, ctx.Err()
+		}
+		if leaseDeadline.Sub(m.outboxNow()) < pubTimeout {
+			m.releaseOutboxClaims(collectOutboxClaimIDs(skippedIDs, claimed[i:]), claimToken)
+			return published, nil
+		}
+
+		aggKey := outboxAggregateKey(ev)
+		if _, failed := failedAggs[aggKey]; failed {
+			skippedIDs = append(skippedIDs, ev.ID)
+			continue
+		}
+
+		pubCtx, pubCancel := context.WithTimeout(ctx, pubTimeout)
+		pubErr := publishFn(pubCtx, ev)
+		pubCancel()
+		if pubErr != nil {
+			isInfra := jetstream.IsInfraError(pubErr)
+			var newAttempts int32
+			var matched bool
+			failNow := m.outboxNow().UTC()
+			m.mu.Lock()
+			for j := range m.outbox {
+				if m.outbox[j].ID == ev.ID && m.outbox[j].PublishedAt == nil && m.outbox[j].ClaimToken == claimToken {
+					matched = true
+					m.outbox[j].Attempts++
+					newAttempts = m.outbox[j].Attempts
+					m.outbox[j].LastError = pubErr.Error()
+					m.outbox[j].ClaimToken = ""
+					if !isInfra {
+						backoffUntil := failNow.Add(jetstream.OutboxRetryBackoff(newAttempts))
+						m.outbox[j].ClaimedUntil = &backoffUntil
+					} else {
+						m.outbox[j].ClaimedUntil = nil
+					}
+					break
+				}
+			}
+			m.mu.Unlock()
+			if isInfra {
+				m.releaseOutboxClaims(collectOutboxClaimIDs(skippedIDs, claimed[i+1:]), claimToken)
+				return published, pubErr
+			}
+			if !matched {
+				// Lost lease while publishing this event; release remaining claims and abort batch.
+				m.releaseOutboxClaims(collectOutboxClaimIDs(skippedIDs, claimed[i+1:]), claimToken)
+				return published, nil
+			}
+			if newAttempts >= jetstream.OutboxPoisonLogAttempt {
+				m.outboxLogger().ErrorContext(ctx, "outbox event repeatedly failing publish",
+					"event_id", ev.ID,
+					"event_type", ev.EventType,
+					"attempts", newAttempts,
+					"error", pubErr,
+				)
+			}
+			failedAggs[aggKey] = struct{}{}
+			continue
+		}
+
+		pubAt := m.outboxNow().UTC()
+		affected := 0
+		m.mu.Lock()
+		for j := range m.outbox {
+			if m.outbox[j].ID == ev.ID && m.outbox[j].PublishedAt == nil && m.outbox[j].ClaimToken == claimToken {
+				m.outbox[j].Attempts++
+				m.outbox[j].PublishedAt = &pubAt
+				m.outbox[j].LastError = ""
+				m.outbox[j].ClaimedUntil = nil
+				m.outbox[j].ClaimToken = ""
+				affected = 1
+				break
+			}
+		}
+		m.mu.Unlock()
+		if affected == 0 {
+			// D9-bis §3: Lost lease on this event; immediately release remaining claims and stop batch.
+			m.releaseOutboxClaims(collectOutboxClaimIDs(skippedIDs, claimed[i+1:]), claimToken)
+			return published, nil
+		}
 		published++
 	}
+	if len(skippedIDs) > 0 {
+		m.releaseOutboxClaims(skippedIDs, claimToken)
+	}
 	return published, nil
+}
+
+func (m *MemoryStore) releaseOutboxClaims(ids []string, claimToken string) {
+	if len(ids) == 0 {
+		return
+	}
+	idSet := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		idSet[id] = struct{}{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.outbox {
+		if _, ok := idSet[m.outbox[i].ID]; ok && m.outbox[i].PublishedAt == nil && m.outbox[i].ClaimToken == claimToken {
+			m.outbox[i].ClaimedUntil = nil
+			m.outbox[i].ClaimToken = ""
+		}
+	}
 }
 
 func (m *MemoryStore) FindExpiredPendingGroups(_ context.Context, limit int32) ([]ExpiredGroupCandidate, error) {

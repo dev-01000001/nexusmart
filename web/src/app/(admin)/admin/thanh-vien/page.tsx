@@ -1,12 +1,12 @@
 "use client";
 
 import React, { Suspense, useMemo, useState } from "react";
-import { computeGiftCardSummary } from "@/data";
+import { computeGiftCardSummary } from "@/data/admin";
 import type {
   AdminGiftCardRecord,
   AdminLoyaltyTierConfig,
   AdminStudentVerificationItem,
-} from "@/data";
+} from "@/data/admin";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button } from "@/components";
 import { formatDateVi, formatInt, formatPercent, formatVnd } from "@/lib/format";

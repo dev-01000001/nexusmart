@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	shippingv1 "github.com/nexusmart/core/gen/go/nexusmart/shipping/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
+	"github.com/nexusmart/core/pkg/common/secretbox"
 	"github.com/nexusmart/core/services/shipping/internal/address"
 	"github.com/nexusmart/core/services/shipping/internal/carrier"
 	"github.com/nexusmart/core/services/shipping/internal/service"
@@ -315,10 +316,6 @@ func (r *stubRepo) ListFallbackRates(_ context.Context, carrierCode string) ([]s
 	}
 	return append([]store.FallbackRate(nil), r.fallback[strings.ToLower(carrierCode)]...), nil
 }
-func (r *stubRepo) FetchPendingOutbox(_ context.Context, _ int) ([]store.OutboxEvent, error) {
-	return nil, nil
-}
-func (r *stubRepo) MarkOutboxPublished(_ context.Context, _ string) error { return nil }
 func (r *stubRepo) IsEventProcessed(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
@@ -592,9 +589,9 @@ func TestShippingGRPC_W2A_ShopSettingsAndAdminCarriers(t *testing.T) {
 		carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock", Token: "sandbox-ghn-token"}),
 		carrier.NewMockExpressAdapter(),
 	)
-	cipher, err := service.NewTokenCipherFromBase64("ZGV2LW9ubHktc2hpcHBpbmctY29uZmlnLWtleS0zMmI=")
+	cipher, err := secretbox.NewFromBase64("ZGV2LW9ubHktc2hpcHBpbmctY29uZmlnLWtleS0zMmI=", "SHIPPING_CONFIG_KEY")
 	if err != nil {
-		t.Fatalf("NewTokenCipherFromBase64: %v", err)
+		t.Fatalf("secretbox.NewFromBase64: %v", err)
 	}
 	svc := service.NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	svc.SetTokenCipher(cipher)

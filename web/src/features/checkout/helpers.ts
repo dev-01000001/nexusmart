@@ -1,7 +1,13 @@
 import type {
   GatewayActiveShopDiscount,
+  GatewayCheckoutRequest,
+  GatewayCheckoutResponse,
+  GatewayDiscountBreakdown,
   GatewayFlashSale,
+  GatewayPaymentMethod,
   GatewayShopDiscountBreakdown,
+  GatewayShopShippingChoice,
+  GatewayVoucher,
 } from "@/lib/gateway-types";
 import {
   AMBIGUOUS_CHECKOUT_MESSAGE,
@@ -63,11 +69,18 @@ export async function fetchActiveShopDiscountsWithFetcher(
 ): Promise<GatewayActiveShopDiscount[]> {
   const batches = buildActiveShopDiscountBatches(params);
   if (batches.length === 0) return [];
-  const results = await Promise.all(batches.map((b) => fetcher(b)));
+  const settled = await Promise.allSettled(batches.map((b) => fetcher(b)));
   const seenSkuIds = new Set<string>();
   const merged: GatewayActiveShopDiscount[] = [];
-  for (const list of results) {
-    for (const disc of list) {
+  for (let i = 0; i < settled.length; i += 1) {
+    const res = settled[i];
+    if (res.status !== "fulfilled") {
+      console.warn(
+        `[promo] active shop discounts batch ${i + 1}/${batches.length} failed (size=${batches[i].skuIds?.length ?? 0})`
+      );
+      continue;
+    }
+    for (const disc of res.value) {
       if (!disc?.sku_id || seenSkuIds.has(disc.sku_id)) continue;
       seenSkuIds.add(disc.sku_id);
       merged.push(disc);
@@ -624,6 +637,7 @@ export function isShopProgramItemApplied(input: {
 
 export type CheckoutSubmitErrorKind =
   | "unauthenticated"
+  | "checkout_failed"
   | "idempotency_conflict"
   | "ambiguous_created"
   | "flash_blocked"
@@ -642,7 +656,7 @@ const FLASH_LIMIT_ERROR_CODES = new Set<string>([
  * Detects checkout errors genuinely caused by flash sale per-user limit, expired window, or exhausted slots
  * so CheckoutClient can offer an explicit opt-out recovery action.
  * Never returns true for ambiguous/forward-recovery errors, stock errors, idempotency conflicts,
- * gateway 429 rate-limits, or unrelated FAILED_PRECONDITION.
+ * CHECKOUT_FAILED, SHOP_PICKUP_ADDRESS_REQUIRED, gateway 429 rate-limits, or unrelated FAILED_PRECONDITION.
  */
 export function isFlashLimitOrSlotError(
   err: unknown,
@@ -663,13 +677,15 @@ export function isFlashLimitOrSlotError(
     code === "SKU_NOT_ACTIVE" ||
     code === "STOCK_VERSION_CONFLICT" ||
     code === "IDEMPOTENCY_KEY_CONFLICT" ||
+    code === "CHECKOUT_FAILED" ||
+    code === "SHOP_PICKUP_ADDRESS_REQUIRED" ||
     code === "VOUCHER_UNAVAILABLE_ON_COMMIT" ||
     code === "SHOP_PROGRAM_UNAVAILABLE_ON_COMMIT" ||
     code === "SHOP_PROGRAM_PRICE_CHANGED" ||
     code === "INSUFFICIENT_COINS" ||
     code === "COD_LIMIT_EXCEEDED" ||
     code === "COD_REJECTED_LIMIT_EXCEEDED" ||
-    /insufficient\s+stock|out\s+of\s+stock|hết\s+hàng|không\s+đủ.*tồn\s+kho|idempotency|trùng\s+mã\s+xử\s+lý|đã\s+tạo\s+đơn/.test(
+    /insufficient\s+stock|out\s+of\s+stock|hết\s+hàng|không\s+đủ.*tồn\s+kho|idempotency|trùng\s+mã\s+xử\s+lý|đã\s+tạo\s+đơn|địa\s+chỉ\s+lấy\s+hàng/.test(
       msg
     )
   ) {
@@ -681,7 +697,8 @@ export function isFlashLimitOrSlotError(
 
 /**
  * Pure classifier for POST /checkout failures separating deterministic rejections from
- * ambiguous forward-recovery outcomes (where Idempotency-Key must be preserved and flash opt-out hidden).
+ * ambiguous forward-recovery outcomes (where Idempotency-Key must be preserved and flash opt-out hidden)
+ * and 409 CHECKOUT_FAILED (D11: prior group with persisted orders failed/cancelled -> must rotate key).
  */
 export function classifyCheckoutSubmitError(
   err: unknown,
@@ -694,6 +711,9 @@ export function classifyCheckoutSubmitError(
     if (status === 401 || code === "UNAUTHENTICATED") {
       return "unauthenticated";
     }
+    if (code === "CHECKOUT_FAILED") {
+      return "checkout_failed";
+    }
     if (code === "IDEMPOTENCY_KEY_CONFLICT") {
       return "idempotency_conflict";
     }
@@ -705,6 +725,524 @@ export function classifyCheckoutSubmitError(
     return "flash_blocked";
   }
   return "definite_failure";
+}
+
+export type CheckoutKeyUncertainty = "none" | "ambiguous" | "conflict";
+
+export interface CheckoutSubmitGuardState {
+  keyUncertainty: CheckoutKeyUncertainty;
+  flashBlocked: boolean;
+  checkoutFailedPrior: boolean;
+  cancelledReplayPrior: boolean;
+}
+
+export const INITIAL_CHECKOUT_SUBMIT_GUARD_STATE: CheckoutSubmitGuardState = {
+  keyUncertainty: "none",
+  flashBlocked: false,
+  checkoutFailedPrior: false,
+  cancelledReplayPrior: false,
+};
+
+export type CheckoutSubmitEvent =
+  | { type: "submit_start" }
+  | { type: "submit_success"; terminalCancelled?: boolean }
+  | { type: "submit_error"; kind: CheckoutSubmitErrorKind }
+  | { type: "explicit_new_order" }
+  | { type: "hydrated_pending_key" };
+
+export interface CheckoutSubmitTransitionResult {
+  state: CheckoutSubmitGuardState;
+  rotateKey: boolean;
+  clearStoredKey: boolean;
+}
+
+/**
+ * P1-1 pure state machine for checkout Idempotency-Key uncertainty:
+ * - Never clears `keyUncertainty` on `submit_start` or subsequent 429/401/400/403/flash_blocked errors.
+ * - Clears `keyUncertainty` (and stored key) ONLY on:
+ *   1) HTTP 200/201 response (`submit_success`),
+ *   2) 409 CHECKOUT_FAILED (`submit_error` kind="checkout_failed", rotating key), or
+ *   3) Explicit buyer click on "Đặt đơn mới" (`explicit_new_order`, rotating key).
+ */
+export function reduceCheckoutSubmitState(
+  prev: CheckoutSubmitGuardState,
+  event: CheckoutSubmitEvent
+): CheckoutSubmitTransitionResult {
+  if (event.type === "submit_start") {
+    return {
+      state: {
+        keyUncertainty: prev.keyUncertainty,
+        flashBlocked: false,
+        checkoutFailedPrior: false,
+        cancelledReplayPrior: false,
+      },
+      rotateKey: false,
+      clearStoredKey: false,
+    };
+  }
+
+  if (event.type === "submit_success") {
+    return {
+      state: {
+        keyUncertainty: "none",
+        flashBlocked: false,
+        checkoutFailedPrior: false,
+        cancelledReplayPrior: Boolean(event.terminalCancelled),
+      },
+      rotateKey: false,
+      clearStoredKey: true,
+    };
+  }
+
+  if (event.type === "explicit_new_order") {
+    return {
+      state: { ...INITIAL_CHECKOUT_SUBMIT_GUARD_STATE },
+      rotateKey: true,
+      clearStoredKey: true,
+    };
+  }
+
+  if (event.type === "hydrated_pending_key") {
+    return {
+      state: {
+        keyUncertainty: "ambiguous",
+        flashBlocked: false,
+        checkoutFailedPrior: false,
+        cancelledReplayPrior: false,
+      },
+      rotateKey: false,
+      clearStoredKey: false,
+    };
+  }
+
+  // event.type === "submit_error"
+  switch (event.kind) {
+    case "checkout_failed":
+      return {
+        state: {
+          keyUncertainty: "none",
+          flashBlocked: false,
+          checkoutFailedPrior: true,
+          cancelledReplayPrior: false,
+        },
+        rotateKey: true,
+        clearStoredKey: true,
+      };
+    case "idempotency_conflict":
+      return {
+        state: {
+          keyUncertainty: "conflict",
+          flashBlocked: false,
+          checkoutFailedPrior: false,
+          cancelledReplayPrior: false,
+        },
+        rotateKey: false,
+        clearStoredKey: false,
+      };
+    case "ambiguous_created":
+      return {
+        state: {
+          keyUncertainty: "ambiguous",
+          flashBlocked: false,
+          checkoutFailedPrior: false,
+          cancelledReplayPrior: false,
+        },
+        rotateKey: false,
+        clearStoredKey: false,
+      };
+    case "flash_blocked":
+      return {
+        state: {
+          keyUncertainty: prev.keyUncertainty,
+          flashBlocked: prev.keyUncertainty === "none",
+          checkoutFailedPrior: false,
+          cancelledReplayPrior: false,
+        },
+        rotateKey: false,
+        clearStoredKey: prev.keyUncertainty === "none",
+      };
+    case "unauthenticated":
+    case "definite_failure":
+    default:
+      return {
+        state: {
+          keyUncertainty: prev.keyUncertainty,
+          flashBlocked: false,
+          checkoutFailedPrior: false,
+          cancelledReplayPrior: false,
+        },
+        rotateKey: false,
+        clearStoredKey: prev.keyUncertainty === "none",
+      };
+  }
+}
+
+/**
+ * P0-1 / P1-1 guard: blocks Flash opt-out/restore mutations (which rotate checkoutIdempotencyKey)
+ * while the current key may have already created an order on server, preventing duplicate orders.
+ */
+export function canMutateCheckoutFlashSelection(state: {
+  keyUncertainty?: CheckoutKeyUncertainty;
+  ambiguousSubmit?: boolean;
+  idempotencyConflict?: boolean;
+}): boolean {
+  if (state.keyUncertainty !== undefined) {
+    return state.keyUncertainty === "none";
+  }
+  return !state.ambiguousSubmit && !state.idempotencyConflict;
+}
+
+export interface CheckoutItemPayloadInput {
+  skuId: string;
+  quantity: number;
+  flashSaleItemId?: string | null;
+}
+
+export function buildCheckoutRequestPayload(input: {
+  addressId: string;
+  items: readonly CheckoutItemPayloadInput[];
+  shopVoucherIds: Record<string, string>;
+  platformVoucherCode?: string | null;
+  freeshipVoucherCode?: string | null;
+  coinsToUse: number;
+  paymentMethod: GatewayPaymentMethod;
+  shippingChoices: GatewayShopShippingChoice[];
+}): GatewayCheckoutRequest {
+  return {
+    address_id: input.addressId,
+    from_cart: false,
+    items: input.items.map((it) => ({
+      sku_id: it.skuId,
+      quantity: it.quantity,
+      ...(it.flashSaleItemId ? { flash_sale_item_id: it.flashSaleItemId } : {}),
+    })),
+    ...(Object.keys(input.shopVoucherIds).length > 0
+      ? { shop_voucher_ids: input.shopVoucherIds }
+      : {}),
+    ...(input.platformVoucherCode ? { platform_voucher_id: input.platformVoucherCode } : {}),
+    ...(input.freeshipVoucherCode ? { freeship_voucher_id: input.freeshipVoucherCode } : {}),
+    coins_to_use: Math.max(0, Math.trunc(input.coinsToUse)),
+    payment_method: input.paymentMethod,
+    shipping_choices: input.shippingChoices,
+  };
+}
+
+export type PostCheckoutCartAction = { kind: "none" } | { kind: "clear_skus"; skuIds: string[] };
+
+export function resolvePostCheckoutCartAction(input: {
+  isBuyNow: boolean;
+  orderedSkuIds: readonly string[];
+}): PostCheckoutCartAction {
+  if (input.isBuyNow) return { kind: "none" };
+  const skuIds = Array.from(new Set(input.orderedSkuIds.map((id) => id.trim()).filter(Boolean)));
+  return skuIds.length > 0 ? { kind: "clear_skus", skuIds } : { kind: "none" };
+}
+
+const TERMINAL_PAYMENT_STATUSES = new Set([
+  "SUCCEEDED",
+  "FAILED",
+  "EXPIRED",
+  "CANCELLED",
+  "REFUNDED",
+]);
+
+/**
+ * P2-3: Detects terminal payment statuses so SSE closes immediately before EOF triggers `onerror`.
+ */
+export function isTerminalPaymentStatus(rawStatus: string | null | undefined): boolean {
+  const norm = String(rawStatus ?? "")
+    .trim()
+    .toUpperCase();
+  return TERMINAL_PAYMENT_STATUSES.has(norm);
+}
+
+/**
+ * P1-3: Guards RetryPaymentBox fetchPayment responses against stale/superseded payment IDs.
+ */
+export function shouldApplyPaymentFetchResult(input: {
+  targetId: string;
+  activePaymentId: string;
+  requestSeq: number;
+  latestSeq: number;
+}): boolean {
+  return (
+    Boolean(input.targetId) &&
+    input.targetId === input.activePaymentId &&
+    input.requestSeq === input.latestSeq
+  );
+}
+
+const PENDING_CHECKOUT_KEY_STORAGE_KEY = "nm_pending_checkout_key_v1";
+
+export interface StoredPendingCheckoutKey {
+  key: string;
+  sig: string;
+}
+
+/**
+ * P1-4: Builds the same-tab checkout idempotency signature (`<userId>:cart` or `<userId>:sku:<skuId>`).
+ * Deliberately excludes item quantities / flash_sale_item_id so that if an ambiguous submit actually
+ * created an order (consuming the flash slot or stock) and the buyer reloads (F5), the old key is
+ * still restored and sent — letting the server replay or return 409 IDEMPOTENCY_KEY_CONFLICT.
+ *
+ * ponytail: chỉ lưu khoá đang chờ ở sessionStorage trong cùng 1 tab để chống tạo đơn trùng qua F5;
+ * hai tab khác nhau cùng mở /thanh-toan chấp nhận dùng khoá riêng (không dựng lock/BroadcastChannel đa tab).
+ */
+export function buildCheckoutIdempotencySignature(input: {
+  userId: string;
+  buyNowSkuId?: string | null;
+}): string {
+  const uid = (input.userId ?? "").trim();
+  const sku = (input.buyNowSkuId ?? "").trim();
+  return sku ? `${uid}:sku:${sku}` : `${uid}:cart`;
+}
+
+export function savePendingCheckoutKey(
+  record: StoredPendingCheckoutKey,
+  storage?: Pick<Storage, "setItem"> | null
+): void {
+  const target = storage === undefined ? getDefaultSessionStorage() : storage;
+  if (!target || !record.key.trim() || !record.sig.trim()) return;
+  try {
+    target.setItem(
+      PENDING_CHECKOUT_KEY_STORAGE_KEY,
+      JSON.stringify({ key: record.key.trim(), sig: record.sig.trim() })
+    );
+  } catch {
+    // Ignore storage access/quota failures
+  }
+}
+
+export function readPendingCheckoutKey(
+  expectedSig: string,
+  storage?: Pick<Storage, "getItem"> | null
+): string | null {
+  const target = storage === undefined ? getDefaultSessionStorage() : storage;
+  const cleanSig = (expectedSig ?? "").trim();
+  if (!target || !cleanSig) return null;
+  try {
+    const raw = target.getItem(PENDING_CHECKOUT_KEY_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredPendingCheckoutKey> | null;
+    if (
+      !parsed ||
+      typeof parsed.key !== "string" ||
+      typeof parsed.sig !== "string" ||
+      !parsed.key.trim() ||
+      parsed.sig !== cleanSig
+    ) {
+      return null;
+    }
+    return parsed.key.trim();
+  } catch {
+    return null;
+  }
+}
+
+export function clearPendingCheckoutKey(storage?: Pick<Storage, "removeItem"> | null): void {
+  const target = storage === undefined ? getDefaultSessionStorage() : storage;
+  if (!target) return;
+  try {
+    target.removeItem(PENDING_CHECKOUT_KEY_STORAGE_KEY);
+  } catch {
+    // Ignore storage access failures
+  }
+}
+
+const TERMINAL_FAILED_PAYMENT_STATUSES = new Set(["CANCELLED", "EXPIRED", "FAILED"]);
+
+/**
+ * P2-6 guard: detects a 200/201 checkout replay whose persisted orders are already CANCELLED
+ * or whose payment status is terminal (CANCELLED/EXPIRED/FAILED) so UI does not navigate to
+ * a dead payment-waiting page.
+ */
+export function isTerminalCancelledCheckoutResponse(
+  res: Pick<GatewayCheckoutResponse, "orders" | "payment_status"> | null | undefined
+): boolean {
+  if (!res) return false;
+  const orders = Array.isArray(res.orders) ? res.orders : [];
+  const allOrdersCancelled =
+    orders.length > 0 &&
+    orders.every(
+      (o) =>
+        String(o?.status ?? "")
+          .trim()
+          .toUpperCase() === "CANCELLED"
+    );
+  const payStatus = String(res.payment_status ?? "")
+    .trim()
+    .toUpperCase();
+  return allOrdersCancelled || TERMINAL_FAILED_PAYMENT_STATUSES.has(payStatus);
+}
+
+/**
+ * P2-9 / P2-2 guard: when POST /promotions/preview failed (`preview === null`):
+ * - Always block on 400/409 (e.g., 409 SKU_INACTIVE, 400 INVALID_ARGUMENT) regardless of vouchers.
+ * - Block on any preview failure whenever the order uses any promotion (Flash sale, shop discount,
+ *   voucher, or coins) so Checkout never silently submits unverified prices or `coins_to_use: 0`.
+ */
+export function getCheckoutPreviewBlockReason(input: {
+  preview: GatewayDiscountBreakdown | null;
+  previewError: string | null;
+  previewErrorStatus?: number | null;
+  hasActiveVouchers: boolean;
+  hasFlashSaleItem?: boolean;
+  hasShopDiscountItem?: boolean;
+  useCoins: boolean;
+  coinBalance: number;
+}): string | null {
+  if (input.preview) return null;
+  if (
+    input.previewError &&
+    (input.previewErrorStatus === 400 || input.previewErrorStatus === 409)
+  ) {
+    return input.previewError;
+  }
+  const hasAnyPromotion =
+    input.hasActiveVouchers ||
+    Boolean(input.hasFlashSaleItem) ||
+    Boolean(input.hasShopDiscountItem) ||
+    (input.useCoins && input.coinBalance > 0);
+  if (hasAnyPromotion) {
+    return "Chưa xác thực được ưu đãi hoặc số Xu áp dụng từ hệ thống nên tạm chặn đặt hàng để tránh lệch số tiền. Vui lòng bấm Thử lại hoặc điều chỉnh ưu đãi.";
+  }
+  return null;
+}
+
+/**
+ * Shared manual voucher preview probe factory used by both /gio-hang and /thanh-toan.
+ */
+export function createManualVoucherPreviewFn(input: {
+  getShopItems: () => Array<{
+    shop_id: string;
+    shipping_fee_vnd: number;
+    items: Array<{ sku_id: string; quantity: number; flash_sale_item_id?: string }>;
+  }>;
+  shopVoucherIds: Record<string, string>;
+  platformVoucherCode: string | null;
+  freeshipVoucherCode: string | null;
+  postPreview: (
+    payload: Record<string, unknown>
+  ) => Promise<{ breakdown?: GatewayDiscountBreakdown | null } | null | undefined>;
+}): (probe: ManualVoucherProbeArgs) => Promise<GatewayDiscountBreakdown | null> {
+  return async (probe) => {
+    const res = await input.postPreview({
+      shop_items: input.getShopItems(),
+      shop_voucher_ids: probe.shopVoucherIds
+        ? { ...input.shopVoucherIds, ...probe.shopVoucherIds }
+        : input.shopVoucherIds,
+      platform_voucher_id:
+        probe.platformVoucherId !== undefined
+          ? probe.platformVoucherId
+          : (input.platformVoucherCode ?? ""),
+      freeship_voucher_id:
+        probe.freeshipVoucherId !== undefined
+          ? probe.freeshipVoucherId
+          : (input.freeshipVoucherCode ?? ""),
+      coins_to_use: 0,
+    });
+    return res?.breakdown ?? null;
+  };
+}
+
+export interface DisplayedLinePricingInput {
+  regularUnitPriceVnd: number;
+  quantity: number;
+  isFlashLine: boolean;
+  flashUnitPriceVnd?: number;
+  flashShortfall: boolean;
+  activeShopDiscount?: Pick<
+    GatewayActiveShopDiscount,
+    "item_id" | "discounted_price_vnd" | "original_price_vnd" | "program_name"
+  > | null;
+  shopBreakdown?: GatewayShopDiscountBreakdown | null;
+  isInPreview?: boolean;
+}
+
+export interface DisplayedLinePricingResult {
+  effectiveUnitPriceVnd: number;
+  originalUnitPriceVnd?: number;
+  lineTotalVnd: number;
+  appliedKind: "flash" | "shop_discount" | "regular";
+  shopProgramApplied: boolean;
+  shopProgramLimitExceeded: boolean;
+  shopProgramName?: string;
+}
+
+/**
+ * Shared line pricing resolver for both Cart and Checkout (P2-15):
+ * obeys single-price rule (Flash > Shop Discount > Regular) and falls back cleanly to the SKU's
+ * active shop discount program when a Flash sale line hits shortfall/limit (matching calculator.go).
+ */
+export function resolveDisplayedLinePricing(
+  input: DisplayedLinePricingInput
+): DisplayedLinePricingResult {
+  const regular = Math.max(0, Math.trunc(input.regularUnitPriceVnd || 0));
+  const qty = Math.max(1, Math.trunc(input.quantity || 1));
+
+  if (
+    input.isFlashLine &&
+    !input.flashShortfall &&
+    typeof input.flashUnitPriceVnd === "number" &&
+    input.flashUnitPriceVnd > 0 &&
+    input.flashUnitPriceVnd < regular
+  ) {
+    const unit = Math.trunc(input.flashUnitPriceVnd);
+    return {
+      effectiveUnitPriceVnd: unit,
+      originalUnitPriceVnd: regular,
+      lineTotalVnd: unit * qty,
+      appliedKind: "flash",
+      shopProgramApplied: false,
+      shopProgramLimitExceeded: false,
+    };
+  }
+
+  const sd = input.activeShopDiscount;
+  const sdPrice = sd ? Math.trunc(sd.discounted_price_vnd || 0) : 0;
+  if (sd && sd.item_id && sdPrice > 0 && sdPrice < regular) {
+    const checkAgainstPreview = Boolean(input.isInPreview && input.shopBreakdown);
+    const applied = checkAgainstPreview
+      ? isShopProgramItemApplied({
+          shopProgramItemId: sd.item_id,
+          shopBreakdown: input.shopBreakdown ?? null,
+        })
+      : true;
+    const limitExceeded = checkAgainstPreview && !applied;
+    if (applied) {
+      const orig =
+        typeof sd.original_price_vnd === "number" && Math.trunc(sd.original_price_vnd) > sdPrice
+          ? Math.max(regular, Math.trunc(sd.original_price_vnd))
+          : regular;
+      return {
+        effectiveUnitPriceVnd: sdPrice,
+        originalUnitPriceVnd: orig,
+        lineTotalVnd: sdPrice * qty,
+        appliedKind: "shop_discount",
+        shopProgramApplied: true,
+        shopProgramLimitExceeded: false,
+        shopProgramName: sd.program_name,
+      };
+    }
+    return {
+      effectiveUnitPriceVnd: regular,
+      originalUnitPriceVnd: undefined,
+      lineTotalVnd: regular * qty,
+      appliedKind: "regular",
+      shopProgramApplied: false,
+      shopProgramLimitExceeded: limitExceeded,
+      shopProgramName: sd.program_name,
+    };
+  }
+
+  return {
+    effectiveUnitPriceVnd: regular,
+    originalUnitPriceVnd: undefined,
+    lineTotalVnd: regular * qty,
+    appliedKind: "regular",
+    shopProgramApplied: false,
+    shopProgramLimitExceeded: false,
+  };
 }
 
 const CHECKOUT_WARNINGS_STORAGE_KEY = "nm_checkout_warnings_v1";
@@ -878,4 +1416,373 @@ export function computeBuyNowSlicePricing(input: {
     effectiveUnitPriceVnd,
     effectiveSubtotalVnd,
   };
+}
+
+export const GENERIC_UNKNOWN_VOUCHER_MESSAGE =
+  "Mã ưu đãi không tồn tại, không còn hiệu lực hoặc không áp dụng cho đơn hàng hiện tại.";
+
+export interface ManualVoucherShopContext {
+  shopId: string;
+  shopName: string;
+  subtotalVnd: number;
+  shippingFeeVnd: number;
+}
+
+export interface ManualVoucherProbeArgs {
+  platformVoucherId?: string;
+  freeshipVoucherId?: string;
+  shopVoucherIds?: Record<string, string>;
+}
+
+export type ManualVoucherResolution =
+  | {
+      ok: true;
+      scope: "PLATFORM" | "FREESHIP" | "SHOP";
+      code: string;
+      shopId?: string;
+      discountVnd?: number;
+      message: string;
+    }
+  | {
+      ok: false;
+      scope?: "PLATFORM" | "FREESHIP" | "SHOP";
+      message: string;
+    };
+
+function extractVoucherWarningsForCode(
+  warnings: readonly string[] | undefined,
+  upperCode: string
+): string[] {
+  if (!Array.isArray(warnings) || warnings.length === 0) return [];
+  const lowerCode = upperCode.toLowerCase();
+  return warnings.filter((w) => {
+    const lower = (w ?? "").toLowerCase();
+    return lower.includes("voucher") && lower.includes(lowerCode);
+  });
+}
+
+function isHiddenOrUnavailableVoucherWarning(lower: string): boolean {
+  return (
+    lower.includes("not found") ||
+    lower.includes("has been deleted") ||
+    lower.includes("is paused") ||
+    lower.includes("is inactive") ||
+    lower.includes("has not started") ||
+    lower.includes("has expired")
+  );
+}
+
+function parseVoucherScopeHint(lower: string): "PLATFORM" | "FREESHIP" | "SHOP" | null {
+  const m = /scope\s+(platform|freeship|shop)\s+does\s+not\s+match/i.exec(lower);
+  if (!m) return null;
+  const scope = m[1].toUpperCase();
+  if (scope === "PLATFORM" || scope === "FREESHIP" || scope === "SHOP") {
+    return scope;
+  }
+  return null;
+}
+
+function isZeroDiscountVoucherWarning(lower: string): boolean {
+  return lower.includes("provides 0 vnd") || /\b0\s*vnd\s+discount\b/i.test(lower);
+}
+
+function isOrderConditionVoucherWarning(lower: string): boolean {
+  return (
+    lower.includes("minimum order") ||
+    lower.includes("shortfall") ||
+    lower.includes("category") ||
+    lower.includes("categories") ||
+    lower.includes("out of quota") ||
+    lower.includes("quota") ||
+    lower.includes("budget") ||
+    lower.includes("per-user") ||
+    lower.includes("limit reached") ||
+    isZeroDiscountVoucherWarning(lower)
+  );
+}
+
+/**
+ * Resolves a manually entered voucher code across PLATFORM, FREESHIP, and SHOP scopes (P2-3 #3):
+ * - Matches visible vouchers first with scope-specific checks.
+ * - For codes outside the visible list, probes PLATFORM -> FREESHIP -> SHOP via `previewFn`
+ *   (skipping unnecessary probes using scope mismatch hints).
+ * - Reports scope-specific eligibility errors for active vouchers in the current cart/order,
+ *   while returning a single uniform generic error for not-found, paused, deleted, inactive,
+ *   not-started, expired, or other-shop vouchers so hidden codes are never leaked.
+ */
+export async function resolveManualVoucherCode(input: {
+  rawCode: string;
+  knownVouchers: readonly GatewayVoucher[];
+  shops: readonly ManualVoucherShopContext[];
+  hasShippingEstimate: boolean;
+  previewFn: (probe: ManualVoucherProbeArgs) => Promise<GatewayDiscountBreakdown | null>;
+}): Promise<ManualVoucherResolution> {
+  const clean = (input.rawCode ?? "").trim().toUpperCase();
+  if (!clean) {
+    return { ok: false, message: "Vui lòng nhập mã ưu đãi cần áp dụng." };
+  }
+  if (input.shops.length === 0) {
+    return {
+      ok: false,
+      message: "Hãy chọn ít nhất 1 sản phẩm trước khi áp dụng mã ưu đãi.",
+    };
+  }
+
+  const matched = input.knownVouchers.find((v) => v.code.toUpperCase() === clean);
+  if (matched) {
+    const scope = matched.scope.toUpperCase();
+    const statusActive = !matched.status || matched.status.toUpperCase() === "ACTIVE";
+    const baseEligible =
+      matched.eligible !== false &&
+      statusActive &&
+      matched.is_active !== false &&
+      matched.remaining_quota > 0;
+
+    if (scope === "SHOP") {
+      const targetShop = input.shops.find((s) => s.shopId === matched.shop_id);
+      if (!targetShop) {
+        return {
+          ok: false,
+          scope: "SHOP",
+          message: "Đơn hàng hiện không có sản phẩm thuộc gian hàng áp dụng mã này.",
+        };
+      }
+      if (targetShop.subtotalVnd < matched.min_order_vnd) {
+        return {
+          ok: false,
+          scope: "SHOP",
+          message: `Mã gian hàng: Chưa đạt giá trị đơn tối thiểu ${formatVnd(matched.min_order_vnd)} của ${targetShop.shopName}.`,
+        };
+      }
+      if (!baseEligible) {
+        return {
+          ok: false,
+          scope: "SHOP",
+          message: `Mã gian hàng: ${translateVoucherReason(matched.ineligible_reason) || `Mã ${matched.code} chưa đủ điều kiện áp dụng.`}`,
+        };
+      }
+      // P2-2: Always confirm known SHOP vouchers through server previewFn (category_ids, per-user limit, post-discount min order, etc.).
+      const shopBdKnown = await input.previewFn({
+        shopVoucherIds: { [matched.shop_id]: matched.code },
+      });
+      const appliedShopKnown = (shopBdKnown?.shops ?? []).find(
+        (s) => s.shop_id === matched.shop_id && s.shop_voucher_discount_vnd > 0
+      );
+      if (appliedShopKnown) {
+        return {
+          ok: true,
+          scope: "SHOP",
+          shopId: matched.shop_id,
+          code: matched.code,
+          discountVnd: appliedShopKnown.shop_voucher_discount_vnd,
+          message: `Đã áp dụng mã gian hàng ${targetShop.shopName} (${matched.code}, giảm ${formatVnd(appliedShopKnown.shop_voucher_discount_vnd)}).`,
+        };
+      }
+      const knownShopWarnings = extractVoucherWarningsForCode(
+        shopBdKnown?.warnings,
+        matched.code
+      ).filter((w) => !w.toLowerCase().includes("does not belong to shop"));
+      const knownShopCond = knownShopWarnings.find((w) =>
+        isOrderConditionVoucherWarning(w.toLowerCase())
+      );
+      return {
+        ok: false,
+        scope: "SHOP",
+        message: `Mã gian hàng: ${knownShopCond ? translateVoucherReason(knownShopCond) : `Mã ${matched.code} chưa đủ điều kiện áp dụng cho sản phẩm của ${targetShop.shopName}.`}`,
+      };
+    }
+
+    if (scope === "FREESHIP") {
+      if (!baseEligible) {
+        return {
+          ok: false,
+          scope: "FREESHIP",
+          message: `Mã vận chuyển: ${translateVoucherReason(matched.ineligible_reason) || `Mã ${matched.code} chưa đủ điều kiện áp dụng.`}`,
+        };
+      }
+      // P1-5: Always confirm known FREESHIP vouchers through server previewFn before claiming applied.
+      const shipBd = await input.previewFn({ freeshipVoucherId: matched.code });
+      if (shipBd && shipBd.total_freeship_discount_vnd > 0) {
+        return {
+          ok: true,
+          scope: "FREESHIP",
+          code: matched.code,
+          discountVnd: shipBd.total_freeship_discount_vnd,
+          message: `Đã áp dụng mã vận chuyển ${matched.code} (giảm ${formatVnd(shipBd.total_freeship_discount_vnd)}).`,
+        };
+      }
+      const shipWarnings = extractVoucherWarningsForCode(shipBd?.warnings, matched.code);
+      const shipCond = shipWarnings.find((w) => isOrderConditionVoucherWarning(w.toLowerCase()));
+      if (shipCond && isZeroDiscountVoucherWarning(shipCond.toLowerCase())) {
+        const totalShipFee = input.shops.reduce((s, sh) => s + Math.max(0, sh.shippingFeeVnd), 0);
+        return {
+          ok: false,
+          scope: "FREESHIP",
+          message:
+            input.hasShippingEstimate && totalShipFee > 0
+              ? "Mã vận chuyển: Phí vận chuyển của đơn đã được hỗ trợ tối đa (0₫)."
+              : "Mã vận chuyển: Chưa có phí vận chuyển để áp dụng (hãy chọn địa chỉ giao hàng ở bước thanh toán).",
+        };
+      }
+      return {
+        ok: false,
+        scope: "FREESHIP",
+        message: `Mã vận chuyển: ${shipCond ? translateVoucherReason(shipCond) : `Mã ${matched.code} chưa đủ điều kiện áp dụng cho đơn hàng hiện tại.`}`,
+      };
+    }
+
+    if (!baseEligible) {
+      return {
+        ok: false,
+        scope: "PLATFORM",
+        message: `Mã toàn sàn: ${translateVoucherReason(matched.ineligible_reason) || `Mã ${matched.code} chưa đủ điều kiện áp dụng.`}`,
+      };
+    }
+    // P1-5: Always confirm known PLATFORM vouchers through server previewFn (category_ids, post-flash totals, etc.).
+    const platBdKnown = await input.previewFn({ platformVoucherId: matched.code });
+    if (platBdKnown && platBdKnown.total_platform_voucher_discount_vnd > 0) {
+      return {
+        ok: true,
+        scope: "PLATFORM",
+        code: matched.code,
+        discountVnd: platBdKnown.total_platform_voucher_discount_vnd,
+        message: `Đã áp dụng mã toàn sàn ${matched.code} (giảm ${formatVnd(platBdKnown.total_platform_voucher_discount_vnd)}).`,
+      };
+    }
+    const knownPlatWarnings = extractVoucherWarningsForCode(platBdKnown?.warnings, matched.code);
+    const knownPlatCond = knownPlatWarnings.find((w) =>
+      isOrderConditionVoucherWarning(w.toLowerCase())
+    );
+    return {
+      ok: false,
+      scope: "PLATFORM",
+      message: `Mã toàn sàn: ${knownPlatCond ? translateVoucherReason(knownPlatCond) : `Mã ${matched.code} chưa đủ điều kiện áp dụng cho đơn hàng hiện tại.`}`,
+    };
+  }
+
+  // Unlisted code: probe PLATFORM first, then narrow to FREESHIP / SHOP.
+  const platBd = await input.previewFn({ platformVoucherId: clean });
+  if (platBd && platBd.total_platform_voucher_discount_vnd > 0) {
+    return {
+      ok: true,
+      scope: "PLATFORM",
+      code: clean,
+      discountVnd: platBd.total_platform_voucher_discount_vnd,
+      message: `Đã áp dụng mã toàn sàn ${clean} (giảm ${formatVnd(platBd.total_platform_voucher_discount_vnd)}).`,
+    };
+  }
+
+  const platWarnings = extractVoucherWarningsForCode(platBd?.warnings, clean);
+  let scopeHint: "PLATFORM" | "FREESHIP" | "SHOP" | null = null;
+  for (const w of platWarnings) {
+    const lower = w.toLowerCase();
+    if (isHiddenOrUnavailableVoucherWarning(lower)) {
+      return { ok: false, message: GENERIC_UNKNOWN_VOUCHER_MESSAGE };
+    }
+    const hint = parseVoucherScopeHint(lower);
+    if (hint) {
+      scopeHint = hint;
+      break;
+    }
+  }
+  if (!scopeHint) {
+    const platCond = platWarnings.find((w) => isOrderConditionVoucherWarning(w.toLowerCase()));
+    if (platCond) {
+      return {
+        ok: false,
+        scope: "PLATFORM",
+        message: `Mã toàn sàn: ${translateVoucherReason(platCond)}`,
+      };
+    }
+  }
+
+  // Probe FREESHIP when hinted or when PLATFORM probe was inconclusive
+  let shipScopeHint: "PLATFORM" | "FREESHIP" | "SHOP" | null = null;
+  if (scopeHint === "FREESHIP" || !scopeHint) {
+    const shipBd = await input.previewFn({ freeshipVoucherId: clean });
+    if (shipBd && shipBd.total_freeship_discount_vnd > 0) {
+      return {
+        ok: true,
+        scope: "FREESHIP",
+        code: clean,
+        discountVnd: shipBd.total_freeship_discount_vnd,
+        message: `Đã áp dụng mã vận chuyển ${clean} (giảm ${formatVnd(shipBd.total_freeship_discount_vnd)}).`,
+      };
+    }
+    const shipWarnings = extractVoucherWarningsForCode(shipBd?.warnings, clean);
+    for (const w of shipWarnings) {
+      const lower = w.toLowerCase();
+      if (isHiddenOrUnavailableVoucherWarning(lower)) {
+        return { ok: false, message: GENERIC_UNKNOWN_VOUCHER_MESSAGE };
+      }
+      const hint = parseVoucherScopeHint(lower);
+      if (hint) {
+        shipScopeHint = hint;
+        break;
+      }
+    }
+    if (!shipScopeHint) {
+      const shipCond = shipWarnings.find((w) => isOrderConditionVoucherWarning(w.toLowerCase()));
+      if (shipCond) {
+        const lower = shipCond.toLowerCase();
+        if (isZeroDiscountVoucherWarning(lower)) {
+          const totalShipFee = input.shops.reduce((s, sh) => s + Math.max(0, sh.shippingFeeVnd), 0);
+          return {
+            ok: false,
+            scope: "FREESHIP",
+            message:
+              input.hasShippingEstimate && totalShipFee > 0
+                ? "Mã vận chuyển: Phí vận chuyển của đơn đã được hỗ trợ tối đa (0₫)."
+                : "Mã vận chuyển: Chưa có phí vận chuyển để áp dụng (hãy chọn địa chỉ giao hàng ở bước thanh toán).",
+          };
+        }
+        return {
+          ok: false,
+          scope: "FREESHIP",
+          message: `Mã vận chuyển: ${translateVoucherReason(shipCond)}`,
+        };
+      }
+    }
+  }
+
+  // Probe SHOP across all shops currently selected in cart/checkout
+  if (scopeHint === "SHOP" || shipScopeHint === "SHOP" || !scopeHint) {
+    const shopVoucherProbe: Record<string, string> = {};
+    for (const sh of input.shops) {
+      shopVoucherProbe[sh.shopId] = clean;
+    }
+    const shopBd = await input.previewFn({ shopVoucherIds: shopVoucherProbe });
+    const appliedShop = (shopBd?.shops ?? []).find((s) => s.shop_voucher_discount_vnd > 0);
+    if (appliedShop) {
+      const matchedShop = input.shops.find((s) => s.shopId === appliedShop.shop_id);
+      const shopLabel = matchedShop?.shopName ? ` ${matchedShop.shopName}` : "";
+      return {
+        ok: true,
+        scope: "SHOP",
+        shopId: appliedShop.shop_id,
+        code: clean,
+        discountVnd: appliedShop.shop_voucher_discount_vnd,
+        message: `Đã áp dụng mã gian hàng${shopLabel} (${clean}, giảm ${formatVnd(appliedShop.shop_voucher_discount_vnd)}).`,
+      };
+    }
+
+    const shopWarnings = extractVoucherWarningsForCode(shopBd?.warnings, clean).filter(
+      (w) => !w.toLowerCase().includes("does not belong to shop")
+    );
+    for (const w of shopWarnings) {
+      if (isHiddenOrUnavailableVoucherWarning(w.toLowerCase())) {
+        return { ok: false, message: GENERIC_UNKNOWN_VOUCHER_MESSAGE };
+      }
+    }
+    const shopCond = shopWarnings.find((w) => isOrderConditionVoucherWarning(w.toLowerCase()));
+    if (shopCond) {
+      return {
+        ok: false,
+        scope: "SHOP",
+        message: `Mã gian hàng: ${translateVoucherReason(shopCond)}`,
+      };
+    }
+  }
+
+  return { ok: false, message: GENERIC_UNKNOWN_VOUCHER_MESSAGE };
 }

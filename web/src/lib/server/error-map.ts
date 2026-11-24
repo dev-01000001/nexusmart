@@ -10,6 +10,9 @@ const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f]/g;
  */
 const KNOWN_PREFIXED_ERROR_CODES = new Set<string>([
   "IDEMPOTENCY_KEY_CONFLICT",
+  "CHECKOUT_FAILED",
+  "SHOP_PICKUP_ADDRESS_REQUIRED",
+  "OWNER_NAME_CHANGED",
   "INSUFFICIENT_STOCK",
   "SKU_INACTIVE",
   "SKU_NOT_ACTIVE",
@@ -41,7 +44,7 @@ const KNOWN_PREFIXED_ERROR_CODES = new Set<string>([
 ]);
 
 function normalizeDomainErrorCode(rawCode: string, rawMessage: string): string {
-  const prefixMatch = /^([A-Z][A-Z0-9_]+):/.exec(rawMessage.trim());
+  const prefixMatch = /^([A-Z][A-Z0-9_]+)(?:\s*\([^)]*\))?:/.exec(rawMessage.trim());
   if (prefixMatch && KNOWN_PREFIXED_ERROR_CODES.has(prefixMatch[1])) {
     return prefixMatch[1];
   }
@@ -257,6 +260,9 @@ export function toSafeVietnameseMessage(status: number, code: string, rawMessage
   ) {
     return "Tài khoản nhận tiền đang trong thời gian tạm khóa bảo mật 24 giờ sau khi thay đổi thông tin ngân hàng.";
   }
+  if (lower.includes("bank_account_id is required")) {
+    return "Thiếu mã bản ghi tài khoản ngân hàng cần thẩm định. Vui lòng tải lại trang và thử lại.";
+  }
   if (
     (status === 400 || code === "INVALID_ARGUMENT") &&
     (lower.includes("bank_account") || lower.includes("bank account"))
@@ -318,7 +324,24 @@ export function toSafeVietnameseMessage(status: number, code: string, rawMessage
     return "Thời điểm áp dụng biểu phí phải hợp lệ và không nằm ở quá khứ.";
   }
 
+  // Wave 3a: D6 optimistic review conflicts & D11 checkout failure / shop pickup address
+  if (code === "OWNER_NAME_CHANGED" || lower.includes("owner_name_changed")) {
+    return "Dữ liệu đã thay đổi — họ tên chủ gian hàng vừa được cập nhật. Vui lòng tải lại và kiểm tra trước khi phê duyệt.";
+  }
+  if (lower.includes("only pending_admin_review bank accounts can be reviewed")) {
+    return "Dữ liệu đã thay đổi — tài khoản ngân hàng này không còn ở trạng thái chờ duyệt. Vui lòng tải lại để xem bản ghi mới nhất.";
+  }
+  if (lower.includes("only pending shops can be reviewed")) {
+    return "Dữ liệu đã thay đổi — hồ sơ gian hàng này không còn ở trạng thái chờ duyệt. Vui lòng tải lại danh sách.";
+  }
+
   // Commerce domain mappings (prioritize normalized domain codes from services/order, promotion, product)
+  if (code === "CHECKOUT_FAILED") {
+    return "Lần đặt hàng trước không hoàn tất và các đơn liên quan đã bị hủy. Bạn có thể kiểm tra Đơn hàng của tôi hoặc thử đặt lại.";
+  }
+  if (code === "SHOP_PICKUP_ADDRESS_REQUIRED") {
+    return "Gian hàng chưa cấu hình đầy đủ địa chỉ lấy hàng hợp lệ nên chưa thể tính phí hoặc tạo vận đơn lúc này.";
+  }
   if (code === "IDEMPOTENCY_KEY_CONFLICT" || lower.includes("idempotency")) {
     return "Lần đặt trước có thể đã tạo đơn hàng rồi. Vui lòng kiểm tra mục Đơn hàng của tôi trước khi đặt lại.";
   }

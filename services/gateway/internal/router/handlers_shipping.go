@@ -418,6 +418,10 @@ func (h *handler) handleCalculateShippingFee(w http.ResponseWriter, r *http.Requ
 				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "one or more SKUs are invalid for this shop")
 				return
 			}
+			if !sk.GetIsActive() {
+				httpx.WriteError(w, r, http.StatusConflict, "SKU_INACTIVE", "sku "+skuID+" is not active")
+				return
+			}
 			if sk.GetPriceVnd() < 0 {
 				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "one or more SKUs have an invalid price")
 				return

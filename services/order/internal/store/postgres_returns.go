@@ -115,8 +115,10 @@ func (s *PostgresStore) TransitionReturnRequest(ctx context.Context, params Retu
 
 	q := s.queries.WithTx(tx)
 
-	// Non-locking peek to acquire locks in canonical order (orders first, then return_requests)
-	// when the transition also mutates the order row.
+	// Non-locking peek to acquire locks in canonical order (orders first, then return_requests).
+	// D9-bis §9: EVERY TransitionReturnRequest emits an outbox event keyed by order_id
+	// (COALESCE(NULLIF(payload_json->>'order_id',''), id)), so we MUST lock the orders row
+	// FOR UPDATE before inserting into outbox_events on all target statuses.
 	peek, err := q.GetReturnRequestByID(ctx, params.ReturnRequestID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -125,15 +127,7 @@ func (s *PostgresStore) TransitionReturnRequest(ctx context.Context, params Retu
 		return nil, err
 	}
 
-	mutatesOrder := params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_REFUNDING ||
-		params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_CLOSED
-
-	var ord db.Order
-	if mutatesOrder {
-		ord, err = q.GetOrderByIDForUpdate(ctx, peek.OrderID)
-	} else {
-		ord, err = q.GetOrderByID(ctx, peek.OrderID)
-	}
+	ord, err := q.GetOrderByIDForUpdate(ctx, peek.OrderID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -468,6 +462,22 @@ func (s *PostgresStore) SaveReturnShipmentInfo(ctx context.Context, params SaveR
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := s.queries.WithTx(tx)
+	// D9-bis §9: Non-locking peek then canonical lock order (orders FOR UPDATE -> return_requests FOR UPDATE)
+	// because SaveReturnShipmentInfo inserts an outbox event keyed by rr.OrderID.
+	peek, err := q.GetReturnRequestByID(ctx, params.ReturnRequestID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, ErrNotFound
+		}
+		return nil, false, err
+	}
+	ord, err := q.GetOrderByIDForUpdate(ctx, peek.OrderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, ErrNotFound
+		}
+		return nil, false, err
+	}
 	rr, err := q.GetReturnRequestByIDForUpdate(ctx, params.ReturnRequestID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -495,11 +505,7 @@ func (s *PostgresStore) SaveReturnShipmentInfo(ctx context.Context, params SaveR
 		}
 		updated = true
 		// P2-3: emit order.return_updated once return tracking code is persisted so notification delivers it to buyer.
-		var checkoutGroupID string
-		if ord, oErr := q.GetOrderByID(ctx, rr.OrderID); oErr == nil {
-			checkoutGroupID = ord.CheckoutGroupID
-		}
-		ob, obErr := buildReturnUpdatedOutbox(rr, checkoutGroupID, rr.Status, "Return shipping label created", "system", params.TraceID, params.Traceparent)
+		ob, obErr := buildReturnUpdatedOutbox(rr, ord.CheckoutGroupID, rr.Status, "Return shipping label created", "system", params.TraceID, params.Traceparent)
 		if obErr != nil {
 			return nil, false, obErr
 		}
@@ -580,12 +586,34 @@ func (s *PostgresStore) ApplyReturnShipmentUpdate(ctx context.Context, params Re
 		}
 	}
 
-	var rr db.ReturnRequest
+	// D9-bis §9: Non-locking peek then canonical lock order (orders FOR UPDATE -> return_requests FOR UPDATE)
+	// because ApplyReturnShipmentUpdate inserts an outbox event keyed by rr.OrderID.
+	var peek db.ReturnRequest
 	if strings.TrimSpace(params.ReturnRequestID) != "" {
-		rr, err = q.GetReturnRequestByIDForUpdate(ctx, strings.TrimSpace(params.ReturnRequestID))
+		peek, err = q.GetReturnRequestByID(ctx, strings.TrimSpace(params.ReturnRequestID))
 	} else {
-		rr, err = q.GetReturnRequestByOrderIDForUpdate(ctx, strings.TrimSpace(params.OrderID))
+		peek, err = q.GetReturnRequestByOrderID(ctx, strings.TrimSpace(params.OrderID))
 	}
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			if err := tx.Commit(ctx); err != nil {
+				return nil, err
+			}
+			return &ReturnShipmentUpdateOutcome{NotFound: true}, nil
+		}
+		return nil, err
+	}
+	ord, err := q.GetOrderByIDForUpdate(ctx, peek.OrderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			if err := tx.Commit(ctx); err != nil {
+				return nil, err
+			}
+			return &ReturnShipmentUpdateOutcome{NotFound: true}, nil
+		}
+		return nil, err
+	}
+	rr, err := q.GetReturnRequestByIDForUpdate(ctx, peek.ID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			if err := tx.Commit(ctx); err != nil {
@@ -750,11 +778,7 @@ func (s *PostgresStore) ApplyReturnShipmentUpdate(ctx context.Context, params Re
 		return nil, err
 	}
 
-	var checkoutGroupID string
-	if ord, oErr := q.GetOrderByID(ctx, rr.OrderID); oErr == nil {
-		checkoutGroupID = ord.CheckoutGroupID
-	}
-	ob, err := buildReturnUpdatedOutbox(updatedRR, checkoutGroupID, prevStatusStr, note, "system", params.TraceID, params.Traceparent)
+	ob, err := buildReturnUpdatedOutbox(updatedRR, ord.CheckoutGroupID, prevStatusStr, note, "system", params.TraceID, params.Traceparent)
 	if err != nil {
 		return nil, err
 	}

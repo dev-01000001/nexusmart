@@ -471,6 +471,45 @@ describe("Wave 2a web features — unit tests", () => {
     const noteTimeout = orderMetaMod.localizeTimelineNote("seller_confirm_timeout");
     assert.ok(!/seller_confirm_timeout/i.test(noteTimeout), `must localize timeout: ${noteTimeout}`);
 
+    // R11: payment timeout & FAILED cancel_reason localization + wiring in buyer & seller order detail
+    assert.equal(
+      orderMetaMod.localizeTimelineNote("payment_timeout_expired"),
+      "Đơn hàng tự động hủy do quá hạn thanh toán."
+    );
+    assert.equal(
+      orderMetaMod.localizeTimelineNote("Payment expired after timeout"),
+      "Đơn hàng tự động hủy do quá hạn thanh toán."
+    );
+    assert.equal(
+      orderMetaMod.localizeTimelineNote("payment expired"),
+      "Đơn hàng tự động hủy do quá hạn thanh toán."
+    );
+    assert.equal(
+      orderMetaMod.localizeTimelineNote("FAILED"),
+      "Đơn hàng bị hủy do thanh toán không thành công."
+    );
+    assert.equal(
+      orderMetaMod.localizeTimelineNote("failed delivery attempt"),
+      "failed delivery attempt",
+      "exact FAILED match must not match unrelated prose"
+    );
+    const buyerDetailSrc = readFileSync(
+      resolve(WEB_SRC, "features/account/OrderDetailClient.tsx"),
+      "utf8"
+    );
+    assert.ok(
+      buyerDetailSrc.includes("localizeTimelineNote(order.cancel_reason)"),
+      "OrderDetailClient must pass order.cancel_reason through localizeTimelineNote"
+    );
+    const sellerOrderDetailSrc = readFileSync(
+      resolve(WEB_SRC, "app/(seller)/seller/don-hang/[id]/page.tsx"),
+      "utf8"
+    );
+    assert.ok(
+      sellerOrderDetailSrc.includes("localizeTimelineNote(order.cancel_reason)"),
+      "Seller order detail must pass order.cancel_reason through localizeTimelineNote"
+    );
+
     const noteSellerRetRecv = orderMetaMod.localizeTimelineNote(
       "Seller confirmed return goods received"
     );

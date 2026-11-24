@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export PATH="$HOME/.local/bin:$HOME/go/bin:$HOME/.cargo/bin:$PATH"
+export PROTOC="${PROTOC:-$HOME/.local/bin/protoc}"
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="${COVERAGE_TARGET:-60}"
 ENFORCE="${COVERAGE_ENFORCE:-0}"
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
 
 # Summarize a Go coverprofile: prints total%, effective% (excluding generated db/cmd),
 # and top 5 largest uncovered files by missed statements.
@@ -93,19 +94,73 @@ if [[ "${1:-}" == "--summarize-go-profile" ]]; then
 	exit 0
 fi
 
-# Report top 5 largest production Rust source files in services/payment/src/ (excluding #[cfg(test)]).
+trim_ws() {
+	local v="$1"
+	v="${v#"${v%%[![:space:]]*}"}"
+	v="${v%"${v##*[![:space:]]}"}"
+	printf '%s' "$v"
+}
+
+assert_no_rust_skips() {
+	local out="$1"
+	if grep -Eq 'test result:.*; [1-9][0-9]* ignored;' <<<"$out" \
+		|| grep -Eiq 'skipping.*TEST_PAYMENT_DB_URL|TEST_PAYMENT_DB_URL not set' <<<"$out"; then
+		echo "$out" >&2
+		echo "ERROR: Postgres test(s) were skipped/ignored in services/payment" >&2
+		exit 1
+	fi
+}
+
+# Share ephemeral Postgres from scripts/test-db.sh so SQL/Postgres integration tests are included in coverage.
+if [[ "${1:-}" == "--with-db" ]]; then
+	shift
+elif [[ -z "$(trim_ws "${TEST_ORDER_DB_URL:-}")" || -z "$(trim_ws "${TEST_PROMOTION_DB_URL:-}")" || -z "$(trim_ws "${TEST_PAYMENT_DB_URL:-}")" ]]; then
+	exec bash "$ROOT_DIR/scripts/test-db.sh" --run bash "$0" --with-db "$@"
+fi
+
+for var in TEST_ORDER_DB_URL TEST_PROMOTION_DB_URL TEST_PAYMENT_DB_URL; do
+	if [[ -z "$(trim_ws "${!var:-}")" ]]; then
+		echo "ERROR: ${var} must be set and non-empty (run without --with-db to start ephemeral Postgres)" >&2
+		exit 1
+	fi
+done
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+# Report top 5 largest production Rust source files in services/payment/src/ (excluding #[cfg(test)] mod tests).
 report_rust_largest_files() {
 	local src_dir="$1"
 	echo "    Top 5 largest production Rust files (production LOC vs unit-test blocks):"
 	awk '
 	FNR == 1 {
 		in_test = 0
+		pending_cfg_test = 0
 		file = FILENAME
 		sub(/^.*services\/payment\//, "services/payment/", file)
 		files[++n] = file
 	}
-	/^[[:space:]]*#\[cfg\(test\)\]/ { in_test = 1 }
 	{
+		if (!in_test) {
+			if (pending_cfg_test) {
+				if ($0 ~ /^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?mod[[:space:]]+tests([[:space:]]*\{|[[:space:]]*;)/) {
+					in_test = 1
+					test_loc[file]++
+					pending_cfg_test = 0
+				} else if ($0 !~ /^[[:space:]]*$/ && $0 !~ /^[[:space:]]*\/\// && $0 !~ /^[[:space:]]*#\[/) {
+					prod_loc[file]++
+					pending_cfg_test = 0
+				}
+			}
+			if (!in_test && $0 ~ /^[[:space:]]*#\[cfg\(test\)\]/) {
+				if ($0 ~ /mod[[:space:]]+tests([[:space:]]*\{|[[:space:]]*;)/) {
+					in_test = 1
+				} else {
+					pending_cfg_test = 1
+					next
+				}
+			}
+		}
 		if (in_test) {
 			test_loc[file]++
 		} else if ($0 !~ /^[[:space:]]*$/ && $0 !~ /^[[:space:]]*\/\//) {
@@ -133,7 +188,17 @@ below=0
 
 for svc in order promotion; do
 	cov_file="$TMP_DIR/${svc}.cov"
-	(cd "$ROOT_DIR/services/$svc" && go test -coverpkg=./... -coverprofile="$cov_file" ./... >/dev/null)
+	go_log="$TMP_DIR/${svc}.log"
+	if ! (cd "$ROOT_DIR/services/$svc" && go test -v -p 1 -count=1 -coverpkg=./... -coverprofile="$cov_file" ./... >"$go_log" 2>&1); then
+		cat "$go_log" >&2
+		exit 1
+	fi
+	if grep -qE '^[[:space:]]*--- SKIP:' "$go_log"; then
+		cat "$go_log" >&2
+		echo "ERROR: test(s) were SKIPPED during coverage in services/$svc:" >&2
+		grep -E '^[[:space:]]*--- SKIP:' "$go_log" >&2
+		exit 1
+	fi
 	out="$(summarize_go_profile "$svc" "$cov_file" "$TARGET")"
 	echo "$out"
 	if grep -q '\[BELOW_TARGET\]' <<<"$out"; then
@@ -143,7 +208,11 @@ done
 
 # Rust payment coverage: use whichever local coverage tool is installed (no new deps).
 if (cd "$ROOT_DIR/services/payment" && cargo llvm-cov --version >/dev/null 2>&1); then
-	rust_summary="$(cd "$ROOT_DIR/services/payment" && cargo llvm-cov --summary-only 2>&1)"
+	if ! rust_summary="$(cd "$ROOT_DIR/services/payment" && cargo llvm-cov --summary-only -- --nocapture 2>&1)"; then
+		echo "$rust_summary" >&2
+		exit 1
+	fi
+	assert_no_rust_skips "$rust_summary"
 	rust_pct="$(awk '/^TOTAL/ { for (i=NF; i>=1; i--) if ($i ~ /%$/) { sub(/%/, "", $i); print $i; exit } }' <<<"$rust_summary")"
 	rust_status="$(awk -v p="${rust_pct:-0}" -v t="$TARGET" 'BEGIN { print (p + 0 >= t + 0) ? "PASS" : "BELOW_TARGET" }')"
 	printf "  %-10s total=%s%% (cargo-llvm-cov) | target=%s%% [%s]\n" "payment" "${rust_pct:-0.0}" "$TARGET" "$rust_status"
@@ -152,7 +221,11 @@ if (cd "$ROOT_DIR/services/payment" && cargo llvm-cov --version >/dev/null 2>&1)
 		report_rust_largest_files "$ROOT_DIR/services/payment/src"
 	fi
 elif (cd "$ROOT_DIR/services/payment" && cargo tarpaulin --version >/dev/null 2>&1); then
-	rust_summary="$(cd "$ROOT_DIR/services/payment" && cargo tarpaulin --skip-clean --out Stdout 2>&1)"
+	if ! rust_summary="$(cd "$ROOT_DIR/services/payment" && cargo tarpaulin --skip-clean --out Stdout -- --nocapture 2>&1)"; then
+		echo "$rust_summary" >&2
+		exit 1
+	fi
+	assert_no_rust_skips "$rust_summary"
 	rust_pct="$(awk '/coverage/ { for (i=1; i<=NF; i++) if ($i ~ /%$/) { sub(/%/, "", $i); print $i; exit } }' <<<"$rust_summary")"
 	rust_status="$(awk -v p="${rust_pct:-0}" -v t="$TARGET" 'BEGIN { print (p + 0 >= t + 0) ? "PASS" : "BELOW_TARGET" }')"
 	printf "  %-10s total=%s%% (cargo-tarpaulin) | target=%s%% [%s]\n" "payment" "${rust_pct:-0.0}" "$TARGET" "$rust_status"
@@ -161,7 +234,11 @@ elif (cd "$ROOT_DIR/services/payment" && cargo tarpaulin --version >/dev/null 2>
 		report_rust_largest_files "$ROOT_DIR/services/payment/src"
 	fi
 else
-	test_out="$(cd "$ROOT_DIR/services/payment" && cargo test 2>&1)"
+	if ! test_out="$(cd "$ROOT_DIR/services/payment" && cargo test -- --nocapture 2>&1)"; then
+		echo "$test_out" >&2
+		exit 1
+	fi
+	assert_no_rust_skips "$test_out"
 	passed_count="$(awk '/test result: ok\./ { sum += $4 } END { print sum + 0 }' <<<"$test_out")"
 	printf "  %-10s total=N/A (cargo test: %s passed; no local cargo-llvm-cov/cargo-tarpaulin installed) | target=%s%% [UNMEASURED]\n" \
 		"payment" "$passed_count" "$TARGET"

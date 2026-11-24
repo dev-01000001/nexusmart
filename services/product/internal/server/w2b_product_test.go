@@ -408,6 +408,12 @@ func TestW2B_SKUPriceHistory_MinPrice30d_FakeClock(t *testing.T) {
 	}
 	prodID := prod.GetProduct().GetId()
 	skuID := prod.GetProduct().GetSkus()[0].GetId()
+	if _, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+		ProductId: prodID,
+		Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
+	}); err != nil {
+		t.Fatalf("AdminReviewProduct approve: %v", err)
+	}
 	if got := prod.GetProduct().GetSkus()[0].GetMinPrice_30DVnd(); got != 100000 {
 		t.Fatalf("Day 0 CreateProduct min_price_30d_vnd = %d, want 100000", got)
 	}
@@ -572,6 +578,12 @@ func TestW2B_GetCategoryDescendants_And_FeeSchedules_FakeClock(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateProduct: %v", err)
+	}
+	if _, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+		ProductId: prod.GetProduct().GetId(),
+		Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
+	}); err != nil {
+		t.Fatalf("AdminReviewProduct approve: %v", err)
 	}
 	skuID := prod.GetProduct().GetSkus()[0].GetId()
 

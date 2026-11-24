@@ -346,3 +346,93 @@ func TestVoucherExpiryJob_R3_SkipsBudgetExhaustedVoucher(t *testing.T) {
 		t.Fatalf("budget-exhausted voucher must NOT trigger expiry notice, got sent=%d msgs=%d err=%v", sent, len(pub.Messages()), err)
 	}
 }
+
+func TestVoucherExpiryJob_W3A_SkipsUsersWhoExhaustedPerUserLimit(t *testing.T) {
+	ctx := context.Background()
+	mem := store.NewMemoryStore()
+	pub := &recordingEventPublisher{}
+	log := logger.New("promo-job-peruser-test", logger.WithWriter(io.Discard))
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+
+	vLim1, err := mem.CreateVoucher(ctx, domain.Voucher{
+		Code: "LIM1EXP", Name: "PerUser 1", Scope: domain.VoucherScopePlatform,
+		DiscountType: domain.DiscountTypeFixed, ValueVND: 15000,
+		Quota: 10, PerUserLimit: 1,
+		StartsAt: now.Add(-time.Hour), EndsAt: now.Add(6 * time.Hour),
+		IsActive: true, Status: domain.VoucherStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vLim2, err := mem.CreateVoucher(ctx, domain.Voucher{
+		Code: "LIM2EXP", Name: "PerUser 2", Scope: domain.VoucherScopePlatform,
+		DiscountType: domain.DiscountTypeFixed, ValueVND: 15000,
+		Quota: 10, PerUserLimit: 2,
+		StartsAt: now.Add(-time.Hour), EndsAt: now.Add(6 * time.Hour),
+		IsActive: true, Status: domain.VoucherStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// buyer-exhausted saves & uses vLim1 (1/1 -> MUST NOT be notified)
+	_, _ = mem.SaveUserVoucher(ctx, "buyer-exhausted", vLim1.ID)
+	if _, _, err := mem.CommitReservation(ctx, domain.PromotionReservation{
+		OrderID:  "ord-exh-1",
+		UserID:   "buyer-exhausted",
+		Vouchers: []domain.ReservedVoucher{{VoucherID: vLim1.ID, Scope: vLim1.Scope, DiscountVND: 15000}},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// buyer-released saves, uses vLim1, then releases -> 0/1 -> MUST be notified!
+	_, _ = mem.SaveUserVoucher(ctx, "buyer-released", vLim1.ID)
+	if _, _, err := mem.CommitReservation(ctx, domain.PromotionReservation{
+		OrderID:  "ord-rel-1",
+		UserID:   "buyer-released",
+		Vouchers: []domain.ReservedVoucher{{VoucherID: vLim1.ID, Scope: vLim1.Scope, DiscountVND: 15000}},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mem.ReleaseReservation(ctx, "ord-rel-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// buyer-partial saves & uses vLim2 once (1/2 -> MUST be notified)
+	_, _ = mem.SaveUserVoucher(ctx, "buyer-partial", vLim2.ID)
+	if _, _, err := mem.CommitReservation(ctx, domain.PromotionReservation{
+		OrderID:  "ord-part-1",
+		UserID:   "buyer-partial",
+		Vouchers: []domain.ReservedVoucher{{VoucherID: vLim2.ID, Scope: vLim2.Scope, DiscountVND: 15000}},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	job := events.NewVoucherExpiryJob(mem, pub, 24*time.Hour, log)
+	job.SetClock(func() time.Time { return now })
+	sent, err := job.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	notified := make(map[string]bool)
+	for _, m := range pub.Messages() {
+		var env events.Envelope
+		_ = json.Unmarshal(m.Data, &env)
+		var p events.VoucherExpiringPayload
+		_ = json.Unmarshal(env.Payload, &p)
+		notified[p.UserID+":"+p.VoucherID] = true
+	}
+	if notified["buyer-exhausted:"+vLim1.ID] {
+		t.Fatalf("buyer-exhausted already reached per_user_limit=1 and must NOT be notified")
+	}
+	if !notified["buyer-released:"+vLim1.ID] {
+		t.Fatalf("buyer-released had reservation released (0/1) and MUST be notified, got %v", notified)
+	}
+	if !notified["buyer-partial:"+vLim2.ID] {
+		t.Fatalf("buyer-partial used 1/2 and MUST be notified, got %v", notified)
+	}
+	if sent != 2 {
+		t.Fatalf("expected exactly 2 notifications, got sent=%d notified=%v", sent, notified)
+	}
+}

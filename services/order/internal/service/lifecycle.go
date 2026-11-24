@@ -652,6 +652,15 @@ func (s *OrderService) SellerShipOrder(ctx context.Context, req *orderv1.SellerS
 		}
 	}
 
+	totalWeight, itemsSummary := summarizeOrderParcel(agg.Items)
+	toAddr := orderAddressToShipmentAddress(agg.Order.ShippingAddressJSON)
+	// Resolve the shop's configured pickup address BEFORE marking pending_shipment_cancel so a shop
+	// missing a pickup address fails clearly without mutating or locking the existing order.
+	fromAddr, err := s.resolveShopPickupAddress(ctx, agg.Order.ShopID)
+	if err != nil {
+		return nil, err
+	}
+
 	// Mark durable shipment-creation intent (with fresh TTL timestamp + attempt token) before calling ShippingService
 	// so even a crash or concurrent cancel cannot leave an uncancelled orphan shipment behind.
 	// Retrying SellerShipOrder refreshes pending_shipment_cancel_at; CANCELLED orders fail immediately under FOR UPDATE.
@@ -674,10 +683,6 @@ func (s *OrderService) SellerShipOrder(ctx context.Context, req *orderv1.SellerS
 	if statemachine.StringToPaymentMethod(agg.Order.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
 		codAmountVND = agg.Order.TotalPayableVND
 	}
-
-	totalWeight, itemsSummary := summarizeOrderParcel(agg.Items)
-	toAddr := orderAddressToShipmentAddress(agg.Order.ShippingAddressJSON)
-	fromAddr := s.resolveShopPickupAddress(ctx, agg.Order.ShopID, toAddr)
 
 	// Guard against a stalled context/goroutine waking up past PendingShipmentCancelTTL before calling CreateShipment.
 	if ctx.Err() != nil || s.nowFn().Sub(markedAt) > store.PendingShipmentCancelTTL {
@@ -784,55 +789,53 @@ func stripServiceAuth(ctx context.Context) context.Context {
 	return ctx
 }
 
-func (s *OrderService) resolveShopPickupAddress(ctx context.Context, shopID string, fallback *shippingv1.ShipmentAddress) *shippingv1.ShipmentAddress {
-	res := &shippingv1.ShipmentAddress{
-		Name:          "Shop " + shopID,
-		Phone:         "0900000000",
-		ProvinceCode:  fallback.GetProvinceCode(),
-		WardCode:      fallback.GetWardCode(),
-		StreetAddress: "Pickup Warehouse",
-	}
+// resolveShopPickupAddress loads the shop's configured pickup address from UserService.
+// It NEVER falls back to the buyer's shipping address: missing or incomplete shop pickup configuration
+// returns FailedPrecondition with code SHOP_PICKUP_ADDRESS_REQUIRED.
+func (s *OrderService) resolveShopPickupAddress(ctx context.Context, shopID string) (*shippingv1.ShipmentAddress, error) {
 	if s.clients.User == nil {
-		return res
+		return nil, status.Errorf(codes.FailedPrecondition, "SHOP_PICKUP_ADDRESS_REQUIRED: user service unavailable for shop %s", shopID)
 	}
 	shopResp, err := s.clients.User.GetShop(stripServiceAuth(ctx), &userv1.GetShopRequest{ShopId: shopID})
-	if err != nil || shopResp.GetShop() == nil {
-		return res
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, status.Errorf(codes.FailedPrecondition, "SHOP_PICKUP_ADDRESS_REQUIRED: shop %s not found", shopID)
+		}
+		return nil, fmt.Errorf("resolve shop %s for pickup address: %w", shopID, err)
 	}
 	shop := shopResp.GetShop()
-	if shop.GetName() != "" {
-		res.Name = shop.GetName()
+	if shop == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "SHOP_PICKUP_ADDRESS_REQUIRED: shop %s not found", shopID)
 	}
-	if shop.GetContactPhone() != "" {
-		res.Phone = shop.GetContactPhone()
+	pickupID := strings.TrimSpace(shop.GetPickupAddressId())
+	ownerID := strings.TrimSpace(shop.GetOwnerUserId())
+	if pickupID == "" || ownerID == "" {
+		return nil, status.Errorf(codes.FailedPrecondition, "SHOP_PICKUP_ADDRESS_REQUIRED: shop %s has no pickup address configured", shopID)
 	}
-	if shop.GetPickupAddressId() == "" || shop.GetOwnerUserId() == "" {
-		return res
-	}
+
 	addrResp, err := s.clients.User.GetAddress(clients.WithInternalAdminContext(ctx), &userv1.GetAddressRequest{
-		UserId:    shop.GetOwnerUserId(),
-		AddressId: shop.GetPickupAddressId(),
+		UserId:    ownerID,
+		AddressId: pickupID,
 	})
-	if err != nil || addrResp.GetAddress() == nil {
-		return res
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, status.Errorf(codes.FailedPrecondition, "SHOP_PICKUP_ADDRESS_REQUIRED: pickup address %s for shop %s not found", pickupID, shopID)
+		}
+		return nil, fmt.Errorf("resolve pickup address %s for shop %s: %w", pickupID, shopID, err)
 	}
 	a := addrResp.GetAddress()
-	if a.GetRecipientName() != "" {
-		res.Name = a.GetRecipientName()
+	if a == nil || strings.TrimSpace(a.GetProvinceCode()) == "" {
+		return nil, status.Errorf(codes.FailedPrecondition, "SHOP_PICKUP_ADDRESS_REQUIRED: pickup address for shop %s is missing province_code", shopID)
 	}
-	if a.GetRecipientPhone() != "" {
-		res.Phone = a.GetRecipientPhone()
+
+	res := &shippingv1.ShipmentAddress{
+		Name:          fallbackStr(strings.TrimSpace(a.GetRecipientName()), fallbackStr(strings.TrimSpace(shop.GetName()), "Shop "+shopID)),
+		Phone:         fallbackStr(strings.TrimSpace(a.GetRecipientPhone()), strings.TrimSpace(shop.GetContactPhone())),
+		ProvinceCode:  strings.TrimSpace(a.GetProvinceCode()),
+		WardCode:      strings.TrimSpace(a.GetWardCode()),
+		StreetAddress: strings.TrimSpace(a.GetStreetAddress()),
 	}
-	if a.GetProvinceCode() != "" {
-		res.ProvinceCode = a.GetProvinceCode()
-	}
-	if a.GetWardCode() != "" {
-		res.WardCode = a.GetWardCode()
-	}
-	if a.GetStreetAddress() != "" {
-		res.StreetAddress = a.GetStreetAddress()
-	}
-	return res
+	return res, nil
 }
 
 // completeDeliveredOrder is the single shared completion path for BuyerConfirmReceived and the 7-day auto-complete job.

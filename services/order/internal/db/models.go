@@ -116,15 +116,18 @@ type OrderTimelineEvent struct {
 }
 
 type OutboxEvent struct {
-	ID          string     `json:"id"`
-	EventType   string     `json:"event_type"`
-	TraceID     string     `json:"trace_id"`
-	Traceparent string     `json:"traceparent"`
-	PayloadJSON []byte     `json:"payload_json"`
-	PublishedAt *time.Time `json:"published_at"`
-	Attempts    int32      `json:"attempts"`
-	LastError   string     `json:"last_error"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID           string     `json:"id"`
+	EventType    string     `json:"event_type"`
+	TraceID      string     `json:"trace_id"`
+	Traceparent  string     `json:"traceparent"`
+	PayloadJSON  []byte     `json:"payload_json"`
+	PublishedAt  *time.Time `json:"published_at"`
+	Attempts     int32      `json:"attempts"`
+	LastError    string     `json:"last_error"`
+	CreatedAt    time.Time  `json:"created_at"`
+	Seq          int64      `json:"seq"`
+	ClaimedUntil *time.Time `json:"claimed_until"`
+	ClaimToken   string     `json:"claim_token"`
 }
 
 type ProcessedEvent struct {

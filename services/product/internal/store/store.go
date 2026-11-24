@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -96,15 +98,37 @@ type SKUPriceHistoryEntry struct {
 }
 
 type OutboxEvent struct {
-	ID          string
-	EventType   string
-	TraceID     string
-	Traceparent string
-	PayloadJSON []byte
-	PublishedAt *time.Time
-	Attempts    int32
-	LastError   string
-	CreatedAt   time.Time
+	ID           string
+	EventType    string
+	AggregateID  string
+	TraceID      string
+	Traceparent  string
+	PayloadJSON  []byte
+	PublishedAt  *time.Time
+	Attempts     int32
+	LastError    string
+	CreatedAt    time.Time
+	Seq          int64
+	ClaimedUntil *time.Time
+	ClaimToken   string
+}
+
+// OutboxAggregateKey returns the ordering key for an outbox event (explicit AggregateID,
+// falling back to payload_json.product_id for legacy/test events).
+func OutboxAggregateKey(ev OutboxEvent) string {
+	if id := strings.TrimSpace(ev.AggregateID); id != "" {
+		return id
+	}
+	if len(ev.PayloadJSON) == 0 {
+		return ""
+	}
+	var payload struct {
+		ProductID string `json:"product_id"`
+	}
+	if err := json.Unmarshal(ev.PayloadJSON, &payload); err == nil {
+		return strings.TrimSpace(payload.ProductID)
+	}
+	return ""
 }
 
 type Product struct {
@@ -200,6 +224,7 @@ type ListProductsFilter struct {
 	PublicOnly  bool
 	MinPriceVND int64
 	MaxPriceVND int64
+	SKUIDs      []string
 	SortBy      string
 	Limit       int32
 	Offset      int32

@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     }
     return NextResponse.json(
       { error: { code: "INVALID_JSON", message: "Thông tin yêu cầu không hợp lệ." } },
-      { status: 400 }
+      { status: 400, headers: { "Cache-Control": "no-store" } }
     );
   }
   const body = parsed.data;

@@ -62,7 +62,9 @@ export function AdminProductModerationTab({ initialQuery = "", onPendingCountCha
           page_size: 100,
           total: 0,
         })),
-        api<{ categories: GatewayCategory[] }>("categories").catch(() => ({ categories: [] })),
+        api<{ categories: GatewayCategory[] }>("admin/categories").catch(() => ({
+          categories: [],
+        })),
       ]);
       const items = prodRes.items ?? [];
       setProducts(items);

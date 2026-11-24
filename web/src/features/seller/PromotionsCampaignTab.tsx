@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState } from "react";
-import type { CampaignSlotKind, Product } from "@/data";
+import type { Product } from "@/data";
+import type { CampaignSlotKind } from "@/data/seller";
 import { Button } from "@/components";
 import { formatInt } from "@/lib/format";
 import { registerSellerCampaignSlot, useSellerSession } from "./sellerStore";

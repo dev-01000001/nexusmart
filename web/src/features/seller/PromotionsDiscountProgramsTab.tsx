@@ -586,8 +586,8 @@ export function PromotionsDiscountProgramsTab({
                         <input
                           id={`dp-price-${idx}`}
                           type="number"
-                          step={1000}
-                          min={1000}
+                          step={1}
+                          min={1}
                           className={common.textInput}
                           value={row.discounted_price_vnd}
                           onChange={(e) =>

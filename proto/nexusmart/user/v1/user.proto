@@ -289,6 +289,8 @@ message AdminReviewShopRequest {
   string shop_id = 2;
   ReviewDecision decision = 3;
   string reason = 4;
+  // Optional snapshot of owner full_name observed by admin; if set and different from current full_name on APPROVE, returns FailedPrecondition (OWNER_NAME_CHANGED) (D6).
+  string expected_owner_name = 5;
 }
 
 message AdminReviewShopResponse {
@@ -471,6 +473,7 @@ message GetShopBankAccountResponse {
 
 message AdminReviewShopBankAccountRequest {
   string shop_id = 1;
+  // Required (D6): ID of the specific PENDING_ADMIN_REVIEW bank account row reviewed by admin (empty -> InvalidArgument; row no longer pending -> FailedPrecondition).
   string bank_account_id = 2;
   // Valid values: REVIEW_DECISION_APPROVE or REVIEW_DECISION_REJECT.
   ReviewDecision decision = 3;

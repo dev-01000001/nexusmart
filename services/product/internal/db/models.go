@@ -33,15 +33,19 @@ type CategoryFeeSchedule struct {
 }
 
 type OutboxEvent struct {
-	ID          string
-	EventType   string
-	TraceID     string
-	Traceparent string
-	PayloadJson []byte
-	PublishedAt *time.Time
-	Attempts    int32
-	LastError   string
-	CreatedAt   time.Time
+	ID           string
+	EventType    string
+	TraceID      string
+	Traceparent  string
+	PayloadJson  []byte
+	PublishedAt  *time.Time
+	Attempts     int32
+	LastError    string
+	CreatedAt    time.Time
+	AggregateID  string
+	Seq          int64
+	ClaimedUntil *time.Time
+	ClaimToken   string
 }
 
 type Product struct {

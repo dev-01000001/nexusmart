@@ -30,7 +30,6 @@ type Querier interface {
 	GetAddressByID(ctx context.Context, id string) (Address, error)
 	GetLatestShopBankAccountByShopID(ctx context.Context, arg GetLatestShopBankAccountByShopIDParams) (ShopBankAccount, error)
 	GetPasswordResetByHashForUpdate(ctx context.Context, tokenHash string) (PasswordReset, error)
-	GetPendingAdminReviewShopBankAccountByShopIDForUpdate(ctx context.Context, shopID string) (ShopBankAccount, error)
 	GetPendingOTPShopBankAccountForUpdate(ctx context.Context, shopID string) (ShopBankAccount, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (RefreshToken, error)
 	GetShopBankAccountByIDForUpdate(ctx context.Context, id string) (ShopBankAccount, error)

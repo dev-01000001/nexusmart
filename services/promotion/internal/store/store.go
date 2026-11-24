@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,11 +35,17 @@ var (
 	ErrVoucherNotEligibleForCommit     = errors.New("voucher inactive, expired, out of quota, or budget exhausted")
 	ErrFlashNotEligibleForCommit       = errors.New("flash sale item not approved, outside active window, or sold out")
 	ErrShopProgramNotEligibleForCommit = errors.New("shop discount program ended, outside active window, or item mismatch")
+	ErrVoucherUserLimitExceeded        = errors.New("voucher per-user limit exceeded")
+	ErrFlashUserLimitExceeded          = errors.New("flash sale item per-user limit exceeded")
+	ErrShopProgramUserLimitExceeded    = errors.New("shop discount program item per-user limit exceeded")
+	ErrReservedCoinReferenceID         = errors.New("coin reference_id uses a reserved internal prefix")
+	ErrCoinLedgerConflict              = errors.New("coin ledger reference conflict")
 )
 
 const voucherSelectColumns = `id, code, name, scope, shop_id, discount_type, value_vnd, discount_percent,
 	max_discount_vnd, min_order_vnd, quota, used_count, per_user_limit,
 	budget_vnd, used_budget_vnd, starts_at, ends_at, is_active, status, category_ids, deleted_at,
+	rules_version, redis_sync_version, redis_synced_version,
 	created_by, created_at, updated_at`
 
 const flashItemSelectColumns = `fsi.id, fsi.flash_sale_id, fsi.shop_id, fsi.sku_id, fsi.original_price_vnd, fsi.flash_price_vnd,
@@ -52,11 +61,16 @@ type Store interface {
 	CreateVoucher(ctx context.Context, v domain.Voucher) (*domain.Voucher, error)
 	GetVoucherByID(ctx context.Context, id string) (*domain.Voucher, error)
 	GetVoucherByIDOrCode(ctx context.Context, idOrCode string) (*domain.Voucher, error)
-	UpdateVoucher(ctx context.Context, id string, mutate func(cur *domain.Voucher) error) (before *domain.Voucher, after *domain.Voucher, err error)
+	UpdateVoucher(ctx context.Context, id string, mutate func(cur *domain.Voucher, hasActiveReservation bool) error) (*domain.Voucher, error)
 	SetVoucherStatus(ctx context.Context, id, newStatus string, check func(cur *domain.Voucher) error) (*domain.Voucher, error)
 	DeleteVoucher(ctx context.Context, id string, check func(cur *domain.Voucher) error) (alreadyDeleted bool, err error)
+	SyncVoucherRedis(ctx context.Context, voucherID string, skipLocked bool, syncFn func(ctx context.Context, v *domain.Voucher) error) (synced bool, err error)
+	ReconcilePendingVouchers(ctx context.Context, limit int, syncFn func(ctx context.Context, v *domain.Voucher) error) (reconciled int, err error)
 	ListVouchers(ctx context.Context, shopID, scope string) ([]domain.Voucher, error)
 	ListAllVouchers(ctx context.Context) ([]domain.Voucher, error)
+	ListActiveVouchers(ctx context.Context, now time.Time) ([]domain.Voucher, error)
+	GetUserUsageBatch(ctx context.Context, userID string, targets []UserUsageKey) (map[UserUsageKey]int32, error)
+	SyncUserUsageRedis(ctx context.Context, kind, targetID, userID string, skipLocked bool, syncFn func(ctx context.Context, usedQty int32) error) (synced bool, err error)
 	SaveUserVoucher(ctx context.Context, userID, voucherID string) (alreadySaved bool, err error)
 	GetUserSavedVoucherIDs(ctx context.Context, userID string) (map[string]bool, error)
 	ProcessExpiringSavedVouchers(ctx context.Context, now time.Time, horizon time.Duration, batchSize int, notifyFn func(ctx context.Context, item domain.ExpiringSavedVoucher) error) (sent int, scanned int, err error)
@@ -67,10 +81,12 @@ type Store interface {
 	RegisterFlashSaleItem(ctx context.Context, item domain.FlashSaleItem, now time.Time) (*domain.FlashSaleItem, error)
 	ApproveFlashSaleItem(ctx context.Context, itemID, adminID string, approve bool, reason string, originalPriceVND int64, now time.Time) (item *domain.FlashSaleItem, prevStatus string, err error)
 	GetFlashSaleItem(ctx context.Context, itemID string) (*domain.FlashSaleItem, error)
+	SyncFlashItemRedis(ctx context.Context, itemID string, skipLocked bool, syncFn func(ctx context.Context, item *domain.FlashSaleItem) error) (synced bool, err error)
 	ListFlashSales(ctx context.Context, now time.Time, includeUpcoming bool) ([]domain.FlashSale, error)
 	ListAllFlashSales(ctx context.Context, now time.Time, statusFilter string, page, pageSize int32) ([]domain.FlashSale, int64, error)
 	ListFlashSaleItems(ctx context.Context, statusFilter, flashSaleID, shopID string, page, pageSize int32) ([]domain.FlashSaleItem, int64, error)
 	ListApprovedFlashSaleItems(ctx context.Context) ([]domain.FlashSaleItem, error)
+	ListActiveApprovedFlashSaleItems(ctx context.Context, now time.Time) ([]domain.FlashSaleItem, error)
 	HasOverlappingApprovedFlashSale(ctx context.Context, skuID string, startsAt, endsAt, now time.Time) (bool, error)
 
 	// Shop discount programs (UC-S18)
@@ -90,7 +106,7 @@ type Store interface {
 	// Reservations
 	GetReservation(ctx context.Context, orderID string) (*domain.PromotionReservation, error)
 	CommitReservation(ctx context.Context, res domain.PromotionReservation, now time.Time) (existing *domain.PromotionReservation, alreadyReserved bool, err error)
-	ReleaseReservation(ctx context.Context, orderID string) (alreadyReleased bool, err error)
+	ReleaseReservation(ctx context.Context, orderID string) (*FullReleaseResult, error)
 	ReleaseReservationShop(ctx context.Context, orderID, shopID string) (*ShopReleaseResult, error)
 }
 
@@ -104,7 +120,9 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-// Migrate applies embedded SQL migrations in lexical order.
+// Migrate applies embedded SQL migrations in lexical order under a Postgres advisory lock,
+// recording applied filenames in promotion_schema_migrations so concurrent startups or rolling
+// restarts do not re-acquire ACCESS EXCLUSIVE table locks once a migration has already been applied.
 func (s *PostgresStore) Migrate(ctx context.Context) error {
 	entries, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
@@ -118,14 +136,46 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 	}
 	sort.Strings(names)
 
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin migrate tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Serialize concurrent Migrate() invocations across replicas / test packages.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(7042001)`); err != nil {
+		return fmt.Errorf("acquire migrate advisory lock: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS promotion_schema_migrations (
+			name       TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)
+	`); err != nil {
+		return fmt.Errorf("create promotion_schema_migrations: %w", err)
+	}
+
 	for _, name := range names {
+		var alreadyApplied bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM promotion_schema_migrations WHERE name = $1)`, name).Scan(&alreadyApplied); err != nil {
+			return fmt.Errorf("check migration %s: %w", name, err)
+		}
+		if alreadyApplied {
+			continue
+		}
 		sqlBytes, readErr := migrationsFS.ReadFile("migrations/" + name)
 		if readErr != nil {
 			return fmt.Errorf("read migration %s: %w", name, readErr)
 		}
-		if _, execErr := s.pool.Exec(ctx, string(sqlBytes)); execErr != nil {
+		if _, execErr := tx.Exec(ctx, string(sqlBytes)); execErr != nil {
 			return fmt.Errorf("exec migration %s: %w", name, execErr)
 		}
+		if _, insErr := tx.Exec(ctx, `INSERT INTO promotion_schema_migrations (name) VALUES ($1) ON CONFLICT DO NOTHING`, name); insErr != nil {
+			return fmt.Errorf("record migration %s: %w", name, insErr)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit migrate tx: %w", err)
 	}
 	return nil
 }
@@ -161,11 +211,13 @@ func (s *PostgresStore) CreateVoucher(ctx context.Context, v domain.Voucher) (*d
 			id, code, name, scope, shop_id, discount_type, value_vnd, discount_percent,
 			max_discount_vnd, min_order_vnd, quota, used_count, per_user_limit,
 			budget_vnd, used_budget_vnd, starts_at, ends_at, is_active, status, category_ids,
+			rules_version, redis_sync_version, redis_synced_version,
 			created_by, created_at, updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8,
 			$9, $10, $11, 0, $12,
 			$13, 0, $14, $15, $16, $17, $18::jsonb,
+			1, 1, 0,
 			$19, $20, $21
 		)
 		RETURNING ` + voucherSelectColumns
@@ -213,30 +265,46 @@ func (s *PostgresStore) GetVoucherByIDOrCode(ctx context.Context, idOrCode strin
 func (s *PostgresStore) UpdateVoucher(
 	ctx context.Context,
 	id string,
-	mutate func(cur *domain.Voucher) error,
-) (*domain.Voucher, *domain.Voucher, error) {
+	mutate func(cur *domain.Voucher, hasActiveReservation bool) error,
+) (*domain.Voucher, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return nil, nil, fmt.Errorf("begin update voucher tx: %w", err)
+		return nil, fmt.Errorf("begin update voucher tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	cur, err := scanVoucher(tx.QueryRow(ctx, `SELECT `+voucherSelectColumns+` FROM vouchers WHERE id = $1 FOR UPDATE`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil, ErrNotFound
+		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("lock voucher for update: %w", err)
+		return nil, fmt.Errorf("lock voucher for update: %w", err)
 	}
 
-	before := cloneVoucher(*cur)
-	if err := mutate(cur); err != nil {
-		return nil, nil, err
+	shopFilter := ""
+	if cur.Scope == domain.VoucherScopeShop {
+		shopFilter = cur.ShopID
+	}
+	var hasActiveReservation bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM promotion_reservations
+			WHERE status = 'RESERVED'
+			  AND vouchers_json @> jsonb_build_array(jsonb_build_object('voucher_id', $1::text))
+			  AND ($2 = '' OR NOT (released_shops_json ? $2))
+		)
+	`, cur.ID, shopFilter).Scan(&hasActiveReservation); err != nil {
+		return nil, fmt.Errorf("check active reservations for voucher: %w", err)
+	}
+
+	if err := mutate(cur, hasActiveReservation); err != nil {
+		return nil, err
 	}
 
 	catJSON, err := marshalStringSliceJSON(cur.CategoryIDs)
 	if err != nil {
-		return nil, nil, fmt.Errorf("marshal voucher category_ids: %w", err)
+		return nil, fmt.Errorf("marshal voucher category_ids: %w", err)
 	}
 
 	const updateQ = `
@@ -253,6 +321,8 @@ func (s *PostgresStore) UpdateVoucher(
 			starts_at = $11,
 			ends_at = $12,
 			category_ids = $13::jsonb,
+			rules_version = $14,
+			redis_sync_version = redis_sync_version + 1,
 			updated_at = NOW()
 		WHERE id = $1
 		RETURNING ` + voucherSelectColumns
@@ -260,16 +330,16 @@ func (s *PostgresStore) UpdateVoucher(
 	after, err := scanVoucher(tx.QueryRow(ctx, updateQ,
 		cur.ID, cur.Name, cur.DiscountType, cur.ValueVND, cur.DiscountPercent,
 		cur.MaxDiscountVND, cur.MinOrderVND, cur.Quota, cur.PerUserLimit,
-		cur.BudgetVND, cur.StartsAt.UTC(), cur.EndsAt.UTC(), string(catJSON),
+		cur.BudgetVND, cur.StartsAt.UTC(), cur.EndsAt.UTC(), string(catJSON), cur.RulesVersion,
 	))
 	if err != nil {
-		return nil, nil, fmt.Errorf("update voucher: %w", err)
+		return nil, fmt.Errorf("update voucher: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return nil, nil, fmt.Errorf("commit update voucher: %w", err)
+		return nil, fmt.Errorf("commit update voucher: %w", err)
 	}
-	return &before, after, nil
+	return after, nil
 }
 
 func (s *PostgresStore) SetVoucherStatus(
@@ -301,6 +371,7 @@ func (s *PostgresStore) SetVoucherStatus(
 		UPDATE vouchers
 		SET status = $2,
 			is_active = $3,
+			redis_sync_version = redis_sync_version + 1,
 			updated_at = NOW()
 		WHERE id = $1
 		RETURNING ` + voucherSelectColumns
@@ -347,6 +418,7 @@ func (s *PostgresStore) DeleteVoucher(
 		SET status = 'DELETED',
 			is_active = FALSE,
 			deleted_at = COALESCE(deleted_at, NOW()),
+			redis_sync_version = redis_sync_version + 1,
 			updated_at = NOW()
 		WHERE id = $1
 	`, id); err != nil {
@@ -358,39 +430,148 @@ func (s *PostgresStore) DeleteVoucher(
 	return false, nil
 }
 
-func (s *PostgresStore) ListVouchers(ctx context.Context, shopID, scope string) ([]domain.Voucher, error) {
-	const q = `
-		SELECT ` + voucherSelectColumns + `
-		FROM vouchers
-		WHERE ($1 = '' OR shop_id = $1)
-		  AND ($2 = '' OR scope = $2)
-		ORDER BY created_at DESC, id ASC
-	`
-	rows, err := s.pool.Query(ctx, q, shopID, scope)
-	if err != nil {
-		return nil, fmt.Errorf("list vouchers: %w", err)
-	}
-	defer rows.Close()
-
-	var result []domain.Voucher
-	for rows.Next() {
-		v, scanErr := scanVoucher(rows)
-		if scanErr != nil {
-			return nil, fmt.Errorf("scan voucher: %w", scanErr)
-		}
-		result = append(result, *v)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate vouchers: %w", err)
-	}
-	return result, nil
+func (s *PostgresStore) SyncVoucherRedis(
+	ctx context.Context,
+	voucherID string,
+	skipLocked bool,
+	syncFn func(ctx context.Context, v *domain.Voucher) error,
+) (bool, error) {
+	return s.syncVoucherRedisLocked(ctx, voucherID, false, skipLocked, syncFn)
 }
 
-func (s *PostgresStore) ListAllVouchers(ctx context.Context) ([]domain.Voucher, error) {
-	const q = `SELECT ` + voucherSelectColumns + ` FROM vouchers`
-	rows, err := s.pool.Query(ctx, q)
+func (s *PostgresStore) ReconcilePendingVouchers(
+	ctx context.Context,
+	limit int,
+	syncFn func(ctx context.Context, v *domain.Voucher) error,
+) (int, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id
+		FROM vouchers
+		WHERE redis_synced_version < redis_sync_version
+		ORDER BY updated_at ASC, id ASC
+		LIMIT $1
+	`, limit)
 	if err != nil {
-		return nil, fmt.Errorf("list all vouchers: %w", err)
+		return 0, fmt.Errorf("list pending redis sync vouchers: %w", err)
+	}
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan pending voucher id: %w", scanErr)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("iterate pending voucher ids: %w", err)
+	}
+	rows.Close()
+
+	reconciled := 0
+	var firstErr error
+	for _, id := range ids {
+		ok, rErr := s.syncVoucherRedisLocked(ctx, id, true, true, syncFn)
+		if rErr != nil {
+			if firstErr == nil {
+				firstErr = rErr
+			}
+			if IsRedisConnOrTimeoutErr(rErr) {
+				break
+			}
+			continue
+		}
+		if ok {
+			reconciled++
+		}
+	}
+	return reconciled, firstErr
+}
+
+// IsRedisConnOrTimeoutErr reports whether err indicates a Redis timeout, cancellation, or connection drop.
+func IsRedisConnOrTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "client is closed") ||
+		strings.Contains(msg, "eof")
+}
+
+func (s *PostgresStore) syncVoucherRedisLocked(
+	ctx context.Context,
+	voucherID string,
+	onlyIfDirty bool,
+	skipLocked bool,
+	syncFn func(ctx context.Context, v *domain.Voucher) error,
+) (bool, error) {
+	if voucherID == "" {
+		return false, nil
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, fmt.Errorf("begin sync voucher redis tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := `SELECT ` + voucherSelectColumns + ` FROM vouchers WHERE id = $1`
+	if onlyIfDirty {
+		q += ` AND redis_synced_version < redis_sync_version`
+	}
+	q += ` FOR UPDATE`
+	if skipLocked {
+		q += ` SKIP LOCKED`
+	}
+
+	cur, err := scanVoucher(tx.QueryRow(ctx, q, voucherID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("lock voucher %s for redis sync: %w", voucherID, err)
+	}
+	if syncFn != nil {
+		if err := syncFn(ctx, cur); err != nil {
+			return false, err
+		}
+	}
+	if cur.RedisSyncedVersion < cur.RedisSyncVersion {
+		if _, err := tx.Exec(ctx, `
+			UPDATE vouchers
+			SET redis_synced_version = redis_sync_version
+			WHERE id = $1
+		`, cur.ID); err != nil {
+			return false, fmt.Errorf("mark voucher %s redis synced: %w", cur.ID, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit sync voucher %s redis: %w", cur.ID, err)
+	}
+	return true, nil
+}
+
+func (s *PostgresStore) queryVouchers(ctx context.Context, q string, args ...any) ([]domain.Voucher, error) {
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query vouchers: %w", err)
 	}
 	defer rows.Close()
 
@@ -403,6 +584,130 @@ func (s *PostgresStore) ListAllVouchers(ctx context.Context) ([]domain.Voucher, 
 		result = append(result, *v)
 	}
 	return result, rows.Err()
+}
+
+func (s *PostgresStore) ListVouchers(ctx context.Context, shopID, scope string) ([]domain.Voucher, error) {
+	const q = `
+		SELECT ` + voucherSelectColumns + `
+		FROM vouchers
+		WHERE ($1 = '' OR shop_id = $1)
+		  AND ($2 = '' OR scope = $2)
+		ORDER BY created_at DESC, id ASC
+	`
+	return s.queryVouchers(ctx, q, shopID, scope)
+}
+
+func (s *PostgresStore) ListAllVouchers(ctx context.Context) ([]domain.Voucher, error) {
+	return s.queryVouchers(ctx, `SELECT `+voucherSelectColumns+` FROM vouchers`)
+}
+
+func (s *PostgresStore) ListActiveVouchers(ctx context.Context, now time.Time) ([]domain.Voucher, error) {
+	const q = `
+		SELECT ` + voucherSelectColumns + `
+		FROM vouchers
+		WHERE status = 'ACTIVE' AND is_active = TRUE AND deleted_at IS NULL
+		  AND starts_at <= $1 AND ends_at >= $1
+	`
+	return s.queryVouchers(ctx, q, now.UTC())
+}
+
+func (s *PostgresStore) GetUserUsageBatch(ctx context.Context, userID string, targets []UserUsageKey) (map[UserUsageKey]int32, error) {
+	out := make(map[UserUsageKey]int32, len(targets))
+	if userID == "" || len(targets) == 0 {
+		return out, nil
+	}
+	seen := make(map[UserUsageKey]struct{}, len(targets))
+	kinds := make([]string, 0, len(targets))
+	targetIDs := make([]string, 0, len(targets))
+	for _, t := range targets {
+		if t.Kind == "" || t.TargetID == "" {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		kinds = append(kinds, t.Kind)
+		targetIDs = append(targetIDs, t.TargetID)
+	}
+	if len(kinds) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT puu.kind, puu.target_id, puu.used_qty
+		FROM promotion_user_usage puu
+		JOIN UNNEST($2::text[], $3::text[]) AS t(kind, target_id)
+		  ON puu.kind = t.kind AND puu.target_id = t.target_id
+		WHERE puu.user_id = $1
+	`, userID, kinds, targetIDs)
+	if err != nil {
+		return nil, fmt.Errorf("batch get user usage: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k UserUsageKey
+		var qty int32
+		if scanErr := rows.Scan(&k.Kind, &k.TargetID, &qty); scanErr != nil {
+			return nil, fmt.Errorf("scan batch user usage: %w", scanErr)
+		}
+		out[k] = qty
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) SyncUserUsageRedis(
+	ctx context.Context,
+	kind, targetID, userID string,
+	skipLocked bool,
+	syncFn func(ctx context.Context, usedQty int32) error,
+) (bool, error) {
+	if kind == "" || targetID == "" || userID == "" {
+		return false, nil
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, fmt.Errorf("begin sync user usage tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := `SELECT used_qty FROM promotion_user_usage WHERE kind = $1 AND target_id = $2 AND user_id = $3 FOR UPDATE`
+	if skipLocked {
+		q += ` SKIP LOCKED`
+	}
+	var qty int32
+	err = tx.QueryRow(ctx, q, kind, targetID, userID).Scan(&qty)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if skipLocked {
+			var exists bool
+			if exErr := tx.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1
+					FROM promotion_user_usage
+					WHERE kind = $1 AND target_id = $2 AND user_id = $3
+				)
+			`, kind, targetID, userID).Scan(&exists); exErr != nil {
+				return false, fmt.Errorf("check user usage exists (%s %s): %w", kind, targetID, exErr)
+			}
+			if exists {
+				// Row exists and is currently locked by another transaction; do not overwrite Redis.
+				return false, nil
+			}
+		}
+		// ponytail: P1-4 accepted — deleting an absent :user: row without a PG row lock can race a concurrent commit;
+		// buildCalcInput takes max(Redis, PG), PG CommitReservation enforces per_user_limit, and :user: keys have 120s TTL.
+		qty = 0
+	} else if err != nil {
+		return false, fmt.Errorf("lock user usage (%s %s): %w", kind, targetID, err)
+	}
+	if syncFn != nil {
+		if err := syncFn(ctx, qty); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit sync user usage (%s %s): %w", kind, targetID, err)
+	}
+	return true, nil
 }
 
 func (s *PostgresStore) SaveUserVoucher(ctx context.Context, userID, voucherID string) (bool, error) {
@@ -461,11 +766,16 @@ func (s *PostgresStore) ProcessExpiringSavedVouchers(
 		SELECT uv.user_id, uv.voucher_id, v.code, v.ends_at
 		FROM user_vouchers uv
 		JOIN vouchers v ON v.id = uv.voucher_id
+		LEFT JOIN promotion_user_usage puu
+		       ON puu.kind = 'VOUCHER'
+		      AND puu.target_id = uv.voucher_id
+		      AND puu.user_id = uv.user_id
 		WHERE uv.expiry_notified_at IS NULL
 		  AND v.status = 'ACTIVE'
 		  AND v.is_active = TRUE
 		  AND v.used_count < v.quota
 		  AND (v.budget_vnd = 0 OR v.used_budget_vnd < v.budget_vnd)
+		  AND (v.per_user_limit <= 0 OR COALESCE(puu.used_qty, 0) < v.per_user_limit)
 		  AND v.ends_at > $1
 		  AND v.ends_at <= $2
 		ORDER BY v.ends_at ASC, uv.user_id ASC, uv.voucher_id ASC
@@ -495,6 +805,8 @@ func (s *PostgresStore) ProcessExpiringSavedVouchers(
 		return 0, 0, nil
 	}
 
+	// ponytail: P2-10 deferred — holding FOR UPDATE OF uv SKIP LOCKED across NATS publish is kept
+	// for now (bounded by nats.Context(ctx) and VoucherExpiryJob's 30s batch timeout); refactor to outbox/claim-then-publish later.
 	sent := 0
 	var firstErr error
 	for _, it := range items {
@@ -774,6 +1086,48 @@ func (s *PostgresStore) GetFlashSaleItem(ctx context.Context, itemID string) (*d
 	return out, nil
 }
 
+func (s *PostgresStore) SyncFlashItemRedis(
+	ctx context.Context,
+	itemID string,
+	skipLocked bool,
+	syncFn func(ctx context.Context, item *domain.FlashSaleItem) error,
+) (bool, error) {
+	if itemID == "" {
+		return false, nil
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, fmt.Errorf("begin sync flash item redis tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := `SELECT ` + flashItemSelectColumns + `
+		FROM flash_sale_items fsi
+		JOIN flash_sales fs ON fs.id = fsi.flash_sale_id
+		WHERE fsi.id = $1
+		FOR UPDATE OF fsi`
+	if skipLocked {
+		q += ` SKIP LOCKED`
+	}
+
+	cur, err := scanFlashSaleItem(tx.QueryRow(ctx, q, itemID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("lock flash item %s for redis sync: %w", itemID, err)
+	}
+	if syncFn != nil {
+		if err := syncFn(ctx, cur); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit sync flash item %s redis: %w", itemID, err)
+	}
+	return true, nil
+}
+
 func (s *PostgresStore) ListFlashSales(ctx context.Context, now time.Time, includeUpcoming bool) ([]domain.FlashSale, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -978,16 +1332,10 @@ func (s *PostgresStore) ListFlashSaleItems(
 	return items, total, rows.Err()
 }
 
-func (s *PostgresStore) ListApprovedFlashSaleItems(ctx context.Context) ([]domain.FlashSaleItem, error) {
-	const q = `
-		SELECT ` + flashItemSelectColumns + `
-		FROM flash_sale_items fsi
-		JOIN flash_sales fs ON fs.id = fsi.flash_sale_id
-		WHERE fsi.status = 'APPROVED'
-	`
-	rows, err := s.pool.Query(ctx, q)
+func (s *PostgresStore) queryFlashSaleItems(ctx context.Context, q string, args ...any) ([]domain.FlashSaleItem, error) {
+	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list approved flash items: %w", err)
+		return nil, fmt.Errorf("query flash sale items: %w", err)
 	}
 	defer rows.Close()
 
@@ -995,11 +1343,31 @@ func (s *PostgresStore) ListApprovedFlashSaleItems(ctx context.Context) ([]domai
 	for rows.Next() {
 		item, scanErr := scanFlashSaleItem(rows)
 		if scanErr != nil {
-			return nil, fmt.Errorf("scan approved flash item: %w", scanErr)
+			return nil, fmt.Errorf("scan flash sale item: %w", scanErr)
 		}
 		items = append(items, *item)
 	}
 	return items, rows.Err()
+}
+
+func (s *PostgresStore) ListApprovedFlashSaleItems(ctx context.Context) ([]domain.FlashSaleItem, error) {
+	const q = `
+		SELECT ` + flashItemSelectColumns + `
+		FROM flash_sale_items fsi
+		JOIN flash_sales fs ON fs.id = fsi.flash_sale_id
+		WHERE fsi.status = 'APPROVED'
+	`
+	return s.queryFlashSaleItems(ctx, q)
+}
+
+func (s *PostgresStore) ListActiveApprovedFlashSaleItems(ctx context.Context, now time.Time) ([]domain.FlashSaleItem, error) {
+	const q = `
+		SELECT ` + flashItemSelectColumns + `
+		FROM flash_sale_items fsi
+		JOIN flash_sales fs ON fs.id = fsi.flash_sale_id
+		WHERE fsi.status = 'APPROVED' AND fs.ends_at > $1
+	`
+	return s.queryFlashSaleItems(ctx, q, now.UTC())
 }
 
 func (s *PostgresStore) HasOverlappingApprovedFlashSale(ctx context.Context, skuID string, startsAt, endsAt, now time.Time) (bool, error) {
@@ -1060,7 +1428,15 @@ func (s *PostgresStore) GetCoinBalance(ctx context.Context, userID string, recen
 	return balance, txns, nil
 }
 
+func hasReservedStoreCoinRefPrefix(refID string) bool {
+	lower := strings.ToLower(strings.TrimSpace(refID))
+	return strings.HasPrefix(lower, "reserve:") || strings.HasPrefix(lower, "release:")
+}
+
 func (s *PostgresStore) CreditCoins(ctx context.Context, userID string, amount int64, reason, referenceID string) (int64, bool, error) {
+	if hasReservedStoreCoinRefPrefix(referenceID) {
+		return 0, false, fmt.Errorf("%w: %s", ErrReservedCoinReferenceID, referenceID)
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return 0, false, fmt.Errorf("begin credit coins tx: %w", err)
@@ -1262,22 +1638,25 @@ func (s *PostgresStore) CommitReservation(ctx context.Context, res domain.Promot
 		if err != nil {
 			return nil, false, fmt.Errorf("insert coin reserve tx: %w", err)
 		}
-		if coinTag.RowsAffected() > 0 {
-			if _, err := tx.Exec(ctx, `
-				UPDATE coin_accounts
-				SET balance = balance - $2, updated_at = NOW()
-				WHERE user_id = $1
-			`, res.UserID, res.CoinsUsed); err != nil {
-				return nil, false, fmt.Errorf("debit coin account: %w", err)
-			}
+		if coinTag.RowsAffected() == 0 {
+			return nil, false, fmt.Errorf("%w: duplicate coin reserve reference %s", ErrCoinLedgerConflict, reserveRef)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE coin_accounts
+			SET balance = balance - $2, updated_at = NOW()
+			WHERE user_id = $1
+		`, res.UserID, res.CoinsUsed); err != nil {
+			return nil, false, fmt.Errorf("debit coin account: %w", err)
 		}
 	}
 
 	// Authoritative Postgres final gate for vouchers (sorted by ID to match release lock order).
+	usageChecks := make([]usageCheck, 0, len(res.Vouchers)+len(res.FlashSaleItems)+len(res.ShopProgramItems))
 	sortedVouchers := append([]domain.ReservedVoucher(nil), res.Vouchers...)
 	sort.Slice(sortedVouchers, func(i, j int) bool { return sortedVouchers[i].VoucherID < sortedVouchers[j].VoucherID })
 	for _, v := range sortedVouchers {
-		vTag, err := tx.Exec(ctx, `
+		var perUserLimit int32
+		err := tx.QueryRow(ctx, `
 			UPDATE vouchers
 			SET used_count = used_count + 1,
 				used_budget_vnd = used_budget_vnd + $2,
@@ -1289,20 +1668,29 @@ func (s *PostgresStore) CommitReservation(ctx context.Context, res domain.Promot
 			  AND (budget_vnd = 0 OR used_budget_vnd + $2 <= budget_vnd)
 			  AND starts_at <= $3
 			  AND ends_at >= $3
-		`, v.VoucherID, v.DiscountVND, now)
+			  AND ($4 = 0 OR rules_version = $4)
+			RETURNING per_user_limit
+		`, v.VoucherID, v.DiscountVND, now, v.RulesVersion).Scan(&perUserLimit)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, fmt.Errorf("%w: voucher %s", ErrVoucherNotEligibleForCommit, v.VoucherID)
+		}
 		if err != nil {
 			return nil, false, fmt.Errorf("sync voucher usage: %w", err)
 		}
-		if vTag.RowsAffected() == 0 {
-			return nil, false, fmt.Errorf("%w: voucher %s", ErrVoucherNotEligibleForCommit, v.VoucherID)
-		}
+		usageChecks = append(usageChecks, usageCheck{
+			kind:     domain.UsageKindVoucher,
+			targetID: v.VoucherID,
+			qty:      1,
+			limit:    perUserLimit,
+		})
 	}
 
 	// Authoritative Postgres final gate for flash sale slots (sorted by ID; no GREATEST clamp).
 	sortedFlash := append([]domain.ReservedFlashItem(nil), res.FlashSaleItems...)
 	sort.Slice(sortedFlash, func(i, j int) bool { return sortedFlash[i].FlashSaleItemID < sortedFlash[j].FlashSaleItemID })
 	for _, f := range sortedFlash {
-		fTag, err := tx.Exec(ctx, `
+		var perUserLimit int32
+		err := tx.QueryRow(ctx, `
 			UPDATE flash_sale_items fsi
 			SET remaining_slots = fsi.remaining_slots - $2,
 				updated_at = $3
@@ -1313,13 +1701,20 @@ func (s *PostgresStore) CommitReservation(ctx context.Context, res domain.Promot
 			  AND fsi.remaining_slots >= $2
 			  AND fs.starts_at <= $3
 			  AND fs.ends_at > $3
-		`, f.FlashSaleItemID, f.Quantity, now)
+			RETURNING fsi.per_user_limit
+		`, f.FlashSaleItemID, f.Quantity, now).Scan(&perUserLimit)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, fmt.Errorf("%w: flash item %s", ErrFlashNotEligibleForCommit, f.FlashSaleItemID)
+		}
 		if err != nil {
 			return nil, false, fmt.Errorf("sync flash remaining slots: %w", err)
 		}
-		if fTag.RowsAffected() == 0 {
-			return nil, false, fmt.Errorf("%w: flash item %s", ErrFlashNotEligibleForCommit, f.FlashSaleItemID)
-		}
+		usageChecks = append(usageChecks, usageCheck{
+			kind:     domain.UsageKindFlash,
+			targetID: f.FlashSaleItemID,
+			qty:      f.Quantity,
+			limit:    perUserLimit,
+		})
 	}
 
 	// Authoritative Postgres final gate for shop discount program items:
@@ -1364,8 +1759,9 @@ func (s *PostgresStore) CommitReservation(ctx context.Context, res domain.Promot
 
 		for _, p := range sortedProgs {
 			var verifiedID string
+			var perUserLimit int32
 			err := tx.QueryRow(ctx, `
-				SELECT sdi.id
+				SELECT sdi.id, sdi.per_user_limit
 				FROM shop_discount_program_items sdi
 				JOIN shop_discount_programs sdp ON sdp.id = sdi.program_id
 				WHERE sdi.id = $1
@@ -1375,13 +1771,27 @@ func (s *PostgresStore) CommitReservation(ctx context.Context, res domain.Promot
 				  AND sdp.ended_at IS NULL
 				  AND sdp.starts_at <= $4
 				  AND sdp.ends_at > $4
-			`, p.ShopDiscountProgramItemID, p.ShopID, p.SKUID, now).Scan(&verifiedID)
+			`, p.ShopDiscountProgramItemID, p.ShopID, p.SKUID, now).Scan(&verifiedID, &perUserLimit)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, false, fmt.Errorf("%w: shop discount program item %s", ErrShopProgramNotEligibleForCommit, p.ShopDiscountProgramItemID)
 			}
 			if err != nil {
 				return nil, false, fmt.Errorf("verify shop discount program item: %w", err)
 			}
+			usageChecks = append(usageChecks, usageCheck{
+				kind:     domain.UsageKindShopProgram,
+				targetID: p.ShopDiscountProgramItemID,
+				qty:      p.Quantity,
+				limit:    perUserLimit,
+			})
+		}
+	}
+
+	// Authoritative Postgres per_user_limit gate across vouchers, flash items, and shop discount programs
+	// (survives Redis loss/eviction and serializes concurrent checkouts by the same user via unique index lock).
+	if res.UserID != "" && len(usageChecks) > 0 {
+		if err := enforceUserUsageLimitsInTx(ctx, tx, res.UserID, usageChecks, now); err != nil {
+			return nil, false, err
 		}
 	}
 
@@ -1392,10 +1802,10 @@ func (s *PostgresStore) CommitReservation(ctx context.Context, res domain.Promot
 	return &res, false, nil
 }
 
-func (s *PostgresStore) ReleaseReservation(ctx context.Context, orderID string) (bool, error) {
+func (s *PostgresStore) ReleaseReservation(ctx context.Context, orderID string) (*FullReleaseResult, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return false, fmt.Errorf("begin release reservation tx: %w", err)
+		return nil, fmt.Errorf("begin release reservation tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -1419,45 +1829,60 @@ func (s *PostgresStore) ReleaseReservation(ctx context.Context, orderID string) 
 			ON CONFLICT (order_id) DO NOTHING
 		`, orderID)
 		if insErr != nil {
-			return false, fmt.Errorf("insert release tombstone: %w", insErr)
+			return nil, fmt.Errorf("insert release tombstone: %w", insErr)
 		}
 		if tag.RowsAffected() > 0 {
 			if err := tx.Commit(ctx); err != nil {
-				return false, fmt.Errorf("commit release tombstone: %w", err)
+				return nil, fmt.Errorf("commit release tombstone: %w", err)
 			}
-			return true, nil
+			return &FullReleaseResult{AlreadyReleased: true}, nil
 		}
 		// A concurrent CommitReservation just inserted the row — lock and release it now.
 		existing, err = scanReservation(tx.QueryRow(ctx, selectForUpdateQ, orderID))
 		if err != nil {
-			return false, fmt.Errorf("re-lock reservation after tombstone conflict: %w", err)
+			return nil, fmt.Errorf("re-lock reservation after tombstone conflict: %w", err)
 		}
 	} else if err != nil {
-		return false, fmt.Errorf("lock reservation for release: %w", err)
+		return nil, fmt.Errorf("lock reservation for release: %w", err)
+	}
+
+	result := &FullReleaseResult{
+		UserID:         existing.UserID,
+		Vouchers:       existing.Vouchers,
+		FlashSaleItems: existing.FlashSaleItems,
+		ShopPrograms:   existing.ShopProgramItems,
 	}
 
 	plan, err := planRemainingRelease(existing, lookupFlashShopInTx(ctx, tx), lookupShopProgShopInTx(ctx, tx))
 	if err != nil {
-		return false, fmt.Errorf("plan remaining release: %w", err)
+		return nil, fmt.Errorf("plan remaining release: %w", err)
 	}
 	if plan.alreadyReleased {
-		return true, nil
+		result.AlreadyReleased = true
+		return result, nil
 	}
 
 	if plan.coinsToReturn > 0 {
 		releaseRef := "release:" + orderID
-		if _, _, err := creditCoinsInTx(ctx, tx, existing.UserID, plan.coinsToReturn, "order_release", releaseRef); err != nil {
-			return false, fmt.Errorf("restore reserved coins: %w", err)
+		_, alreadyCredited, err := creditCoinsInTx(ctx, tx, existing.UserID, plan.coinsToReturn, "order_release", releaseRef)
+		if err != nil {
+			return nil, fmt.Errorf("restore reserved coins: %w", err)
+		}
+		if !alreadyCredited {
+			result.CoinsReturned = plan.coinsToReturn
 		}
 	}
 
 	if err := restoreVouchersAndFlashInTx(ctx, tx, plan.vouchersToRelease, plan.flashToRelease); err != nil {
-		return false, err
+		return nil, err
+	}
+	if err := restoreUserUsageInTx(ctx, tx, existing.UserID, plan.vouchersToRelease, plan.flashToRelease, plan.shopProgramsToRelease); err != nil {
+		return nil, err
 	}
 
 	releasedShopsJSON, err := json.Marshal(plan.newReleasedShops)
 	if err != nil {
-		return false, fmt.Errorf("marshal released shops: %w", err)
+		return nil, fmt.Errorf("marshal released shops: %w", err)
 	}
 
 	if _, err := tx.Exec(ctx, `
@@ -1468,13 +1893,13 @@ func (s *PostgresStore) ReleaseReservation(ctx context.Context, orderID string) 
 			updated_at = NOW()
 		WHERE order_id = $1
 	`, orderID, string(releasedShopsJSON)); err != nil {
-		return false, fmt.Errorf("mark reservation released: %w", err)
+		return nil, fmt.Errorf("mark reservation released: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit release reservation tx: %w", err)
+		return nil, fmt.Errorf("commit release reservation tx: %w", err)
 	}
-	return false, nil
+	return result, nil
 }
 
 func (s *PostgresStore) ReleaseReservationShop(ctx context.Context, orderID, shopID string) (*ShopReleaseResult, error) {
@@ -1525,12 +1950,19 @@ func (s *PostgresStore) ReleaseReservationShop(ctx context.Context, orderID, sho
 
 	if plan.coinsToReturn > 0 {
 		releaseRef := "release:" + orderID + ":shop:" + shopID
-		if _, _, err := creditCoinsInTx(ctx, tx, existing.UserID, plan.coinsToReturn, "order_release", releaseRef); err != nil {
+		_, alreadyCredited, err := creditCoinsInTx(ctx, tx, existing.UserID, plan.coinsToReturn, "order_release", releaseRef)
+		if err != nil {
 			return nil, fmt.Errorf("restore shop reserved coins: %w", err)
+		}
+		if alreadyCredited {
+			result.CoinsReturned = 0
 		}
 	}
 
 	if err := restoreVouchersAndFlashInTx(ctx, tx, plan.vouchersToRelease, plan.flashToRelease); err != nil {
+		return nil, err
+	}
+	if err := restoreUserUsageInTx(ctx, tx, existing.UserID, plan.vouchersToRelease, plan.flashToRelease, plan.shopProgramsToRelease); err != nil {
 		return nil, err
 	}
 
@@ -1625,6 +2057,117 @@ func restoreVouchersAndFlashInTx(ctx context.Context, tx pgx.Tx, vouchers []doma
 	return nil
 }
 
+type usageCheck struct {
+	kind     string
+	targetID string
+	qty      int32
+	limit    int32
+}
+
+func mergeUsageChecks(in []usageCheck) []usageCheck {
+	byKey := make(map[string]usageCheck, len(in))
+	for _, u := range in {
+		if u.targetID == "" || u.qty <= 0 {
+			continue
+		}
+		k := u.kind + "|" + u.targetID
+		if existing, ok := byKey[k]; ok {
+			existing.qty += u.qty
+			if u.limit > 0 && (existing.limit <= 0 || u.limit < existing.limit) {
+				existing.limit = u.limit
+			}
+			byKey[k] = existing
+		} else {
+			byKey[k] = u
+		}
+	}
+	out := make([]usageCheck, 0, len(byKey))
+	for _, u := range byKey {
+		out = append(out, u)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].kind != out[j].kind {
+			return out[i].kind < out[j].kind
+		}
+		return out[i].targetID < out[j].targetID
+	})
+	return out
+}
+
+func userLimitError(kind, targetID string) error {
+	switch kind {
+	case domain.UsageKindVoucher:
+		return fmt.Errorf("%w: voucher %s", ErrVoucherUserLimitExceeded, targetID)
+	case domain.UsageKindFlash:
+		return fmt.Errorf("%w: flash item %s", ErrFlashUserLimitExceeded, targetID)
+	case domain.UsageKindShopProgram:
+		return fmt.Errorf("%w: shop discount program item %s", ErrShopProgramUserLimitExceeded, targetID)
+	default:
+		return fmt.Errorf("per-user limit exceeded for %s %s", kind, targetID)
+	}
+}
+
+func enforceUserUsageLimitsInTx(ctx context.Context, tx pgx.Tx, userID string, checks []usageCheck, now time.Time) error {
+	merged := mergeUsageChecks(checks)
+	for _, uc := range merged {
+		if uc.limit > 0 && uc.qty > uc.limit {
+			return userLimitError(uc.kind, uc.targetID)
+		}
+		var newUsed int32
+		err := tx.QueryRow(ctx, `
+			INSERT INTO promotion_user_usage (kind, target_id, user_id, used_qty, updated_at)
+			SELECT $1, $2, $3, $4, $5
+			WHERE ($6 <= 0 OR $4 <= $6)
+			ON CONFLICT (kind, target_id, user_id) DO UPDATE
+				SET used_qty = promotion_user_usage.used_qty + EXCLUDED.used_qty,
+					updated_at = EXCLUDED.updated_at
+				WHERE ($6 <= 0 OR promotion_user_usage.used_qty + EXCLUDED.used_qty <= $6)
+			RETURNING used_qty
+		`, uc.kind, uc.targetID, userID, uc.qty, now, uc.limit).Scan(&newUsed)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return userLimitError(uc.kind, uc.targetID)
+		}
+		if err != nil {
+			return fmt.Errorf("enforce per-user usage limit (%s %s): %w", uc.kind, uc.targetID, err)
+		}
+	}
+	return nil
+}
+
+func restoreUserUsageInTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	userID string,
+	vouchers []domain.ReservedVoucher,
+	flashItems []domain.ReservedFlashItem,
+	shopProgs []domain.ReservedShopProgramItem,
+) error {
+	if userID == "" {
+		return nil
+	}
+	checks := make([]usageCheck, 0, len(vouchers)+len(flashItems)+len(shopProgs))
+	for _, v := range vouchers {
+		checks = append(checks, usageCheck{kind: domain.UsageKindVoucher, targetID: v.VoucherID, qty: 1})
+	}
+	for _, f := range flashItems {
+		checks = append(checks, usageCheck{kind: domain.UsageKindFlash, targetID: f.FlashSaleItemID, qty: f.Quantity})
+	}
+	for _, p := range shopProgs {
+		checks = append(checks, usageCheck{kind: domain.UsageKindShopProgram, targetID: p.ShopDiscountProgramItemID, qty: p.Quantity})
+	}
+	for _, uc := range mergeUsageChecks(checks) {
+		if _, err := tx.Exec(ctx, `
+			UPDATE promotion_user_usage
+			SET used_qty = GREATEST(used_qty - $4, 0),
+				updated_at = NOW()
+			WHERE kind = $1 AND target_id = $2 AND user_id = $3
+		`, uc.kind, uc.targetID, userID, uc.qty); err != nil {
+			return fmt.Errorf("restore per-user usage (%s %s): %w", uc.kind, uc.targetID, err)
+		}
+	}
+	return nil
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }
@@ -1636,6 +2179,7 @@ func scanVoucher(row rowScanner) (*domain.Voucher, error) {
 		&v.ID, &v.Code, &v.Name, &v.Scope, &v.ShopID, &v.DiscountType, &v.ValueVND, &v.DiscountPercent,
 		&v.MaxDiscountVND, &v.MinOrderVND, &v.Quota, &v.UsedCount, &v.PerUserLimit,
 		&v.BudgetVND, &v.UsedBudgetVND, &v.StartsAt, &v.EndsAt, &v.IsActive, &v.Status, &catRaw, &v.DeletedAt,
+		&v.RulesVersion, &v.RedisSyncVersion, &v.RedisSyncedVersion,
 		&v.CreatedBy, &v.CreatedAt, &v.UpdatedAt,
 	)
 	if err != nil {

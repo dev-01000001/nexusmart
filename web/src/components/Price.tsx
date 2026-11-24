@@ -20,7 +20,8 @@ export function Price({
   className,
 }: PriceProps) {
   const hasRange = maxAmount != null && maxAmount > amount;
-  const hasDiscount = originalAmount != null && originalAmount > amount;
+  const upperDisplayed = hasRange ? maxAmount : amount;
+  const hasDiscount = originalAmount != null && originalAmount > upperDisplayed;
   return (
     <span className={[styles.wrap, styles[size], className ?? ""].filter(Boolean).join(" ")}>
       <span className={styles.current}>

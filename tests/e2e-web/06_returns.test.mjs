@@ -9,6 +9,7 @@ import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   ACCESS_COOKIE,
+  COD_SAFE_SUBTOTAL_CAP_VND,
   RATE_LIMIT_MAX_WAIT_MS,
   RATE_LIMIT_SSR_DEFAULT_WAIT_MS,
   RATE_LIMIT_SSR_TEXT,
@@ -16,6 +17,7 @@ import {
   WebClient,
   calculateShippingQuote,
   config,
+  createApprovedCodProduct,
   createBuyerAddress,
   ensureRateBudget,
   fetchWith429Retry,
@@ -464,19 +466,33 @@ async function createSellerShopOrder(seller, buyerClient, buyer, { paymentMethod
 
   const prodRes = await buyerClient.json(
     "GET",
-    `/api/gw/products?shop_id=${encodeURIComponent(shopId)}&page=1&page_size=20`
+    `/api/gw/products?shop_id=${encodeURIComponent(shopId)}&page=1&page_size=100`
   );
   assert.equal(prodRes.status, 200, `list shop products expected 200: ${prodRes.text}`);
   const products = prodRes.data?.items ?? [];
-  let chosenSku = null;
+  const maxSkuPrice = paymentMethod === "COD" ? COD_SAFE_SUBTOTAL_CAP_VND : Number.POSITIVE_INFINITY;
+  const eligibleSkus = [];
   for (const p of products) {
     for (const s of p.skus ?? []) {
-      if (s.is_active !== false && (s.available_stock ?? 0) >= 2 && (s.price_vnd ?? 0) > 0) {
-        chosenSku = s;
-        break;
+      if (
+        s.is_active !== false &&
+        (s.available_stock ?? 0) >= 2 &&
+        (s.price_vnd ?? 0) > 0 &&
+        s.price_vnd <= maxSkuPrice
+      ) {
+        eligibleSkus.push(s);
       }
     }
-    if (chosenSku) break;
+  }
+  eligibleSkus.sort((a, b) => a.price_vnd - b.price_vnd);
+  let chosenSku = eligibleSkus[0] ?? null;
+  if (!chosenSku) {
+    const created = await createApprovedCodProduct(seller, {
+      priceVnd: 250_000,
+      stock: 20,
+      tag: `ret-${tag}`,
+    });
+    chosenSku = created.sku;
   }
   assert.ok(chosenSku, `expected at least 1 active in-stock SKU for shop ${shopId}`);
 

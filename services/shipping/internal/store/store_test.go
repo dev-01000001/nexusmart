@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nexusmart/core/services/shipping/migrations"
 )
 
@@ -24,8 +22,8 @@ func TestEmbeddedMigrationsPresentAndIdempotentGuards(t *testing.T) {
 	for _, e := range entries {
 		found[e.Name()] = true
 	}
-	if !found["000001_init.sql"] || !found["000002_shipping_ops.sql"] || !found["000003_return_recreate_index.sql"] || !found["000004_shop_freeship_settings.sql"] {
-		t.Fatalf("expected 000001, 000002, 000003, and 000004 migrations, got %v", found)
+	if !found["000001_init.sql"] || !found["000002_shipping_ops.sql"] || !found["000003_return_recreate_index.sql"] || !found["000004_shop_freeship_settings.sql"] || !found["000005_outbox_lease.sql"] {
+		t.Fatalf("expected 000001..000005 migrations, got %v", found)
 	}
 
 	raw, err := fs.ReadFile(migrations.FS, "000002_shipping_ops.sql")
@@ -80,6 +78,34 @@ func TestEmbeddedMigrationsPresentAndIdempotentGuards(t *testing.T) {
 			t.Fatalf("000004_shop_freeship_settings.sql missing %q", mustContain)
 		}
 	}
+
+	raw5, err := fs.ReadFile(migrations.FS, "000005_outbox_lease.sql")
+	if err != nil {
+		t.Fatalf("read 000005_outbox_lease.sql: %v", err)
+	}
+	sql5 := string(raw5)
+	for _, mustContain := range []string{
+		"DEPLOY NOTE",
+		"idx_outbox_unpublished",
+		"ADD COLUMN IF NOT EXISTS aggregate_id",
+		"ADD COLUMN IF NOT EXISTS claimed_until",
+		"ADD COLUMN IF NOT EXISTS claim_token",
+		"ADD COLUMN IF NOT EXISTS attempts",
+		"ADD COLUMN IF NOT EXISTS last_error",
+		"column_name = 'seq'",
+		"ADD COLUMN seq BIGSERIAL NOT NULL",
+		"BTRIM(payload->>'shipment_id')",
+		"AND published_at IS NULL",
+		"nextval(seq_name)",
+		"idx_shipping_outbox_claimable",
+		"ON outbox_events (seq ASC)",
+		"idx_shipping_outbox_aggregate_unpublished",
+		"ON outbox_events (aggregate_id, seq ASC)",
+	} {
+		if !strings.Contains(sql5, mustContain) {
+			t.Fatalf("000005_outbox_lease.sql missing %q", mustContain)
+		}
+	}
 }
 
 func TestCanTransitionStatusMatrix(t *testing.T) {
@@ -122,18 +148,10 @@ func TestNormalizeDirectionAndDescriptionsVI(t *testing.T) {
 	}
 }
 
-// TestPGStoreMigrateAndSeedIdempotent runs against a live shipping_db when TEST_SHIPPING_DB_URL is set.
+// TestPGStoreMigrateAndSeedIdempotent runs against an isolated temporary shipping DB when TEST_SHIPPING_DB_URL is set.
 func TestPGStoreMigrateAndSeedIdempotent(t *testing.T) {
-	dsn := strings.TrimSpace(os.Getenv("TEST_SHIPPING_DB_URL"))
-	if dsn == "" {
-		t.Skip("set TEST_SHIPPING_DB_URL to run Postgres migration idempotency test")
-	}
+	pool := openIsolatedShippingTestPool(t)
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
-	}
-	defer pool.Close()
 
 	st := NewPGStore(pool)
 	if err := st.MigrateAndSeed(ctx); err != nil {

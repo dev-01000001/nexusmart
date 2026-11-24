@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -16,6 +17,10 @@ const (
 	// DefaultReservationTTLSeconds keeps reservation/release tombstones for 400 days
 	// so late returns and disputes never lose their Redis compensation payload.
 	DefaultReservationTTLSeconds = 400 * 24 * 3600
+
+	// DefaultUserUsageTTLSeconds bounds per-user Redis usage keys so any stale/orphaned
+	// counter self-clears within 2 minutes while Postgres enforces authoritative per_user_limit (D12).
+	DefaultUserUsageTTLSeconds = 120
 )
 
 var (
@@ -28,13 +33,9 @@ var (
 	//go:embed release_partial_atomic.lua
 	releasePartialAtomicLua string
 
-	//go:embed adjust_voucher.lua
-	adjustVoucherLua string
-
 	reserveScript        = redis.NewScript(reserveAtomicLua)
 	releaseScript        = redis.NewScript(releaseAtomicLua)
 	releasePartialScript = redis.NewScript(releasePartialAtomicLua)
-	adjustVoucherScript  = redis.NewScript(adjustVoucherLua)
 )
 
 // ReservationErrorCode categorizes failures returned by reserve_atomic.lua.
@@ -154,66 +155,65 @@ func NewEngine(rdb redis.UniversalClient) *Engine {
 	return &Engine{rdb: rdb}
 }
 
-// InitVoucherKeys sets the initial Redis quota, status (ACTIVE), and optional budget keys for a voucher.
-func (e *Engine) InitVoucherKeys(ctx context.Context, voucherID string, quota int32, budgetVND int64) error {
+// ReconcileVoucherKeys authoritatively converges a voucher's Redis status, remaining quota,
+// and remaining budget (or deletes the budget key when budgetVND == 0) to exact Postgres values.
+// Remaining quota is strictly bounded to [0, quota] and remaining budget to [0, budgetVND].
+func (e *Engine) ReconcileVoucherKeys(
+	ctx context.Context,
+	voucherID, status string,
+	quota, usedCount int32,
+	budgetVND, usedBudgetVND int64,
+) error {
+	remQuota := min(max(quota-usedCount, 0), quota)
+	remBudget := min(max(budgetVND-usedBudgetVND, 0), budgetVND)
+
 	pipe := e.rdb.TxPipeline()
-	pipe.Set(ctx, VoucherRemainingKey(voucherID), quota, 0)
-	pipe.Set(ctx, VoucherStatusKey(voucherID), domain.VoucherStatusActive, 0)
+	pipe.Set(ctx, VoucherStatusKey(voucherID), status, 0)
+	pipe.Set(ctx, VoucherRemainingKey(voucherID), remQuota, 0)
 	if budgetVND > 0 {
-		pipe.Set(ctx, VoucherBudgetRemainingKey(voucherID), budgetVND, 0)
+		pipe.Set(ctx, VoucherBudgetRemainingKey(voucherID), remBudget, 0)
+	} else {
+		pipe.Del(ctx, VoucherBudgetRemainingKey(voucherID))
 	}
 	_, err := pipe.Exec(ctx)
 	return err
 }
 
-// SetVoucherStatusKey atomically updates a voucher's status key in Redis (ACTIVE / PAUSED / DELETED).
-func (e *Engine) SetVoucherStatusKey(ctx context.Context, voucherID, status string) error {
-	return e.rdb.Set(ctx, VoucherStatusKey(voucherID), status, 0).Err()
+func userUsageKey(kind, targetID, userID string) (string, bool) {
+	if targetID == "" || userID == "" {
+		return "", false
+	}
+	switch kind {
+	case domain.UsageKindVoucher:
+		return VoucherUserKey(targetID, userID), true
+	case domain.UsageKindFlash:
+		return FlashUserKey(targetID, userID), true
+	case domain.UsageKindShopProgram:
+		return ShopProgramUserKey(targetID, userID), true
+	default:
+		return "", false
+	}
 }
 
-// AdjustVoucherKeys atomically synchronizes voucher status and quota/budget deltas in Redis
-// without losing concurrent reservation decrements.
-func (e *Engine) AdjustVoucherKeys(
-	ctx context.Context,
-	voucherID string,
-	status string,
-	quotaDelta int32,
-	fallbackRemQuota int32,
-	oldBudgetVND int64,
-	newBudgetVND int64,
-	fallbackRemBudget int64,
-) error {
-	keys := []string{
-		VoucherRemainingKey(voucherID),
-		VoucherBudgetRemainingKey(voucherID),
-		VoucherStatusKey(voucherID),
-	}
-	_, err := adjustVoucherScript.Run(
-		ctx,
-		e.rdb,
-		keys,
-		status,
-		quotaDelta,
-		fallbackRemQuota,
-		oldBudgetVND,
-		newBudgetVND,
-		fallbackRemBudget,
-	).Result()
-	if err != nil {
-		return fmt.Errorf("run adjust_voucher.lua: %w", err)
-	}
-	return nil
-}
-
-// SyncVoucherKeysWithStatus initializes missing quota/budget counters and overwrites status from DB.
-func (e *Engine) SyncVoucherKeysWithStatus(ctx context.Context, voucherID, status string, remainingQuota int32, budgetVND, remainingBudgetVND int64) error {
+// ReconcileUserUsageKeys authoritatively converges per-user usage counters in Redis from Postgres:
+// positive counts are SET with 120s TTL and zero counts are DELETED.
+func (e *Engine) ReconcileUserUsageKeys(ctx context.Context, entries []domain.UserUsage) error {
 	pipe := e.rdb.Pipeline()
-	pipe.Set(ctx, VoucherStatusKey(voucherID), status, 0)
-	if status == domain.VoucherStatusActive {
-		pipe.SetNX(ctx, VoucherRemainingKey(voucherID), remainingQuota, 0)
-		if budgetVND > 0 {
-			pipe.SetNX(ctx, VoucherBudgetRemainingKey(voucherID), remainingBudgetVND, 0)
+	queued := 0
+	for _, u := range entries {
+		key, ok := userUsageKey(u.Kind, u.TargetID, u.UserID)
+		if !ok {
+			continue
 		}
+		if u.UsedQty <= 0 {
+			pipe.Del(ctx, key)
+		} else {
+			pipe.Set(ctx, key, u.UsedQty, time.Duration(DefaultUserUsageTTLSeconds)*time.Second)
+		}
+		queued++
+	}
+	if queued == 0 {
+		return nil
 	}
 	_, err := pipe.Exec(ctx)
 	return err
@@ -244,21 +244,19 @@ func (e *Engine) GetInt64(ctx context.Context, key string) (int64, bool, error) 
 	return val, true, nil
 }
 
-// IsReservationReleased reports whether promo:res:<order_id> has been marked RELEASED or removed.
+// IsReservationReleased reports whether promo:res:<order_id> is explicitly marked RELEASED.
+// An absent key returns false so waitForCommittedReservation does not abort while UndoReserve+retry is in flight.
 func (e *Engine) IsReservationReleased(ctx context.Context, orderID string) bool {
 	val, err := e.rdb.Get(ctx, ReservationKey(orderID)).Result()
-	if errors.Is(err, redis.Nil) {
-		return true
-	}
 	if err != nil {
 		return false
 	}
 	return val == "RELEASED"
 }
 
-// MGetInt64 fetches multiple integer keys in a single round-trip.
-func (e *Engine) MGetInt64(ctx context.Context, keys []string) (map[string]int64, error) {
-	res := make(map[string]int64, len(keys))
+// MGetStrings fetches multiple string keys in a single round-trip.
+func (e *Engine) MGetStrings(ctx context.Context, keys []string) (map[string]string, error) {
+	res := make(map[string]string, len(keys))
 	if len(keys) == 0 {
 		return res, nil
 	}
@@ -267,16 +265,23 @@ func (e *Engine) MGetInt64(ctx context.Context, keys []string) (map[string]int64
 		return nil, err
 	}
 	for i, raw := range vals {
-		if raw == nil {
-			continue
+		if raw != nil {
+			res[keys[i]] = fmt.Sprint(raw)
 		}
-		switch v := raw.(type) {
-		case string:
-			if n, parseErr := strconv.ParseInt(v, 10, 64); parseErr == nil {
-				res[keys[i]] = n
-			}
-		case int64:
-			res[keys[i]] = v
+	}
+	return res, nil
+}
+
+// MGetInt64 fetches multiple integer keys in a single round-trip.
+func (e *Engine) MGetInt64(ctx context.Context, keys []string) (map[string]int64, error) {
+	raw, err := e.MGetStrings(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	res := make(map[string]int64, len(raw))
+	for k, s := range raw {
+		if n, parseErr := strconv.ParseInt(s, 10, 64); parseErr == nil {
+			res[k] = n
 		}
 	}
 	return res, nil
@@ -291,10 +296,10 @@ func (e *Engine) Reserve(ctx context.Context, in ReserveInput) (ReserveOutcome, 
 	}
 
 	keys := make([]string, 0, 1+len(in.FlashItems)*2+len(in.Vouchers)*4+len(in.ShopProgramItems))
-	args := make([]any, 0, 4+len(in.FlashItems)*2+len(in.Vouchers)*3+len(in.ShopProgramItems)*2)
+	args := make([]any, 0, 5+len(in.FlashItems)*2+len(in.Vouchers)*3+len(in.ShopProgramItems)*2)
 
 	keys = append(keys, ReservationKey(in.OrderID))
-	args = append(args, len(in.FlashItems), len(in.Vouchers), ttl, len(in.ShopProgramItems))
+	args = append(args, len(in.FlashItems), len(in.Vouchers), ttl, len(in.ShopProgramItems), DefaultUserUsageTTLSeconds)
 
 	for _, f := range in.FlashItems {
 		keys = append(keys, FlashRemainingKey(f.ItemID), FlashUserKey(f.ItemID, in.UserID))
@@ -352,13 +357,24 @@ func (e *Engine) Reserve(ctx context.Context, in ReserveInput) (ReserveOutcome, 
 }
 
 // Release runs release_atomic.lua idempotently to restore flash sale slots, voucher quotas, budgets,
-// and per-user counters (including shop discount program items).
+// and per-user counters (including shop discount program items), writing a RELEASED tombstone.
 func (e *Engine) Release(ctx context.Context, orderID string, extraKeys ...string) (ReleaseOutcome, error) {
+	return e.runRelease(ctx, orderID, DefaultReservationTTLSeconds, 0, extraKeys...)
+}
+
+// UndoReserve cleanly reverts a reserved order's Redis counters and deletes promo:res:<order_id>
+// WITHOUT writing a RELEASED tombstone so the same order_id can immediately retry Reserve at regular price.
+// Existing RELEASED tombstones are left intact.
+func (e *Engine) UndoReserve(ctx context.Context, orderID string, extraKeys ...string) (ReleaseOutcome, error) {
+	return e.runRelease(ctx, orderID, 0, 1, extraKeys...)
+}
+
+func (e *Engine) runRelease(ctx context.Context, orderID string, ttlSeconds, noTombstone int, extraKeys ...string) (ReleaseOutcome, error) {
 	keys := make([]string, 0, 1+len(extraKeys))
 	keys = append(keys, ReservationKey(orderID))
 	keys = append(keys, extraKeys...)
 
-	raw, err := releaseScript.Run(ctx, e.rdb, keys, DefaultReservationTTLSeconds).Result()
+	raw, err := releaseScript.Run(ctx, e.rdb, keys, ttlSeconds, noTombstone, DefaultUserUsageTTLSeconds).Result()
 	if err != nil {
 		return ReleaseOutcome{}, fmt.Errorf("run release_atomic.lua: %w", err)
 	}
@@ -389,8 +405,8 @@ func (e *Engine) ReleasePartial(ctx context.Context, orderID string, targetKeys 
 	keys = append(keys, ReservationKey(orderID))
 	keys = append(keys, extraKeys...)
 
-	args := make([]any, 0, 1+len(targetKeys))
-	args = append(args, DefaultReservationTTLSeconds)
+	args := make([]any, 0, 2+len(targetKeys))
+	args = append(args, DefaultReservationTTLSeconds, DefaultUserUsageTTLSeconds)
 	for _, k := range targetKeys {
 		args = append(args, k)
 	}

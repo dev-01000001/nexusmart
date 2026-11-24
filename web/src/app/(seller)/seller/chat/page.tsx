@@ -3,7 +3,8 @@
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ORDER_STATUS_META, SHOPS, getSellerWorkspace, getShopById } from "@/data";
+import { ORDER_STATUS_META, SHOPS, getShopById } from "@/data";
+import { getSellerWorkspace } from "@/data/seller";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconSearch, StateView } from "@/components";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";

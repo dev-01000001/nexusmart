@@ -43,7 +43,7 @@ func seedR6GroupAndOrders(t *testing.T, h *testHarness, groupID, groupStatus, pa
 	}
 	if groupStatus == "COMPLETED" {
 		_ = h.store.CompleteCheckoutWithPayment(ctx, store.UpdateCheckoutPaymentParams{
-			CheckoutGroupID: groupID, PaymentID: "pay-" + groupID, PaymentStatus: "PENDING", TotalPayableVND: total,
+			CheckoutGroupID: groupID, PaymentID: "pay-" + groupID, PaymentStatus: "PENDING",
 		})
 	} else if groupStatus == "FAILED" {
 		_ = h.store.FailCheckoutGroup(ctx, groupID, "FAILED")
@@ -393,9 +393,9 @@ func TestW2B_R6_5_M5_ReconcileObservedErrorReturnsUnavailable(t *testing.T) {
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("M5: expected codes.Unavailable when reconcileObservedPaymentStatus fails, got %v", err)
 	}
-	grp, gErr := h.store.GetActiveCheckoutGroup(context.Background(), "buyer-1", "r6-m5-reconcile-err")
-	if gErr != nil || grp.Status != "IN_PROGRESS" {
-		t.Fatalf("M5 violation: group must stay IN_PROGRESS (NOT COMPLETED) when reconcile fails, got err=%v grp=%+v", gErr, grp)
+	lookup, gErr := h.store.GetCheckoutGroupForIdempotency(context.Background(), "buyer-1", "r6-m5-reconcile-err")
+	if gErr != nil || lookup.Group.Status != "IN_PROGRESS" {
+		t.Fatalf("M5 violation: group must stay IN_PROGRESS (NOT COMPLETED) when reconcile fails, got err=%v lookup=%+v", gErr, lookup)
 	}
 }
 
@@ -425,11 +425,11 @@ func TestW2B_R6_6_M6_DetachedCreatePaymentAndCODAmbiguousDefer(t *testing.T) {
 			t.Fatalf("M6 violation: must NOT cancel/release COD order on ambiguous+NotFound! stock=%d promo=%d",
 				len(h.product.releaseCalls), len(h.promo.releaseCalls))
 		}
-		grp, gErr := h.store.GetActiveCheckoutGroup(context.Background(), "buyer-1", "r6-m6-cod-ambig")
-		if gErr != nil || grp.Status != "IN_PROGRESS" {
-			t.Fatalf("M6: group must remain IN_PROGRESS for watchdog forward recovery, got err=%v grp=%+v", gErr, grp)
+		lookup, gErr := h.store.GetCheckoutGroupForIdempotency(context.Background(), "buyer-1", "r6-m6-cod-ambig")
+		if gErr != nil || lookup.Group.Status != "IN_PROGRESS" {
+			t.Fatalf("M6: group must remain IN_PROGRESS for watchdog forward recovery, got err=%v lookup=%+v", gErr, lookup)
 		}
-		aggs, _ := h.store.ListOrdersByCheckoutGroup(context.Background(), grp.ID)
+		aggs, _ := h.store.ListOrdersByCheckoutGroup(context.Background(), lookup.Group.ID)
 		if len(aggs) != 1 || aggs[0].Order.Status != "CONFIRMED" {
 			t.Fatalf("M6: COD order must remain CONFIRMED, got %+v", aggs)
 		}
@@ -534,19 +534,16 @@ func TestW2B_R6_7_M7_ZeroSubOrderInMultiShopVietQRAndP3(t *testing.T) {
 			t.Fatalf("M7 violation: cancelling PENDING 0-VND sub-order skipped CancelPayment! calls=%+v", h.payment.cancelCalls)
 		}
 
-		// Also verify cancelPaymentAfterAllCancelled flags the positive-payable sub-order (shop-2) over 0-VND shop-1!
-		h.payment.cancelErr = status.Error(codes.Unavailable, "payment down")
-		aggs, _ := h.store.ListOrdersByCheckoutGroup(context.Background(), "grp-m7-multi")
-		// Clear flags first so we observe which order cancelPaymentAfterAllCancelled picks.
-		for _, a := range aggs {
-			_ = h.store.ClearOrderPendingCancelCompensation(context.Background(), a.Order.ID)
+		// CompleteCheckoutWithPayment with payment_id emits fresh order.cancelled outbox events for both cancelled sub-orders (P0-1).
+		beforeOutbox := len(h.store.OutboxEvents())
+		if err := h.store.CompleteCheckoutWithPayment(context.Background(), store.UpdateCheckoutPaymentParams{
+			CheckoutGroupID: "grp-m7-multi", PaymentID: "pay-m7", PaymentStatus: "PENDING",
+		}); err != nil {
+			t.Fatalf("CompleteCheckoutWithPayment: %v", err)
 		}
-		h.svc.cancelPaymentAfterAllCancelled(context.Background(), "grp-m7-multi", "pay-m7", aggs)
-		ordPos, _ := h.store.GetOrderWithDetails(context.Background(), "ord-m7-pos")
-		ordZero, _ := h.store.GetOrderWithDetails(context.Background(), "ord-m7-zero")
-		if !ordPos.Order.PendingCancelCompensation || ordZero.Order.PendingCancelCompensation {
-			t.Fatalf("M7: expected flag on positive-payable ord-m7-pos (pos=%v zero=%v)",
-				ordPos.Order.PendingCancelCompensation, ordZero.Order.PendingCancelCompensation)
+		afterEvents := h.store.OutboxEvents()[beforeOutbox:]
+		if len(afterEvents) != 2 {
+			t.Fatalf("P0-1: expected 2 re-emitted order.cancelled events for grp-m7-multi, got %d", len(afterEvents))
 		}
 	})
 

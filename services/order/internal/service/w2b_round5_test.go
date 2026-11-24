@@ -182,9 +182,9 @@ func TestW2B_R5_1_N1_PersistCheckoutBatchRecovery(t *testing.T) {
 			t.Fatalf("N1 violation: must NOT compensate when persist state uncertain! stock=%d promo=%d",
 				len(h.product.releaseCalls), len(h.promo.releaseCalls))
 		}
-		grp, gErr := h.store.GetActiveCheckoutGroup(context.Background(), "buyer-1", "r5-n1-uncertain")
-		if gErr != nil || grp.Status != "IN_PROGRESS" {
-			t.Fatalf("N1 violation: group must remain IN_PROGRESS for watchdog, got err=%v grp=%+v", gErr, grp)
+		lookup, gErr := h.store.GetCheckoutGroupForIdempotency(context.Background(), "buyer-1", "r5-n1-uncertain")
+		if gErr != nil || lookup.Group.Status != "IN_PROGRESS" {
+			t.Fatalf("N1 violation: group must remain IN_PROGRESS for watchdog, got err=%v lookup=%+v", gErr, lookup)
 		}
 	})
 
@@ -326,11 +326,11 @@ func TestW2B_R5_2_N2_CreatePaymentAmbiguousAndSafeCancel(t *testing.T) {
 			t.Fatalf("N2 violation: must NOT release stock/promo when payment probe fails! stock=%d promo=%d",
 				len(h.product.releaseCalls), len(h.promo.releaseCalls))
 		}
-		grp, gErr := h.store.GetActiveCheckoutGroup(context.Background(), "buyer-1", "r5-n2-probe-fail")
-		if gErr != nil || grp.Status != "IN_PROGRESS" {
-			t.Fatalf("N2 violation: group must stay IN_PROGRESS, got err=%v grp=%+v", gErr, grp)
+		lookup, gErr := h.store.GetCheckoutGroupForIdempotency(context.Background(), "buyer-1", "r5-n2-probe-fail")
+		if gErr != nil || lookup.Group.Status != "IN_PROGRESS" {
+			t.Fatalf("N2 violation: group must stay IN_PROGRESS, got err=%v lookup=%+v", gErr, lookup)
 		}
-		aggs, _ := h.store.ListOrdersByCheckoutGroup(context.Background(), grp.ID)
+		aggs, _ := h.store.ListOrdersByCheckoutGroup(context.Background(), lookup.Group.ID)
 		if len(aggs) != 1 || aggs[0].Order.Status != "PENDING" {
 			t.Fatalf("N2 violation: order must stay PENDING when probe fails, got %+v", aggs)
 		}
@@ -648,11 +648,14 @@ func TestW2B_R5_5_N5_CancelPaymentWithEmptyIDAndPostCommitCancel(t *testing.T) {
 		buyerCtx := ctxWithUser("buyer-1", "buyer", "")
 		// Cancel right after CreatePayment returns (while order still has payment_id == "")!
 		var cancelOrderErr error
+		var createdGroupID, cancelledOrderID string
 		h.payment.afterCreatePay = func(pay *paymentv1.Payment) {
+			createdGroupID = pay.GetOrderGroupId()
 			aggs, _ := h.store.ListOrdersByCheckoutGroup(context.Background(), pay.GetOrderGroupId())
 			if len(aggs) > 0 {
+				cancelledOrderID = aggs[0].Order.ID
 				_, cancelOrderErr = h.svc.CancelOrder(buyerCtx, &orderv1.CancelOrderRequest{
-					OrderId: aggs[0].Order.ID,
+					OrderId: cancelledOrderID,
 					Reason:  "buyer cancelled before CompleteCheckoutWithPayment",
 				})
 			}
@@ -664,41 +667,58 @@ func TestW2B_R5_5_N5_CancelPaymentWithEmptyIDAndPostCommitCancel(t *testing.T) {
 			Items:          []*orderv1.CheckoutItemInput{{SkuId: "sku-1", Quantity: 1}},
 			PaymentMethod:  orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR,
 		})
-		if err != nil || cancelOrderErr != nil {
-			t.Fatalf("CreateCheckout=%v CancelOrder=%v", err, cancelOrderErr)
+		if cancelOrderErr != nil {
+			t.Fatalf("CancelOrder=%v", cancelOrderErr)
 		}
-		// Expect CancelPayment called BOTH by CancelOrder (with OrderGroupId even though PaymentID=="")
-		// AND by post-commit CompleteCheckoutWithPayment (with P1) because all orders were CANCELLED!
-		var sawByGroup, sawWithP1 bool
+		if err == nil || resp != nil || status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "CHECKOUT_FAILED") {
+			t.Fatalf("D11 (P1-1): expected FailedPrecondition CHECKOUT_FAILED when all orders cancelled, got resp=%+v err=%v", resp, err)
+		}
+		lookup, lErr := h.store.GetCheckoutGroupForIdempotency(context.Background(), "buyer-1", "r5-n5-cancel-empty-payid")
+		if lErr != nil || !lookup.HasOrders || lookup.Group.Status != "FAILED" || lookup.Group.ID != createdGroupID {
+			t.Fatalf("expected FAILED group with orders in store, got lookup=%+v err=%v", lookup, lErr)
+		}
+		// Expect CancelOrder called CancelPayment(OrderGroupId) even though PaymentID=="",
+		// AND CompleteCheckoutWithPayment re-emitted a fresh order.cancelled outbox event (distinct event_id)
+		// in the same TX so payment cancels/refunds P1 regardless of P1's status (P0-1).
+		var sawByGroup bool
 		for _, req := range h.payment.cancelCalls {
-			if req.GetOrderGroupId() == resp.CheckoutGroupId && req.GetPaymentId() == "" {
+			if req.GetOrderGroupId() == lookup.Group.ID && req.GetPaymentId() == "" {
 				sawByGroup = true
-			}
-			if req.GetOrderGroupId() == resp.CheckoutGroupId && req.GetPaymentId() == resp.PaymentId && resp.PaymentId != "" {
-				sawWithP1 = true
 			}
 		}
 		if !sawByGroup {
 			t.Fatalf("N5: CancelOrder on PENDING order with empty payment_id did not call CancelPayment(OrderGroupId); calls=%+v", h.payment.cancelCalls)
 		}
-		if !sawWithP1 {
-			t.Fatalf("N5: CompleteCheckoutWithPayment seeing all orders CANCELLED did not call CancelPayment(P1); calls=%+v", h.payment.cancelCalls)
+		seenCancelEventIDs := map[string]struct{}{}
+		for _, ev := range h.store.OutboxEvents() {
+			if ev.EventType != events.SubjectOrderCancelled {
+				continue
+			}
+			var p events.OrderCancelledPayload
+			if json.Unmarshal(ev.PayloadJSON, &p) == nil && p.OrderID == cancelledOrderID {
+				seenCancelEventIDs[ev.ID] = struct{}{}
+			}
+		}
+		if len(seenCancelEventIDs) < 2 {
+			t.Fatalf("P0-1: expected >=2 distinct order.cancelled outbox events (initial cancel + CompleteCheckoutWithPayment re-emit), got %d", len(seenCancelEventIDs))
 		}
 	})
 
-	t.Run("PostCommitCancelPaymentP1Fails_FlagsPendingCancelCompForWatchdog", func(t *testing.T) {
+	t.Run("CancelOrderPaymentOutage_FlagsPendingCancelCompAndReemitsOutbox", func(t *testing.T) {
 		h := newTestHarness()
 		buyerCtx := ctxWithUser("buyer-1", "buyer", "")
 		var cancelOrderErr error
+		var cancelledOrderID string
 		h.payment.afterCreatePay = func(pay *paymentv1.Payment) {
 			aggs, _ := h.store.ListOrdersByCheckoutGroup(context.Background(), pay.GetOrderGroupId())
 			if len(aggs) > 0 {
+				cancelledOrderID = aggs[0].Order.ID
+				// Simulate transient payment outage when CancelOrder's compensation runs!
+				h.payment.cancelErr = status.Error(codes.Unavailable, "payment temporarily unavailable")
 				_, cancelOrderErr = h.svc.CancelOrder(buyerCtx, &orderv1.CancelOrderRequest{
-					OrderId: aggs[0].Order.ID,
+					OrderId: cancelledOrderID,
 					Reason:  "buyer cancelled",
 				})
-				// Simulate transient payment outage when post-commit CancelPayment(P1) runs!
-				h.payment.cancelErr = status.Error(codes.Unavailable, "payment temporarily unavailable")
 			}
 		}
 
@@ -708,13 +728,34 @@ func TestW2B_R5_5_N5_CancelPaymentWithEmptyIDAndPostCommitCancel(t *testing.T) {
 			Items:          []*orderv1.CheckoutItemInput{{SkuId: "sku-1", Quantity: 1}},
 			PaymentMethod:  orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR,
 		})
-		if err != nil || cancelOrderErr != nil {
-			t.Fatalf("CreateCheckout=%v CancelOrder=%v", err, cancelOrderErr)
+		if cancelOrderErr != nil {
+			t.Fatalf("CancelOrder=%v", cancelOrderErr)
 		}
-		// Order must be flagged pending_cancel_compensation=true so ScanPendingCancelCompensations recovers!
-		agg, _ := h.store.GetOrderWithDetails(context.Background(), resp.Orders[0].Id)
+		if err == nil || resp != nil || status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "CHECKOUT_FAILED") {
+			t.Fatalf("D11 (P1-1): expected FailedPrecondition CHECKOUT_FAILED when all orders cancelled, got resp=%+v err=%v", resp, err)
+		}
+		lookup, lErr := h.store.GetCheckoutGroupForIdempotency(context.Background(), "buyer-1", "r5-n5-postcommit-retry")
+		if lErr != nil || !lookup.HasOrders || lookup.Group.Status != "FAILED" {
+			t.Fatalf("expected FAILED group with orders in store, got lookup=%+v err=%v", lookup, lErr)
+		}
+		// Fresh order.cancelled outbox event is durably recorded inside CompleteCheckoutWithPayment TX even during payment outage.
+		cancelOutboxCount := 0
+		for _, ev := range h.store.OutboxEvents() {
+			if ev.EventType != events.SubjectOrderCancelled {
+				continue
+			}
+			var p events.OrderCancelledPayload
+			if json.Unmarshal(ev.PayloadJSON, &p) == nil && p.OrderID == cancelledOrderID {
+				cancelOutboxCount++
+			}
+		}
+		if cancelOutboxCount < 2 {
+			t.Fatalf("P0-1: expected durable re-emitted order.cancelled outbox event during payment outage, got %d", cancelOutboxCount)
+		}
+		// Order must still be flagged pending_cancel_compensation=true so ScanPendingCancelCompensations recovers!
+		agg, _ := h.store.GetOrderWithDetails(context.Background(), cancelledOrderID)
 		if !agg.Order.PendingCancelCompensation {
-			t.Fatalf("N5: expected pending_cancel_compensation=true when post-commit CancelPayment(P1) failed")
+			t.Fatalf("N5: expected pending_cancel_compensation=true when CancelPayment failed during outage")
 		}
 		// Payment recovers -> watchdog succeeds and clears pending_cancel_compensation.
 		h.payment.cancelErr = nil
@@ -722,7 +763,7 @@ func TestW2B_R5_5_N5_CancelPaymentWithEmptyIDAndPostCommitCancel(t *testing.T) {
 		if err != nil || handled != 1 {
 			t.Fatalf("ScanPendingCancelCompensations = %d, %v; want 1, nil", handled, err)
 		}
-		aggAfter, _ := h.store.GetOrderWithDetails(context.Background(), resp.Orders[0].Id)
+		aggAfter, _ := h.store.GetOrderWithDetails(context.Background(), cancelledOrderID)
 		if aggAfter.Order.PendingCancelCompensation {
 			t.Fatalf("expected pending_cancel_compensation cleared after watchdog recovery")
 		}
@@ -747,6 +788,25 @@ func TestW2B_R5_6_P2_N6_N7_N8_N9_N10(t *testing.T) {
 			ID: gid, BuyerID: "buyer-1", IdempotencyKey: "r5-n6-legacy-snap",
 			RequestHash: reqHash, Status: "IN_PROGRESS", PaymentMethod: "VIETQR", TotalPayableVND: 1030000,
 		})
+		_, _ = h.store.PersistCheckoutBatch(ctx, store.CheckoutBatch{
+			CheckoutGroupID: gid,
+			Orders: []store.NewOrderRecord{{
+				Order: db.InsertOrderParams{
+					ID: "ord-legacy", OrderCode: "NM-LEGACY-1", CheckoutGroupID: gid,
+					BuyerID: "buyer-1", ShopID: "shop-1", Status: "PENDING",
+					PaymentMethod: "VIETQR", PaymentStatus: "PENDING",
+					SubtotalVND: 1000000, ShippingFeeVND: 30000, CommissionVND: 50000,
+					PaymentFeeVND: 15450, PaymentFeeBPS: 150, TotalPayableVND: 1030000,
+					ShippingAddressJSON: []byte(`{}`),
+				},
+				Items: []db.InsertOrderItemParams{{
+					ID: "oi-legacy", OrderID: "ord-legacy", SKUID: "sku-1", ProductID: "p-1",
+					ProductName: "KB", SKUName: "Std", UnitPriceVND: 1000000, EffectiveUnitPriceVND: 1000000,
+					Quantity: 1, LineTotalVND: 1000000, CommissionRateBPS: 500,
+				}},
+			}},
+		})
+		_ = h.store.MarkOrderOrphanShipmentManualReview(ctx, "ord-legacy", "legacy review flag")
 		// Inject a pre-r4 snapshot containing non-zero seller fees + needs_manual_review=true!
 		legacySnap, _ := protojson.Marshal(&orderv1.CreateCheckoutResponse{
 			CheckoutGroupId: gid,
@@ -769,7 +829,6 @@ func TestW2B_R5_6_P2_N6_N7_N8_N9_N10(t *testing.T) {
 			CheckoutGroupID:      gid,
 			PaymentID:            "pay-legacy",
 			PaymentStatus:        "PENDING",
-			TotalPayableVND:      1030000,
 			ResponseSnapshotJSON: legacySnap,
 		})
 
@@ -829,11 +888,8 @@ func TestW2B_R5_6_P2_N6_N7_N8_N9_N10(t *testing.T) {
 			PaymentMethod:  orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR,
 		}
 		resp1, err := h.svc.CreateCheckout(buyerCtx, req)
-		if err != nil {
-			t.Fatalf("CreateCheckout 1: %v", err)
-		}
-		if len(resp1.Warnings) != 1 {
-			t.Fatalf("expected 1 warning on initial call, got %v", resp1.Warnings)
+		if err == nil || resp1 != nil || status.Code(err) != codes.Unavailable {
+			t.Fatalf("P1-1: CreateCheckout 1 expected Unavailable when finalization fails, got resp=%+v err=%v", resp1, err)
 		}
 
 		// Reset completeFailRemaining = 0 BEFORE the 500ms pre-grace check so that if the 2s grace guard
@@ -888,7 +944,7 @@ func TestW2B_R5_6_P2_N6_N7_N8_N9_N10(t *testing.T) {
 			},
 		})
 		if err := h.store.CompleteCheckoutWithPayment(ctx, store.UpdateCheckoutPaymentParams{
-			CheckoutGroupID: gid, PaymentID: "pay-n8", PaymentStatus: "PENDING", TotalPayableVND: 1560000,
+			CheckoutGroupID: gid, PaymentID: "pay-n8", PaymentStatus: "PENDING",
 		}); err != nil {
 			t.Fatalf("CompleteCheckoutWithPayment: %v", err)
 		}
@@ -945,14 +1001,20 @@ func TestW2B_R5_6_P2_N6_N7_N8_N9_N10(t *testing.T) {
 		}
 		h.svc.store = wrapped
 
+		var origPayID string
+		h.payment.afterCreatePay = func(p *paymentv1.Payment) {
+			if origPayID == "" {
+				origPayID = p.GetPaymentId()
+			}
+		}
 		co, err := h.svc.CreateCheckout(buyerCtx, &orderv1.CreateCheckoutRequest{
 			IdempotencyKey: "r5-n10-retry-pay",
 			AddressId:      "addr-buyer-1",
 			Items:          []*orderv1.CheckoutItemInput{{SkuId: "sku-1", Quantity: 1}},
 			PaymentMethod:  orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR,
 		})
-		if err != nil {
-			t.Fatalf("CreateCheckout: %v", err)
+		if err == nil || co != nil || status.Code(err) != codes.Unavailable || origPayID == "" {
+			t.Fatalf("P1-1: CreateCheckout expected Unavailable with created payment, got resp=%+v payID=%q err=%v", co, origPayID, err)
 		}
 		// DB recovered -> buyer calls RetryPayment(P1) while group is still IN_PROGRESS and payment_id="".
 		wrapped.mu.Lock()
@@ -960,14 +1022,14 @@ func TestW2B_R5_6_P2_N6_N7_N8_N9_N10(t *testing.T) {
 		wrapped.mu.Unlock()
 
 		retryResp, err := h.svc.RetryPayment(buyerCtx, &orderv1.RetryPaymentRequest{
-			PaymentId:      co.PaymentId,
+			PaymentId:      origPayID,
 			IdempotencyKey: "retry-n10-1",
 		})
 		if err != nil {
 			t.Fatalf("N10: RetryPayment must recover IN_PROGRESS group instead of failing FailedPrecondition: %v", err)
 		}
-		if retryResp.PaymentId == "" || retryResp.PaymentId == co.PaymentId {
-			t.Fatalf("expected new superseding payment_id, got %q (old %q)", retryResp.PaymentId, co.PaymentId)
+		if retryResp.PaymentId == "" || retryResp.PaymentId == origPayID {
+			t.Fatalf("expected new superseding payment_id, got %q (old %q)", retryResp.PaymentId, origPayID)
 		}
 	})
 

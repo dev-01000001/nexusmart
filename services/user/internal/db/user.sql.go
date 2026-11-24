@@ -189,7 +189,7 @@ SET status = $2,
     updated_at = $6
 WHERE id = $1
   AND status = 'PENDING_OTP'
-RETURNING id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed
+RETURNING id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed, account_number_enc
 `
 
 type CompleteShopBankAccountOTPVerificationParams struct {
@@ -230,6 +230,7 @@ func (q *Queries) CompleteShopBankAccountOTPVerification(ctx context.Context, ar
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.OTPPublishFailed,
+		&i.AccountNumberEnc,
 	)
 	return i, err
 }
@@ -297,7 +298,18 @@ func (q *Queries) CountShops(ctx context.Context, status string) (int64, error) 
 
 const countUsers = `-- name: CountUsers :one
 SELECT COUNT(*)::bigint FROM users
-WHERE ($1::text = '' OR full_name ILIKE '%' || $1::text || '%' OR email ILIKE '%' || $1::text || '%' OR phone ILIKE '%' || $1::text || '%')
+WHERE (
+    $1::text = ''
+    OR CASE
+        WHEN $1::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        THEN id = ($1::text)::uuid
+        ELSE (
+            full_name ILIKE '%' || $1::text || '%'
+            OR email ILIKE '%' || $1::text || '%'
+            OR phone ILIKE '%' || $1::text || '%'
+        )
+    END
+)
   AND ($2::text = '' OR role = $2::text)
   AND ($3::text = '' OR status = $3::text)
 `
@@ -511,15 +523,15 @@ func (q *Queries) CreateShop(ctx context.Context, arg CreateShopParams) (Shop, e
 
 const createShopBankAccount = `-- name: CreateShopBankAccount :one
 INSERT INTO shop_bank_accounts (
-    id, shop_id, bank_code, bank_name, account_number, account_number_masked,
+    id, shop_id, bank_code, bank_name, account_number, account_number_enc, account_number_masked,
     account_holder_name, holder_name_matched, status, review_note,
     otp_hash, otp_expires_at, otp_attempts, created_at, updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6,
+    $1, $2, $3, $4, '', $5, $6,
     $7, $8, $9, $10,
     $11, $12, $13, $14, $15
 )
-RETURNING id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed
+RETURNING id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed, account_number_enc
 `
 
 type CreateShopBankAccountParams struct {
@@ -527,7 +539,7 @@ type CreateShopBankAccountParams struct {
 	ShopID              string     `json:"shop_id"`
 	BankCode            string     `json:"bank_code"`
 	BankName            string     `json:"bank_name"`
-	AccountNumber       string     `json:"account_number"`
+	AccountNumberEnc    []byte     `json:"account_number_enc"`
 	AccountNumberMasked string     `json:"account_number_masked"`
 	AccountHolderName   string     `json:"account_holder_name"`
 	HolderNameMatched   bool       `json:"holder_name_matched"`
@@ -546,7 +558,7 @@ func (q *Queries) CreateShopBankAccount(ctx context.Context, arg CreateShopBankA
 		arg.ShopID,
 		arg.BankCode,
 		arg.BankName,
-		arg.AccountNumber,
+		arg.AccountNumberEnc,
 		arg.AccountNumberMasked,
 		arg.AccountHolderName,
 		arg.HolderNameMatched,
@@ -578,6 +590,7 @@ func (q *Queries) CreateShopBankAccount(ctx context.Context, arg CreateShopBankA
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.OTPPublishFailed,
+		&i.AccountNumberEnc,
 	)
 	return i, err
 }
@@ -703,7 +716,7 @@ func (q *Queries) GetAddressByID(ctx context.Context, id string) (Address, error
 }
 
 const getLatestShopBankAccountByShopID = `-- name: GetLatestShopBankAccountByShopID :one
-SELECT id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed FROM shop_bank_accounts
+SELECT id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed, account_number_enc FROM shop_bank_accounts
 WHERE shop_id = $1
   AND status <> 'SUPERSEDED'
   AND (
@@ -750,6 +763,7 @@ func (q *Queries) GetLatestShopBankAccountByShopID(ctx context.Context, arg GetL
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.OTPPublishFailed,
+		&i.AccountNumberEnc,
 	)
 	return i, err
 }
@@ -775,43 +789,8 @@ func (q *Queries) GetPasswordResetByHashForUpdate(ctx context.Context, tokenHash
 	return i, err
 }
 
-const getPendingAdminReviewShopBankAccountByShopIDForUpdate = `-- name: GetPendingAdminReviewShopBankAccountByShopIDForUpdate :one
-SELECT id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed FROM shop_bank_accounts
-WHERE shop_id = $1
-  AND status = 'PENDING_ADMIN_REVIEW'
-ORDER BY created_at DESC
-LIMIT 1
-FOR UPDATE
-`
-
-func (q *Queries) GetPendingAdminReviewShopBankAccountByShopIDForUpdate(ctx context.Context, shopID string) (ShopBankAccount, error) {
-	row := q.db.QueryRow(ctx, getPendingAdminReviewShopBankAccountByShopIDForUpdate, shopID)
-	var i ShopBankAccount
-	err := row.Scan(
-		&i.ID,
-		&i.ShopID,
-		&i.BankCode,
-		&i.BankName,
-		&i.AccountNumber,
-		&i.AccountNumberMasked,
-		&i.AccountHolderName,
-		&i.HolderNameMatched,
-		&i.Status,
-		&i.ReviewNote,
-		&i.OTPHash,
-		&i.OTPExpiresAt,
-		&i.OTPAttempts,
-		&i.PayoutLockedUntil,
-		&i.VerifiedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.OTPPublishFailed,
-	)
-	return i, err
-}
-
 const getPendingOTPShopBankAccountForUpdate = `-- name: GetPendingOTPShopBankAccountForUpdate :one
-SELECT id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed FROM shop_bank_accounts
+SELECT id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed, account_number_enc FROM shop_bank_accounts
 WHERE shop_id = $1
   AND status = 'PENDING_OTP'
 ORDER BY created_at DESC
@@ -841,6 +820,7 @@ func (q *Queries) GetPendingOTPShopBankAccountForUpdate(ctx context.Context, sho
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.OTPPublishFailed,
+		&i.AccountNumberEnc,
 	)
 	return i, err
 }
@@ -868,7 +848,7 @@ func (q *Queries) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (
 }
 
 const getShopBankAccountByIDForUpdate = `-- name: GetShopBankAccountByIDForUpdate :one
-SELECT id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed FROM shop_bank_accounts
+SELECT id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed, account_number_enc FROM shop_bank_accounts
 WHERE id = $1
 LIMIT 1
 FOR UPDATE
@@ -896,6 +876,7 @@ func (q *Queries) GetShopBankAccountByIDForUpdate(ctx context.Context, id string
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.OTPPublishFailed,
+		&i.AccountNumberEnc,
 	)
 	return i, err
 }
@@ -1220,7 +1201,7 @@ func (q *Queries) GetUserPlatformCounts(ctx context.Context) (GetUserPlatformCou
 }
 
 const getVerifiedShopBankAccountByShopID = `-- name: GetVerifiedShopBankAccountByShopID :one
-SELECT id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed FROM shop_bank_accounts
+SELECT id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed, account_number_enc FROM shop_bank_accounts
 WHERE shop_id = $1
   AND status = 'VERIFIED'
 LIMIT 1
@@ -1248,6 +1229,7 @@ func (q *Queries) GetVerifiedShopBankAccountByShopID(ctx context.Context, shopID
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.OTPPublishFailed,
+		&i.AccountNumberEnc,
 	)
 	return i, err
 }
@@ -1671,7 +1653,18 @@ func (q *Queries) ListShops(ctx context.Context, arg ListShopsParams) ([]Shop, e
 
 const listUsers = `-- name: ListUsers :many
 SELECT id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason FROM users
-WHERE ($1::text = '' OR full_name ILIKE '%' || $1::text || '%' OR email ILIKE '%' || $1::text || '%' OR phone ILIKE '%' || $1::text || '%')
+WHERE (
+    $1::text = ''
+    OR CASE
+        WHEN $1::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        THEN id = ($1::text)::uuid
+        ELSE (
+            full_name ILIKE '%' || $1::text || '%'
+            OR email ILIKE '%' || $1::text || '%'
+            OR phone ILIKE '%' || $1::text || '%'
+        )
+    END
+)
   AND ($2::text = '' OR role = $2::text)
   AND ($3::text = '' OR status = $3::text)
 ORDER BY created_at DESC
@@ -1776,7 +1769,7 @@ SET status = $2,
     otp_expires_at = $5,
     updated_at = $6
 WHERE id = $1
-RETURNING id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed
+RETURNING id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed, account_number_enc
 `
 
 type RecordShopBankAccountOTPFailureParams struct {
@@ -1817,6 +1810,7 @@ func (q *Queries) RecordShopBankAccountOTPFailure(ctx context.Context, arg Recor
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.OTPPublishFailed,
+		&i.AccountNumberEnc,
 	)
 	return i, err
 }
@@ -2063,7 +2057,7 @@ SET status = $2,
     updated_at = $6
 WHERE id = $1
   AND status = 'PENDING_ADMIN_REVIEW'
-RETURNING id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed
+RETURNING id, shop_id, bank_code, bank_name, account_number, account_number_masked, account_holder_name, holder_name_matched, status, review_note, otp_hash, otp_expires_at, otp_attempts, payout_locked_until, verified_at, created_at, updated_at, otp_publish_failed, account_number_enc
 `
 
 type UpdateShopBankAccountAdminReviewParams struct {
@@ -2104,6 +2098,7 @@ func (q *Queries) UpdateShopBankAccountAdminReview(ctx context.Context, arg Upda
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.OTPPublishFailed,
+		&i.AccountNumberEnc,
 	)
 	return i, err
 }

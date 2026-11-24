@@ -48,7 +48,7 @@ export function verifyCsrfOrigin(req: Request): NextResponse | null {
           message: "Yêu cầu không hợp lệ.",
         },
       },
-      { status: 403 }
+      { status: 403, headers: { "Cache-Control": "no-store" } }
     );
   }
 
@@ -63,7 +63,7 @@ export function verifyCsrfOrigin(req: Request): NextResponse | null {
           message: "Yêu cầu không hợp lệ.",
         },
       },
-      { status: 403 }
+      { status: 403, headers: { "Cache-Control": "no-store" } }
     );
   }
 

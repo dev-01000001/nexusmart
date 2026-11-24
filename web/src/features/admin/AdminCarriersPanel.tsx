@@ -36,7 +36,7 @@ function normalizeFallbackRates(rates?: GatewayFallbackRate[]): GatewayFallbackR
       return {
         region,
         base_fee_vnd: Math.max(0, Math.trunc(existing.base_fee_vnd || 0)),
-        base_weight_grams: Math.max(100, Math.trunc(existing.base_weight_grams || 1000)),
+        base_weight_grams: Math.max(1, Math.trunc(existing.base_weight_grams || 1000)),
         extra_fee_vnd_per_500g: Math.max(0, Math.trunc(existing.extra_fee_vnd_per_500g || 0)),
       };
     }
@@ -308,6 +308,7 @@ export function AdminCarriersPanel() {
             <form
               className={styles.settingsPanel}
               onSubmit={(e) => void handleSaveCarrier(e, carrier)}
+              noValidate
             >
               <div className={styles.switchRow}>
                 <div className={styles.switchCopy}>
@@ -372,7 +373,7 @@ export function AdminCarriersPanel() {
                             <input
                               type="number"
                               min={0}
-                              step={1000}
+                              step={1}
                               className={styles.compactInput}
                               value={rate.base_fee_vnd}
                               onChange={(e) =>
@@ -385,8 +386,8 @@ export function AdminCarriersPanel() {
                           <td className={shared.colNum}>
                             <input
                               type="number"
-                              min={100}
-                              step={100}
+                              min={1}
+                              step={1}
                               className={styles.compactInput}
                               value={rate.base_weight_grams}
                               onChange={(e) =>
@@ -405,7 +406,7 @@ export function AdminCarriersPanel() {
                             <input
                               type="number"
                               min={0}
-                              step={500}
+                              step={1}
                               className={styles.compactInput}
                               value={rate.extra_fee_vnd_per_500g}
                               onChange={(e) =>
@@ -446,7 +447,7 @@ export function AdminCarriersPanel() {
                             id={baseId}
                             type="number"
                             min={0}
-                            step={1000}
+                            step={1}
                             className={`${styles.settingInput} ${styles.settingInputNum}`}
                             value={rate.base_fee_vnd}
                             onChange={(e) =>
@@ -462,8 +463,8 @@ export function AdminCarriersPanel() {
                           <input
                             id={weightId}
                             type="number"
-                            min={100}
-                            step={100}
+                            min={1}
+                            step={1}
                             className={`${styles.settingInput} ${styles.settingInputNum}`}
                             value={rate.base_weight_grams}
                             onChange={(e) =>
@@ -480,7 +481,7 @@ export function AdminCarriersPanel() {
                             id={extraId}
                             type="number"
                             min={0}
-                            step={500}
+                            step={1}
                             className={`${styles.settingInput} ${styles.settingInputNum}`}
                             value={rate.extra_fee_vnd_per_500g}
                             onChange={(e) =>

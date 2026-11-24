@@ -102,7 +102,18 @@ FOR UPDATE;
 
 -- name: ListUsers :many
 SELECT * FROM users
-WHERE (sqlc.arg(query)::text = '' OR full_name ILIKE '%' || sqlc.arg(query)::text || '%' OR email ILIKE '%' || sqlc.arg(query)::text || '%' OR phone ILIKE '%' || sqlc.arg(query)::text || '%')
+WHERE (
+    sqlc.arg(query)::text = ''
+    OR CASE
+        WHEN sqlc.arg(query)::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        THEN id = (sqlc.arg(query)::text)::uuid
+        ELSE (
+            full_name ILIKE '%' || sqlc.arg(query)::text || '%'
+            OR email ILIKE '%' || sqlc.arg(query)::text || '%'
+            OR phone ILIKE '%' || sqlc.arg(query)::text || '%'
+        )
+    END
+)
   AND (sqlc.arg(role)::text = '' OR role = sqlc.arg(role)::text)
   AND (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text)
 ORDER BY created_at DESC
@@ -110,7 +121,18 @@ LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 
 -- name: CountUsers :one
 SELECT COUNT(*)::bigint FROM users
-WHERE (sqlc.arg(query)::text = '' OR full_name ILIKE '%' || sqlc.arg(query)::text || '%' OR email ILIKE '%' || sqlc.arg(query)::text || '%' OR phone ILIKE '%' || sqlc.arg(query)::text || '%')
+WHERE (
+    sqlc.arg(query)::text = ''
+    OR CASE
+        WHEN sqlc.arg(query)::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        THEN id = (sqlc.arg(query)::text)::uuid
+        ELSE (
+            full_name ILIKE '%' || sqlc.arg(query)::text || '%'
+            OR email ILIKE '%' || sqlc.arg(query)::text || '%'
+            OR phone ILIKE '%' || sqlc.arg(query)::text || '%'
+        )
+    END
+)
   AND (sqlc.arg(role)::text = '' OR role = sqlc.arg(role)::text)
   AND (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text);
 
@@ -403,11 +425,11 @@ WHERE shop_id = $1
 
 -- name: CreateShopBankAccount :one
 INSERT INTO shop_bank_accounts (
-    id, shop_id, bank_code, bank_name, account_number, account_number_masked,
+    id, shop_id, bank_code, bank_name, account_number, account_number_enc, account_number_masked,
     account_holder_name, holder_name_matched, status, review_note,
     otp_hash, otp_expires_at, otp_attempts, created_at, updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6,
+    $1, $2, $3, $4, '', $5, $6,
     $7, $8, $9, $10,
     $11, $12, $13, $14, $15
 )
@@ -497,14 +519,6 @@ LIMIT 1;
 -- name: GetShopBankAccountByIDForUpdate :one
 SELECT * FROM shop_bank_accounts
 WHERE id = $1
-LIMIT 1
-FOR UPDATE;
-
--- name: GetPendingAdminReviewShopBankAccountByShopIDForUpdate :one
-SELECT * FROM shop_bank_accounts
-WHERE shop_id = $1
-  AND status = 'PENDING_ADMIN_REVIEW'
-ORDER BY created_at DESC
 LIMIT 1
 FOR UPDATE;
 

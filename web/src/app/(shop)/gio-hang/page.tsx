@@ -36,13 +36,16 @@ import {
 } from "@/components";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import { formatVoucherCondition, translateVoucherReason } from "@/features/checkout/messages";
+import { chunkSkuIds } from "@/lib/catalog-mapper";
 import {
   buildCalculateFeePayload,
+  createManualVoucherPreviewFn,
   evaluateShopFlashLines,
   fetchActiveShopDiscountsWithFetcher,
   inspectFlashSaleStatusForSku,
-  isShopProgramItemApplied,
+  resolveDisplayedLinePricing,
   resolveLiveFlashSaleForSku,
+  resolveManualVoucherCode,
   resolveSkuEffectivePromotion,
 } from "@/features/checkout/helpers";
 import { CheckoutSuggestionStrip } from "@/features/checkout/CheckoutSuggestionStrip";
@@ -117,6 +120,7 @@ function CartPageContent() {
   const [codeFeedback, setCodeFeedback] = useState<{ ok: boolean; message: string } | null>(null);
 
   const previewReqSeq = useRef(0);
+  const manualPromoSeqRef = useRef(0);
 
   useRevealOnScroll(
     `${viewState ?? "live"}-${cartItems.length}-${shopGroups.length}-${isAuthenticated}`
@@ -350,7 +354,8 @@ function CartPageContent() {
     }
     let active = true;
     const loadPromos = async () => {
-      const [fsRes, discRes] = await Promise.allSettled([
+      const slugBatches = chunkSkuIds(cartSkuIds, 100);
+      const [fsRes, discRes, ...slugResults] = await Promise.allSettled([
         api<GatewayFlashSalesResponse>("flash-sales?include_upcoming=true"),
         fetchActiveShopDiscountsWithFetcher({ skuIds: cartSkuIds }, async (batch) => {
           const qs = new URLSearchParams();
@@ -365,6 +370,11 @@ function CartPageContent() {
           );
           return Array.isArray(res?.discounts) ? res.discounts : [];
         }),
+        ...slugBatches.map((batch) =>
+          api<PaginatedResponse<GatewayProduct>>(
+            `products?sku_ids=${encodeURIComponent(batch.join(","))}&page=1&page_size=100`
+          )
+        ),
       ]);
       if (!active) return;
       if (fsRes.status === "fulfilled" && Array.isArray(fsRes.value?.flash_sales)) {
@@ -378,6 +388,17 @@ function CartPageContent() {
           }
         }
         setActiveShopDiscountsBySkuId(next);
+      }
+      const extraSlugs: Record<string, string> = {};
+      for (const r of slugResults) {
+        if (r.status === "fulfilled" && Array.isArray(r.value?.items)) {
+          for (const p of r.value.items) {
+            if (p.id && p.slug) extraSlugs[p.id] = p.slug;
+          }
+        }
+      }
+      if (Object.keys(extraSlugs).length > 0) {
+        setProductSlugById((prev) => ({ ...prev, ...extraSlugs }));
       }
     };
     void loadPromos();
@@ -507,9 +528,9 @@ function CartPageContent() {
           setPreviewError(null);
         } catch (err) {
           if (previewReqSeq.current !== seq) return;
-          if (err instanceof ApiError && err.status === 401) {
-            setPreview(null);
-          } else {
+          // P2-1: Always clear stale preview on any preview failure (401/400/409/503/network).
+          setPreview(null);
+          if (!(err instanceof ApiError && err.status === 401)) {
             setPreviewError(
               getErrorMessage(err, "Chưa thể tính trước ưu đãi lúc này. Vui lòng thử lại.")
             );
@@ -533,6 +554,18 @@ function CartPageContent() {
     freeshipVoucherCode,
     useCoins,
     coinBalance,
+  ]);
+
+  // P2-2: Invalidate any in-flight manual promo code probe when cart/voucher/shipping inputs change.
+  useEffect(() => {
+    manualPromoSeqRef.current += 1;
+    setApplyingCode(false);
+  }, [
+    selectedShopGroups,
+    activeShopVoucherMap,
+    platformVoucherCode,
+    freeshipVoucherCode,
+    shippingFeeByShop,
   ]);
 
   const handleQtyChange = async (skuId: string, nextQty: number) => {
@@ -577,93 +610,57 @@ function CartPageContent() {
       ...freeshipVouchers,
       ...Object.values(shopVouchersByShop).flat(),
     ];
-    const matched = allKnownVouchers.find((v) => v.code.toUpperCase() === clean);
 
-    if (matched) {
-      const scope = matched.scope.toUpperCase();
-      if (scope === "SHOP") {
-        const shopGroup = selectedShopGroups.find((g) => g.shopId === matched.shop_id);
-        if (!shopGroup) {
-          setCodeFeedback({
-            ok: false,
-            message: "Giỏ hàng chưa có sản phẩm đang chọn thuộc gian hàng áp dụng mã này.",
-          });
-          return;
-        }
-        if (!matched.eligible) {
-          setCodeFeedback({
-            ok: false,
-            message:
-              translateVoucherReason(matched.ineligible_reason) ||
-              `Mã ${matched.code} chưa đủ điều kiện áp dụng.`,
-          });
-          return;
-        }
-        setShopVoucher(matched.shop_id, matched.code);
-        setCodeFeedback({ ok: true, message: `Đã chọn mã gian hàng ${matched.code}.` });
-        setManualCode("");
-        return;
-      }
-
-      if (!matched.eligible) {
-        setCodeFeedback({
-          ok: false,
-          message:
-            translateVoucherReason(matched.ineligible_reason) ||
-            `Mã ${matched.code} chưa đủ điều kiện áp dụng.`,
-        });
-        return;
-      }
-
-      if (scope === "FREESHIP") {
-        setFreeshipVoucher(matched.code);
-        setCodeFeedback({ ok: true, message: `Đã chọn mã vận chuyển ${matched.code}.` });
-      } else {
-        setPlatformVoucher(matched.code);
-        setCodeFeedback({ ok: true, message: `Đã chọn mã toàn sàn ${matched.code}.` });
-      }
-      setManualCode("");
-      return;
-    }
-
-    // Unknown or expired/exhausted code: verify live via POST /promotions/preview
+    const seq = ++manualPromoSeqRef.current;
     setApplyingCode(true);
     setCodeFeedback(null);
     try {
-      const res = await api<GatewayPreviewDiscountsResponse>("promotions/preview", {
-        method: "POST",
-        json: {
-          shop_items: buildShopDiscountInputs(),
-          shop_voucher_ids: activeShopVoucherMap,
-          platform_voucher_id: clean,
-          freeship_voucher_id: freeshipVoucherCode ?? "",
-          coins_to_use: useCoins ? coinBalance : 0,
-        },
+      const result = await resolveManualVoucherCode({
+        rawCode: clean,
+        knownVouchers: allKnownVouchers,
+        shops: selectedShopGroups.map((g) => ({
+          shopId: g.shopId,
+          shopName: shopMetaById[g.shopId]?.name || g.shopName,
+          subtotalVnd: effectiveSubtotalByShop[g.shopId] ?? g.selectedSubtotalVnd,
+          shippingFeeVnd: shippingFeeByShop[g.shopId] ?? 0,
+        })),
+        hasShippingEstimate: Boolean(defaultAddress),
+        previewFn: createManualVoucherPreviewFn({
+          getShopItems: buildShopDiscountInputs,
+          shopVoucherIds: activeShopVoucherMap,
+          platformVoucherCode,
+          freeshipVoucherCode,
+          postPreview: (json) =>
+            api<GatewayPreviewDiscountsResponse>("promotions/preview", {
+              method: "POST",
+              json,
+            }),
+        }),
       });
-      const bd = res?.breakdown;
-      if (bd && bd.total_platform_voucher_discount_vnd > 0) {
-        setPlatformVoucher(clean);
-        setCodeFeedback({
-          ok: true,
-          message: `Áp dụng thành công mã ${clean} (giảm ${formatVnd(bd.total_platform_voucher_discount_vnd)}).`,
-        });
+      if (manualPromoSeqRef.current !== seq) return;
+      if (result.ok) {
+        if (result.scope === "SHOP" && result.shopId) {
+          setShopVoucher(result.shopId, result.code);
+        } else if (result.scope === "FREESHIP") {
+          setFreeshipVoucher(result.code);
+        } else {
+          setPlatformVoucher(result.code);
+        }
+        setCodeFeedback({ ok: true, message: result.message });
         setManualCode("");
       } else {
-        const warning = bd?.warnings?.[0];
-        setCodeFeedback({
-          ok: false,
-          message: warning
-            ? translateVoucherReason(warning)
-            : `Mã ${clean} không tồn tại hoặc chưa đủ điều kiện áp dụng.`,
-        });
+        setCodeFeedback({ ok: false, message: result.message });
       }
     } catch (err) {
+      if (manualPromoSeqRef.current !== seq) return;
       setCodeFeedback({
         ok: false,
         message: getErrorMessage(err, `Không thể kiểm tra mã ${clean} lúc này.`),
       });
     } finally {
-      setApplyingCode(false);
+      if (manualPromoSeqRef.current === seq) {
+        setApplyingCode(false);
+      }
     }
   };
 
@@ -954,28 +951,26 @@ function CartPageContent() {
                       {group.items.map((item, itemIdx) => {
                         const skuPromoInfo = promoBySkuId[item.skuId];
                         const flashEval = flashEvalBySkuId[item.skuId];
-                        const isShopDisc = skuPromoInfo?.promo.kind === "shop_discount";
-                        const shopProgramApplied = isShopDisc
-                          ? isShopProgramItemApplied({
-                              shopProgramItemId: skuPromoInfo?.promo.shopProgramItemId,
-                              shopBreakdown: item.selected ? (shopBreakdown ?? null) : null,
-                            })
-                          : false;
-                        const shopProgramLimitExceeded =
-                          isShopDisc &&
-                          Boolean(item.selected && shopBreakdown && !shopProgramApplied);
                         const flashShortfall = Boolean(flashEval?.previewShortfall);
-                        const effectiveUnit =
-                          skuPromoInfo?.promo.kind === "flash" && !flashShortfall
-                            ? skuPromoInfo.promo.effectiveUnitPriceVnd
-                            : isShopDisc && !shopProgramLimitExceeded
-                              ? skuPromoInfo.promo.effectiveUnitPriceVnd
-                              : item.priceVnd;
-                        const originalUnit =
-                          effectiveUnit < item.priceVnd
-                            ? (skuPromoInfo?.promo.originalUnitPriceVnd ?? item.priceVnd)
-                            : undefined;
-                        const lineTotal = effectiveUnit * item.quantity;
+                        const isFlashPromo = skuPromoInfo?.promo.kind === "flash";
+                        const linePricing = resolveDisplayedLinePricing({
+                          regularUnitPriceVnd: item.priceVnd,
+                          quantity: item.quantity,
+                          isFlashLine: isFlashPromo,
+                          flashUnitPriceVnd: isFlashPromo
+                            ? skuPromoInfo?.promo.effectiveUnitPriceVnd
+                            : undefined,
+                          flashShortfall,
+                          activeShopDiscount: activeShopDiscountsBySkuId[item.skuId] ?? null,
+                          shopBreakdown: item.selected ? (shopBreakdown ?? null) : null,
+                          isInPreview: item.selected,
+                        });
+                        const isShopDisc = linePricing.appliedKind === "shop_discount";
+                        const shopProgramLimitExceeded =
+                          !isFlashPromo && linePricing.shopProgramLimitExceeded;
+                        const effectiveUnit = linePricing.effectiveUnitPriceVnd;
+                        const originalUnit = linePricing.originalUnitPriceVnd;
+                        const lineTotal = linePricing.lineTotalVnd;
                         const outOfStock = item.availableStock <= 0;
                         const isBusy = Boolean(busySkuIds[item.skuId]);
                         const clampedNote = clampedSkuNotices[item.skuId];
@@ -1081,7 +1076,9 @@ function CartPageContent() {
                                 )}
                                 {isShopDisc && !shopProgramLimitExceeded && (
                                   <span className={`${shared.statusTag} ${shared.tonePos}`}>
-                                    {skuPromoInfo.promo.programName || "Giảm giá gian hàng"}
+                                    {linePricing.shopProgramName ||
+                                      skuPromoInfo?.promo.programName ||
+                                      "Giảm giá gian hàng"}
                                   </span>
                                 )}
                                 {shopProgramLimitExceeded && (

@@ -102,6 +102,7 @@ func run() error {
 	log.Info("connected to NATS JetStream", slog.String("stream", natsStream))
 
 	pgStore := store.NewPgStore(pool)
+	pgStore.SetLogger(log)
 	red := metrics.NewRED(serviceName, nil)
 
 	grpcServer := grpc.NewServer(
@@ -118,6 +119,10 @@ func run() error {
 
 	outboxRelay := events.NewOutboxRelay(pgStore, js, log, 250*time.Millisecond, productSrv.OutboxTrigger())
 	var bgWG sync.WaitGroup
+	defer func() {
+		stop()
+		bgWG.Wait()
+	}()
 	bgWG.Add(1)
 	go func() {
 		defer bgWG.Done()

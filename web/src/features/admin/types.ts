@@ -1,4 +1,13 @@
-import type { ProductStatus, ShopStatus, UserRole, UserStatus } from "@/lib/gateway-types";
+import type {
+  GatewayShop,
+  GatewayUser,
+  PaginatedResponse,
+  ProductStatus,
+  ShopStatus,
+  UserRole,
+  UserStatus,
+} from "@/lib/gateway-types";
+import { getErrorMessage } from "@/lib/api";
 import { GATEWAY_ORDER_STATUS_LABELS } from "@/lib/format";
 import type { PillTone } from "./adminMeta";
 
@@ -169,7 +178,183 @@ export function getAdminOrderStatusMeta(status: string): { label: string; tone: 
   return ADMIN_ORDER_STATUS_META[status] ?? { label: status || "Chưa rõ", tone: "neutral" };
 }
 
-export function formatCommissionBps(bps: number): string {
-  const pct = bps / 100;
+export function formatCommissionBps(bps?: number): string {
+  const safe = typeof bps === "number" && Number.isFinite(bps) ? bps : 0;
+  const pct = safe / 100;
   return `${pct.toFixed(1).replace(".", ",")}%`;
+}
+
+export const ADMIN_DATA_CHANGED_MESSAGE =
+  "Dữ liệu đã thay đổi. Hệ thống đã tải lại thông tin mới nhất, vui lòng kiểm tra lại trước khi thao tác.";
+
+/**
+ * Returns true when an admin shop or bank-account review fails with an optimistic-concurrency
+ * conflict (HTTP 409, OWNER_NAME_CHANGED, or stale PENDING/PENDING_ADMIN_REVIEW row).
+ */
+export function isAdminReviewConflictError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { status?: unknown; code?: unknown };
+  if (e.status === 409) return true;
+  const code = typeof e.code === "string" ? e.code.trim().toUpperCase() : "";
+  return (
+    code === "OWNER_NAME_CHANGED" ||
+    code === "FAILED_PRECONDITION" ||
+    code === "CONFLICT" ||
+    code === "ABORTED"
+  );
+}
+
+export interface AdminShopOwnerState {
+  loading: boolean;
+  user: GatewayUser | null;
+  error?: string;
+}
+
+export function getDisplayedOwnerFullName(state?: AdminShopOwnerState | null): string {
+  return (state?.user?.full_name ?? "").trim();
+}
+
+/**
+ * Matches backend `services/user/internal/service/server.go` (`AdminReviewShop`):
+ * only shops in `PENDING` status can be reviewed (APPROVE, REJECT, or REQUEST_INFO).
+ */
+export function canReviewShopStatus(shopStatus: string): boolean {
+  return (shopStatus ?? "").trim().toUpperCase() === "PENDING";
+}
+
+/**
+ * APPROVE is only enabled for `PENDING` shops once the shop owner's full_name has been fetched
+ * and displayed on the review panel (D6), preventing approval with an empty `expected_owner_name`.
+ */
+export function canApproveShop(
+  shopStatus: string,
+  ownerState?: AdminShopOwnerState | null
+): boolean {
+  if (!canReviewShopStatus(shopStatus)) return false;
+  if (ownerState?.loading) return false;
+  return getDisplayedOwnerFullName(ownerState).length > 0;
+}
+
+export interface AdminShopReviewPayload {
+  decision: "APPROVE" | "REQUEST_INFO" | "REJECT";
+  reason: string;
+  expected_owner_name: string;
+}
+
+/**
+ * Builds the POST /admin/shops/{id}/review request body.
+ * APPROVE strictly requires non-empty `expectedOwnerName` matching the name displayed to the admin
+ * (D6 optimistic guard); REJECT and REQUEST_INFO do not require an owner name.
+ */
+export function buildAdminShopReviewPayload(input: {
+  decision: "APPROVE" | "REQUEST_INFO" | "REJECT";
+  reason: string;
+  expectedOwnerName?: string;
+}): AdminShopReviewPayload {
+  const note = input.reason.trim();
+  const trimmedOwner = (input.expectedOwnerName ?? "").trim();
+  if (input.decision === "APPROVE" && !trimmedOwner) {
+    throw new Error("expected_owner_name is required when approving a shop");
+  }
+  return {
+    decision: input.decision,
+    reason:
+      note ||
+      (input.decision === "APPROVE" ? "Hồ sơ gian hàng đầy đủ, đã phê duyệt hoạt động." : ""),
+    expected_owner_name: input.decision === "APPROVE" ? trimmedOwner : "",
+  };
+}
+
+export type AdminShopReviewOutcome =
+  | { status: "blocked_missing_owner" }
+  | { status: "ok"; shop?: GatewayShop }
+  | { status: "conflict"; message: string };
+
+/**
+ * Coordinates a single admin shop review submission without re-fetching owner details right before
+ * posting: APPROVE sends the exact owner name currently displayed on the panel, blocks with zero
+ * network calls if missing, and on 409 reloads fresh data so the admin must inspect and click again.
+ */
+export async function submitAdminShopReviewDecision(input: {
+  shopId: string;
+  decision: "APPROVE" | "REQUEST_INFO" | "REJECT";
+  reason: string;
+  displayedOwnerName: string;
+  postReview: (path: string, payload: AdminShopReviewPayload) => Promise<{ shop?: GatewayShop }>;
+  onConflictReload: () => Promise<void>;
+}): Promise<AdminShopReviewOutcome> {
+  const trimmedOwner = (input.displayedOwnerName ?? "").trim();
+  if (input.decision === "APPROVE" && !trimmedOwner) {
+    return { status: "blocked_missing_owner" };
+  }
+
+  const payload = buildAdminShopReviewPayload({
+    decision: input.decision,
+    reason: input.reason,
+    expectedOwnerName: input.decision === "APPROVE" ? trimmedOwner : "",
+  });
+
+  try {
+    const res = await input.postReview(
+      `admin/shops/${encodeURIComponent(input.shopId)}/review`,
+      payload
+    );
+    return { status: "ok", shop: res?.shop };
+  } catch (err) {
+    if (isAdminReviewConflictError(err)) {
+      const rawMsg = getErrorMessage(err, ADMIN_DATA_CHANGED_MESSAGE);
+      const message = rawMsg.toLowerCase().includes("dữ liệu đã thay đổi")
+        ? rawMsg
+        : "Dữ liệu đã thay đổi — họ tên chủ gian hàng hoặc trạng thái hồ sơ vừa được cập nhật. Hệ thống đã tải lại thông tin mới nhất, vui lòng kiểm tra lại.";
+      await input.onConflictReload();
+      return { status: "conflict", message };
+    }
+    throw err;
+  }
+}
+
+export interface AdminBankReviewPayload {
+  bank_account_id: string;
+  decision: "APPROVE" | "REJECT";
+  reason: string;
+}
+
+/**
+ * Builds the POST /admin/shops/{id}/bank-account/review request body, enforcing required
+ * `bank_account_id` (D6 guard against approving a superseded bank account row).
+ */
+export function buildAdminBankReviewPayload(input: {
+  bankAccountId: string;
+  decision: "APPROVE" | "REJECT";
+  reason: string;
+}): AdminBankReviewPayload {
+  const bankAccountId = (input.bankAccountId ?? "").trim();
+  if (!bankAccountId) {
+    throw new Error("bank_account_id is required");
+  }
+  const note = input.reason.trim();
+  return {
+    bank_account_id: bankAccountId,
+    decision: input.decision,
+    reason:
+      note || (input.decision === "APPROVE" ? "Đã đối chiếu giấy tờ chủ tài khoản ngân hàng." : ""),
+  };
+}
+
+/**
+ * Looks up a single shop owner by exact user ID via `GET /admin/users?query=<id>&page=1&page_size=1`,
+ * verifying `item.id === ownerUserId` before returning.
+ */
+export async function fetchShopOwnerById(
+  ownerUserId: string,
+  fetchUserByQuery: (path: string) => Promise<PaginatedResponse<GatewayUser>>
+): Promise<GatewayUser | null> {
+  const cleanId = (ownerUserId ?? "").trim();
+  if (!cleanId) return null;
+
+  const path = `admin/users?query=${encodeURIComponent(cleanId)}&page=1&page_size=1`;
+  const res = await fetchUserByQuery(path);
+  const items = Array.isArray(res?.items) ? res.items : [];
+  const exact = items.find((u) => u?.id === cleanId);
+  return exact ?? null;
 }

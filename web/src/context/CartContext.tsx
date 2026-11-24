@@ -67,7 +67,6 @@ export interface CartContextValue {
   selectedShopGroups: CartShopGroup[];
   selectedCount: number;
   selectedSubtotalVnd: number;
-  isFullCartSelected: boolean;
   cartLoading: boolean;
   cartInitialized: boolean;
   cartError: string | null;
@@ -298,13 +297,6 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const selectedSubtotalVnd = useMemo(
     () => selectedItems.reduce((sum, item) => sum + item.priceVnd * item.quantity, 0),
     [selectedItems]
-  );
-
-  const isFullCartSelected = useMemo(
-    () =>
-      cartItems.length > 0 &&
-      cartItems.every((it) => it.selected && it.availableStock > 0 && it.quantity > 0),
-    [cartItems]
   );
 
   const addToCart = useCallback(
@@ -586,7 +578,6 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       selectedShopGroups,
       selectedCount,
       selectedSubtotalVnd,
-      isFullCartSelected,
       cartLoading,
       cartInitialized,
       cartError,
@@ -623,7 +614,6 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       selectedShopGroups,
       selectedCount,
       selectedSubtotalVnd,
-      isFullCartSelected,
       cartLoading,
       cartInitialized,
       cartError,

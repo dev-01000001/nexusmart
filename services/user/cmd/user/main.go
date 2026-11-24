@@ -20,6 +20,7 @@ import (
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/logger"
 	"github.com/nexusmart/core/pkg/common/metrics"
+	"github.com/nexusmart/core/pkg/common/secretbox"
 	"github.com/nexusmart/core/pkg/common/telemetry"
 	"github.com/nexusmart/core/services/user/internal/config"
 	"github.com/nexusmart/core/services/user/internal/db"
@@ -44,6 +45,11 @@ func main() {
 func run() error {
 	cfg := config.Load()
 	log := logger.New(cfg.ServiceName, logger.WithLevel(parseLogLevel(cfg.LogLevel)))
+
+	bankBox, err := secretbox.NewFromBase64(cfg.BankAccountKey, "BANK_ACCOUNT_KEY")
+	if err != nil {
+		return fmt.Errorf("init bank account encryption: %w", err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -73,6 +79,13 @@ func run() error {
 	}
 	if err := db.RunMigrations(ctx, pool); err != nil {
 		return fmt.Errorf("run migrations: %w", err)
+	}
+	backfilled, err := db.BackfillShopBankAccountEncryption(ctx, pool, bankBox, 0)
+	if err != nil {
+		return fmt.Errorf("backfill shop bank account encryption: %w", err)
+	}
+	if backfilled > 0 {
+		log.Info("backfilled encrypted shop bank accounts", slog.Int("count", backfilled))
 	}
 
 	rdb := redis.NewClient(&redis.Options{
@@ -146,6 +159,7 @@ func run() error {
 		LoginMaxFailedAttempts: cfg.LoginMaxFailedAttempts,
 		LoginLockoutDuration:   cfg.LoginLockoutDuration,
 		BankPayoutLockDuration: cfg.BankPayoutLockDuration,
+		BankAccountBox:         bankBox,
 		AddressCatalog:         addrCatalog,
 	})
 	userv1.RegisterUserServiceServer(grpcSrv, userSrv)

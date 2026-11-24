@@ -825,7 +825,10 @@ func (s *OrderService) ensureReturnShipment(ctx context.Context, rr db.ReturnReq
 	buyerAddr := orderAddressToShipmentAddress(ord.ShippingAddressJSON)
 	svcCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 	defer cancel()
-	shopAddr := s.resolveShopPickupAddress(svcCtx, ord.ShopID, buyerAddr)
+	shopAddr, err := s.resolveShopPickupAddress(svcCtx, ord.ShopID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve return destination address for shop %s: %w", ord.ShopID, err)
+	}
 
 	createShip := func(carrierCode, serviceCode string) (*shippingv1.CreateReturnShipmentResponse, error) {
 		var respOut *shippingv1.CreateReturnShipmentResponse

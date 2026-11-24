@@ -1,8 +1,12 @@
 "use client";
 
 import React, { Suspense, useMemo, useState } from "react";
-import { computeCsrProgress } from "@/data";
-import type { AdminEditorialSubmission, AdminBadgeRequest, AdminSearchRankingConfig } from "@/data";
+import { computeCsrProgress } from "@/data/admin";
+import type {
+  AdminEditorialSubmission,
+  AdminBadgeRequest,
+  AdminSearchRankingConfig,
+} from "@/data/admin";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button } from "@/components";
 import { formatDateVi, formatInt, formatPercent, formatVnd } from "@/lib/format";

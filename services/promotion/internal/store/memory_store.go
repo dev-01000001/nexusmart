@@ -27,6 +27,7 @@ type MemoryStore struct {
 	coinTxns          []domain.CoinTransaction
 	coinRefIndex      map[string]bool
 	reservations      map[string]domain.PromotionReservation
+	userUsage         map[string]int32 // key: kind + "|" + targetID + "|" + userID
 	processedEvents   map[string]bool
 }
 
@@ -44,6 +45,7 @@ func NewMemoryStore() *MemoryStore {
 		coinBalances:      make(map[string]int64),
 		coinRefIndex:      make(map[string]bool),
 		reservations:      make(map[string]domain.PromotionReservation),
+		userUsage:         make(map[string]int32),
 		processedEvents:   make(map[string]bool),
 	}
 }
@@ -66,6 +68,9 @@ func (m *MemoryStore) CreateVoucher(_ context.Context, v domain.Voucher) (*domai
 	v.UpdatedAt = now
 	v.UsedCount = 0
 	v.UsedBudgetVND = 0
+	v.RulesVersion = 1
+	v.RedisSyncVersion = 1
+	v.RedisSyncedVersion = 0
 	if v.Status == "" {
 		if v.IsActive {
 			v.Status = domain.VoucherStatusActive
@@ -111,24 +116,47 @@ func (m *MemoryStore) GetVoucherByIDOrCode(_ context.Context, idOrCode string) (
 func (m *MemoryStore) UpdateVoucher(
 	_ context.Context,
 	id string,
-	mutate func(cur *domain.Voucher) error,
-) (*domain.Voucher, *domain.Voucher, error) {
+	mutate func(cur *domain.Voucher, hasActiveReservation bool) error,
+) (*domain.Voucher, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	existing, ok := m.vouchers[id]
 	if !ok {
-		return nil, nil, ErrNotFound
+		return nil, ErrNotFound
 	}
-	before := cloneVoucher(existing)
+	hasActiveReservation := m.hasActiveVoucherReservationLocked(&existing)
 	cur := cloneVoucher(existing)
-	if err := mutate(&cur); err != nil {
-		return nil, nil, err
+	if err := mutate(&cur, hasActiveReservation); err != nil {
+		return nil, err
 	}
+	cur.RedisSyncVersion++
 	cur.UpdatedAt = time.Now().UTC()
 	m.vouchers[id] = cloneVoucher(cur)
 	after := cloneVoucher(cur)
-	return &before, &after, nil
+	return &after, nil
+}
+
+func (m *MemoryStore) hasActiveVoucherReservationLocked(v *domain.Voucher) bool {
+	for _, res := range m.reservations {
+		if res.Status != domain.ReservationStatusReserved {
+			continue
+		}
+		released := make(map[string]bool, len(res.ReleasedShops))
+		for _, s := range res.ReleasedShops {
+			released[s] = true
+		}
+		for _, rv := range res.Vouchers {
+			if rv.VoucherID != v.ID {
+				continue
+			}
+			if v.Scope == domain.VoucherScopeShop && v.ShopID != "" && released[v.ShopID] {
+				continue
+			}
+			return true
+		}
+	}
+	return false
 }
 
 func (m *MemoryStore) SetVoucherStatus(
@@ -151,6 +179,7 @@ func (m *MemoryStore) SetVoucherStatus(
 	}
 	cur.Status = newStatus
 	cur.IsActive = newStatus == domain.VoucherStatusActive
+	cur.RedisSyncVersion++
 	cur.UpdatedAt = time.Now().UTC()
 	m.vouchers[id] = cloneVoucher(cur)
 	after := cloneVoucher(cur)
@@ -182,9 +211,139 @@ func (m *MemoryStore) DeleteVoucher(
 	cur.Status = domain.VoucherStatusDeleted
 	cur.IsActive = false
 	cur.DeletedAt = &now
+	cur.RedisSyncVersion++
 	cur.UpdatedAt = now
 	m.vouchers[id] = cloneVoucher(cur)
 	return false, nil
+}
+
+func (m *MemoryStore) SyncVoucherRedis(
+	ctx context.Context,
+	voucherID string,
+	_ bool,
+	syncFn func(ctx context.Context, v *domain.Voucher) error,
+) (bool, error) {
+	return m.syncVoucherRedisLocked(ctx, voucherID, false, syncFn)
+}
+
+func (m *MemoryStore) syncVoucherRedisLocked(
+	ctx context.Context,
+	voucherID string,
+	onlyIfDirty bool,
+	syncFn func(ctx context.Context, v *domain.Voucher) error,
+) (bool, error) {
+	if voucherID == "" {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cur, ok := m.vouchers[voucherID]
+	if !ok {
+		return false, nil
+	}
+	if onlyIfDirty && cur.RedisSyncedVersion >= cur.RedisSyncVersion {
+		return false, nil
+	}
+	cp := cloneVoucher(cur)
+	if syncFn != nil {
+		if err := syncFn(ctx, &cp); err != nil {
+			return false, err
+		}
+	}
+	if cur.RedisSyncedVersion < cur.RedisSyncVersion {
+		cur.RedisSyncedVersion = cur.RedisSyncVersion
+		m.vouchers[cur.ID] = cur
+	}
+	return true, nil
+}
+
+func (m *MemoryStore) ReconcilePendingVouchers(
+	ctx context.Context,
+	limit int,
+	syncFn func(ctx context.Context, v *domain.Voucher) error,
+) (int, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	m.mu.Lock()
+	pending := make([]domain.Voucher, 0)
+	for _, v := range m.vouchers {
+		if v.RedisSyncedVersion < v.RedisSyncVersion {
+			pending = append(pending, cloneVoucher(v))
+		}
+	}
+	m.mu.Unlock()
+
+	sort.Slice(pending, func(i, j int) bool {
+		if !pending[i].UpdatedAt.Equal(pending[j].UpdatedAt) {
+			return pending[i].UpdatedAt.Before(pending[j].UpdatedAt)
+		}
+		return pending[i].ID < pending[j].ID
+	})
+	if len(pending) > limit {
+		pending = pending[:limit]
+	}
+
+	reconciled := 0
+	var firstErr error
+	for i := range pending {
+		ok, err := m.syncVoucherRedisLocked(ctx, pending[i].ID, true, syncFn)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			if IsRedisConnOrTimeoutErr(err) {
+				break
+			}
+			continue
+		}
+		if ok {
+			reconciled++
+		}
+	}
+	return reconciled, firstErr
+}
+
+func (m *MemoryStore) GetUserUsageBatch(_ context.Context, userID string, targets []UserUsageKey) (map[UserUsageKey]int32, error) {
+	out := make(map[UserUsageKey]int32, len(targets))
+	if userID == "" || len(targets) == 0 {
+		return out, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range targets {
+		if t.Kind == "" || t.TargetID == "" {
+			continue
+		}
+		if qty, ok := m.userUsage[memUsageKey(t.Kind, t.TargetID, userID)]; ok {
+			out[t] = qty
+		}
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) SyncUserUsageRedis(
+	ctx context.Context,
+	kind, targetID, userID string,
+	_ bool,
+	syncFn func(ctx context.Context, usedQty int32) error,
+) (bool, error) {
+	if kind == "" || targetID == "" || userID == "" {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	qty := m.userUsage[memUsageKey(kind, targetID, userID)]
+	if syncFn != nil {
+		if err := syncFn(ctx, qty); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 func (m *MemoryStore) ListVouchers(_ context.Context, shopID, scope string) ([]domain.Voucher, error) {
@@ -217,6 +376,19 @@ func (m *MemoryStore) ListAllVouchers(_ context.Context) ([]domain.Voucher, erro
 	out := make([]domain.Voucher, 0, len(m.vouchers))
 	for _, v := range m.vouchers {
 		out = append(out, cloneVoucher(v))
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) ListActiveVouchers(_ context.Context, now time.Time) ([]domain.Voucher, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var out []domain.Voucher
+	for _, v := range m.vouchers {
+		if v.EffectiveStatus() == domain.VoucherStatusActive && v.IsActive && v.DeletedAt == nil && !now.Before(v.StartsAt) && !now.After(v.EndsAt) {
+			out = append(out, cloneVoucher(v))
+		}
 	}
 	return out, nil
 }
@@ -279,6 +451,9 @@ func (m *MemoryStore) ProcessExpiringSavedVouchers(
 				continue
 			}
 			if v.BudgetVND > 0 && v.UsedBudgetVND >= v.BudgetVND {
+				continue
+			}
+			if v.PerUserLimit > 0 && m.userUsage[memUsageKey(domain.UsageKindVoucher, vid, userID)] >= v.PerUserLimit {
 				continue
 			}
 			if !v.EndsAt.After(now.UTC()) || v.EndsAt.After(cutoff) {
@@ -485,6 +660,35 @@ func (m *MemoryStore) GetFlashSaleItem(_ context.Context, itemID string) (*domai
 	return &cp, nil
 }
 
+func (m *MemoryStore) SyncFlashItemRedis(
+	ctx context.Context,
+	itemID string,
+	_ bool,
+	syncFn func(ctx context.Context, item *domain.FlashSaleItem) error,
+) (bool, error) {
+	if itemID == "" {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	item, ok := m.flashItems[itemID]
+	if !ok {
+		return false, nil
+	}
+	if fs, fsOk := m.flashSales[item.FlashSaleID]; fsOk {
+		item.StartsAt = fs.StartsAt
+		item.EndsAt = fs.EndsAt
+	}
+	cp := item
+	if syncFn != nil {
+		if err := syncFn(ctx, &cp); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
 func (m *MemoryStore) ListFlashSales(_ context.Context, now time.Time, includeUpcoming bool) ([]domain.FlashSale, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -624,6 +828,24 @@ func (m *MemoryStore) ListApprovedFlashSaleItems(_ context.Context) ([]domain.Fl
 	var out []domain.FlashSaleItem
 	for _, item := range m.flashItems {
 		if item.Status == domain.FlashStatusApproved {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) ListActiveApprovedFlashSaleItems(_ context.Context, now time.Time) ([]domain.FlashSaleItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var out []domain.FlashSaleItem
+	for _, item := range m.flashItems {
+		if item.Status != domain.FlashStatusApproved {
+			continue
+		}
+		if fs, ok := m.flashSales[item.FlashSaleID]; ok && fs.EndsAt.After(now) {
+			item.StartsAt = fs.StartsAt
+			item.EndsAt = fs.EndsAt
 			out = append(out, item)
 		}
 	}
@@ -974,6 +1196,9 @@ func (m *MemoryStore) GetCoinBalance(_ context.Context, userID string, recentLim
 }
 
 func (m *MemoryStore) CreditCoins(_ context.Context, userID string, amount int64, reason, referenceID string) (int64, bool, error) {
+	if hasReservedStoreCoinRefPrefix(referenceID) {
+		return 0, false, fmt.Errorf("%w: %s", ErrReservedCoinReferenceID, referenceID)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -1051,18 +1276,29 @@ func (m *MemoryStore) CommitReservation(_ context.Context, res domain.PromotionR
 		if m.coinBalances[res.UserID] < res.CoinsUsed {
 			return nil, false, ErrInsufficientCoins
 		}
+		if m.coinRefIndex["reserve:"+res.OrderID] {
+			return nil, false, fmt.Errorf("%w: duplicate coin reserve reference reserve:%s", ErrCoinLedgerConflict, res.OrderID)
+		}
 	}
+	usageChecks := make([]usageCheck, 0, len(res.Vouchers)+len(res.FlashSaleItems)+len(res.ShopProgramItems))
 	for _, rv := range res.Vouchers {
 		v, ok := m.vouchers[rv.VoucherID]
 		if !ok ||
 			v.EffectiveStatus() != domain.VoucherStatusActive ||
 			!v.IsActive ||
+			(rv.RulesVersion > 0 && v.RulesVersion != rv.RulesVersion) ||
 			v.UsedCount >= v.Quota ||
 			(v.BudgetVND > 0 && v.UsedBudgetVND+rv.DiscountVND > v.BudgetVND) ||
 			now.Before(v.StartsAt) ||
 			now.After(v.EndsAt) {
 			return nil, false, fmt.Errorf("%w: voucher %s", ErrVoucherNotEligibleForCommit, rv.VoucherID)
 		}
+		usageChecks = append(usageChecks, usageCheck{
+			kind:     domain.UsageKindVoucher,
+			targetID: rv.VoucherID,
+			qty:      1,
+			limit:    v.PerUserLimit,
+		})
 	}
 	for _, rf := range res.FlashSaleItems {
 		fi, ok := m.flashItems[rf.FlashSaleItemID]
@@ -1074,6 +1310,12 @@ func (m *MemoryStore) CommitReservation(_ context.Context, res domain.PromotionR
 				return nil, false, fmt.Errorf("%w: flash item %s outside window", ErrFlashNotEligibleForCommit, rf.FlashSaleItemID)
 			}
 		}
+		usageChecks = append(usageChecks, usageCheck{
+			kind:     domain.UsageKindFlash,
+			targetID: rf.FlashSaleItemID,
+			qty:      rf.Quantity,
+			limit:    fi.PerUserLimit,
+		})
 	}
 	for _, rp := range res.ShopProgramItems {
 		spi, ok := m.shopProgramItems[rp.ShopDiscountProgramItemID]
@@ -1090,24 +1332,38 @@ func (m *MemoryStore) CommitReservation(_ context.Context, res domain.PromotionR
 		if !pOk || p.EffectiveStatus(now) != domain.ShopProgramStatusActive {
 			return nil, false, fmt.Errorf("%w: shop discount program item %s inactive", ErrShopProgramNotEligibleForCommit, rp.ShopDiscountProgramItemID)
 		}
+		usageChecks = append(usageChecks, usageCheck{
+			kind:     domain.UsageKindShopProgram,
+			targetID: rp.ShopDiscountProgramItemID,
+			qty:      rp.Quantity,
+			limit:    spi.PerUserLimit,
+		})
+	}
+
+	mergedUsage := mergeUsageChecks(usageChecks)
+	if res.UserID != "" {
+		for _, uc := range mergedUsage {
+			curUsed := m.userUsage[memUsageKey(uc.kind, uc.targetID, res.UserID)]
+			if uc.limit > 0 && curUsed+uc.qty > uc.limit {
+				return nil, false, userLimitError(uc.kind, uc.targetID)
+			}
+		}
 	}
 
 	// All final gates passed — apply mutations atomically.
 	if res.CoinsUsed > 0 {
 		cur := m.coinBalances[res.UserID]
 		reserveRef := "reserve:" + res.OrderID
-		if !m.coinRefIndex[reserveRef] {
-			m.coinRefIndex[reserveRef] = true
-			m.coinBalances[res.UserID] = cur - res.CoinsUsed
-			m.coinTxns = append(m.coinTxns, domain.CoinTransaction{
-				ID:          uuid.NewString(),
-				UserID:      res.UserID,
-				Delta:       -res.CoinsUsed,
-				Reason:      "order_reserve",
-				ReferenceID: reserveRef,
-				CreatedAt:   now,
-			})
-		}
+		m.coinRefIndex[reserveRef] = true
+		m.coinBalances[res.UserID] = cur - res.CoinsUsed
+		m.coinTxns = append(m.coinTxns, domain.CoinTransaction{
+			ID:          uuid.NewString(),
+			UserID:      res.UserID,
+			Delta:       -res.CoinsUsed,
+			Reason:      "order_reserve",
+			ReferenceID: reserveRef,
+			CreatedAt:   now,
+		})
 	}
 
 	res.Status = domain.ReservationStatusReserved
@@ -1128,12 +1384,18 @@ func (m *MemoryStore) CommitReservation(_ context.Context, res domain.PromotionR
 		fi.UpdatedAt = now
 		m.flashItems[rf.FlashSaleItemID] = fi
 	}
+	if res.UserID != "" {
+		for _, uc := range mergedUsage {
+			k := memUsageKey(uc.kind, uc.targetID, res.UserID)
+			m.userUsage[k] += uc.qty
+		}
+	}
 
 	cp := cloneReservation(res)
 	return &cp, false, nil
 }
 
-func (m *MemoryStore) ReleaseReservation(_ context.Context, orderID string) (bool, error) {
+func (m *MemoryStore) ReleaseReservation(_ context.Context, orderID string) (*FullReleaseResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -1148,31 +1410,42 @@ func (m *MemoryStore) ReleaseReservation(_ context.Context, orderID string) (boo
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
-		return true, nil
+		return &FullReleaseResult{AlreadyReleased: true}, nil
+	}
+
+	result := &FullReleaseResult{
+		UserID:         existing.UserID,
+		Vouchers:       append([]domain.ReservedVoucher(nil), existing.Vouchers...),
+		FlashSaleItems: append([]domain.ReservedFlashItem(nil), existing.FlashSaleItems...),
+		ShopPrograms:   append([]domain.ReservedShopProgramItem(nil), existing.ShopProgramItems...),
 	}
 
 	plan, err := planRemainingRelease(&existing, m.lookupFlashShopLocked, m.lookupShopProgShopLocked)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if plan.alreadyReleased {
-		return true, nil
+		result.AlreadyReleased = true
+		return result, nil
 	}
 
 	if plan.coinsToReturn > 0 {
 		releaseRef := "release:" + orderID
-		m.creditCoinsLocked(existing.UserID, plan.coinsToReturn, "order_release", releaseRef)
+		if _, alreadyCredited := m.creditCoinsLocked(existing.UserID, plan.coinsToReturn, "order_release", releaseRef); !alreadyCredited {
+			result.CoinsReturned = plan.coinsToReturn
+		}
 	}
 
 	now := time.Now().UTC()
 	m.restoreVouchersAndFlashLocked(plan.vouchersToRelease, plan.flashToRelease, now)
+	m.restoreUserUsageLocked(existing.UserID, plan.vouchersToRelease, plan.flashToRelease, plan.shopProgramsToRelease)
 
 	existing.Status = domain.ReservationStatusReleased
 	existing.ReleasedShops = plan.newReleasedShops
 	existing.ReleasedAt = &now
 	existing.UpdatedAt = now
 	m.reservations[orderID] = existing
-	return false, nil
+	return result, nil
 }
 
 func (m *MemoryStore) ReleaseReservationShop(_ context.Context, orderID, shopID string) (*ShopReleaseResult, error) {
@@ -1211,11 +1484,14 @@ func (m *MemoryStore) ReleaseReservationShop(_ context.Context, orderID, shopID 
 
 	if plan.coinsToReturn > 0 {
 		releaseRef := "release:" + orderID + ":shop:" + shopID
-		m.creditCoinsLocked(existing.UserID, plan.coinsToReturn, "order_release", releaseRef)
+		if _, alreadyCredited := m.creditCoinsLocked(existing.UserID, plan.coinsToReturn, "order_release", releaseRef); alreadyCredited {
+			result.CoinsReturned = 0
+		}
 	}
 
 	now := time.Now().UTC()
 	m.restoreVouchersAndFlashLocked(plan.vouchersToRelease, plan.flashToRelease, now)
+	m.restoreUserUsageLocked(existing.UserID, plan.vouchersToRelease, plan.flashToRelease, plan.shopProgramsToRelease)
 
 	existing.ReleasedShops = plan.newReleasedShops
 	existing.UpdatedAt = now
@@ -1266,6 +1542,39 @@ func (m *MemoryStore) restoreVouchersAndFlashLocked(vouchers []domain.ReservedVo
 			m.flashItems[rf.FlashSaleItemID] = fi
 		}
 	}
+}
+
+func (m *MemoryStore) restoreUserUsageLocked(
+	userID string,
+	vouchers []domain.ReservedVoucher,
+	flashItems []domain.ReservedFlashItem,
+	shopProgs []domain.ReservedShopProgramItem,
+) {
+	if userID == "" {
+		return
+	}
+	checks := make([]usageCheck, 0, len(vouchers)+len(flashItems)+len(shopProgs))
+	for _, rv := range vouchers {
+		checks = append(checks, usageCheck{kind: domain.UsageKindVoucher, targetID: rv.VoucherID, qty: 1})
+	}
+	for _, rf := range flashItems {
+		checks = append(checks, usageCheck{kind: domain.UsageKindFlash, targetID: rf.FlashSaleItemID, qty: rf.Quantity})
+	}
+	for _, rp := range shopProgs {
+		checks = append(checks, usageCheck{kind: domain.UsageKindShopProgram, targetID: rp.ShopDiscountProgramItemID, qty: rp.Quantity})
+	}
+	for _, uc := range mergeUsageChecks(checks) {
+		k := memUsageKey(uc.kind, uc.targetID, userID)
+		next := m.userUsage[k] - uc.qty
+		if next < 0 {
+			next = 0
+		}
+		m.userUsage[k] = next
+	}
+}
+
+func memUsageKey(kind, targetID, userID string) string {
+	return kind + "|" + targetID + "|" + userID
 }
 
 // AccountBalance returns the stored coin_accounts balance for invariant verification in tests.

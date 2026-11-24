@@ -216,7 +216,7 @@ func (m *MemoryStore) TransitionReturnRequest(_ context.Context, params ReturnTr
 		if err != nil {
 			return nil, err
 		}
-		m.outbox = append(m.outbox, db.OutboxEvent{
+		m.appendOutboxLocked(db.OutboxEvent{
 			ID:          uuid.NewString(),
 			EventType:   events.SubjectOrderReturned,
 			TraceID:     params.TraceID,
@@ -321,7 +321,7 @@ func (m *MemoryStore) TransitionReturnRequest(_ context.Context, params ReturnTr
 	if err != nil {
 		return nil, err
 	}
-	m.outbox = append(m.outbox, db.OutboxEvent{
+	m.appendOutboxLocked(db.OutboxEvent{
 		ID:          ob.ID,
 		EventType:   ob.EventType,
 		TraceID:     ob.TraceID,
@@ -405,7 +405,7 @@ func (m *MemoryStore) SaveReturnShipmentInfo(_ context.Context, params SaveRetur
 		if obErr != nil {
 			return nil, false, obErr
 		}
-		m.outbox = append(m.outbox, db.OutboxEvent{
+		m.appendOutboxLocked(db.OutboxEvent{
 			ID:          ob.ID,
 			EventType:   ob.EventType,
 			TraceID:     ob.TraceID,
@@ -577,7 +577,7 @@ func (m *MemoryStore) ApplyReturnShipmentUpdate(_ context.Context, params Return
 	if err != nil {
 		return nil, err
 	}
-	m.outbox = append(m.outbox, db.OutboxEvent{
+	m.appendOutboxLocked(db.OutboxEvent{
 		ID:          ob.ID,
 		EventType:   ob.EventType,
 		TraceID:     ob.TraceID,

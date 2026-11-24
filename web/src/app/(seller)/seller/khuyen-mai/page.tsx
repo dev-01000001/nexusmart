@@ -823,7 +823,8 @@ function SellerPromotionsInner({ shop }: { shop: GatewayShop }) {
                         <input
                           id="v-max"
                           type="number"
-                          step={5000}
+                          min={0}
+                          step={1}
                           className={common.textInput}
                           value={vMaxDiscount}
                           onChange={(e) => setVMaxDiscount(e.target.value)}
@@ -841,7 +842,8 @@ function SellerPromotionsInner({ shop }: { shop: GatewayShop }) {
                       <input
                         id="v-min"
                         type="number"
-                        step={10000}
+                        min={0}
+                        step={1}
                         className={common.textInput}
                         value={vMinOrder}
                         onChange={(e) => setVMinOrder(e.target.value)}
@@ -888,7 +890,8 @@ function SellerPromotionsInner({ shop }: { shop: GatewayShop }) {
                       <input
                         id="v-budget"
                         type="number"
-                        step={100000}
+                        min={0}
+                        step={1}
                         className={common.textInput}
                         value={vBudget}
                         onChange={(e) => setVBudget(e.target.value)}
@@ -1335,7 +1338,8 @@ function SellerPromotionsInner({ shop }: { shop: GatewayShop }) {
                           <input
                             id="f-price"
                             type="number"
-                            step={1000}
+                            min={1}
+                            step={1}
                             className={common.textInput}
                             value={fPriceStr}
                             onChange={(e) => setFPriceStr(e.target.value)}

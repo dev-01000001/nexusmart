@@ -152,14 +152,17 @@ message CoinTransaction {
 message DiscountLineItem {
   string sku_id = 1;
   int32 quantity = 2;
+  // Ignored by PreviewDiscounts (D4): promotion resolves authoritative SKU price via ProductService.GetSKUsBatch.
   int64 unit_price_vnd = 3;
   string flash_sale_item_id = 4;
+  // Ignored by PreviewDiscounts (D4): promotion resolves authoritative SKU category_id via ProductService.GetSKUsBatch.
   string category_id = 5;
   string shop_discount_program_item_id = 6;
 }
 
 message ShopDiscountInput {
   string shop_id = 1;
+  // Ignored by PreviewDiscounts (D4): promotion computes subtotal_vnd from authoritative SKU prices resolved via ProductService.GetSKUsBatch.
   int64 subtotal_vnd = 2;
   int64 shipping_fee_vnd = 3;
   repeated DiscountLineItem items = 4;
@@ -470,6 +473,7 @@ message PreviewDiscountsResponse {
 
 message ReservePromotionRequest {
   string order_id = 1;
+  // Required (D3): caller must authenticate with the order-service token (claims.Service == "order-service"); user_id comes from the request.
   string user_id = 2;
   map<string, string> shop_voucher_ids = 3;
   string platform_voucher_id = 4;

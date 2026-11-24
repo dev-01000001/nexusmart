@@ -117,6 +117,7 @@ func run() error {
 		RateLimitUserPerMin:    cfg.RateLimitUserPerMin,
 		RateLimitFlashPerMin:   cfg.RateLimitFlashPerMin,
 		RateLimitAuthPerMin:    cfg.RateLimitAuthPerMin,
+		RateLimitBankOTPPerMin: cfg.RateLimitBankOTPPerMin,
 		RateLimitWebhookPerMin: cfg.RateLimitWebhookPerMin,
 		TrustedProxies:         trustedProxies,
 		RED:                    red,

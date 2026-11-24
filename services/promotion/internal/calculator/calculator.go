@@ -98,6 +98,7 @@ type AppliedVoucher struct {
 	DiscountVND  int64
 	HasBudget    bool
 	PerUserLimit int32
+	RulesVersion int32
 }
 
 // AppliedShopProgram describes a shop discount program item applied during calculation.
@@ -321,6 +322,7 @@ func Calculate(in Input) (*Output, error) {
 					DiscountVND:  disc,
 					HasBudget:    cand.Voucher.BudgetVND > 0,
 					PerUserLimit: cand.Voucher.PerUserLimit,
+					RulesVersion: cand.Voucher.RulesVersion,
 				})
 			}
 		}
@@ -410,6 +412,7 @@ func Calculate(in Input) (*Output, error) {
 				DiscountVND:  disc,
 				HasBudget:    in.PlatformVoucher.Voucher.BudgetVND > 0,
 				PerUserLimit: in.PlatformVoucher.Voucher.PerUserLimit,
+				RulesVersion: in.PlatformVoucher.Voucher.RulesVersion,
 			})
 		}
 	}
@@ -470,6 +473,7 @@ func Calculate(in Input) (*Output, error) {
 				DiscountVND:  disc,
 				HasBudget:    in.FreeshipVoucher.Voucher.BudgetVND > 0,
 				PerUserLimit: in.FreeshipVoucher.Voucher.PerUserLimit,
+				RulesVersion: in.FreeshipVoucher.Voucher.RulesVersion,
 			})
 		}
 	}
